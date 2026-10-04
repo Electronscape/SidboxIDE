@@ -1,0 +1,8 @@
+Compiler GCC for the sidbox version
+STM32-GCC
+for V1.6.0 from the source
+
+Stripped out just for the applets to compile and run on the sidbox os
+THis is not the full dev kit from STElectronics!
+there is just here enough for compiling YOUR applet to run on the sidbox only.
+
