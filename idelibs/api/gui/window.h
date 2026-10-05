@@ -139,7 +139,7 @@ typedef struct {
 #define GUICoderGirl      (API->gui)
 /////////////////////////////////////////////////////////
 
-#define SBOS_CreateWindow(...)  (GUICoderGirl->windows->window_create(__VA_ARGS__))
+#define SBOS_CreateWindow(CWinHandlePtr, x, y, width, height, titlePtr, flags)  (GUICoderGirl->windows->window_create(CWinHandlePtr, x, y, width, height, titlePtr, flags))
 #define SBOS_CloseWindow(id)    (GUICoderGirl->windows->window_close(id))
 #define SBOS_SetWindowProc(win, proc) (GUICoderGirl->windows->set_proc(win, proc))
 #define SBOS_WindowToFront(id)  (GUICoderGirl->windows->to_front(id))

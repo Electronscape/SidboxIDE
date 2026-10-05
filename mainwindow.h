@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QHash>
 #include <QString>
 #include <QStringList>
 
@@ -12,6 +13,7 @@ class MainWindow;
 QT_END_NAMESPACE
 
 class CodeEditor;
+class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QPlainTextEdit;
@@ -31,6 +33,7 @@ private:
     void setupInterface();
     void createNewProject();
     void createNewSourceFile();
+    void createNewHeaderFile();
     void openProject();
     bool saveProject();
     void showOptions();
@@ -50,8 +53,13 @@ private:
     void clearEditorTabs();
     void refreshProjectFiles();
     void refreshFunctionCompletions();
+    void ensureApiCatalog();
+    void refreshApiCatalog();
+    void showPassiveQuickTip(const QString &symbol);
+    void showQuickTip(const QString &symbol);
+    QString quickTipForSymbol(const QString &symbol) const;
     void updateTabTitle(CodeEditor *editor);
-    QString tabTitleForEditor(CodeEditor *editor) const;
+    QString tabTitleForEditor(CodeEditor *editor, int type = 0) const;
     QString displayPath(const QString &filePath) const;
     QStringList collectOpenProjectFiles() const;
     QStringList projectFilesForCompile() const;
@@ -94,6 +102,7 @@ private:
     Ui::MainWindow *ui;
     QListWidget *m_projectFiles;
     QTabWidget *m_editorTabs;
+    QLabel *m_quickTipLabel;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;
     QProcess *m_compilerProcess;
@@ -104,6 +113,8 @@ private:
     QString m_projectPath;
     QString m_projectFilePath;
     QStringList m_projectFilesInProject;
+    QHash<QString, QString> m_apiTips;
+    QStringList m_apiSignatures;
     QString m_linkerScriptPath;
     QString m_projectType;
     int m_modSizeKb;

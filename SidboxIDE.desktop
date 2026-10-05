@@ -1,0 +1,18 @@
+[Desktop Entry]
+Comment[en_GB]=Serial commander for the sidbox
+Comment=Serial commander for the sidbox
+Exec=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Release/SidboxIDE
+GenericName[en_GB]=
+GenericName=
+Icon=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/icons/icon.png
+MimeType=
+Name[en_GB]=Sidbox Terminal
+Name=Sidbox Terminal
+Path=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Release/
+StartupNotify=true
+Terminal=false
+TerminalOptions=
+Type=Application
+Version=1.0
+X-KDE-SubstituteUID=false
+X-KDE-Username=

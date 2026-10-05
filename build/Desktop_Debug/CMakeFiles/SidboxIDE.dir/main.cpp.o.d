@@ -363,8 +363,8 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: \
  /usr/include/qt6/QtGui/qfontvariableaxis.h \
  /usr/include/qt6/QtWidgets/qsizepolicy.h \
  /usr/include/qt6/QtGui/qcursor.h /usr/include/qt6/QtGui/qbitmap.h \
- /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QString \
- /usr/include/qt6/QtCore/QStringList \
+ /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QHash \
+ /usr/include/qt6/QtCore/QString /usr/include/qt6/QtCore/QStringList \
  /usr/include/qt6/QtWidgets/QApplication \
  /usr/include/qt6/QtWidgets/qapplication.h \
  /usr/include/qt6/QtCore/qcoreapplication.h \
@@ -377,4 +377,14 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: \
  /usr/include/qt6/QtCore/qcoreapplication_platform.h \
  /usr/include/qt6/QtGui/qguiapplication.h \
  /usr/include/qt6/QtGui/qinputmethod.h /usr/include/qt6/QtCore/qlocale.h \
- /usr/include/qt6/QtGui/qguiapplication_platform.h
+ /usr/include/qt6/QtGui/qguiapplication_platform.h \
+ /usr/include/qt6/QtGui/QIcon /usr/include/qt6/QtCore/QDebug \
+ /usr/include/qt6/QtCore/QFile /usr/include/qt6/QtCore/qfile.h \
+ /usr/include/qt6/QtCore/qfiledevice.h \
+ /usr/include/qt6/QtCore/qiodevice.h /usr/include/c++/16/filesystem \
+ /usr/include/c++/16/bits/fs_fwd.h /usr/include/c++/16/bits/fs_path.h \
+ /usr/include/c++/16/iomanip /usr/include/c++/16/bits/quoted_string.h \
+ /usr/include/c++/16/codecvt /usr/include/c++/16/bits/fs_dir.h \
+ /usr/include/c++/16/bits/fs_ops.h /usr/include/qt6/QtCore/QProcess \
+ /usr/include/qt6/QtCore/qprocess.h \
+ /usr/include/qt6/QtCore/QProcessEnvironment

@@ -322,6 +322,7 @@ SidboxIDE_autogen/timestamp: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/CMakeLists
   /usr/include/linux/types.h \
   /usr/include/locale.h \
   /usr/include/pthread.h \
+  /usr/include/qt6/QtCore/QHash \
   /usr/include/qt6/QtCore/QList \
   /usr/include/qt6/QtCore/QObject \
   /usr/include/qt6/QtCore/QRect \
@@ -2398,6 +2399,8 @@ CMakeFiles/4.3.0/CMakeCXXCompiler.cmake:
 
 /usr/lib64/cmake/Qt6Gui/Qt6QTiffPluginTargetsPrecheck.cmake:
 
+/usr/include/qt6/QtCore/QHash:
+
 /usr/include/c++/16/tr1/special_function_util.h:
 
 /usr/lib64/cmake/Qt6Gui/Qt6QTgaPluginAdditionalTargetInfo.cmake:
@@ -2666,6 +2669,12 @@ CMakeFiles/4.3.0/CMakeCXXCompiler.cmake:
 
 /usr/include/qt6/QtCore/qpair.h:
 
+/usr/lib64/cmake/Qt6Gui/Qt6QXdgDesktopPortalThemePluginConfig.cmake:
+
+/usr/include/stdlib.h:
+
+/usr/include/qt6/QtCore/qrect.h:
+
 /usr/include/qt6/QtCore/qrefcount.h:
 
 /usr/include/qt6/QtCore/qscopedpointer.h:
@@ -2879,9 +2888,3 @@ CMakeFiles/4.3.0/CMakeSystem.cmake:
 /usr/lib64/cmake/Qt6Gui/Qt6GuiTargetsPrecheck.cmake:
 
 /usr/include/stdc-predef.h:
-
-/usr/lib64/cmake/Qt6Gui/Qt6QXdgDesktopPortalThemePluginConfig.cmake:
-
-/usr/include/qt6/QtCore/qrect.h:
-
-/usr/include/stdlib.h:

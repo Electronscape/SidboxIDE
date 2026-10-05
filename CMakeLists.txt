@@ -19,13 +19,23 @@ qt_add_executable(SidboxIDE
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    res.qrc
+    icons/icon.png
+    icons/icon.ico
 )
+
+set(CMAKE_AUTORCC ON)
 
 target_link_libraries(SidboxIDE
     PRIVATE
         Qt::Core
         Qt::Gui
         Qt::Widgets
+)
+
+install(FILES icons/icon.png
+    DESTINATION share/icons/hicolor/256x256/apps
+    RENAME SidboxIDE.png
 )
 
 install(TARGETS SidboxIDE

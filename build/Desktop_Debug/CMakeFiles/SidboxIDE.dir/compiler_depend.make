@@ -342,6 +342,7 @@ CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: SidboxIDE_aut
   /usr/include/locale.h \
   /usr/include/math.h \
   /usr/include/pthread.h \
+  /usr/include/qt6/QtCore/QHash \
   /usr/include/qt6/QtCore/QList \
   /usr/include/qt6/QtCore/QObject \
   /usr/include/qt6/QtCore/QRect \
@@ -1857,6 +1858,10 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/c++/16/bits/exception_defines.h \
   /usr/include/c++/16/bits/exception_ptr.h \
   /usr/include/c++/16/bits/formatfwd.h \
+  /usr/include/c++/16/bits/fs_dir.h \
+  /usr/include/c++/16/bits/fs_fwd.h \
+  /usr/include/c++/16/bits/fs_ops.h \
+  /usr/include/c++/16/bits/fs_path.h \
   /usr/include/c++/16/bits/functexcept.h \
   /usr/include/c++/16/bits/functional_hash.h \
   /usr/include/c++/16/bits/hash_bytes.h \
@@ -1894,6 +1899,7 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/c++/16/bits/postypes.h \
   /usr/include/c++/16/bits/predefined_ops.h \
   /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/quoted_string.h \
   /usr/include/c++/16/bits/range_access.h \
   /usr/include/c++/16/bits/ranges_algo.h \
   /usr/include/c++/16/bits/ranges_algobase.h \
@@ -1959,6 +1965,7 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/c++/16/climits \
   /usr/include/c++/16/clocale \
   /usr/include/c++/16/cmath \
+  /usr/include/c++/16/codecvt \
   /usr/include/c++/16/compare \
   /usr/include/c++/16/concepts \
   /usr/include/c++/16/cstddef \
@@ -1979,9 +1986,11 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/c++/16/ext/numeric_traits.h \
   /usr/include/c++/16/ext/string_conversions.h \
   /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/filesystem \
   /usr/include/c++/16/format \
   /usr/include/c++/16/functional \
   /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iomanip \
   /usr/include/c++/16/ios \
   /usr/include/c++/16/iosfwd \
   /usr/include/c++/16/istream \
@@ -2064,6 +2073,11 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/locale.h \
   /usr/include/math.h \
   /usr/include/pthread.h \
+  /usr/include/qt6/QtCore/QDebug \
+  /usr/include/qt6/QtCore/QFile \
+  /usr/include/qt6/QtCore/QHash \
+  /usr/include/qt6/QtCore/QProcess \
+  /usr/include/qt6/QtCore/QProcessEnvironment \
   /usr/include/qt6/QtCore/QString \
   /usr/include/qt6/QtCore/QStringList \
   /usr/include/qt6/QtCore/q17memory.h \
@@ -2115,6 +2129,8 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/qt6/QtCore/qendian.h \
   /usr/include/qt6/QtCore/qeventloop.h \
   /usr/include/qt6/QtCore/qexceptionhandling.h \
+  /usr/include/qt6/QtCore/qfile.h \
+  /usr/include/qt6/QtCore/qfiledevice.h \
   /usr/include/qt6/QtCore/qflags.h \
   /usr/include/qt6/QtCore/qfloat16.h \
   /usr/include/qt6/QtCore/qforeach.h \
@@ -2125,6 +2141,7 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/qt6/QtCore/qglobalstatic.h \
   /usr/include/qt6/QtCore/qhash.h \
   /usr/include/qt6/QtCore/qhashfunctions.h \
+  /usr/include/qt6/QtCore/qiodevice.h \
   /usr/include/qt6/QtCore/qiodevicebase.h \
   /usr/include/qt6/QtCore/qiterable.h \
   /usr/include/qt6/QtCore/qiterator.h \
@@ -2150,6 +2167,7 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/qt6/QtCore/qoverload.h \
   /usr/include/qt6/QtCore/qpair.h \
   /usr/include/qt6/QtCore/qpoint.h \
+  /usr/include/qt6/QtCore/qprocess.h \
   /usr/include/qt6/QtCore/qprocessordetection.h \
   /usr/include/qt6/QtCore/qrect.h \
   /usr/include/qt6/QtCore/qrefcount.h \
@@ -2204,6 +2222,7 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/ma
   /usr/include/qt6/QtCore/qversiontagging.h \
   /usr/include/qt6/QtCore/qxptype_traits.h \
   /usr/include/qt6/QtCore/qyieldcpu.h \
+  /usr/include/qt6/QtGui/QIcon \
   /usr/include/qt6/QtGui/qaction.h \
   /usr/include/qt6/QtGui/qbitmap.h \
   /usr/include/qt6/QtGui/qbrush.h \
@@ -2612,6 +2631,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/Sidbox
   /usr/include/qt6/QtCore/QDirIterator \
   /usr/include/qt6/QtCore/QFile \
   /usr/include/qt6/QtCore/QFileInfo \
+  /usr/include/qt6/QtCore/QHash \
   /usr/include/qt6/QtCore/QJsonArray \
   /usr/include/qt6/QtCore/QJsonDocument \
   /usr/include/qt6/QtCore/QJsonObject \
@@ -2625,6 +2645,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/Sidbox
   /usr/include/qt6/QtCore/QSettings \
   /usr/include/qt6/QtCore/QSize \
   /usr/include/qt6/QtCore/QSizeF \
+  /usr/include/qt6/QtCore/QStandardPaths \
   /usr/include/qt6/QtCore/QString \
   /usr/include/qt6/QtCore/QStringList \
   /usr/include/qt6/QtCore/QVariant \
@@ -2746,6 +2767,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/Sidbox
   /usr/include/qt6/QtCore/qsharedpointer_impl.h \
   /usr/include/qt6/QtCore/qsize.h \
   /usr/include/qt6/QtCore/qspan.h \
+  /usr/include/qt6/QtCore/qstandardpaths.h \
   /usr/include/qt6/QtCore/qstdlibdetection.h \
   /usr/include/qt6/QtCore/qstring.h \
   /usr/include/qt6/QtCore/qstringalgorithms.h \
@@ -2794,6 +2816,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/Sidbox
   /usr/include/qt6/QtGui/QAction \
   /usr/include/qt6/QtGui/QColor \
   /usr/include/qt6/QtGui/QFontDatabase \
+  /usr/include/qt6/QtGui/QIcon \
   /usr/include/qt6/QtGui/QKeySequence \
   /usr/include/qt6/QtGui/QMouseEvent \
   /usr/include/qt6/QtGui/QTextCharFormat \
@@ -4227,11 +4250,11 @@ CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o:
 
 /usr/include/qt6/QtCore/quuid.h:
 
+/usr/include/qt6/QtCore/qstandardpaths.h:
+
 /usr/include/qt6/QtCore/qsettings.h:
 
 /usr/include/qt6/QtCore/qsavefile.h:
-
-/usr/include/qt6/QtCore/qprocess.h:
 
 /usr/include/qt6/QtCore/qjsonparseerror.h:
 
@@ -4248,6 +4271,8 @@ CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o:
 /usr/lib64/libpng16.so.16:
 
 /usr/include/qt6/QtCore/QVariant:
+
+/usr/include/qt6/QtCore/QStandardPaths:
 
 /usr/include/qt6/QtCore/QSettings:
 
@@ -4268,6 +4293,14 @@ CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o:
 /usr/lib64/libdouble-conversion.so.3:
 
 /usr/include/qt6/QtWidgets/QApplication:
+
+/usr/include/qt6/QtGui/QIcon:
+
+/usr/include/qt6/QtCore/qprocess.h:
+
+/usr/include/qt6/QtCore/QProcessEnvironment:
+
+/usr/include/qt6/QtCore/QDebug:
 
 /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp:
 
@@ -4382,6 +4415,10 @@ CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o:
 /usr/include/qt6/QtWidgets/QMainWindow:
 
 /usr/include/qt6/QtWidgets/QDialog:
+
+/usr/include/qt6/QtCore/qcborcommon.h:
+
+/usr/include/qt6/QtGui/qtransform.h:
 
 /usr/include/bits/thread-shared-types.h:
 
@@ -5067,10 +5104,6 @@ SidboxIDE_autogen/EWIEGA46WW/moc_mainwindow.cpp:
 
 /usr/include/bits/stdlib-float.h:
 
-/usr/include/qt6/QtCore/qcborcommon.h:
-
-/usr/include/qt6/QtGui/qtransform.h:
-
 /usr/include/bits/time64.h:
 
 /usr/include/c++/16/bits/allocator.h:
@@ -5220,6 +5253,8 @@ SidboxIDE_autogen/EWIEGA46WW/moc_csyntaxhighlighter.cpp:
 /usr/include/c++/16/tr1/modified_bessel_func.tcc:
 
 /usr/include/qt6/QtCore/qsystemdetection.h:
+
+/usr/include/qt6/QtCore/QHash:
 
 /usr/include/c++/16/tr1/special_function_util.h:
 

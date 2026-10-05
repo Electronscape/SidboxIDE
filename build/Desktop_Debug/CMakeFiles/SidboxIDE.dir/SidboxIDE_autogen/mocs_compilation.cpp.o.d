@@ -409,7 +409,7 @@ CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../mainwindow.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
  /usr/include/qt6/QtWidgets/qmainwindow.h \
- /usr/include/qt6/QtWidgets/qtabwidget.h \
+ /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QHash \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_optionsdialog.cpp \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../optionsdialog.h \
  /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h \

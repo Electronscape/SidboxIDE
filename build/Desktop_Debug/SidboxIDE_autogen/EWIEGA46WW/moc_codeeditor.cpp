@@ -39,10 +39,22 @@ template <> constexpr inline auto CodeEditor::qt_create_metaobjectdata<qt_meta_t
 {
     namespace QMC = QtMocConstants;
     QtMocHelpers::StringRefStorage qt_stringData {
-        "CodeEditor"
+        "CodeEditor",
+        "quickTipRequested",
+        "",
+        "symbol",
+        "quickTipCandidateChanged"
     };
 
     QtMocHelpers::UintData qt_methods {
+        // Signal 'quickTipRequested'
+        QtMocHelpers::SignalData<void(const QString &)>(1, 2, QMC::AccessPublic, QMetaType::Void, {{
+            { QMetaType::QString, 3 },
+        }}),
+        // Signal 'quickTipCandidateChanged'
+        QtMocHelpers::SignalData<void(const QString &)>(4, 2, QMC::AccessPublic, QMetaType::Void, {{
+            { QMetaType::QString, 3 },
+        }}),
     };
     QtMocHelpers::UintData qt_properties {
     };
@@ -64,10 +76,19 @@ Q_CONSTINIT const QMetaObject CodeEditor::staticMetaObject = { {
 void CodeEditor::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
 {
     auto *_t = static_cast<CodeEditor *>(_o);
-    (void)_t;
-    (void)_c;
-    (void)_id;
-    (void)_a;
+    if (_c == QMetaObject::InvokeMetaMethod) {
+        switch (_id) {
+        case 0: _t->quickTipRequested((*reinterpret_cast<std::add_pointer_t<QString>>(_a[1]))); break;
+        case 1: _t->quickTipCandidateChanged((*reinterpret_cast<std::add_pointer_t<QString>>(_a[1]))); break;
+        default: ;
+        }
+    }
+    if (_c == QMetaObject::IndexOfMethod) {
+        if (QtMocHelpers::indexOfMethod<void (CodeEditor::*)(const QString & )>(_a, &CodeEditor::quickTipRequested, 0))
+            return;
+        if (QtMocHelpers::indexOfMethod<void (CodeEditor::*)(const QString & )>(_a, &CodeEditor::quickTipCandidateChanged, 1))
+            return;
+    }
 }
 
 const QMetaObject *CodeEditor::metaObject() const
@@ -86,6 +107,30 @@ void *CodeEditor::qt_metacast(const char *_clname)
 int CodeEditor::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
 {
     _id = QPlainTextEdit::qt_metacall(_c, _id, _a);
+    if (_id < 0)
+        return _id;
+    if (_c == QMetaObject::InvokeMetaMethod) {
+        if (_id < 2)
+            qt_static_metacall(this, _c, _id, _a);
+        _id -= 2;
+    }
+    if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
+        if (_id < 2)
+            *reinterpret_cast<QMetaType *>(_a[0]) = QMetaType();
+        _id -= 2;
+    }
     return _id;
+}
+
+// SIGNAL 0
+void CodeEditor::quickTipRequested(const QString & _t1)
+{
+    QMetaObject::activate<void>(this, &staticMetaObject, 0, nullptr, _t1);
+}
+
+// SIGNAL 1
+void CodeEditor::quickTipCandidateChanged(const QString & _t1)
+{
+    QMetaObject::activate<void>(this, &staticMetaObject, 1, nullptr, _t1);
 }
 QT_WARNING_POP

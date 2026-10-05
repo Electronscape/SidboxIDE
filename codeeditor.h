@@ -7,6 +7,7 @@
 
 class CSyntaxHighlighter;
 class QCompleter;
+class QFont;
 class QPaintEvent;
 class QResizeEvent;
 class QStringListModel;
@@ -23,6 +24,7 @@ public:
     QString filePath() const;
     void setFilePath(const QString &path);
     void setFunctionCompletions(const QStringList &signatures);
+    void setCompletionFont(const QFont &font);
 
     bool loadFromFile(const QString &path);
     bool save();
@@ -31,6 +33,10 @@ public:
     int lineNumberAreaWidth() const;
     void refreshLineNumberAreaWidth();
     void lineNumberAreaPaintEvent(QPaintEvent *event);
+
+signals:
+    void quickTipRequested(const QString &symbol);
+    void quickTipCandidateChanged(const QString &symbol);
 
 protected:
     void focusInEvent(QFocusEvent *event) override;

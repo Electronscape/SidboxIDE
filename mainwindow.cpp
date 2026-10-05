@@ -6,6 +6,7 @@
 #include "ui_mainwindow.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QColor>
 #include <QAbstractButton>
 #include <QCoreApplication>
@@ -39,11 +40,13 @@
 #include <QTextDocument>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QStandardPaths>
 
 namespace {
 constexpr int ProjectFileVersion = 2;
 const QString GuiProjectType = QStringLiteral("gui");
 const QString GameProjectType = QStringLiteral("game");
+
 
 bool isCompilableSource(const QString &filePath)
 {
@@ -51,12 +54,20 @@ bool isCompilableSource(const QString &filePath)
     return suffix == QStringLiteral("c") || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp");
 }
 
+/*
 bool canContainFunctionSignatures(const QString &filePath)
 {
     const QString suffix = QFileInfo(filePath).suffix().toLower();
     return suffix == QStringLiteral("c") || suffix == QStringLiteral("h")
         || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp")
         || suffix == QStringLiteral("hpp");
+}
+*/
+
+bool canContainFunctionSignatures(const QString &filePath)
+{
+    const QString suffix = QFileInfo(filePath).suffix().toLower();
+    return !suffix.isEmpty();
 }
 
 QString normalizedProjectType(const QString &projectType)
@@ -87,6 +98,289 @@ bool replaceLinkerAssignment(QString *text, const QString &symbol, const QString
 
     text->replace(expression, QStringLiteral("\\1%1\\2").arg(value));
     return true;
+}
+
+QStringList splitApiArgumentList(const QString &text)
+{
+    QStringList arguments;
+    QString current;
+    int depth = 0;
+    for (const QChar ch : text) {
+        if (ch == QLatin1Char('(') || ch == QLatin1Char('[')) {
+            ++depth;
+        } else if ((ch == QLatin1Char(')') || ch == QLatin1Char(']')) && depth > 0) {
+            --depth;
+        }
+        if (ch == QLatin1Char(',') && depth == 0) {
+            const QString argument = current.trimmed();
+            if (!argument.isEmpty()) {
+                arguments.append(argument);
+            }
+            current.clear();
+            continue;
+        }
+        current.append(ch);
+    }
+    const QString argument = current.trimmed();
+    if (!argument.isEmpty() && argument != QStringLiteral("void")) {
+        arguments.append(argument);
+    }
+    return arguments;
+}
+
+QString readableApiArgumentName(const QString &rawArgument, int index)
+{
+    const QString argument = rawArgument.simplified();
+    static const QRegularExpression functionPointerExpression(QStringLiteral("\\(\\s*\\*\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)"));
+    const QRegularExpressionMatch functionPointerMatch = functionPointerExpression.match(argument);
+    if (functionPointerMatch.hasMatch()) {
+        return functionPointerMatch.captured(1);
+    }
+
+    static const QRegularExpression identifierExpression(QStringLiteral("([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\[[^\\]]*\\])?\\s*$"));
+    const QRegularExpressionMatch match = identifierExpression.match(argument);
+    if (!match.hasMatch()) {
+        return QStringLiteral("arg%1").arg(index + 1);
+    }
+
+    const QString name = match.captured(1);
+    if (name == QStringLiteral("const") || name == QStringLiteral("volatile") || name == QStringLiteral("restrict")) {
+        return QStringLiteral("arg%1").arg(index + 1);
+    }
+
+    const bool showPointer = argument.contains(QLatin1Char('*'))
+        && !argument.contains(QRegularExpression(QStringLiteral("\\bchar\\s*\\*")));
+    return showPointer ? QStringLiteral("*%1").arg(name) : name;
+}
+
+QString readableApiArguments(const QString &argumentText)
+{
+    const QStringList arguments = splitApiArgumentList(argumentText);
+    QStringList names;
+    for (int i = 0; i < arguments.count(); ++i) {
+        names.append(readableApiArgumentName(arguments.at(i), i));
+    }
+    return names.join(QStringLiteral(", "));
+}
+
+QString uncommentedApiText(QString text)
+{
+    text.replace(QRegularExpression(QStringLiteral("/\\*.*?\\*/"), QRegularExpression::DotMatchesEverythingOption), QStringLiteral(" "));
+    text.replace(QRegularExpression(QStringLiteral("//[^\\n]*")), QString());
+    return text;
+}
+
+void collectApiFunctionPointers(const QString &text, QHash<QString, QString> *functionPointers)
+{
+    static const QRegularExpression pointerExpression(
+        QStringLiteral("(?:^|[\\n;{])\\s*[^;{}]*?\\(\\s*\\*\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*\\(([^;]*)\\)\\s*;"),
+        QRegularExpression::MultilineOption);
+
+    QRegularExpressionMatchIterator iterator = pointerExpression.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        functionPointers->insert(match.captured(1).trimmed(), readableApiArguments(match.captured(2)));
+    }
+}
+
+void collectApiMacros(QString text, const QHash<QString, QString> &functionPointers, QHash<QString, QString> *tips, QStringList *signatures)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"(\\\s*\r?\n)")), QStringLiteral(" "));
+    static const QRegularExpression macroExpression(
+        QStringLiteral("^\\s*#\\s*define\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*([^\\n]*)"),
+        QRegularExpression::MultilineOption);
+    static const QRegularExpression targetExpression(QStringLiteral("->\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\("));
+
+    QRegularExpressionMatchIterator iterator = macroExpression.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        const QString name = match.captured(1).trimmed();
+        const QString macroArguments = match.captured(2).trimmed();
+        const QString body = match.captured(3);
+
+        QString targetName;
+        QRegularExpressionMatchIterator targetIterator = targetExpression.globalMatch(body);
+        while (targetIterator.hasNext()) {
+            targetName = targetIterator.next().captured(1).trimmed();
+        }
+
+        QString displayArguments;
+        if (macroArguments == QStringLiteral("...") && !targetName.isEmpty() && functionPointers.contains(targetName)) {
+            displayArguments = functionPointers.value(targetName);
+        } else {
+            QStringList arguments = splitApiArgumentList(macroArguments);
+            arguments.removeAll(QStringLiteral("void"));
+            displayArguments = arguments.join(QStringLiteral(", "));
+        }
+
+        const QString signature = QStringLiteral("%1(%2)").arg(name, displayArguments);
+        tips->insert(name, signature);
+        signatures->append(signature);
+    }
+}
+
+QString trimmedApiValue(QString value)
+{
+    value = value.simplified();
+    if (value.length() > 120) {
+        value = value.left(117) + QStringLiteral("...");
+    }
+    return value;
+}
+
+void collectApiDefines(QString text, QHash<QString, QString> *tips, QStringList *signatures)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"(\\\s*\r?\n)")), QStringLiteral(" "));
+    static const QRegularExpression defineExpression(
+        QStringLiteral("^\\s*#\\s*define\\s+([A-Za-z_][A-Za-z0-9_]*)([^\\n]*)"),
+        QRegularExpression::MultilineOption);
+
+    QRegularExpressionMatchIterator iterator = defineExpression.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        const QString name = match.captured(1).trimmed();
+        const QString rest = match.captured(2);
+        if (name.isEmpty() || rest.startsWith(QLatin1Char('('))) {
+            continue;
+        }
+
+        const QString value = trimmedApiValue(rest);
+        if (value.isEmpty()) {
+            continue;
+        }
+        tips->insert(name, QStringLiteral("#define %1 %2").arg(name, value));
+        signatures->append(name);
+    }
+}
+
+void collectApiTypes(const QString &text, QHash<QString, QString> *tips, QStringList *signatures)
+{
+    static const QRegularExpression callbackTypedefExpression(
+        QStringLiteral("\\btypedef\\s+(.+?)\\(\\s*\\*\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*\\(([^;]*)\\)\\s*;"),
+        QRegularExpression::MultilineOption);
+    QRegularExpressionMatchIterator callbackIterator = callbackTypedefExpression.globalMatch(text);
+    while (callbackIterator.hasNext()) {
+        const QRegularExpressionMatch match = callbackIterator.next();
+        const QString returnType = match.captured(1).simplified();
+        const QString name = match.captured(2).trimmed();
+        const QString arguments = match.captured(3).simplified();
+        if (!name.isEmpty()) {
+            tips->insert(name, QStringLiteral("typedef %1 (*%2)(%3)").arg(returnType, name, arguments));
+            signatures->append(name);
+        }
+    }
+
+    static const QRegularExpression compoundTypedefExpression(
+        QStringLiteral("\\btypedef\\s+(struct|enum)\\s*([A-Za-z_][A-Za-z0-9_]*)?\\s*\\{.*?\\}\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*;"),
+        QRegularExpression::DotMatchesEverythingOption);
+    QRegularExpressionMatchIterator compoundIterator = compoundTypedefExpression.globalMatch(text);
+    while (compoundIterator.hasNext()) {
+        const QRegularExpressionMatch match = compoundIterator.next();
+        const QString kind = match.captured(1);
+        const QString tagName = match.captured(2).trimmed();
+        const QString aliasName = match.captured(3).trimmed();
+        if (aliasName.isEmpty()) {
+            continue;
+        }
+
+        const QString tip = tagName.isEmpty()
+            ? QStringLiteral("typedef %1 { ... } %2").arg(kind, aliasName)
+            : QStringLiteral("typedef %1 %2 { ... } %3").arg(kind, tagName, aliasName);
+        tips->insert(aliasName, tip);
+        signatures->append(aliasName);
+        if (!tagName.isEmpty()) {
+            tips->insert(tagName, tip);
+            signatures->append(tagName);
+        }
+    }
+
+    static const QRegularExpression simpleTypedefExpression(
+        QStringLiteral("\\btypedef\\s+([^;{}()]+?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;"),
+        QRegularExpression::MultilineOption);
+    QRegularExpressionMatchIterator simpleIterator = simpleTypedefExpression.globalMatch(text);
+    while (simpleIterator.hasNext()) {
+        const QRegularExpressionMatch match = simpleIterator.next();
+        const QString base = match.captured(1).simplified();
+        const QString name = match.captured(2).trimmed();
+        if (name.isEmpty() || base.startsWith(QStringLiteral("struct")) || base.startsWith(QStringLiteral("enum"))) {
+            continue;
+        }
+
+        tips->insert(name, QStringLiteral("typedef %1 %2").arg(base, name));
+        signatures->append(name);
+    }
+
+    static const QRegularExpression structExpression(
+        QStringLiteral("\\b(struct|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{"),
+        QRegularExpression::MultilineOption);
+    QRegularExpressionMatchIterator structIterator = structExpression.globalMatch(text);
+    while (structIterator.hasNext()) {
+        const QRegularExpressionMatch match = structIterator.next();
+        const QString kind = match.captured(1);
+        const QString name = match.captured(2).trimmed();
+        if (!name.isEmpty() && !tips->contains(name)) {
+            tips->insert(name, QStringLiteral("%1 %2 { ... }").arg(kind, name));
+            signatures->append(name);
+        }
+    }
+}
+
+bool isApiIdentifierChar(QChar ch)
+{
+    return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+}
+
+void collectApiLineSymbols(QString text, QHash<QString, QString> *tips, QStringList *signatures)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"(\\\s*\r?\n)")), QStringLiteral(" "));
+
+    for (const QString &rawLine : text.split(QLatin1Char('\n'))) {
+        const QString line = rawLine.trimmed();
+        if (line.startsWith(QStringLiteral("#define "))) {
+            const QString rest = line.mid(8).trimmed();
+            int nameEnd = 0;
+            while (nameEnd < rest.length() && isApiIdentifierChar(rest.at(nameEnd))) {
+                ++nameEnd;
+            }
+
+            const QString name = rest.left(nameEnd);
+            const QString value = trimmedApiValue(rest.mid(nameEnd));
+            if (name.isEmpty() || value.isEmpty()) {
+                continue;
+            }
+
+            if (value.startsWith(QLatin1Char('('))) {
+                const int closeIndex = value.indexOf(QLatin1Char(')'));
+                if (closeIndex > 0 && !tips->contains(name)) {
+                    const QString arguments = value.mid(1, closeIndex - 1).trimmed();
+                    const QString signature = QStringLiteral("%1(%2)").arg(name, arguments);
+                    tips->insert(name, signature);
+                    signatures->append(signature);
+                }
+            } else if (!tips->contains(name)) {
+                tips->insert(name, QStringLiteral("#define %1 %2").arg(name, value));
+                signatures->append(name);
+            }
+            continue;
+        }
+
+        if (line.startsWith(QStringLiteral("typedef ")) && line.endsWith(QLatin1Char(';'))
+            && !line.contains(QLatin1Char('{')) && !line.contains(QLatin1Char('('))) {
+            QString declaration = line;
+            declaration.chop(1);
+            const int lastSpace = declaration.lastIndexOf(QLatin1Char(' '));
+            if (lastSpace <= 8) {
+                continue;
+            }
+
+            const QString name = declaration.mid(lastSpace + 1).trimmed();
+            const QString base = declaration.mid(8, lastSpace - 8).simplified();
+            if (!name.isEmpty() && !base.isEmpty() && !tips->contains(name)) {
+                tips->insert(name, QStringLiteral("typedef %1 %2").arg(base, name));
+                signatures->append(name);
+            }
+        }
+    }
 }
 
 class CompilerOutputPane : public QPlainTextEdit
@@ -139,6 +433,7 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
     , m_projectFiles(nullptr)
     , m_editorTabs(nullptr)
+    , m_quickTipLabel(nullptr)
     , m_outputPane(nullptr)
     , m_outputToolBar(nullptr)
     , m_compilerProcess(new QProcess(this))
@@ -150,6 +445,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
     loadOptions();
     setupInterface();
+    refreshApiCatalog();
+
+
+
 
     connect(m_compilerProcess, &QProcess::readyReadStandardOutput, this, [this]() {
         appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()), OutputKind::Normal);
@@ -166,6 +465,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_compilerProcess, &QProcess::finished, this, &MainWindow::handleCompilerFinished);
 
     createNewSourceFile();
+    createNewHeaderFile();
 }
 
 MainWindow::~MainWindow()
@@ -173,10 +473,14 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+
 void MainWindow::setupInterface()
 {
     setWindowTitle(tr("Sidbox IDE"));
+    QIcon icon = QApplication::windowIcon().isNull() ? QIcon(":/icons/icon.png") : QApplication::windowIcon();
+    setWindowIcon(icon);
     resize(1100, 720);
+
 
     auto *toolBar = addToolBar(tr("Project"));
     toolBar->setMovable(false);
@@ -184,7 +488,8 @@ void MainWindow::setupInterface()
     QAction *newAction = toolBar->addAction(tr("New"));
     auto *newMenu = new QMenu(this);
     QAction *newProjectAction = newMenu->addAction(tr("New Project"));
-    QAction *newSourceAction = newMenu->addAction(tr("New C File"));
+    QAction *newSourceAction = newMenu->addAction(tr("New C Source File"));
+    QAction *newHeaderAction = newMenu->addAction(tr("New H Header File"));
     newAction->setMenu(newMenu);
 
     QAction *openProjectAction = toolBar->addAction(tr("Open Project [CTRL+O]"));
@@ -206,6 +511,7 @@ void MainWindow::setupInterface()
     });
     connect(newProjectAction, &QAction::triggered, this, &MainWindow::createNewProject);
     connect(newSourceAction, &QAction::triggered, this, &MainWindow::createNewSourceFile);
+    connect(newHeaderAction, &QAction::triggered, this, &MainWindow::createNewHeaderFile);
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
@@ -246,6 +552,13 @@ void MainWindow::setupInterface()
     outputLayout->setContentsMargins(0, 0, 0, 0);
     outputLayout->setSpacing(0);
 
+    m_quickTipLabel = new QLabel(tr("F1: quick API tip"), outputPanel);
+    m_quickTipLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    m_quickTipLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_quickTipLabel->setStyleSheet(QStringLiteral(
+        "QLabel { background: #020402; color: #66ff8a; border-top: 1px solid #15351a; "
+        "border-bottom: 1px solid #15351a; padding: 3px 6px; }"));
+
     m_outputToolBar = new QToolBar(tr("Compiler Output"), outputPanel);
     m_outputToolBar->setMovable(false);
     QAction *clearOutputAction = m_outputToolBar->addAction(tr("Clear"));
@@ -265,6 +578,7 @@ void MainWindow::setupInterface()
     m_outputPane->setPlaceholderText(tr("Compiler output"));
     m_outputPane->setMaximumBlockCount(1000);
 
+    outputLayout->addWidget(m_quickTipLabel);
     outputLayout->addWidget(m_outputToolBar);
     outputLayout->addWidget(m_outputPane, 1);
 
@@ -329,6 +643,7 @@ void MainWindow::createNewProject()
     clearEditorTabs();
     refreshProjectFiles();
     createNewSourceFile();
+    createNewHeaderFile();
     saveProjectFile(m_projectFilePath);
 
     statusBar()->showMessage(tr("New %1 project created: %2")
@@ -346,7 +661,7 @@ void MainWindow::createNewSourceFile()
 
     editor->setPlainText(QString(
                              "/*\n"
-                             "   Create file: %1 %2\n"
+                             "   Created file: %1 %2\n"
                              "*/\n"
                              "#include \"apis.h\"\n\n"
                              "int main(void)\n"
@@ -356,10 +671,31 @@ void MainWindow::createNewSourceFile()
 
     editor->document()->setModified(false);
 
-    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor));
+    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor, 0));
     m_editorTabs->setCurrentIndex(index);
     refreshFunctionCompletions();
     statusBar()->showMessage(tr("New C source file created"));
+}
+
+void MainWindow::createNewHeaderFile(){
+    CodeEditor *editor = createEditor();
+
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString dateStr = now.toString(QStringLiteral("MMM dd yyyy"));
+    const QString timeStr = now.toString(QStringLiteral("hh:mm:ss"));
+
+    editor->setPlainText(QString(
+                             "/*\n"
+                             "   Created Header file: %1 %2\n"
+                             "*/\n"
+                             "\n").arg(timeStr, dateStr));
+
+    editor->document()->setModified(false);
+
+    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor, 1));
+    m_editorTabs->setCurrentIndex(index);
+    refreshFunctionCompletions();
+    statusBar()->showMessage(tr("New H header file created"));
 }
 
 void MainWindow::openProject()
@@ -690,12 +1026,6 @@ void MainWindow::handleCompilerFinished(int exitCode)
             appendOutputLine(tr("APP size: %1 bytes").arg(QLocale().toString(appSize)), OutputKind::Success);
         }
 
-        const QString buildPath = QDir(m_projectPath).filePath(QStringLiteral("build"));
-        QDir buildDir(buildPath);
-        const QStringList suFiles = buildDir.entryList({QStringLiteral("*.su")}, QDir::Files);
-        for (const QString &suFile : suFiles) {
-            buildDir.remove(suFile);
-        }
 
         appendOutputLine(tr("Compile finished successfully."), OutputKind::Success);
         m_buildStep = BuildStep::None;
@@ -720,6 +1050,7 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(m_editorFontPointSize);
     editor->setFont(font);
+    editor->setCompletionFont(font);
     editor->refreshLineNumberAreaWidth();
 
     connect(editor->document(), &QTextDocument::modificationChanged, this, [this, editor]() {
@@ -729,9 +1060,13 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
         refreshFunctionCompletions();
     });
 
+    connect(editor, &CodeEditor::quickTipRequested, this, &MainWindow::showQuickTip);
+    connect(editor, &CodeEditor::quickTipCandidateChanged, this, &MainWindow::showPassiveQuickTip);
     return editor;
 }
 
+
+/*
 bool MainWindow::openFile(const QString &filePath)
 {
     for (int i = 0; i < m_editorTabs->count(); ++i) {
@@ -754,6 +1089,37 @@ bool MainWindow::openFile(const QString &filePath)
     refreshFunctionCompletions();
     return true;
 }
+
+*/
+
+bool MainWindow::openFile(const QString &filePath)
+{
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        //auto *editor = qobject_cast(m_editorTabs->widget(i));
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor && QFileInfo(editor->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+            m_editorTabs->setCurrentIndex(i);
+            return true;
+        }
+    }
+
+    CodeEditor *editor = createEditor(filePath);
+    if (!editor->loadFromFile(filePath)) {
+        editor->deleteLater();
+        QMessageBox::warning(this, tr("Open File"), tr("Could not open %1.").arg(QDir::toNativeSeparators(filePath)));
+        return false;
+    }
+
+    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor));
+    m_editorTabs->setCurrentIndex(index);
+    refreshFunctionCompletions();
+    return true;
+}
+
+
+
+
+/*
 
 bool MainWindow::saveEditor(CodeEditor *editor)
 {
@@ -793,6 +1159,48 @@ bool MainWindow::saveEditor(CodeEditor *editor)
     refreshFunctionCompletions();
     return true;
 }
+
+*/
+
+bool MainWindow::saveEditor(CodeEditor *editor)
+{
+    if (!editor) {
+        return false;
+    }
+
+    const bool wasUntitled = editor->filePath().isEmpty();
+    if (wasUntitled) {
+        const QString baseDirectory = m_projectPath.isEmpty() ? QDir::homePath() : m_projectPath;
+        QString filePath = QFileDialog::getSaveFileName(
+            this,
+            tr("Save Source File"),
+            QDir(baseDirectory).filePath(tabTitleForEditor(editor).remove(QLatin1Char('*'))),
+            tr("Source files (*.c *.h *.inc *.cc *.cpp *.hpp);;All files (*)"));
+
+        if (filePath.isEmpty()) {
+            return false;
+        }
+
+        if (QFileInfo(filePath).suffix().isEmpty()) {
+            filePath.append(QStringLiteral(".c"));
+        }
+
+        if (!editor->saveAs(filePath)) {
+            QMessageBox::warning(this, tr("Save File"), tr("Could not save %1.").arg(QDir::toNativeSeparators(filePath)));
+            return false;
+        }
+    } else if (!editor->save()) {
+        QMessageBox::warning(this, tr("Save File"), tr("Could not save %1.").arg(QDir::toNativeSeparators(editor->filePath())));
+        return false;
+    }
+
+    addProjectFile(editor->filePath());
+    updateTabTitle(editor);
+    refreshProjectFiles();
+    refreshFunctionCompletions();
+    return true;
+}
+
 
 bool MainWindow::saveModifiedWorkBeforeNewProject()
 {
@@ -949,6 +1357,7 @@ void MainWindow::refreshProjectFiles()
 
 void MainWindow::refreshFunctionCompletions()
 {
+    ensureApiCatalog();
     const QStringList signatures = projectFunctionSignatures();
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
@@ -958,6 +1367,126 @@ void MainWindow::refreshFunctionCompletions()
     }
 }
 
+void MainWindow::ensureApiCatalog()
+{
+    if (m_apiTips.isEmpty() || m_apiSignatures.isEmpty()) {
+        refreshApiCatalog();
+    }
+}
+
+
+void MainWindow::refreshApiCatalog()
+{
+    m_apiTips.clear();
+    m_apiSignatures.clear();
+
+    const QString apiPath = QDir(ideLibsPath()).filePath(QStringLiteral("api"));
+    if (!QFileInfo::exists(apiPath)) {
+        if (m_quickTipLabel) {
+            m_quickTipLabel->setText(tr("F1: API folder not found: %1").arg(QDir::toNativeSeparators(apiPath)));
+        }
+        return;
+    }
+
+    QStringList apiTexts;
+    QDirIterator iterator(apiPath, {QStringLiteral("*.h")}, QDir::Files, QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        QFile file(iterator.next());
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+
+        apiTexts.append(uncommentedApiText(QString::fromUtf8(file.readAll())));
+    }
+
+    QHash<QString, QString> functionPointers;
+    for (const QString &text : std::as_const(apiTexts)) {
+        collectApiFunctionPointers(text, &functionPointers);
+    }
+
+    for (const QString &text : std::as_const(apiTexts)) {
+        collectApiMacros(text, functionPointers, &m_apiTips, &m_apiSignatures);
+        collectApiDefines(text, &m_apiTips, &m_apiSignatures);
+        collectApiTypes(text, &m_apiTips, &m_apiSignatures);
+        collectApiLineSymbols(text, &m_apiTips, &m_apiSignatures);
+        m_apiSignatures.append(functionSignaturesFromText(text));
+    }
+
+    m_apiSignatures.removeDuplicates();
+    m_apiSignatures.sort(Qt::CaseInsensitive);
+
+    if (m_quickTipLabel) {
+        m_quickTipLabel->setText(tr("F1: API ready: %1 tips from %2").arg(m_apiTips.count()).arg(QDir::toNativeSeparators(apiPath)));
+    }
+}
+
+QString MainWindow::quickTipForSymbol(const QString &symbol) const
+{
+    const QString name = symbol.trimmed();
+    if (name.isEmpty()) {
+        return {};
+    }
+
+    const auto exactMatch = m_apiTips.constFind(name);
+    if (exactMatch != m_apiTips.constEnd()) {
+        return exactMatch.value();
+    }
+
+    for (auto it = m_apiTips.constBegin(); it != m_apiTips.constEnd(); ++it) {
+        if (it.key().compare(name, Qt::CaseInsensitive) == 0) {
+            return it.value();
+        }
+    }
+
+    const QStringList signatures = projectFunctionSignatures();
+    for (const QString &signature : signatures) {
+        const int parenIndex = signature.indexOf(QLatin1Char('('));
+        if (parenIndex > 0 && signature.left(parenIndex).compare(name, Qt::CaseInsensitive) == 0) {
+            return signature;
+        }
+    }
+
+    return {};
+}
+
+void MainWindow::showPassiveQuickTip(const QString &symbol)
+{
+    if (!m_quickTipLabel) {
+        return;
+    }
+
+    ensureApiCatalog();
+    const QString tip = quickTipForSymbol(symbol);
+    if (!tip.isEmpty()) {
+        m_quickTipLabel->setText(tip);
+    }
+}
+
+
+void MainWindow::showQuickTip(const QString &symbol)
+{
+    if (!m_quickTipLabel) {
+        return;
+    }
+
+    ensureApiCatalog();
+    const QString name = symbol.trimmed();
+    if (name.isEmpty()) {
+        m_quickTipLabel->setText(tr("F1: move the cursor onto an API call first"));
+        return;
+    }
+
+    const QString tip = quickTipForSymbol(name);
+    if (tip.isEmpty()) {
+        m_quickTipLabel->setText(tr("F1: no API tip for %1").arg(name));
+        return;
+    }
+
+    m_quickTipLabel->setText(tip);
+    statusBar()->showMessage(tip, 4000);
+}
+
+
 void MainWindow::updateTabTitle(CodeEditor *editor)
 {
     const int index = m_editorTabs->indexOf(editor);
@@ -966,11 +1495,35 @@ void MainWindow::updateTabTitle(CodeEditor *editor)
     }
 }
 
+/*
 QString MainWindow::tabTitleForEditor(CodeEditor *editor) const
 {
     QString title = editor->filePath().isEmpty()
         ? tr("untitled.c")
         : QFileInfo(editor->filePath()).fileName();
+
+    if (editor->document()->isModified()) {
+        title.prepend(QLatin1Char('*'));
+    }
+
+    return title;
+}
+*/
+
+QString MainWindow::tabTitleForEditor(CodeEditor *editor, int defaultType) const
+{
+    QString title;
+    if (editor->filePath().isEmpty()) {
+        if (defaultType == 1) {
+            title = tr("untitled.h");
+        } else if (defaultType == 2) {
+            title = tr("untitled.inc");
+        } else {
+            title = tr("untitled.c");
+        }
+    } else {
+        title = QFileInfo(editor->filePath()).fileName();
+    }
 
     if (editor->document()->isModified()) {
         title.prepend(QLatin1Char('*'));
@@ -1021,6 +1574,7 @@ QStringList MainWindow::projectFilesForCompile() const
 QStringList MainWindow::projectFunctionSignatures() const
 {
     QStringList signatures;
+    signatures.append(m_apiSignatures);
     QStringList scannedOpenFiles;
 
     for (int i = 0; i < m_editorTabs->count(); ++i) {
@@ -1216,6 +1770,7 @@ QString MainWindow::objcopyPath() const
 
 QStringList MainWindow::sidboxApiSourceFiles() const
 {
+    // realistically this should scan the folders, and search for the .c / .h for function calls, type defs
     const QDir apiDir(QDir(ideLibsPath()).filePath(QStringLiteral("api")));
     const QStringList relativePaths = {
         QStringLiteral("applet.s"),
@@ -1265,6 +1820,7 @@ void MainWindow::applyEditorFont()
 
         editor->setFont(font);
         editor->setTabStopDistance(editor->fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
+        editor->setCompletionFont(font);
         editor->refreshLineNumberAreaWidth();
     }
 }

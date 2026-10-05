@@ -114,6 +114,9 @@ CodeEditor::CodeEditor(QWidget *parent)
     connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
+    connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
+        emit quickTipCandidateChanged(textUnderCursor());
+    });
     updateLineNumberAreaWidth(0);
     highlightCurrentLine();
 
@@ -147,6 +150,14 @@ void CodeEditor::setFunctionCompletions(const QStringList &signatures)
     sortedSignatures.removeDuplicates();
     sortedSignatures.sort(Qt::CaseInsensitive);
     m_completionModel->setStringList(sortedSignatures);
+}
+
+
+void CodeEditor::setCompletionFont(const QFont &font)
+{
+    if (m_completer) {
+        m_completer->popup()->setFont(font);
+    }
 }
 
 bool CodeEditor::loadFromFile(const QString &path)
@@ -238,6 +249,12 @@ void CodeEditor::focusInEvent(QFocusEvent *event)
 
 void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_F1) {
+        emit quickTipRequested(textUnderCursor());
+        event->accept();
+        return;
+    }
+
     if (m_completer && m_completer->popup()->isVisible()) {
         switch (event->key()) {
         case Qt::Key_Tab:
@@ -328,9 +345,36 @@ void CodeEditor::highlightCurrentLine()
 
 QString CodeEditor::textUnderCursor() const
 {
-    QTextCursor cursor = textCursor();
-    cursor.select(QTextCursor::WordUnderCursor);
-    return cursor.selectedText();
+    const QString text = toPlainText();
+    int position = textCursor().position();
+    if (position > text.length()) {
+        position = text.length();
+    }
+
+    auto isIdentifierChar = [](QChar ch) {
+        return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+    };
+
+    if (position > 0 && (position == text.length() || !isIdentifierChar(text.at(position)))
+        && isIdentifierChar(text.at(position - 1))) {
+        --position;
+    }
+
+    if (position >= text.length() || !isIdentifierChar(text.at(position))) {
+        return {};
+    }
+
+    int start = position;
+    while (start > 0 && isIdentifierChar(text.at(start - 1))) {
+        --start;
+    }
+
+    int end = position + 1;
+    while (end < text.length() && isIdentifierChar(text.at(end))) {
+        ++end;
+    }
+
+    return text.mid(start, end - start);
 }
 
 void CodeEditor::insertFunctionCompletion(const QString &signature)
@@ -343,6 +387,13 @@ void CodeEditor::insertFunctionCompletion(const QString &signature)
     cursor.select(QTextCursor::WordUnderCursor);
 
     const QString name = functionNameFromSignature(signature);
+    if (!signature.contains(QLatin1Char('('))) {
+        cursor.insertText(name);
+        setTextCursor(cursor);
+        m_argumentRanges.clear();
+        m_selectedArgument = -1;
+        return;
+    }
     const QStringList arguments = splitFunctionArguments(signature);
     QStringList placeholders;
     for (int i = 0; i < arguments.count(); ++i) {

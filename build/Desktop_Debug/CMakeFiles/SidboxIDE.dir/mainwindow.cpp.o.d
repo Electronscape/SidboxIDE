@@ -363,8 +363,8 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtGui/qfontvariableaxis.h \
  /usr/include/qt6/QtWidgets/qsizepolicy.h \
  /usr/include/qt6/QtGui/qcursor.h /usr/include/qt6/QtGui/qbitmap.h \
- /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QString \
- /usr/include/qt6/QtCore/QStringList \
+ /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QHash \
+ /usr/include/qt6/QtCore/QString /usr/include/qt6/QtCore/QStringList \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.h \
  /usr/include/qt6/QtWidgets/QPlainTextEdit \
  /usr/include/qt6/QtWidgets/qplaintextedit.h \
@@ -402,7 +402,8 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.h \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/include/ui_mainwindow.h \
- /usr/include/qt6/QtCore/QVariant /usr/include/qt6/QtWidgets/QApplication \
+ /usr/include/qt6/QtCore/QVariant /usr/include/qt6/QtGui/QIcon \
+ /usr/include/qt6/QtWidgets/QApplication \
  /usr/include/qt6/QtWidgets/qapplication.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
  /usr/include/qt6/QtWidgets/QMenuBar \
@@ -473,4 +474,6 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/qboxlayout.h \
  /usr/include/qt6/QtWidgets/qlayout.h \
  /usr/include/qt6/QtWidgets/qlayoutitem.h \
- /usr/include/qt6/QtWidgets/qgridlayout.h
+ /usr/include/qt6/QtWidgets/qgridlayout.h \
+ /usr/include/qt6/QtCore/QStandardPaths \
+ /usr/include/qt6/QtCore/qstandardpaths.h
