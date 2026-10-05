@@ -10,7 +10,7 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     , m_commentEndExpression(QStringLiteral("\\*/"))
 {
     QTextCharFormat keywordFormat;
-    keywordFormat.setForeground(QColor(255, 255, 0));
+    keywordFormat.setForeground(QColor(255, 200, 0));
     //keywordFormat.setFontWeight(QFont::Bold);
 
     const QStringList keywordPatterns = {
@@ -26,15 +26,46 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
         QStringLiteral("\\bswitch\\b"), QStringLiteral("\\btypedef\\b"), QStringLiteral("\\bunion\\b"),
         QStringLiteral("\\bunsigned\\b"), QStringLiteral("\\bvoid\\b"), QStringLiteral("\\bvolatile\\b"),
         QStringLiteral("\\bwhile\\b"), QStringLiteral("\\b_Bool\\b"), QStringLiteral("\\b_Complex\\b"),
-        QStringLiteral("\\b_Imaginary\\b")
+        QStringLiteral("\\b_Imaginary\\b"),
+        QStringLiteral("\\bint8_t\\b"), QStringLiteral("\\bint16_t\\b"), QStringLiteral("\\bint32_t\\b"), QStringLiteral("\\bint64_t\\b"),
+        QStringLiteral("\\buint8_t\\b"), QStringLiteral("\\buint16_t\\b"), QStringLiteral("\\buint32_t\\b"), QStringLiteral("\\buint64_t\\b"),
     };
 
     for (const QString &pattern : keywordPatterns) {
         m_highlightingRules.append({QRegularExpression(pattern), keywordFormat});
     }
 
+
+    QTextCharFormat stmFormat;
+    stmFormat.setForeground(QColor(72, 176, 176));
+    m_stm32Format.setForeground(QColor(72, 176, 176));
+    const QStringList stm32Patterns = {
+        QStringLiteral("\\bMEMALIGN32\\b"), QStringLiteral("\\bMEMALIGN16\\b"), QStringLiteral("\\bMEMALIGN8\\b"), QStringLiteral("\\bMEMALIGN4\\b"),
+    };
+
+    for (const QString &pattern : stm32Patterns) {
+        m_highlightingRules.append({QRegularExpression(pattern), stmFormat});
+    }
+
+    // custom API format
+    QTextCharFormat APIkeywordFormat;
+    APIkeywordFormat.setForeground(QColor(64, 128, 200));
+    const QStringList APIkeywordPatterns = {
+        QStringLiteral("\\bprintf\\b")
+    };
+
+    for (const QString &pattern : APIkeywordPatterns) {
+        m_highlightingRules.append({QRegularExpression(pattern), APIkeywordFormat});
+    }
+
+
+
+
+
+
     QTextCharFormat preprocessorFormat;
     preprocessorFormat.setForeground(QColor(0, 255, 255));
+    m_preprocessorFormat.setForeground(QColor(0, 255, 255));
     m_highlightingRules.append({QRegularExpression(QStringLiteral("^\\s*#\\s*\\w+.*")), preprocessorFormat});
 
     QTextCharFormat quotationFormat;
@@ -50,27 +81,39 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     });
 
     QTextCharFormat functionFormat;
-    functionFormat.setForeground(QColor(220, 220, 255));
-    m_highlightingRules.append({QRegularExpression(QStringLiteral("\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()")), functionFormat});
+    functionFormat.setForeground(QColor(200, 132, 192));
+    m_highlightingRules.append({QRegularExpression(QStringLiteral("\\b(?!(?:return|if|for|while|switch|sizeof)\\b)[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()")), functionFormat});
 
     QTextCharFormat singleLineCommentFormat;
     singleLineCommentFormat.setForeground(QColor(106, 153, 85));
     m_highlightingRules.append({QRegularExpression(QStringLiteral("//[^\\n]*")), singleLineCommentFormat});
 
-    m_multiLineCommentFormat = singleLineCommentFormat;
+    QTextCharFormat multiLineCommentFormat;
+    m_multiLineCommentFormat.setForeground(QColor(130, 150, 125));
 }
 
 void CSyntaxHighlighter::highlightBlock(const QString &text)
 {
-    for (const HighlightingRule &rule : std::as_const(m_highlightingRules)) {
-        QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
-        while (matchIterator.hasNext()) {
-            const QRegularExpressionMatch match = matchIterator.next();
-            setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+    const bool inPreprocessor = (previousBlockState() == 2);
+    const bool isPreprocessorLine = inPreprocessor || text.trimmed().startsWith('#');
+
+    if (isPreprocessorLine) {
+        setFormat(0, text.length(), m_preprocessorFormat);
+    } else {
+        for (const HighlightingRule &rule : std::as_const(m_highlightingRules)) {
+            QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
+            while (matchIterator.hasNext()) {
+                const QRegularExpressionMatch match = matchIterator.next();
+                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+            }
         }
     }
 
     applyMultiLineComments(text);
+
+    if (isPreprocessorLine && text.trimmed().endsWith('\\')) {
+        setCurrentBlockState(2);
+    }
 }
 
 void CSyntaxHighlighter::applyMultiLineComments(const QString &text)

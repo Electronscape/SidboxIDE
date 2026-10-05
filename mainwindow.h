@@ -40,6 +40,10 @@ private:
     void showProjectSettings();
     void compileActiveFile();
     void openProjectFile(QListWidgetItem *item);
+    void addExistingProjectFile();
+    void createProjectFile();
+    void removeSelectedProjectFile();
+    void renameSelectedProjectFile();
     void handleCompilerFinished(int exitCode);
 
     CodeEditor *activeEditor() const;
@@ -61,6 +65,9 @@ private:
     void updateTabTitle(CodeEditor *editor);
     QString tabTitleForEditor(CodeEditor *editor, int type = 0) const;
     QString displayPath(const QString &filePath) const;
+    QString projectFileDisplayText(const QString &filePath) const;
+    QStringList projectFolderSourceFiles() const;
+    bool isProjectExplorerFile(const QString &filePath) const;
     QStringList collectOpenProjectFiles() const;
     QStringList projectFilesForCompile() const;
     QStringList projectFunctionSignatures() const;

@@ -77,7 +77,7 @@ int main(int argc, char *argv[])
         qWarning() << "Could not load Sidbox IDE icon from resources";
     }
 
-
+/*
 #ifdef Q_OS_LINUX
     QString platform = QGuiApplication::platformName();
     printf("Current platform: %s\n", platform.toUtf8().constData());
@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
         printf("already bubbling !!!\n");
     }
 #endif
-
+*/
     MainWindow w;
 
     setvbuf(stdout, NULL, _IONBF, 0);

@@ -16,12 +16,16 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QHBoxLayout>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
+#include <QLineEdit>
+#include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -52,6 +56,31 @@ bool isCompilableSource(const QString &filePath)
 {
     const QString suffix = QFileInfo(filePath).suffix().toLower();
     return suffix == QStringLiteral("c") || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp");
+}
+
+bool isProjectExplorerSuffix(const QString &suffix)
+{
+    const QString lower = suffix.toLower();
+    return lower == QStringLiteral("c") || lower == QStringLiteral("h")
+        || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
+        || lower == QStringLiteral("md");
+}
+
+QString formattedFileSize(qint64 bytes)
+{
+    if (bytes < 0) {
+        return QStringLiteral("0 B");
+    }
+    if (bytes < 1024) {
+        return QStringLiteral("%1 B").arg(QLocale().toString(bytes));
+    }
+
+    const double kib = bytes / 1024.0;
+    if (kib < 1024.0) {
+        return QStringLiteral("%1 KB").arg(QLocale().toString(kib, 'f', 1));
+    }
+
+    return QStringLiteral("%1 MB").arg(QLocale().toString(kib / 1024.0, 'f', 1));
 }
 
 /*
@@ -479,7 +508,7 @@ void MainWindow::setupInterface()
     setWindowTitle(tr("Sidbox IDE"));
     QIcon icon = QApplication::windowIcon().isNull() ? QIcon(":/icons/icon.png") : QApplication::windowIcon();
     setWindowIcon(icon);
-    resize(1100, 720);
+    resize(1600, 880);
 
 
     auto *toolBar = addToolBar(tr("Project"));
@@ -520,19 +549,70 @@ void MainWindow::setupInterface()
 
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
 
+
+
     auto *projectPane = new QWidget(mainSplitter);
+    projectPane->setMinimumWidth(200); // Prevents resizing the left panel smaller than 200px
+
     auto *projectLayout = new QVBoxLayout(projectPane);
     projectLayout->setContentsMargins(8, 8, 8, 8);
     projectLayout->setSpacing(6);
 
     auto *projectLabel = new QLabel(tr("Files in Project"), projectPane);
     m_projectFiles = new QListWidget(projectPane);
+    m_projectFiles->setStyleSheet(QStringLiteral(
+        "QListWidget {"
+        "   border: 1px solid #102048;"
+        "   border-radius: 0px;"
+        "}"
+        "QListWidget::item {"
+        "   border-radius: 0px;"
+        "}"
+        "QListWidget::item:selected {"
+        "   background-color: #2858A8;"
+        "   color: #ffffff;"
+        "}"
+        "QListWidget::item:selected:hover {"
+        "   border: 1px solid #6C80AA;"
+        "   background-color: #2858A8;"
+        "}"
+        ));
+
+    m_projectFiles->setContextMenuPolicy(Qt::CustomContextMenu);
+    auto *projectButtonLayout = new QHBoxLayout();
+    projectButtonLayout->setContentsMargins(0, 0, 0, 0);
+    projectButtonLayout->setSpacing(4);
+    auto *addFileButton = new QPushButton(tr("Add"), projectPane);
+    auto *createFileButton = new QPushButton(tr("Create"), projectPane);
+    auto *removeFileButton = new QPushButton(tr("Remove"), projectPane);
+    projectButtonLayout->addWidget(addFileButton);
+    projectButtonLayout->addWidget(createFileButton);
+    projectButtonLayout->addWidget(removeFileButton);
+
+    auto *renameFileAction = new QAction(tr("Rename"), m_projectFiles);
+    renameFileAction->setShortcut(Qt::Key_F2);
+    renameFileAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    m_projectFiles->addAction(renameFileAction);
     m_projectFiles->setAlternatingRowColors(true);
     projectLayout->addWidget(projectLabel);
+    projectLayout->addLayout(projectButtonLayout);
     projectLayout->addWidget(m_projectFiles, 1);
 
     connect(m_projectFiles, &QListWidget::itemDoubleClicked, this, &MainWindow::openProjectFile);
     connect(m_projectFiles, &QListWidget::itemActivated, this, &MainWindow::openProjectFile);
+    connect(addFileButton, &QPushButton::clicked, this, &MainWindow::addExistingProjectFile);
+    connect(createFileButton, &QPushButton::clicked, this, &MainWindow::createProjectFile);
+    connect(removeFileButton, &QPushButton::clicked, this, &MainWindow::removeSelectedProjectFile);
+    connect(renameFileAction, &QAction::triggered, this, &MainWindow::renameSelectedProjectFile);
+    connect(m_projectFiles, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QMenu menu(this);
+        menu.addAction(tr("Add File"), this, &MainWindow::addExistingProjectFile);
+        menu.addAction(tr("Create File"), this, &MainWindow::createProjectFile);
+        menu.addSeparator();
+        menu.addAction(tr("Rename"), this, &MainWindow::renameSelectedProjectFile);
+        menu.addAction(tr("Remove"), this, &MainWindow::removeSelectedProjectFile);
+        menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
+    });
 
     auto *workAreaSplitter = new QSplitter(Qt::Vertical, mainSplitter);
     m_editorTabs = new QTabWidget(workAreaSplitter);
@@ -571,7 +651,7 @@ void MainWindow::setupInterface()
     m_outputPane->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     m_outputPane->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_outputPane->setStyleSheet(QStringLiteral(
-        "QPlainTextEdit { background: #050805; color: #d8e8d0; "
+        "QPlainTextEdit { background: #000000; color: #d8e8d0; "
         "selection-background-color: #265c32; selection-color: #ffffff; }"));
     m_outputPane->setAcceptDrops(false);
     m_outputPane->viewport()->setAcceptDrops(false);
@@ -591,7 +671,9 @@ void MainWindow::setupInterface()
     mainSplitter->addWidget(workAreaSplitter);
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 5);
-    mainSplitter->setSizes({220, 880});
+    mainSplitter->setSizes({100, 1600});
+
+
 
     setCentralWidget(mainSplitter);
     statusBar()->showMessage(tr("Ready"));
@@ -666,6 +748,7 @@ void MainWindow::createNewSourceFile()
                              "#include \"apis.h\"\n\n"
                              "int main(void)\n"
                              "{\n"
+                             "    printf(\"Hello world\");\n"
                              "    return 0;\n"
                              "}\n").arg(timeStr, dateStr));
 
@@ -956,6 +1039,199 @@ void MainWindow::openProjectFile(QListWidgetItem *item)
     openFile(item->data(Qt::UserRole).toString());
 }
 
+void MainWindow::addExistingProjectFile()
+{
+    const QString baseDirectory = m_projectPath.isEmpty() ? QDir::homePath() : m_projectPath;
+    const QStringList filePaths = QFileDialog::getOpenFileNames(
+        this,
+        tr("Add File"),
+        baseDirectory,
+        tr("Project files (*.c *.h *.inc *.txt *.md);;All files (*)"));
+
+    if (filePaths.isEmpty()) {
+        return;
+    }
+
+    for (const QString &filePath : filePaths) {
+        addProjectFile(filePath);
+    }
+
+    refreshProjectFiles();
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+    statusBar()->showMessage(tr("File added to project"));
+}
+
+void MainWindow::createProjectFile()
+{
+    if (m_projectPath.isEmpty()) {
+        QMessageBox::information(this, tr("Create File"), tr("Save or create a project first so the IDE knows which folder to use."));
+        return;
+    }
+
+    bool accepted = false;
+    QString fileName = QInputDialog::getText(
+        this,
+        tr("Create File"),
+        tr("File name:"),
+        QLineEdit::Normal,
+        QStringLiteral("newfile.c"),
+        &accepted).trimmed();
+
+    if (!accepted || fileName.isEmpty()) {
+        return;
+    }
+
+    if (QFileInfo(fileName).suffix().isEmpty()) {
+        fileName.append(QStringLiteral(".c"));
+    }
+
+    if (QFileInfo(fileName).fileName() != fileName) {
+        QMessageBox::warning(this, tr("Create File"), tr("Enter a file name, not a path."));
+        return;
+    }
+
+    const QString filePath = QFileInfo(QDir(m_projectPath).filePath(fileName)).absoluteFilePath();
+    if (!isProjectExplorerFile(filePath)) {
+        QMessageBox::warning(this, tr("Create File"), tr("Use one of these extensions: .c, .h, .inc, .txt, .md"));
+        return;
+    }
+
+    if (QFileInfo::exists(filePath)) {
+        QMessageBox::warning(this, tr("Create File"), tr("That file already exists."));
+        return;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Create File"), tr("Could not create %1.").arg(QDir::toNativeSeparators(filePath)));
+        return;
+    }
+    file.close();
+
+    addProjectFile(filePath);
+    refreshProjectFiles();
+    openFile(filePath);
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+    statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
+}
+
+void MainWindow::removeSelectedProjectFile()
+{
+    QListWidgetItem *item = m_projectFiles->currentItem();
+    if (!item) {
+        return;
+    }
+
+    const QString filePath = item->data(Qt::UserRole).toString();
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    const bool inProjectFolder = !m_projectPath.isEmpty()
+        && QFileInfo(filePath).absoluteFilePath().startsWith(QFileInfo(m_projectPath).absoluteFilePath() + QDir::separator());
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Remove File"));
+    box.setText(tr("Remove %1?").arg(displayPath(filePath)));
+    QPushButton *removeButton = box.addButton(inProjectFolder ? tr("Delete File") : tr("Remove From Project"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+
+    if (box.clickedButton() != removeButton) {
+        return;
+    }
+
+    if (inProjectFolder && QFileInfo::exists(filePath) && !QFile::remove(filePath)) {
+        QMessageBox::warning(this, tr("Remove File"), tr("Could not delete %1.").arg(QDir::toNativeSeparators(filePath)));
+        return;
+    }
+
+    m_projectFilesInProject.removeAll(QFileInfo(filePath).absoluteFilePath());
+    for (int i = m_editorTabs->count() - 1; i >= 0; --i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor && QFileInfo(editor->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+            QWidget *widget = m_editorTabs->widget(i);
+            m_editorTabs->removeTab(i);
+            widget->deleteLater();
+        }
+    }
+
+    refreshProjectFiles();
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+    statusBar()->showMessage(tr("File removed"));
+}
+
+void MainWindow::renameSelectedProjectFile()
+{
+    QListWidgetItem *item = m_projectFiles->currentItem();
+    if (!item) {
+        return;
+    }
+
+    const QString oldPath = item->data(Qt::UserRole).toString();
+    const QFileInfo oldInfo(oldPath);
+    if (!oldInfo.exists()) {
+        return;
+    }
+
+    bool accepted = false;
+    const QString newName = QInputDialog::getText(
+        this,
+        tr("Rename File"),
+        tr("New name:"),
+        QLineEdit::Normal,
+        oldInfo.fileName(),
+        &accepted).trimmed();
+
+    if (!accepted || newName.isEmpty() || newName == oldInfo.fileName()) {
+        return;
+    }
+
+    if (QFileInfo(newName).fileName() != newName) {
+        QMessageBox::warning(this, tr("Rename File"), tr("Enter a file name, not a path."));
+        return;
+    }
+
+    const QString newPath = QFileInfo(oldInfo.dir().filePath(newName)).absoluteFilePath();
+    if (!isProjectExplorerFile(newPath)) {
+        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .txt, .md"));
+        return;
+    }
+
+    if (QFileInfo::exists(newPath)) {
+        QMessageBox::warning(this, tr("Rename File"), tr("A file with that name already exists."));
+        return;
+    }
+
+    if (!QFile::rename(oldPath, newPath)) {
+        QMessageBox::warning(this, tr("Rename File"), tr("Could not rename %1.").arg(QDir::toNativeSeparators(oldPath)));
+        return;
+    }
+
+    m_projectFilesInProject.removeAll(oldInfo.absoluteFilePath());
+    addProjectFile(newPath);
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor && QFileInfo(editor->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
+            editor->setFilePath(newPath);
+            updateTabTitle(editor);
+        }
+    }
+
+    refreshProjectFiles();
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+    statusBar()->showMessage(tr("File renamed: %1").arg(displayPath(newPath)));
+}
+
 void MainWindow::handleCompilerFinished(int exitCode)
 {
     if (m_buildStep == BuildStep::Linking) {
@@ -1112,6 +1388,8 @@ bool MainWindow::openFile(const QString &filePath)
 
     const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor));
     m_editorTabs->setCurrentIndex(index);
+    addProjectFile(filePath);
+    refreshProjectFiles();
     refreshFunctionCompletions();
     return true;
 }
@@ -1349,9 +1627,25 @@ void MainWindow::refreshProjectFiles()
 {
     m_projectFiles->clear();
 
-    for (const QString &filePath : std::as_const(m_projectFilesInProject)) {
-        auto *item = new QListWidgetItem(displayPath(filePath), m_projectFiles);
-        item->setData(Qt::UserRole, filePath);
+    QStringList files = m_projectFilesInProject;
+    for (const QString &projectFile : projectFolderSourceFiles()) {
+        const QString absolutePath = QFileInfo(projectFile).absoluteFilePath();
+        if (!files.contains(absolutePath)) {
+            files.append(absolutePath);
+        }
+    }
+
+    files.removeDuplicates();
+    files.sort(Qt::CaseInsensitive);
+
+    for (const QString &filePath : std::as_const(files)) {
+        if (!isProjectExplorerFile(filePath) || !QFileInfo::exists(filePath)) {
+            continue;
+        }
+
+        auto *item = new QListWidgetItem(projectFileDisplayText(filePath), m_projectFiles);
+        item->setData(Qt::UserRole, QFileInfo(filePath).absoluteFilePath());
+        item->setToolTip(QDir::toNativeSeparators(QFileInfo(filePath).absoluteFilePath()));
     }
 }
 
@@ -1541,6 +1835,44 @@ QString MainWindow::displayPath(const QString &filePath) const
     return QDir(m_projectPath).relativeFilePath(filePath);
 }
 
+QString MainWindow::projectFileDisplayText(const QString &filePath) const
+{
+    const QFileInfo info(filePath);
+    return QStringLiteral("%1 (%2)").arg(displayPath(filePath), formattedFileSize(info.size()));
+}
+
+QStringList MainWindow::projectFolderSourceFiles() const
+{
+    QStringList files;
+    if (m_projectPath.isEmpty() || !QFileInfo::exists(m_projectPath)) {
+        return files;
+    }
+
+    const QStringList filters = {
+        QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
+        QStringLiteral("*.txt"), QStringLiteral("*.md")
+    };
+
+    QDirIterator iterator(m_projectPath, filters, QDir::Files, QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        const QString filePath = QFileInfo(iterator.next()).absoluteFilePath();
+        const QString relativePath = QDir(m_projectPath).relativeFilePath(filePath);
+        if (relativePath.startsWith(QStringLiteral("build/")) || relativePath == QStringLiteral("build")) {
+            continue;
+        }
+        files.append(filePath);
+    }
+
+    files.removeDuplicates();
+    files.sort(Qt::CaseInsensitive);
+    return files;
+}
+
+bool MainWindow::isProjectExplorerFile(const QString &filePath) const
+{
+    return isProjectExplorerSuffix(QFileInfo(filePath).suffix());
+}
+
 QStringList MainWindow::collectOpenProjectFiles() const
 {
     QStringList files;
@@ -1563,11 +1895,17 @@ QStringList MainWindow::collectOpenProjectFiles() const
 QStringList MainWindow::projectFilesForCompile() const
 {
     QStringList files;
-    for (const QString &filePath : m_projectFilesInProject) {
+    QStringList candidates = m_projectFilesInProject;
+    candidates.append(projectFolderSourceFiles());
+    candidates.removeDuplicates();
+
+    for (const QString &filePath : std::as_const(candidates)) {
         if (isCompilableSource(filePath)) {
             files.append(filePath);
         }
     }
+    files.removeDuplicates();
+    files.sort(Qt::CaseInsensitive);
     return files;
 }
 

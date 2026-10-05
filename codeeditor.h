@@ -41,6 +41,7 @@ signals:
 protected:
     void focusInEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 
 private:
@@ -50,6 +51,12 @@ private:
     QString textUnderCursor() const;
     void insertFunctionCompletion(const QString &signature);
     void selectArgument(int index);
+    int indentWidthColumns() const;
+    QString leadingWhitespace(const QString &text) const;
+    void insertAutoIndent();
+    void indentSelection();
+    void unindentSelection();
+    void drawIndentGuides(QPaintEvent *event);
 
     QWidget *m_lineNumberArea;
     QString m_filePath;

@@ -27,6 +27,9 @@ private:
     QRegularExpression m_commentStartExpression;
     QRegularExpression m_commentEndExpression;
     QTextCharFormat m_multiLineCommentFormat;
+    QTextCharFormat m_preprocessorFormat;
+    QTextCharFormat m_customAPIFormat;
+    QTextCharFormat m_stm32Format;
 };
 
 #endif // CSYNTAXHIGHLIGHTER_H

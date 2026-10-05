@@ -5,6 +5,27 @@ again a auto complete hitting tab, adds to the auto complete popup too
 also the popup intellisense needs to have a mono spaced font too
 
 
+Features needed: 
+  - the file explorer (on the left)
+      1: needs a "add file"
+      2: needs a "create file"
+      3: remove file
+      4: to list the files in the project folder. (with filters, *.c, *.h, *.inc, *.txt, *.md) and have the size of the file in brackets)
+      5: double clicking on the files in the project files, open a tab (it already does this)
+      5: the ability to F2 rename the files using the file explorer
+  
+  - the project management:
+      1: a new project should just create the .proj file, and a standard (gui, or game) main.c .
+          the standard gui/game will be a resource found in the idelibs/templates/
+
+
+  - code editor:
+      1: needs to have auto indents - (if possible lines to indicate the intentations)
+      2: [ bug ] 
+        - some keywords loose their colour... eg. for on its own works, but for (int i = 0; i < 10; i++) breaks the colour syntax for "for" 
+              happens on if. (some bug fixes)
+        - some of the APIs arent showing still
+
 
 
 
