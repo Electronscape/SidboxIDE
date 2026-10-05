@@ -2,33 +2,48 @@
 
 #include "codeeditor.h"
 #include "optionsdialog.h"
+#include "projectsettingsdialog.h"
 #include "ui_mainwindow.h"
 
 #include <QAction>
+#include <QColor>
+#include <QAbstractButton>
+#include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPushButton>
+#include <QPoint>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTextCharFormat>
+#include <QTextCursor>
 #include <QTextDocument>
 #include <QToolBar>
 #include <QVBoxLayout>
 
 namespace {
-constexpr int ProjectFileVersion = 1;
+constexpr int ProjectFileVersion = 2;
+const QString GuiProjectType = QStringLiteral("gui");
+const QString GameProjectType = QStringLiteral("game");
 
 bool isCompilableSource(const QString &filePath)
 {
@@ -43,6 +58,80 @@ bool canContainFunctionSignatures(const QString &filePath)
         || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp")
         || suffix == QStringLiteral("hpp");
 }
+
+QString normalizedProjectType(const QString &projectType)
+{
+    return projectType == GameProjectType ? GameProjectType : GuiProjectType;
+}
+
+QString projectTypeLabel(const QString &projectType)
+{
+    return normalizedProjectType(projectType) == GameProjectType
+        ? QStringLiteral("Game")
+        : QStringLiteral("GUI");
+}
+
+QString hexBytes(int kilobytes)
+{
+    return QStringLiteral("0x%1").arg(qMax(0, kilobytes) * 1024, 0, 16);
+}
+
+bool replaceLinkerAssignment(QString *text, const QString &symbol, const QString &value)
+{
+    const QRegularExpression expression(QStringLiteral("(^\\s*%1\\s*=\\s*)[^;]+(;)").arg(QRegularExpression::escape(symbol)),
+        QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch match = expression.match(*text);
+    if (!match.hasMatch()) {
+        return false;
+    }
+
+    text->replace(expression, QStringLiteral("\\1%1\\2").arg(value));
+    return true;
+}
+
+class CompilerOutputPane : public QPlainTextEdit
+{
+public:
+    explicit CompilerOutputPane(QWidget *parent = nullptr)
+        : QPlainTextEdit(parent)
+    {
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        m_pressedInsideSelection = false;
+        if (event->button() == Qt::LeftButton) {
+            const QTextCursor cursor = textCursor();
+            if (cursor.hasSelection()) {
+                const int position = cursorForPosition(event->pos()).position();
+                m_pressedInsideSelection = position >= cursor.selectionStart()
+                    && position < cursor.selectionEnd();
+            }
+        }
+
+        QPlainTextEdit::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_pressedInsideSelection && (event->buttons() & Qt::LeftButton)) {
+            event->accept();
+            return;
+        }
+
+        QPlainTextEdit::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        QPlainTextEdit::mouseReleaseEvent(event);
+        m_pressedInsideSelection = false;
+    }
+
+private:
+    bool m_pressedInsideSelection = false;
+};
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -53,20 +142,25 @@ MainWindow::MainWindow(QWidget *parent)
     , m_outputPane(nullptr)
     , m_outputToolBar(nullptr)
     , m_compilerProcess(new QProcess(this))
+    , m_buildStep(BuildStep::None)
+    , m_projectType(GuiProjectType)
     , m_modSizeKb(0)
+    , m_editorFontPointSize(10)
 {
     ui->setupUi(this);
     loadOptions();
     setupInterface();
 
     connect(m_compilerProcess, &QProcess::readyReadStandardOutput, this, [this]() {
-        m_outputPane->appendPlainText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()));
+        appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()), OutputKind::Normal);
     });
     connect(m_compilerProcess, &QProcess::readyReadStandardError, this, [this]() {
-        m_outputPane->appendPlainText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardError()));
+        appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardError()), OutputKind::Error);
     });
     connect(m_compilerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
-        m_outputPane->appendPlainText(tr("Could not start compiler. Make sure gcc is installed and on PATH."));
+        const QString toolName = m_buildStep == BuildStep::Objcopy ? tr("objcopy") : tr("compiler");
+        appendOutputLine(tr("Could not start %1. Check that the IDE's bundled toolchain exists.").arg(toolName), OutputKind::Error);
+        m_buildStep = BuildStep::None;
         statusBar()->showMessage(tr("Compile failed"));
     });
     connect(m_compilerProcess, &QProcess::finished, this, &MainWindow::handleCompilerFinished);
@@ -88,20 +182,33 @@ void MainWindow::setupInterface()
     toolBar->setMovable(false);
 
     QAction *newAction = toolBar->addAction(tr("New"));
-    QAction *openProjectAction = toolBar->addAction(tr("Open Project"));
-    QAction *saveProjectAction = toolBar->addAction(tr("Save Project"));
+    auto *newMenu = new QMenu(this);
+    QAction *newProjectAction = newMenu->addAction(tr("New Project"));
+    QAction *newSourceAction = newMenu->addAction(tr("New C File"));
+    newAction->setMenu(newMenu);
+
+    QAction *openProjectAction = toolBar->addAction(tr("Open Project [CTRL+O]"));
+    QAction *saveProjectAction = toolBar->addAction(tr("Save Project [CTRL+S]"));
+    QAction *projectSettingsAction = toolBar->addAction(tr("Project Settings"));
     QAction *optionsAction = toolBar->addAction(tr("Options"));
     toolBar->addSeparator();
-    QAction *compileAction = toolBar->addAction(tr("Compile"));
+    QAction *compileAction = toolBar->addAction(tr("Compile [F5]"));
 
     newAction->setShortcut(QKeySequence::New);
     openProjectAction->setShortcut(QKeySequence::Open);
     saveProjectAction->setShortcut(QKeySequence::Save);
     compileAction->setShortcut(Qt::Key_F5);
 
-    connect(newAction, &QAction::triggered, this, &MainWindow::createNewSourceFile);
+    connect(newAction, &QAction::triggered, this, [toolBar, newAction, newMenu]() {
+        if (QWidget *button = toolBar->widgetForAction(newAction)) {
+            newMenu->popup(button->mapToGlobal(QPoint(0, button->height())));
+        }
+    });
+    connect(newProjectAction, &QAction::triggered, this, &MainWindow::createNewProject);
+    connect(newSourceAction, &QAction::triggered, this, &MainWindow::createNewSourceFile);
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
+    connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(compileAction, &QAction::triggered, this, &MainWindow::compileActiveFile);
 
@@ -146,9 +253,13 @@ void MainWindow::setupInterface()
         m_outputPane->clear();
     });
 
-    m_outputPane = new QPlainTextEdit(outputPanel);
+    m_outputPane = new CompilerOutputPane(outputPanel);
     m_outputPane->setReadOnly(true);
-    m_outputPane->setTextInteractionFlags(Qt::NoTextInteraction);
+    m_outputPane->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    m_outputPane->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    m_outputPane->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background: #050805; color: #d8e8d0; "
+        "selection-background-color: #265c32; selection-color: #ffffff; }"));
     m_outputPane->setAcceptDrops(false);
     m_outputPane->viewport()->setAcceptDrops(false);
     m_outputPane->setPlaceholderText(tr("Compiler output"));
@@ -172,10 +283,77 @@ void MainWindow::setupInterface()
     statusBar()->showMessage(tr("Ready"));
 }
 
+void MainWindow::createNewProject()
+{
+    if (!saveModifiedWorkBeforeNewProject()) {
+        statusBar()->showMessage(tr("New project cancelled"));
+        return;
+    }
+
+    QString projectFilePath = QFileDialog::getSaveFileName(
+        this,
+        tr("New Project"),
+        QDir::home().filePath(QStringLiteral("project.proj")),
+        tr("Sidbox projects (*.proj);;All files (*)"));
+
+    if (projectFilePath.isEmpty()) {
+        statusBar()->showMessage(tr("New project cancelled"));
+        return;
+    }
+
+    if (QFileInfo(projectFilePath).suffix().isEmpty()) {
+        projectFilePath.append(QStringLiteral(".proj"));
+    }
+
+    QMessageBox typeBox(this);
+    typeBox.setWindowTitle(tr("Project Type"));
+    typeBox.setText(tr("What type of Sidbox project is this?"));
+    QPushButton *guiButton = typeBox.addButton(tr("GUI"), QMessageBox::AcceptRole);
+    QPushButton *gameButton = typeBox.addButton(tr("Game"), QMessageBox::AcceptRole);
+    typeBox.addButton(QMessageBox::Cancel);
+    typeBox.exec();
+
+    if (typeBox.clickedButton() == nullptr || typeBox.standardButton(typeBox.clickedButton()) == QMessageBox::Cancel) {
+        statusBar()->showMessage(tr("New project cancelled"));
+        return;
+    }
+
+    m_projectType = typeBox.clickedButton() == static_cast<QAbstractButton *>(gameButton) ? GameProjectType : GuiProjectType;
+    Q_UNUSED(guiButton);
+    m_modSizeKb = 0;
+    m_linkerScriptPath.clear();
+    m_projectFilePath = QFileInfo(projectFilePath).absoluteFilePath();
+    m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
+    m_projectFilesInProject.clear();
+
+    clearEditorTabs();
+    refreshProjectFiles();
+    createNewSourceFile();
+    saveProjectFile(m_projectFilePath);
+
+    statusBar()->showMessage(tr("New %1 project created: %2")
+        .arg(projectTypeLabel(m_projectType), QDir::toNativeSeparators(m_projectFilePath)));
+}
+
+
 void MainWindow::createNewSourceFile()
 {
     CodeEditor *editor = createEditor();
-    editor->setPlainText(QStringLiteral("#include <stdio.h>\n\nint main(void)\n{\n    printf(\"Hello, Sidbox!\\n\");\n    return 0;\n}\n"));
+
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString dateStr = now.toString(QStringLiteral("MMM dd yyyy"));
+    const QString timeStr = now.toString(QStringLiteral("hh:mm:ss"));
+
+    editor->setPlainText(QString(
+                             "/*\n"
+                             "   Create file: %1 %2\n"
+                             "*/\n"
+                             "#include \"apis.h\"\n\n"
+                             "int main(void)\n"
+                             "{\n"
+                             "    return 0;\n"
+                             "}\n").arg(timeStr, dateStr));
+
     editor->document()->setModified(false);
 
     const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor));
@@ -201,7 +379,7 @@ void MainWindow::openProject()
     }
 }
 
-void MainWindow::saveProject()
+bool MainWindow::saveProject()
 {
     bool allSaved = true;
 
@@ -216,7 +394,7 @@ void MainWindow::saveProject()
 
     if (!allSaved) {
         statusBar()->showMessage(tr("Project save cancelled"));
-        return;
+        return false;
     }
 
     QString projectFilePath = m_projectFilePath;
@@ -229,7 +407,7 @@ void MainWindow::saveProject()
 
         if (projectFilePath.isEmpty()) {
             statusBar()->showMessage(tr("Project save cancelled"));
-            return;
+            return false;
         }
 
         if (QFileInfo(projectFilePath).suffix().isEmpty()) {
@@ -240,24 +418,49 @@ void MainWindow::saveProject()
     if (saveProjectFile(projectFilePath)) {
         refreshProjectFiles();
         statusBar()->showMessage(tr("Project saved: %1").arg(QDir::toNativeSeparators(m_projectFilePath)));
+        return true;
     }
+
+    return false;
 }
 
 void MainWindow::showOptions()
 {
     OptionsDialog dialog(this);
-    dialog.setLinkerScriptPath(m_linkerScriptPath);
-    dialog.setModSizeKb(m_modSizeKb);
+    dialog.setEditorFontPointSize(m_editorFontPointSize);
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    m_linkerScriptPath = dialog.linkerScriptPath();
-    m_modSizeKb = dialog.modSizeKb();
+    m_editorFontPointSize = dialog.editorFontPointSize();
     saveOptions();
+    applyEditorFont();
 
     statusBar()->showMessage(tr("Options saved"));
+}
+
+void MainWindow::showProjectSettings()
+{
+    ProjectSettingsDialog dialog(this);
+    dialog.setProjectType(m_projectType);
+    dialog.setModSizeKb(m_modSizeKb);
+    dialog.setCustomLinkerScriptPath(m_linkerScriptPath);
+    dialog.setDefaultLinkerScriptPaths(defaultLinkerScriptPath(GuiProjectType), defaultLinkerScriptPath(GameProjectType));
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    m_projectType = normalizedProjectType(dialog.projectType());
+    m_modSizeKb = dialog.modSizeKb();
+    m_linkerScriptPath = dialog.customLinkerScriptPath();
+
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+
+    statusBar()->showMessage(tr("Project settings saved"));
 }
 
 void MainWindow::compileActiveFile()
@@ -265,6 +468,11 @@ void MainWindow::compileActiveFile()
     CodeEditor *editor = activeEditor();
     if (!editor) {
         QMessageBox::information(this, tr("Compile"), tr("Open a project source file before compiling."));
+        return;
+    }
+
+    if (m_projectFilePath.isEmpty()) {
+        QMessageBox::information(this, tr("Compile"), tr("Save the project before compiling so build outputs can sit beside the .proj file."));
         return;
     }
 
@@ -281,62 +489,127 @@ void MainWindow::compileActiveFile()
         return;
     }
 
-    const QString filePath = editor->filePath();
-    const QFileInfo sourceInfo(filePath);
     const QStringList sourceFiles = projectFilesForCompile();
-
     if (sourceFiles.isEmpty()) {
         QMessageBox::information(this, tr("Compile"), tr("Add at least one .c, .cc, or .cpp file to the project before compiling."));
         return;
     }
 
-    const QString workingDirectory = m_projectPath.isEmpty() ? sourceInfo.absolutePath() : m_projectPath;
-    const QString outputDirectory = QDir(workingDirectory).filePath(QStringLiteral(".sidbox-build"));
-
-    QDir().mkpath(outputDirectory);
-
-    const QString outputName = m_projectFilePath.isEmpty()
-        ? sourceInfo.completeBaseName()
-        : QFileInfo(m_projectFilePath).completeBaseName();
-    const QString outputPath = QDir(outputDirectory).filePath(outputName);
-    QStringList arguments = {QStringLiteral("-Wall"), QStringLiteral("-Wextra")};
-    arguments << sourceFiles << QStringLiteral("-o") << outputPath;
-
-    if (!m_linkerScriptPath.isEmpty()) {
-        const QFileInfo linkerInfo(m_linkerScriptPath);
-        if (!linkerInfo.exists()) {
-            QMessageBox::warning(this, tr("Compile"), tr("The selected linker script does not exist."));
-            return;
-        }
-
-        arguments << QStringLiteral("-T") << m_linkerScriptPath;
+    QString linkerError;
+    if (m_linkerScriptPath.isEmpty() && !updateProjectLinkerScript(&linkerError)) {
+        QMessageBox::warning(this, tr("Compile"), tr("Could not prepare the project linker script:\n%1").arg(linkerError));
+        return;
     }
 
-    if (m_modSizeKb > 0) {
-        arguments << QStringLiteral("-Wl,--defsym=MOD_SIZE=%1").arg(m_modSizeKb * 1024);
+    const QString libsPath = ideLibsPath();
+    const QDir apiDir(QDir(libsPath).filePath(QStringLiteral("api")));
+    const QString selectedLinkerScript = effectiveLinkerScriptPath();
+    const QString selectedCompiler = compilerPath();
+    const QString selectedObjcopy = objcopyPath();
+    const QStringList apiSourceFiles = sidboxApiSourceFiles();
+    const QStringList libraryFiles = sidboxLibraryFiles();
+
+    if (!QFileInfo::exists(selectedCompiler)) {
+        QMessageBox::warning(this, tr("Compile"), tr("The bundled Sidbox compiler was not found:\n%1").arg(QDir::toNativeSeparators(selectedCompiler)));
+        return;
     }
+
+    if (!QFileInfo::exists(selectedObjcopy)) {
+        QMessageBox::warning(this, tr("Compile"), tr("The bundled Sidbox objcopy was not found:\n%1").arg(QDir::toNativeSeparators(selectedObjcopy)));
+        return;
+    }
+
+    if (!QFileInfo::exists(selectedLinkerScript)) {
+        QMessageBox::warning(this, tr("Compile"), tr("The selected linker script does not exist:\n%1").arg(QDir::toNativeSeparators(selectedLinkerScript)));
+        return;
+    }
+
+    if (apiSourceFiles.isEmpty()) {
+        QMessageBox::warning(this, tr("Compile"), tr("The IDE API sources were not found under idelibs/api."));
+        return;
+    }
+
+    const QString outputBaseName = QFileInfo(m_projectFilePath).completeBaseName();
+    const QString buildPath = QDir(m_projectPath).filePath(QStringLiteral("build"));
+    if (!QDir().mkpath(buildPath)) {
+        QMessageBox::warning(this, tr("Compile"), tr("Could not create build folder:\n%1").arg(QDir::toNativeSeparators(buildPath)));
+        return;
+    }
+
+    const QString outputPath = QDir(buildPath).filePath(outputBaseName + QStringLiteral(".elf"));
+    const QString appOutputPath = QDir(m_projectPath).filePath(outputBaseName + QStringLiteral(".app"));
+    const QString mapOutputPath = QDir(buildPath).filePath(outputBaseName + QStringLiteral(".map"));
+    const QString asmOutputPath = QDir(buildPath).filePath(outputBaseName + QStringLiteral(".asm"));
+
+    QStringList arguments = {
+        QStringLiteral("-mcpu=cortex-m7"),
+        QStringLiteral("-mthumb"),
+        QStringLiteral("-mfpu=fpv5-d16"),
+        QStringLiteral("-mfloat-abi=hard"),
+        QStringLiteral("-std=gnu99"),
+        QStringLiteral("-Ofast"),
+        QStringLiteral("-ffunction-sections"),
+        QStringLiteral("-fdata-sections"),
+        QStringLiteral("-fstack-usage"),
+        QStringLiteral("--specs=nano.specs"),
+        QStringLiteral("-mno-unaligned-access"),
+        QStringLiteral("-w"),
+        QStringLiteral("-DSIDBOX_STARTUP_HEADER_IN_ASM"),
+        QStringLiteral("-I"), apiDir.absolutePath(),
+        QStringLiteral("-I"), QDir(libsPath).filePath(QStringLiteral("libraries")),
+    };
+
+    arguments << sourceFiles;
+    arguments << apiSourceFiles;
+    arguments << libraryFiles;
+    arguments << QStringLiteral("-T") << selectedLinkerScript;
+    arguments << QStringLiteral("-Wl,-Map=%1").arg(mapOutputPath);
+    arguments << QStringLiteral("-Wl,--gc-sections")
+              << QStringLiteral("-static")
+              << QStringLiteral("--specs=nosys.specs");
+
+    arguments << QStringLiteral("-Wl,--start-group")
+              << QStringLiteral("-lc")
+              << QStringLiteral("-lm")
+              << QStringLiteral("-Wl,--end-group")
+              << QStringLiteral("-o")
+              << outputPath;
 
     m_outputPane->clear();
-    m_outputPane->appendPlainText(tr("Compiling project sources:"));
-    for (const QString &sourceFile : sourceFiles) {
-        m_outputPane->appendPlainText(tr("  %1").arg(displayPath(sourceFile)));
-    }
-    m_outputPane->appendPlainText(tr("Output: %1").arg(QDir::toNativeSeparators(outputPath)));
-    if (!m_projectFilePath.isEmpty()) {
-        m_outputPane->appendPlainText(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)));
-    }
-    if (!m_linkerScriptPath.isEmpty()) {
-        m_outputPane->appendPlainText(tr("Linker script: %1").arg(QDir::toNativeSeparators(m_linkerScriptPath)));
-    }
+    appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(selectedCompiler)), OutputKind::Path);
+    appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
+    appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
+    appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
+    appendOutputLine(tr("Build folder: %1").arg(QDir::toNativeSeparators(buildPath)), OutputKind::Path);
+    appendOutputLine(tr("ELF: %1").arg(QDir::toNativeSeparators(outputPath)), OutputKind::Path);
+    appendOutputLine(tr("APP: %1").arg(QDir::toNativeSeparators(appOutputPath)), OutputKind::Path);
+    appendOutputLine(tr("Map: %1").arg(QDir::toNativeSeparators(mapOutputPath)), OutputKind::Path);
+    appendOutputLine(tr("Asm: %1").arg(QDir::toNativeSeparators(asmOutputPath)), OutputKind::Path);
+    appendOutputLine(tr("Linker script: %1").arg(QDir::toNativeSeparators(selectedLinkerScript)), OutputKind::Path);
     if (m_modSizeKb > 0) {
-        m_outputPane->appendPlainText(tr("MOD size: %1 KB").arg(m_modSizeKb));
+        appendOutputLine(tr("MOD size: %1 KB").arg(m_modSizeKb), OutputKind::Warning);
+    }
+    appendOutputLine(tr("Project sources:"), OutputKind::Header);
+    for (const QString &sourceFile : sourceFiles) {
+        appendOutputLine(tr("  %1").arg(displayPath(sourceFile)), OutputKind::Muted);
+    }
+    appendOutputLine(tr("IDE API sources:"), OutputKind::Header);
+    for (const QString &apiSource : apiSourceFiles) {
+        appendOutputLine(tr("  %1").arg(QDir(libsPath).relativeFilePath(apiSource)), OutputKind::Muted);
     }
 
-    m_compilerProcess->setWorkingDirectory(workingDirectory);
-    m_compilerProcess->start(QStringLiteral("gcc"), arguments);
+    m_pendingElfPath = outputPath;
+    m_pendingAppPath = appOutputPath;
+    m_pendingAsmPath = asmOutputPath;
+    m_buildStep = BuildStep::Linking;
+    m_compilerProcess->setWorkingDirectory(buildPath);
+    m_compilerProcess->start(selectedCompiler, arguments);
 
     statusBar()->showMessage(tr("Compile started"));
 }
+
+
+
 
 void MainWindow::openProjectFile(QListWidgetItem *item)
 {
@@ -349,13 +622,88 @@ void MainWindow::openProjectFile(QListWidgetItem *item)
 
 void MainWindow::handleCompilerFinished(int exitCode)
 {
-    if (exitCode == 0) {
-        m_outputPane->appendPlainText(tr("Compile finished successfully."));
-        statusBar()->showMessage(tr("Compile successful"));
-    } else {
-        m_outputPane->appendPlainText(tr("Compile failed with exit code %1.").arg(exitCode));
-        statusBar()->showMessage(tr("Compile failed"));
+    if (m_buildStep == BuildStep::Linking) {
+        if (exitCode != 0) {
+            appendOutputLine(tr("Link failed with exit code %1.").arg(exitCode), OutputKind::Error);
+            m_buildStep = BuildStep::None;
+            statusBar()->showMessage(tr("Compile failed"));
+            return;
+        }
+
+        appendOutputLine(tr("Link finished successfully."), OutputKind::Success);
+        appendOutputLine(tr("Generating .asm output..."), OutputKind::Header);
+
+        QString objdumpExec = objcopyPath();
+        objdumpExec.replace(QStringLiteral("objcopy"), QStringLiteral("objdump"));
+
+        m_buildStep = BuildStep::Asm;
+        m_compilerProcess->setWorkingDirectory(m_projectPath);
+        m_compilerProcess->setStandardOutputFile(m_pendingAsmPath);
+        m_compilerProcess->start(objdumpExec, {
+                                                  QStringLiteral("-d"),
+                                                  QStringLiteral("-S"),
+                                                  m_pendingElfPath
+                                              });
+        return;
     }
+
+    if (m_buildStep == BuildStep::Asm) {
+        m_compilerProcess->setStandardOutputFile(QString());
+
+        if (exitCode != 0) {
+            appendOutputLine(tr("ASM generation failed with exit code %1.").arg(exitCode), OutputKind::Error);
+            m_buildStep = BuildStep::None;
+            statusBar()->showMessage(tr("Compile failed"));
+            return;
+        }
+
+        const qint64 asmSize = QFileInfo(m_pendingAsmPath).size();
+        appendOutputLine(tr("ASM generated: %1").arg(QDir::toNativeSeparators(m_pendingAsmPath)), OutputKind::Success);
+        if (asmSize >= 0) {
+            appendOutputLine(tr("ASM size: %1 bytes").arg(QLocale().toString(asmSize)), OutputKind::Success);
+        }
+
+        appendOutputLine(tr("Generating .app binary..."), OutputKind::Header);
+
+        m_buildStep = BuildStep::Objcopy;
+        m_compilerProcess->setWorkingDirectory(m_projectPath);
+        m_compilerProcess->start(objcopyPath(), {
+                                                    QStringLiteral("-O"),
+                                                    QStringLiteral("binary"),
+                                                    m_pendingElfPath,
+                                                    m_pendingAppPath
+                                                });
+        return;
+    }
+
+    if (m_buildStep == BuildStep::Objcopy) {
+        if (exitCode != 0) {
+            appendOutputLine(tr("Objcopy failed with exit code %1.").arg(exitCode), OutputKind::Error);
+            m_buildStep = BuildStep::None;
+            statusBar()->showMessage(tr("Compile failed"));
+            return;
+        }
+
+        const qint64 appSize = QFileInfo(m_pendingAppPath).size();
+        appendOutputLine(tr("APP generated: %1").arg(QDir::toNativeSeparators(m_pendingAppPath)), OutputKind::Success);
+        if (appSize >= 0) {
+            appendOutputLine(tr("APP size: %1 bytes").arg(QLocale().toString(appSize)), OutputKind::Success);
+        }
+
+        const QString buildPath = QDir(m_projectPath).filePath(QStringLiteral("build"));
+        QDir buildDir(buildPath);
+        const QStringList suFiles = buildDir.entryList({QStringLiteral("*.su")}, QDir::Files);
+        for (const QString &suFile : suFiles) {
+            buildDir.remove(suFile);
+        }
+
+        appendOutputLine(tr("Compile finished successfully."), OutputKind::Success);
+        m_buildStep = BuildStep::None;
+        statusBar()->showMessage(tr("Compile successful"));
+        return;
+    }
+
+    m_buildStep = BuildStep::None;
 }
 
 CodeEditor *MainWindow::activeEditor() const
@@ -368,6 +716,11 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     auto *editor = new CodeEditor(m_editorTabs);
     editor->setFilePath(filePath);
     editor->setFunctionCompletions(projectFunctionSignatures());
+
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSize(m_editorFontPointSize);
+    editor->setFont(font);
+    editor->refreshLineNumberAreaWidth();
 
     connect(editor->document(), &QTextDocument::modificationChanged, this, [this, editor]() {
         updateTabTitle(editor);
@@ -411,7 +764,7 @@ bool MainWindow::saveEditor(CodeEditor *editor)
     const bool wasUntitled = editor->filePath().isEmpty();
     if (wasUntitled) {
         const QString baseDirectory = m_projectPath.isEmpty() ? QDir::homePath() : m_projectPath;
-        const QString filePath = QFileDialog::getSaveFileName(
+        QString filePath = QFileDialog::getSaveFileName(
             this,
             tr("Save Source File"),
             QDir(baseDirectory).filePath(QStringLiteral("main.c")),
@@ -419,6 +772,10 @@ bool MainWindow::saveEditor(CodeEditor *editor)
 
         if (filePath.isEmpty()) {
             return false;
+        }
+
+        if (QFileInfo(filePath).suffix().isEmpty()) {
+            filePath.append(QStringLiteral(".c"));
         }
 
         if (!editor->saveAs(filePath)) {
@@ -435,6 +792,35 @@ bool MainWindow::saveEditor(CodeEditor *editor)
     refreshProjectFiles();
     refreshFunctionCompletions();
     return true;
+}
+
+bool MainWindow::saveModifiedWorkBeforeNewProject()
+{
+    bool hasUnsavedWork = m_projectFilePath.isEmpty() && m_editorTabs->count() > 0;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor && editor->document()->isModified()) {
+            hasUnsavedWork = true;
+            break;
+        }
+    }
+
+    if (!hasUnsavedWork) {
+        return true;
+    }
+
+    const QMessageBox::StandardButton answer = QMessageBox::warning(
+        this,
+        tr("New Project"),
+        tr("Save the current project and source files before creating a new project?"),
+        QMessageBox::Save | QMessageBox::Cancel,
+        QMessageBox::Save);
+
+    if (answer != QMessageBox::Save) {
+        return false;
+    }
+
+    return saveProject();
 }
 
 bool MainWindow::loadProjectFile(const QString &filePath)
@@ -458,13 +844,11 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_projectFilePath = QFileInfo(filePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
+    m_projectType = normalizedProjectType(root.value(QStringLiteral("projectType")).toString(GuiProjectType));
+    m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
 
     const QString linkerScript = root.value(QStringLiteral("linkerScript")).toString();
-    if (!linkerScript.isEmpty()) {
-        m_linkerScriptPath = fromProjectRelativePath(linkerScript);
-    }
-    m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(m_modSizeKb);
-    saveOptions();
+    m_linkerScriptPath = linkerScript.isEmpty() ? QString() : fromProjectRelativePath(linkerScript);
 
     for (const QJsonValue &value : files) {
         const QString projectFile = fromProjectRelativePath(value.toString());
@@ -493,7 +877,9 @@ bool MainWindow::saveProjectFile(const QString &filePath)
 {
     m_projectFilePath = QFileInfo(filePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
-    m_projectFilesInProject = collectOpenProjectFiles();
+    for (const QString &projectFile : collectOpenProjectFiles()) {
+        addProjectFile(projectFile);
+    }
 
     QJsonArray files;
     for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
@@ -502,8 +888,9 @@ bool MainWindow::saveProjectFile(const QString &filePath)
 
     QJsonObject root;
     root.insert(QStringLiteral("version"), ProjectFileVersion);
+    root.insert(QStringLiteral("projectType"), normalizedProjectType(m_projectType));
     root.insert(QStringLiteral("files"), files);
-    root.insert(QStringLiteral("linkerScript"), toProjectRelativePath(m_linkerScriptPath));
+    root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));
     root.insert(QStringLiteral("modSizeKb"), m_modSizeKb);
 
     QFile file(m_projectFilePath);
@@ -513,6 +900,16 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     }
 
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    file.close();
+
+    if (m_linkerScriptPath.isEmpty()) {
+        QString linkerError;
+        if (!updateProjectLinkerScript(&linkerError)) {
+            QMessageBox::warning(this, tr("Save Project"), tr("Project saved, but the linker script could not be prepared:\n%1").arg(linkerError));
+            return false;
+        }
+    }
+
     refreshFunctionCompletions();
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     return true;
@@ -705,16 +1102,227 @@ QString MainWindow::fromProjectRelativePath(const QString &filePath) const
     return QFileInfo(QDir(m_projectPath).filePath(filePath)).absoluteFilePath();
 }
 
+QString MainWindow::ideLibsPath() const
+{
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QStringList candidates = {
+        appDir.filePath(QStringLiteral("idelibs")),
+        appDir.filePath(QStringLiteral("../idelibs")),
+        appDir.filePath(QStringLiteral("../../idelibs")),
+        appDir.filePath(QStringLiteral("../SidboxIDE/idelibs")),
+        QDir::current().filePath(QStringLiteral("idelibs")),
+        QDir::current().filePath(QStringLiteral("SidboxIDE/idelibs"))
+    };
+
+    for (const QString &candidate : candidates) {
+        const QFileInfo info(candidate);
+        if (info.exists() && info.isDir()) {
+            return info.absoluteFilePath();
+        }
+    }
+
+    return QFileInfo(appDir.filePath(QStringLiteral("../../idelibs"))).absoluteFilePath();
+}
+
+QString MainWindow::defaultLinkerScriptPath(const QString &projectType) const
+{
+    const QString type = normalizedProjectType(projectType.isEmpty() ? m_projectType : projectType);
+    return QDir(ideLibsPath()).filePath(type == GameProjectType ? QStringLiteral("gaming.ld") : QStringLiteral("gui.ld"));
+}
+
+QString MainWindow::projectLinkerScriptPath() const
+{
+    if (m_projectFilePath.isEmpty()) {
+        return {};
+    }
+
+    const QString fileName = QFileInfo(m_projectFilePath).completeBaseName() + QStringLiteral(".ld");
+    return QDir(m_projectPath).filePath(fileName);
+}
+
+QString MainWindow::effectiveLinkerScriptPath() const
+{
+    if (!m_linkerScriptPath.isEmpty()) {
+        return m_linkerScriptPath;
+    }
+
+    const QString projectLinker = projectLinkerScriptPath();
+    return projectLinker.isEmpty() ? defaultLinkerScriptPath() : projectLinker;
+}
+
+bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
+{
+    if (m_projectFilePath.isEmpty() || m_projectPath.isEmpty()) {
+        if (errorMessage) {
+            *errorMessage = tr("Save the project first so the linker script has a project folder.");
+        }
+        return false;
+    }
+
+    const QString sourcePath = defaultLinkerScriptPath();
+    QFile sourceFile(sourcePath);
+    if (!sourceFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = tr("Could not read %1.").arg(QDir::toNativeSeparators(sourcePath));
+        }
+        return false;
+    }
+
+    QString scriptText = QString::fromUtf8(sourceFile.readAll());
+    const QString profileValue = normalizedProjectType(m_projectType) == GameProjectType
+        ? QStringLiteral("0")
+        : QStringLiteral("1");
+
+    if (!replaceLinkerAssignment(&scriptText, QStringLiteral("_profile_is_desktop"), profileValue)
+        || !replaceLinkerAssignment(&scriptText, QStringLiteral("_largest_modfile"), hexBytes(m_modSizeKb))) {
+        if (errorMessage) {
+            *errorMessage = tr("The template linker script is missing an expected Sidbox setting.");
+        }
+        return false;
+    }
+
+    scriptText.prepend(tr("/* Generated by Sidbox IDE from %1. Edit the project settings to regenerate. */\n")
+        .arg(QDir::toNativeSeparators(sourcePath)));
+
+    const QString destinationPath = projectLinkerScriptPath();
+    QSaveFile destinationFile(destinationPath);
+    if (!destinationFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = tr("Could not write %1.").arg(QDir::toNativeSeparators(destinationPath));
+        }
+        return false;
+    }
+
+    destinationFile.write(scriptText.toUtf8());
+    if (!destinationFile.commit()) {
+        if (errorMessage) {
+            *errorMessage = tr("Could not finish writing %1.").arg(QDir::toNativeSeparators(destinationPath));
+        }
+        return false;
+    }
+
+    return true;
+}
+
+QString MainWindow::compilerPath() const
+{
+    return QDir(ideLibsPath()).filePath(QStringLiteral("tools/bin/arm-none-eabi-gcc"));
+}
+
+QString MainWindow::objcopyPath() const
+{
+    return QDir(ideLibsPath()).filePath(QStringLiteral("tools/bin/arm-none-eabi-objcopy"));
+}
+
+QStringList MainWindow::sidboxApiSourceFiles() const
+{
+    const QDir apiDir(QDir(ideLibsPath()).filePath(QStringLiteral("api")));
+    const QStringList relativePaths = {
+        QStringLiteral("applet.s"),
+        QStringLiteral("apis.c"),
+        QStringLiteral("syscalls.c"),
+        QStringLiteral("crt/crt.c"),
+        QStringLiteral("graphics/graphics.c"),
+        QStringLiteral("audio/audio.c"),
+        QStringLiteral("touch/touch.c")
+    };
+
+    QStringList files;
+    for (const QString &relativePath : relativePaths) {
+        const QString absolutePath = apiDir.filePath(relativePath);
+        if (QFileInfo::exists(absolutePath)) {
+            files.append(absolutePath);
+        }
+    }
+    return files;
+}
+
+QStringList MainWindow::sidboxLibraryFiles() const
+{
+    QStringList files;
+    const QString libraryPath = QDir(ideLibsPath()).filePath(QStringLiteral("libraries"));
+    if (!QFileInfo::exists(libraryPath)) {
+        return files;
+    }
+
+    QDirIterator iterator(libraryPath, {QStringLiteral("*.a")}, QDir::Files, QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        files.append(iterator.next());
+    }
+    return files;
+}
+
+void MainWindow::applyEditorFont()
+{
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSize(m_editorFontPointSize);
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (!editor) {
+            continue;
+        }
+
+        editor->setFont(font);
+        editor->setTabStopDistance(editor->fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
+        editor->refreshLineNumberAreaWidth();
+    }
+}
+
+void MainWindow::appendOutputText(const QString &text, OutputKind kind)
+{
+    if (!m_outputPane || text.isEmpty()) {
+        return;
+    }
+
+    QColor color;
+    switch (kind) {
+    case OutputKind::Header:
+        color = QColor(120, 220, 255);
+        break;
+    case OutputKind::Path:
+        color = QColor(170, 205, 255);
+        break;
+    case OutputKind::Success:
+        color = QColor(80, 255, 120);
+        break;
+    case OutputKind::Error:
+        color = QColor(255, 90, 90);
+        break;
+    case OutputKind::Warning:
+        color = QColor(255, 210, 90);
+        break;
+    case OutputKind::Muted:
+        color = QColor(150, 165, 150);
+        break;
+    case OutputKind::Normal:
+        color = QColor(220, 235, 210);
+        break;
+    }
+
+    QTextCharFormat format;
+    format.setForeground(color);
+
+    QTextCursor cursor = m_outputPane->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text, format);
+    m_outputPane->setTextCursor(cursor);
+    m_outputPane->ensureCursorVisible();
+}
+
+void MainWindow::appendOutputLine(const QString &text, OutputKind kind)
+{
+    appendOutputText(text + QLatin1Char('\n'), kind);
+}
+
 void MainWindow::loadOptions()
 {
     QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    m_linkerScriptPath = settings.value(QStringLiteral("compiler/linkerScript")).toString();
-    m_modSizeKb = settings.value(QStringLiteral("compiler/modSizeKb"), 0).toInt();
+    m_editorFontPointSize = settings.value(QStringLiteral("editor/fontPointSize"), 10).toInt();
 }
 
 void MainWindow::saveOptions() const
 {
     QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    settings.setValue(QStringLiteral("compiler/linkerScript"), m_linkerScriptPath);
-    settings.setValue(QStringLiteral("compiler/modSizeKb"), m_modSizeKb);
+    settings.setValue(QStringLiteral("editor/fontPointSize"), m_editorFontPointSize);
 }

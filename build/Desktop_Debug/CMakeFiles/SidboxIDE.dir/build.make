@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug
+CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug
 
 # Include any dependencies generated for this target.
 include CMakeFiles/SidboxIDE.dir/depend.make
@@ -75,86 +75,100 @@ CMakeFiles/SidboxIDE.dir/codegen:
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: SidboxIDE_autogen/mocs_compilation.cpp
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o -MF CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o.d -o CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o -MF CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o.d -o CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp
 
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp > CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp > CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.i
 
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp -o CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp -o CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.s
 
 CMakeFiles/SidboxIDE.dir/main.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
-CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp
+CMakeFiles/SidboxIDE.dir/main.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp
 CMakeFiles/SidboxIDE.dir/main.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/SidboxIDE.dir/main.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/main.cpp.o -MF CMakeFiles/SidboxIDE.dir/main.cpp.o.d -o CMakeFiles/SidboxIDE.dir/main.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/SidboxIDE.dir/main.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/main.cpp.o -MF CMakeFiles/SidboxIDE.dir/main.cpp.o.d -o CMakeFiles/SidboxIDE.dir/main.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp
 
 CMakeFiles/SidboxIDE.dir/main.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/main.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp > CMakeFiles/SidboxIDE.dir/main.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp > CMakeFiles/SidboxIDE.dir/main.cpp.i
 
 CMakeFiles/SidboxIDE.dir/main.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/main.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp -o CMakeFiles/SidboxIDE.dir/main.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp -o CMakeFiles/SidboxIDE.dir/main.cpp.s
 
 CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
-CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp
+CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp
 CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o -MF CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o.d -o CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o -MF CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o.d -o CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp
 
 CMakeFiles/SidboxIDE.dir/codeeditor.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/codeeditor.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp > CMakeFiles/SidboxIDE.dir/codeeditor.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp > CMakeFiles/SidboxIDE.dir/codeeditor.cpp.i
 
 CMakeFiles/SidboxIDE.dir/codeeditor.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/codeeditor.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp -o CMakeFiles/SidboxIDE.dir/codeeditor.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp -o CMakeFiles/SidboxIDE.dir/codeeditor.cpp.s
 
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
-CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp
+CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o -MF CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o.d -o CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o -MF CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o.d -o CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp
 
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp > CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp > CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.i
 
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp -o CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp -o CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.s
 
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
-CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp
+CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o -MF CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o.d -o CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o -MF CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o.d -o CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp
 
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp > CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp > CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.i
 
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp -o CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp -o CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.s
+
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o -MF CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o.d -o CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp
+
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.i"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp > CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.i
+
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.s"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp -o CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.s
 
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: CMakeFiles/SidboxIDE.dir/flags.make
-CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp
+CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o -MF CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o.d -o CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o"
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o -MF CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o.d -o CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp
 
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/SidboxIDE.dir/mainwindow.cpp.i"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp > CMakeFiles/SidboxIDE.dir/mainwindow.cpp.i
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp > CMakeFiles/SidboxIDE.dir/mainwindow.cpp.i
 
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/SidboxIDE.dir/mainwindow.cpp.s"
-	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp -o CMakeFiles/SidboxIDE.dir/mainwindow.cpp.s
+	/usr/bin/g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp -o CMakeFiles/SidboxIDE.dir/mainwindow.cpp.s
 
 # Object files for target SidboxIDE
 SidboxIDE_OBJECTS = \
@@ -163,6 +177,7 @@ SidboxIDE_OBJECTS = \
 "CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o" \
 "CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o" \
 "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o" \
+"CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o" \
 "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o"
 
 # External object files for target SidboxIDE
@@ -173,6 +188,7 @@ SidboxIDE: CMakeFiles/SidboxIDE.dir/main.cpp.o
 SidboxIDE: CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o
 SidboxIDE: CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o
 SidboxIDE: CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o
+SidboxIDE: CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o
 SidboxIDE: CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o
 SidboxIDE: CMakeFiles/SidboxIDE.dir/build.make
 SidboxIDE: CMakeFiles/SidboxIDE.dir/compiler_depend.ts
@@ -182,7 +198,7 @@ SidboxIDE: /usr/lib64/libGLX.so
 SidboxIDE: /usr/lib64/libOpenGL.so
 SidboxIDE: /usr/lib64/libQt6Core.so.6.11.2
 SidboxIDE: CMakeFiles/SidboxIDE.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Linking CXX executable SidboxIDE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Linking CXX executable SidboxIDE"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/SidboxIDE.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
@@ -194,6 +210,6 @@ CMakeFiles/SidboxIDE.dir/clean:
 .PHONY : CMakeFiles/SidboxIDE.dir/clean
 
 CMakeFiles/SidboxIDE.dir/depend:
-	cd /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE
+	cd /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE
 .PHONY : CMakeFiles/SidboxIDE.dir/depend
 

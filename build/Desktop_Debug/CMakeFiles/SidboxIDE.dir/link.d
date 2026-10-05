@@ -7,6 +7,7 @@ SidboxIDE: \
   CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o \
   CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o \
   CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o \
+  CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o \
   CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o \
   /usr/lib64/libQt6Widgets.so.6.11.2 \
   /usr/lib64/libQt6Gui.so.6.11.2 \
@@ -95,6 +96,8 @@ CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o:
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o:
 
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o:
+
+CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o:
 
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o:
 

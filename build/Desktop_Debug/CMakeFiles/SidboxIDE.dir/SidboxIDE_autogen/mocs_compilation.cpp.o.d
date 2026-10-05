@@ -1,8 +1,8 @@
 CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_codeeditor.cpp \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../codeeditor.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_codeeditor.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../codeeditor.h \
  /usr/include/qt6/QtWidgets/QPlainTextEdit \
  /usr/include/qt6/QtWidgets/qplaintextedit.h \
  /usr/include/qt6/QtWidgets/qtwidgetsglobal.h \
@@ -397,19 +397,21 @@ CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o: \
  /usr/include/qt6/QtCore/qtmochelpers.h \
  /usr/include/qt6/QtCore/qtmocconstants.h \
  /usr/include/qt6/QtCore/q20algorithm.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_csyntaxhighlighter.cpp \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../csyntaxhighlighter.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_csyntaxhighlighter.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../csyntaxhighlighter.h \
  /usr/include/qt6/QtCore/QRegularExpression \
  /usr/include/qt6/QtCore/qregularexpression.h \
  /usr/include/qt6/QtGui/QSyntaxHighlighter \
  /usr/include/qt6/QtGui/qsyntaxhighlighter.h \
  /usr/include/qt6/QtGui/qtextobject.h \
  /usr/include/qt6/QtGui/QTextCharFormat \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_mainwindow.cpp \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../mainwindow.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_mainwindow.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../mainwindow.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
  /usr/include/qt6/QtWidgets/qmainwindow.h \
  /usr/include/qt6/QtWidgets/qtabwidget.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_optionsdialog.cpp \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../optionsdialog.h \
- /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_optionsdialog.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../optionsdialog.h \
+ /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_projectsettingsdialog.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/../../../../projectsettingsdialog.h

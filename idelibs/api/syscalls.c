@@ -107,8 +107,10 @@ void initMalloc(){
     heap_size = (SDRAM_BASE + SDRAM_SIZE) - (uint32_t)&__app_end;
 }
 
+#ifndef SIDBOX_STARTUP_HEADER_IN_ASM
 __attribute__((section(".header")))
 const char sdex_header[8] = { 'S', 'B', 'A', 'P', 'X', '5', 'O', '2' };
+#endif
 
 __attribute__((section(".thestart")))
 const uint32_t sdex_startaddr = (uint32_t)&_appstart;

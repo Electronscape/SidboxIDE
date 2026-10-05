@@ -1,7 +1,7 @@
 CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.h \
  /usr/include/qt6/QtWidgets/QPlainTextEdit \
  /usr/include/qt6/QtWidgets/qplaintextedit.h \
  /usr/include/qt6/QtWidgets/qtwidgetsglobal.h \
@@ -393,7 +393,7 @@ CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: \
  /usr/include/qt6/QtGui/qglyphrun.h /usr/include/qt6/QtGui/qrawfont.h \
  /usr/include/qt6/QtGui/qfontdatabase.h /usr/include/qt6/QtCore/QString \
  /usr/include/qt6/QtCore/QStringList \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.h \
  /usr/include/qt6/QtCore/QRegularExpression \
  /usr/include/qt6/QtCore/qregularexpression.h \
  /usr/include/qt6/QtGui/QSyntaxHighlighter \
@@ -421,8 +421,10 @@ CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o: \
  /usr/include/c++/16/bits/fs_dir.h /usr/include/c++/16/bits/fs_ops.h \
  /usr/include/qt6/QtGui/QFocusEvent /usr/include/qt6/QtGui/QFont \
  /usr/include/qt6/QtGui/QFontDatabase /usr/include/qt6/QtGui/QKeyEvent \
- /usr/include/qt6/QtWidgets/QScrollBar \
+ /usr/include/qt6/QtGui/QPainter /usr/include/qt6/QtGui/qpainter.h \
+ /usr/include/qt6/QtGui/QColor /usr/include/qt6/QtWidgets/QScrollBar \
  /usr/include/qt6/QtWidgets/qscrollbar.h \
  /usr/include/qt6/QtCore/QStringListModel \
  /usr/include/qt6/QtCore/qstringlistmodel.h \
- /usr/include/qt6/QtCore/QTextStream
+ /usr/include/qt6/QtGui/QTextBlock /usr/include/qt6/QtWidgets/QTextEdit \
+ /usr/include/qt6/QtCore/QTextStream /usr/include/qt6/QtWidgets/QWidget

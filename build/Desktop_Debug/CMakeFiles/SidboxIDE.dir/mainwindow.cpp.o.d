@@ -1,7 +1,7 @@
 CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
  /usr/include/qt6/QtWidgets/qmainwindow.h \
  /usr/include/qt6/QtWidgets/qtwidgetsglobal.h \
@@ -365,7 +365,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtGui/qcursor.h /usr/include/qt6/QtGui/qbitmap.h \
  /usr/include/qt6/QtWidgets/qtabwidget.h /usr/include/qt6/QtCore/QString \
  /usr/include/qt6/QtCore/QStringList \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.h \
  /usr/include/qt6/QtWidgets/QPlainTextEdit \
  /usr/include/qt6/QtWidgets/qplaintextedit.h \
  /usr/include/qt6/QtWidgets/qtextedit.h \
@@ -398,9 +398,10 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtGui/qguiapplication_platform.h \
  /usr/include/qt6/QtGui/qglyphrun.h /usr/include/qt6/QtGui/qrawfont.h \
  /usr/include/qt6/QtGui/qfontdatabase.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.h \
  /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/include/ui_mainwindow.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/include/ui_mainwindow.h \
  /usr/include/qt6/QtCore/QVariant /usr/include/qt6/QtWidgets/QApplication \
  /usr/include/qt6/QtWidgets/qapplication.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
@@ -409,8 +410,10 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/QStatusBar \
  /usr/include/qt6/QtWidgets/qstatusbar.h \
  /usr/include/qt6/QtWidgets/QWidget /usr/include/qt6/QtGui/QAction \
- /usr/include/qt6/QtCore/QDir /usr/include/qt6/QtCore/qdir.h \
- /usr/include/qt6/QtCore/qdirlisting.h \
+ /usr/include/qt6/QtGui/QColor /usr/include/qt6/QtWidgets/QAbstractButton \
+ /usr/include/qt6/QtWidgets/qabstractbutton.h \
+ /usr/include/qt6/QtCore/QCoreApplication /usr/include/qt6/QtCore/QDir \
+ /usr/include/qt6/QtCore/qdir.h /usr/include/qt6/QtCore/qdirlisting.h \
  /usr/include/qt6/QtCore/qfiledevice.h /usr/include/c++/16/filesystem \
  /usr/include/c++/16/bits/fs_fwd.h /usr/include/c++/16/bits/fs_path.h \
  /usr/include/c++/16/iomanip /usr/include/c++/16/bits/quoted_string.h \
@@ -418,10 +421,12 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/c++/16/bits/fs_ops.h /usr/include/qt6/QtCore/qdatetime.h \
  /usr/include/qt6/QtCore/qcalendar.h /usr/include/qt6/QtCore/qfile.h \
  /usr/include/qt6/QtCore/qfileinfo.h /usr/include/qt6/QtCore/qtimezone.h \
- /usr/include/qt6/QtCore/QFile /usr/include/qt6/QtWidgets/QFileDialog \
+ /usr/include/qt6/QtCore/QDirIterator \
+ /usr/include/qt6/QtCore/qdiriterator.h /usr/include/qt6/QtCore/QFile \
+ /usr/include/qt6/QtWidgets/QFileDialog \
  /usr/include/qt6/QtWidgets/qfiledialog.h \
- /usr/include/qt6/QtCore/QFileInfo /usr/include/qt6/QtCore/QJsonArray \
- /usr/include/qt6/QtCore/qjsonarray.h \
+ /usr/include/qt6/QtCore/QFileInfo /usr/include/qt6/QtGui/QFontDatabase \
+ /usr/include/qt6/QtCore/QJsonArray /usr/include/qt6/QtCore/qjsonarray.h \
  /usr/include/qt6/QtCore/qjsonvalue.h \
  /usr/include/qt6/QtCore/qcborvalue.h \
  /usr/include/qt6/QtCore/qcborcommon.h \
@@ -446,17 +451,23 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/qabstractslider.h \
  /usr/include/qt6/QtWidgets/qstyle.h /usr/include/qt6/QtWidgets/qtabbar.h \
  /usr/include/qt6/QtWidgets/qrubberband.h \
- /usr/include/qt6/QtWidgets/QMessageBox \
+ /usr/include/qt6/QtWidgets/QMenu /usr/include/qt6/QtWidgets/QMessageBox \
  /usr/include/qt6/QtWidgets/qmessagebox.h \
  /usr/include/qt6/QtWidgets/qdialogbuttonbox.h \
+ /usr/include/qt6/QtGui/QMouseEvent \
+ /usr/include/qt6/QtWidgets/QPushButton \
+ /usr/include/qt6/QtWidgets/qpushbutton.h /usr/include/qt6/QtCore/QPoint \
  /usr/include/qt6/QtCore/QProcess /usr/include/qt6/QtCore/qprocess.h \
  /usr/include/qt6/QtCore/QRegularExpression \
+ /usr/include/qt6/QtCore/QSaveFile /usr/include/qt6/QtCore/qsavefile.h \
  /usr/include/qt6/QtCore/QSettings /usr/include/qt6/QtCore/qsettings.h \
  /usr/include/qt6/QtWidgets/QSplitter \
  /usr/include/qt6/QtWidgets/qsplitter.h \
  /usr/include/qt6/QtWidgets/QStatusBar \
  /usr/include/qt6/QtWidgets/QTabWidget \
- /usr/include/qt6/QtGui/QTextDocument /usr/include/qt6/QtWidgets/QToolBar \
+ /usr/include/qt6/QtGui/QTextCharFormat \
+ /usr/include/qt6/QtGui/QTextCursor /usr/include/qt6/QtGui/QTextDocument \
+ /usr/include/qt6/QtWidgets/QToolBar \
  /usr/include/qt6/QtWidgets/qtoolbar.h \
  /usr/include/qt6/QtWidgets/QVBoxLayout \
  /usr/include/qt6/QtWidgets/qboxlayout.h \

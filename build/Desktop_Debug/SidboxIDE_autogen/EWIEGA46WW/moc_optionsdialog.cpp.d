@@ -1,5 +1,5 @@
-/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_optionsdialog.cpp: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.h \
-  /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h \
+/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_optionsdialog.cpp: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.h \
+  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h \
   /usr/include/alloca.h \
   /usr/include/asm-generic/bitsperlong.h \
   /usr/include/asm-generic/errno-base.h \
@@ -301,7 +301,6 @@
   /usr/include/linux/types.h \
   /usr/include/locale.h \
   /usr/include/pthread.h \
-  /usr/include/qt6/QtCore/QString \
   /usr/include/qt6/QtCore/q17memory.h \
   /usr/include/qt6/QtCore/q20bit.h \
   /usr/include/qt6/QtCore/q20functional.h \

@@ -1,4 +1,4 @@
-# Install script for directory: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+# Install script for directory: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -49,7 +49,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
          FILE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/SidboxIDE"
          RPATH "\$ORIGIN:\$ORIGIN/../lib64")
   endif()
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE")
   if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/SidboxIDE" AND
      NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/SidboxIDE")
     file(RPATH_CHANGE
@@ -63,13 +63,13 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  include("/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/.qt/deploy_SidboxIDE_7f87633aea.cmake")
+  include("/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/.qt/deploy_SidboxIDE_7f87633aea.cmake")
 endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/install_local_manifest.txt"
+  file(WRITE "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()
 if(CMAKE_INSTALL_COMPONENT)
@@ -85,6 +85,6 @@ else()
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

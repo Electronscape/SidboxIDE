@@ -6,7 +6,7 @@
     /* MAGIC */
 	.section .header, "a", %progbits
 	.align 2
-	.ascii "SBAPX502"    /* Exactly 8 bytes, no null terminator */
+	.ascii "SBAPX5O2"    /* Exactly 8 bytes, no null terminator */
 
 
     /* Optional vector table (kept if you want it) */

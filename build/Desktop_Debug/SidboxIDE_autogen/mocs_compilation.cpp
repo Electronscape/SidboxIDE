@@ -3,3 +3,4 @@
 #include "EWIEGA46WW/moc_csyntaxhighlighter.cpp"
 #include "EWIEGA46WW/moc_mainwindow.cpp"
 #include "EWIEGA46WW/moc_optionsdialog.cpp"
+#include "EWIEGA46WW/moc_projectsettingsdialog.cpp"

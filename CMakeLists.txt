@@ -14,6 +14,8 @@ qt_add_executable(SidboxIDE
     csyntaxhighlighter.h
     optionsdialog.cpp
     optionsdialog.h
+    projectsettingsdialog.cpp
+    projectsettingsdialog.h
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui

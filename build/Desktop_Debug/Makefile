@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug
+CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -132,9 +132,9 @@ install/strip/fast: preinstall/fast
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -344,6 +344,30 @@ optionsdialog.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.s
 .PHONY : optionsdialog.cpp.s
 
+projectsettingsdialog.o: projectsettingsdialog.cpp.o
+.PHONY : projectsettingsdialog.o
+
+# target to build an object file
+projectsettingsdialog.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o
+.PHONY : projectsettingsdialog.cpp.o
+
+projectsettingsdialog.i: projectsettingsdialog.cpp.i
+.PHONY : projectsettingsdialog.i
+
+# target to preprocess a source file
+projectsettingsdialog.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.i
+.PHONY : projectsettingsdialog.cpp.i
+
+projectsettingsdialog.s: projectsettingsdialog.cpp.s
+.PHONY : projectsettingsdialog.s
+
+# target to generate assembly for a file
+projectsettingsdialog.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.s
+.PHONY : projectsettingsdialog.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -377,6 +401,9 @@ help:
 	@echo "... optionsdialog.o"
 	@echo "... optionsdialog.i"
 	@echo "... optionsdialog.s"
+	@echo "... projectsettingsdialog.o"
+	@echo "... projectsettingsdialog.i"
+	@echo "... projectsettingsdialog.s"
 .PHONY : help
 
 

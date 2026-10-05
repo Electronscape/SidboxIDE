@@ -2,9 +2,7 @@
 #define OPTIONSDIALOG_H
 
 #include <QDialog>
-#include <QString>
 
-class QLineEdit;
 class QSpinBox;
 
 class OptionsDialog : public QDialog
@@ -14,15 +12,11 @@ class OptionsDialog : public QDialog
 public:
     explicit OptionsDialog(QWidget *parent = nullptr);
 
-    QString linkerScriptPath() const;
-    void setLinkerScriptPath(const QString &path);
-
-    int modSizeKb() const;
-    void setModSizeKb(int sizeKb);
+    int editorFontPointSize() const;
+    void setEditorFontPointSize(int pointSize);
 
 private:
-    QLineEdit *m_linkerScriptEdit;
-    QSpinBox *m_modSizeSpinBox;
+    QSpinBox *m_fontSizeSpinBox;
 };
 
 #endif // OPTIONSDIALOG_H

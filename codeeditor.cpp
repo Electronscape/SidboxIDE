@@ -9,12 +9,41 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QKeyEvent>
+#include <QPainter>
+#include <QColor>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QStringListModel>
+#include <QTextBlock>
+#include <QTextEdit>
 #include <QTextStream>
+#include <QWidget>
 
 namespace {
+class LineNumberArea : public QWidget
+{
+public:
+    explicit LineNumberArea(CodeEditor *editor)
+        : QWidget(editor)
+        , m_editor(editor)
+    {
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(m_editor->lineNumberAreaWidth(), 0);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        m_editor->lineNumberAreaPaintEvent(event);
+    }
+
+private:
+    CodeEditor *m_editor;
+};
+
 QString functionNameFromSignature(const QString &signature)
 {
     const int parenIndex = signature.indexOf(QLatin1Char('('));
@@ -70,6 +99,7 @@ QString placeholderForArgument(const QString &argument, int index)
 
 CodeEditor::CodeEditor(QWidget *parent)
     : QPlainTextEdit(parent)
+    , m_lineNumberArea(new LineNumberArea(this))
     , m_highlighter(new CSyntaxHighlighter(document()))
     , m_completer(new QCompleter(this))
     , m_completionModel(new QStringListModel(this))
@@ -81,10 +111,17 @@ CodeEditor::CodeEditor(QWidget *parent)
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
     document()->setModified(false);
 
+    connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
+    connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
+    connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
+    updateLineNumberAreaWidth(0);
+    highlightCurrentLine();
+
     m_completer->setModel(m_completionModel);
     m_completer->setWidget(this);
     m_completer->setCaseSensitivity(Qt::CaseInsensitive);
     m_completer->setCompletionMode(QCompleter::PopupCompletion);
+    m_completer->popup()->setFont(fixedFont);
     m_completer->setWrapAround(false);
 
     connect(m_completer, qOverload<const QString &>(&QCompleter::activated), this, [this](const QString &completion) {
@@ -149,6 +186,47 @@ bool CodeEditor::saveAs(const QString &path)
     return true;
 }
 
+int CodeEditor::lineNumberAreaWidth() const
+{
+    int digits = 1;
+    int max = qMax(1, blockCount());
+    while (max >= 10) {
+        max /= 10;
+        ++digits;
+    }
+
+    return 12 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+}
+
+void CodeEditor::refreshLineNumberAreaWidth()
+{
+    updateLineNumberAreaWidth(0);
+}
+
+void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
+{
+    QPainter painter(m_lineNumberArea);
+    painter.fillRect(event->rect(), QColor(0, 0, 0));
+
+    QTextBlock block = firstVisibleBlock();
+    int blockNumber = block.blockNumber();
+    int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+    int bottom = top + qRound(blockBoundingRect(block).height());
+
+    while (block.isValid() && top <= event->rect().bottom()) {
+        if (block.isVisible() && bottom >= event->rect().top()) {
+            const QString number = QString::number(blockNumber + 1);
+            painter.setPen(QColor(0, 255, 64));
+            painter.drawText(0, top, m_lineNumberArea->width() - 6, fontMetrics().height(), Qt::AlignRight, number);
+        }
+
+        block = block.next();
+        top = bottom;
+        bottom = top + qRound(blockBoundingRect(block).height());
+        ++blockNumber;
+    }
+}
+
 void CodeEditor::focusInEvent(QFocusEvent *event)
 {
     if (m_completer) {
@@ -204,6 +282,48 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     completionRect.setWidth(m_completer->popup()->sizeHintForColumn(0)
                             + m_completer->popup()->verticalScrollBar()->sizeHint().width());
     m_completer->complete(completionRect);
+}
+
+void CodeEditor::resizeEvent(QResizeEvent *event)
+{
+    QPlainTextEdit::resizeEvent(event);
+
+    const QRect contents = contentsRect();
+    m_lineNumberArea->setGeometry(QRect(contents.left(), contents.top(), lineNumberAreaWidth(), contents.height()));
+}
+
+void CodeEditor::updateLineNumberAreaWidth(int)
+{
+    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+}
+
+void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
+{
+    if (dy) {
+        m_lineNumberArea->scroll(0, dy);
+    } else {
+        m_lineNumberArea->update(0, rect.y(), m_lineNumberArea->width(), rect.height());
+    }
+
+    if (rect.contains(viewport()->rect())) {
+        updateLineNumberAreaWidth(0);
+    }
+}
+
+void CodeEditor::highlightCurrentLine()
+{
+    QList<QTextEdit::ExtraSelection> selections;
+
+    if (!isReadOnly()) {
+        QTextEdit::ExtraSelection selection;
+        selection.format.setBackground(palette().alternateBase().color().lighter(106));
+        selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+        selection.cursor = textCursor();
+        selection.cursor.clearSelection();
+        selections.append(selection);
+    }
+
+    setExtraSelections(selections);
 }
 
 QString CodeEditor::textUnderCursor() const

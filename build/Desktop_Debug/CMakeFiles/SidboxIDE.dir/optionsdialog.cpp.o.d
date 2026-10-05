@@ -1,7 +1,7 @@
 CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.h \
  /usr/include/qt6/QtWidgets/QDialog /usr/include/qt6/QtWidgets/qdialog.h \
  /usr/include/qt6/QtWidgets/qtwidgetsglobal.h \
  /usr/include/qt6/QtGui/qtguiglobal.h /usr/include/qt6/QtCore/qglobal.h \
@@ -362,40 +362,17 @@ CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o: \
  /usr/include/qt6/QtGui/qfontvariableaxis.h \
  /usr/include/qt6/QtWidgets/qsizepolicy.h \
  /usr/include/qt6/QtGui/qcursor.h /usr/include/qt6/QtGui/qbitmap.h \
- /usr/include/qt6/QtCore/QString \
  /usr/include/qt6/QtWidgets/QDialogButtonBox \
  /usr/include/qt6/QtWidgets/qdialogbuttonbox.h \
- /usr/include/qt6/QtWidgets/QFileDialog \
- /usr/include/qt6/QtWidgets/qfiledialog.h /usr/include/qt6/QtCore/qdir.h \
- /usr/include/qt6/QtCore/qdirlisting.h \
- /usr/include/qt6/QtCore/qfiledevice.h \
- /usr/include/qt6/QtCore/qiodevice.h /usr/include/c++/16/filesystem \
- /usr/include/c++/16/bits/fs_fwd.h /usr/include/c++/16/bits/fs_path.h \
- /usr/include/c++/16/iomanip /usr/include/c++/16/bits/quoted_string.h \
- /usr/include/c++/16/codecvt /usr/include/c++/16/bits/fs_dir.h \
- /usr/include/c++/16/bits/fs_ops.h /usr/include/qt6/QtCore/qdatetime.h \
- /usr/include/qt6/QtCore/qcalendar.h /usr/include/qt6/QtCore/qlocale.h \
- /usr/include/qt6/QtCore/qfile.h /usr/include/qt6/QtCore/qfileinfo.h \
- /usr/include/qt6/QtCore/qtimezone.h /usr/include/qt6/QtCore/qurl.h \
  /usr/include/qt6/QtWidgets/QFormLayout \
  /usr/include/qt6/QtWidgets/qformlayout.h \
  /usr/include/qt6/QtWidgets/QLayout /usr/include/qt6/QtWidgets/qlayout.h \
  /usr/include/qt6/QtWidgets/qlayoutitem.h \
  /usr/include/qt6/QtWidgets/qboxlayout.h \
  /usr/include/qt6/QtWidgets/qgridlayout.h \
- /usr/include/qt6/QtWidgets/QHBoxLayout \
- /usr/include/qt6/QtWidgets/QLineEdit \
- /usr/include/qt6/QtWidgets/qlineedit.h \
- /usr/include/qt6/QtWidgets/qframe.h /usr/include/qt6/QtGui/qtextcursor.h \
- /usr/include/qt6/QtGui/qtextdocument.h \
- /usr/include/qt6/QtGui/qtextformat.h /usr/include/qt6/QtGui/qpen.h \
- /usr/include/qt6/QtGui/qtextoption.h \
- /usr/include/qt6/QtWidgets/QPushButton \
- /usr/include/qt6/QtWidgets/qpushbutton.h \
- /usr/include/qt6/QtWidgets/qabstractbutton.h \
  /usr/include/qt6/QtWidgets/QSpinBox \
  /usr/include/qt6/QtWidgets/qspinbox.h \
  /usr/include/qt6/QtWidgets/qabstractspinbox.h \
  /usr/include/qt6/QtGui/qvalidator.h \
  /usr/include/qt6/QtCore/qregularexpression.h \
- /usr/include/qt6/QtWidgets/QVBoxLayout
+ /usr/include/qt6/QtCore/qlocale.h /usr/include/qt6/QtWidgets/QVBoxLayout

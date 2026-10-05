@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug
+CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug
 
 # Utility rule file for SidboxIDE_autogen.
 
@@ -71,9 +71,9 @@ CMakeFiles/SidboxIDE_autogen: SidboxIDE_autogen/timestamp
 SidboxIDE_autogen/timestamp: /usr/lib64/qt6/libexec/moc
 SidboxIDE_autogen/timestamp: /usr/lib64/qt6/libexec/uic
 SidboxIDE_autogen/timestamp: CMakeFiles/SidboxIDE_autogen.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Automatic MOC and UIC for target SidboxIDE"
-	/usr/bin/cmake -E cmake_autogen /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/AutogenInfo.json Debug
-	/usr/bin/cmake -E touch /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/timestamp
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Automatic MOC and UIC for target SidboxIDE"
+	/usr/bin/cmake -E cmake_autogen /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/AutogenInfo.json Debug
+	/usr/bin/cmake -E touch /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/timestamp
 
 CMakeFiles/SidboxIDE_autogen.dir/codegen:
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/codegen
@@ -92,6 +92,6 @@ CMakeFiles/SidboxIDE_autogen.dir/clean:
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/clean
 
 CMakeFiles/SidboxIDE_autogen.dir/depend:
-	cd /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE_autogen
+	cd /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE_autogen
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/depend
 

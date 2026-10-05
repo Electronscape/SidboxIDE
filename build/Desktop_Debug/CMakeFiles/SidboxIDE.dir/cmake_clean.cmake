@@ -15,6 +15,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o.d"
   "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o"
   "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o.d"
+  "CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o"
+  "CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o.d"
   "SidboxIDE"
   "SidboxIDE.pdb"
 )

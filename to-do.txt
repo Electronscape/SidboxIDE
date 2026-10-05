@@ -1,0 +1,53 @@
+F1 should have a "quick tip" a status bar at the bottom, just above the output window
+that if for example "SBOS_CreateWindow" it shows "SBOSCreateWindow(*winid, x, y, w, h, title, flags)"
+this needs to work for all the api's so would need something that would read the api folder and catalog them
+again a auto complete hitting tab, adds to the auto complete popup too 
+also the popup intellisense needs to have a mono spaced font too
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+----------------------[ DONE ] ----------------------------------------------------------------------------------------
+line numbers on the left of the code editor
+
+
+the ld file should be a default located in the idelibs (these are meant to be the source so programmers can edit these)
+however they're designed to be pulled in from the IDE, as well as the coreapi "api"
+
+- libraries are where the libraries are stored for things like the 3dlib, raycastlib, other libs i create.
+
+- tools is where the compiler is stored (our gcc from stelectronics, it contains the bare minimum for compiling for the sidbox)
+
+- /idelibs/api/applet.s is the startup asm
+  /idelibs/api/toolchain.mk is where things are pulled in from
+
+the IDE should keep the source files from the project where they are.
+
+essentially a programmer writes their c files in a directory they choose
+but the IDE uses the compiler, libs, api stuff. they should not be copied from the IDE to the programmers project files.
+
+the idea here is that the IDE makes things as painless for the coder, all the settings governing the .LD for games or gui mode be in the options.
+
+build outputs should be in the same folder the .proj file is.
+options are the general options for the IDE, font settings, colours....
+
+the "project settings" button contains the settings surrounding the project,
+mod size, project type  (gui, game)
+
+the button, NEW, needs to be able to choose between new project or a new .c file.
+when a NEW project is wanted, any unsaved work needs to be written, so a confirm box is needed
+THEN a new project will ask the programmer "is this gui, or a game" which can be changed in the project settings.
+

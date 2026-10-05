@@ -29,10 +29,12 @@ public:
 
 private:
     void setupInterface();
+    void createNewProject();
     void createNewSourceFile();
     void openProject();
-    void saveProject();
+    bool saveProject();
     void showOptions();
+    void showProjectSettings();
     void compileActiveFile();
     void openProjectFile(QListWidgetItem *item);
     void handleCompilerFinished(int exitCode);
@@ -41,6 +43,7 @@ private:
     CodeEditor *createEditor(const QString &filePath = QString());
     bool openFile(const QString &filePath);
     bool saveEditor(CodeEditor *editor);
+    bool saveModifiedWorkBeforeNewProject();
     bool loadProjectFile(const QString &filePath);
     bool saveProjectFile(const QString &filePath);
     void addProjectFile(const QString &filePath);
@@ -56,8 +59,37 @@ private:
     QStringList functionSignaturesFromText(const QString &text) const;
     QString toProjectRelativePath(const QString &filePath) const;
     QString fromProjectRelativePath(const QString &filePath) const;
+    QString ideLibsPath() const;
+    QString defaultLinkerScriptPath(const QString &projectType = QString()) const;
+    QString projectLinkerScriptPath() const;
+    QString effectiveLinkerScriptPath() const;
+    bool updateProjectLinkerScript(QString *errorMessage = nullptr) const;
+    QString compilerPath() const;
+    QString objcopyPath() const;
+    QStringList sidboxApiSourceFiles() const;
+    QStringList sidboxLibraryFiles() const;
+    enum class OutputKind {
+        Normal,
+        Header,
+        Path,
+        Success,
+        Error,
+        Warning,
+        Muted
+    };
+
+    void applyEditorFont();
+    void appendOutputText(const QString &text, OutputKind kind);
+    void appendOutputLine(const QString &text, OutputKind kind);
     void loadOptions();
     void saveOptions() const;
+
+    enum class BuildStep {
+        None,
+        Linking,
+        Asm,
+        Objcopy
+    };
 
     Ui::MainWindow *ui;
     QListWidget *m_projectFiles;
@@ -65,10 +97,16 @@ private:
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;
     QProcess *m_compilerProcess;
+    BuildStep m_buildStep;
+    QString m_pendingElfPath;
+    QString m_pendingAsmPath;
+    QString m_pendingAppPath;
     QString m_projectPath;
     QString m_projectFilePath;
     QStringList m_projectFilesInProject;
     QString m_linkerScriptPath;
+    QString m_projectType;
     int m_modSizeKb;
+    int m_editorFontPointSize;
 };
 #endif // MAINWINDOW_H

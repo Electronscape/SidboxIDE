@@ -54,10 +54,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug
+CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -88,14 +88,14 @@ CMakeFiles/SidboxIDE.dir/all: CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/al
 CMakeFiles/SidboxIDE.dir/all: CMakeFiles/SidboxIDE_autogen.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=1,2,3,4,5,6,7 "Built target SidboxIDE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=1,2,3,4,5,6,7,8 "Built target SidboxIDE"
 .PHONY : CMakeFiles/SidboxIDE.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/SidboxIDE.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 8
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 9
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/SidboxIDE.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
 .PHONY : CMakeFiles/SidboxIDE.dir/rule
 
 # Convenience name for target.
@@ -106,7 +106,7 @@ SidboxIDE: CMakeFiles/SidboxIDE.dir/rule
 CMakeFiles/SidboxIDE.dir/codegen: CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all
 CMakeFiles/SidboxIDE.dir/codegen: CMakeFiles/SidboxIDE_autogen.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE.dir/build.make CMakeFiles/SidboxIDE.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=1,2,3,4,5,6,7 "Finished codegen for target SidboxIDE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=1,2,3,4,5,6,7,8 "Finished codegen for target SidboxIDE"
 .PHONY : CMakeFiles/SidboxIDE.dir/codegen
 
 # clean rule for target.
@@ -121,14 +121,14 @@ CMakeFiles/SidboxIDE.dir/clean:
 CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/build.make CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/build.make CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num= "Built target SidboxIDE_autogen_timestamp_deps"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num= "Built target SidboxIDE_autogen_timestamp_deps"
 .PHONY : CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
 .PHONY : CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/rule
 
 # Convenience name for target.
@@ -138,7 +138,7 @@ SidboxIDE_autogen_timestamp_deps: CMakeFiles/SidboxIDE_autogen_timestamp_deps.di
 # codegen rule for target.
 CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/build.make CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num= "Finished codegen for target SidboxIDE_autogen_timestamp_deps"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num= "Finished codegen for target SidboxIDE_autogen_timestamp_deps"
 .PHONY : CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/codegen
 
 # clean rule for target.
@@ -153,14 +153,14 @@ CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/clean:
 CMakeFiles/SidboxIDE_autogen.dir/all: CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen.dir/build.make CMakeFiles/SidboxIDE_autogen.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen.dir/build.make CMakeFiles/SidboxIDE_autogen.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=8 "Built target SidboxIDE_autogen"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=9 "Built target SidboxIDE_autogen"
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/SidboxIDE_autogen.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 1
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 1
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/SidboxIDE_autogen.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles 0
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/rule
 
 # Convenience name for target.
@@ -170,7 +170,7 @@ SidboxIDE_autogen: CMakeFiles/SidboxIDE_autogen.dir/rule
 # codegen rule for target.
 CMakeFiles/SidboxIDE_autogen.dir/codegen: CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/SidboxIDE_autogen.dir/build.make CMakeFiles/SidboxIDE_autogen.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=8 "Finished codegen for target SidboxIDE_autogen"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles --progress-num=9 "Finished codegen for target SidboxIDE_autogen"
 .PHONY : CMakeFiles/SidboxIDE_autogen.dir/codegen
 
 # clean rule for target.

@@ -8,12 +8,13 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp" "CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o.d"
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp" "CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o.d"
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp" "CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o.d"
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp" "CMakeFiles/SidboxIDE.dir/main.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/main.cpp.o.d"
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp" "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o.d"
-  "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp" "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp" "CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/SidboxIDE_autogen/mocs_compilation.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp" "CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/codeeditor.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp" "CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp" "CMakeFiles/SidboxIDE.dir/main.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/main.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp" "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp" "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/optionsdialog.cpp.o.d"
+  "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp" "CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o" "gcc" "CMakeFiles/SidboxIDE.dir/projectsettingsdialog.cpp.o.d"
   "" "SidboxIDE" "gcc" "CMakeFiles/SidboxIDE.dir/link.d"
   )
 

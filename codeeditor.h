@@ -7,7 +7,10 @@
 
 class CSyntaxHighlighter;
 class QCompleter;
+class QPaintEvent;
+class QResizeEvent;
 class QStringListModel;
+class QWidget;
 
 class CodeEditor : public QPlainTextEdit
 {
@@ -25,15 +28,24 @@ public:
     bool save();
     bool saveAs(const QString &path);
 
+    int lineNumberAreaWidth() const;
+    void refreshLineNumberAreaWidth();
+    void lineNumberAreaPaintEvent(QPaintEvent *event);
+
 protected:
     void focusInEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
+    void updateLineNumberAreaWidth(int newBlockCount);
+    void updateLineNumberArea(const QRect &rect, int dy);
+    void highlightCurrentLine();
     QString textUnderCursor() const;
     void insertFunctionCompletion(const QString &signature);
     void selectArgument(int index);
 
+    QWidget *m_lineNumberArea;
     QString m_filePath;
     CSyntaxHighlighter *m_highlighter;
     QCompleter *m_completer;

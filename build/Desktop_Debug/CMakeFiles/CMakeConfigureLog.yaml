@@ -160,7 +160,7 @@ events:
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
       
       The CXX compiler identification is GNU, found in:
-        /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CompilerIdCXX/a.out
+        /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CompilerIdCXX/a.out
       
   -
     kind: "find-v1"
@@ -804,8 +804,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC"
-      binary: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC"
+      source: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase"
+      binary: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase"
     cmakeVariables:
       CMAKE_CXX_FLAGS: ""
       CMAKE_CXX_FLAGS_DEBUG: "-g"
@@ -816,13 +816,13 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC'
+        Change Dir: '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase'
         
-        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_81575/fast
-        /usr/bin/gmake  -f CMakeFiles/cmTC_81575.dir/build.make CMakeFiles/cmTC_81575.dir/build
-        gmake[1]: Entering directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC'
-        Building CXX object CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o
-        /usr/bin/g++   -v -o CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_68907/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_68907.dir/build.make CMakeFiles/cmTC_68907.dir/build
+        gmake[1]: Entering directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase'
+        Building CXX object CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o
+        /usr/bin/g++   -v -o CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp
         Using built-in specs.
         COLLECT_GCC=/usr/bin/g++
         OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa
@@ -832,8 +832,8 @@ events:
         Thread model: posix
         Supported LTO compression algorithms: zlib zstd
         gcc version 16.2.1 20260819 (Red Hat 16.2.1-2) (GCC) 
-        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/'
-         /usr/libexec/gcc/x86_64-redhat-linux/16/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_81575.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -mtls-dialect=gnu2 -version -o /tmp/ccj8XksM.s
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/'
+         /usr/libexec/gcc/x86_64-redhat-linux/16/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_68907.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -mtls-dialect=gnu2 -version -o /tmp/ccVF0n77.s
         GNU C++20 (GCC) version 16.2.1 20260819 (Red Hat 16.2.1-2) (x86_64-redhat-linux)
         	compiled by GNU C version 16.2.1 20260819 (Red Hat 16.2.1-2), GMP version 6.3.0, MPFR version 4.2.2, MPC version 1.4.1, isl version isl-0.24-GMP
         
@@ -850,14 +850,14 @@ events:
          /usr/include
         End of search list.
         Compiler executable checksum: 65ab9aa42e0ee60985a3e473fe6610c4
-        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/'
-         as -v --64 -o CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccj8XksM.s
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/'
+         as -v --64 -o CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccVF0n77.s
         GNU assembler version 2.46.1 (x86_64-redhat-linux) using BFD version version 2.46.1-1.fc44
         COMPILER_PATH=/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/:/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/
         LIBRARY_PATH=/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../:/lib/:/usr/lib/
-        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.'
-        Linking CXX executable cmTC_81575
-        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_81575.dir/link.txt --verbose=1
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_68907
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_68907.dir/link.txt --verbose=1
         Using built-in specs.
         COLLECT_GCC=/usr/bin/g++
         COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper
@@ -870,14 +870,14 @@ events:
         gcc version 16.2.1 20260819 (Red Hat 16.2.1-2) (GCC) 
         COMPILER_PATH=/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/:/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/
         LIBRARY_PATH=/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../:/lib/:/usr/lib/
-        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_81575' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_81575.'
-         /usr/libexec/gcc/x86_64-redhat-linux/16/collect2 -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccdPqyAr.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_81575 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_68907' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_68907.'
+         /usr/libexec/gcc/x86_64-redhat-linux/16/collect2 -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccazIuMQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_68907 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o
         collect2 version 16.2.1 20260819 (Red Hat 16.2.1-2)
-        /usr/bin/ld -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccdPqyAr.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_81575 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o
+        /usr/bin/ld -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccazIuMQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_68907 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o
         GNU ld version 2.46.1-1.fc44
-        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_81575' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_81575.'
-        /usr/bin/g++  -v -Wl,-v CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_81575
-        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC'
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_68907' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_68907.'
+        /usr/bin/g++  -v -Wl,-v CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_68907
+        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase'
         
       exitCode: 0
   -
@@ -916,13 +916,13 @@ events:
       Parsed CXX implicit link information:
         link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
         linker tool regex: [^[ 	]*(->|"|[0-9]+>[ 	-]*Build:[ 	0-9]+ ms[ 	]*)?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
-        ignore line: [Change Dir: '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC']
+        ignore line: [Change Dir: '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase']
         ignore line: []
-        ignore line: [Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_81575/fast]
-        ignore line: [/usr/bin/gmake  -f CMakeFiles/cmTC_81575.dir/build.make CMakeFiles/cmTC_81575.dir/build]
-        ignore line: [gmake[1]: Entering directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-dLHIfC']
-        ignore line: [Building CXX object CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o]
-        ignore line: [/usr/bin/g++   -v -o CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_68907/fast]
+        ignore line: [/usr/bin/gmake  -f CMakeFiles/cmTC_68907.dir/build.make CMakeFiles/cmTC_68907.dir/build]
+        ignore line: [gmake[1]: Entering directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-DO2Ase']
+        ignore line: [Building CXX object CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/usr/bin/g++   -v -o CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
         ignore line: [Using built-in specs.]
         ignore line: [COLLECT_GCC=/usr/bin/g++]
         ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa]
@@ -932,8 +932,8 @@ events:
         ignore line: [Thread model: posix]
         ignore line: [Supported LTO compression algorithms: zlib zstd]
         ignore line: [gcc version 16.2.1 20260819 (Red Hat 16.2.1-2) (GCC) ]
-        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/']
-        ignore line: [ /usr/libexec/gcc/x86_64-redhat-linux/16/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_81575.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -mtls-dialect=gnu2 -version -o /tmp/ccj8XksM.s]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/']
+        ignore line: [ /usr/libexec/gcc/x86_64-redhat-linux/16/cc1plus -quiet -v -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_68907.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -mtls-dialect=gnu2 -version -o /tmp/ccVF0n77.s]
         ignore line: [GNU C++20 (GCC) version 16.2.1 20260819 (Red Hat 16.2.1-2) (x86_64-redhat-linux)]
         ignore line: [	compiled by GNU C version 16.2.1 20260819 (Red Hat 16.2.1-2)  GMP version 6.3.0  MPFR version 4.2.2  MPC version 1.4.1  isl version isl-0.24-GMP]
         ignore line: []
@@ -950,14 +950,14 @@ events:
         ignore line: [ /usr/include]
         ignore line: [End of search list.]
         ignore line: [Compiler executable checksum: 65ab9aa42e0ee60985a3e473fe6610c4]
-        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/']
-        ignore line: [ as -v --64 -o CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccj8XksM.s]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccVF0n77.s]
         ignore line: [GNU assembler version 2.46.1 (x86_64-redhat-linux) using BFD version version 2.46.1-1.fc44]
         ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/:/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/]
         ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../:/lib/:/usr/lib/]
-        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.']
-        ignore line: [Linking CXX executable cmTC_81575]
-        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_81575.dir/link.txt --verbose=1]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_68907]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_68907.dir/link.txt --verbose=1]
         ignore line: [Using built-in specs.]
         ignore line: [COLLECT_GCC=/usr/bin/g++]
         ignore line: [COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper]
@@ -970,13 +970,13 @@ events:
         ignore line: [gcc version 16.2.1 20260819 (Red Hat 16.2.1-2) (GCC) ]
         ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/16/:/usr/libexec/gcc/x86_64-redhat-linux/:/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/]
         ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-redhat-linux/16/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/:/lib/../lib64/:/usr/lib/../lib64/:/usr/lib/gcc/x86_64-redhat-linux/16/../../../:/lib/:/usr/lib/]
-        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_81575' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_81575.']
-        link line: [ /usr/libexec/gcc/x86_64-redhat-linux/16/collect2 -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccdPqyAr.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_81575 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_68907' '-foffload-options=-l_GCC_stdc++' '-foffload-options=-l_GCC_m' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-mtls-dialect=gnu2' '-dumpdir' 'cmTC_68907.']
+        link line: [ /usr/libexec/gcc/x86_64-redhat-linux/16/collect2 -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccazIuMQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_68907 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o]
           arg [/usr/libexec/gcc/x86_64-redhat-linux/16/collect2] ==> ignore
           arg [-plugin] ==> ignore
           arg [/usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so] ==> ignore
           arg [-plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper] ==> ignore
-          arg [-plugin-opt=-fresolution=/tmp/ccdPqyAr.res] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccazIuMQ.res] ==> ignore
           arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
           arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
           arg [-plugin-opt=-pass-through=-latomic_asneeded] ==> ignore
@@ -992,7 +992,7 @@ events:
           arg [-dynamic-linker] ==> ignore
           arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
           arg [-o] ==> ignore
-          arg [cmTC_81575] ==> ignore
+          arg [cmTC_68907] ==> ignore
           arg [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o] ==> obj [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o]
           arg [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o] ==> obj [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o]
           arg [/usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o] ==> obj [/usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o]
@@ -1004,7 +1004,7 @@ events:
           arg [-L/lib] ==> dir [/lib]
           arg [-L/usr/lib] ==> dir [/usr/lib]
           arg [-v] ==> ignore
-          arg [CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
           arg [-lstdc++] ==> lib [stdc++]
           arg [-lm] ==> lib [m]
           arg [-lgcc_s] ==> lib [gcc_s]
@@ -1016,7 +1016,7 @@ events:
           arg [/usr/lib/gcc/x86_64-redhat-linux/16/crtend.o] ==> obj [/usr/lib/gcc/x86_64-redhat-linux/16/crtend.o]
           arg [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o] ==> obj [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o]
         ignore line: [collect2 version 16.2.1 20260819 (Red Hat 16.2.1-2)]
-        ignore line: [/usr/bin/ld -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccdPqyAr.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_81575 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_81575.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o]
+        ignore line: [/usr/bin/ld -plugin /usr/libexec/gcc/x86_64-redhat-linux/16/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/16/lto-wrapper -plugin-opt=-fresolution=/tmp/ccazIuMQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-latomic_asneeded -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o cmTC_68907 /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/16/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/16 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L/usr/lib/gcc/x86_64-redhat-linux/16/../../.. -L/lib -L/usr/lib -v CMakeFiles/cmTC_68907.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -latomic_asneeded -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-redhat-linux/16/crtend.o /usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crtn.o]
         linker tool for 'CXX': /usr/bin/ld
         collapse obj [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crt1.o] ==> [/usr/lib64/crt1.o]
         collapse obj [/usr/lib/gcc/x86_64-redhat-linux/16/../../../../lib64/crti.o] ==> [/usr/lib64/crti.o]
@@ -1065,8 +1065,8 @@ events:
       - "build/Desktop_Debug/.qtcreator/cmake-helper/maintenance_tool_provider.cmake:235 (find_package)"
       - "CMakeLists.txt:4 (find_package)"
     directories:
-      source: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ"
-      binary: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ"
+      source: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy"
+      binary: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy"
     cmakeVariables:
       CMAKE_CXX_FLAGS: ""
       CMAKE_CXX_FLAGS_DEBUG: "-g"
@@ -1077,17 +1077,17 @@ events:
       variable: "CMAKE_HAVE_LIBC_PTHREAD"
       cached: true
       stdout: |
-        Change Dir: '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ'
+        Change Dir: '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy'
         
-        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_4b3ca/fast
-        /usr/bin/gmake  -f CMakeFiles/cmTC_4b3ca.dir/build.make CMakeFiles/cmTC_4b3ca.dir/build
-        gmake[1]: Entering directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ'
-        Building CXX object CMakeFiles/cmTC_4b3ca.dir/src.cxx.o
-        /usr/bin/g++ -DCMAKE_HAVE_LIBC_PTHREAD   -o CMakeFiles/cmTC_4b3ca.dir/src.cxx.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ/src.cxx
-        Linking CXX executable cmTC_4b3ca
-        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_4b3ca.dir/link.txt --verbose=1
-        /usr/bin/g++ CMakeFiles/cmTC_4b3ca.dir/src.cxx.o -o cmTC_4b3ca
-        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-ZF7CTQ'
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_92339/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_92339.dir/build.make CMakeFiles/cmTC_92339.dir/build
+        gmake[1]: Entering directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy'
+        Building CXX object CMakeFiles/cmTC_92339.dir/src.cxx.o
+        /usr/bin/g++ -DCMAKE_HAVE_LIBC_PTHREAD   -o CMakeFiles/cmTC_92339.dir/src.cxx.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy/src.cxx
+        Linking CXX executable cmTC_92339
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_92339.dir/link.txt --verbose=1
+        /usr/bin/g++ CMakeFiles/cmTC_92339.dir/src.cxx.o -o cmTC_92339
+        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-1t2Ofy'
         
       exitCode: 0
   -
@@ -1143,35 +1143,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6Config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6Config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -2667,8 +2667,8 @@ events:
     checks:
       - "Performing Test HAVE_STDATOMIC"
     directories:
-      source: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu"
-      binary: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu"
+      source: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu"
+      binary: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu"
     cmakeVariables:
       CMAKE_CXX_FLAGS: ""
       CMAKE_CXX_FLAGS_DEBUG: "-g"
@@ -2679,17 +2679,17 @@ events:
       variable: "HAVE_STDATOMIC"
       cached: true
       stdout: |
-        Change Dir: '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu'
+        Change Dir: '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu'
         
-        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_ba901/fast
-        /usr/bin/gmake  -f CMakeFiles/cmTC_ba901.dir/build.make CMakeFiles/cmTC_ba901.dir/build
-        gmake[1]: Entering directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu'
-        Building CXX object CMakeFiles/cmTC_ba901.dir/src.cxx.o
-        /usr/bin/g++ -DHAVE_STDATOMIC   -o CMakeFiles/cmTC_ba901.dir/src.cxx.o -c /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu/src.cxx
-        Linking CXX executable cmTC_ba901
-        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_ba901.dir/link.txt --verbose=1
-        /usr/bin/g++ CMakeFiles/cmTC_ba901.dir/src.cxx.o -o cmTC_ba901
-        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-qj6zcu'
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_77ab7/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_77ab7.dir/build.make CMakeFiles/cmTC_77ab7.dir/build
+        gmake[1]: Entering directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu'
+        Building CXX object CMakeFiles/cmTC_77ab7.dir/src.cxx.o
+        /usr/bin/g++ -DHAVE_STDATOMIC   -o CMakeFiles/cmTC_77ab7.dir/src.cxx.o -c /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu/src.cxx
+        Linking CXX executable cmTC_77ab7
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_77ab7.dir/link.txt --verbose=1
+        /usr/bin/g++ CMakeFiles/cmTC_77ab7.dir/src.cxx.o -o cmTC_77ab7
+        gmake[1]: Leaving directory '/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/CMakeScratch/TryCompile-5wh2mu'
         
       exitCode: 0
   -
@@ -2748,35 +2748,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6CoreToolsConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6CoreToolsConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6coretools-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6coretools-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6CoreTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6CoreTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6coretools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6coretools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6CoreTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6CoreTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6coretools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6coretools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6CoreTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6CoreTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6coretools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6coretools.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -2860,35 +2860,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6CoreConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6CoreConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6core-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6core-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Core.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6core.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Core.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6core.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Core.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6core.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6core.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -3035,35 +3035,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6GuiToolsConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6GuiToolsConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6guitools-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6guitools-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6GuiTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6GuiTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6guitools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6guitools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6GuiTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6GuiTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6guitools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6guitools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6GuiTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6GuiTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6guitools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6guitools.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -3158,35 +3158,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6WidgetsToolsConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6WidgetsToolsConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6widgetstools-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6widgetstools-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6WidgetsTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6WidgetsTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6widgetstools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6widgetstools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6WidgetsTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6WidgetsTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6widgetstools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6widgetstools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6WidgetsTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6WidgetsTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6widgetstools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6widgetstools.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -4749,35 +4749,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6DBusToolsConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6DBusToolsConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6dbustools-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6dbustools-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6DBusTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6DBusTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6dbustools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6dbustools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6DBusTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6DBusTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6dbustools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6dbustools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6DBusTools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6DBusTools.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6dbustools.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6dbustools.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -4880,35 +4880,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6DBusConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6DBusConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6dbus-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6dbus-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6DBus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6DBus.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6dbus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6dbus.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6DBus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6DBus.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6dbus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6dbus.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6DBus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6DBus.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6dbus.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6dbus.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -5013,35 +5013,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6GuiConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6GuiConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6gui-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6gui-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6gui.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6gui.cps"
         mode: "cps"
         reason: "no_exist"
       -
@@ -5136,35 +5136,35 @@ events:
         CMAKE_FIND_ROOT_PATH_MODE: "BOTH"
     candidates:
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6WidgetsConfig.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/Qt6WidgetsConfig.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6widgets-config.cmake"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/qt6widgets-config.cmake"
         mode: "config"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/Qt6Widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib64/cps/qt6widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/Qt6Widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/lib/cps/qt6widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/Qt6Widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -
-        path: "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6widgets.cps"
+        path: "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/pkgRedirects/share/cps/qt6widgets.cps"
         mode: "cps"
         reason: "no_exist"
       -

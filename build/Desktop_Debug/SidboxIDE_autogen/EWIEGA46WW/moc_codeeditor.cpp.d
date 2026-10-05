@@ -1,5 +1,5 @@
-/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_codeeditor.cpp: /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.h \
-  /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h \
+/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/EWIEGA46WW/moc_codeeditor.cpp: /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.h \
+  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h \
   /usr/include/alloca.h \
   /usr/include/asm-generic/bitsperlong.h \
   /usr/include/asm-generic/errno-base.h \

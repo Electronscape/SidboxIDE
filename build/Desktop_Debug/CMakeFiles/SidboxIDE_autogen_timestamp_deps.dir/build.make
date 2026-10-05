@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE
+CMAKE_SOURCE_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug
+CMAKE_BINARY_DIR = /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug
 
 # Utility rule file for SidboxIDE_autogen_timestamp_deps.
 
@@ -81,6 +81,6 @@ CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/clean:
 .PHONY : CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/clean
 
 CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/depend:
-	cd /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE_autogen_timestamp_deps
+	cd /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/DependInfo.cmake "--color=$(COLOR)" SidboxIDE_autogen_timestamp_deps
 .PHONY : CMakeFiles/SidboxIDE_autogen_timestamp_deps.dir/depend
 

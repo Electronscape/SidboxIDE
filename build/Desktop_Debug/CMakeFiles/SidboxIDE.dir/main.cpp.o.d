@@ -1,7 +1,7 @@
 CMakeFiles/SidboxIDE.dir/main.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.h \
  /usr/include/qt6/QtWidgets/QMainWindow \
  /usr/include/qt6/QtWidgets/qmainwindow.h \
  /usr/include/qt6/QtWidgets/qtwidgetsglobal.h \

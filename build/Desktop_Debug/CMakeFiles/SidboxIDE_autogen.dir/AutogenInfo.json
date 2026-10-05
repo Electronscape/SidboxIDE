@@ -1,19 +1,19 @@
 {
-	"BUILD_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen",
-	"CMAKE_BINARY_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug",
-	"CMAKE_CURRENT_BINARY_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug",
-	"CMAKE_CURRENT_SOURCE_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE",
+	"BUILD_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen",
+	"CMAKE_BINARY_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug",
+	"CMAKE_CURRENT_BINARY_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE",
 	"CMAKE_EXECUTABLE" : "/usr/bin/cmake",
 	"CMAKE_LIST_FILES" : 
 	[
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/CMakeLists.txt",
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/qtcreator-project.cmake",
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/package-manager.cmake",
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CMakeSystem.cmake",
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/maintenance_tool_provider.cmake",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/CMakeLists.txt",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/qtcreator-project.cmake",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/package-manager.cmake",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CMakeSystem.cmake",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/.qtcreator/cmake-helper/maintenance_tool_provider.cmake",
 		"/usr/share/cmake/Modules/CMakeSystemSpecificInitialize.cmake",
 		"/usr/share/cmake/Modules/Platform/Linux-Initialize.cmake",
-		"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CMakeCXXCompiler.cmake",
+		"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/4.3.0/CMakeCXXCompiler.cmake",
 		"/usr/share/cmake/Modules/CMakeSystemSpecificInformation.cmake",
 		"/usr/share/cmake/Modules/CMakeGenericSystem.cmake",
 		"/usr/share/cmake/Modules/CMakeInitializeConfigs.cmake",
@@ -574,40 +574,46 @@
 		"/usr/lib64/cmake/Qt6/Qt6Dependencies.cmake",
 		"/usr/share/cmake/Modules/GNUInstallDirs.cmake"
 	],
-	"CMAKE_SOURCE_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE",
+	"CMAKE_SOURCE_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE",
 	"CROSS_CONFIG" : false,
-	"DEP_FILE" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/deps",
+	"DEP_FILE" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/deps",
 	"DEP_FILE_RULE_NAME" : "SidboxIDE_autogen/timestamp",
 	"HEADERS" : 
 	[
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.h",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.h",
 			"MU",
 			"EWIEGA46WW/moc_codeeditor.cpp",
 			null
 		],
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.h",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.h",
 			"MU",
 			"EWIEGA46WW/moc_csyntaxhighlighter.cpp",
 			null
 		],
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.h",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.h",
 			"MU",
 			"EWIEGA46WW/moc_mainwindow.cpp",
 			null
 		],
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.h",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.h",
 			"MU",
 			"EWIEGA46WW/moc_optionsdialog.cpp",
+			null
+		],
+		[
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.h",
+			"MU",
+			"EWIEGA46WW/moc_projectsettingsdialog.cpp",
 			null
 		]
 	],
 	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
-	"INCLUDE_DIR" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/include",
-	"MOC_COMPILATION_FILE" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp",
+	"INCLUDE_DIR" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/include",
+	"MOC_COMPILATION_FILE" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/mocs_compilation.cpp",
 	"MOC_DEFINITIONS" : [ "QT_CORE_LIB", "QT_GUI_LIB", "QT_QML_DEBUG", "QT_WIDGETS_LIB" ],
 	"MOC_DEPEND_FILTERS" : 
 	[
@@ -649,41 +655,34 @@
 		"-E",
 		"/usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp"
 	],
-	"MOC_PREDEFS_FILE" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h",
+	"MOC_PREDEFS_FILE" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/SidboxIDE_autogen/moc_predefs.h",
 	"MOC_RELAXED_MODE" : false,
 	"MOC_SKIP" : [],
 	"MULTI_CONFIG" : false,
 	"PARALLEL" : 8,
-	"PARSE_CACHE_FILE" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/ParseCache.txt",
+	"PARSE_CACHE_FILE" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/ParseCache.txt",
 	"QT_MOC_EXECUTABLE" : "/usr/lib64/qt6/libexec/moc",
 	"QT_UIC_EXECUTABLE" : "/usr/lib64/qt6/libexec/uic",
 	"QT_VERSION_MAJOR" : 6,
 	"QT_VERSION_MINOR" : 11,
-	"SETTINGS_FILE" : "/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/AutogenUsed.txt",
+	"SETTINGS_FILE" : "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/build/Desktop_Debug/CMakeFiles/SidboxIDE_autogen.dir/AutogenUsed.txt",
 	"SOURCES" : 
 	[
+		[ "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/codeeditor.cpp", "MU", null ],
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/codeeditor.cpp",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp",
+			"MU",
+			null
+		],
+		[ "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/main.cpp", "MU", null ],
+		[ "/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/mainwindow.cpp", "MU", null ],
+		[
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/optionsdialog.cpp",
 			"MU",
 			null
 		],
 		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp",
-			"MU",
-			null
-		],
-		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/main.cpp",
-			"MU",
-			null
-		],
-		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/mainwindow.cpp",
-			"MU",
-			null
-		],
-		[
-			"/mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/optionsdialog.cpp",
+			"/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/projectsettingsdialog.cpp",
 			"MU",
 			null
 		]

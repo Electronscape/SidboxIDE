@@ -1,7 +1,7 @@
 CMakeFiles/SidboxIDE.dir/csyntaxhighlighter.cpp.o: \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.cpp \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.cpp \
  /usr/include/stdc-predef.h \
- /mnt/LinuxDatas/work/sidbox-softwares/SidboxIDE/csyntaxhighlighter.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/csyntaxhighlighter.h \
  /usr/include/qt6/QtCore/QRegularExpression \
  /usr/include/qt6/QtCore/qregularexpression.h \
  /usr/include/qt6/QtCore/qglobal.h /usr/include/c++/16/type_traits \

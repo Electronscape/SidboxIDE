@@ -10,8 +10,8 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     , m_commentEndExpression(QStringLiteral("\\*/"))
 {
     QTextCharFormat keywordFormat;
-    keywordFormat.setForeground(QColor(86, 156, 214));
-    keywordFormat.setFontWeight(QFont::Bold);
+    keywordFormat.setForeground(QColor(255, 255, 0));
+    //keywordFormat.setFontWeight(QFont::Bold);
 
     const QStringList keywordPatterns = {
         QStringLiteral("\\bauto\\b"), QStringLiteral("\\bbreak\\b"), QStringLiteral("\\bcase\\b"),
@@ -34,7 +34,7 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     }
 
     QTextCharFormat preprocessorFormat;
-    preprocessorFormat.setForeground(QColor(197, 134, 192));
+    preprocessorFormat.setForeground(QColor(0, 255, 255));
     m_highlightingRules.append({QRegularExpression(QStringLiteral("^\\s*#\\s*\\w+.*")), preprocessorFormat});
 
     QTextCharFormat quotationFormat;
@@ -43,14 +43,14 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     m_highlightingRules.append({QRegularExpression(QStringLiteral("'([^'\\\\]|\\\\.)*'")), quotationFormat});
 
     QTextCharFormat numberFormat;
-    numberFormat.setForeground(QColor(181, 206, 168));
+    numberFormat.setForeground(QColor(0, 206, 0));
     m_highlightingRules.append({
         QRegularExpression(QStringLiteral("\\b(0[xX][0-9A-Fa-f]+|\\d+(\\.\\d+)?([eE][+-]?\\d+)?)[uUlLfF]*\\b")),
         numberFormat
     });
 
     QTextCharFormat functionFormat;
-    functionFormat.setForeground(QColor(220, 220, 170));
+    functionFormat.setForeground(QColor(220, 220, 255));
     m_highlightingRules.append({QRegularExpression(QStringLiteral("\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()")), functionFormat});
 
     QTextCharFormat singleLineCommentFormat;
