@@ -7,12 +7,17 @@ also the popup intellisense needs to have a mono spaced font too
 
 Features needed: 
   - the file explorer (on the left)
-      1: needs a "add file"
-      2: needs a "create file"
-      3: remove file
-      4: to list the files in the project folder. (with filters, *.c, *.h, *.inc, *.txt, *.md) and have the size of the file in brackets)
-      5: double clicking on the files in the project files, open a tab (it already does this)
-      5: the ability to F2 rename the files using the file explorer
+      1: needs a "add file"    [ DONE ]
+      2: needs a "create file" [ DONE ]
+      3: needs a "remove file" [ DONE ]
+      4: to list the files in the project folder. (with filters, *.c, *.h, *.inc, *.txt, *.md) and have the size of the file in brackets) [ DONE ]
+      5: double clicking on the files in the project files, open a tab (it already does this) [ DONE ]
+      6: the ability to F2 rename the files using the file explorer [ DONE ]
+      7: the folders "folder/file1.c", "folder/file2.c" blah blah, needs to be groupd that can be clicked to drop down
+      8: a right pane, that lists the functions, and global variables. (variables at the top, functions after, both alphabetical order)
+      
+
+
   
   - the project management:
       1: a new project should just create the .proj file, and a standard (gui, or game) main.c .
@@ -25,6 +30,8 @@ Features needed:
         - some keywords loose their colour... eg. for on its own works, but for (int i = 0; i < 10; i++) breaks the colour syntax for "for" 
               happens on if. (some bug fixes)
         - some of the APIs arent showing still
+
+      3: context intellisense, this should allow things like HWKERNAL-> ... it should also popup the options with in the structs
 
 
 

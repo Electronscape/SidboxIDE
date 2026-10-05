@@ -551,6 +551,7 @@ void MainWindow::setupInterface()
 
 
 
+    // --- Left Project Panel ---
     auto *projectPane = new QWidget(mainSplitter);
     projectPane->setMinimumWidth(200); // Prevents resizing the left panel smaller than 200px
 
@@ -614,6 +615,7 @@ void MainWindow::setupInterface()
         menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
     });
 
+    // --- Center Work Area ---
     auto *workAreaSplitter = new QSplitter(Qt::Vertical, mainSplitter);
     m_editorTabs = new QTabWidget(workAreaSplitter);
     m_editorTabs->setDocumentMode(true);
@@ -627,6 +629,38 @@ void MainWindow::setupInterface()
         refreshFunctionCompletions();
     });
 
+    // --- Right Panel (Functions/Variables) ---
+    auto *rightPane = new QWidget(mainSplitter);
+    rightPane->setMinimumWidth(200);
+
+    auto *rightLayout = new QVBoxLayout(rightPane);
+    rightLayout->setContentsMargins(8, 8, 8, 8);
+    rightLayout->setSpacing(6);
+
+    auto *functionLabel = new QLabel(tr("Functions & Variables"), rightPane);
+    m_functionvarList = new QListWidget(rightPane);
+    m_functionvarList->setStyleSheet(QStringLiteral(
+        "QListWidget {"
+        "   border: 1px solid #102048;"
+        "   border-radius: 0px;"
+        "}"
+        "QListWidget::item {"
+        "   border-radius: 0px;"
+        "}"
+        "QListWidget::item:selected {"
+        "   background-color: #2858A8;"
+        "   color: #ffffff;"
+        "}"
+        "QListWidget::item:selected:hover {"
+        "   border: 1px solid #6C80AA;"
+        "   background-color: #2858A8;"
+        "}"
+        ));
+
+    rightLayout->addWidget(functionLabel);
+    rightLayout->addWidget(m_functionvarList, 1);
+
+    // --- Bottom Output Panel ---
     auto *outputPanel = new QWidget(workAreaSplitter);
     auto *outputLayout = new QVBoxLayout(outputPanel);
     outputLayout->setContentsMargins(0, 0, 0, 0);
@@ -667,11 +701,15 @@ void MainWindow::setupInterface()
     workAreaSplitter->setStretchFactor(0, 4);
     workAreaSplitter->setStretchFactor(1, 1);
 
+    // Assembly of main horizontal splitter
     mainSplitter->addWidget(projectPane);
     mainSplitter->addWidget(workAreaSplitter);
+    mainSplitter->addWidget(rightPane);
+
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 5);
-    mainSplitter->setSizes({100, 1600});
+    mainSplitter->setStretchFactor(2, 1);
+    mainSplitter->setSizes({200, 1200, 400});
 
 
 

@@ -109,6 +109,7 @@ private:
     Ui::MainWindow *ui;
     QListWidget *m_projectFiles;
     QTabWidget *m_editorTabs;
+    QListWidget *m_functionvarList;
     QLabel *m_quickTipLabel;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;

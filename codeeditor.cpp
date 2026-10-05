@@ -97,8 +97,7 @@ class LineNumberArea : public QWidget
     }
 }
 
-CodeEditor::CodeEditor(QWidget *parent)
-    : QPlainTextEdit(parent)
+CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     , m_lineNumberArea(new LineNumberArea(this))
     , m_highlighter(new CSyntaxHighlighter(document()))
     , m_completer(new QCompleter(this))
@@ -254,7 +253,7 @@ void CodeEditor::focusInEvent(QFocusEvent *event)
 
 int CodeEditor::indentWidthColumns() const
 {
-    const int spaceWidth = qMax(1, fontMetrics().horizontalAdvance(QLatin1Char(32)));
+    const int spaceWidth = qMax(1, fontMetrics().horizontalAdvance(QLatin1Char(30)));
     return qMax(1, qRound(tabStopDistance() / spaceWidth));
 }
 
