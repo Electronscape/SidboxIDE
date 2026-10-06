@@ -686,6 +686,23 @@ void MainWindow::setupInterface()
 
     connect(m_editorTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget *widget = m_editorTabs->widget(index);
+        auto *editor = qobject_cast<QPlainTextEdit *>(widget);
+        if (editor && editor->document()->isModified())
+        {
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this,
+                tr("Unsaved Changes"),
+                tr("You're about to close an unsaved tab, proceed?"),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+
+            if (reply != QMessageBox::Yes) {
+                return;
+            }
+        }
+
+
+
         m_editorTabs->removeTab(index);
         widget->deleteLater();
         refreshFunctionCompletions();
