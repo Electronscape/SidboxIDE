@@ -31,6 +31,9 @@ public:
     ~MainWindow() override;
 
 private:
+
+    QHash<CodeEditor *, QSet<QString>> m_symbolTreeExpanded;
+    CodeEditor *m_symbolTreeEditor = nullptr;
     void setupInterface();
     void createNewProject();
     void createNewSourceFile();
@@ -46,11 +49,10 @@ private:
     void createProjectFileInDirectory(const QString &directoryPath);
     void createProjectFolderInDirectory(const QString &directoryPath);
     QString projectContextDirectory(QTreeWidgetItem *item) const;
+    void moveProjectFile(const QString &sourceFilePath, const QString &targetDirectory);
     void removeSelectedProjectFile();
     void renameSelectedProjectFile();
     void handleCompilerFinished(int exitCode);
-    void moveProjectFile(const QString &sourceFilePath,
-                         const QString &targetDirectory);
 
     CodeEditor *activeEditor() const;
     CodeEditor *createEditor(const QString &filePath = QString());
@@ -62,6 +64,12 @@ private:
     void addProjectFile(const QString &filePath);
     void clearEditorTabs();
     void refreshProjectFiles();
+    void refreshSymbolTree();
+    void jumpToSymbol(QTreeWidgetItem *item, int column);
+
+    void saveSymbolTreeExpansionState(CodeEditor *editor);
+    void restoreSymbolTreeExpansionState(CodeEditor *editor);
+
     void refreshFunctionCompletions();
     void ensureApiCatalog();
     void refreshApiCatalog();
@@ -116,7 +124,7 @@ private:
     Ui::MainWindow *ui;
     QTreeWidget *m_projectFiles;
     QTabWidget *m_editorTabs;
-    QListWidget *m_functionvarList;
+    QTreeWidget *m_functionvarList;
     QLabel *m_quickTipLabel;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;

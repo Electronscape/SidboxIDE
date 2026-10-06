@@ -29,6 +29,8 @@ class LineNumberArea : public QWidget
         {
         }
 
+
+
         QSize sizeHint() const override
         {
             return QSize(m_editor->lineNumberAreaWidth(), 0);
