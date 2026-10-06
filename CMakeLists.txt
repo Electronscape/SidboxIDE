@@ -36,7 +36,14 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/close_tab.png
         icons/icon.png
         icons/icon.ico
-)
+        icons/tree_folder.png
+        icons/tree_file_c.png
+        icons/tree_file_h.png
+        icons/tree_file_inc.png
+        icons/tree_file_md.png
+        icons/tree_file_unknown.png
+        icons/tree_file_txt.png
+    )
 
 set(CMAKE_AUTORCC ON)
 

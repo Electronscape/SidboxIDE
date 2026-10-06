@@ -12,6 +12,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -47,6 +48,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QStandardPaths>
+#include <functional>
 
 namespace {
 constexpr int ProjectFileVersion = 2;
@@ -414,6 +416,79 @@ void collectApiLineSymbols(QString text, QHash<QString, QString> *tips, QStringL
     }
 }
 
+class ProjectTreeWidget : public QTreeWidget
+{
+public:
+    explicit ProjectTreeWidget(QWidget *parent = nullptr)
+        : QTreeWidget(parent)
+    {
+        setDragEnabled(true);
+        setAcceptDrops(true);
+        viewport()->setAcceptDrops(true);
+        setDropIndicatorShown(true);
+        setDragDropMode(QAbstractItemView::DragDrop);
+        setDefaultDropAction(Qt::MoveAction);
+    }
+
+    std::function<void(const QString &, const QString &)> fileMoveRequested;
+
+protected:
+    void startDrag(Qt::DropActions supportedActions) override
+    {
+        Q_UNUSED(supportedActions);
+
+        QTreeWidgetItem *item = currentItem();
+        if (!item) {
+            return;
+        }
+
+        const bool isFolder = item->data(0, Qt::UserRole + 1).toBool();
+        const QString filePath = item->data(0, Qt::UserRole).toString();
+
+        /* Folder items are drop targets only; they can never be dragged. */
+        if (isFolder || filePath.isEmpty()) {
+            return;
+        }
+
+        m_draggedFilePath = QFileInfo(filePath).absoluteFilePath();
+        QTreeWidget::startDrag(Qt::MoveAction);
+        m_draggedFilePath.clear();
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        if (m_draggedFilePath.isEmpty() || !fileMoveRequested) {
+            event->ignore();
+            return;
+        }
+
+        QString targetDirectory;
+        QTreeWidgetItem *targetItem = itemAt(event->position().toPoint());
+
+        if (targetItem) {
+            const QString targetPath = targetItem->data(0, Qt::UserRole).toString();
+            const bool targetIsFolder = targetItem->data(0, Qt::UserRole + 1).toBool();
+
+            if (!targetPath.isEmpty()) {
+                targetDirectory = targetIsFolder
+                    ? QFileInfo(targetPath).absoluteFilePath()
+                    : QFileInfo(targetPath).absolutePath();
+            }
+        }
+
+        /*
+         * Do not let QTreeWidget perform a cosmetic internal move. MainWindow
+         * moves the real file on disk and then rebuilds the tree instead.
+         */
+        fileMoveRequested(m_draggedFilePath, targetDirectory);
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+    }
+
+private:
+    QString m_draggedFilePath;
+};
+
 class CompilerOutputPane : public QPlainTextEdit
 {
 public:
@@ -520,7 +595,9 @@ void MainWindow::setupInterface()
     setWindowTitle(tr("Sidbox IDE"));
     QIcon icon = QApplication::windowIcon().isNull() ? QIcon(":/icons/icon.png") : QApplication::windowIcon();
     setWindowIcon(icon);
-    resize(1600, 880);
+    //resize(1600, 880);
+    //maximumSize();
+    showMaximized();
 
 
     auto *toolBar = addToolBar(tr("Project"));
@@ -590,7 +667,7 @@ void MainWindow::setupInterface()
 
     // --- Left Project Panel ---
     auto *projectPane = new QWidget(mainSplitter);
-    projectPane->setMinimumWidth(200); // Prevents resizing the left panel smaller than 200px
+    projectPane->setMinimumWidth(300); // Prevents resizing the left panel smaller than 300px
 
     auto *projectLayout = new QVBoxLayout(projectPane);
     projectLayout->setContentsMargins(8, 8, 8, 8);
@@ -598,11 +675,16 @@ void MainWindow::setupInterface()
 
     auto *projectLabel = new QLabel(tr("Files in Project"), projectPane);
 
-    m_projectFiles = new QTreeWidget(projectPane);
+    auto *projectTree = new ProjectTreeWidget(projectPane);
+    m_projectFiles = projectTree;
     m_projectFiles->setHeaderHidden(true);
     m_projectFiles->setRootIsDecorated(true);
     m_projectFiles->setItemsExpandable(true);
     m_projectFiles->setAnimated(false);
+
+    projectTree->fileMoveRequested = [this](const QString &sourceFilePath, const QString &targetDirectory) {
+        moveProjectFile(sourceFilePath, targetDirectory);
+    };
 
     m_projectFiles->setStyleSheet(QStringLiteral(
         "QTreeWidget {"
@@ -649,12 +731,38 @@ void MainWindow::setupInterface()
     connect(removeFileButton, &QPushButton::clicked, this, &MainWindow::removeSelectedProjectFile);
     connect(renameFileAction, &QAction::triggered, this, &MainWindow::renameSelectedProjectFile);
     connect(m_projectFiles, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QTreeWidgetItem *item = m_projectFiles->itemAt(pos);
+
+        if (item) {
+            m_projectFiles->setCurrentItem(item);
+        } else {
+            m_projectFiles->clearSelection();
+        }
+
+        const QString targetDirectory = projectContextDirectory(item);
+
         QMenu menu(this);
+
+        menu.addAction(tr("Create File"), this, [this, targetDirectory]() {
+            createProjectFileInDirectory(targetDirectory);
+        });
+
+        menu.addAction(tr("Create Folder"), this, [this, targetDirectory]() {
+            createProjectFolderInDirectory(targetDirectory);
+        });
+
         menu.addAction(tr("Add File"), this, &MainWindow::addExistingProjectFile);
-        menu.addAction(tr("Create File"), this, &MainWindow::createProjectFile);
-        menu.addSeparator();
-        menu.addAction(tr("Rename"), this, &MainWindow::renameSelectedProjectFile);
-        menu.addAction(tr("Remove"), this, &MainWindow::removeSelectedProjectFile);
+
+        /*
+         * Rename / Remove currently apply to files only.
+         * Folder rename/delete can be added separately later.
+         */
+        if (item && !item->data(0, Qt::UserRole + 1).toBool()) {
+            menu.addSeparator();
+            menu.addAction(tr("Rename"), this, &MainWindow::renameSelectedProjectFile);
+            menu.addAction(tr("Remove"), this, &MainWindow::removeSelectedProjectFile);
+        }
+
         menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
     });
 
@@ -728,7 +836,7 @@ void MainWindow::setupInterface()
 
     // --- Right Panel (Functions/Variables) ---
     auto *rightPane = new QWidget(mainSplitter);
-    rightPane->setMinimumWidth(200);
+    rightPane->setMinimumWidth(300);
 
     auto *rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(8, 8, 8, 8);
@@ -806,7 +914,7 @@ void MainWindow::setupInterface()
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 5);
     mainSplitter->setStretchFactor(2, 1);
-    mainSplitter->setSizes({200, 1200, 400});
+    mainSplitter->setSizes({300, 1200, 300});
 
 
 
@@ -1186,14 +1294,149 @@ void MainWindow::openProjectFile(QTreeWidgetItem *item, int column)
         return;
     }
 
-    const QString filePath = item->data(0, Qt::UserRole).toString();
+    const bool isFolder = item->data(0, Qt::UserRole + 1).toBool();
+    const QString itemPath = item->data(0, Qt::UserRole).toString();
 
-    if (filePath.isEmpty()) {
+    if (isFolder) {
         item->setExpanded(!item->isExpanded());
         return;
     }
 
-    openFile(filePath);
+    if (!itemPath.isEmpty()) {
+        openFile(itemPath);
+    }
+}
+
+QString MainWindow::projectContextDirectory(QTreeWidgetItem *item) const
+{
+    if (m_projectPath.isEmpty()) {
+        return {};
+    }
+
+    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+
+    if (!item) {
+        return projectRoot;
+    }
+
+    const QString itemPath = item->data(0, Qt::UserRole).toString();
+    const bool isFolder = item->data(0, Qt::UserRole + 1).toBool();
+
+    if (itemPath.isEmpty()) {
+        return projectRoot;
+    }
+
+    QString directoryPath = isFolder
+        ? QFileInfo(itemPath).absoluteFilePath()
+        : QFileInfo(itemPath).absolutePath();
+
+    /*
+     * Files which live outside the project can appear as top-level items.
+     * Do not create new project files beside those external files.
+     */
+    if (directoryPath != projectRoot
+        && !directoryPath.startsWith(projectRoot + QDir::separator())) {
+        directoryPath = projectRoot;
+    }
+
+    return directoryPath;
+}
+
+void MainWindow::moveProjectFile(const QString &sourceFilePath, const QString &targetDirectory)
+{
+    if (m_projectPath.isEmpty() || sourceFilePath.isEmpty()) {
+        return;
+    }
+
+    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+    const QString sourcePath = QFileInfo(sourceFilePath).absoluteFilePath();
+
+    /*
+     * External files may appear in the project tree, but dragging should never
+     * silently relocate files from elsewhere on the machine.
+     */
+    if (sourcePath != projectRoot
+        && !sourcePath.startsWith(projectRoot + QDir::separator())) {
+        QMessageBox::information(
+            this,
+            tr("Move File"),
+            tr("Only files inside the project folder can be moved by drag and drop."));
+        refreshProjectFiles();
+        return;
+    }
+
+    QString destinationDirectory = targetDirectory.isEmpty()
+        ? projectRoot
+        : QFileInfo(targetDirectory).absoluteFilePath();
+
+    if (destinationDirectory != projectRoot
+        && !destinationDirectory.startsWith(projectRoot + QDir::separator())) {
+        destinationDirectory = projectRoot;
+    }
+
+    if (!QFileInfo(destinationDirectory).isDir()) {
+        QMessageBox::warning(
+            this,
+            tr("Move File"),
+            tr("The destination folder no longer exists."));
+        refreshProjectFiles();
+        return;
+    }
+
+    const QFileInfo sourceInfo(sourcePath);
+    const QString destinationPath =
+        QFileInfo(QDir(destinationDirectory).filePath(sourceInfo.fileName())).absoluteFilePath();
+
+    /* Dropping onto the current folder is simply a no-op. */
+    if (destinationPath == sourcePath) {
+        refreshProjectFiles();
+        return;
+    }
+
+    if (QFileInfo::exists(destinationPath)) {
+        QMessageBox::warning(
+            this,
+            tr("Move File"),
+            tr("A file named %1 already exists in that folder.").arg(sourceInfo.fileName()));
+        refreshProjectFiles();
+        return;
+    }
+
+    if (!QFile::rename(sourcePath, destinationPath)) {
+        QMessageBox::warning(
+            this,
+            tr("Move File"),
+            tr("Could not move %1 to %2.")
+                .arg(QDir::toNativeSeparators(sourcePath),
+                     QDir::toNativeSeparators(destinationDirectory)));
+        refreshProjectFiles();
+        return;
+    }
+
+    /* Update the explicit project-file list, if this file is stored there. */
+    m_projectFilesInProject.removeAll(sourcePath);
+    addProjectFile(destinationPath);
+
+    /* Keep already-open editor tabs pointing at the file's new location. */
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor
+            && QFileInfo(editor->filePath()).absoluteFilePath() == sourcePath) {
+            editor->setFilePath(destinationPath);
+            updateTabTitle(editor);
+        }
+    }
+
+    refreshProjectFiles();
+    refreshFunctionCompletions();
+
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+
+    statusBar()->showMessage(
+        tr("File moved: %1").arg(displayPath(destinationPath)),
+        4000);
 }
 
 void MainWindow::addExistingProjectFile()
@@ -1222,8 +1465,28 @@ void MainWindow::addExistingProjectFile()
 
 void MainWindow::createProjectFile()
 {
+    createProjectFileInDirectory(m_projectPath);
+}
+
+void MainWindow::createProjectFileInDirectory(const QString &directoryPath)
+{
     if (m_projectPath.isEmpty()) {
         QMessageBox::information(this, tr("Create File"), tr("Save or create a project first so the IDE knows which folder to use."));
+        return;
+    }
+
+    QString targetDirectory = directoryPath.isEmpty()
+        ? QFileInfo(m_projectPath).absoluteFilePath()
+        : QFileInfo(directoryPath).absoluteFilePath();
+
+    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+    if (targetDirectory != projectRoot
+        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
+        targetDirectory = projectRoot;
+    }
+
+    if (!QFileInfo(targetDirectory).isDir()) {
+        QMessageBox::warning(this, tr("Create File"), tr("The selected project folder no longer exists."));
         return;
     }
 
@@ -1249,7 +1512,8 @@ void MainWindow::createProjectFile()
         return;
     }
 
-    const QString filePath = QFileInfo(QDir(m_projectPath).filePath(fileName)).absoluteFilePath();
+    const QString filePath = QFileInfo(QDir(targetDirectory).filePath(fileName)).absoluteFilePath();
+
     if (!isProjectExplorerFile(filePath)) {
         QMessageBox::warning(this, tr("Create File"), tr("Use one of these extensions: .c, .h, .inc, .txt, .md"));
         return;
@@ -1270,17 +1534,81 @@ void MainWindow::createProjectFile()
     addProjectFile(filePath);
     refreshProjectFiles();
     openFile(filePath);
+
     if (!m_projectFilePath.isEmpty()) {
         saveProjectFile(m_projectFilePath);
     }
-    statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
 
+    statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
+}
+
+void MainWindow::createProjectFolderInDirectory(const QString &directoryPath)
+{
+    if (m_projectPath.isEmpty()) {
+        QMessageBox::information(this, tr("Create Folder"), tr("Save or create a project first so the IDE knows which folder to use."));
+        return;
+    }
+
+    QString targetDirectory = directoryPath.isEmpty()
+        ? QFileInfo(m_projectPath).absoluteFilePath()
+        : QFileInfo(directoryPath).absoluteFilePath();
+
+    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+    if (targetDirectory != projectRoot
+        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
+        targetDirectory = projectRoot;
+    }
+
+    if (!QFileInfo(targetDirectory).isDir()) {
+        QMessageBox::warning(this, tr("Create Folder"), tr("The selected project folder no longer exists."));
+        return;
+    }
+
+    bool accepted = false;
+    const QString folderName = QInputDialog::getText(
+        this,
+        tr("Create Folder"),
+        tr("Folder name:"),
+        QLineEdit::Normal,
+        QStringLiteral("NewFolder"),
+        &accepted).trimmed();
+
+    if (!accepted || folderName.isEmpty()) {
+        return;
+    }
+
+    if (folderName == QStringLiteral(".")
+        || folderName == QStringLiteral("..")
+        || QFileInfo(folderName).fileName() != folderName) {
+        QMessageBox::warning(this, tr("Create Folder"), tr("Enter a folder name, not a path."));
+        return;
+    }
+
+    const QString folderPath = QFileInfo(QDir(targetDirectory).filePath(folderName)).absoluteFilePath();
+
+    if (QFileInfo::exists(folderPath)) {
+        QMessageBox::warning(this, tr("Create Folder"), tr("That folder already exists."));
+        return;
+    }
+
+    QDir parentDirectory(targetDirectory);
+    if (!parentDirectory.mkdir(folderName)) {
+        QMessageBox::warning(this, tr("Create Folder"), tr("Could not create %1.").arg(QDir::toNativeSeparators(folderPath)));
+        return;
+    }
+
+    refreshProjectFiles();
+    statusBar()->showMessage(tr("Folder created: %1").arg(displayPath(folderPath)));
 }
 
 void MainWindow::removeSelectedProjectFile()
 {
     QTreeWidgetItem *item = m_projectFiles->currentItem();
     if (!item) {
+        return;
+    }
+
+    if (item->data(0, Qt::UserRole + 1).toBool()) {
         return;
     }
 
@@ -1329,6 +1657,10 @@ void MainWindow::renameSelectedProjectFile()
 {
     QTreeWidgetItem *item = m_projectFiles->currentItem();
     if (!item) {
+        return;
+    }
+
+    if (item->data(0, Qt::UserRole + 1).toBool()) {
         return;
     }
 
@@ -1839,6 +2171,82 @@ void MainWindow::refreshProjectFiles()
 {
     m_projectFiles->clear();
 
+    QHash<QString, QTreeWidgetItem *> folderItems;
+
+    /*
+     * Create / find a folder item from a path relative to the project root.
+     * Folder items store their real directory path in Qt::UserRole and are
+     * marked as folders in Qt::UserRole + 1.
+     */
+    auto ensureFolderItem = [this, &folderItems](const QString &relativeFolderPath) -> QTreeWidgetItem * {
+        const QString cleanPath = QDir::cleanPath(relativeFolderPath);
+        if (cleanPath.isEmpty() || cleanPath == QStringLiteral(".")) {
+            return nullptr;
+        }
+
+        const QStringList parts = cleanPath.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        QTreeWidgetItem *parentItem = nullptr;
+        QString currentFolder;
+
+        for (const QString &part : parts) {
+            if (!currentFolder.isEmpty()) {
+                currentFolder += QLatin1Char('/');
+            }
+            currentFolder += part;
+
+            QTreeWidgetItem *folderItem = folderItems.value(currentFolder, nullptr);
+            if (!folderItem) {
+                folderItem = new QTreeWidgetItem();
+                folderItem->setText(0, part);
+                folderItem->setIcon(0, QIcon(QStringLiteral(":/icons/tree_folder.png")));
+
+                const QString absoluteFolderPath =
+                    QFileInfo(QDir(m_projectPath).filePath(currentFolder)).absoluteFilePath();
+
+                folderItem->setData(0, Qt::UserRole, absoluteFolderPath);
+                folderItem->setData(0, Qt::UserRole + 1, true);
+                folderItem->setToolTip(0, QDir::toNativeSeparators(absoluteFolderPath));
+
+                if (parentItem) {
+                    parentItem->addChild(folderItem);
+                } else {
+                    m_projectFiles->addTopLevelItem(folderItem);
+                }
+
+                folderItems.insert(currentFolder, folderItem);
+            }
+
+            parentItem = folderItem;
+        }
+
+        return parentItem;
+    };
+
+    /*
+     * Add actual project directories first so empty folders are visible too.
+     * The generated build folder stays hidden from the project explorer.
+     */
+    if (!m_projectPath.isEmpty() && QFileInfo(m_projectPath).isDir()) {
+        QDirIterator directoryIterator(
+            m_projectPath,
+            QDir::Dirs | QDir::NoDotAndDotDot,
+            QDirIterator::Subdirectories);
+
+        while (directoryIterator.hasNext()) {
+            const QString absoluteFolderPath =
+                QFileInfo(directoryIterator.next()).absoluteFilePath();
+            const QString relativeFolderPath =
+                QDir(m_projectPath).relativeFilePath(absoluteFolderPath);
+
+            if (relativeFolderPath == QStringLiteral("build")
+                || relativeFolderPath.startsWith(QStringLiteral("build/"))) {
+                continue;
+            }
+
+            ensureFolderItem(relativeFolderPath);
+        }
+    }
+
     QStringList files = m_projectFilesInProject;
 
     for (const QString &projectFile : projectFolderSourceFiles()) {
@@ -1851,8 +2259,6 @@ void MainWindow::refreshProjectFiles()
     files.removeDuplicates();
     files.sort(Qt::CaseInsensitive);
 
-    QHash<QString, QTreeWidgetItem *> folderItems;
-
     for (const QString &filePath : std::as_const(files)) {
         if (!isProjectExplorerFile(filePath) || !QFileInfo::exists(filePath)) {
             continue;
@@ -1860,53 +2266,58 @@ void MainWindow::refreshProjectFiles()
 
         const QFileInfo fileInfo(filePath);
         QString relativePath;
+
         if (!m_projectPath.isEmpty()) {
             relativePath = QDir(m_projectPath).relativeFilePath(fileInfo.absoluteFilePath());
         } else {
             relativePath = fileInfo.fileName();
         }
+
         relativePath = QDir::cleanPath(relativePath);
 
-        if (relativePath == QStringLiteral("..") || relativePath.startsWith(QStringLiteral("../"))) {
+        QIcon fileIcon;
+        const QString suffix = fileInfo.suffix().toLower();
+
+        if (suffix == QStringLiteral("c")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
+        } else if (suffix == QStringLiteral("h")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_h.png"));
+        } else if (suffix == QStringLiteral("inc")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
+        } else if (suffix == QStringLiteral("txt")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
+        } else if (suffix == QStringLiteral("md")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_md.png"));
+        } else {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
+        }
+
+        /* Files outside the project directory remain top-level entries. */
+        if (relativePath == QStringLiteral("..")
+            || relativePath.startsWith(QStringLiteral("../"))) {
+
             auto *fileItem = new QTreeWidgetItem(m_projectFiles);
             fileItem->setText(0, projectFileDisplayText(filePath));
+            fileItem->setIcon(0, fileIcon);
             fileItem->setData(0, Qt::UserRole, fileInfo.absoluteFilePath());
+            fileItem->setData(0, Qt::UserRole + 1, false);
             fileItem->setToolTip(0, QDir::toNativeSeparators(fileInfo.absoluteFilePath()));
             continue;
         }
 
-        const QStringList parts = relativePath.split(QLatin1Char('/'), Qt::SkipEmptyParts);
-        if (parts.isEmpty()) {
-            continue;
-        }
-
+        const QString parentFolderPath = QFileInfo(relativePath).path();
         QTreeWidgetItem *parentItem = nullptr;
-        QString currentFolder;
 
-        for (int i = 0; i < parts.count() - 1; ++i) {
-            if (!currentFolder.isEmpty()) {
-                currentFolder += QLatin1Char('/');
-            }
-            currentFolder += parts.at(i);
-
-            QTreeWidgetItem *folderItem = folderItems.value(currentFolder, nullptr);
-            if (!folderItem) {
-                folderItem = new QTreeWidgetItem();
-                folderItem->setText(0, parts.at(i));
-                folderItem->setData(0, Qt::UserRole, QString());
-                if (parentItem) {
-                    parentItem->addChild(folderItem);
-                } else {
-                    m_projectFiles->addTopLevelItem(folderItem);
-                }
-                folderItems.insert(currentFolder, folderItem);
-            }
-            parentItem = folderItem;
+        if (!parentFolderPath.isEmpty() && parentFolderPath != QStringLiteral(".")) {
+            parentItem = ensureFolderItem(parentFolderPath);
         }
 
         auto *fileItem = new QTreeWidgetItem();
-        fileItem->setText(0, QStringLiteral("%1 (%2)").arg(fileInfo.fileName(), formattedFileSize(fileInfo.size())));
+        fileItem->setText(0, QStringLiteral("%1 (%2)")
+                                 .arg(fileInfo.fileName(), formattedFileSize(fileInfo.size())));
+        fileItem->setIcon(0, fileIcon);
         fileItem->setData(0, Qt::UserRole, fileInfo.absoluteFilePath());
+        fileItem->setData(0, Qt::UserRole + 1, false);
         fileItem->setToolTip(0, QDir::toNativeSeparators(fileInfo.absoluteFilePath()));
 
         if (parentItem) {

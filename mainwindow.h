@@ -43,9 +43,14 @@ private:
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();
     void createProjectFile();
+    void createProjectFileInDirectory(const QString &directoryPath);
+    void createProjectFolderInDirectory(const QString &directoryPath);
+    QString projectContextDirectory(QTreeWidgetItem *item) const;
     void removeSelectedProjectFile();
     void renameSelectedProjectFile();
     void handleCompilerFinished(int exitCode);
+    void moveProjectFile(const QString &sourceFilePath,
+                         const QString &targetDirectory);
 
     CodeEditor *activeEditor() const;
     CodeEditor *createEditor(const QString &filePath = QString());
