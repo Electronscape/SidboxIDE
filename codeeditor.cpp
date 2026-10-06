@@ -253,7 +253,7 @@ void CodeEditor::focusInEvent(QFocusEvent *event)
 
 int CodeEditor::indentWidthColumns() const
 {
-    const int spaceWidth = qMax(1, fontMetrics().horizontalAdvance(QLatin1Char(30)));
+    const int spaceWidth = qMax(1, fontMetrics().horizontalAdvance(QLatin1Char(' ')));
     return qMax(1, qRound(tabStopDistance() / spaceWidth));
 }
 
@@ -421,6 +421,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    // If the completion popup is open, Tab/Enter accept the current completion first.
     if (m_completer && m_completer->popup()->isVisible()) {
         switch (event->key()) {
         case Qt::Key_Tab:
@@ -439,13 +440,46 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         }
     }
 
-    /*
-    if (event->key() == Qt::Key_Tab && !m_argumentRanges.isEmpty()) {
-        selectArgument(m_selectedArgument + 1);
+    // Enter keeps the current indentation.
+    // If the text before the cursor ends in '{', the new line gets one extra indent level.
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        insertAutoIndent();
         event->accept();
         return;
     }
-    */
+
+    // Tab indents either the selected block or the current cursor position.
+    if (event->key() == Qt::Key_Tab && !(event->modifiers() & Qt::ShiftModifier)) {
+        QTextCursor cursor = textCursor();
+
+        if (cursor.hasSelection()) {
+            indentSelection();
+        } else {
+            cursor.insertText(QString(indentWidthColumns(), QLatin1Char(' ')));
+            setTextCursor(cursor);
+        }
+
+        event->accept();
+        return;
+    }
+
+    // Shift+Tab removes one indentation level from every selected line,
+    // or from the current line when there is no selection.
+    if (event->key() == Qt::Key_Backtab
+        || (event->key() == Qt::Key_Tab && (event->modifiers() & Qt::ShiftModifier))) {
+
+        QTextCursor cursor = textCursor();
+
+        if (!cursor.hasSelection()) {
+            cursor.movePosition(QTextCursor::StartOfBlock);
+            cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+            setTextCursor(cursor);
+        }
+
+        unindentSelection();
+        event->accept();
+        return;
+    }
 
     QPlainTextEdit::keyPressEvent(event);
 
@@ -464,7 +498,9 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     }
 
     QRect completionRect = cursorRect();
-    completionRect.setWidth(m_completer->popup()->sizeHintForColumn(0) + m_completer->popup()->verticalScrollBar()->sizeHint().width());
+    completionRect.setWidth(
+        m_completer->popup()->sizeHintForColumn(0)
+        + m_completer->popup()->verticalScrollBar()->sizeHint().width());
     m_completer->complete(completionRect);
 }
 

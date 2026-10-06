@@ -24,6 +24,8 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QLineEdit>
 #include <QLocale>
 #include <QMenu>
@@ -495,6 +497,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     createNewSourceFile();
     createNewHeaderFile();
+
+    AutoSelectMainC();
 }
 
 MainWindow::~MainWindow()
@@ -502,6 +506,14 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+void MainWindow::AutoSelectMainC(){
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (m_editorTabs->tabText(i) == "main.c" || m_editorTabs->tabText(i) == "untitled.c") { // Or tabToolTip(i) / filename check
+            m_editorTabs->setCurrentIndex(i);
+            break;
+        }
+    }
+}
 
 void MainWindow::setupInterface()
 {
@@ -585,20 +597,26 @@ void MainWindow::setupInterface()
     projectLayout->setSpacing(6);
 
     auto *projectLabel = new QLabel(tr("Files in Project"), projectPane);
-    m_projectFiles = new QListWidget(projectPane);
+
+    m_projectFiles = new QTreeWidget(projectPane);
+    m_projectFiles->setHeaderHidden(true);
+    m_projectFiles->setRootIsDecorated(true);
+    m_projectFiles->setItemsExpandable(true);
+    m_projectFiles->setAnimated(false);
+
     m_projectFiles->setStyleSheet(QStringLiteral(
-        "QListWidget {"
+        "QTreeWidget {"
         "   border: 1px solid #102048;"
         "   border-radius: 0px;"
         "}"
-        "QListWidget::item {"
+        "QTreeWidget::item {"
         "   border-radius: 0px;"
         "}"
-        "QListWidget::item:selected {"
+        "QTreeWidget::item:selected {"
         "   background-color: #2858A8;"
         "   color: #ffffff;"
         "}"
-        "QListWidget::item:selected:hover {"
+        "QTreeWidget::item:selected:hover {"
         "   border: 1px solid #6C80AA;"
         "   background-color: #2858A8;"
         "}"
@@ -624,13 +642,13 @@ void MainWindow::setupInterface()
     projectLayout->addLayout(projectButtonLayout);
     projectLayout->addWidget(m_projectFiles, 1);
 
-    connect(m_projectFiles, &QListWidget::itemDoubleClicked, this, &MainWindow::openProjectFile);
-    connect(m_projectFiles, &QListWidget::itemActivated, this, &MainWindow::openProjectFile);
+    connect(m_projectFiles, &QTreeWidget::itemDoubleClicked, this, &MainWindow::openProjectFile);
+    connect(m_projectFiles, &QTreeWidget::itemActivated, this, &MainWindow::openProjectFile);
     connect(addFileButton, &QPushButton::clicked, this, &MainWindow::addExistingProjectFile);
     connect(createFileButton, &QPushButton::clicked, this, &MainWindow::createProjectFile);
     connect(removeFileButton, &QPushButton::clicked, this, &MainWindow::removeSelectedProjectFile);
     connect(renameFileAction, &QAction::triggered, this, &MainWindow::renameSelectedProjectFile);
-    connect(m_projectFiles, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+    connect(m_projectFiles, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QMenu menu(this);
         menu.addAction(tr("Add File"), this, &MainWindow::addExistingProjectFile);
         menu.addAction(tr("Create File"), this, &MainWindow::createProjectFile);
@@ -850,6 +868,9 @@ void MainWindow::createNewProject()
 
     statusBar()->showMessage(tr("New %1 project created: %2")
         .arg(projectTypeLabel(m_projectType), QDir::toNativeSeparators(m_projectFilePath)));
+
+
+    AutoSelectMainC();
 }
 
 
@@ -916,6 +937,8 @@ void MainWindow::openProject()
     if (loadProjectFile(projectFilePath)) {
         statusBar()->showMessage(tr("Project opened: %1").arg(QDir::toNativeSeparators(m_projectFilePath)));
     }
+
+    AutoSelectMainC();
 }
 
 bool MainWindow::saveProject()
@@ -1155,13 +1178,22 @@ void MainWindow::compileActiveFile()
 
 
 
-void MainWindow::openProjectFile(QListWidgetItem *item)
+void MainWindow::openProjectFile(QTreeWidgetItem *item, int column)
 {
+    Q_UNUSED(column);
+
     if (!item) {
         return;
     }
 
-    openFile(item->data(Qt::UserRole).toString());
+    const QString filePath = item->data(0, Qt::UserRole).toString();
+
+    if (filePath.isEmpty()) {
+        item->setExpanded(!item->isExpanded());
+        return;
+    }
+
+    openFile(filePath);
 }
 
 void MainWindow::addExistingProjectFile()
@@ -1242,16 +1274,17 @@ void MainWindow::createProjectFile()
         saveProjectFile(m_projectFilePath);
     }
     statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
+
 }
 
 void MainWindow::removeSelectedProjectFile()
 {
-    QListWidgetItem *item = m_projectFiles->currentItem();
+    QTreeWidgetItem *item = m_projectFiles->currentItem();
     if (!item) {
         return;
     }
 
-    const QString filePath = item->data(Qt::UserRole).toString();
+    const QString filePath = item->data(0, Qt::UserRole).toString();
     if (filePath.isEmpty()) {
         return;
     }
@@ -1294,12 +1327,12 @@ void MainWindow::removeSelectedProjectFile()
 
 void MainWindow::renameSelectedProjectFile()
 {
-    QListWidgetItem *item = m_projectFiles->currentItem();
+    QTreeWidgetItem *item = m_projectFiles->currentItem();
     if (!item) {
         return;
     }
 
-    const QString oldPath = item->data(Qt::UserRole).toString();
+    const QString oldPath = item->data(0, Qt::UserRole).toString();
     const QFileInfo oldInfo(oldPath);
     if (!oldInfo.exists()) {
         return;
@@ -1691,12 +1724,31 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     clearEditorTabs();
     refreshProjectFiles();
 
+    const QJsonArray openTabsArray = root.value(QStringLiteral("openTabs")).toArray();
+    for (const QJsonValue &val : openTabsArray) {
+        const QString tabPath = fromProjectRelativePath(val.toString());
+        if (!tabPath.isEmpty() && QFileInfo::exists(tabPath)) {
+            openFile(tabPath);
+        }
+    }
+
+    /*
     for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
         // open initially the main.c only
         //openFile(projectFile);
         if (projectFile.endsWith(QStringLiteral("/main.c"), Qt::CaseInsensitive) || projectFile == QStringLiteral("main.c")) {
             openFile(projectFile);
             break; // Stop looping once main.c is found and opened
+        }
+    }
+    */
+
+    if (m_editorTabs->count() == 0) {
+        for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
+            if (projectFile.endsWith(QStringLiteral("/main.c"), Qt::CaseInsensitive) || projectFile == QStringLiteral("main.c")) {
+                openFile(projectFile);
+                break;
+            }
         }
     }
 
@@ -1722,10 +1774,19 @@ bool MainWindow::saveProjectFile(const QString &filePath)
         files.append(toProjectRelativePath(projectFile));
     }
 
+    QJsonArray openTabsArray;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor && !editor->filePath().isEmpty()) {
+            openTabsArray.append(toProjectRelativePath(editor->filePath()));
+        }
+    }
+
     QJsonObject root;
     root.insert(QStringLiteral("version"), ProjectFileVersion);
     root.insert(QStringLiteral("projectType"), normalizedProjectType(m_projectType));
     root.insert(QStringLiteral("files"), files);
+    root.insert(QStringLiteral("openTabs"), openTabsArray);
     root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));
     root.insert(QStringLiteral("modSizeKb"), m_modSizeKb);
     root.insert(QStringLiteral("appSizeKb"), m_appSizeKb);
@@ -1779,6 +1840,7 @@ void MainWindow::refreshProjectFiles()
     m_projectFiles->clear();
 
     QStringList files = m_projectFilesInProject;
+
     for (const QString &projectFile : projectFolderSourceFiles()) {
         const QString absolutePath = QFileInfo(projectFile).absoluteFilePath();
         if (!files.contains(absolutePath)) {
@@ -1789,15 +1851,72 @@ void MainWindow::refreshProjectFiles()
     files.removeDuplicates();
     files.sort(Qt::CaseInsensitive);
 
+    QHash<QString, QTreeWidgetItem *> folderItems;
+
     for (const QString &filePath : std::as_const(files)) {
         if (!isProjectExplorerFile(filePath) || !QFileInfo::exists(filePath)) {
             continue;
         }
 
-        auto *item = new QListWidgetItem(projectFileDisplayText(filePath), m_projectFiles);
-        item->setData(Qt::UserRole, QFileInfo(filePath).absoluteFilePath());
-        item->setToolTip(QDir::toNativeSeparators(QFileInfo(filePath).absoluteFilePath()));
+        const QFileInfo fileInfo(filePath);
+        QString relativePath;
+        if (!m_projectPath.isEmpty()) {
+            relativePath = QDir(m_projectPath).relativeFilePath(fileInfo.absoluteFilePath());
+        } else {
+            relativePath = fileInfo.fileName();
+        }
+        relativePath = QDir::cleanPath(relativePath);
+
+        if (relativePath == QStringLiteral("..") || relativePath.startsWith(QStringLiteral("../"))) {
+            auto *fileItem = new QTreeWidgetItem(m_projectFiles);
+            fileItem->setText(0, projectFileDisplayText(filePath));
+            fileItem->setData(0, Qt::UserRole, fileInfo.absoluteFilePath());
+            fileItem->setToolTip(0, QDir::toNativeSeparators(fileInfo.absoluteFilePath()));
+            continue;
+        }
+
+        const QStringList parts = relativePath.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (parts.isEmpty()) {
+            continue;
+        }
+
+        QTreeWidgetItem *parentItem = nullptr;
+        QString currentFolder;
+
+        for (int i = 0; i < parts.count() - 1; ++i) {
+            if (!currentFolder.isEmpty()) {
+                currentFolder += QLatin1Char('/');
+            }
+            currentFolder += parts.at(i);
+
+            QTreeWidgetItem *folderItem = folderItems.value(currentFolder, nullptr);
+            if (!folderItem) {
+                folderItem = new QTreeWidgetItem();
+                folderItem->setText(0, parts.at(i));
+                folderItem->setData(0, Qt::UserRole, QString());
+                if (parentItem) {
+                    parentItem->addChild(folderItem);
+                } else {
+                    m_projectFiles->addTopLevelItem(folderItem);
+                }
+                folderItems.insert(currentFolder, folderItem);
+            }
+            parentItem = folderItem;
+        }
+
+        auto *fileItem = new QTreeWidgetItem();
+        fileItem->setText(0, QStringLiteral("%1 (%2)").arg(fileInfo.fileName(), formattedFileSize(fileInfo.size())));
+        fileItem->setData(0, Qt::UserRole, fileInfo.absoluteFilePath());
+        fileItem->setToolTip(0, QDir::toNativeSeparators(fileInfo.absoluteFilePath()));
+
+        if (parentItem) {
+            parentItem->addChild(fileItem);
+        } else {
+            m_projectFiles->addTopLevelItem(fileItem);
+        }
     }
+
+    m_projectFiles->expandAll();
 }
 
 void MainWindow::refreshFunctionCompletions()

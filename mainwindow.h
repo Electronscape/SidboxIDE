@@ -15,7 +15,8 @@ QT_END_NAMESPACE
 class CodeEditor;
 class QLabel;
 class QListWidget;
-class QListWidgetItem;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QPlainTextEdit;
 class QToolBar;
 class QProcess;
@@ -39,7 +40,7 @@ private:
     void showOptions();
     void showProjectSettings();
     void compileActiveFile();
-    void openProjectFile(QListWidgetItem *item);
+    void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();
     void createProjectFile();
     void removeSelectedProjectFile();
@@ -98,6 +99,7 @@ private:
     void appendOutputLine(const QString &text, OutputKind kind);
     void loadOptions();
     void saveOptions() const;
+    void AutoSelectMainC();
 
     enum class BuildStep {
         None,
@@ -107,7 +109,7 @@ private:
     };
 
     Ui::MainWindow *ui;
-    QListWidget *m_projectFiles;
+    QTreeWidget *m_projectFiles;
     QTabWidget *m_editorTabs;
     QListWidget *m_functionvarList;
     QLabel *m_quickTipLabel;
