@@ -16,6 +16,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     : QDialog(parent)
     , m_projectTypeCombo(new QComboBox(this))
     , m_modSizeSpinBox(new QSpinBox(this))
+    , m_appSizeSpinBox(new QSpinBox(this))
     , m_linkerScriptEdit(new QLineEdit(this))
     , m_defaultLinkerLabel(new QLabel(this))
 {
@@ -28,8 +29,13 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     });
 
     m_modSizeSpinBox->setRange(0, 1024 * 1024);
+    m_modSizeSpinBox->setSingleStep(8);
     m_modSizeSpinBox->setSuffix(tr(" KB"));
     m_modSizeSpinBox->setSpecialValueText(tr("Not set"));
+
+    m_appSizeSpinBox->setRange(16, 1024 * 1024);
+    m_appSizeSpinBox->setSingleStep(8);
+    m_appSizeSpinBox->setSuffix(tr(" KB"));
 
     m_linkerScriptEdit->setPlaceholderText(tr("Use default for project type"));
 
@@ -56,6 +62,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
 
     auto *formLayout = new QFormLayout;
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
+    formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
     formLayout->addRow(tr("MOD size"), m_modSizeSpinBox);
     formLayout->addRow(tr("Linker script"), linkerLayout);
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);

@@ -379,12 +379,24 @@ CMakeFiles/SidboxIDE.dir/main.cpp.o: \
  /usr/include/qt6/QtGui/qinputmethod.h /usr/include/qt6/QtCore/qlocale.h \
  /usr/include/qt6/QtGui/qguiapplication_platform.h \
  /usr/include/qt6/QtGui/QIcon /usr/include/qt6/QtCore/QDebug \
- /usr/include/qt6/QtCore/QFile /usr/include/qt6/QtCore/qfile.h \
- /usr/include/qt6/QtCore/qfiledevice.h \
+ /usr/include/qt6/QtCore/QCoreApplication \
+ /usr/include/qt6/QtGui/QGuiApplication /usr/include/qt6/QtCore/QFile \
+ /usr/include/qt6/QtCore/qfile.h /usr/include/qt6/QtCore/qfiledevice.h \
  /usr/include/qt6/QtCore/qiodevice.h /usr/include/c++/16/filesystem \
  /usr/include/c++/16/bits/fs_fwd.h /usr/include/c++/16/bits/fs_path.h \
  /usr/include/c++/16/iomanip /usr/include/c++/16/bits/quoted_string.h \
  /usr/include/c++/16/codecvt /usr/include/c++/16/bits/fs_dir.h \
- /usr/include/c++/16/bits/fs_ops.h /usr/include/qt6/QtCore/QProcess \
+ /usr/include/c++/16/bits/fs_ops.h /usr/include/qt6/QtCore/QDir \
+ /usr/include/qt6/QtCore/qdir.h /usr/include/qt6/QtCore/qdirlisting.h \
+ /usr/include/qt6/QtCore/qdatetime.h /usr/include/qt6/QtCore/qcalendar.h \
+ /usr/include/qt6/QtCore/qfileinfo.h /usr/include/qt6/QtCore/qtimezone.h \
+ /usr/include/qt6/QtCore/QFileInfo /usr/include/qt6/QtGui/QPixmap \
+ /usr/include/qt6/QtCore/QTimer /usr/include/qt6/QtCore/qtimer.h \
+ /usr/include/qt6/QtGui/QWindow /usr/include/qt6/QtGui/qwindow.h \
+ /usr/include/qt6/QtCore/QObject /usr/include/qt6/QtCore/QEvent \
+ /usr/include/qt6/QtCore/QMargins /usr/include/qt6/QtCore/QRect \
+ /usr/include/qt6/QtGui/qsurface.h \
+ /usr/include/qt6/QtGui/qsurfaceformat.h \
+ /usr/include/qt6/QtWidgets/QWidget /usr/include/qt6/QtCore/QProcess \
  /usr/include/qt6/QtCore/qprocess.h \
  /usr/include/qt6/QtCore/QProcessEnvironment

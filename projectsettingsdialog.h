@@ -32,6 +32,7 @@ private:
 
     QComboBox *m_projectTypeCombo;
     QSpinBox *m_modSizeSpinBox;
+    QSpinBox *m_appSizeSpinBox;
     QLineEdit *m_linkerScriptEdit;
     QLabel *m_defaultLinkerLabel;
     QString m_guiDefaultLinkerScriptPath;

@@ -513,20 +513,45 @@ void MainWindow::setupInterface()
 
     auto *toolBar = addToolBar(tr("Project"));
     toolBar->setMovable(false);
+    toolBar->setIconSize(QSize(32, 32));
+    toolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);    //
 
-    QAction *newAction = toolBar->addAction(tr("New"));
+    toolBar->setStyleSheet(R"(
+        QToolBar {
+            spacing: 1px;
+            padding: 1px;
+            margin: 0px;
+            border: none;
+        }
+        QToolButton {
+            padding: 2px;
+            margin: 0px;
+            border: none;
+        }
+        QToolButton:hover {
+            background-color: rgba(255, 255, 255, 25);
+            border-radius: 0px;
+        }
+        QToolButton:pressed {
+            background-color: rgba(255, 255, 255, 40);
+        }
+    )");
+
+    QAction *newAction = toolBar->addAction(QIcon(":/icons/new_project.png"), tr("|   New   |"));
     auto *newMenu = new QMenu(this);
     QAction *newProjectAction = newMenu->addAction(tr("New Project"));
     QAction *newSourceAction = newMenu->addAction(tr("New C Source File"));
     QAction *newHeaderAction = newMenu->addAction(tr("New H Header File"));
     newAction->setMenu(newMenu);
 
-    QAction *openProjectAction = toolBar->addAction(tr("Open Project [CTRL+O]"));
-    QAction *saveProjectAction = toolBar->addAction(tr("Save Project [CTRL+S]"));
-    QAction *projectSettingsAction = toolBar->addAction(tr("Project Settings"));
-    QAction *optionsAction = toolBar->addAction(tr("Options"));
+    QAction *openProjectAction = toolBar->addAction(QIcon(":/icons/open_project.png"), tr("Open Project..."));
+    QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
+    QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
+    QAction *optionsAction = toolBar->addAction(QIcon(":/icons/options.png"), tr("Options"));
     toolBar->addSeparator();
-    QAction *compileAction = toolBar->addAction(tr("Compile [F5]"));
+    QAction *compileAction = toolBar->addAction(QIcon(":/icons/compile.png"), tr("Compile [F5]"));
+
+
 
     newAction->setShortcut(QKeySequence::New);
     openProjectAction->setShortcut(QKeySequence::Open);
@@ -621,6 +646,43 @@ void MainWindow::setupInterface()
     m_editorTabs->setDocumentMode(true);
     m_editorTabs->setTabsClosable(true);
     m_editorTabs->setMovable(true);
+    m_editorTabs->setStyleSheet(R"(
+        QTabWidget::pane {
+            border: 1px solid #102048;
+            border-radius: 0px;
+        }
+        QTabBar::tab {
+            background: #1a1a2e;
+            color: #c0c0c0;
+            border: 1px solid #102048;
+            border-bottom: none;
+            border-radius: 0px;
+            padding: 6px 12px;
+            margin-right: -6px;
+        }
+        QTabBar::tab:selected {
+            background: #2858A8;
+            color: #ffffff;
+            border-radius: 0px;
+        }
+        QTabBar::tab:hover:!selected {
+            background: #2a2a4a;
+            border-radius: 0px;
+        }
+        QTabBar::close-button {
+                image: url(:/icons/close_tab.png);   /* optional – only if you have a custom icon */
+                border-radius: 0px;
+                subcontrol-position: right;
+                subcontrol-origin: padding;
+                width: 14px;
+                height: 14px;
+                background: transparent;
+            }
+            QTabBar::close-button:hover {
+                background: #ff5555;
+                border-radius: 0px;
+            }
+    )");
 
     connect(m_editorTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget *widget = m_editorTabs->widget(index);
@@ -745,12 +807,15 @@ void MainWindow::createNewProject()
     QPushButton *guiButton = typeBox.addButton(tr("GUI"), QMessageBox::AcceptRole);
     QPushButton *gameButton = typeBox.addButton(tr("Game"), QMessageBox::AcceptRole);
     typeBox.addButton(QMessageBox::Cancel);
-    typeBox.exec();
+    //typeBox.exec();
 
-    if (typeBox.clickedButton() == nullptr || typeBox.standardButton(typeBox.clickedButton()) == QMessageBox::Cancel) {
+    //if (typeBox.clickedButton() == nullptr || typeBox.standardButton(typeBox.clickedButton()) == QMessageBox::Cancel) {
+    //if (typeBox.standardButton(typeBox.clickedButton()) == QMessageBox::Cancel) {
+    if (typeBox.exec() == QMessageBox::Cancel || !typeBox.clickedButton()) {
         statusBar()->showMessage(tr("New project cancelled"));
         return;
     }
+
 
     m_projectType = typeBox.clickedButton() == static_cast<QAbstractButton *>(gameButton) ? GameProjectType : GuiProjectType;
     Q_UNUSED(guiButton);
@@ -843,6 +908,11 @@ bool MainWindow::saveProject()
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
         if (!editor) {
+            continue;
+        }
+
+        // Skip untitled/unsaved tabs so QFileDialog isn't popped up for each one
+        if (editor->filePath().isEmpty()) {
             continue;
         }
 
@@ -1537,12 +1607,31 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
         this,
         tr("New Project"),
         tr("Save the current project and source files before creating a new project?"),
-        QMessageBox::Save | QMessageBox::Cancel,
+        QMessageBox::Save | QMessageBox::Cancel | QMessageBox::Discard,
         QMessageBox::Save);
+
+
+    if (answer == QMessageBox::Discard) {
+        // Throw away current work and reset to the exact same clean state as startup
+        m_projectFilePath.clear();
+        m_projectPath.clear();
+        m_projectFilesInProject.clear();
+        m_linkerScriptPath.clear();
+        m_modSizeKb = 0;
+        m_projectType = GuiProjectType;
+        clearEditorTabs();
+        refreshProjectFiles();
+        createNewSourceFile();
+        createNewHeaderFile();
+        setWindowTitle(tr("Sidbox IDE"));
+        statusBar()->showMessage(tr("New project started (unsaved)"));
+        return false;   // stop createNewProject — we already did the reset
+    }
 
     if (answer != QMessageBox::Save) {
         return false;
     }
+
 
     return saveProject();
 }
@@ -1570,6 +1659,7 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_projectFilesInProject.clear();
     m_projectType = normalizedProjectType(root.value(QStringLiteral("projectType")).toString(GuiProjectType));
     m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
+    m_appSizeKb = root.value(QStringLiteral("appSizeKb")).toInt(0);
 
     const QString linkerScript = root.value(QStringLiteral("linkerScript")).toString();
     m_linkerScriptPath = linkerScript.isEmpty() ? QString() : fromProjectRelativePath(linkerScript);
@@ -1585,7 +1675,12 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     refreshProjectFiles();
 
     for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
-        openFile(projectFile);
+        // open initially the main.c only
+        //openFile(projectFile);
+        if (projectFile.endsWith(QStringLiteral("/main.c"), Qt::CaseInsensitive) || projectFile == QStringLiteral("main.c")) {
+            openFile(projectFile);
+            break; // Stop looping once main.c is found and opened
+        }
     }
 
     if (m_editorTabs->count() == 0) {
@@ -1616,6 +1711,7 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     root.insert(QStringLiteral("files"), files);
     root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));
     root.insert(QStringLiteral("modSizeKb"), m_modSizeKb);
+    root.insert(QStringLiteral("appSizeKb"), m_appSizeKb);
 
     QFile file(m_projectFilePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {

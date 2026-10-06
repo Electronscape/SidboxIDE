@@ -126,6 +126,7 @@ private:
     QString m_linkerScriptPath;
     QString m_projectType;
     int m_modSizeKb;
+    int m_appSizeKb;
     int m_editorFontPointSize;
 };
 #endif // MAINWINDOW_H

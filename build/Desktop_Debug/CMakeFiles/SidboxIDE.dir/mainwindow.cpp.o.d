@@ -411,7 +411,8 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/QStatusBar \
  /usr/include/qt6/QtWidgets/qstatusbar.h \
  /usr/include/qt6/QtWidgets/QWidget /usr/include/qt6/QtGui/QAction \
- /usr/include/qt6/QtGui/QColor /usr/include/qt6/QtWidgets/QAbstractButton \
+ /usr/include/qt6/QtWidgets/QApplication /usr/include/qt6/QtGui/QColor \
+ /usr/include/qt6/QtWidgets/QAbstractButton \
  /usr/include/qt6/QtWidgets/qabstractbutton.h \
  /usr/include/qt6/QtCore/QCoreApplication /usr/include/qt6/QtCore/QDir \
  /usr/include/qt6/QtCore/qdir.h /usr/include/qt6/QtCore/qdirlisting.h \
@@ -427,6 +428,14 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/QFileDialog \
  /usr/include/qt6/QtWidgets/qfiledialog.h \
  /usr/include/qt6/QtCore/QFileInfo /usr/include/qt6/QtGui/QFontDatabase \
+ /usr/include/qt6/QtWidgets/QHBoxLayout \
+ /usr/include/qt6/QtWidgets/qboxlayout.h \
+ /usr/include/qt6/QtWidgets/qlayout.h \
+ /usr/include/qt6/QtWidgets/qlayoutitem.h \
+ /usr/include/qt6/QtWidgets/qgridlayout.h \
+ /usr/include/qt6/QtWidgets/QInputDialog \
+ /usr/include/qt6/QtWidgets/qinputdialog.h \
+ /usr/include/qt6/QtWidgets/qlineedit.h \
  /usr/include/qt6/QtCore/QJsonArray /usr/include/qt6/QtCore/qjsonarray.h \
  /usr/include/qt6/QtCore/qjsonvalue.h \
  /usr/include/qt6/QtCore/qcborvalue.h \
@@ -452,6 +461,7 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/qabstractslider.h \
  /usr/include/qt6/QtWidgets/qstyle.h /usr/include/qt6/QtWidgets/qtabbar.h \
  /usr/include/qt6/QtWidgets/qrubberband.h \
+ /usr/include/qt6/QtWidgets/QLineEdit /usr/include/qt6/QtCore/QLocale \
  /usr/include/qt6/QtWidgets/QMenu /usr/include/qt6/QtWidgets/QMessageBox \
  /usr/include/qt6/QtWidgets/qmessagebox.h \
  /usr/include/qt6/QtWidgets/qdialogbuttonbox.h \
@@ -471,9 +481,5 @@ CMakeFiles/SidboxIDE.dir/mainwindow.cpp.o: \
  /usr/include/qt6/QtWidgets/QToolBar \
  /usr/include/qt6/QtWidgets/qtoolbar.h \
  /usr/include/qt6/QtWidgets/QVBoxLayout \
- /usr/include/qt6/QtWidgets/qboxlayout.h \
- /usr/include/qt6/QtWidgets/qlayout.h \
- /usr/include/qt6/QtWidgets/qlayoutitem.h \
- /usr/include/qt6/QtWidgets/qgridlayout.h \
  /usr/include/qt6/QtCore/QStandardPaths \
  /usr/include/qt6/QtCore/qstandardpaths.h

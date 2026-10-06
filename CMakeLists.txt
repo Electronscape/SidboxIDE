@@ -5,6 +5,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
 
 qt_standard_project_setup()
 
+
 qt_add_executable(SidboxIDE
     WIN32 MACOSX_BUNDLE
     main.cpp
@@ -19,9 +20,22 @@ qt_add_executable(SidboxIDE
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
-    res.qrc
-    icons/icon.png
-    icons/icon.ico
+)
+
+qt_add_resources(SidboxIDE "app_icons"
+    PREFIX "/icons"
+    BASE icons
+    FILES
+        icons/icon_save.png
+        icons/new_project.png
+        icons/open_project.png
+        icons/save_project.png
+        icons/compile.png
+        icons/options.png
+        icons/project_settings.png
+        icons/close_tab.png
+        icons/icon.png
+        icons/icon.ico
 )
 
 set(CMAKE_AUTORCC ON)

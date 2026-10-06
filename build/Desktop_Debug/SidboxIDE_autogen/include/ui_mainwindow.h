@@ -32,7 +32,7 @@ public:
             MainWindow->setObjectName("MainWindow");
         MainWindow->resize(800, 600);
         QIcon icon;
-        icon.addFile(QString::fromUtf8(":/icons/icon.ico"), QSize(), QIcon::Mode::Normal, QIcon::State::Off);
+        icon.addFile(QString::fromUtf8(":/icons/icon.png"), QSize(), QIcon::Mode::Normal, QIcon::State::Off);
         MainWindow->setWindowIcon(icon);
         centralwidget = new QWidget(MainWindow);
         centralwidget->setObjectName("centralwidget");
