@@ -42,36 +42,47 @@ typedef API_GUI_MENUS API_GUI_Menus;
 #define GUICoderGirl (API->gui)
 #endif
 
+/* @brief Creates a menu and its title, returning the menu handle. */
 #define SBOS_CreateMenuTitle(titlestring) \
     (GUICoderGirl->menus->create_title(titlestring))
 
+/* @brief Adds an item to a menu title and returns its menu-item handle. */
 #define SBOS_CreateMenuItem(menuid, menutitleindex, itemstring) \
     (GUICoderGirl->menus->create_item(menuid, menutitleindex, itemstring))
 
+/* @brief Destroys a menu and releases its menu resources. */
 #define SBOS_DestroyMenu(menuid) \
     (GUICoderGirl->menus->destroy(menuid))
 
+/* @brief Attaches a menu bar/menu to a GUI window. */
 #define SBOS_AttachMenuToWindow(menuid, windowid) \
     (GUICoderGirl->menus->attach_to_window(menuid, windowid))
 
+/* @brief Associates an image item-list with a menu. */
 #define SBOS_MenuAttachImagesItemlist(menuid, imageitemlist) \
     (GUICoderGirl->menus->attach_images_itemlist(menuid, imageitemlist))
 
+/* @brief Assigns a callback and user pointer to a menu item. */
 #define SBOS_MenuCallBack(menuitemid, callback, userdata) \
     (GUICoderGirl->menus->set_callback(menuitemid, callback, userdata))
 
+/* @brief Clears/sets menu-item state flags. */
 #define SBOS_MenuSetFlags(menuitemid, clearflags, setflags) \
     (GUICoderGirl->menus->set_flags(menuitemid, clearflags, setflags))
 
+/* @brief Returns the current flags for a menu item. */
 #define SBOS_MenuGetFlags(menuitemid) \
     (GUICoderGirl->menus->get_flags(menuitemid))
 
+/* @brief Sets the image index used by a menu item. */
 #define SBOS_SetMenuItemImage(menuitemid, imageindex) \
     (GUICoderGirl->menus->set_item_image(menuitemid, imageindex))
 
+/* @brief Returns whether the menu system currently has an active/open menu. */
 #define SBOS_MenuActive() \
     (GUICoderGirl->menus->active())
 
+/* @brief Closes the currently active menu. */
 #define SBOS_MenuClose() \
     (GUICoderGirl->menus->close())
 

@@ -67,30 +67,39 @@ typedef struct API_GUI_DIALOGS {
     void     (*filerequest_close)    (CGWindow filerq_winhnd);
 } API_GUI_DIALOGS;
 
+/* @brief Opens a message box using a CGFMsgBoxParams structure. */
 #define SBOS_MessageBoxEx(owner, params) \
     (GUICoderGirl->dialogs->messagebox_ex(owner, params))
 
+/* @brief Opens a message box owned by a window with title, message and flags. */
 #define SBOS_MessageBox(owner, title, message, flags) \
     (GUICoderGirl->dialogs->messagebox(owner, title, message, flags))
 
+/* @brief Closes an open message-box window. */
 #define SBOS_CloseMessageBox(win) \
     (GUICoderGirl->dialogs->messagebox_close(win))
 
+/* @brief Opens an information box using a CGFInfoBoxParams structure. */
 #define SBOS_InfoBoxEx(owner, params) \
     (GUICoderGirl->dialogs->infobox_ex(owner, params))
 
+/* @brief Opens a simple information box owned by a window. */
 #define SBOS_InfoBox(owner, title, message) \
     (GUICoderGirl->dialogs->infobox(owner, title, message))
 
+/* @brief Closes an open information-box window. */
 #define SBOS_CloseInfoBox(win) \
     (GUICoderGirl->dialogs->infobox_close(win))
 
+/* @brief Opens a file requester starting in the supplied directory. */
 #define SBOS_FileRequest(owner, title, initdir) \
     (GUICoderGirl->dialogs->filerequest(owner, title, initdir))
 
+/* @brief Opens a file requester with an explicit filter list. */
 #define SBOS_FileRequestFilter(owner, title, initdir, filter_list) \
     (GUICoderGirl->dialogs->filerequest_filter(owner, title, initdir, filter_list))
 
+/* @brief Closes an open file-requester window. */
 #define SBOS_CloseFileRequester(win) \
     (GUICoderGirl->dialogs->filerequest_close(win))
 

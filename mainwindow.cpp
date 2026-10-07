@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QColor>
 #include <QAbstractButton>
 #include <QCoreApplication>
@@ -48,6 +49,7 @@
 #include <QTabWidget>
 #include <QTextCharFormat>
 #include <QTextBlock>
+#include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTimer>
@@ -2104,6 +2106,12 @@ void MainWindow::setupInterface()
     QAction *findReplaceAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("Find / Replace"));
     findReplaceAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
 
+    QAction *apiCheatSheetAction =
+        toolBar->addAction(tr("Cheat Sheet [F8]"));
+    apiCheatSheetAction->setShortcut(Qt::Key_F8);
+    apiCheatSheetAction->setToolTip(
+        tr("Open the searchable Sidbox API Cheat Sheet"));
+
     QAction *findCurrentWordAction = new QAction(tr("Find Current Word"), this);
     findCurrentWordAction->setShortcuts({
         QKeySequence(QStringLiteral("Ctrl+F")),
@@ -2134,6 +2142,8 @@ void MainWindow::setupInterface()
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
+    connect(apiCheatSheetAction, &QAction::triggered,
+            this, &MainWindow::showApiCheatSheet);
     connect(findCurrentWordAction, &QAction::triggered,
             this, &MainWindow::showFindReplaceForCurrentWord);
     connect(compileAction, &QAction::triggered, this, &MainWindow::compileActiveFile);
@@ -2796,6 +2806,734 @@ void MainWindow::showFindReplaceForCurrentWord()
     } else {
         m_findReplaceDialog->focusFindText();
     }
+}
+
+
+namespace {
+
+QString apiCheatSheetCategory(const QString &apiRoot,
+                              const QString &filePath)
+{
+    QString relative =
+        QDir(apiRoot).relativeFilePath(filePath);
+
+    relative = QDir::fromNativeSeparators(relative);
+
+    const int slash = relative.indexOf(QLatin1Char('/'));
+    QString category =
+        slash >= 0
+            ? relative.left(slash)
+            : QFileInfo(relative).completeBaseName();
+
+    if (category.compare(QStringLiteral("apis"), Qt::CaseInsensitive) == 0
+        || category.compare(QStringLiteral("syscalls"), Qt::CaseInsensitive) == 0
+        || category.compare(QStringLiteral("applet"), Qt::CaseInsensitive) == 0) {
+        category = QStringLiteral("Core");
+    }
+
+    if (!category.isEmpty()) {
+        category[0] = category.at(0).toUpper();
+    }
+
+    return category.isEmpty() ? QStringLiteral("Other") : category;
+}
+
+QString cleanApiComment(QString comment)
+{
+    comment.replace(QStringLiteral("/**"), QString());
+    comment.replace(QStringLiteral("/*"), QString());
+    comment.replace(QStringLiteral("*/"), QString());
+
+    QStringList cleaned;
+    const QStringList lines = comment.split(QLatin1Char('\n'));
+
+    for (QString line : lines) {
+        line = line.trimmed();
+
+        if (line.startsWith(QLatin1Char('*'))) {
+            line.remove(0, 1);
+            line = line.trimmed();
+        }
+        if (line.startsWith(QStringLiteral("//"))) {
+            line.remove(0, 2);
+            line = line.trimmed();
+        }
+
+        if (line.startsWith(QStringLiteral("@brief"))) {
+            line.remove(0, 6);
+            line = line.trimmed();
+        }
+
+        /*
+         * Keep useful prose, but skip documentation tags that are better
+         * represented by the function signature itself.
+         */
+        if (line.startsWith(QLatin1Char('@'))) {
+            continue;
+        }
+
+        if (!line.isEmpty()) {
+            cleaned.append(line);
+        }
+    }
+
+    return cleaned.join(QLatin1Char(' ')).simplified();
+}
+
+QString apiCommentBeforeLine(const QString &source, int zeroBasedLine)
+{
+    if (zeroBasedLine < 0) {
+        return {};
+    }
+
+    const QStringList lines = source.split(QLatin1Char('\n'));
+    if (zeroBasedLine >= lines.size()) {
+        return {};
+    }
+
+    int i = zeroBasedLine - 1;
+
+    while (i >= 0 && lines.at(i).trimmed().isEmpty()) {
+        --i;
+    }
+
+    if (i < 0) {
+        return {};
+    }
+
+    QStringList commentLines;
+
+    // Consecutive // comments directly above the declaration.
+    if (lines.at(i).trimmed().startsWith(QStringLiteral("//"))) {
+        while (i >= 0
+               && lines.at(i).trimmed().startsWith(QStringLiteral("//"))) {
+            commentLines.prepend(lines.at(i));
+            --i;
+        }
+        return cleanApiComment(commentLines.join(QLatin1Char('\n')));
+    }
+
+    // /* ... */ or /** ... */ block immediately above the declaration.
+    if (lines.at(i).contains(QStringLiteral("*/"))) {
+        while (i >= 0) {
+            commentLines.prepend(lines.at(i));
+
+            if (lines.at(i).contains(QStringLiteral("/*"))) {
+                break;
+            }
+            --i;
+        }
+
+        if (!commentLines.isEmpty()
+            && commentLines.first().contains(QStringLiteral("/*"))) {
+            return cleanApiComment(commentLines.join(QLatin1Char('\n')));
+        }
+    }
+
+    return {};
+}
+
+QString firstDeclarationLineContaining(const QString &source,
+                                       const QString &symbol,
+                                       int *lineOut)
+{
+    if (lineOut) {
+        *lineOut = -1;
+    }
+
+    const QRegularExpression symbolExpression(
+        QStringLiteral(R"(\b%1\b)")
+            .arg(QRegularExpression::escape(symbol)));
+
+    const QStringList lines = source.split(QLatin1Char('\n'));
+
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString trimmed = lines.at(i).trimmed();
+
+        if (trimmed.startsWith(QStringLiteral("//"))
+            || trimmed.startsWith(QLatin1Char('*'))
+            || trimmed.startsWith(QStringLiteral("/*"))) {
+            continue;
+        }
+
+        if (!symbolExpression.match(lines.at(i)).hasMatch()) {
+            continue;
+        }
+
+        if (lineOut) {
+            *lineOut = i;
+        }
+
+        /*
+         * Gather a short multi-line declaration/prototype, stopping at ';' or
+         * '{'. This keeps the Cheat Sheet useful for wrapped API prototypes.
+         */
+        QString declaration = trimmed;
+
+        for (int j = i + 1;
+             j < lines.size()
+             && j <= i + 6
+             && !declaration.contains(QLatin1Char(';'))
+             && !declaration.contains(QLatin1Char('{'));
+             ++j) {
+            declaration += QLatin1Char(' ');
+            declaration += lines.at(j).trimmed();
+        }
+
+        return declaration.simplified();
+    }
+
+    return {};
+}
+
+}
+
+void MainWindow::showApiCheatSheet()
+{
+    if (!m_editorTabs) {
+        return;
+    }
+
+    /*
+     * F8 is context-sensitive: if the caret is sitting on a known Sidbox API
+     * identifier, remember it before switching away from the source editor.
+     */
+    QString requestedSymbol;
+
+    ensureApiCatalog();
+
+    if (auto *editor = activeEditor()) {
+        QTextCursor cursor = editor->textCursor();
+        cursor.select(QTextCursor::WordUnderCursor);
+
+        const QString candidate = cursor.selectedText().trimmed();
+        if (!candidate.isEmpty()
+            && apiSyntaxNames().contains(candidate)) {
+            requestedSymbol = candidate;
+        }
+    }
+
+    auto selectCheatSheetSymbol =
+        [requestedSymbol](QWidget *page) -> bool {
+            if (!page || requestedSymbol.isEmpty()) {
+                return false;
+            }
+
+            auto *tree =
+                page->findChild<QTreeWidget *>(
+                    QStringLiteral("apiCheatTree"));
+            auto *search =
+                page->findChild<QLineEdit *>(
+                    QStringLiteral("apiCheatSearch"));
+
+            if (!tree) {
+                return false;
+            }
+
+            /*
+             * A previous search may have hidden the requested symbol. Clear it
+             * before selecting the exact API entry.
+             */
+            if (search && !search->text().isEmpty()) {
+                search->clear();
+            }
+
+            const QList<QTreeWidgetItem *> matches =
+                tree->findItems(
+                    requestedSymbol,
+                    Qt::MatchExactly | Qt::MatchRecursive,
+                    0);
+
+            for (QTreeWidgetItem *item : matches) {
+                if (!item || item->childCount() > 0) {
+                    continue;
+                }
+
+                /*
+                 * Keep the tree collapsed by default. Only expand the category
+                 * which contains the API symbol requested by F8.
+                 */
+                tree->collapseAll();
+
+                if (item->parent()) {
+                    item->parent()->setExpanded(true);
+                }
+
+                tree->setCurrentItem(item);
+                tree->scrollToItem(
+                    item,
+                    QAbstractItemView::PositionAtCenter);
+                return true;
+            }
+
+            return false;
+        };
+
+    /*
+     * Reuse the existing Cheat Sheet tab instead of opening duplicates.
+     */
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        QWidget *widget = m_editorTabs->widget(i);
+        if (widget
+            && widget->property("sidboxApiCheatSheet").toBool()) {
+            m_editorTabs->setCurrentIndex(i);
+
+            const bool selected =
+                selectCheatSheetSymbol(widget);
+
+            if (!selected) {
+                if (QLineEdit *search =
+                        widget->findChild<QLineEdit *>(
+                            QStringLiteral("apiCheatSearch"))) {
+                    search->setFocus();
+                    search->selectAll();
+                }
+            }
+            return;
+        }
+    }
+
+    const QString apiRoot =
+        QDir(ideLibsPath()).filePath(QStringLiteral("api"));
+
+    if (!QFileInfo::exists(apiRoot)) {
+        QMessageBox::information(
+            this,
+            tr("Cheat Sheet"),
+            tr("The Sidbox API folder could not be found:\n%1")
+                .arg(QDir::toNativeSeparators(apiRoot)));
+        return;
+    }
+
+    auto *page = new QWidget(m_editorTabs);
+    page->setProperty("sidboxApiCheatSheet", true);
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *title = new QLabel(
+        tr("Sidbox API Cheat Sheet"),
+        page);
+
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+
+    auto *search = new QLineEdit(page);
+    search->setObjectName(QStringLiteral("apiCheatSearch"));
+    search->setPlaceholderText(
+        tr("Search functions, constants, types, descriptions..."));
+    search->setClearButtonEnabled(true);
+
+    auto *splitter = new QSplitter(Qt::Horizontal, page);
+
+    auto *tree = new QTreeWidget(splitter);
+    tree->setObjectName(QStringLiteral("apiCheatTree"));
+    tree->setHeaderHidden(true);
+    tree->setRootIsDecorated(true);
+    tree->setAlternatingRowColors(true);
+    tree->setMinimumWidth(300);
+
+    auto *detailPane = new QWidget(splitter);
+    auto *detailLayout = new QVBoxLayout(detailPane);
+    detailLayout->setContentsMargins(8, 0, 0, 0);
+    detailLayout->setSpacing(6);
+
+    auto *symbolLabel = new QLabel(tr("Select an API item"), detailPane);
+    QFont symbolFont = symbolLabel->font();
+    symbolFont.setBold(true);
+    symbolLabel->setFont(symbolFont);
+    symbolLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *signatureLabel = new QLabel(detailPane);
+    signatureLabel->setWordWrap(true);
+    signatureLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    signatureLabel->setFont(
+        QFontDatabase::systemFont(QFontDatabase::FixedFont));
+
+    auto *description = new QTextBrowser(detailPane);
+    description->setOpenExternalLinks(false);
+    description->setPlaceholderText(
+        tr("No API item selected."));
+    description->setMinimumHeight(160);
+
+    auto *sourceLabel = new QLabel(detailPane);
+    sourceLabel->setWordWrap(true);
+    sourceLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *buttonRow = new QHBoxLayout;
+    auto *openSourceButton =
+        new QPushButton(tr("Open Source"), detailPane);
+    auto *copyPrototypeButton =
+        new QPushButton(tr("Copy Prototype"), detailPane);
+
+    openSourceButton->setEnabled(false);
+    copyPrototypeButton->setEnabled(false);
+
+    buttonRow->addWidget(openSourceButton);
+    buttonRow->addWidget(copyPrototypeButton);
+    buttonRow->addStretch(1);
+
+    detailLayout->addWidget(symbolLabel);
+    detailLayout->addWidget(signatureLabel);
+    detailLayout->addWidget(description, 1);
+    detailLayout->addWidget(sourceLabel);
+    detailLayout->addLayout(buttonRow);
+
+    splitter->addWidget(tree);
+    splitter->addWidget(detailPane);
+    splitter->setStretchFactor(0, 2);
+    splitter->setStretchFactor(1, 3);
+
+    layout->addWidget(title);
+    layout->addWidget(search);
+    layout->addWidget(splitter, 1);
+
+    struct ApiEntry {
+        QString name;
+        QString signature;
+        QString description;
+        QString filePath;
+        QString category;
+        int line = -1;
+    };
+
+    QList<ApiEntry> entries;
+    const QStringList knownNames = apiSyntaxNames();
+
+    QStringList apiFiles;
+    QDirIterator iterator(
+        apiRoot,
+        {QStringLiteral("*.h"), QStringLiteral("*.c")},
+        QDir::Files,
+        QDirIterator::Subdirectories);
+
+    while (iterator.hasNext()) {
+        apiFiles.append(
+            QFileInfo(iterator.next()).absoluteFilePath());
+    }
+
+    /*
+     * Headers first: they generally contain the public declaration and the
+     * documentation comment a Sidbox programmer actually wants to read.
+     * Source files still fill gaps and give us something useful for APIs that
+     * are only declared/implemented there.
+     */
+    std::stable_sort(
+        apiFiles.begin(),
+        apiFiles.end(),
+        [](const QString &a, const QString &b) {
+            const bool aHeader =
+                QFileInfo(a).suffix().compare(
+                    QStringLiteral("h"),
+                    Qt::CaseInsensitive) == 0;
+            const bool bHeader =
+                QFileInfo(b).suffix().compare(
+                    QStringLiteral("h"),
+                    Qt::CaseInsensitive) == 0;
+
+            if (aHeader != bHeader) {
+                return aHeader;
+            }
+            return a.compare(b, Qt::CaseInsensitive) < 0;
+        });
+
+    QSet<QString> addedNames;
+
+    for (const QString &name : knownNames) {
+        ApiEntry chosen;
+        chosen.name = name;
+
+        for (const QString &filePath : std::as_const(apiFiles)) {
+            QFile file(filePath);
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                continue;
+            }
+
+            const QString source =
+                QString::fromUtf8(file.readAll());
+
+            int line = -1;
+            const QString declaration =
+                firstDeclarationLineContaining(
+                    source,
+                    name,
+                    &line);
+
+            if (line < 0) {
+                continue;
+            }
+
+            chosen.filePath = filePath;
+            chosen.line = line;
+            chosen.category =
+                apiCheatSheetCategory(apiRoot, filePath);
+
+            const QString catalogTip =
+                quickTipForSymbol(name);
+
+            chosen.signature =
+                !catalogTip.isEmpty()
+                    ? catalogTip
+                    : declaration;
+
+            chosen.description =
+                apiCommentBeforeLine(source, line);
+
+            /*
+             * Prefer a documented match. If the first header declaration has
+             * no prose, keep looking for a source definition with a useful
+             * comment before accepting the plain declaration.
+             */
+            if (!chosen.description.isEmpty()) {
+                break;
+            }
+        }
+
+        if (chosen.filePath.isEmpty()) {
+            continue;
+        }
+
+        if (chosen.description.isEmpty()) {
+            chosen.description =
+                tr("No description is written in the API source yet. "
+                   "Use the prototype and Open Source button to inspect how it works.");
+        }
+
+        entries.append(chosen);
+        addedNames.insert(name);
+    }
+
+    std::sort(
+        entries.begin(),
+        entries.end(),
+        [](const ApiEntry &a, const ApiEntry &b) {
+            const int categoryCompare =
+                a.category.compare(
+                    b.category,
+                    Qt::CaseInsensitive);
+
+            if (categoryCompare != 0) {
+                return categoryCompare < 0;
+            }
+
+            return a.name.compare(
+                       b.name,
+                       Qt::CaseInsensitive) < 0;
+        });
+
+    QHash<QString, QTreeWidgetItem *> categoryItems;
+
+    for (const ApiEntry &entry : std::as_const(entries)) {
+        QTreeWidgetItem *category =
+            categoryItems.value(entry.category, nullptr);
+
+        if (!category) {
+            category = new QTreeWidgetItem(tree);
+            category->setText(0, entry.category);
+            category->setExpanded(false);
+            category->setData(
+                0,
+                Qt::UserRole + 20,
+                QStringLiteral("category"));
+            categoryItems.insert(entry.category, category);
+        }
+
+        auto *item = new QTreeWidgetItem(category);
+        item->setText(0, entry.name);
+        item->setToolTip(0, entry.signature);
+
+        item->setData(0, Qt::UserRole, entry.filePath);
+        item->setData(0, Qt::UserRole + 1, entry.line);
+        item->setData(0, Qt::UserRole + 2, entry.signature);
+        item->setData(0, Qt::UserRole + 3, entry.description);
+        item->setData(0, Qt::UserRole + 4, entry.category);
+        item->setData(0, Qt::UserRole + 5, entry.name);
+    }
+
+    auto showItem = [=](QTreeWidgetItem *item) {
+        if (!item || item->childCount() > 0) {
+            return;
+        }
+
+        const QString name =
+            item->data(0, Qt::UserRole + 5).toString();
+        const QString signature =
+            item->data(0, Qt::UserRole + 2).toString();
+        const QString explanation =
+            item->data(0, Qt::UserRole + 3).toString();
+        const QString filePath =
+            item->data(0, Qt::UserRole).toString();
+        const int line =
+            item->data(0, Qt::UserRole + 1).toInt();
+
+        symbolLabel->setText(name);
+        signatureLabel->setText(signature);
+        description->setPlainText(explanation);
+
+        sourceLabel->setText(
+            tr("Source: %1:%2")
+                .arg(
+                    QDir(apiRoot).relativeFilePath(filePath))
+                .arg(line + 1));
+
+        openSourceButton->setProperty(
+            "apiFilePath",
+            filePath);
+        openSourceButton->setProperty(
+            "apiLine",
+            line);
+        copyPrototypeButton->setProperty(
+            "apiPrototype",
+            signature);
+
+        openSourceButton->setEnabled(
+            !filePath.isEmpty() && line >= 0);
+        copyPrototypeButton->setEnabled(
+            !signature.isEmpty());
+    };
+
+    connect(tree, &QTreeWidget::currentItemChanged,
+            page,
+            [showItem](QTreeWidgetItem *current,
+                       QTreeWidgetItem *) {
+                showItem(current);
+            });
+
+    connect(tree, &QTreeWidget::itemDoubleClicked,
+            page,
+            [this](QTreeWidgetItem *item, int) {
+                if (!item || item->childCount() > 0) {
+                    return;
+                }
+
+                const QString filePath =
+                    item->data(
+                        0,
+                        Qt::UserRole).toString();
+                const int line =
+                    item->data(
+                        0,
+                        Qt::UserRole + 1).toInt();
+
+                openApiReference(filePath, line);
+            });
+
+    connect(openSourceButton, &QPushButton::clicked,
+            page,
+            [this, openSourceButton]() {
+                const QString filePath =
+                    openSourceButton
+                        ->property("apiFilePath")
+                        .toString();
+                const int line =
+                    openSourceButton
+                        ->property("apiLine")
+                        .toInt();
+
+                if (!filePath.isEmpty()) {
+                    openApiReference(filePath, line);
+                }
+            });
+
+    connect(copyPrototypeButton, &QPushButton::clicked,
+            page,
+            [copyPrototypeButton]() {
+                const QString prototype =
+                    copyPrototypeButton
+                        ->property("apiPrototype")
+                        .toString();
+
+                if (!prototype.isEmpty()) {
+                    QApplication::clipboard()
+                        ->setText(prototype);
+                }
+            });
+
+    connect(search, &QLineEdit::textChanged,
+            page,
+            [tree](const QString &text) {
+                const QString needle =
+                    text.trimmed();
+
+                for (int i = 0;
+                     i < tree->topLevelItemCount();
+                     ++i) {
+                    QTreeWidgetItem *category =
+                        tree->topLevelItem(i);
+
+                    bool categoryHasMatch = false;
+
+                    for (int j = 0;
+                         j < category->childCount();
+                         ++j) {
+                        QTreeWidgetItem *item =
+                            category->child(j);
+
+                        const QString searchable =
+                            item->text(0)
+                            + QLatin1Char(' ')
+                            + item->data(
+                                  0,
+                                  Qt::UserRole + 2).toString()
+                            + QLatin1Char(' ')
+                            + item->data(
+                                  0,
+                                  Qt::UserRole + 3).toString()
+                            + QLatin1Char(' ')
+                            + item->data(
+                                  0,
+                                  Qt::UserRole + 4).toString();
+
+                        const bool match =
+                            needle.isEmpty()
+                            || searchable.contains(
+                                needle,
+                                Qt::CaseInsensitive);
+
+                        item->setHidden(!match);
+
+                        if (match) {
+                            categoryHasMatch = true;
+                        }
+                    }
+
+                    category->setHidden(
+                        !categoryHasMatch);
+
+                    if (!needle.isEmpty()) {
+                        category->setExpanded(true);
+                    } else {
+                        category->setExpanded(false);
+                    }
+                }
+            });
+
+    const int index =
+        m_editorTabs->addTab(
+            page,
+            tr("Cheat Sheet"));
+
+    m_editorTabs->setTabToolTip(
+        index,
+        tr("F8 — searchable Sidbox API Cheat Sheet"));
+
+    m_editorTabs->setCurrentIndex(index);
+
+    tree->collapseAll();
+
+    const bool selected =
+        selectCheatSheetSymbol(page);
+
+    if (!selected) {
+        search->setFocus();
+    }
+
+    statusBar()->showMessage(
+        tr("Sidbox API Cheat Sheet ready — %1 items")
+            .arg(entries.size()),
+        3000);
 }
 
 void MainWindow::showProjectSettings()

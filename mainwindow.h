@@ -49,6 +49,7 @@ private:
     void showFindReplace();
     void showFindReplaceForCurrentWord();
     void showProjectSettings();
+    void showApiCheatSheet();
     void compileActiveFile();
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();

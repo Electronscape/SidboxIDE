@@ -123,40 +123,52 @@ typedef struct {
 /////////////////////////////////////////////////////////
 
 //#define SBOS_CreateButton(win, x, y, w, h, text, flags) (GUICoderGirl->gadgets->button_create(__VA_ARGS__))
+/* @brief Creates a button gadget inside the specified window. */
 #define SBOS_CreateButton(win, x, y, w, h, text, flags) \
     (GUICoderGirl->gadgets->button_create(win, x, y, w, h, text, flags))
 
+/* @brief Creates a text-label gadget inside the specified window. */
 #define SBOS_CreateLabel(win, x, y, w, h, text, flags) \
     (GUICoderGirl->gadgets->label_create(win, x, y, w, h, text, flags))
 
+/* @brief Creates a multi-line text-area gadget. */
 #define SBOS_CreateTextArea(win, x, y, w, h, text, text_flags, flags) \
     (GUICoderGirl->gadgets->textarea_create(win, x, y, w, h, text, text_flags, flags))
 
+/* @brief Creates a bitmap-view gadget with explicit view and bitmap dimensions. */
 #define SBOS_CreateBitmapView(win, x, y, w, h, bmp_w, bmp_h, bv_flags, flags) \
     (GUICoderGirl->gadgets->bitmapview_create(win, x, y, w, h, bmp_w, bmp_h, bv_flags, flags))
 
+/* @brief Creates a drawable canvas gadget using the requested canvas draw type. */
 #define SBOS_CreateCanvas(win, x, y, w, h, drawtype, flags) \
     (GUICoderGirl->gadgets->canvas_create(win, x, y, w, h, drawtype, flags))
 
+/* @brief Destroys a GUI gadget. */
 #define SBOS_DestroyGadget(gadget) \
     (GUICoderGirl->gadgets->destroy(gadget))
 
+/* @brief Requests a repaint of a GUI gadget. */
 #define SBOS_GadgetRepaint(gadget) \
     (GUICoderGirl->gadgets->repaint(gadget))
 
+/* @brief Moves keyboard/input focus to a GUI gadget. */
 #define SBOS_GadgetSetFocus(gadget) \
     (GUICoderGirl->gadgets->set_focus(gadget))
 
 
+/* @brief Assigns activation and change callbacks to a GUI gadget. */
 #define SBOS_GadgetSetCallBack(h, fnOnActive, fnOnChange) \
     (GUICoderGirl->gadgets->set_callback(h, fnOnActive, fnOnChange))
 
+/* @brief Copies text from a text-area gadget into the supplied output buffer. */
 #define SBOS_TextAreaGetText(hTa, out, outCap) \
     (GUICoderGirl->gadgets->textarea_get_text(hTa, out, outCap))
 
+/* @brief Changes the bitmap displayed by a bitmap-view gadget. */
 #define SBOS_BitmapviewSetBitmap(bitmapview, bitmap) \
     (GUICoderGirl->gadgets->bitmapview_set_bitmap(bitmapview, bitmap))
 
+/* @brief Changes the source image dimensions used by a bitmap-view gadget. */
 #define SBOS_BitmapviewSetImageSize(bitmapview, width, height) \
     (GUICoderGirl->gadgets->bitmapview_set_size(bitmapview, width, height))
 

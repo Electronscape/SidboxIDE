@@ -139,17 +139,29 @@ typedef struct {
 #define GUICoderGirl      (API->gui)
 /////////////////////////////////////////////////////////
 
+/* @brief Creates a GUI window and stores/returns its window handle. */
 #define SBOS_CreateWindow(CWinHandlePtr, x, y, width, height, titlePtr, flags)  (GUICoderGirl->windows->window_create(CWinHandlePtr, x, y, width, height, titlePtr, flags))
+/* @brief Closes a GUI window. */
 #define SBOS_CloseWindow(id)    (GUICoderGirl->windows->window_close(id))
+/* @brief Assigns the message/event procedure used by a GUI window. */
 #define SBOS_SetWindowProc(win, proc) (GUICoderGirl->windows->set_proc(win, proc))
+/* @brief Moves a window to the front of the GUI z-order. */
 #define SBOS_WindowToFront(id)  (GUICoderGirl->windows->to_front(id))
+/* @brief Moves a window to the back of the GUI z-order. */
 #define SBOS_WindowToBack(id)   (GUICoderGirl->windows->to_back(id))
+/* @brief Gives input focus to a GUI window. */
 #define SBOS_WindowSetFocus(id) (GUICoderGirl->windows->set_focus(id))
+/* @brief Changes the application/window title text. */
 #define SBOS_WindowSetApplicationTitle(win, text) (GUICoderGirl->windows->set_app_title(win, text))
+/* @brief Alias for SBOS_WindowSetApplicationTitle(). */
 #define SetApplicationTitle(win, text)            SBOS_WindowSetApplicationTitle(win, text)
+/* @brief Switches the global mouse pointer to the busy state. */
 #define SetMouseBusy()          (GUICoderGirl->windows->busymouse())
+/* @brief Restores the global mouse pointer to its normal state. */
 #define SetMouseNormal()        (GUICoderGirl->windows->normalmouse())
+/* @brief Sets or clears the busy-mouse state for one window. */
 #define WindowMouseBusy(win, busy)   (GUICoderGirl->windows->window_mouse_busy((win), (busy)))
+/* @brief Returns whether a window is currently using the busy-mouse state. */
 #define WindowMouseIsBusy(win)       (GUICoderGirl->windows->window_mouse_is_busy(win))
 
 

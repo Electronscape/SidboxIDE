@@ -97,14 +97,22 @@ typedef struct API_TIMERS {
 
 #define APITimers                  (API->hwl->timers)
 
+/* @brief Applies control bits to hardware timer 1 (enable, IRQ, one-shot and reset). */
 #define timer1ctrl(ctrlbits)       (APITimers->timer1ctrl(ctrlbits))
+/* @brief Sets hardware timer 1 auto-reload period and prescaler values. */
 #define timer1duty(period, presc)  (APITimers->timer1duty(period, presc))
+/* @brief Registers the callback invoked by hardware timer 1 when IRQ mode is enabled. */
 #define timer1isr(isr)             (APITimers->timer1isr(isr))
+/* @brief Returns the current 16-bit hardware timer 1 counter value. */
 #define timer1val()                (APITimers->timer1val())
 
+/* @brief Applies control bits to hardware timer 2 (enable, IRQ, one-shot and reset). */
 #define timer2ctrl(ctrlbits)       (APITimers->timer2ctrl(ctrlbits))
+/* @brief Sets hardware timer 2 auto-reload period and prescaler values. */
 #define timer2duty(period, presc)  (APITimers->timer2duty(period, presc))
+/* @brief Registers the callback invoked by hardware timer 2 when IRQ mode is enabled. */
 #define timer2isr(isr)             (APITimers->timer2isr(isr))
+/* @brief Returns the current 16-bit hardware timer 2 counter value. */
 #define timer2val()                (APITimers->timer2val())
 
 #endif // SBAPI_SYS_TIMERS_H

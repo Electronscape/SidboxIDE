@@ -54,8 +54,11 @@ typedef char TCHAR;
 #define MAX_DEPTH 256
 
 extern long _Randseed;
+/* @brief Returns a signed pseudo-random value in the range -range to +range. */
 int16_t randomi(unsigned short range);		// random from -range to +range
+/* @brief Returns an unsigned pseudo-random value from 0 up to the requested range. */
 uint16_t urandomi(unsigned short range);	// random from 0 to range
+/* @brief Seeds the SIDBOX pseudo-random number generator. */
 void urandomseed(long seed);
 
 #ifndef MAX
@@ -69,6 +72,7 @@ void urandomseed(long seed);
 #define RAMLOCATION		0xD0000000
 // Exported applet entry point function (must match ENTRY in ld script)
 extern const char _largest_modfile;
+/* @brief Initialises the applet heap range used by the runtime allocator. */
 void initMalloc(void);
 
 
@@ -313,87 +317,137 @@ extern const char __sidbox_api_location;   // const char is the classic “linke
 
 // conf and hardware setups
 #define IRQSERVICE  (API->irq)
+/* @brief Registers a callback for the LCD vertical-blank interrupt. */
 #define irq_lcd_vbl(isr)			(IRQSERVICE->IRQ_LCD_VBL(isr))	// the IRQ is internally cleared, so dont need to do this
+/* @brief Registers a MIDI receive callback; pass 0 to remove the callback. */
 #define irq_midi(isr)				(IRQSERVICE->IRQ_MIDI_RX(isr))	// pass 0 to remove the MIDI byte callback
 
+/* @brief Selects the cached executable SDRAM run-mode/profile for the applet. */
 #define configure_runmode(profile)	(HWKERNAL->gamemode(profile))
+/* @brief Disables the LCD display hardware while the applet needs direct control. */
 #define hw_disarm_lcd()				(HWKERNAL->lcd_disp_disable())
+/* @brief Re-enables the LCD display hardware after it has been disarmed. */
 #define hw_rearm_lcd()				(HWKERNAL->lcd_disp_enable())
+/* @brief Disables the SIDBOX USB interrupt service. */
 #define hw_disable_irq_usb()		(HWKERNAL->irq_usb_disable())
+/* @brief Enables the SIDBOX USB interrupt service. */
 #define hw_enable_irq_usb()			(HWKERNAL->irq_usb_enable())
+/* @brief Disables joystick-port interrupt handling. */
 #define hw_disable_irq_joystick()	(HWKERNAL->irq_joy_disable())
+/* @brief Enables joystick-port interrupt handling. */
 #define hw_enable_irq_joystick()	(HWKERNAL->irq_joy_enable())
+/* @brief Disables mouse/joystick-port interrupt handling. */
 #define hw_disable_irq_mouse()		(HWKERNAL->irq_joy_disable())
+/* @brief Enables mouse/joystick-port interrupt handling. */
 #define hw_enable_irq_mouse()		(HWKERNAL->irq_joy_enable())
+/* @brief Disables the audio-sampler interrupt service. */
 #define hw_disable_irq_audiosampler() (HWKERNAL->irq_audio_disable())
+/* @brief Enables the audio-sampler interrupt service. */
 #define hw_enable_irq_audiosampler()	(HWKERNAL->irq_audio_enable())
+/* @brief Disables the emulator interrupt service. */
 #define hw_disable_irq_emulator()	(HWKERNAL->irq_emu_disable())
+/* @brief Enables the emulator interrupt service. */
 #define hw_enable_irq_emulator()	(HWKERNAL->irq_emu_enable())
+/* @brief Disables UART interrupt handling. */
 #define hw_disable_irq_uart()		(HWKERNAL->irq_uart_disable())
+/* @brief Enables UART interrupt handling. */
 #define hw_enable_irq_uart()		(HWKERNAL->irq_uart_enable())
+/* @brief Disables MDMA interrupt handling. */
 #define hw_disable_irq_mdma()		(HWKERNAL->irq_mdma_disable())
+/* @brief Enables MDMA interrupt handling. */
 #define hw_enable_irq_mdma()		(HWKERNAL->irq_mdma_enable())
 
+/* @brief Alias for hw_disable_irq_usb(). */
 #define disable_irq_usb()			hw_disable_irq_usb()
+/* @brief Alias for hw_enable_irq_usb(). */
 #define enable_irq_usb()			hw_enable_irq_usb()
+/* @brief Alias for hw_disable_irq_joystick(). */
 #define disable_irq_joystick()		hw_disable_irq_joystick()
+/* @brief Alias for hw_enable_irq_joystick(). */
 #define enable_irq_joystick()		hw_enable_irq_joystick()
+/* @brief Alias for hw_disable_irq_mouse(). */
 #define disable_irq_mouse()			hw_disable_irq_mouse()
+/* @brief Alias for hw_enable_irq_mouse(). */
 #define enable_irq_mouse()			hw_enable_irq_mouse()
+/* @brief Alias for hw_disable_irq_audiosampler(). */
 #define disable_irq_audiosampler()	hw_disable_irq_audiosampler()
+/* @brief Alias for hw_enable_irq_audiosampler(). */
 #define enable_irq_audiosampler()	hw_enable_irq_audiosampler()
+/* @brief Alias for hw_disable_irq_emulator(). */
 #define disable_irq_emulator()		hw_disable_irq_emulator()
+/* @brief Alias for hw_enable_irq_emulator(). */
 #define enable_irq_emulator()		hw_enable_irq_emulator()
+/* @brief Alias for hw_disable_irq_uart(). */
 #define disable_irq_uart()			hw_disable_irq_uart()
+/* @brief Alias for hw_enable_irq_uart(). */
 #define enable_irq_uart()			hw_enable_irq_uart()
+/* @brief Alias for hw_disable_irq_mdma(). */
 #define disable_irq_mdma()			hw_disable_irq_mdma()
+/* @brief Alias for hw_enable_irq_mdma(). */
 #define enable_irq_mdma()			hw_enable_irq_mdma()
 
+/* @brief Sends a string to the SIDBOX low-level debug output. */
 #define dbug(s) 	        (API->hwl->dbug(s))
 
 // Mouse interfacing
+/* @brief Reads the current mouse pointer position into x and y. */
 #define getmousepos(x, y)   (HWKERNAL->getmousepos(x,y))
+/* @brief Sets the current mouse pointer position. */
 #define setmousepos(x, y)   (HWKERNAL->setmousepos(x,y))
+/* @brief Returns accumulated mouse movement since the last delta clear. */
 #define getmousedelta(x, y) (HWKERNAL->getmousedelta(x,y))
+/* @brief Clears the accumulated mouse movement delta. */
 #define clrmousedelta()	    (HWKERNAL->clrmousedelta())
 
 //#define CPU_HZ 480000000.0f
 #define CPU_HZ 480000000.0f
 #define TICK_TO_SECONDS     (1.0f / CPU_HZ)
+/* @brief Returns the current low-level system tick counter. */
 #define getTicks()			(HWKERNAL->getTicks())
 
 // joy stick interfacing (usually just for the port Y1, Y2, X1, X2, BTn1, BTn2, up/down/left/right/fire1/fire2)
+/* @brief Reads the current joystick-port button/direction bitfield. */
 #define getjoyport()   		(HWKERNAL->getjoyport())
 
+/* @brief Returns the SIDBOX 16-bit temporary memory buffer exposed by the hardware API. */
 #define get32kmem()	   		(HWKERNAL->get32kmem())
+/* @brief Returns the SIDBOX 8-bit temporary memory buffer exposed by the hardware API. */
 #define get16k8mem()		(HWKERNAL->get16kmem8())
 
 // touch screen interfacing
 #ifndef apiTouchInit
+/* @brief Initialises the touchscreen interface. */
 #define apiTouchInit()      (API->touch->init())
 #endif
 #ifndef apiTouchDown
+/* @brief Returns whether the touchscreen is currently pressed. */
 #define apiTouchDown()      (API->touch->ispressed())
 #endif
 #ifndef apiTouchGetXY
+/* @brief Reads calibrated touchscreen coordinates into x and y. */
 #define apiTouchGetXY(x, y) (API->touch->getxy(x,y))
 #endif
 #ifndef apiTouchGetRawXY
+/* @brief Reads raw touchscreen coordinates into x and y. */
 #define apiTouchGetRawXY(x,y) (API->touch->getrawxy(x,y))
 #endif
 #ifndef apiTouchPressure
+/* @brief Returns the current touchscreen pressure reading. */
 #define apiTouchPressure()  (API->touch->getpressure())
 #endif
 
 // system clock API
 //void     (*rtc_gettime)      (uint8_t* hour, uint8_t* min, uint8_t* sec);
 //void     (*rtc_getdate)      (uint8_t* year, uint8_t* month, uint8_t* day, uint8_t* weekday);
+/* @brief Reads the real-time clock hour, minute and second values. */
 #define API_GetTime(hour, min, sec)				(API->hwl->rtc_gettime(hour, min, sec))
 //#define API_GetDate(year, month, day, weekday)
 
 
 // dedicated 3D math
+/* @brief Clips a 3D triangle against the camera viewing frustum and writes the resulting vertices. */
 #define sb3D_clipTriangleToFrustum(a, b, c, outVerts, cam, src, dst) (API->sb3d->renderer->clipTriangleToFrustum(a, b, c, outVerts, cam, src, dst))
+/* @brief Tests a moving 3D entity against a target entity and reports the hit position/triangle. */
 #define sb3D_entitySweepRaycastTestAPI(movingId, targetId, hitPos, triHit, worldEntities) (API->sb3d->renderer->entitySweepRaycastTestAPI(movingId, targetId, hitPos, triHit, worldEntities))
 
 

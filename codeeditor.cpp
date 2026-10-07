@@ -1413,15 +1413,17 @@ void CodeEditor::highlightCurrentLine()
 {
     QList<QTextEdit::ExtraSelection> selections;
 
-    if (!isReadOnly()) {
-        QTextEdit::ExtraSelection selection;
-        selection.format.setBackground(m_theme.currentLine);
-        //selection.format.setBackground(QColor(0,0,0));
-        selection.format.setProperty(QTextFormat::FullWidthSelection, true);
-        selection.cursor = textCursor();
-        selection.cursor.clearSelection();
-        selections.append(selection);
-    }
+    /*
+     * Read-only API reference tabs should still show the line we navigated to.
+     * "Read only" means the user cannot edit the source; it should not remove
+     * the editor's navigation highlight.
+     */
+    QTextEdit::ExtraSelection selection;
+    selection.format.setBackground(m_theme.currentLine);
+    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    selection.cursor = textCursor();
+    selection.cursor.clearSelection();
+    selections.append(selection);
 
     setExtraSelections(selections);
 }

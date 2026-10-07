@@ -216,31 +216,45 @@ typedef struct  {
 #define GFXP    (GFXBase->gfx_primative)   
 /////////////////////////////////////////////////////////
 
+/* @brief Sets LCD backlight brightness. */
 #define lcd_bright(uint8_t)     (GFXHW->ledbrightness(uint8_t))
 
 // get the current draw buffer
+/* @brief Returns the graphics buffer currently being shown. */
 #define gfx_getshowbuffer()     (GFXHW->getshowbuffer())
+/* @brief Returns the graphics buffer currently selected for drawing. */
 #define gfx_getdrawbuffer()     (GFXHW->getdrawbuffer())
 
 // get the current show buffer - this buffer is sent to the LCD output
 
+/* @brief Returns foreground buffer 1. */
 #define gfx_getfbuffer1()       (GFXHW->getfrontbuffer1())
+/* @brief Returns foreground buffer 2. */
 #define gfx_getfbuffer2()       (GFXHW->getfrontbuffer2())
+/* @brief Returns background buffer 1. */
 #define gfx_getbbuffer1()       (GFXHW->getbackbuffer1())
+/* @brief Returns background buffer 2. */
 #define gfx_getbbuffer2()       (GFXHW->getbackbuffer2())
 
 // SET the show buffer - prepare the buffer for LCD output
+/* @brief Selects the supplied foreground buffer for display. */
 #define gfx_showfbuffer(p_buffer)  (GFXHW->showfbuffer(p_buffer))
+/* @brief Selects the supplied background buffer for display. */
 #define gfx_showbbuffer(p_buffer)  (GFXHW->showbbuffer(p_buffer))
 
 // SET scroll info
+/* @brief Sets foreground-layer scrolling offset. */
 #define gfx_scrollf(x, y)          (GFXHW->scrollf(x,y))
+/* @brief Sets background-layer scrolling offset. */
 #define gfx_scrollb(x, y)          (GFXHW->scrollb(x,y))
 
 // SET the draw buffer - use this buffer for ANY drawing! (including sprites)
+/* @brief Selects the bitmap/buffer used by the primitive drawing API. */
 #define gfx_usebuffer(p_buffer)   (GFXHW->usebuffer(p_buffer))
 
+/* @brief Copies/displays foreground source-buffer content into the destination buffer. */
 #define gfx_dispfbuffer(p_sbuffer, p_dbuffer) (GFXHW->dispfbuffers(p_sbuffer, p_dbuffer))
+/* @brief Copies/displays background source-buffer content into the destination buffer. */
 #define gfx_dispbbuffer(p_sbuffer, p_dbuffer) (GFXHW->dispbbuffers(p_sbuffer, p_dbuffer))
 
 //#define gfx_blitchunk(buffer, yoffset)        (GFXHW->BlitChunk(buffer, yoffset))
@@ -248,64 +262,95 @@ typedef struct  {
 //const gfx_sprite_t *spr, int16_t x, int16_t y, const gfx_dstbitmap_t *dstbmp
 // NOTE: sprites work differently, images are rotated CCW and FLIPPED.
 // to correct for this, FLIP on X, THEN rotate COUNTER CLOCK WISE
+/* @brief Creates a sprite descriptor from image data and its width/height. */
 #define gfx_createSprite(ptrImage, width, height)  (GFXHW->createSprite(ptrImage, width, height))
+/* @brief Submits a sprite for drawing at x,y into the destination bitmap. */
 #define gfx_submitSprite(sprite, x, y, destBitmap) (GFXHW->submitSprite(sprite, x, y, destBitmap))
+/* @brief Processes/pops the queued sprite submissions. */
 #define gfx_popSprites() (GFXHW->popSprites())
 
 // SET the LCD output mode, rotations, flips, output frame rate (25hz, 50hz, 60hz)
+/* @brief Configures LCD operating mode and refresh rate. */
 #define gfx_setlcd(mode, rate)  (GFXHW->setlcd(mode, rate))
 
 /* 
     SET the graphics output mode, [setdisplaymode], LCD can only display physically 480 x 320, but a buffer can be much larger
     if using a much larger buffer dimentions, recommend to use scrollable
 */
+/* @brief Sets foreground/background dimensions and display-mode flags. */
 #define gfx_mode(fgwidth, fgheight, bgwidth, bgheight, flags) (GFXHW->setdisplaymode(fgwidth, fgheight, bgwidth, bgheight, flags))
 
 // Put show buffer to LCD screen output
+/* @brief Forces the current graphics buffers to be displayed immediately. */
 #define gfx_displaynow()        (GFXHW->displaynow())
 
 // LCDWAIT, commiting using displaynow(), some time is needed for the entire push to lcd to be complete
 // using this CAN be useful if more time is needed to complete, if your code base takes longer before the next displaynow,
 // the lcdwait() may not be necessary. 
 // side effect if not used when needed, graphics will be half rendered and potentially look corrupted. 
+/* @brief Waits for the LCD/display synchronisation point. */
 #define gfx_lcdwait()           (GFXHW->lcdwait())
 
 // will clear the current drawbuffer (to zero)
+/* @brief Clears the current drawing buffer. */
 #define gfx_cls()		        (GFXP->cls())
 
 // draw a filled rectactangle on the drawbuffer
+/* @brief Draws a filled rectangle using the current graphics colour. */
 #define gfx_rectf(x, y, w, h)	(GFXP->rectf(x,y,w,h))
+/* @brief Draws a circle outline using the current graphics colour. */
 #define gfx_circle(cx, cy, r)   (GFXP->circle(cx,cy,r))
+/* @brief Draws a filled circle using the current graphics colour. */
 #define gfx_circlef(cx, cy, r)  (GFXP->circlef(cx,cy,r))
 
 // primatives
+/* @brief Plots one pixel using the current graphics colour. */
 #define gfx_plot(x, y)          (GFXP->plot(x,y))
+/* @brief Draws text at x,y using the current graphics colour/font settings. */
 #define gfx_drawtext(x,y,text)  (GFXP->drawtext(x,y,text))
+/* @brief Draws text with explicit x/y scale factors. */
 #define gfx_drawtextf(x,y,text,sizex,sizey)  (GFXP->drawtextf(x,y,text,sizex,sizey))
+/* @brief Draws scaled text with a colour range/step effect. */
 #define gfx_drawtextfc(x,y,text,sizex,sizey,colstart,colend,step)  (GFXP->drawtextfc(x,y,text,sizex,sizey,colstart,colend,step))
+/* @brief Draws a line between two coordinates. */
 #define gfx_drawline(x0, y0, x1, y1) (GFXP->drawline(x0, y0, x1, y1))
 
 // set the current draw colour
+/* @brief Sets the current colour used by graphics primitives. */
 #define gfx_setcolour(c)        (GFXP->setcolour((c)))
 
 // direct blit system, messier but kept in just for directness
+/* @brief Returns/extracts a sprite frame from a sprite sheet. */
 #define gfx_getsprite(sheet, sheet_w, cell_w, cell_h, frame) (GFXP->getsprite(sheet, sheet_w, cell_w, cell_h, frame))
+/* @brief Blits a selected cell from a source image/sheet to the current buffer. */
 #define gfx_blitcell(img, x, y, sx, sy, cx, cy, index)       (GFXP->blitcell(img, x, y, sx, sy, cx, cy, index))
+/* @brief Blits a packed image block to x,y. */
 #define gfx_blit(img, x, y, w, h)                            (GFXP->blit(img, x, y, w, h))
+/* @brief Blits an image block with an explicit source stride. */
 #define gfx_blitw(src, x, y, w, h, stride)                   (GFXP->blitw(src, x, y, w, h, stride))
+/* @brief Tests collision between two tile/image regions using their dimensions, strides and positions. */
 #define gfx_tcollide(A, Aw, Ah, AS, Ax, Ay,   B, Bw, Bh, BS, Bx, By) (GFXP->tcollide(A, Aw, Ah, AS, Ax, Ay,  B, Bw, Bh, BS, Bx, By))
 
 // BOBS blitter objects!!
+/* @brief Draws a BOB object using its stored graphics data/state. */
 #define gfx_drawbob(bob)     (GFXP->drawbob(bob))
+/* @brief Tests collision between two BOB objects. */
 #define gfx_bcollide(a, b)   (GFXP->bcollide(a, b))
 
 // PALETTE use
+/* @brief Selects the foreground colour palette. */
 #define gfx_usefpalette(pal) (GFXHW->usepalettef(pal))
+/* @brief Selects the background colour palette. */
 #define gfx_usebpalette(pal) (GFXHW->usepaletteb(pal))
+/* @brief Enables palette cycling. */
 #define gfx_palcycleon()     (GFXHW->palcycleon())
+/* @brief Disables palette cycling. */
 #define gfx_palcycleoff()    (GFXHW->palcycleoff())
+/* @brief Enables or disables palette cycling. */
 #define gfx_palcycleset(en)  (GFXHW->palcycleset(en))
+/* @brief Sets the first and last palette indexes used by palette cycling. */
 #define gfx_palcyclerange(fromcol, tocol) (GFXHW->palcyclerange(fromcol, tocol))
+/* @brief Sets the palette-cycle update rate in ticks. */
 #define gfx_palcyclerate(tick)            (GFXHW->palcyclerate(tick))
 
 /// API KIT Function calls
