@@ -41,6 +41,8 @@ public:
     void setFunctionCompletions(const QStringList &signatures);
     void setProjectTypeNames(const QStringList &typeNames);
     void setApiSyntaxNames(const QStringList &apiNames);
+    void setResourceMode(bool enabled);
+    bool isResourceMode() const;
     void showMemberCompletions(const QStringList &members, const QString &prefix);
     void refreshMemberCompletion();
     void setCompletionFont(const QFont &font);
@@ -111,6 +113,7 @@ private:
     QStringList m_functionCompletions;
     QString m_memberCompletionPrefix;
     bool m_memberCompletionActive = false;
+    bool m_resourceMode = false;
     QList<QPair<int, int>> m_argumentRanges;
     QList<EditorDiagnostic> m_diagnostics;
     int m_selectedArgument;

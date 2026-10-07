@@ -175,6 +175,16 @@ void ProjectSettingsDialog::setModSizeKb(int sizeKb)
     m_modSizeSpinBox->setValue(sizeKb);
 }
 
+int ProjectSettingsDialog::appSizeKb() const
+{
+    return m_appSizeSpinBox->value();
+}
+
+void ProjectSettingsDialog::setAppSizeKb(int sizeKb)
+{
+    m_appSizeSpinBox->setValue(qMax(16, sizeKb));
+}
+
 QString ProjectSettingsDialog::customLinkerScriptPath() const
 {
     return m_linkerScriptEdit->text().trimmed();

@@ -23,6 +23,8 @@ public:
 
     int modSizeKb() const;
     void setModSizeKb(int sizeKb);
+    int appSizeKb() const;
+    void setAppSizeKb(int sizeKb);
 
     QString customLinkerScriptPath() const;
     void setCustomLinkerScriptPath(const QString &path);

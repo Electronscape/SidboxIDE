@@ -15,6 +15,7 @@ public:
     void setTheme(const IDETheme &theme);
     void setExternalTypeNames(const QStringList &names);
     void setExternalApiNames(const QStringList &names);
+    void setResourceMode(bool enabled);
 
 protected:
     void highlightBlock(const QString &text) override;
@@ -45,6 +46,7 @@ private:
     QStringList m_localTypeNames;
     QStringList m_externalTypeNames;
     QStringList m_externalApiNames;
+    bool m_resourceMode = false;
 };
 
 #endif // CSYNTAXHIGHLIGHTER_H

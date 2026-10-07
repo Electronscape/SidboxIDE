@@ -63,8 +63,33 @@ void CSyntaxHighlighter::setExternalApiNames(const QStringList &names)
     rehighlight();
 }
 
+
+void CSyntaxHighlighter::setResourceMode(bool enabled)
+{
+    if (m_resourceMode == enabled) {
+        return;
+    }
+
+    m_resourceMode = enabled;
+
+    if (m_resourceMode) {
+        m_localTypeNames.clear();
+        m_externalTypeNames.clear();
+        m_externalApiNames.clear();
+    } else {
+        rebuildLocalTypeNames();
+    }
+
+    rebuildRules();
+    rehighlight();
+}
+
 void CSyntaxHighlighter::rebuildLocalTypeNames()
 {
+    if (m_resourceMode) {
+        return;
+    }
+
     const QStringList discovered = typedefNames();
 
     if (discovered == m_localTypeNames) {
@@ -109,6 +134,16 @@ void CSyntaxHighlighter::rebuildRules()
 
     for (const QString &pattern : keywordPatterns) {
         m_highlightingRules.append({QRegularExpression(pattern), keywordFormat});
+    }
+
+    /*
+     * .res files deliberately use the lightest possible highlighting path.
+     * They are C source for GCC, but resource data should not pay the cost of
+     * typedef discovery, API colouring, function detection or other semantic
+     * highlighting. C keywords are enough to keep the file readable.
+     */
+    if (m_resourceMode) {
+        return;
     }
 
     QTextCharFormat stmFormat;
@@ -357,6 +392,19 @@ QStringList CSyntaxHighlighter::typedefNames() const
 
 void CSyntaxHighlighter::highlightBlock(const QString &text)
 {
+    if (m_resourceMode) {
+        setCurrentBlockState(0);
+        for (const HighlightingRule &rule : m_highlightingRules) {
+            QRegularExpressionMatchIterator matchIterator =
+                rule.pattern.globalMatch(text);
+            while (matchIterator.hasNext()) {
+                const QRegularExpressionMatch match = matchIterator.next();
+                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+            }
+        }
+        return;
+    }
+
     const bool inPreprocessor = (previousBlockState() == 2);
     const bool isPreprocessorLine = inPreprocessor || text.trimmed().startsWith('#');
 

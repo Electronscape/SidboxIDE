@@ -1,3 +1,4 @@
+#include <QScrollArea>
 #include "mainwindow.h"
 
 #include "codeeditor.h"
@@ -20,6 +21,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -38,6 +40,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPixmap>
 #include <QPushButton>
 #include <QPoint>
 #include <QProcess>
@@ -65,10 +68,19 @@ const QString GuiProjectType = QStringLiteral("gui");
 const QString GameProjectType = QStringLiteral("game");
 
 
+bool isResourceSource(const QString &filePath)
+{
+    return QFileInfo(filePath).suffix().compare(
+               QStringLiteral("res"), Qt::CaseInsensitive) == 0;
+}
+
 bool isCompilableSource(const QString &filePath)
 {
     const QString suffix = QFileInfo(filePath).suffix().toLower();
-    return suffix == QStringLiteral("c") || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp");
+    return suffix == QStringLiteral("c")
+        || suffix == QStringLiteral("cc")
+        || suffix == QStringLiteral("cpp")
+        || suffix == QStringLiteral("res");
 }
 
 bool isProjectExplorerSuffix(const QString &suffix)
@@ -76,7 +88,57 @@ bool isProjectExplorerSuffix(const QString &suffix)
     const QString lower = suffix.toLower();
     return lower == QStringLiteral("c") || lower == QStringLiteral("h")
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
-        || lower == QStringLiteral("md");
+        || lower == QStringLiteral("md") || lower == QStringLiteral("res");
+}
+
+QIcon editorTabIconForFile(const QString &filePath,
+                           int defaultType = 0)
+{
+    QString suffix = QFileInfo(filePath).suffix().toLower();
+
+    /*
+     * Untitled tabs have no file path yet, so use the same defaultType
+     * convention as tabTitleForEditor():
+     *   0 = C source, 1 = header, 2 = include.
+     */
+    if (suffix.isEmpty()) {
+        if (defaultType == 1) {
+            suffix = QStringLiteral("h");
+        } else if (defaultType == 2) {
+            suffix = QStringLiteral("inc");
+        } else {
+            suffix = QStringLiteral("c");
+        }
+    }
+
+    if (suffix == QStringLiteral("c")
+        || suffix == QStringLiteral("cc")
+        || suffix == QStringLiteral("cpp")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_c.png"));
+    }
+
+    if (suffix == QStringLiteral("h")
+        || suffix == QStringLiteral("hpp")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_h.png"));
+    }
+
+    if (suffix == QStringLiteral("inc")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
+    }
+
+    if (suffix == QStringLiteral("res")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_res.png"));
+    }
+
+    if (suffix == QStringLiteral("txt")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
+    }
+
+    if (suffix == QStringLiteral("md")) {
+        return QIcon(QStringLiteral(":/icons/tree_file_md.png"));
+    }
+
+    return QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
 }
 
 QString formattedFileSize(qint64 bytes)
@@ -109,6 +171,9 @@ bool canContainFunctionSignatures(const QString &filePath)
 bool canContainFunctionSignatures(const QString &filePath)
 {
     const QString suffix = QFileInfo(filePath).suffix().toLower();
+    if (suffix == QStringLiteral("res")) {
+        return false;
+    }
     return !suffix.isEmpty();
 }
 
@@ -2055,48 +2120,21 @@ void MainWindow::setupInterface()
     toolBar->setMovable(false);
     toolBar->setIconSize(QSize(32, 32));
     toolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);    //
-/*
-    toolBar->setStyleSheet(R"(
-        QToolBar {
-            background-color: #000000;
-            spacing: 1px;
-            padding: 1px;
-            margin: 0px;
-            border: none;
-        }
-        QToolButton {
-            background-color: #000000;
-            color: #FF9A00;
-            padding: 2px;
-            margin: 0px;
-            border: none;
-            border-radius: 0px;
-        }
-        QToolButton:hover {
-            background-color: rgba(255, 255, 255, 25);
-            border-radius: 0px;
-        }
-        QToolButton:pressed {
-            background-color: rgba(255, 255, 255, 40);
-        }
-         QToolBar::separator {
-                background: #333333;
-                width: 1px;
-                margin: 4px;
-            }
-    )");
-*/
-    QAction *newAction = toolBar->addAction(QIcon(":/icons/new_project.png"), tr("|   New   |"));
-    auto *newMenu = new QMenu(this);
-    QAction *newProjectAction = newMenu->addAction(tr("New Project"));
+
+    QAction *newAction = toolBar->addAction(QIcon(":/icons/new_project.png"), tr("New"));
+    //auto *newMenu = new QMenu(this);
+    //QAction *newProjectAction = newMenu->addAction(tr("New Project"));
     //QAction *newSourceAction = newMenu->addAction(tr("New C Source File"));
     //QAction *newHeaderAction = newMenu->addAction(tr("New H Header File"));
-    newAction->setMenu(newMenu);
+    toolBar->addSeparator();
+    //newAction->setMenu(newMenu);
 
     QAction *openProjectAction = toolBar->addAction(QIcon(":/icons/open_project.png"), tr("Open Project..."));
     QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
+    toolBar->addSeparator();
     QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
     QAction *optionsAction = toolBar->addAction(QIcon(":/icons/options.png"), tr("Options"));
+
 
     //QIcon findReplaceIcon = QIcon::fromTheme(QStringLiteral("edit-find-replace"));
     //if (findReplaceIcon.isNull()) {
@@ -2106,11 +2144,6 @@ void MainWindow::setupInterface()
     QAction *findReplaceAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("Find / Replace"));
     findReplaceAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
 
-    QAction *apiCheatSheetAction =
-        toolBar->addAction(tr("Cheat Sheet [F8]"));
-    apiCheatSheetAction->setShortcut(Qt::Key_F8);
-    apiCheatSheetAction->setToolTip(
-        tr("Open the searchable Sidbox API Cheat Sheet"));
 
     QAction *findCurrentWordAction = new QAction(tr("Find Current Word"), this);
     findCurrentWordAction->setShortcuts({
@@ -2122,25 +2155,31 @@ void MainWindow::setupInterface()
     toolBar->addSeparator();
     QAction *compileAction = toolBar->addAction(QIcon(":/icons/compile.png"), tr("Compile [F5]"));
 
+    toolBar->addSeparator();
+    QAction *apiCheatSheetAction = toolBar->addAction(QIcon(":/icons/toolbar_cheatsheet.png"), tr("Cheat Sheet [F8]"));
+    apiCheatSheetAction->setShortcut(Qt::Key_F8);
+    apiCheatSheetAction->setToolTip(tr("Open the searchable Sidbox API Cheat Sheet"));
 
+    QAction *aboutIdeAction = toolBar->addAction(QIcon(":/icons/ide_icon_32x32.png"), tr("About IDE"));
 
     newAction->setShortcut(QKeySequence::New);
     openProjectAction->setShortcut(QKeySequence::Open);
     saveProjectAction->setShortcut(QKeySequence::Save);
     compileAction->setShortcut(Qt::Key_F5);
 
-    connect(newAction, &QAction::triggered, this, [toolBar, newAction, newMenu]() {
-        if (QWidget *button = toolBar->widgetForAction(newAction)) {
-            newMenu->popup(button->mapToGlobal(QPoint(0, button->height())));
-        }
-    });
-    connect(newProjectAction, &QAction::triggered, this, &MainWindow::createNewProject);
+    //connect(newAction, &QAction::triggered, this, [toolBar, newAction, newMenu]() {
+        //if (QWidget *button = toolBar->widgetForAction(newAction)) {
+            //newMenu->popup(button->mapToGlobal(QPoint(0, button->height())));
+        //}
+    //});
+    connect(newAction, &QAction::triggered, this, &MainWindow::createNewProject);
     //connect(newSourceAction, &QAction::triggered, this, &MainWindow::createNewSourceFile);
     //connect(newHeaderAction, &QAction::triggered, this, &MainWindow::createNewHeaderFile);
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
+    connect(aboutIdeAction, &QAction::triggered, this, &MainWindow::showAboutIde);
     connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
     connect(apiCheatSheetAction, &QAction::triggered,
             this, &MainWindow::showApiCheatSheet);
@@ -2197,9 +2236,12 @@ void MainWindow::setupInterface()
     projectButtonLayout->setSpacing(4);
     auto *addFileButton = new QPushButton(tr("Add"), projectPane);
     auto *createFileButton = new QPushButton(tr("Create"), projectPane);
+    auto *resourceFileButton = new QPushButton(tr("Add Resource"), projectPane);
+    resourceFileButton->setToolTip(tr("Create a lightweight .res C resource file"));
     auto *removeFileButton = new QPushButton(tr("Remove"), projectPane);
     projectButtonLayout->addWidget(addFileButton);
     projectButtonLayout->addWidget(createFileButton);
+    projectButtonLayout->addWidget(resourceFileButton);
     projectButtonLayout->addWidget(removeFileButton);
 
     auto *renameFileAction = new QAction(tr("Rename"), m_projectFiles);
@@ -2215,6 +2257,7 @@ void MainWindow::setupInterface()
     connect(m_projectFiles, &QTreeWidget::itemActivated, this, &MainWindow::openProjectFile);
     connect(addFileButton, &QPushButton::clicked, this, &MainWindow::addExistingProjectFile);
     connect(createFileButton, &QPushButton::clicked, this, &MainWindow::createProjectFile);
+    connect(resourceFileButton, &QPushButton::clicked, this, &MainWindow::createResourceFile);
     connect(removeFileButton, &QPushButton::clicked, this, &MainWindow::removeSelectedProjectFile);
     connect(renameFileAction, &QAction::triggered, this, &MainWindow::renameSelectedProjectFile);
     connect(m_projectFiles, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -2232,6 +2275,10 @@ void MainWindow::setupInterface()
 
         menu.addAction(tr("Create File"), this, [this, targetDirectory]() {
             createProjectFileInDirectory(targetDirectory);
+        });
+
+        menu.addAction(tr("Add Resource"), this, [this, targetDirectory]() {
+            createResourceFileInDirectory(targetDirectory);
         });
 
         menu.addAction(tr("Create Folder"), this, [this, targetDirectory]() {
@@ -2356,6 +2403,7 @@ void MainWindow::setupInterface()
 
     connect(m_editorTabs, &QTabWidget::currentChanged, this, [this](int) {
         refreshSymbolTree();
+        updateCursorPositionStatus();
     });
     connect(m_functionvarList, &QTreeWidget::itemDoubleClicked,
             this, &MainWindow::jumpToSymbol);
@@ -2418,6 +2466,14 @@ void MainWindow::setupInterface()
 
     setCentralWidget(mainSplitter);
     applyTheme();
+
+    m_cursorPositionLabel = new QLabel(statusBar());
+    m_cursorPositionLabel->setObjectName(QStringLiteral("cursorPositionStatus"));
+    m_cursorPositionLabel->setMinimumWidth(120);
+    m_cursorPositionLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    statusBar()->addPermanentWidget(m_cursorPositionLabel);
+
+    updateCursorPositionStatus();
     statusBar()->showMessage(tr("Ready"));
 }
 
@@ -2503,6 +2559,8 @@ void MainWindow::createNewSourceFile()
                              "/*\n"
                              "   Created file: %1 %2\n"
                              "*/\n"
+                             "#include <stdint.h>\n"
+                             "#include <stdlib.h>\n\n"
                              "#include \"apis.h\"\n\n"
                              "int main(void)\n"
                              "{\n"
@@ -2512,7 +2570,10 @@ void MainWindow::createNewSourceFile()
 
     editor->document()->setModified(false);
 
-    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor, 0));
+    const int index = m_editorTabs->addTab(
+        editor,
+        editorTabIconForFile(editor->filePath(), 0),
+        tabTitleForEditor(editor, 0));
     m_editorTabs->setCurrentIndex(index);
     refreshFunctionCompletions();
     statusBar()->showMessage(tr("New C source file created"));
@@ -2533,7 +2594,10 @@ void MainWindow::createNewHeaderFile(){
 
     editor->document()->setModified(false);
 
-    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor, 1));
+    const int index = m_editorTabs->addTab(
+        editor,
+        editorTabIconForFile(editor->filePath(), 1),
+        tabTitleForEditor(editor, 1));
     m_editorTabs->setCurrentIndex(index);
     refreshFunctionCompletions();
     statusBar()->showMessage(tr("New H header file created"));
@@ -2809,7 +2873,209 @@ void MainWindow::showFindReplaceForCurrentWord()
 }
 
 
+
+void MainWindow::showAboutIde()
+{
+    if (!m_editorTabs) {
+        return;
+    }
+
+    // Reuse the existing About tab instead of opening duplicates.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        QWidget *widget = m_editorTabs->widget(i);
+        if (widget && widget->property("sidboxAboutIde").toBool()) {
+            m_editorTabs->setCurrentIndex(i);
+            return;
+        }
+    }
+
+    auto *page = new QWidget;
+    page->setProperty("sidboxAboutIde", true);
+
+    auto *outerLayout = new QVBoxLayout(page);
+    outerLayout->setContentsMargins(24, 24, 24, 24);
+    outerLayout->setSpacing(14);
+
+    auto *headerLayout = new QHBoxLayout;
+    headerLayout->setSpacing(18);
+
+    auto *logoLabel = new QLabel(page);
+    logoLabel->setFixedSize(160, 160);
+    logoLabel->setAlignment(Qt::AlignCenter);
+
+    /*
+     * ABOUT LOGO PLACEHOLDER
+     *
+     * Replace :/icons/icon.png below with your final About graphic resource,
+     * for example:
+     *
+     *     QPixmap logo(QStringLiteral(":/icons/about_logo.png"));
+     */
+    QPixmap logo(QStringLiteral(":/icons/icon.png"));
+    if (!logo.isNull()) {
+        logoLabel->setPixmap(
+            logo.scaled(
+                logoLabel->size(),
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation));
+    } else {
+        logoLabel->setText(tr("SIDBOX IDE"));
+    }
+
+    auto *titleArea = new QWidget(page);
+    auto *titleLayout = new QVBoxLayout(titleArea);
+    titleLayout->setContentsMargins(0, 0, 0, 0);
+    titleLayout->setSpacing(5);
+
+    auto *title = new QLabel(tr("Sidbox IDE"), titleArea);
+    QFont titleFont = title->font();
+    titleFont.setPointSize(titleFont.pointSize() + 8);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+
+    auto *subtitle = new QLabel(
+        tr("A dedicated C development environment for the Sidbox platform."),
+        titleArea);
+    subtitle->setWordWrap(true);
+
+    auto *purpose = new QLabel(
+        tr("Sidbox IDE was created to make developing Sidbox software quicker, "
+           "clearer and more enjoyable. It brings the Sidbox project format, "
+           "compiler toolchain, API navigation, diagnostics, source browsing, "
+           "minimap, project symbols and searchable API Cheat Sheet together "
+           "in one focused development environment."),
+        titleArea);
+    purpose->setWordWrap(true);
+
+    titleLayout->addWidget(title);
+    titleLayout->addWidget(subtitle);
+    titleLayout->addSpacing(8);
+    titleLayout->addWidget(purpose);
+    titleLayout->addStretch(1);
+
+    headerLayout->addWidget(logoLabel, 0, Qt::AlignTop);
+    headerLayout->addWidget(titleArea, 1);
+
+    auto *aboutHeading = new QLabel(tr("About the IDE"), page);
+    QFont headingFont = aboutHeading->font();
+    headingFont.setBold(true);
+    aboutHeading->setFont(headingFont);
+
+    auto *aboutText = new QLabel(
+        tr("Although it is a capable C/C++ editor at heart, Sidbox IDE was "
+           "designed specifically around Sidbox development. Its goal is not "
+           "to be a huge general-purpose IDE; it is to provide the tools that "
+           "are actually useful when creating Sidbox applications and games."),
+        page);
+    aboutText->setWordWrap(true);
+    aboutText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *featuresHeading = new QLabel(tr("Built for Sidbox"), page);
+    featuresHeading->setFont(headingFont);
+
+    auto *features = new QLabel(
+        tr("• Sidbox .proj project support\n"
+           "• Integrated Sidbox compiler and linker settings\n"
+           "• Error and warning diagnostics\n"
+           "• API-aware syntax highlighting and completion\n"
+           "• Ctrl+Click navigation into project and Sidbox API source\n"
+           "• Read-only API source reference tabs\n"
+           "• F1 contextual API tips\n"
+           "• F8 searchable API Cheat Sheet\n"
+           "• Functions / variables browser and minimap navigation\n"
+           "• Project-wide find and replace"),
+        page);
+    features->setWordWrap(true);
+    features->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *creditsHeading = new QLabel(tr("Credits"), page);
+    creditsHeading->setFont(headingFont);
+
+    auto *credits = new QLabel(
+        tr("Sidbox IDE was designed and created by Kim for the Sidbox platform.\n\n"
+           "Qt 6 / C++ implementation assistance, debugging and code review "
+           "were carried out with the assistance of ChatGPT by OpenAI."),
+        page);
+    credits->setWordWrap(true);
+    credits->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *note = new QLabel(
+        tr("Built because Sidbox deserved an IDE of its own. :)"),
+        page);
+    QFont noteFont = note->font();
+    noteFont.setItalic(true);
+    note->setFont(noteFont);
+
+    outerLayout->addLayout(headerLayout);
+    outerLayout->addSpacing(6);
+    outerLayout->addWidget(aboutHeading);
+    outerLayout->addWidget(aboutText);
+    outerLayout->addSpacing(6);
+    outerLayout->addWidget(featuresHeading);
+    outerLayout->addWidget(features);
+    outerLayout->addSpacing(6);
+    outerLayout->addWidget(creditsHeading);
+    outerLayout->addWidget(credits);
+    outerLayout->addStretch(1);
+    outerLayout->addWidget(note);
+
+    auto *scroll = new QScrollArea(m_editorTabs);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(page);
+    scroll->setProperty("sidboxAboutIde", true);
+
+    const int index = m_editorTabs->addTab(scroll, tr("About IDE"));
+    m_editorTabs->setTabToolTip(index, tr("About Sidbox IDE"));
+    m_editorTabs->setCurrentIndex(index);
+}
+
 namespace {
+
+
+QString libraryCheatSheetCategory(const QString &filePath)
+{
+    const QString baseName = QFileInfo(filePath).completeBaseName();
+    return QStringLiteral("Libraries — %1")
+        .arg(baseName.isEmpty() ? QStringLiteral("Library") : baseName);
+}
+
+QString libraryArchiveForHeader(const QString &libraryRoot,
+                                const QString &headerPath)
+{
+    if (libraryRoot.isEmpty() || headerPath.isEmpty()) {
+        return {};
+    }
+
+    QString headerBase = QFileInfo(headerPath).completeBaseName();
+    if (headerBase.startsWith(QStringLiteral("lib"), Qt::CaseInsensitive)) {
+        headerBase.remove(0, 3);
+    }
+
+    QDirIterator iterator(
+        libraryRoot,
+        {QStringLiteral("*.a")},
+        QDir::Files,
+        QDirIterator::Subdirectories);
+
+    while (iterator.hasNext()) {
+        const QString archivePath =
+            QFileInfo(iterator.next()).absoluteFilePath();
+
+        QString archiveBase =
+            QFileInfo(archivePath).completeBaseName();
+
+        if (archiveBase.startsWith(QStringLiteral("lib"), Qt::CaseInsensitive)) {
+            archiveBase.remove(0, 3);
+        }
+
+        if (archiveBase.compare(headerBase, Qt::CaseInsensitive) == 0) {
+            return archivePath;
+        }
+    }
+
+    return {};
+}
 
 QString apiCheatSheetCategory(const QString &apiRoot,
                               const QString &filePath)
@@ -3093,15 +3359,19 @@ void MainWindow::showApiCheatSheet()
         }
     }
 
+    const QString libsRoot = ideLibsPath();
     const QString apiRoot =
-        QDir(ideLibsPath()).filePath(QStringLiteral("api"));
+        QDir(libsRoot).filePath(QStringLiteral("api"));
+    const QString libraryRoot =
+        QDir(libsRoot).filePath(QStringLiteral("libraries"));
 
-    if (!QFileInfo::exists(apiRoot)) {
+    if (!QFileInfo::exists(apiRoot)
+        && !QFileInfo::exists(libraryRoot)) {
         QMessageBox::information(
             this,
             tr("Cheat Sheet"),
-            tr("The Sidbox API folder could not be found:\n%1")
-                .arg(QDir::toNativeSeparators(apiRoot)));
+            tr("Neither the Sidbox API nor libraries folder could be found under:\n%1")
+                .arg(QDir::toNativeSeparators(libsRoot)));
         return;
     }
 
@@ -3113,7 +3383,7 @@ void MainWindow::showApiCheatSheet()
     layout->setSpacing(6);
 
     auto *title = new QLabel(
-        tr("Sidbox API Cheat Sheet"),
+        tr("Sidbox API & Libraries Cheat Sheet"),
         page);
 
     QFont titleFont = title->font();
@@ -3123,7 +3393,7 @@ void MainWindow::showApiCheatSheet()
     auto *search = new QLineEdit(page);
     search->setObjectName(QStringLiteral("apiCheatSearch"));
     search->setPlaceholderText(
-        tr("Search functions, constants, types, descriptions..."));
+        tr("Search API/library functions, constants, types, descriptions..."));
     search->setClearButtonEnabled(true);
 
     auto *splitter = new QSplitter(Qt::Horizontal, page);
@@ -3196,33 +3466,50 @@ void MainWindow::showApiCheatSheet()
         QString description;
         QString filePath;
         QString category;
+        QString libraryArchive;
+        bool libraryEntry = false;
         int line = -1;
     };
 
     QList<ApiEntry> entries;
     const QStringList knownNames = apiSyntaxNames();
 
-    QStringList apiFiles;
-    QDirIterator iterator(
-        apiRoot,
-        {QStringLiteral("*.h"), QStringLiteral("*.c")},
-        QDir::Files,
-        QDirIterator::Subdirectories);
+    QStringList catalogFiles;
 
-    while (iterator.hasNext()) {
-        apiFiles.append(
-            QFileInfo(iterator.next()).absoluteFilePath());
+    if (QFileInfo::exists(apiRoot)) {
+        QDirIterator apiIterator(
+            apiRoot,
+            {QStringLiteral("*.h"), QStringLiteral("*.c")},
+            QDir::Files,
+            QDirIterator::Subdirectories);
+
+        while (apiIterator.hasNext()) {
+            catalogFiles.append(
+                QFileInfo(apiIterator.next()).absoluteFilePath());
+        }
+    }
+
+    if (QFileInfo::exists(libraryRoot)) {
+        QDirIterator libraryIterator(
+            libraryRoot,
+            {QStringLiteral("*.h")},
+            QDir::Files,
+            QDirIterator::Subdirectories);
+
+        while (libraryIterator.hasNext()) {
+            catalogFiles.append(
+                QFileInfo(libraryIterator.next()).absoluteFilePath());
+        }
     }
 
     /*
-     * Headers first: they generally contain the public declaration and the
-     * documentation comment a Sidbox programmer actually wants to read.
-     * Source files still fill gaps and give us something useful for APIs that
-     * are only declared/implemented there.
+     * Headers first: both the core API and static libraries generally expose
+     * the public declaration/documentation there. API .c files remain a
+     * fallback for wrappers/definitions whose documentation lives in source.
      */
     std::stable_sort(
-        apiFiles.begin(),
-        apiFiles.end(),
+        catalogFiles.begin(),
+        catalogFiles.end(),
         [](const QString &a, const QString &b) {
             const bool aHeader =
                 QFileInfo(a).suffix().compare(
@@ -3245,7 +3532,7 @@ void MainWindow::showApiCheatSheet()
         ApiEntry chosen;
         chosen.name = name;
 
-        for (const QString &filePath : std::as_const(apiFiles)) {
+        for (const QString &filePath : std::as_const(catalogFiles)) {
             QFile file(filePath);
             if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
                 continue;
@@ -3267,8 +3554,31 @@ void MainWindow::showApiCheatSheet()
 
             chosen.filePath = filePath;
             chosen.line = line;
-            chosen.category =
-                apiCheatSheetCategory(apiRoot, filePath);
+
+            const QString absoluteLibraryRoot =
+                QFileInfo(libraryRoot).absoluteFilePath();
+            const QString absoluteFilePath =
+                QFileInfo(filePath).absoluteFilePath();
+
+            chosen.libraryEntry =
+                QFileInfo::exists(libraryRoot)
+                && (absoluteFilePath == absoluteLibraryRoot
+                    || absoluteFilePath.startsWith(
+                        absoluteLibraryRoot + QDir::separator()));
+
+            if (chosen.libraryEntry) {
+                chosen.category =
+                    libraryCheatSheetCategory(filePath);
+                chosen.libraryArchive =
+                    libraryArchiveForHeader(
+                        libraryRoot,
+                        filePath);
+            } else {
+                chosen.category =
+                    apiCheatSheetCategory(
+                        apiRoot,
+                        filePath);
+            }
 
             const QString catalogTip =
                 quickTipForSymbol(name);
@@ -3297,8 +3607,12 @@ void MainWindow::showApiCheatSheet()
 
         if (chosen.description.isEmpty()) {
             chosen.description =
-                tr("No description is written in the API source yet. "
-                   "Use the prototype and Open Source button to inspect how it works.");
+                chosen.libraryEntry
+                    ? tr("No description is written in this library header yet. "
+                         "Add a /* @brief ... */ comment above the declaration "
+                         "to document it in the Cheat Sheet.")
+                    : tr("No description is written in the API source yet. "
+                         "Use the prototype and Open Source button to inspect how it works.");
         }
 
         entries.append(chosen);
@@ -3350,6 +3664,8 @@ void MainWindow::showApiCheatSheet()
         item->setData(0, Qt::UserRole + 3, entry.description);
         item->setData(0, Qt::UserRole + 4, entry.category);
         item->setData(0, Qt::UserRole + 5, entry.name);
+        item->setData(0, Qt::UserRole + 6, entry.libraryArchive);
+        item->setData(0, Qt::UserRole + 7, entry.libraryEntry);
     }
 
     auto showItem = [=](QTreeWidgetItem *item) {
@@ -3372,11 +3688,35 @@ void MainWindow::showApiCheatSheet()
         signatureLabel->setText(signature);
         description->setPlainText(explanation);
 
-        sourceLabel->setText(
-            tr("Source: %1:%2")
-                .arg(
-                    QDir(apiRoot).relativeFilePath(filePath))
-                .arg(line + 1));
+        const bool libraryEntry =
+            item->data(
+                0,
+                Qt::UserRole + 7).toBool();
+
+        const QString libraryArchive =
+            item->data(
+                0,
+                Qt::UserRole + 6).toString();
+
+        if (libraryEntry) {
+            const QString archiveText =
+                libraryArchive.isEmpty()
+                    ? tr("(matching .a archive not found)")
+                    : QFileInfo(libraryArchive).fileName();
+
+            sourceLabel->setText(
+                tr("Library: %1\nHeader: %2:%3")
+                    .arg(
+                        archiveText,
+                        QDir(libsRoot).relativeFilePath(filePath))
+                    .arg(line + 1));
+        } else {
+            sourceLabel->setText(
+                tr("Source: %1:%2")
+                    .arg(
+                        QDir(libsRoot).relativeFilePath(filePath))
+                    .arg(line + 1));
+        }
 
         openSourceButton->setProperty(
             "apiFilePath",
@@ -3517,7 +3857,7 @@ void MainWindow::showApiCheatSheet()
 
     m_editorTabs->setTabToolTip(
         index,
-        tr("F8 — searchable Sidbox API Cheat Sheet"));
+        tr("F8 — searchable Sidbox API & Libraries Cheat Sheet"));
 
     m_editorTabs->setCurrentIndex(index);
 
@@ -3531,7 +3871,7 @@ void MainWindow::showApiCheatSheet()
     }
 
     statusBar()->showMessage(
-        tr("Sidbox API Cheat Sheet ready — %1 items")
+        tr("Sidbox API & Libraries Cheat Sheet ready — %1 items")
             .arg(entries.size()),
         3000);
 }
@@ -3541,6 +3881,7 @@ void MainWindow::showProjectSettings()
     ProjectSettingsDialog dialog(this);
     dialog.setProjectType(m_projectType);
     dialog.setModSizeKb(m_modSizeKb);
+    dialog.setAppSizeKb(m_appSizeKb);
     dialog.setCustomLinkerScriptPath(m_linkerScriptPath);
     dialog.setDefaultLinkerScriptPaths(
         defaultLinkerScriptPath(GuiProjectType),
@@ -3561,6 +3902,7 @@ void MainWindow::showProjectSettings()
 
     m_projectType = normalizedProjectType(dialog.projectType());
     m_modSizeKb = dialog.modSizeKb();
+    m_appSizeKb = dialog.appSizeKb();
     m_linkerScriptPath = dialog.customLinkerScriptPath();
 
     m_compilerOptimization = dialog.optimizationFlag();
@@ -3607,7 +3949,7 @@ void MainWindow::compileActiveFile()
 
     const QStringList sourceFiles = projectFilesForCompile();
     if (sourceFiles.isEmpty()) {
-        QMessageBox::information(this, tr("Compile"), tr("Add at least one .c, .cc, or .cpp file to the project before compiling."));
+        QMessageBox::information(this, tr("Compile"), tr("Add at least one .c, .cc, .cpp, or .res file to the project before compiling."));
         return;
     }
 
@@ -3696,7 +4038,23 @@ void MainWindow::compileActiveFile()
         arguments << QProcess::splitCommand(m_extraCompilerFlags);
     }
 
-    arguments << sourceFiles;
+    /*
+     * .res is a Sidbox IDE resource-source extension. GCC does not infer C
+     * from that suffix, so explicitly select C for that input and immediately
+     * restore extension-based language detection for the files which follow.
+     */
+    for (const QString &sourceFile : sourceFiles) {
+        if (isResourceSource(sourceFile)) {
+            arguments << QStringLiteral("-x")
+                      << QStringLiteral("c")
+                      << sourceFile
+                      << QStringLiteral("-x")
+                      << QStringLiteral("none");
+        } else {
+            arguments << sourceFile;
+        }
+    }
+
     arguments << apiSourceFiles;
     arguments << libraryFiles;
     arguments << QStringLiteral("-T") << selectedLinkerScript;
@@ -3727,6 +4085,19 @@ void MainWindow::compileActiveFile()
     appendOutputLine(
         tr("Optimisation: %1").arg(m_compilerOptimization),
         OutputKind::Header);
+
+    int resourceCount = 0;
+    for (const QString &sourceFile : sourceFiles) {
+        if (isResourceSource(sourceFile)) {
+            ++resourceCount;
+        }
+    }
+    if (resourceCount > 0) {
+        appendOutputLine(
+            tr("Resource sources: %1 (.res compiled as C, IDE analysis disabled)")
+                .arg(resourceCount),
+            OutputKind::Muted);
+    }
 
     QStringList enabledCompilerOptions;
     if (m_compilerFunctionSections) enabledCompilerOptions << QStringLiteral("-ffunction-sections");
@@ -3934,7 +4305,7 @@ void MainWindow::addExistingProjectFile()
         this,
         tr("Add File"),
         baseDirectory,
-        tr("Project files (*.c *.h *.inc *.txt *.md);;All files (*)"));
+        tr("Project files (*.c *.h *.inc *.res *.txt *.md);;All files (*)"));
 
     if (filePaths.isEmpty()) {
         return;
@@ -4003,7 +4374,7 @@ void MainWindow::createProjectFileInDirectory(const QString &directoryPath)
     const QString filePath = QFileInfo(QDir(targetDirectory).filePath(fileName)).absoluteFilePath();
 
     if (!isProjectExplorerFile(filePath)) {
-        QMessageBox::warning(this, tr("Create File"), tr("Use one of these extensions: .c, .h, .inc, .txt, .md"));
+        QMessageBox::warning(this, tr("Create File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md"));
         return;
     }
 
@@ -4028,6 +4399,108 @@ void MainWindow::createProjectFileInDirectory(const QString &directoryPath)
     }
 
     statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
+}
+
+void MainWindow::createResourceFile()
+{
+    createResourceFileInDirectory(m_projectPath);
+}
+
+void MainWindow::createResourceFileInDirectory(const QString &directoryPath)
+{
+    if (m_projectPath.isEmpty()) {
+        QMessageBox::information(
+            this,
+            tr("Create Resource"),
+            tr("Save or create a project first so the IDE knows which folder to use."));
+        return;
+    }
+
+    QString targetDirectory = directoryPath.isEmpty()
+        ? QFileInfo(m_projectPath).absoluteFilePath()
+        : QFileInfo(directoryPath).absoluteFilePath();
+
+    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+    if (targetDirectory != projectRoot
+        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
+        targetDirectory = projectRoot;
+    }
+
+    if (!QFileInfo(targetDirectory).isDir()) {
+        QMessageBox::warning(
+            this, tr("Create Resource"), tr("The selected project folder no longer exists."));
+        return;
+    }
+
+    bool accepted = false;
+    QString fileName = QInputDialog::getText(
+        this,
+        tr("Create Resource"),
+        tr("Resource file name:"),
+        QLineEdit::Normal,
+        QStringLiteral("resource.res"),
+        &accepted).trimmed();
+
+    if (!accepted || fileName.isEmpty()) {
+        return;
+    }
+
+    if (QFileInfo(fileName).suffix().isEmpty()) {
+        fileName.append(QStringLiteral(".res"));
+    }
+
+    if (QFileInfo(fileName).suffix().compare(
+            QStringLiteral("res"), Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(
+            this, tr("Create Resource"), tr("Sidbox resource source files use the .res extension."));
+        return;
+    }
+
+    if (QFileInfo(fileName).fileName() != fileName) {
+        QMessageBox::warning(this, tr("Create Resource"), tr("Enter a file name, not a path."));
+        return;
+    }
+
+    const QString filePath =
+        QFileInfo(QDir(targetDirectory).filePath(fileName)).absoluteFilePath();
+
+    if (QFileInfo::exists(filePath)) {
+        QMessageBox::warning(this, tr("Create Resource"), tr("That resource file already exists."));
+        return;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(
+            this,
+            tr("Create Resource"),
+            tr("Could not create %1.").arg(QDir::toNativeSeparators(filePath)));
+        return;
+    }
+
+    const QByteArray header =
+        "/*\n"
+        " * SIDBOX RESOURCE SOURCE\n"
+        " *\n"
+        " * This file contains C resource data. Sidbox IDE compiles .res\n"
+        " * files as C, but deliberately excludes them from IntelliSense,\n"
+        " * project symbol analysis and heavyweight syntax analysis.\n"
+        " */\n\n";
+
+    file.write(header);
+    file.close();
+
+    addProjectFile(filePath);
+    refreshProjectFiles();
+    openFile(filePath);
+
+    if (!m_projectFilePath.isEmpty()) {
+        saveProjectFile(m_projectFilePath);
+    }
+
+    statusBar()->showMessage(
+        tr("Resource created: %1").arg(displayPath(filePath)),
+        4000);
 }
 
 void MainWindow::createProjectFolderInDirectory(const QString &directoryPath)
@@ -4303,23 +4776,51 @@ CodeEditor *MainWindow::activeEditor() const
     return qobject_cast<CodeEditor *>(m_editorTabs->currentWidget());
 }
 
+void MainWindow::updateCursorPositionStatus()
+{
+    if (!m_cursorPositionLabel) {
+        return;
+    }
+
+    CodeEditor *editor = activeEditor();
+    if (!editor) {
+        m_cursorPositionLabel->clear();
+        return;
+    }
+
+    const QTextCursor cursor = editor->textCursor();
+    m_cursorPositionLabel->setText(
+        tr("[ Ln %1, Col %2 ]  ")
+            .arg(cursor.blockNumber() + 1)
+            .arg(cursor.positionInBlock() + 1));
+}
+
 CodeEditor *MainWindow::createEditor(const QString &filePath)
 {
     auto *editor = new CodeEditor(m_editorTabs);
-    editor->setTheme(m_theme);
     editor->setFilePath(filePath);
 
-    ensureApiCatalog();
+    const bool resourceMode = isResourceSource(filePath);
+    editor->setResourceMode(resourceMode);
+    editor->setTheme(m_theme);
 
-    QStringList initialCompletions = projectFunctionSignatures();
-    const QStringList initialTypeNames = projectTypeNames();
-    initialCompletions.append(initialTypeNames);
-    initialCompletions.removeDuplicates();
-    initialCompletions.sort(Qt::CaseInsensitive);
+    if (!resourceMode) {
+        ensureApiCatalog();
 
-    editor->setFunctionCompletions(initialCompletions);
-    editor->setProjectTypeNames(initialTypeNames);
-    editor->setApiSyntaxNames(apiSyntaxNames());
+        QStringList initialCompletions = projectFunctionSignatures();
+        const QStringList initialTypeNames = projectTypeNames();
+        initialCompletions.append(initialTypeNames);
+        initialCompletions.removeDuplicates();
+        initialCompletions.sort(Qt::CaseInsensitive);
+
+        editor->setFunctionCompletions(initialCompletions);
+        editor->setProjectTypeNames(initialTypeNames);
+        editor->setApiSyntaxNames(apiSyntaxNames());
+    } else {
+        editor->setFunctionCompletions({});
+        editor->setProjectTypeNames({});
+        editor->setApiSyntaxNames({});
+    }
     applyCompilerDiagnostics(editor);
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -4327,6 +4828,13 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     editor->setFont(font);
     editor->setCompletionFont(font);
     editor->refreshLineNumberAreaWidth();
+
+    connect(editor, &QPlainTextEdit::cursorPositionChanged,
+            this, [this, editor]() {
+                if (editor == activeEditor()) {
+                    updateCursorPositionStatus();
+                }
+            });
 
     connect(editor->document(), &QTextDocument::modificationChanged, this, [this, editor]() {
         updateTabTitle(editor);
@@ -4338,8 +4846,13 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
          * middle of that initial load; openFile() performs the normal refresh
          * after the tab is installed.
          */
-        if (m_editorTabs->indexOf(editor) >= 0) {
+        if (!editor->isResourceMode()
+            && m_editorTabs->indexOf(editor) >= 0) {
             m_projectAnalysisTimer->start();
+        }
+
+        if (editor->isResourceMode()) {
+            return;
         }
 
         /*
@@ -4472,7 +4985,10 @@ bool MainWindow::openFile(const QString &filePath)
         return false;
     }
 
-    const int index = m_editorTabs->addTab(editor, tabTitleForEditor(editor));
+    const int index = m_editorTabs->addTab(
+        editor,
+        editorTabIconForFile(filePath),
+        tabTitleForEditor(editor));
     m_editorTabs->setCurrentIndex(index);
     addProjectFile(filePath);
     refreshProjectFiles();
@@ -4530,6 +5046,7 @@ bool MainWindow::openApiReference(const QString &filePath, int line)
         const int index =
             m_editorTabs->addTab(
                 editor,
+                editorTabIconForFile(absolutePath),
                 tabTitleForEditor(editor));
 
         m_editorTabs->setTabToolTip(
@@ -5019,6 +5536,8 @@ void MainWindow::refreshProjectFiles()
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_h.png"));
         } else if (suffix == QStringLiteral("inc")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
+        } else if (suffix == QStringLiteral("res")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_res.png"));
         } else if (suffix == QStringLiteral("txt")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
         } else if (suffix == QStringLiteral("md")) {
@@ -5146,6 +5665,14 @@ void MainWindow::refreshSymbolTree()
 
     if (!editor) {
         m_symbolTreeEditor = nullptr;
+        return;
+    }
+
+    if (editor->isResourceMode()) {
+        auto *resourceItem = new QTreeWidgetItem(m_functionvarList);
+        resourceItem->setText(0, tr("Resource file — analysis disabled"));
+        resourceItem->setFlags(resourceItem->flags() & ~Qt::ItemIsSelectable);
+        m_symbolTreeEditor = editor;
         return;
     }
 
@@ -5388,7 +5915,7 @@ void MainWindow::completeStructMembers(CodeEditor *sourceEditor,
         auto *editor =
             qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
 
-        if (!editor || editor == sourceEditor) {
+        if (!editor || editor == sourceEditor || editor->isResourceMode()) {
             continue;
         }
 
@@ -5524,7 +6051,7 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
     //    participate in Ctrl+Click navigation.
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
-        if (!editor || editor == sourceEditor) {
+        if (!editor || editor == sourceEditor || editor->isResourceMode()) {
             continue;
         }
 
@@ -5632,43 +6159,66 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
 
     const QStringList knownApiNames = apiSyntaxNames();
     if (knownApiNames.contains(symbol)) {
+        const QString libsRoot = ideLibsPath();
         const QString apiPath =
-            QDir(ideLibsPath()).filePath(QStringLiteral("api"));
+            QDir(libsRoot).filePath(QStringLiteral("api"));
+        const QString libraryPath =
+            QDir(libsRoot).filePath(QStringLiteral("libraries"));
 
         QStringList apiSourceFiles;
         QStringList apiHeaderFiles;
+        QStringList libraryHeaderFiles;
 
-        QDirIterator apiIterator(
-            apiPath,
-            {QStringLiteral("*.c"), QStringLiteral("*.h")},
-            QDir::Files,
-            QDirIterator::Subdirectories);
+        if (QFileInfo::exists(apiPath)) {
+            QDirIterator apiIterator(
+                apiPath,
+                {QStringLiteral("*.c"), QStringLiteral("*.h")},
+                QDir::Files,
+                QDirIterator::Subdirectories);
 
-        while (apiIterator.hasNext()) {
-            const QString path =
-                QFileInfo(apiIterator.next()).absoluteFilePath();
+            while (apiIterator.hasNext()) {
+                const QString path =
+                    QFileInfo(apiIterator.next()).absoluteFilePath();
 
-            if (QFileInfo(path).suffix().compare(
-                    QStringLiteral("c"),
-                    Qt::CaseInsensitive) == 0) {
-                apiSourceFiles.append(path);
-            } else {
-                apiHeaderFiles.append(path);
+                if (QFileInfo(path).suffix().compare(
+                        QStringLiteral("c"),
+                        Qt::CaseInsensitive) == 0) {
+                    apiSourceFiles.append(path);
+                } else {
+                    apiHeaderFiles.append(path);
+                }
+            }
+        }
+
+        if (QFileInfo::exists(libraryPath)) {
+            QDirIterator libraryIterator(
+                libraryPath,
+                {QStringLiteral("*.h")},
+                QDir::Files,
+                QDirIterator::Subdirectories);
+
+            while (libraryIterator.hasNext()) {
+                libraryHeaderFiles.append(
+                    QFileInfo(
+                        libraryIterator.next())
+                        .absoluteFilePath());
             }
         }
 
         /*
-         * Prefer .c first: for an API function/global this normally lands on
-         * the real implementation/storage. Headers are the fallback for
-         * macros, typedefs, enums, structs and header-only declarations.
+         * Prefer API .c implementations first, then API headers, then static
+         * library headers. A .a archive is binary, so its accompanying .h is
+         * the useful read-only reference target for Ctrl+Click.
          */
         apiSourceFiles.sort(Qt::CaseInsensitive);
         apiHeaderFiles.sort(Qt::CaseInsensitive);
+        libraryHeaderFiles.sort(Qt::CaseInsensitive);
 
-        QStringList apiFiles = apiSourceFiles;
-        apiFiles.append(apiHeaderFiles);
+        QStringList sdkFiles = apiSourceFiles;
+        sdkFiles.append(apiHeaderFiles);
+        sdkFiles.append(libraryHeaderFiles);
 
-        for (const QString &apiFilePath : std::as_const(apiFiles)) {
+        for (const QString &apiFilePath : std::as_const(sdkFiles)) {
             QFile apiFile(apiFilePath);
             if (!apiFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
                 continue;
@@ -5693,11 +6243,28 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
             }
 
             if (openApiReference(apiFilePath, apiLine)) {
+                const QString absoluteLibraryRoot =
+                    QFileInfo(libraryPath).absoluteFilePath();
+                const QString absoluteReferencePath =
+                    QFileInfo(apiFilePath).absoluteFilePath();
+
+                const bool libraryReference =
+                    QFileInfo::exists(libraryPath)
+                    && absoluteReferencePath.startsWith(
+                        absoluteLibraryRoot + QDir::separator());
+
                 statusBar()->showMessage(
-                    tr("%1 — Sidbox API source in %2:%3 (read-only)")
-                        .arg(symbol,
-                             QFileInfo(apiFilePath).fileName())
-                        .arg(apiLine + 1),
+                    libraryReference
+                        ? tr("%1 — Sidbox library header in %2:%3 (read-only)")
+                              .arg(
+                                  symbol,
+                                  QFileInfo(apiFilePath).fileName())
+                              .arg(apiLine + 1)
+                        : tr("%1 — Sidbox API source in %2:%3 (read-only)")
+                              .arg(
+                                  symbol,
+                                  QFileInfo(apiFilePath).fileName())
+                              .arg(apiLine + 1),
                     3500);
             }
             return;
@@ -5818,6 +6385,13 @@ void MainWindow::refreshFunctionCompletions()
             continue;
         }
 
+        if (editor->isResourceMode()) {
+            editor->setFunctionCompletions({});
+            editor->setProjectTypeNames({});
+            editor->setApiSyntaxNames({});
+            continue;
+        }
+
         editor->setFunctionCompletions(completions);
         editor->setProjectTypeNames(typeNames);
         editor->setApiSyntaxNames(apiNames);
@@ -5837,46 +6411,101 @@ void MainWindow::refreshApiCatalog()
     m_apiTips.clear();
     m_apiSignatures.clear();
 
-    const QString apiPath = QDir(ideLibsPath()).filePath(QStringLiteral("api"));
-    if (!QFileInfo::exists(apiPath)) {
+    const QString libsRoot = ideLibsPath();
+    const QString apiPath =
+        QDir(libsRoot).filePath(QStringLiteral("api"));
+    const QString libraryPath =
+        QDir(libsRoot).filePath(QStringLiteral("libraries"));
+
+    QStringList catalogTexts;
+    int scannedFileCount = 0;
+
+    auto appendCatalogFiles =
+        [&catalogTexts, &scannedFileCount](
+            const QString &rootPath,
+            const QStringList &filters) {
+            if (!QFileInfo::exists(rootPath)) {
+                return;
+            }
+
+            QDirIterator iterator(
+                rootPath,
+                filters,
+                QDir::Files,
+                QDirIterator::Subdirectories);
+
+            while (iterator.hasNext()) {
+                QFile file(iterator.next());
+                if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    continue;
+                }
+
+                catalogTexts.append(
+                    uncommentedApiText(
+                        QString::fromUtf8(file.readAll())));
+                ++scannedFileCount;
+            }
+        };
+
+    // Core Sidbox API: declarations plus source-side wrappers/types.
+    appendCatalogFiles(
+        apiPath,
+        {QStringLiteral("*.h"), QStringLiteral("*.c")});
+
+    /*
+     * Static libraries expose their public interface through the accompanying
+     * headers.  The .a archive itself is binary and cannot be meaningfully
+     * parsed for Cheat Sheet descriptions/signatures, so catalogue the .h
+     * files and let the build system continue linking every .a as before.
+     */
+    appendCatalogFiles(
+        libraryPath,
+        {QStringLiteral("*.h")});
+
+    if (catalogTexts.isEmpty()) {
         if (m_quickTipLabel) {
-            m_quickTipLabel->setText(tr("F1: API folder not found: %1").arg(QDir::toNativeSeparators(apiPath)));
+            m_quickTipLabel->setText(
+                tr("F1: API/library catalogue not found under %1")
+                    .arg(QDir::toNativeSeparators(libsRoot)));
         }
         return;
     }
 
-    QStringList apiTexts;
-    QDirIterator iterator(apiPath,
-                          {QStringLiteral("*.h"), QStringLiteral("*.c")},
-                          QDir::Files,
-                          QDirIterator::Subdirectories);
-    while (iterator.hasNext()) {
-        QFile file(iterator.next());
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            continue;
-        }
-
-        apiTexts.append(uncommentedApiText(QString::fromUtf8(file.readAll())));
-    }
-
     QHash<QString, QString> functionPointers;
-    for (const QString &text : std::as_const(apiTexts)) {
+    for (const QString &text : std::as_const(catalogTexts)) {
         collectApiFunctionPointers(text, &functionPointers);
     }
 
-    for (const QString &text : std::as_const(apiTexts)) {
-        collectApiMacros(text, functionPointers, &m_apiTips, &m_apiSignatures);
-        collectApiDefines(text, &m_apiTips, &m_apiSignatures);
-        collectApiTypes(text, &m_apiTips, &m_apiSignatures);
-        collectApiLineSymbols(text, &m_apiTips, &m_apiSignatures);
-        m_apiSignatures.append(functionSignaturesFromText(text));
+    for (const QString &text : std::as_const(catalogTexts)) {
+        collectApiMacros(
+            text,
+            functionPointers,
+            &m_apiTips,
+            &m_apiSignatures);
+        collectApiDefines(
+            text,
+            &m_apiTips,
+            &m_apiSignatures);
+        collectApiTypes(
+            text,
+            &m_apiTips,
+            &m_apiSignatures);
+        collectApiLineSymbols(
+            text,
+            &m_apiTips,
+            &m_apiSignatures);
+        m_apiSignatures.append(
+            functionSignaturesFromText(text));
     }
 
     m_apiSignatures.removeDuplicates();
     m_apiSignatures.sort(Qt::CaseInsensitive);
 
     if (m_quickTipLabel) {
-        m_quickTipLabel->setText(tr("F1: API ready: %1 tips from %2").arg(m_apiTips.count()).arg(QDir::toNativeSeparators(apiPath)));
+        m_quickTipLabel->setText(
+            tr("F1: SDK ready: %1 tips from %2 API/library files")
+                .arg(m_apiTips.count())
+                .arg(scannedFileCount));
     }
 }
 
@@ -5952,6 +6581,9 @@ void MainWindow::updateTabTitle(CodeEditor *editor)
     const int index = m_editorTabs->indexOf(editor);
     if (index >= 0) {
         m_editorTabs->setTabText(index, tabTitleForEditor(editor));
+        m_editorTabs->setTabIcon(
+            index,
+            editorTabIconForFile(editor->filePath()));
     }
 }
 
@@ -6020,7 +6652,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
 
     const QStringList filters = {
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
-        QStringLiteral("*.txt"), QStringLiteral("*.md")
+        QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md")
     };
 
     QDirIterator iterator(m_projectPath, filters, QDir::Files, QDirIterator::Subdirectories);
@@ -6087,7 +6719,7 @@ QStringList MainWindow::projectFunctionSignatures() const
 
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
-        if (!editor) {
+        if (!editor || editor->isResourceMode()) {
             continue;
         }
 
@@ -6140,7 +6772,7 @@ QStringList MainWindow::projectTypeNames() const
     // Open tabs win: use the live in-memory text, including unsaved changes.
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
-        if (!editor) {
+        if (!editor || editor->isResourceMode()) {
             continue;
         }
 

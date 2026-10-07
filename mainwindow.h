@@ -50,11 +50,14 @@ private:
     void showFindReplaceForCurrentWord();
     void showProjectSettings();
     void showApiCheatSheet();
+    void showAboutIde();
     void compileActiveFile();
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();
     void createProjectFile();
     void createProjectFileInDirectory(const QString &directoryPath);
+    void createResourceFile();
+    void createResourceFileInDirectory(const QString &directoryPath);
     void createProjectFolderInDirectory(const QString &directoryPath);
     QString projectContextDirectory(QTreeWidgetItem *item) const;
     void moveProjectFile(const QString &sourceFilePath, const QString &targetDirectory);
@@ -63,6 +66,7 @@ private:
     void handleCompilerFinished(int exitCode);
 
     CodeEditor *activeEditor() const;
+    void updateCursorPositionStatus();
     CodeEditor *createEditor(const QString &filePath = QString());
     bool openFile(const QString &filePath);
     bool openApiReference(const QString &filePath, int line);
@@ -160,6 +164,7 @@ private:
     QTabWidget *m_editorTabs;
     QTreeWidget *m_functionvarList;
     QLabel *m_quickTipLabel;
+    QLabel *m_cursorPositionLabel = nullptr;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;
     FindReplaceDialog *m_findReplaceDialog;

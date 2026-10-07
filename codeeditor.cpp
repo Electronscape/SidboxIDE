@@ -260,8 +260,53 @@ private:
         }
 
         QScrollBar *bar = m_editor->verticalScrollBar();
-        const qreal ratio = qBound<qreal>(0.0, y / static_cast<qreal>(height()), 1.0);
-        bar->setValue(qRound(ratio * bar->maximum()));
+        const int maximum = bar->maximum();
+        const int pageStep = qMax(1, bar->pageStep());
+        const int totalRange = maximum + pageStep;
+
+        if (maximum <= 0 || totalRange <= 0) {
+            bar->setValue(0);
+            return;
+        }
+
+        /*
+         * Match the exact mapping used to draw the minimap viewport.
+         *
+         * Previously the click Y position was mapped directly onto the
+         * scrollbar maximum. That effectively treated the mouse position as
+         * the TOP of the editor viewport, so clicks could appear to overshoot
+         * or undershoot the bit of code the user was aiming at.
+         *
+         * Instead, put the CENTRE of the visible editor viewport on the mouse
+         * position. This makes a click on a minimap line land around that same
+         * line in the middle of the editor.
+         */
+        const qreal minimapHeight = static_cast<qreal>(height());
+
+        qreal viewHeight =
+            (static_cast<qreal>(pageStep)
+             / static_cast<qreal>(totalRange))
+            * minimapHeight;
+
+        // Keep this in sync with paintEvent().
+        viewHeight = qMax<qreal>(12.0, viewHeight);
+        viewHeight = qMin<qreal>(viewHeight, minimapHeight);
+
+        const qreal desiredViewTop =
+            qBound<qreal>(
+                0.0,
+                y - (viewHeight * 0.5),
+                qMax<qreal>(0.0, minimapHeight - viewHeight));
+
+        const qreal value =
+            (desiredViewTop / minimapHeight)
+            * static_cast<qreal>(totalRange);
+
+        bar->setValue(
+            qBound(
+                0,
+                qRound(value),
+                maximum));
     }
 
     CodeEditor *m_editor;
@@ -466,7 +511,9 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
     connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
-        emit quickTipCandidateChanged(textUnderCursor());
+        if (!m_resourceMode) {
+            emit quickTipCandidateChanged(textUnderCursor());
+        }
     });
     connect(this, &CodeEditor::updateRequest, this, [this](const QRect &, int) {
         m_minimap->update();
@@ -529,6 +576,56 @@ void CodeEditor::setApiSyntaxNames(const QStringList &apiNames)
     }
 }
 
+void CodeEditor::setResourceMode(bool enabled)
+{
+    if (m_resourceMode == enabled) {
+        return;
+    }
+
+    m_resourceMode = enabled;
+
+    if (m_highlighter) {
+        m_highlighter->setResourceMode(enabled);
+    }
+
+    if (m_resourceMode) {
+        m_functionCompletions.clear();
+        m_memberCompletionActive = false;
+        m_memberCompletionPrefix.clear();
+        m_completionModel->setStringList({});
+        if (m_completer && m_completer->popup()) {
+            m_completer->popup()->hide();
+        }
+    }
+
+    if (m_minimap) {
+        /*
+         * Resource files still benefit enormously from minimap navigation,
+         * especially when they contain hundreds of kilobytes of generated
+         * array data.  The expensive semantic analysis remains disabled;
+         * only the visual minimap stays available.
+         */
+        m_minimap->setVisible(true);
+        m_minimap->update();
+    }
+
+    updateLineNumberAreaWidth(0);
+
+    if (m_minimap) {
+        const QRect view = viewport()->geometry();
+        m_minimap->setGeometry(
+            QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
+        m_minimap->raise();
+    }
+
+    setTheme(m_theme);
+}
+
+bool CodeEditor::isResourceMode() const
+{
+    return m_resourceMode;
+}
+
 void CodeEditor::restoreFunctionCompletionModel()
 {
     m_memberCompletionActive = false;
@@ -571,6 +668,10 @@ void CodeEditor::showMemberCompletions(const QStringList &members,
 
 void CodeEditor::refreshMemberCompletion()
 {
+    if (m_resourceMode) {
+        return;
+    }
+
     /*
      * Re-run member discovery against the editor's current text. This is useful
      * after the user edits a typedef/struct or variable declaration while the
@@ -591,11 +692,43 @@ void CodeEditor::setTheme(const IDETheme &theme)
     m_theme = theme;
 
     QPalette p = palette();
-    p.setColor(QPalette::Base, m_theme.editorBackground);
+
+    /*
+     * Resource tabs intentionally use a lighter charcoal background so it is
+     * immediately obvious that the tab is in lightweight resource mode.
+     */
+    QColor editorBackground = m_theme.editorBackground;
+    if (m_resourceMode) {
+        editorBackground = QColor(52, 52, 52);
+    }
+
+    p.setColor(QPalette::Base, editorBackground);
     p.setColor(QPalette::Text, m_theme.editorText);
     p.setColor(QPalette::Highlight, m_theme.selectionBackground);
     p.setColor(QPalette::HighlightedText, m_theme.selectionText);
     setPalette(p);
+
+    /*
+     * MainWindow has a generic QPlainTextEdit stylesheet, and Qt stylesheets
+     * take precedence over QPalette.  That is why resource tabs were still
+     * appearing black even though their palette was set to charcoal.
+     *
+     * Give CodeEditor its own background rule so the selected editor colour
+     * wins while the rest of the inherited IDE styling remains intact.
+     */
+    setStyleSheet(
+        QStringLiteral(
+            "CodeEditor {"
+            " background-color:%1;"
+            " color:%2;"
+            " selection-background-color:%3;"
+            " selection-color:%4;"
+            "}")
+            .arg(
+                ideThemeColorName(editorBackground),
+                ideThemeColorName(m_theme.editorText),
+                ideThemeColorName(m_theme.selectionBackground),
+                ideThemeColorName(m_theme.selectionText)));
 
     if (m_highlighter) {
         m_highlighter->setTheme(m_theme);
@@ -1066,7 +1199,8 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
 
 void CodeEditor::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton
+    if (!m_resourceMode
+        && event->button() == Qt::LeftButton
         && (event->modifiers() & Qt::ControlModifier)) {
 
         QTextCursor cursor = cursorForPosition(event->position().toPoint());
@@ -1088,7 +1222,7 @@ void CodeEditor::mousePressEvent(QMouseEvent *event)
 
 void CodeEditor::mouseMoveEvent(QMouseEvent *event)
 {
-    if (event->modifiers() & Qt::ControlModifier) {
+    if (!m_resourceMode && (event->modifiers() & Qt::ControlModifier)) {
         QTextCursor cursor = cursorForPosition(event->position().toPoint());
         cursor.select(QTextCursor::WordUnderCursor);
         const QString symbol = cursor.selectedText().trimmed();
@@ -1223,7 +1357,7 @@ bool CodeEditor::handlePairedBackspace(QKeyEvent *event)
 
 void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
-    if (event->key() == Qt::Key_F1) {
+    if (!m_resourceMode && event->key() == Qt::Key_F1) {
         emit quickTipRequested(textUnderCursor());
         event->accept();
         return;
@@ -1353,6 +1487,13 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
 
     QPlainTextEdit::keyPressEvent(event);
 
+    if (m_resourceMode) {
+        if (m_completer && m_completer->popup()) {
+            m_completer->popup()->hide();
+        }
+        return;
+    }
+
     if (m_completer && requestMemberCompletionAtCursor()) {
         return;
     }
@@ -1386,6 +1527,10 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
     m_lineNumberArea->setGeometry(
         QRect(contents.left(), contents.top(), lineNumberAreaWidth(), contents.height()));
 
+    /*
+     * The minimap lives in the right-hand viewport margin for every editor
+     * mode, including lightweight .res resource tabs.
+     */
     const QRect view = viewport()->geometry();
     m_minimap->setGeometry(
         QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
@@ -1393,7 +1538,15 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
 
 void CodeEditor::updateLineNumberAreaWidth(int)
 {
-    setViewportMargins(lineNumberAreaWidth(), 0, CodeMinimapWidth, 0);
+    /*
+     * Always reserve the normal minimap strip on the right.  Resource mode
+     * disables heavyweight semantic analysis, not the minimap itself.
+     */
+    setViewportMargins(
+        lineNumberAreaWidth(),
+        0,
+        CodeMinimapWidth,
+        0);
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
