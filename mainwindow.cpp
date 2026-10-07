@@ -50,6 +50,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QStandardPaths>
@@ -501,6 +502,23 @@ struct SourceVariableSymbol
     QString name;
     int line = -1;
     QString typeName;
+
+    /*
+     * Display-only array suffix, e.g. "[]", "[256]" or "[16][32]".
+     * Keep this separate from name so Ctrl+Click/type/member lookup still uses
+     * the real C identifier ("background", not "background[256]").
+     */
+    QString arraySuffix;
+
+    /*
+     * True for declarations such as:
+     *
+     *     extern const uint8_t background[];
+     *
+     * Ctrl+Click should prefer the real storage definition in another file
+     * rather than stopping on this declaration.
+     */
+    bool externDeclaration = false;
 };
 
 struct SourceNamedSymbol
@@ -674,6 +692,147 @@ QString variableNameFromDeclarator(QString declarator)
     return match.hasMatch() ? match.captured(1) : QString();
 }
 
+int inferredBraceArrayElementCount(const QString &declarator)
+{
+    /*
+     * Count elements in the outermost brace initializer only.
+     *
+     * Examples:
+     *   { 1, 2, 3 }                  -> 3
+     *   { {1,2}, {3,4} }            -> 2
+     *
+     * The parser calls this with sanitized C source, so comments and quoted
+     * strings have already been blanked and commas inside them cannot confuse
+     * the count.
+     */
+    const int equals = declarator.indexOf(QLatin1Char('='));
+    if (equals < 0) {
+        return -1;
+    }
+
+    const int openBrace = declarator.indexOf(QLatin1Char('{'), equals + 1);
+    if (openBrace < 0) {
+        return -1;
+    }
+
+    int depth = 0;
+    int elementCount = 0;
+    bool elementHasContent = false;
+
+    for (int i = openBrace + 1; i < declarator.size(); ++i) {
+        const QChar ch = declarator.at(i);
+
+        if (ch == QLatin1Char('{')) {
+            ++depth;
+            elementHasContent = true;
+            continue;
+        }
+
+        if (ch == QLatin1Char('}')) {
+            if (depth > 0) {
+                --depth;
+                elementHasContent = true;
+                continue;
+            }
+
+            // Closing brace of the outer initializer.
+            if (elementHasContent) {
+                ++elementCount;
+            }
+            return elementCount;
+        }
+
+        if (ch == QLatin1Char(',')
+            && depth == 0) {
+            if (elementHasContent) {
+                ++elementCount;
+                elementHasContent = false;
+            }
+            continue;
+        }
+
+        if (!ch.isSpace()) {
+            elementHasContent = true;
+        }
+    }
+
+    return -1;
+}
+
+QString arraySuffixFromDeclarator(const QString &declarator,
+                                  const QString &variableName)
+{
+    if (variableName.isEmpty()) {
+        return {};
+    }
+
+    QString beforeInitializer = declarator;
+
+    /*
+     * Find '=' only at top level. An array bound may itself contain
+     * parentheses/brackets, so do not simply use indexOf('=').
+     */
+    int nesting = 0;
+    int equals = -1;
+    for (int i = 0; i < beforeInitializer.size(); ++i) {
+        const QChar ch = beforeInitializer.at(i);
+
+        if (ch == QLatin1Char('(') || ch == QLatin1Char('[')) {
+            ++nesting;
+        } else if (ch == QLatin1Char(')') || ch == QLatin1Char(']')) {
+            nesting = qMax(0, nesting - 1);
+        } else if (ch == QLatin1Char('=') && nesting == 0) {
+            equals = i;
+            break;
+        }
+    }
+
+    if (equals >= 0) {
+        beforeInitializer = beforeInitializer.left(equals);
+    }
+
+    const QRegularExpression arrayExpression(
+        QStringLiteral(
+            R"(\b%1\b\s*((?:\[[^\]]*\]\s*)+)$)")
+            .arg(QRegularExpression::escape(variableName)));
+
+    const QRegularExpressionMatch match =
+        arrayExpression.match(beforeInitializer.trimmed());
+
+    if (!match.hasMatch()) {
+        return {};
+    }
+
+    QString suffix = match.captured(1);
+    suffix.remove(QRegularExpression(QStringLiteral("\\s+")));
+
+    /*
+     * If the first dimension was left empty and this declaration has a brace
+     * initializer, show the element count that C would infer.
+     *
+     *     const int8_t background[] = { 10, 20, 30 };
+     *                               -> background[3]
+     *
+     * For multidimensional arrays only the first unsized dimension is inferred:
+     *
+     *     int map[][2] = {{1,2}, {3,4}};
+     *                  -> map[2][2]
+     */
+    if (suffix.startsWith(QStringLiteral("[]"))) {
+        const int inferredCount =
+            inferredBraceArrayElementCount(declarator);
+
+        if (inferredCount > 0) {
+            suffix.replace(
+                0,
+                2,
+                QStringLiteral("[%1]").arg(inferredCount));
+        }
+    }
+
+    return suffix;
+}
+
 QStringList splitTopLevelCommas(const QString &text)
 {
     QStringList parts;
@@ -837,12 +996,125 @@ QList<SourceVariableSymbol> variableSymbolsFromStatement(const QString &statemen
         return symbols;
     }
 
+    const bool isExternDeclaration =
+        QRegularExpression(QStringLiteral(R"(\bextern\b)"))
+            .match(text)
+            .hasMatch();
+
     for (const QString &declarator : declarators) {
         const QString name = variableNameFromDeclarator(declarator);
         if (!name.isEmpty()) {
-            symbols.append({name, line, declarationType});
+            symbols.append({
+                name,
+                line,
+                declarationType,
+                arraySuffixFromDeclarator(declarator, name),
+                isExternDeclaration
+            });
         }
     }
+    return symbols;
+}
+
+/*
+ * Find C array declarations which use brace initialisers, for example:
+ *
+ *     const int8_t background[] = {
+ *         1, 2, 3, 4
+ *     };
+ *
+ * The normal lightweight declaration regexp deliberately stops at braces, so
+ * these declarations used to disappear from the Globals/Locals tree. Scan
+ * them separately and feed the complete declaration through the same
+ * variable/type parser used for ordinary declarations.
+ */
+QList<SourceVariableSymbol> braceInitialisedArraySymbolsInRange(
+    const QString &sanitized,
+    const QString &wholeSource,
+    int start,
+    int end)
+{
+    QList<SourceVariableSymbol> symbols;
+
+    if (start < 0 || end <= start || start >= sanitized.size()) {
+        return symbols;
+    }
+
+    const int boundedEnd = qMin(end, sanitized.size());
+
+    static const QRegularExpression arrayStartExpression(
+        QStringLiteral(
+            R"((?:^|[\n;{}])\s*((?:(?:const|volatile|static|extern|register)\s+)*(?:(?:struct|union|enum)\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]]*\]\s*=\s*\{))"),
+        QRegularExpression::MultilineOption);
+
+    int searchFrom = start;
+
+    while (searchFrom < boundedEnd) {
+        const QRegularExpressionMatch match =
+            arrayStartExpression.match(
+                sanitized,
+                searchFrom,
+                QRegularExpression::NormalMatch,
+                QRegularExpression::NoMatchOption);
+
+        if (!match.hasMatch() || match.capturedStart(1) >= boundedEnd) {
+            break;
+        }
+
+        const int declarationStart = match.capturedStart(1);
+        const int openBrace =
+            sanitized.indexOf(QLatin1Char('{'), match.capturedStart(1));
+
+        if (openBrace < 0 || openBrace >= boundedEnd) {
+            break;
+        }
+
+        const int closeBrace = matchingBracePosition(sanitized, openBrace);
+        if (closeBrace < 0 || closeBrace >= boundedEnd) {
+            break;
+        }
+
+        int semicolon = closeBrace + 1;
+        while (semicolon < boundedEnd
+               && sanitized.at(semicolon).isSpace()) {
+            ++semicolon;
+        }
+
+        if (semicolon >= boundedEnd
+            || sanitized.at(semicolon) != QLatin1Char(';')) {
+            searchFrom = closeBrace + 1;
+            continue;
+        }
+
+        const QString declaration =
+            sanitized.mid(
+                declarationStart,
+                semicolon - declarationStart);
+
+        const auto found =
+            variableSymbolsFromStatement(
+                declaration,
+                declarationStart,
+                wholeSource);
+
+        for (const SourceVariableSymbol &symbol : found) {
+            bool duplicate = false;
+            for (const SourceVariableSymbol &existing : symbols) {
+                if (existing.name == symbol.name
+                    && existing.line == symbol.line) {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate) {
+                symbols.append(symbol);
+            }
+        }
+
+        searchFrom = semicolon + 1;
+    }
+
     return symbols;
 }
 
@@ -881,6 +1153,32 @@ QList<SourceVariableSymbol> variableSymbolsInRange(const QString &sanitized,
             if (!duplicate) {
                 symbols.append(symbol);
             }
+        }
+    }
+
+    /*
+     * Brace-initialised arrays need a separate pass because the ordinary
+     * declaration regexp above intentionally excludes braces.
+     */
+    const auto arraySymbols =
+        braceInitialisedArraySymbolsInRange(
+            sanitized,
+            wholeSource,
+            start,
+            boundedEnd);
+
+    for (const SourceVariableSymbol &symbol : arraySymbols) {
+        bool duplicate = false;
+        for (const SourceVariableSymbol &existing : symbols) {
+            if (existing.name == symbol.name
+                && existing.line == symbol.line) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            symbols.append(symbol);
         }
     }
 
@@ -1257,7 +1555,8 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
                 function.parameters.append({
                     cleanName,
                     function.line,
-                    typeNameFromDeclaration(parameter, cleanName)
+                    typeNameFromDeclaration(parameter, cleanName),
+                    arraySuffixFromDeclarator(parameter, cleanName)
                 });
             }
         }
@@ -1358,7 +1657,8 @@ QString sourceFunctionName(const QString &signature)
 int definitionLineInTable(const SourceSymbolTable &table,
                           const QString &symbol,
                           int usageLine,
-                          bool includeLocalScope)
+                          bool includeLocalScope,
+                          bool includeExternGlobals = true)
 {
     if (includeLocalScope && usageLine >= 0) {
         for (const SourceFunctionSymbol &function : table.functions) {
@@ -1404,7 +1704,8 @@ int definitionLineInTable(const SourceSymbolTable &table,
     }
 
     for (const SourceVariableSymbol &global : table.globals) {
-        if (global.name == symbol) {
+        if (global.name == symbol
+            && (includeExternGlobals || !global.externDeclaration)) {
             return global.line;
         }
     }
@@ -1473,10 +1774,18 @@ MainWindow::MainWindow(QWidget *parent)
     , m_outputToolBar(nullptr)
     , m_findReplaceDialog(nullptr)
     , m_compilerProcess(new QProcess(this))
+    , m_projectAnalysisTimer(new QTimer(this))
     , m_buildStep(BuildStep::None)
     , m_projectType(GuiProjectType)
     , m_modSizeKb(0)
     , m_editorFontPointSize(10)
+    , m_compilerOptimization(QStringLiteral("-Ofast"))
+    , m_compilerSuppressWarnings(true)
+    , m_compilerWall(false)
+    , m_compilerWextra(false)
+    , m_compilerFunctionSections(true)
+    , m_compilerDataSections(true)
+    , m_compilerStackUsage(true)
     , m_theme(defaultIDETheme())
 {
     ui->setupUi(this);
@@ -1484,8 +1793,18 @@ MainWindow::MainWindow(QWidget *parent)
     setupInterface();
     refreshApiCatalog();
 
-
-
+    /*
+     * Project-wide function/type discovery scans multiple source files.
+     * Running it on every single keystroke makes large resource-heavy projects
+     * feel frozen. Coalesce bursts of edits into one refresh shortly after the
+     * user stops typing.
+     */
+    m_projectAnalysisTimer->setSingleShot(true);
+    m_projectAnalysisTimer->setInterval(140);
+    connect(m_projectAnalysisTimer, &QTimer::timeout, this, [this]() {
+        refreshFunctionCompletions();
+        refreshSymbolTree();
+    });
 
     connect(m_compilerProcess, &QProcess::readyReadStandardOutput, this, [this]() {
         appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()), OutputKind::Normal);
@@ -1494,7 +1813,6 @@ MainWindow::MainWindow(QWidget *parent)
         const QString text =
             QString::fromLocal8Bit(m_compilerProcess->readAllStandardError());
 
-        appendOutputText(text, OutputKind::Error);
         processCompilerStderrChunk(text);
     });
     connect(m_compilerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
@@ -2135,6 +2453,16 @@ void MainWindow::createNewProject()
     Q_UNUSED(guiButton);
     m_modSizeKb = 0;
     m_linkerScriptPath.clear();
+
+    // Compiler defaults for a brand-new project.
+    m_compilerOptimization = QStringLiteral("-Ofast");
+    m_compilerSuppressWarnings = true;
+    m_compilerWall = false;
+    m_compilerWextra = false;
+    m_compilerFunctionSections = true;
+    m_compilerDataSections = true;
+    m_compilerStackUsage = true;
+    m_extraCompilerFlags.clear();
     m_projectFilePath = QFileInfo(projectFilePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
@@ -2278,9 +2606,6 @@ void MainWindow::showOptions()
     /*
      * Keep the dialog in its own scope so it and all of its colour-picker /
      * tab children are destroyed before we replace the MainWindow stylesheet.
-     *
-     * Re-polishing a just-closed modal child tree while returning from exec()
-     * is unnecessary and can be unstable on some Qt/style combinations.
      */
     {
         OptionsDialog dialog(this);
@@ -2479,7 +2804,18 @@ void MainWindow::showProjectSettings()
     dialog.setProjectType(m_projectType);
     dialog.setModSizeKb(m_modSizeKb);
     dialog.setCustomLinkerScriptPath(m_linkerScriptPath);
-    dialog.setDefaultLinkerScriptPaths(defaultLinkerScriptPath(GuiProjectType), defaultLinkerScriptPath(GameProjectType));
+    dialog.setDefaultLinkerScriptPaths(
+        defaultLinkerScriptPath(GuiProjectType),
+        defaultLinkerScriptPath(GameProjectType));
+
+    dialog.setOptimizationFlag(m_compilerOptimization);
+    dialog.setSuppressWarnings(m_compilerSuppressWarnings);
+    dialog.setWallEnabled(m_compilerWall);
+    dialog.setWextraEnabled(m_compilerWextra);
+    dialog.setFunctionSectionsEnabled(m_compilerFunctionSections);
+    dialog.setDataSectionsEnabled(m_compilerDataSections);
+    dialog.setStackUsageEnabled(m_compilerStackUsage);
+    dialog.setExtraCompilerFlags(m_extraCompilerFlags);
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
@@ -2488,6 +2824,15 @@ void MainWindow::showProjectSettings()
     m_projectType = normalizedProjectType(dialog.projectType());
     m_modSizeKb = dialog.modSizeKb();
     m_linkerScriptPath = dialog.customLinkerScriptPath();
+
+    m_compilerOptimization = dialog.optimizationFlag();
+    m_compilerSuppressWarnings = dialog.suppressWarnings();
+    m_compilerWall = dialog.wallEnabled();
+    m_compilerWextra = dialog.wextraEnabled();
+    m_compilerFunctionSections = dialog.functionSectionsEnabled();
+    m_compilerDataSections = dialog.dataSectionsEnabled();
+    m_compilerStackUsage = dialog.stackUsageEnabled();
+    m_extraCompilerFlags = dialog.extraCompilerFlags();
 
     if (!m_projectFilePath.isEmpty()) {
         saveProjectFile(m_projectFilePath);
@@ -2580,17 +2925,38 @@ void MainWindow::compileActiveFile()
         QStringLiteral("-mfpu=fpv5-d16"),
         QStringLiteral("-mfloat-abi=hard"),
         QStringLiteral("-std=gnu99"),
-        QStringLiteral("-Ofast"),
-        QStringLiteral("-ffunction-sections"),
-        QStringLiteral("-fdata-sections"),
-        QStringLiteral("-fstack-usage"),
+        m_compilerOptimization,
         QStringLiteral("--specs=nano.specs"),
         QStringLiteral("-mno-unaligned-access"),
-        QStringLiteral("-w"),
         QStringLiteral("-DSIDBOX_STARTUP_HEADER_IN_ASM"),
         QStringLiteral("-I"), apiDir.absolutePath(),
         QStringLiteral("-I"), QDir(libsPath).filePath(QStringLiteral("libraries")),
     };
+
+    if (m_compilerFunctionSections) {
+        arguments << QStringLiteral("-ffunction-sections");
+    }
+    if (m_compilerDataSections) {
+        arguments << QStringLiteral("-fdata-sections");
+    }
+    if (m_compilerStackUsage) {
+        arguments << QStringLiteral("-fstack-usage");
+    }
+
+    if (m_compilerSuppressWarnings) {
+        arguments << QStringLiteral("-w");
+    } else {
+        if (m_compilerWall) {
+            arguments << QStringLiteral("-Wall");
+        }
+        if (m_compilerWextra) {
+            arguments << QStringLiteral("-Wextra");
+        }
+    }
+
+    if (!m_extraCompilerFlags.trimmed().isEmpty()) {
+        arguments << QProcess::splitCommand(m_extraCompilerFlags);
+    }
 
     arguments << sourceFiles;
     arguments << apiSourceFiles;
@@ -2620,6 +2986,31 @@ void MainWindow::compileActiveFile()
     appendOutputLine(tr("Map: %1").arg(QDir::toNativeSeparators(mapOutputPath)), OutputKind::Path);
     appendOutputLine(tr("Asm: %1").arg(QDir::toNativeSeparators(asmOutputPath)), OutputKind::Path);
     appendOutputLine(tr("Linker script: %1").arg(QDir::toNativeSeparators(selectedLinkerScript)), OutputKind::Path);
+    appendOutputLine(
+        tr("Optimisation: %1").arg(m_compilerOptimization),
+        OutputKind::Header);
+
+    QStringList enabledCompilerOptions;
+    if (m_compilerFunctionSections) enabledCompilerOptions << QStringLiteral("-ffunction-sections");
+    if (m_compilerDataSections) enabledCompilerOptions << QStringLiteral("-fdata-sections");
+    if (m_compilerStackUsage) enabledCompilerOptions << QStringLiteral("-fstack-usage");
+    if (m_compilerSuppressWarnings) {
+        enabledCompilerOptions << QStringLiteral("-w");
+    } else {
+        if (m_compilerWall) enabledCompilerOptions << QStringLiteral("-Wall");
+        if (m_compilerWextra) enabledCompilerOptions << QStringLiteral("-Wextra");
+    }
+    if (!m_extraCompilerFlags.trimmed().isEmpty()) {
+        enabledCompilerOptions << m_extraCompilerFlags.trimmed();
+    }
+
+    appendOutputLine(
+        tr("Compiler options: %1")
+            .arg(enabledCompilerOptions.isEmpty()
+                     ? tr("(none)")
+                     : enabledCompilerOptions.join(QLatin1Char(' '))),
+        OutputKind::Muted);
+
     if (m_modSizeKb > 0) {
         appendOutputLine(tr("MOD size: %1 KB").arg(m_modSizeKb), OutputKind::Warning);
     }
@@ -3084,6 +3475,9 @@ void MainWindow::renameSelectedProjectFile()
 void MainWindow::handleCompilerFinished(int exitCode)
 {
     if (m_buildStep == BuildStep::Linking && !m_compilerStderrBuffer.isEmpty()) {
+        appendOutputLine(
+            m_compilerStderrBuffer,
+            compilerOutputKindForLine(m_compilerStderrBuffer));
         processCompilerDiagnosticLine(m_compilerStderrBuffer);
         m_compilerStderrBuffer.clear();
     }
@@ -3177,6 +3571,8 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     editor->setTheme(m_theme);
     editor->setFilePath(filePath);
 
+    ensureApiCatalog();
+
     QStringList initialCompletions = projectFunctionSignatures();
     const QStringList initialTypeNames = projectTypeNames();
     initialCompletions.append(initialTypeNames);
@@ -3185,6 +3581,7 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
 
     editor->setFunctionCompletions(initialCompletions);
     editor->setProjectTypeNames(initialTypeNames);
+    editor->setApiSyntaxNames(apiSyntaxNames());
     applyCompilerDiagnostics(editor);
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -3197,21 +3594,19 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
         updateTabTitle(editor);
     });
     connect(editor->document(), &QTextDocument::contentsChanged, this, [this, editor]() {
-        refreshFunctionCompletions();
-
-        if (editor == activeEditor()) {
-            refreshSymbolTree();
+        /*
+         * loadFromFile() calls setPlainText() before the editor is inserted
+         * into the tab widget. Do not perform a project-wide parse in the
+         * middle of that initial load; openFile() performs the normal refresh
+         * after the tab is installed.
+         */
+        if (m_editorTabs->indexOf(editor) >= 0) {
+            m_projectAnalysisTimer->start();
         }
 
         /*
-         * Struct/type/member information is parsed from the live document.
-         * Re-query member completion after every edit so newly added typedefs,
-         * members and object declarations are immediately visible without
-         * closing/reopening the tab.
-         *
-         * Queue it until the current key event/contentsChanged chain has
-         * finished, otherwise we can ask the completer while QTextDocument is
-         * still notifying its listeners.
+         * Struct/member completion itself is cheap unless the caret is
+         * actually after '.' or '->', so keep this responsive.
          */
         QMetaObject::invokeMethod(
             editor,
@@ -3274,6 +3669,64 @@ bool MainWindow::openFile(const QString &filePath)
         }
     }
 
+    /*
+     * Sidbox IDE deliberately performs syntax highlighting, symbol discovery
+     * and project IntelliSense on source files. That is useful for normal code,
+     * but very large generated/resource files can still take a moment to open.
+     *
+     * Warn rather than silently disabling features: the user keeps full IDE
+     * behaviour if they choose Open Anyway.
+     */
+    const QFileInfo openingFileInfo(filePath);
+    const qint64 largeSourceThreshold = 200LL * 1024LL;
+    const qint64 veryLargeSourceThreshold = 1024LL * 1024LL;
+    const QString suffix = openingFileInfo.suffix().toLower();
+
+    const bool isSourceLike =
+        suffix == QStringLiteral("c")
+        || suffix == QStringLiteral("h")
+        || suffix == QStringLiteral("cc")
+        || suffix == QStringLiteral("cpp")
+        || suffix == QStringLiteral("hpp")
+        || suffix == QStringLiteral("inc");
+
+    if (isSourceLike
+        && openingFileInfo.exists()
+        && openingFileInfo.size() >= largeSourceThreshold) {
+
+        QMessageBox warning(this);
+        warning.setIcon(QMessageBox::Warning);
+        warning.setWindowTitle(
+            openingFileInfo.size() >= veryLargeSourceThreshold
+                ? tr("Very Large Source File")
+                : tr("Large Source File"));
+
+        warning.setText(
+            tr("%1 is %2.")
+                .arg(openingFileInfo.fileName(),
+                     formattedFileSize(openingFileInfo.size())));
+
+        warning.setInformativeText(
+            openingFileInfo.size() >= veryLargeSourceThreshold
+                ? tr("This is a very large source file. Syntax analysis and IntelliSense "
+                     "may take a few seconds. Generated/resource data is usually easier "
+                     "for the IDE to handle when split across smaller source files.")
+                : tr("Large source files may take a moment to open while syntax analysis "
+                     "and IntelliSense are prepared. If this is generated/resource data, "
+                     "consider splitting it across smaller source files."));
+
+        QPushButton *openAnywayButton =
+            warning.addButton(tr("Open Anyway"), QMessageBox::AcceptRole);
+        warning.addButton(QMessageBox::Cancel);
+        warning.setDefaultButton(openAnywayButton);
+
+        warning.exec();
+
+        if (warning.clickedButton() != openAnywayButton) {
+            return false;
+        }
+    }
+
     CodeEditor *editor = createEditor(filePath);
     if (!editor->loadFromFile(filePath)) {
         editor->deleteLater();
@@ -3286,6 +3739,81 @@ bool MainWindow::openFile(const QString &filePath)
     addProjectFile(filePath);
     refreshProjectFiles();
     refreshFunctionCompletions();
+    return true;
+}
+
+
+bool MainWindow::openApiReference(const QString &filePath, int line)
+{
+    const QString absolutePath = QFileInfo(filePath).absoluteFilePath();
+    if (absolutePath.isEmpty() || !QFileInfo::exists(absolutePath)) {
+        return false;
+    }
+
+    /*
+     * Reuse an already-open tab for the same file. If it is a project tab,
+     * leave its editability alone; if it was opened by API navigation it is
+     * already read-only.
+     */
+    CodeEditor *editor = nullptr;
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *candidate =
+            qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+
+        if (!candidate || candidate->filePath().isEmpty()) {
+            continue;
+        }
+
+        if (QFileInfo(candidate->filePath()).absoluteFilePath()
+            == absolutePath) {
+            editor = candidate;
+            m_editorTabs->setCurrentIndex(i);
+            break;
+        }
+    }
+
+    if (!editor) {
+        editor = createEditor(absolutePath);
+
+        if (!editor->loadFromFile(absolutePath)) {
+            editor->deleteLater();
+            QMessageBox::warning(
+                this,
+                tr("Open API Source"),
+                tr("Could not open %1.")
+                    .arg(QDir::toNativeSeparators(absolutePath)));
+            return false;
+        }
+
+        editor->setReadOnly(true);
+        editor->setProperty("sidboxApiReference", true);
+
+        const int index =
+            m_editorTabs->addTab(
+                editor,
+                tabTitleForEditor(editor));
+
+        m_editorTabs->setTabToolTip(
+            index,
+            tr("Read-only Sidbox API source\n%1")
+                .arg(QDir::toNativeSeparators(absolutePath)));
+
+        m_editorTabs->setCurrentIndex(index);
+    }
+
+    if (line >= 0) {
+        const QTextBlock block =
+            editor->document()->findBlockByNumber(line);
+
+        if (block.isValid()) {
+            QTextCursor cursor(block);
+            editor->setTextCursor(cursor);
+            editor->centerCursor();
+        }
+    }
+
+    editor->setFocus();
     return true;
 }
 
@@ -3406,6 +3934,14 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
         m_linkerScriptPath.clear();
         m_modSizeKb = 0;
         m_projectType = GuiProjectType;
+        m_compilerOptimization = QStringLiteral("-Ofast");
+        m_compilerSuppressWarnings = true;
+        m_compilerWall = false;
+        m_compilerWextra = false;
+        m_compilerFunctionSections = true;
+        m_compilerDataSections = true;
+        m_compilerStackUsage = true;
+        m_extraCompilerFlags.clear();
         clearEditorTabs();
         refreshProjectFiles();
         createNewSourceFile();
@@ -3447,6 +3983,51 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_projectType = normalizedProjectType(root.value(QStringLiteral("projectType")).toString(GuiProjectType));
     m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
     m_appSizeKb = root.value(QStringLiteral("appSizeKb")).toInt(0);
+
+    const QJsonObject compiler =
+        root.value(QStringLiteral("compiler")).toObject();
+
+    m_compilerOptimization =
+        compiler.value(QStringLiteral("optimization"))
+            .toString(QStringLiteral("-Ofast"));
+
+    const QStringList validOptimizations = {
+        QStringLiteral("-O0"),
+        QStringLiteral("-Og"),
+        QStringLiteral("-O1"),
+        QStringLiteral("-O2"),
+        QStringLiteral("-O3"),
+        QStringLiteral("-Os"),
+        QStringLiteral("-Ofast")
+    };
+    if (!validOptimizations.contains(m_compilerOptimization)) {
+        m_compilerOptimization = QStringLiteral("-Ofast");
+    }
+
+    m_compilerSuppressWarnings =
+        compiler.value(QStringLiteral("suppressWarnings")).toBool(true);
+    m_compilerWall =
+        compiler.value(QStringLiteral("wall")).toBool(false);
+    m_compilerWextra =
+        compiler.value(QStringLiteral("wextra")).toBool(false);
+    m_compilerFunctionSections =
+        compiler.value(QStringLiteral("functionSections")).toBool(true);
+    m_compilerDataSections =
+        compiler.value(QStringLiteral("dataSections")).toBool(true);
+    m_compilerStackUsage =
+        compiler.value(QStringLiteral("stackUsage")).toBool(true);
+    m_extraCompilerFlags =
+        compiler.value(QStringLiteral("extraFlags")).toString();
+
+    /*
+     * -w means warnings are suppressed, so warning-enabling switches have no
+     * effect. Keep the stored state internally consistent for older/hand-edited
+     * project files.
+     */
+    if (m_compilerSuppressWarnings) {
+        m_compilerWall = false;
+        m_compilerWextra = false;
+    }
 
     const QString linkerScript = root.value(QStringLiteral("linkerScript")).toString();
     m_linkerScriptPath = linkerScript.isEmpty() ? QString() : fromProjectRelativePath(linkerScript);
@@ -3527,6 +4108,17 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));
     root.insert(QStringLiteral("modSizeKb"), m_modSizeKb);
     root.insert(QStringLiteral("appSizeKb"), m_appSizeKb);
+
+    QJsonObject compiler;
+    compiler.insert(QStringLiteral("optimization"), m_compilerOptimization);
+    compiler.insert(QStringLiteral("suppressWarnings"), m_compilerSuppressWarnings);
+    compiler.insert(QStringLiteral("wall"), m_compilerWall);
+    compiler.insert(QStringLiteral("wextra"), m_compilerWextra);
+    compiler.insert(QStringLiteral("functionSections"), m_compilerFunctionSections);
+    compiler.insert(QStringLiteral("dataSections"), m_compilerDataSections);
+    compiler.insert(QStringLiteral("stackUsage"), m_compilerStackUsage);
+    compiler.insert(QStringLiteral("extraFlags"), m_extraCompilerFlags);
+    root.insert(QStringLiteral("compiler"), compiler);
 
     QFile file(m_projectFilePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
@@ -3916,7 +4508,7 @@ void MainWindow::refreshSymbolTree()
     } else {
         for (const SourceVariableSymbol &global : symbols.globals) {
             auto *item = new QTreeWidgetItem(globalsItem);
-            item->setText(0, global.name);
+            item->setText(0, global.name + global.arraySuffix);
             item->setIcon(0, globalIcon);
             item->setData(0, Qt::UserRole, global.line);
             item->setToolTip(0, tr("Global — double-click to jump to line %1").arg(global.line + 1));
@@ -3964,7 +4556,7 @@ void MainWindow::refreshSymbolTree()
                 parametersItem->setExpanded(true);
                 for (const SourceVariableSymbol &parameter : function.parameters) {
                     auto *item = new QTreeWidgetItem(parametersItem);
-                    item->setText(0, parameter.name);
+                    item->setText(0, parameter.name + parameter.arraySuffix);
                     item->setIcon(0, parameterIcon);
                     item->setData(0, Qt::UserRole, parameter.line);
                     item->setToolTip(0, tr("Parameter — double-click to jump to function"));
@@ -3983,7 +4575,7 @@ void MainWindow::refreshSymbolTree()
                 localsItem->setExpanded(true);
                 for (const SourceVariableSymbol &local : function.locals) {
                     auto *item = new QTreeWidgetItem(localsItem);
-                    item->setText(0, local.name);
+                    item->setText(0, local.name + local.arraySuffix);
                     item->setIcon(0, localIcon);
                     item->setData(0, Qt::UserRole, local.line);
                     item->setToolTip(0, tr("Local — double-click to jump to line %1").arg(local.line + 1));
@@ -4142,13 +4734,31 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
         return true;
     };
 
+    /*
+     * Keep the first extern declaration as a fallback. We search every open
+     * tab/project file for a real definition first. If none exists, Ctrl+Click
+     * can still take the user to the declaration rather than doing nothing.
+     */
+    CodeEditor *externFallbackEditor = nullptr;
+    int externFallbackLine = -1;
+    QString externFallbackPath;
+
     // 1. Current file first. This also resolves locals and parameters using
     //    the function containing the Ctrl+Clicked use.
     const SourceSymbolTable currentSymbols =
         parseSourceSymbols(sourceEditor->toPlainText());
 
+    for (const SourceVariableSymbol &global : currentSymbols.globals) {
+        if (global.name == symbol && global.externDeclaration) {
+            externFallbackEditor = sourceEditor;
+            externFallbackLine = global.line;
+            externFallbackPath = sourceEditor->filePath();
+            break;
+        }
+    }
+
     const int currentLine =
-        definitionLineInTable(currentSymbols, symbol, sourceLine, true);
+        definitionLineInTable(currentSymbols, symbol, sourceLine, true, false);
 
     if (currentLine >= 0) {
         jumpToLine(sourceEditor, currentLine);
@@ -4191,7 +4801,18 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
         const SourceSymbolTable symbols =
             parseSourceSymbols(editor->toPlainText());
 
-        const int line = definitionLineInTable(symbols, symbol, -1, false);
+        if (externFallbackLine < 0) {
+            for (const SourceVariableSymbol &global : symbols.globals) {
+                if (global.name == symbol && global.externDeclaration) {
+                    externFallbackEditor = editor;
+                    externFallbackLine = global.line;
+                    externFallbackPath = editorPath;
+                    break;
+                }
+            }
+        }
+
+        const int line = definitionLineInTable(symbols, symbol, -1, false, false);
         if (line >= 0) {
             jumpToLine(editor, line);
             statusBar()->showMessage(
@@ -4229,7 +4850,19 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
 
         const QString source = QString::fromUtf8(file.readAll());
         const SourceSymbolTable symbols = parseSourceSymbols(source);
-        const int line = definitionLineInTable(symbols, symbol, -1, false);
+
+        if (externFallbackLine < 0) {
+            for (const SourceVariableSymbol &global : symbols.globals) {
+                if (global.name == symbol && global.externDeclaration) {
+                    externFallbackEditor = nullptr;
+                    externFallbackLine = global.line;
+                    externFallbackPath = absolutePath;
+                    break;
+                }
+            }
+        }
+
+        const int line = definitionLineInTable(symbols, symbol, -1, false, false);
 
         if (line < 0) {
             continue;
@@ -4248,6 +4881,123 @@ void MainWindow::goToDefinition(CodeEditor *sourceEditor,
                 2500);
         }
         return;
+    }
+
+    /*
+     * 4. Sidbox API source/header lookup.
+     *
+     * Only do this for names that are actually in the API catalogue, so a
+     * failed Ctrl+Click on an ordinary project identifier does not recursively
+     * scan the SDK.
+     */
+    ensureApiCatalog();
+
+    const QStringList knownApiNames = apiSyntaxNames();
+    if (knownApiNames.contains(symbol)) {
+        const QString apiPath =
+            QDir(ideLibsPath()).filePath(QStringLiteral("api"));
+
+        QStringList apiSourceFiles;
+        QStringList apiHeaderFiles;
+
+        QDirIterator apiIterator(
+            apiPath,
+            {QStringLiteral("*.c"), QStringLiteral("*.h")},
+            QDir::Files,
+            QDirIterator::Subdirectories);
+
+        while (apiIterator.hasNext()) {
+            const QString path =
+                QFileInfo(apiIterator.next()).absoluteFilePath();
+
+            if (QFileInfo(path).suffix().compare(
+                    QStringLiteral("c"),
+                    Qt::CaseInsensitive) == 0) {
+                apiSourceFiles.append(path);
+            } else {
+                apiHeaderFiles.append(path);
+            }
+        }
+
+        /*
+         * Prefer .c first: for an API function/global this normally lands on
+         * the real implementation/storage. Headers are the fallback for
+         * macros, typedefs, enums, structs and header-only declarations.
+         */
+        apiSourceFiles.sort(Qt::CaseInsensitive);
+        apiHeaderFiles.sort(Qt::CaseInsensitive);
+
+        QStringList apiFiles = apiSourceFiles;
+        apiFiles.append(apiHeaderFiles);
+
+        for (const QString &apiFilePath : std::as_const(apiFiles)) {
+            QFile apiFile(apiFilePath);
+            if (!apiFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                continue;
+            }
+
+            const QString apiSource =
+                QString::fromUtf8(apiFile.readAll());
+
+            const SourceSymbolTable apiSymbols =
+                parseSourceSymbols(apiSource);
+
+            const int apiLine =
+                definitionLineInTable(
+                    apiSymbols,
+                    symbol,
+                    -1,
+                    false,
+                    false);
+
+            if (apiLine < 0) {
+                continue;
+            }
+
+            if (openApiReference(apiFilePath, apiLine)) {
+                statusBar()->showMessage(
+                    tr("%1 — Sidbox API source in %2:%3 (read-only)")
+                        .arg(symbol,
+                             QFileInfo(apiFilePath).fileName())
+                        .arg(apiLine + 1),
+                    3500);
+            }
+            return;
+        }
+    }
+
+    /*
+     * No storage definition was found. Fall back to the extern declaration,
+     * if there was one.
+     */
+    if (externFallbackLine >= 0) {
+        if (externFallbackEditor) {
+            jumpToLine(externFallbackEditor, externFallbackLine);
+            statusBar()->showMessage(
+                tr("%1 — extern declaration in %2:%3")
+                    .arg(symbol,
+                         externFallbackPath.isEmpty()
+                             ? tr("open tab")
+                             : QFileInfo(externFallbackPath).fileName())
+                    .arg(externFallbackLine + 1),
+                2500);
+            return;
+        }
+
+        if (!externFallbackPath.isEmpty()
+            && openFile(externFallbackPath)) {
+            CodeEditor *targetEditor = activeEditor();
+            if (targetEditor
+                && jumpToLine(targetEditor, externFallbackLine)) {
+                statusBar()->showMessage(
+                    tr("%1 — extern declaration in %2:%3")
+                        .arg(symbol,
+                             QFileInfo(externFallbackPath).fileName())
+                        .arg(externFallbackLine + 1),
+                    2500);
+            }
+            return;
+        }
     }
 
     statusBar()->showMessage(
@@ -4286,12 +5036,37 @@ void MainWindow::jumpToSymbol(QTreeWidgetItem *item, int column)
     editor->setFocus();
 }
 
+QStringList MainWindow::apiSyntaxNames() const
+{
+    QStringList names = m_apiTips.keys();
+
+    /*
+     * Some functions are discovered as signatures without a separate quick-tip
+     * entry. Pull their identifier out as well so every catalogued API symbol
+     * receives the API syntax colour.
+     */
+    for (const QString &signature : m_apiSignatures) {
+        const int paren = signature.indexOf(QLatin1Char('('));
+        const QString name =
+            (paren >= 0 ? signature.left(paren) : signature).trimmed();
+
+        if (!name.isEmpty()) {
+            names.append(name);
+        }
+    }
+
+    names.removeDuplicates();
+    names.sort(Qt::CaseSensitive);
+    return names;
+}
+
 void MainWindow::refreshFunctionCompletions()
 {
     ensureApiCatalog();
 
     QStringList completions = projectFunctionSignatures();
     const QStringList typeNames = projectTypeNames();
+    const QStringList apiNames = apiSyntaxNames();
 
     // Type names without "(...)" are handled by CodeEditor's existing
     // completion insertion path as plain identifiers.
@@ -4307,6 +5082,7 @@ void MainWindow::refreshFunctionCompletions()
 
         editor->setFunctionCompletions(completions);
         editor->setProjectTypeNames(typeNames);
+        editor->setApiSyntaxNames(apiNames);
     }
 }
 
@@ -4332,7 +5108,10 @@ void MainWindow::refreshApiCatalog()
     }
 
     QStringList apiTexts;
-    QDirIterator iterator(apiPath, {QStringLiteral("*.h")}, QDir::Files, QDirIterator::Subdirectories);
+    QDirIterator iterator(apiPath,
+                          {QStringLiteral("*.h"), QStringLiteral("*.c")},
+                          QDir::Files,
+                          QDirIterator::Subdirectories);
     while (iterator.hasNext()) {
         QFile file(iterator.next());
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -4466,6 +5245,10 @@ QString MainWindow::tabTitleForEditor(CodeEditor *editor, int defaultType) const
         }
     } else {
         title = QFileInfo(editor->filePath()).fileName();
+
+        if (editor->property("sidboxApiReference").toBool()) {
+            title += tr(" [API]");
+        }
     }
 
     if (editor->document()->isModified()) {
@@ -5422,6 +6205,25 @@ QString MainWindow::normalizedDiagnosticPath(const QString &compilerPath) const
     return QFileInfo(path).absoluteFilePath();
 }
 
+MainWindow::OutputKind MainWindow::compilerOutputKindForLine(
+    const QString &line) const
+{
+    const QString lower = line.toLower();
+
+    if (lower.contains(QStringLiteral("warning:"))) {
+        return OutputKind::Warning;
+    }
+
+    if (lower.contains(QStringLiteral("fatal error:"))
+        || lower.contains(QStringLiteral("error:"))
+        || lower.contains(QStringLiteral("undefined reference"))
+        || lower.contains(QStringLiteral("ld returned"))) {
+        return OutputKind::Error;
+    }
+
+    return OutputKind::Normal;
+}
+
 void MainWindow::processCompilerStderrChunk(const QString &text)
 {
     if (text.isEmpty()) {
@@ -5439,6 +6241,7 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
             line.chop(1);
         }
 
+        appendOutputLine(line, compilerOutputKindForLine(line));
         processCompilerDiagnosticLine(line);
     }
 }

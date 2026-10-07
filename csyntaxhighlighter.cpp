@@ -12,6 +12,18 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     , m_theme(defaultIDETheme())
 {
     rebuildRules();
+    rebuildLocalTypeNames();
+
+    /*
+     * typedefNames() scans the whole document, so NEVER call it from
+     * highlightBlock(). highlightBlock() runs once per text block and doing a
+     * whole-document scan there turns large files into an accidental O(lines ×
+     * file-size) workload.
+     *
+     * Rebuild the local type cache once when the document actually changes.
+     */
+    connect(parent, &QTextDocument::contentsChanged,
+            this, &CSyntaxHighlighter::rebuildLocalTypeNames);
 }
 
 void CSyntaxHighlighter::setTheme(const IDETheme &theme)
@@ -33,6 +45,38 @@ void CSyntaxHighlighter::setExternalTypeNames(const QStringList &names)
     }
 
     m_externalTypeNames = clean;
+    rehighlight();
+}
+
+void CSyntaxHighlighter::setExternalApiNames(const QStringList &names)
+{
+    QStringList clean = names;
+    clean.removeAll(QString());
+    clean.removeDuplicates();
+    clean.sort(Qt::CaseSensitive);
+
+    if (clean == m_externalApiNames) {
+        return;
+    }
+
+    m_externalApiNames = clean;
+    rehighlight();
+}
+
+void CSyntaxHighlighter::rebuildLocalTypeNames()
+{
+    const QStringList discovered = typedefNames();
+
+    if (discovered == m_localTypeNames) {
+        return;
+    }
+
+    m_localTypeNames = discovered;
+
+    /*
+     * A typedef can affect highlighting on lines other than the edited one,
+     * so rehighlight once only when the discovered type list actually changed.
+     */
     rehighlight();
 }
 
@@ -104,16 +148,7 @@ void CSyntaxHighlighter::rebuildRules()
         preprocessorFormat
     });
 
-    QTextCharFormat quotationFormat;
-    quotationFormat.setForeground(m_theme.syntaxString);
-    m_highlightingRules.append({
-        QRegularExpression(QStringLiteral("\"([^\"\\\\]|\\\\.)*\"")),
-        quotationFormat
-    });
-    m_highlightingRules.append({
-        QRegularExpression(QStringLiteral("'([^'\\\\]|\\\\.)*'")),
-        quotationFormat
-    });
+    m_stringFormat.setForeground(m_theme.syntaxString);
 
     QTextCharFormat numberFormat;
     numberFormat.setForeground(m_theme.syntaxNumber);
@@ -131,13 +166,7 @@ void CSyntaxHighlighter::rebuildRules()
         functionFormat
     });
 
-    QTextCharFormat singleLineCommentFormat;
-    singleLineCommentFormat.setForeground(m_theme.syntaxComment);
-    m_highlightingRules.append({
-        QRegularExpression(QStringLiteral("//[^\\n]*")),
-        singleLineCommentFormat
-    });
-
+    m_singleLineCommentFormat.setForeground(m_theme.syntaxComment);
     m_multiLineCommentFormat.setForeground(m_theme.syntaxMultiComment);
 }
 
@@ -345,7 +374,7 @@ void CSyntaxHighlighter::highlightBlock(const QString &text)
          *
          * was painted green after the comment rule had already run.
          */
-        QStringList typeNames = typedefNames();
+        QStringList typeNames = m_localTypeNames;
         typeNames.append(m_externalTypeNames);
         typeNames.removeDuplicates();
 
@@ -380,12 +409,79 @@ void CSyntaxHighlighter::highlightBlock(const QString &text)
                 setFormat(match.capturedStart(), match.capturedLength(), rule.format);
             }
         }
+
+        /*
+         * Sidbox API symbols deliberately run AFTER the generic function/type
+         * rules so API calls, constants and API typedef names keep their own
+         * colour instead of being repainted as ordinary C symbols.
+         *
+         * Scan identifiers once per line and compare against the catalog rather
+         * than running one regular expression per API name.
+         */
+        static const QRegularExpression identifierExpression(
+            QStringLiteral(R"(\b[A-Za-z_][A-Za-z0-9_]*\b)"));
+
+        QRegularExpressionMatchIterator apiIterator =
+            identifierExpression.globalMatch(text);
+
+        while (apiIterator.hasNext()) {
+            const QRegularExpressionMatch match = apiIterator.next();
+            const QString identifier = match.captured(0);
+
+            if (identifier == QStringLiteral("printf")
+                || m_externalApiNames.contains(identifier)) {
+                setFormat(match.capturedStart(),
+                          match.capturedLength(),
+                          m_customAPIFormat);
+            }
+        }
+
+        /*
+         * Strings and // comments are protected regions and must win over API
+         * colouring. Multi-line comments are applied immediately afterwards.
+         */
+        applyStringsAndSingleLineComments(text);
     }
 
     applyMultiLineComments(text);
 
     if (isPreprocessorLine && text.trimmed().endsWith('\\')) {
         setCurrentBlockState(2);
+    }
+}
+
+void CSyntaxHighlighter::applyStringsAndSingleLineComments(const QString &text)
+{
+    static const QRegularExpression doubleQuoted(
+        QStringLiteral("\"([^\"\\\\]|\\\\.)*\""));
+    static const QRegularExpression singleQuoted(
+        QStringLiteral("'([^'\\\\]|\\\\.)*'"));
+    static const QRegularExpression singleLineComment(
+        QStringLiteral("//[^\\n]*"));
+
+    QRegularExpressionMatchIterator iterator =
+        doubleQuoted.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        setFormat(match.capturedStart(),
+                  match.capturedLength(),
+                  m_stringFormat);
+    }
+
+    iterator = singleQuoted.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        setFormat(match.capturedStart(),
+                  match.capturedLength(),
+                  m_stringFormat);
+    }
+
+    iterator = singleLineComment.globalMatch(text);
+    while (iterator.hasNext()) {
+        const QRegularExpressionMatch match = iterator.next();
+        setFormat(match.capturedStart(),
+                  match.capturedLength(),
+                  m_singleLineCommentFormat);
     }
 }
 

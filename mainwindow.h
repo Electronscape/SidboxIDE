@@ -25,6 +25,7 @@ class QPlainTextEdit;
 class QToolBar;
 class QProcess;
 class QTabWidget;
+class QTimer;
 
 class MainWindow : public QMainWindow
 {
@@ -63,6 +64,7 @@ private:
     CodeEditor *activeEditor() const;
     CodeEditor *createEditor(const QString &filePath = QString());
     bool openFile(const QString &filePath);
+    bool openApiReference(const QString &filePath, int line);
     bool saveEditor(CodeEditor *editor);
     bool saveModifiedWorkBeforeNewProject();
     bool loadProjectFile(const QString &filePath);
@@ -97,6 +99,7 @@ private:
     QStringList projectFilesForCompile() const;
     QStringList projectFunctionSignatures() const;
     QStringList projectTypeNames() const;
+    QStringList apiSyntaxNames() const;
     QStringList functionSignaturesFromText(const QString &text) const;
 
     QList<ProjectSearchResult> findInProject(
@@ -135,6 +138,7 @@ private:
 
     void clearCompilerDiagnostics();
     void processCompilerStderrChunk(const QString &text);
+    OutputKind compilerOutputKindForLine(const QString &line) const;
     void processCompilerDiagnosticLine(const QString &line);
     void applyCompilerDiagnostics(CodeEditor *editor);
     QString normalizedDiagnosticPath(const QString &compilerPath) const;
@@ -159,6 +163,7 @@ private:
     QToolBar *m_outputToolBar;
     FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
+    QTimer *m_projectAnalysisTimer;
     BuildStep m_buildStep;
     QString m_pendingElfPath;
     QString m_pendingAsmPath;
@@ -176,6 +181,14 @@ private:
     int m_modSizeKb;
     int m_appSizeKb;
     int m_editorFontPointSize;
+    QString m_compilerOptimization;
+    QString m_extraCompilerFlags;
+    bool m_compilerSuppressWarnings;
+    bool m_compilerWall;
+    bool m_compilerWextra;
+    bool m_compilerFunctionSections;
+    bool m_compilerDataSections;
+    bool m_compilerStackUsage;
     IDETheme m_theme;
 };
 #endif // MAINWINDOW_H

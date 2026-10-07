@@ -114,7 +114,7 @@ inline IDETheme defaultIDETheme()
     // Syntax: values from the current highlighter.
     t.syntaxKeyword = QColor(255, 200, 0);
     t.syntaxSTM32 = QColor(72, 176, 176);
-    t.syntaxAPI = QColor(64, 128, 200);
+    t.syntaxAPI = QColor("#ff00ff");
     t.syntaxType = QColor(80, 255, 80);
     t.syntaxPreprocessor = QColor(0, 255, 255);
     t.syntaxString = QColor(206, 145, 120);

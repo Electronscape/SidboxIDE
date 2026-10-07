@@ -522,6 +522,13 @@ void CodeEditor::setProjectTypeNames(const QStringList &typeNames)
     }
 }
 
+void CodeEditor::setApiSyntaxNames(const QStringList &apiNames)
+{
+    if (m_highlighter) {
+        m_highlighter->setExternalApiNames(apiNames);
+    }
+}
+
 void CodeEditor::restoreFunctionCompletionModel()
 {
     m_memberCompletionActive = false;
