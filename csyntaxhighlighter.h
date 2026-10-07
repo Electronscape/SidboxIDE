@@ -13,6 +13,7 @@ class CSyntaxHighlighter : public QSyntaxHighlighter
 public:
     explicit CSyntaxHighlighter(QTextDocument *parent = nullptr);
     void setTheme(const IDETheme &theme);
+    void setExternalTypeNames(const QStringList &names);
 
 protected:
     void highlightBlock(const QString &text) override;
@@ -36,6 +37,7 @@ private:
     QTextCharFormat m_customAPIFormat;
     QTextCharFormat m_stm32Format;
     IDETheme m_theme;
+    QStringList m_externalTypeNames;
 };
 
 #endif // CSYNTAXHIGHLIGHTER_H

@@ -39,6 +39,7 @@ public:
     QString filePath() const;
     void setFilePath(const QString &path);
     void setFunctionCompletions(const QStringList &signatures);
+    void setProjectTypeNames(const QStringList &typeNames);
     void showMemberCompletions(const QStringList &members, const QString &prefix);
     void refreshMemberCompletion();
     void setCompletionFont(const QFont &font);

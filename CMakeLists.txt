@@ -20,6 +20,8 @@ qt_add_executable(SidboxIDE
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    findreplacedialog.cpp
+    findreplacedialog.h
 )
 
 qt_add_resources(SidboxIDE "app_icons"
@@ -49,6 +51,7 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/tree_scope_defines.png
         icons/tree_scope_params.png
         icons/tree_scope_locals.png
+        icons/search_term.png
     )
 
 set(CMAKE_AUTORCC ON)

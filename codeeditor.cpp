@@ -515,6 +515,13 @@ void CodeEditor::setFunctionCompletions(const QStringList &signatures)
     }
 }
 
+void CodeEditor::setProjectTypeNames(const QStringList &typeNames)
+{
+    if (m_highlighter) {
+        m_highlighter->setExternalTypeNames(typeNames);
+    }
+}
+
 void CodeEditor::restoreFunctionCompletionModel()
 {
     m_memberCompletionActive = false;

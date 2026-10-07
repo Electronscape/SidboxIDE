@@ -3,6 +3,7 @@
 
 #include "codeeditor.h"
 #include "idetheme.h"
+#include "findreplacedialog.h"
 #include <QMainWindow>
 #include <QSet>
 #include <QHash>
@@ -44,6 +45,8 @@ private:
     void openProject();
     bool saveProject();
     void showOptions();
+    void showFindReplace();
+    void showFindReplaceForCurrentWord();
     void showProjectSettings();
     void compileActiveFile();
     void openProjectFile(QTreeWidgetItem *item, int column);
@@ -93,7 +96,17 @@ private:
     QStringList collectOpenProjectFiles() const;
     QStringList projectFilesForCompile() const;
     QStringList projectFunctionSignatures() const;
+    QStringList projectTypeNames() const;
     QStringList functionSignaturesFromText(const QString &text) const;
+
+    QList<ProjectSearchResult> findInProject(
+        const QString &needle,
+        bool matchCase,
+        bool wholeWord) const;
+    bool replaceProjectResults(
+        const QList<ProjectSearchResult> &results,
+        const QString &replacement);
+    void jumpToProjectSearchResult(const ProjectSearchResult &result);
     QString toProjectRelativePath(const QString &filePath) const;
     QString fromProjectRelativePath(const QString &filePath) const;
     QString ideLibsPath() const;
@@ -144,6 +157,7 @@ private:
     QLabel *m_quickTipLabel;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;
+    FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
     BuildStep m_buildStep;
     QString m_pendingElfPath;

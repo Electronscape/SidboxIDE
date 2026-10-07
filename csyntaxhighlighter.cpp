@@ -21,6 +21,21 @@ void CSyntaxHighlighter::setTheme(const IDETheme &theme)
     rehighlight();
 }
 
+void CSyntaxHighlighter::setExternalTypeNames(const QStringList &names)
+{
+    QStringList clean = names;
+    clean.removeAll(QString());
+    clean.removeDuplicates();
+    clean.sort(Qt::CaseInsensitive);
+
+    if (clean == m_externalTypeNames) {
+        return;
+    }
+
+    m_externalTypeNames = clean;
+    rehighlight();
+}
+
 void CSyntaxHighlighter::rebuildRules()
 {
     m_highlightingRules.clear();
@@ -319,17 +334,26 @@ void CSyntaxHighlighter::highlightBlock(const QString &text)
     if (isPreprocessorLine) {
         setFormat(0, text.length(), m_preprocessorFormat);
     } else {
-        for (const HighlightingRule &rule : std::as_const(m_highlightingRules)) {
-            QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
-            while (matchIterator.hasNext()) {
-                const QRegularExpressionMatch match = matchIterator.next();
-                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
-            }
-        }
+        /*
+         * Apply project/local type names FIRST.
+         *
+         * The normal syntax rules are applied afterwards, so strings and
+         * comments correctly win over the type colour. Previously a known
+         * typedef such as BlobT inside:
+         *
+         *     // extern BlobT thing;
+         *
+         * was painted green after the comment rule had already run.
+         */
+        QStringList typeNames = typedefNames();
+        typeNames.append(m_externalTypeNames);
+        typeNames.removeDuplicates();
 
-        // Typedef aliases are discovered from the whole document so their uses
-        // are highlighted on any later line.
-        for (const QString &name : typedefNames()) {
+        for (const QString &name : std::as_const(typeNames)) {
+            if (name.isEmpty()) {
+                continue;
+            }
+
             const QRegularExpression typeExpression(
                 QStringLiteral("\\b%1\\b")
                     .arg(QRegularExpression::escape(name)));
@@ -342,6 +366,18 @@ void CSyntaxHighlighter::highlightBlock(const QString &text)
                 setFormat(match.capturedStart(),
                           match.capturedLength(),
                           m_typedefFormat);
+            }
+        }
+
+        /*
+         * These rules deliberately come second. In particular, quotation and
+         * comment formats overwrite type colouring where appropriate.
+         */
+        for (const HighlightingRule &rule : std::as_const(m_highlightingRules)) {
+            QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
+            while (matchIterator.hasNext()) {
+                const QRegularExpressionMatch match = matchIterator.next();
+                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
             }
         }
     }

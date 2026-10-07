@@ -2,6 +2,7 @@
 
 #include "codeeditor.h"
 #include "optionsdialog.h"
+#include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
 #include "ui_mainwindow.h"
 
@@ -52,6 +53,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QStandardPaths>
+#include <QStyle>
 #include <functional>
 
 namespace {
@@ -1469,6 +1471,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_quickTipLabel(nullptr)
     , m_outputPane(nullptr)
     , m_outputToolBar(nullptr)
+    , m_findReplaceDialog(nullptr)
     , m_compilerProcess(new QProcess(this))
     , m_buildStep(BuildStep::None)
     , m_projectType(GuiProjectType)
@@ -1774,6 +1777,22 @@ void MainWindow::setupInterface()
     QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
     QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
     QAction *optionsAction = toolBar->addAction(QIcon(":/icons/options.png"), tr("Options"));
+
+    //QIcon findReplaceIcon = QIcon::fromTheme(QStringLiteral("edit-find-replace"));
+    //if (findReplaceIcon.isNull()) {
+        //findReplaceIcon = QIcon::fromTheme(QStringLiteral("edit-find"));
+    //}
+
+    QAction *findReplaceAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("Find / Replace"));
+    findReplaceAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
+
+    QAction *findCurrentWordAction = new QAction(tr("Find Current Word"), this);
+    findCurrentWordAction->setShortcuts({
+        QKeySequence(QStringLiteral("Ctrl+F")),
+        QKeySequence(QStringLiteral("F3"))
+    });
+    addAction(findCurrentWordAction);
+
     toolBar->addSeparator();
     QAction *compileAction = toolBar->addAction(QIcon(":/icons/compile.png"), tr("Compile [F5]"));
 
@@ -1796,6 +1815,9 @@ void MainWindow::setupInterface()
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
+    connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
+    connect(findCurrentWordAction, &QAction::triggered,
+            this, &MainWindow::showFindReplaceForCurrentWord);
     connect(compileAction, &QAction::triggered, this, &MainWindow::compileActiveFile);
 
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
@@ -2281,6 +2303,174 @@ void MainWindow::showOptions()
     applyEditorFont();
 
     statusBar()->showMessage(tr("Options saved"), 3000);
+}
+
+void MainWindow::showFindReplace()
+{
+    if (!m_findReplaceDialog) {
+        m_findReplaceDialog = new FindReplaceDialog(this);
+        m_findReplaceDialog->setAttribute(Qt::WA_DeleteOnClose, true);
+
+        connect(m_findReplaceDialog, &QObject::destroyed,
+                this, [this]() {
+                    m_findReplaceDialog = nullptr;
+                });
+
+        connect(m_findReplaceDialog, &FindReplaceDialog::findAllRequested,
+                this, [this]() {
+                    if (!m_findReplaceDialog) {
+                        return;
+                    }
+
+                    const QList<ProjectSearchResult> results =
+                        findInProject(
+                            m_findReplaceDialog->findText(),
+                            m_findReplaceDialog->matchCase(),
+                            m_findReplaceDialog->wholeWord());
+
+                    m_findReplaceDialog->setResults(results);
+
+                    statusBar()->showMessage(
+                        tr("%1 match(es) found")
+                            .arg(results.size()),
+                        3000);
+                });
+
+        connect(m_findReplaceDialog, &FindReplaceDialog::resultActivated,
+                this, [this](int index) {
+                    if (!m_findReplaceDialog
+                        || index < 0
+                        || index >= m_findReplaceDialog->results().size()) {
+                        return;
+                    }
+
+                    jumpToProjectSearchResult(
+                        m_findReplaceDialog->results().at(index));
+                });
+
+        connect(m_findReplaceDialog, &FindReplaceDialog::replaceSelectedRequested,
+                this, [this]() {
+                    if (!m_findReplaceDialog) {
+                        return;
+                    }
+
+                    QList<ProjectSearchResult> selected;
+                    for (const int index :
+                         m_findReplaceDialog->selectedResultIndexes()) {
+                        if (index >= 0
+                            && index < m_findReplaceDialog->results().size()) {
+                            selected.append(
+                                m_findReplaceDialog->results().at(index));
+                        }
+                    }
+
+                    if (selected.isEmpty()) {
+                        return;
+                    }
+
+                    if (!replaceProjectResults(
+                            selected,
+                            m_findReplaceDialog->replaceText())) {
+                        return;
+                    }
+
+                    const QList<ProjectSearchResult> refreshed =
+                        findInProject(
+                            m_findReplaceDialog->findText(),
+                            m_findReplaceDialog->matchCase(),
+                            m_findReplaceDialog->wholeWord());
+
+                    m_findReplaceDialog->setResults(refreshed);
+
+                    statusBar()->showMessage(
+                        tr("%1 selected replacement(s) made")
+                            .arg(selected.size()),
+                        3000);
+                });
+
+        connect(m_findReplaceDialog, &FindReplaceDialog::replaceAllRequested,
+                this, [this]() {
+                    if (!m_findReplaceDialog
+                        || m_findReplaceDialog->results().isEmpty()) {
+                        return;
+                    }
+
+                    const QList<ProjectSearchResult> allResults =
+                        m_findReplaceDialog->results();
+
+                    QSet<QString> files;
+                    for (const ProjectSearchResult &result : allResults) {
+                        files.insert(QFileInfo(result.filePath).absoluteFilePath());
+                    }
+
+                    const QMessageBox::StandardButton answer =
+                        QMessageBox::question(
+                            this,
+                            tr("Replace All"),
+                            tr("Replace %1 occurrence(s) in %2 file(s)?\n\n"
+                               "Open files will remain as unsaved editor changes. "
+                               "Files which are not open will be written to disk.")
+                                .arg(allResults.size())
+                                .arg(files.size()),
+                            QMessageBox::Yes | QMessageBox::Cancel,
+                            QMessageBox::Cancel);
+
+                    if (answer != QMessageBox::Yes) {
+                        return;
+                    }
+
+                    if (!replaceProjectResults(
+                            allResults,
+                            m_findReplaceDialog->replaceText())) {
+                        return;
+                    }
+
+                    const QList<ProjectSearchResult> refreshed =
+                        findInProject(
+                            m_findReplaceDialog->findText(),
+                            m_findReplaceDialog->matchCase(),
+                            m_findReplaceDialog->wholeWord());
+
+                    m_findReplaceDialog->setResults(refreshed);
+
+                    statusBar()->showMessage(
+                        tr("%1 replacement(s) made")
+                            .arg(allResults.size()),
+                        4000);
+                });
+    }
+
+    m_findReplaceDialog->show();
+    m_findReplaceDialog->raise();
+    m_findReplaceDialog->activateWindow();
+}
+
+void MainWindow::showFindReplaceForCurrentWord()
+{
+    QString word;
+
+    if (CodeEditor *editor = activeEditor()) {
+        QTextCursor cursor = editor->textCursor();
+
+        if (cursor.hasSelection()) {
+            word = cursor.selectedText().trimmed();
+        } else {
+            cursor.select(QTextCursor::WordUnderCursor);
+            word = cursor.selectedText().trimmed();
+        }
+    }
+
+    showFindReplace();
+
+    if (!m_findReplaceDialog) {
+        return;
+    }
+
+    if (!word.isEmpty()) {
+        m_findReplaceDialog->setFindText(word);
+    } else {
+        m_findReplaceDialog->focusFindText();
+    }
 }
 
 void MainWindow::showProjectSettings()
@@ -2986,7 +3176,15 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     auto *editor = new CodeEditor(m_editorTabs);
     editor->setTheme(m_theme);
     editor->setFilePath(filePath);
-    editor->setFunctionCompletions(projectFunctionSignatures());
+
+    QStringList initialCompletions = projectFunctionSignatures();
+    const QStringList initialTypeNames = projectTypeNames();
+    initialCompletions.append(initialTypeNames);
+    initialCompletions.removeDuplicates();
+    initialCompletions.sort(Qt::CaseInsensitive);
+
+    editor->setFunctionCompletions(initialCompletions);
+    editor->setProjectTypeNames(initialTypeNames);
     applyCompilerDiagnostics(editor);
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -4091,12 +4289,24 @@ void MainWindow::jumpToSymbol(QTreeWidgetItem *item, int column)
 void MainWindow::refreshFunctionCompletions()
 {
     ensureApiCatalog();
-    const QStringList signatures = projectFunctionSignatures();
+
+    QStringList completions = projectFunctionSignatures();
+    const QStringList typeNames = projectTypeNames();
+
+    // Type names without "(...)" are handled by CodeEditor's existing
+    // completion insertion path as plain identifiers.
+    completions.append(typeNames);
+    completions.removeDuplicates();
+    completions.sort(Qt::CaseInsensitive);
+
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
-        if (editor) {
-            editor->setFunctionCompletions(signatures);
+        if (!editor) {
+            continue;
         }
+
+        editor->setFunctionCompletions(completions);
+        editor->setProjectTypeNames(typeNames);
     }
 }
 
@@ -4366,9 +4576,15 @@ QStringList MainWindow::projectFunctionSignatures() const
         }
     }
 
-    for (const QString &filePath : m_projectFilesInProject) {
+    QStringList projectFiles = m_projectFilesInProject;
+    projectFiles.append(projectFolderSourceFiles());
+    projectFiles.removeDuplicates();
+
+    for (const QString &filePath : std::as_const(projectFiles)) {
         const QString absolutePath = QFileInfo(filePath).absoluteFilePath();
-        if (scannedOpenFiles.contains(absolutePath) || !canContainFunctionSignatures(absolutePath)) {
+        if (scannedOpenFiles.contains(absolutePath)
+            || !QFileInfo::exists(absolutePath)
+            || !canContainFunctionSignatures(absolutePath)) {
             continue;
         }
 
@@ -4383,6 +4599,66 @@ QStringList MainWindow::projectFunctionSignatures() const
     signatures.removeDuplicates();
     signatures.sort(Qt::CaseInsensitive);
     return signatures;
+}
+
+QStringList MainWindow::projectTypeNames() const
+{
+    QStringList names;
+    QSet<QString> scannedPaths;
+
+    auto appendTypes = [&names](const QString &source) {
+        const SourceSymbolTable symbols = parseSourceSymbols(source);
+
+        for (const SourceNamedSymbol &type : symbols.types) {
+            if (!type.name.isEmpty()) {
+                names.append(type.name);
+            }
+        }
+    };
+
+    // Open tabs win: use the live in-memory text, including unsaved changes.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (!editor) {
+            continue;
+        }
+
+        appendTypes(editor->toPlainText());
+
+        if (!editor->filePath().isEmpty()) {
+            scannedPaths.insert(
+                QFileInfo(editor->filePath()).absoluteFilePath());
+        }
+    }
+
+    // Then scan all remaining project files on disk, including subfolders,
+    // headers and .inc files.
+    QStringList projectFiles = m_projectFilesInProject;
+    projectFiles.append(projectFolderSourceFiles());
+    projectFiles.removeDuplicates();
+
+    for (const QString &filePath : std::as_const(projectFiles)) {
+        const QString absolutePath =
+            QFileInfo(filePath).absoluteFilePath();
+
+        if (absolutePath.isEmpty()
+            || scannedPaths.contains(absolutePath)
+            || !QFileInfo::exists(absolutePath)
+            || !canContainFunctionSignatures(absolutePath)) {
+            continue;
+        }
+
+        QFile file(absolutePath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+
+        appendTypes(QString::fromUtf8(file.readAll()));
+    }
+
+    names.removeDuplicates();
+    names.sort(Qt::CaseInsensitive);
+    return names;
 }
 
 QStringList MainWindow::functionSignaturesFromText(const QString &text) const
@@ -4408,6 +4684,359 @@ QStringList MainWindow::functionSignaturesFromText(const QString &text) const
 
     signatures.removeDuplicates();
     return signatures;
+}
+
+QList<ProjectSearchResult> MainWindow::findInProject(
+    const QString &needle,
+    bool matchCase,
+    bool wholeWord) const
+{
+    QList<ProjectSearchResult> results;
+
+    if (needle.isEmpty()) {
+        return results;
+    }
+
+    /*
+     * Build one list of project files. An open editor always wins over the
+     * on-disk copy so unsaved edits are searched live.
+     */
+    QStringList candidates = m_projectFilesInProject;
+    candidates.append(projectFolderSourceFiles());
+
+    QHash<QString, CodeEditor *> openEditors;
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor =
+            qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+
+        if (!editor || editor->filePath().isEmpty()) {
+            continue;
+        }
+
+        const QString path =
+            QFileInfo(editor->filePath()).absoluteFilePath();
+
+        openEditors.insert(path, editor);
+
+        if (!candidates.contains(path)) {
+            candidates.append(path);
+        }
+    }
+
+    candidates.removeDuplicates();
+    candidates.sort(Qt::CaseInsensitive);
+
+    const Qt::CaseSensitivity sensitivity =
+        matchCase ? Qt::CaseSensitive : Qt::CaseInsensitive;
+
+    QRegularExpression wholeWordExpression;
+
+    if (wholeWord) {
+        QRegularExpression::PatternOptions options =
+            QRegularExpression::NoPatternOption;
+
+        if (!matchCase) {
+            options |= QRegularExpression::CaseInsensitiveOption;
+        }
+
+        wholeWordExpression =
+            QRegularExpression(
+                QStringLiteral("\\b%1\\b")
+                    .arg(QRegularExpression::escape(needle)),
+                options);
+    }
+
+    for (const QString &rawPath : std::as_const(candidates)) {
+        const QString filePath =
+            QFileInfo(rawPath).absoluteFilePath();
+
+        QString text;
+
+        if (CodeEditor *editor =
+                openEditors.value(filePath, nullptr)) {
+            text = editor->toPlainText();
+        } else {
+            QFile file(filePath);
+
+            if (!file.open(
+                    QIODevice::ReadOnly | QIODevice::Text)) {
+                continue;
+            }
+
+            text = QString::fromUtf8(file.readAll());
+        }
+
+        QList<QPair<int, int>> matches;
+
+        if (wholeWord) {
+            QRegularExpressionMatchIterator iterator =
+                wholeWordExpression.globalMatch(text);
+
+            while (iterator.hasNext()) {
+                const QRegularExpressionMatch match = iterator.next();
+
+                if (match.capturedLength() > 0) {
+                    matches.append({
+                        match.capturedStart(),
+                        match.capturedLength()
+                    });
+                }
+            }
+        } else {
+            int from = 0;
+
+            while (from <= text.size()) {
+                const int found =
+                    text.indexOf(needle, from, sensitivity);
+
+                if (found < 0) {
+                    break;
+                }
+
+                matches.append({found, needle.size()});
+                from = found + qMax(1, needle.size());
+            }
+        }
+
+        for (const auto &match : matches) {
+            const int start = match.first;
+            const int length = match.second;
+
+            const int line =
+                text.left(start).count(QLatin1Char('\n'));
+
+            const int lineStart =
+                text.lastIndexOf(QLatin1Char('\n'), start - 1) + 1;
+
+            int lineEnd =
+                text.indexOf(QLatin1Char('\n'), start);
+
+            if (lineEnd < 0) {
+                lineEnd = text.size();
+            }
+
+            const int column = start - lineStart;
+
+            QString preview =
+                text.mid(lineStart, lineEnd - lineStart).trimmed();
+
+            if (preview.size() > 180) {
+                preview = preview.left(177)
+                    + QStringLiteral("...");
+            }
+
+            results.append({
+                filePath,
+                line,
+                column,
+                start,
+                length,
+                preview
+            });
+        }
+    }
+
+    return results;
+}
+
+bool MainWindow::replaceProjectResults(
+    const QList<ProjectSearchResult> &results,
+    const QString &replacement)
+{
+    if (results.isEmpty()) {
+        return true;
+    }
+
+    QHash<QString, QList<ProjectSearchResult>> byFile;
+
+    for (const ProjectSearchResult &result : results) {
+        if (result.filePath.isEmpty()
+            || result.start < 0
+            || result.length < 0) {
+            continue;
+        }
+
+        byFile[QFileInfo(result.filePath).absoluteFilePath()]
+            .append(result);
+    }
+
+    for (auto it = byFile.begin();
+         it != byFile.end();
+         ++it) {
+
+        QList<ProjectSearchResult> fileResults = it.value();
+
+        std::sort(
+            fileResults.begin(),
+            fileResults.end(),
+            [](const ProjectSearchResult &a,
+               const ProjectSearchResult &b) {
+                return a.start > b.start;
+            });
+
+        CodeEditor *openEditor = nullptr;
+
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            auto *editor =
+                qobject_cast<CodeEditor *>(
+                    m_editorTabs->widget(i));
+
+            if (editor
+                && !editor->filePath().isEmpty()
+                && QFileInfo(editor->filePath()).absoluteFilePath()
+                    == it.key()) {
+                openEditor = editor;
+                break;
+            }
+        }
+
+        if (openEditor) {
+            QTextCursor cursor(openEditor->document());
+            cursor.beginEditBlock();
+
+            for (const ProjectSearchResult &result :
+                 fileResults) {
+                if (result.start + result.length
+                    > openEditor->document()->characterCount()) {
+                    continue;
+                }
+
+                cursor.setPosition(result.start);
+                cursor.setPosition(
+                    result.start + result.length,
+                    QTextCursor::KeepAnchor);
+                cursor.insertText(replacement);
+            }
+
+            cursor.endEditBlock();
+
+            openEditor->document()->setModified(true);
+            updateTabTitle(openEditor);
+            continue;
+        }
+
+        QFile file(it.key());
+
+        if (!file.open(
+                QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::warning(
+                this,
+                tr("Replace"),
+                tr("Could not read %1.")
+                    .arg(QDir::toNativeSeparators(it.key())));
+            return false;
+        }
+
+        QString text = QString::fromUtf8(file.readAll());
+        file.close();
+
+        for (const ProjectSearchResult &result :
+             fileResults) {
+            if (result.start < 0
+                || result.start + result.length > text.size()) {
+                continue;
+            }
+
+            text.replace(
+                result.start,
+                result.length,
+                replacement);
+        }
+
+        QSaveFile output(it.key());
+
+        if (!output.open(
+                QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(
+                this,
+                tr("Replace"),
+                tr("Could not write %1.")
+                    .arg(QDir::toNativeSeparators(it.key())));
+            return false;
+        }
+
+        output.write(text.toUtf8());
+
+        if (!output.commit()) {
+            QMessageBox::warning(
+                this,
+                tr("Replace"),
+                tr("Could not finish writing %1.")
+                    .arg(QDir::toNativeSeparators(it.key())));
+            return false;
+        }
+    }
+
+    refreshFunctionCompletions();
+    refreshSymbolTree();
+    return true;
+}
+
+void MainWindow::jumpToProjectSearchResult(
+    const ProjectSearchResult &result)
+{
+    if (result.filePath.isEmpty()) {
+        return;
+    }
+
+    CodeEditor *editor = nullptr;
+    const QString target =
+        QFileInfo(result.filePath).absoluteFilePath();
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *candidate =
+            qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+
+        if (candidate
+            && !candidate->filePath().isEmpty()
+            && QFileInfo(candidate->filePath()).absoluteFilePath()
+                == target) {
+            editor = candidate;
+            m_editorTabs->setCurrentIndex(i);
+            break;
+        }
+    }
+
+    if (!editor) {
+        if (!openFile(target)) {
+            return;
+        }
+
+        editor = activeEditor();
+    }
+
+    if (!editor) {
+        return;
+    }
+
+    QTextBlock block =
+        editor->document()->findBlockByNumber(
+            qMax(0, result.line));
+
+    if (!block.isValid()) {
+        return;
+    }
+
+    QTextCursor cursor(block);
+
+    if (result.column > 0) {
+        cursor.movePosition(
+            QTextCursor::NextCharacter,
+            QTextCursor::MoveAnchor,
+            result.column);
+    }
+
+    if (result.length > 0) {
+        cursor.movePosition(
+            QTextCursor::NextCharacter,
+            QTextCursor::KeepAnchor,
+            result.length);
+    }
+
+    editor->setTextCursor(cursor);
+    editor->centerCursor();
+    editor->setFocus();
 }
 
 QString MainWindow::toProjectRelativePath(const QString &filePath) const
