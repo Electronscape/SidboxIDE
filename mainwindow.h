@@ -1,8 +1,12 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "codeeditor.h"
+#include "idetheme.h"
 #include <QMainWindow>
+#include <QSet>
 #include <QHash>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -12,7 +16,6 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
-class CodeEditor;
 class QLabel;
 class QListWidget;
 class QTreeWidget;
@@ -66,6 +69,11 @@ private:
     void refreshProjectFiles();
     void refreshSymbolTree();
     void jumpToSymbol(QTreeWidgetItem *item, int column);
+    void goToDefinition(CodeEditor *sourceEditor, const QString &symbol, int sourceLine);
+    void completeStructMembers(CodeEditor *sourceEditor,
+                               const QString &objectName,
+                               int sourceLine,
+                               const QString &prefix);
 
     void saveSymbolTreeExpansionState(CodeEditor *editor);
     void restoreSymbolTreeExpansionState(CodeEditor *editor);
@@ -108,8 +116,16 @@ private:
     };
 
     void applyEditorFont();
+    void applyTheme();
     void appendOutputText(const QString &text, OutputKind kind);
     void appendOutputLine(const QString &text, OutputKind kind);
+
+    void clearCompilerDiagnostics();
+    void processCompilerStderrChunk(const QString &text);
+    void processCompilerDiagnosticLine(const QString &line);
+    void applyCompilerDiagnostics(CodeEditor *editor);
+    QString normalizedDiagnosticPath(const QString &compilerPath) const;
+
     void loadOptions();
     void saveOptions() const;
     void AutoSelectMainC();
@@ -138,10 +154,14 @@ private:
     QStringList m_projectFilesInProject;
     QHash<QString, QString> m_apiTips;
     QStringList m_apiSignatures;
+
+    QString m_compilerStderrBuffer;
+    QHash<QString, QList<EditorDiagnostic>> m_compilerDiagnostics;
     QString m_linkerScriptPath;
     QString m_projectType;
     int m_modSizeKb;
     int m_appSizeKb;
     int m_editorFontPointSize;
+    IDETheme m_theme;
 };
 #endif // MAINWINDOW_H

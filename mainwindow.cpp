@@ -5,6 +5,7 @@
 #include "projectsettingsdialog.h"
 #include "ui_mainwindow.h"
 
+#include <algorithm>
 #include <QSet>
 #include <QAction>
 #include <QApplication>
@@ -32,6 +33,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -492,22 +494,25 @@ private:
 };
 
 
-struct SourceNamedSymbol
-{
-    QString name;
-    int line = -1;
-};
-
 struct SourceVariableSymbol
 {
     QString name;
     int line = -1;
+    QString typeName;
+};
+
+struct SourceNamedSymbol
+{
+    QString name;
+    int line = -1;
+    QList<SourceVariableSymbol> members;
 };
 
 struct SourceFunctionSymbol
 {
     QString signature;
     int line = -1;
+    int endLine = -1;
     QList<SourceVariableSymbol> parameters;
     QList<SourceVariableSymbol> locals;
 };
@@ -692,6 +697,66 @@ QStringList splitTopLevelCommas(const QString &text)
     return parts;
 }
 
+QString typeNameFromDeclaration(const QString &statement,
+                                const QString &variableName)
+{
+    if (variableName.isEmpty()) {
+        return {};
+    }
+
+    QString beforeInitializer = statement;
+    const int equals = beforeInitializer.indexOf(QLatin1Char('='));
+    if (equals >= 0) {
+        beforeInitializer = beforeInitializer.left(equals);
+    }
+
+    const QRegularExpression variableExpression(
+        QStringLiteral("\\b%1\\b")
+            .arg(QRegularExpression::escape(variableName)));
+
+    const int variablePos =
+        beforeInitializer.indexOf(variableExpression);
+
+    if (variablePos <= 0) {
+        return {};
+    }
+
+    QString typePart =
+        beforeInitializer.left(variablePos).trimmed();
+
+    // Remove pointer stars and common declaration qualifiers/storage classes.
+    typePart.remove(QLatin1Char('*'));
+
+    static const QRegularExpression qualifierExpression(
+        QStringLiteral(
+            R"(\b(?:const|volatile|restrict|static|extern|register|auto|signed|unsigned|long|short)\b)"));
+
+    typePart.remove(qualifierExpression);
+    typePart = typePart.simplified();
+
+    // "struct Foo", "union Foo" and "enum Foo" should resolve to Foo.
+    static const QRegularExpression taggedTypeExpression(
+        QStringLiteral(R"(^(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)$)"));
+
+    const QRegularExpressionMatch taggedMatch =
+        taggedTypeExpression.match(typePart);
+
+    if (taggedMatch.hasMatch()) {
+        return taggedMatch.captured(1);
+    }
+
+    // For a typedef alias (Vec3, Face, etc.) the final identifier is the type.
+    static const QRegularExpression finalIdentifierExpression(
+        QStringLiteral(R"(([A-Za-z_][A-Za-z0-9_]*)\s*$)"));
+
+    const QRegularExpressionMatch finalMatch =
+        finalIdentifierExpression.match(typePart);
+
+    return finalMatch.hasMatch()
+        ? finalMatch.captured(1)
+        : QString();
+}
+
 QList<SourceVariableSymbol> variableSymbolsFromStatement(const QString &statement,
                                                           int statementOffset,
                                                           const QString &wholeSource)
@@ -737,6 +802,23 @@ QList<SourceVariableSymbol> variableSymbolsFromStatement(const QString &statemen
         return symbols;
     }
 
+    /*
+     * Member assignments are expressions, not declarations:
+     *
+     *     fish.y = 3;
+     *     fish->y = 3;
+     *
+     * Without this check the lightweight declaration parser sees the final
+     * member name (y) and mistakes the object name (fish) for a type.
+     */
+    const QString declarationPrefix =
+        firstBeforeInitializer.left(firstNamePos).trimmed();
+
+    if (declarationPrefix.contains(QLatin1Char('.'))
+        || declarationPrefix.contains(QStringLiteral("->"))) {
+        return symbols;
+    }
+
     // Function calls/prototypes are not variables. Function-pointer declarations are
     // intentionally skipped by this light-weight browser rather than guessed wrongly.
     if (text.contains(QLatin1Char('(')) || text.contains(QLatin1Char(')'))) {
@@ -744,10 +826,19 @@ QList<SourceVariableSymbol> variableSymbolsFromStatement(const QString &statemen
     }
 
     const int line = sourceLineForOffset(wholeSource, statementOffset);
+    const QString declarationType =
+        typeNameFromDeclaration(text, firstName);
+
+    // If there is no identifiable type before the variable name, this was an
+    // expression (for example *ptr = value), not a declaration.
+    if (declarationType.isEmpty()) {
+        return symbols;
+    }
+
     for (const QString &declarator : declarators) {
         const QString name = variableNameFromDeclarator(declarator);
         if (!name.isEmpty()) {
-            symbols.append({name, line});
+            symbols.append({name, line, declarationType});
         }
     }
     return symbols;
@@ -846,36 +937,33 @@ QList<SourceNamedSymbol> typeSymbolsFromSource(const QString &source)
     QList<SourceNamedSymbol> symbols;
     const QString sanitized = sanitizedCSource(source);
 
-    auto appendUnique = [&symbols](const QString &name, int line) {
+    auto appendUnique = [&symbols](const QString &name,
+                                   int line,
+                                   const QList<SourceVariableSymbol> &members = {}) {
         if (name.isEmpty()) {
             return;
         }
-        for (const SourceNamedSymbol &existing : std::as_const(symbols)) {
+
+        for (SourceNamedSymbol &existing : symbols) {
             if (existing.name == name && existing.line == line) {
+                if (existing.members.isEmpty() && !members.isEmpty()) {
+                    existing.members = members;
+                }
                 return;
             }
         }
-        symbols.append({name, line});
+
+        symbols.append({name, line, members});
     };
 
-    /*
-     * Parse typedefs by finding the terminating semicolon at top level rather
-     * than with a single regex. A typedef struct contains member semicolons,
-     * so a non-greedy regex stops at the first member (for example "int x;")
-     * instead of reaching "} Vec3;".
-     *
-     * This also copes with attributes such as:
-     *
-     *   typedef struct __attribute__((packed, aligned(4))) {
-     *       int16_t x;
-     *   } Vec3;
-     */
     static const QRegularExpression typedefStartExpression(
         QStringLiteral(R"(\btypedef\b)"));
 
     int searchFrom = 0;
     while (searchFrom < sanitized.size()) {
-        const QRegularExpressionMatch startMatch = typedefStartExpression.match(sanitized, searchFrom);
+        const QRegularExpressionMatch startMatch =
+            typedefStartExpression.match(sanitized, searchFrom);
+
         if (!startMatch.hasMatch()) {
             break;
         }
@@ -914,40 +1002,202 @@ QList<SourceNamedSymbol> typeSymbolsFromSource(const QString &source)
             break;
         }
 
-        const QString declaration = sanitized.mid(typedefStart, typedefEnd - typedefStart + 1);
+        const QString declaration =
+            sanitized.mid(typedefStart, typedefEnd - typedefStart + 1);
 
-        /*
-         * The typedef name is the final identifier before the top-level ';'.
-         * For a struct block this is the alias after '}', e.g. Vec3.
-         * For an ordinary typedef it is likewise the final identifier.
-         */
+        QList<SourceVariableSymbol> members;
+        const int relativeOpenBrace = declaration.indexOf(QLatin1Char('{'));
+        if (relativeOpenBrace >= 0) {
+            const int openBrace = typedefStart + relativeOpenBrace;
+            const int closeBrace = matchingBracePosition(sanitized, openBrace);
+
+            if (closeBrace > openBrace && closeBrace <= typedefEnd) {
+                members = variableSymbolsInRange(
+                    sanitized,
+                    source,
+                    openBrace + 1,
+                    closeBrace);
+            }
+        }
+
         static const QRegularExpression aliasExpression(
             QStringLiteral(R"(([A-Za-z_][A-Za-z0-9_]*)\s*;$)"));
-        const QRegularExpressionMatch aliasMatch = aliasExpression.match(declaration);
+
+        const QRegularExpressionMatch aliasMatch =
+            aliasExpression.match(declaration);
+
         if (aliasMatch.hasMatch()) {
             const QString alias = aliasMatch.captured(1).trimmed();
-            const int aliasOffset = typedefStart + aliasMatch.capturedStart(1);
-            appendUnique(alias, sourceLineForOffset(source, aliasOffset));
+            const int aliasOffset =
+                typedefStart + aliasMatch.capturedStart(1);
+
+            appendUnique(
+                alias,
+                sourceLineForOffset(source, aliasOffset),
+                members);
         }
 
         searchFrom = typedefEnd + 1;
     }
 
-    // Named struct/enum/union declarations are useful even when they are not typedefs.
-    // Allow attributes/qualifiers between the tag name and the opening brace.
+    // Named struct / enum / union types, including non-typedef declarations.
     static const QRegularExpression taggedTypeExpression(
         QStringLiteral(
             R"(\b(struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:__attribute__\s*\(\([^\n]*?\)\)\s*)?(?=\{|;))"),
         QRegularExpression::MultilineOption);
 
-    QRegularExpressionMatchIterator taggedIterator = taggedTypeExpression.globalMatch(sanitized);
+    QRegularExpressionMatchIterator taggedIterator =
+        taggedTypeExpression.globalMatch(sanitized);
+
     while (taggedIterator.hasNext()) {
         const QRegularExpressionMatch match = taggedIterator.next();
         const QString name = match.captured(2).trimmed();
-        appendUnique(name, sourceLineForOffset(source, match.capturedStart(2)));
+
+        QList<SourceVariableSymbol> members;
+        const int openBrace = sanitized.indexOf(
+            QLatin1Char('{'),
+            match.capturedEnd(0));
+
+        if (openBrace >= 0) {
+            // Do not accidentally attach a later unrelated brace to a
+            // forward declaration such as "struct Foo;".
+            const int semicolon = sanitized.indexOf(
+                QLatin1Char(';'),
+                match.capturedEnd(0));
+
+            if (semicolon < 0 || openBrace < semicolon) {
+                const int closeBrace =
+                    matchingBracePosition(sanitized, openBrace);
+
+                if (closeBrace > openBrace) {
+                    members = variableSymbolsInRange(
+                        sanitized,
+                        source,
+                        openBrace + 1,
+                        closeBrace);
+                }
+            }
+        }
+
+        appendUnique(
+            name,
+            sourceLineForOffset(source, match.capturedStart(2)),
+            members);
     }
 
     return symbols;
+}
+
+void maskTypeDeclarations(QString *text)
+{
+    if (!text) {
+        return;
+    }
+
+    auto blankRange = [text](int start, int end) {
+        if (start < 0 || end < start) {
+            return;
+        }
+
+        const int boundedEnd = qMin(end, text->size() - 1);
+        for (int i = start; i <= boundedEnd; ++i) {
+            if (text->at(i) != QLatin1Char('\n')) {
+                (*text)[i] = QLatin1Char(' ');
+            }
+        }
+    };
+
+    // Mask complete typedef declarations, respecting braces/parentheses so
+    // member semicolons inside a struct do not terminate the declaration.
+    static const QRegularExpression typedefStartExpression(
+        QStringLiteral(R"(\btypedef\b)"));
+
+    int searchFrom = 0;
+    while (searchFrom < text->size()) {
+        const QRegularExpressionMatch match =
+            typedefStartExpression.match(*text, searchFrom);
+
+        if (!match.hasMatch()) {
+            break;
+        }
+
+        int braces = 0;
+        int parens = 0;
+        int brackets = 0;
+        int end = -1;
+
+        for (int i = match.capturedEnd(); i < text->size(); ++i) {
+            const QChar ch = text->at(i);
+
+            if (ch == QLatin1Char('{')) {
+                ++braces;
+            } else if (ch == QLatin1Char('}')) {
+                braces = qMax(0, braces - 1);
+            } else if (ch == QLatin1Char('(')) {
+                ++parens;
+            } else if (ch == QLatin1Char(')')) {
+                parens = qMax(0, parens - 1);
+            } else if (ch == QLatin1Char('[')) {
+                ++brackets;
+            } else if (ch == QLatin1Char(']')) {
+                brackets = qMax(0, brackets - 1);
+            } else if (ch == QLatin1Char(';')
+                       && braces == 0
+                       && parens == 0
+                       && brackets == 0) {
+                end = i;
+                break;
+            }
+        }
+
+        if (end < 0) {
+            break;
+        }
+
+        blankRange(match.capturedStart(), end);
+        searchFrom = end + 1;
+    }
+
+    // Also mask standalone named struct/enum/union bodies:
+    //     struct Foo { int x; };
+    static const QRegularExpression taggedBodyExpression(
+        QStringLiteral(R"(\b(struct|enum|union)\s+[A-Za-z_][A-Za-z0-9_]*[^\n;{]*\{)"),
+        QRegularExpression::MultilineOption);
+
+    searchFrom = 0;
+    while (searchFrom < text->size()) {
+        const QRegularExpressionMatch match =
+            taggedBodyExpression.match(*text, searchFrom);
+
+        if (!match.hasMatch()) {
+            break;
+        }
+
+        const int openBrace =
+            text->indexOf(QLatin1Char('{'), match.capturedStart());
+
+        if (openBrace < 0) {
+            break;
+        }
+
+        const int closeBrace =
+            matchingBracePosition(*text, openBrace);
+
+        if (closeBrace < 0) {
+            break;
+        }
+
+        int end = closeBrace;
+        const int semicolon =
+            text->indexOf(QLatin1Char(';'), closeBrace + 1);
+
+        if (semicolon >= 0) {
+            end = semicolon;
+        }
+
+        blankRange(match.capturedStart(), end);
+        searchFrom = end + 1;
+    }
 }
 
 SourceSymbolTable parseSourceSymbols(const QString &source)
@@ -957,6 +1207,9 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
     table.types = typeSymbolsFromSource(source);
     const QString sanitized = sanitizedCSource(source);
     QString globalsOnly = sanitized;
+
+    // Struct/typedef members are fields of their type, not globals.
+    maskTypeDeclarations(&globalsOnly);
 
     static const QRegularExpression functionExpression(
         QStringLiteral(
@@ -990,6 +1243,7 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
         const QString arguments = match.captured(3).simplified();
         function.signature = QStringLiteral("%1(%2)").arg(functionName, arguments);
         function.line = sourceLineForOffset(source, match.capturedStart(2));
+        function.endLine = sourceLineForOffset(source, closingBrace);
 
         const QStringList parameterParts = splitApiArgumentList(match.captured(3));
         for (const QString &parameter : parameterParts) {
@@ -998,7 +1252,11 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
             cleanName.remove(QLatin1Char('*'));
             cleanName = cleanName.trimmed();
             if (!cleanName.isEmpty()) {
-                function.parameters.append({cleanName, function.line});
+                function.parameters.append({
+                    cleanName,
+                    function.line,
+                    typeNameFromDeclaration(parameter, cleanName)
+                });
             }
         }
 
@@ -1016,6 +1274,146 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
 
     table.globals = variableSymbolsInRange(globalsOnly, source, 0, globalsOnly.size());
     return table;
+}
+
+QString variableTypeInTable(const SourceSymbolTable &table,
+                            const QString &variableName,
+                            int usageLine,
+                            bool includeLocalScope)
+{
+    if (includeLocalScope && usageLine >= 0) {
+        for (const SourceFunctionSymbol &function : table.functions) {
+            if (usageLine < function.line
+                || (function.endLine >= 0 && usageLine > function.endLine)) {
+                continue;
+            }
+
+            // Prefer the nearest local declaration visible before this use.
+            int bestLine = -1;
+            QString bestType;
+
+            for (const SourceVariableSymbol &local : function.locals) {
+                if (local.name == variableName
+                    && local.line <= usageLine
+                    && local.line > bestLine) {
+                    bestLine = local.line;
+                    bestType = local.typeName;
+                }
+            }
+
+            if (!bestType.isEmpty()) {
+                return bestType;
+            }
+
+            for (const SourceVariableSymbol &parameter : function.parameters) {
+                if (parameter.name == variableName) {
+                    return parameter.typeName;
+                }
+            }
+
+            break;
+        }
+    }
+
+    for (const SourceVariableSymbol &global : table.globals) {
+        if (global.name == variableName) {
+            return global.typeName;
+        }
+    }
+
+    return {};
+}
+
+QStringList membersForTypeInTable(const SourceSymbolTable &table,
+                                  const QString &typeName)
+{
+    for (const SourceNamedSymbol &type : table.types) {
+        if (type.name != typeName) {
+            continue;
+        }
+
+        QStringList members;
+        for (const SourceVariableSymbol &member : type.members) {
+            if (!member.name.isEmpty()) {
+                members.append(member.name);
+            }
+        }
+
+        members.removeDuplicates();
+        members.sort(Qt::CaseInsensitive);
+        return members;
+    }
+
+    return {};
+}
+
+QString sourceFunctionName(const QString &signature)
+{
+    const int paren = signature.indexOf(QLatin1Char('('));
+    return paren >= 0 ? signature.left(paren).trimmed() : signature.trimmed();
+}
+
+int definitionLineInTable(const SourceSymbolTable &table,
+                          const QString &symbol,
+                          int usageLine,
+                          bool includeLocalScope)
+{
+    if (includeLocalScope && usageLine >= 0) {
+        for (const SourceFunctionSymbol &function : table.functions) {
+            if (usageLine < function.line
+                || (function.endLine >= 0 && usageLine > function.endLine)) {
+                continue;
+            }
+
+            // A local variable is the most specific definition. Prefer the
+            // nearest declaration at or before the clicked use.
+            int bestLocalLine = -1;
+            for (const SourceVariableSymbol &local : function.locals) {
+                if (local.name == symbol
+                    && local.line <= usageLine
+                    && local.line > bestLocalLine) {
+                    bestLocalLine = local.line;
+                }
+            }
+            if (bestLocalLine >= 0) {
+                return bestLocalLine;
+            }
+
+            for (const SourceVariableSymbol &parameter : function.parameters) {
+                if (parameter.name == symbol) {
+                    return parameter.line;
+                }
+            }
+            break;
+        }
+    }
+
+    // Types first makes "struct Foo" / typedef aliases particularly useful.
+    for (const SourceNamedSymbol &type : table.types) {
+        if (type.name == symbol) {
+            return type.line;
+        }
+    }
+
+    for (const SourceFunctionSymbol &function : table.functions) {
+        if (sourceFunctionName(function.signature) == symbol) {
+            return function.line;
+        }
+    }
+
+    for (const SourceVariableSymbol &global : table.globals) {
+        if (global.name == symbol) {
+            return global.line;
+        }
+    }
+
+    for (const SourceNamedSymbol &define : table.defines) {
+        if (define.name == symbol) {
+            return define.line;
+        }
+    }
+
+    return -1;
 }
 
 class CompilerOutputPane : public QPlainTextEdit
@@ -1076,6 +1474,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_projectType(GuiProjectType)
     , m_modSizeKb(0)
     , m_editorFontPointSize(10)
+    , m_theme(defaultIDETheme())
 {
     ui->setupUi(this);
     loadOptions();
@@ -1089,7 +1488,11 @@ MainWindow::MainWindow(QWidget *parent)
         appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()), OutputKind::Normal);
     });
     connect(m_compilerProcess, &QProcess::readyReadStandardError, this, [this]() {
-        appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardError()), OutputKind::Error);
+        const QString text =
+            QString::fromLocal8Bit(m_compilerProcess->readAllStandardError());
+
+        appendOutputText(text, OutputKind::Error);
+        processCompilerStderrChunk(text);
     });
     connect(m_compilerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
         const QString toolName = m_buildStep == BuildStep::Objcopy ? tr("objcopy") : tr("compiler");
@@ -1315,9 +1718,12 @@ void MainWindow::setupInterface()
         }
 
         QToolTip {
-            background-color: #101010;
-            color: #ffffff;
-            border: 1px solid #505050;
+            background-color: #07090d;
+            color: #f2f2f2;
+            border: 2px solid #2858A8;
+            padding: 5px 5px;
+            font-size: 12px;
+            font-weight: 500;
         }
     )");
 
@@ -1661,6 +2067,7 @@ void MainWindow::setupInterface()
 
 
     setCentralWidget(mainSplitter);
+    applyTheme();
     statusBar()->showMessage(tr("Ready"));
 }
 
@@ -1843,18 +2250,37 @@ bool MainWindow::saveProject()
 
 void MainWindow::showOptions()
 {
-    OptionsDialog dialog(this);
-    dialog.setEditorFontPointSize(m_editorFontPointSize);
+    int newFontPointSize = m_editorFontPointSize;
+    IDETheme newTheme = m_theme;
 
-    if (dialog.exec() != QDialog::Accepted) {
-        return;
+    /*
+     * Keep the dialog in its own scope so it and all of its colour-picker /
+     * tab children are destroyed before we replace the MainWindow stylesheet.
+     *
+     * Re-polishing a just-closed modal child tree while returning from exec()
+     * is unnecessary and can be unstable on some Qt/style combinations.
+     */
+    {
+        OptionsDialog dialog(this);
+        dialog.setEditorFontPointSize(m_editorFontPointSize);
+        dialog.setTheme(m_theme);
+
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+
+        newFontPointSize = dialog.editorFontPointSize();
+        newTheme = dialog.theme();
     }
 
-    m_editorFontPointSize = dialog.editorFontPointSize();
+    m_editorFontPointSize = newFontPointSize;
+    m_theme = newTheme;
+
     saveOptions();
+    applyTheme();
     applyEditorFont();
 
-    statusBar()->showMessage(tr("Options saved"));
+    statusBar()->showMessage(tr("Options saved"), 3000);
 }
 
 void MainWindow::showProjectSettings()
@@ -1992,6 +2418,7 @@ void MainWindow::compileActiveFile()
               << QStringLiteral("-o")
               << outputPath;
 
+    clearCompilerDiagnostics();
     m_outputPane->clear();
     appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(selectedCompiler)), OutputKind::Path);
     appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
@@ -2466,6 +2893,11 @@ void MainWindow::renameSelectedProjectFile()
 
 void MainWindow::handleCompilerFinished(int exitCode)
 {
+    if (m_buildStep == BuildStep::Linking && !m_compilerStderrBuffer.isEmpty()) {
+        processCompilerDiagnosticLine(m_compilerStderrBuffer);
+        m_compilerStderrBuffer.clear();
+    }
+
     if (m_buildStep == BuildStep::Linking) {
         if (exitCode != 0) {
             appendOutputLine(tr("Link failed with exit code %1.").arg(exitCode), OutputKind::Error);
@@ -2552,8 +2984,10 @@ CodeEditor *MainWindow::activeEditor() const
 CodeEditor *MainWindow::createEditor(const QString &filePath)
 {
     auto *editor = new CodeEditor(m_editorTabs);
+    editor->setTheme(m_theme);
     editor->setFilePath(filePath);
     editor->setFunctionCompletions(projectFunctionSignatures());
+    applyCompilerDiagnostics(editor);
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(m_editorFontPointSize);
@@ -2566,13 +3000,41 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     });
     connect(editor->document(), &QTextDocument::contentsChanged, this, [this, editor]() {
         refreshFunctionCompletions();
+
         if (editor == activeEditor()) {
             refreshSymbolTree();
         }
+
+        /*
+         * Struct/type/member information is parsed from the live document.
+         * Re-query member completion after every edit so newly added typedefs,
+         * members and object declarations are immediately visible without
+         * closing/reopening the tab.
+         *
+         * Queue it until the current key event/contentsChanged chain has
+         * finished, otherwise we can ask the completer while QTextDocument is
+         * still notifying its listeners.
+         */
+        QMetaObject::invokeMethod(
+            editor,
+            [editor]() {
+                editor->refreshMemberCompletion();
+            },
+            Qt::QueuedConnection);
     });
 
     connect(editor, &CodeEditor::quickTipRequested, this, &MainWindow::showQuickTip);
     connect(editor, &CodeEditor::quickTipCandidateChanged, this, &MainWindow::showPassiveQuickTip);
+    connect(editor, &CodeEditor::definitionRequested,
+            this, [this, editor](const QString &symbol, int sourceLine) {
+                goToDefinition(editor, symbol, sourceLine);
+            });
+    connect(editor, &CodeEditor::memberCompletionRequested,
+            this, [this, editor](const QString &objectName,
+                                int sourceLine,
+                                const QString &prefix) {
+                completeStructMembers(editor, objectName, sourceLine, prefix);
+            });
     return editor;
 }
 
@@ -3219,6 +3681,21 @@ void MainWindow::refreshSymbolTree()
             item->setIcon(0, typeIcon);
             item->setData(0, Qt::UserRole, type.line);
             item->setToolTip(0, tr("Type — double-click to jump to line %1").arg(type.line + 1));
+            item->setData(
+                0,
+                Qt::UserRole + 10,
+                QStringLiteral("type:%1").arg(type.name));
+
+            for (const SourceVariableSymbol &member : type.members) {
+                auto *memberItem = new QTreeWidgetItem(item);
+                memberItem->setText(0, member.name);
+                memberItem->setIcon(0, localIcon);
+                memberItem->setData(0, Qt::UserRole, member.line);
+                memberItem->setToolTip(
+                    0,
+                    tr("Member — double-click to jump to line %1")
+                        .arg(member.line + 1));
+            }
         }
         typesItem->setText(0,
             QStringLiteral("Types (%1)")
@@ -3334,6 +3811,252 @@ void MainWindow::refreshSymbolTree()
 
     m_symbolTreeEditor = editor;
 }
+
+void MainWindow::completeStructMembers(CodeEditor *sourceEditor,
+                                       const QString &objectName,
+                                       int sourceLine,
+                                       const QString &prefix)
+{
+    if (!sourceEditor || objectName.isEmpty()) {
+        return;
+    }
+
+    const SourceSymbolTable currentSymbols =
+        parseSourceSymbols(sourceEditor->toPlainText());
+
+    const QString typeName =
+        variableTypeInTable(
+            currentSymbols,
+            objectName,
+            sourceLine,
+            true);
+
+    if (typeName.isEmpty()) {
+        sourceEditor->showMemberCompletions({}, prefix);
+        return;
+    }
+
+    // The type may be declared in the same file.
+    QStringList members =
+        membersForTypeInTable(currentSymbols, typeName);
+
+    if (!members.isEmpty()) {
+        sourceEditor->showMemberCompletions(members, prefix);
+        return;
+    }
+
+    const QString sourcePath =
+        sourceEditor->filePath().isEmpty()
+            ? QString()
+            : QFileInfo(sourceEditor->filePath()).absoluteFilePath();
+
+    QSet<QString> scannedPaths;
+    if (!sourcePath.isEmpty()) {
+        scannedPaths.insert(sourcePath);
+    }
+
+    // Then search other open tabs, using their unsaved in-memory text.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor =
+            qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+
+        if (!editor || editor == sourceEditor) {
+            continue;
+        }
+
+        if (!editor->filePath().isEmpty()) {
+            scannedPaths.insert(
+                QFileInfo(editor->filePath()).absoluteFilePath());
+        }
+
+        const SourceSymbolTable table =
+            parseSourceSymbols(editor->toPlainText());
+
+        members = membersForTypeInTable(table, typeName);
+        if (!members.isEmpty()) {
+            sourceEditor->showMemberCompletions(members, prefix);
+            return;
+        }
+    }
+
+    // Finally search the remaining project files on disk.
+    QStringList projectFiles = m_projectFilesInProject;
+    projectFiles.append(projectFolderSourceFiles());
+    projectFiles.removeDuplicates();
+
+    for (const QString &filePath : std::as_const(projectFiles)) {
+        const QString absolutePath =
+            QFileInfo(filePath).absoluteFilePath();
+
+        if (absolutePath.isEmpty()
+            || scannedPaths.contains(absolutePath)
+            || !QFileInfo::exists(absolutePath)
+            || !canContainFunctionSignatures(absolutePath)) {
+            continue;
+        }
+
+        QFile file(absolutePath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+
+        const SourceSymbolTable table =
+            parseSourceSymbols(QString::fromUtf8(file.readAll()));
+
+        members = membersForTypeInTable(table, typeName);
+        if (!members.isEmpty()) {
+            sourceEditor->showMemberCompletions(members, prefix);
+            return;
+        }
+    }
+
+    sourceEditor->showMemberCompletions({}, prefix);
+}
+
+
+void MainWindow::goToDefinition(CodeEditor *sourceEditor,
+                                const QString &symbol,
+                                int sourceLine)
+{
+    if (!sourceEditor || symbol.isEmpty()) {
+        return;
+    }
+
+    auto jumpToLine = [this](CodeEditor *editor, int line) {
+        if (!editor || line < 0) {
+            return false;
+        }
+
+        const QTextBlock block = editor->document()->findBlockByNumber(line);
+        if (!block.isValid()) {
+            return false;
+        }
+
+        const int tabIndex = m_editorTabs->indexOf(editor);
+        if (tabIndex >= 0) {
+            m_editorTabs->setCurrentIndex(tabIndex);
+        }
+
+        QTextCursor cursor(block);
+        editor->setTextCursor(cursor);
+        editor->centerCursor();
+        editor->setFocus();
+        return true;
+    };
+
+    // 1. Current file first. This also resolves locals and parameters using
+    //    the function containing the Ctrl+Clicked use.
+    const SourceSymbolTable currentSymbols =
+        parseSourceSymbols(sourceEditor->toPlainText());
+
+    const int currentLine =
+        definitionLineInTable(currentSymbols, symbol, sourceLine, true);
+
+    if (currentLine >= 0) {
+        jumpToLine(sourceEditor, currentLine);
+        statusBar()->showMessage(
+            tr("%1 — definition in %2:%3")
+                .arg(symbol,
+                     sourceEditor->filePath().isEmpty()
+                         ? tr("current tab")
+                         : QFileInfo(sourceEditor->filePath()).fileName())
+                .arg(currentLine + 1),
+            2500);
+        return;
+    }
+
+    const QString sourcePath = sourceEditor->filePath().isEmpty()
+        ? QString()
+        : QFileInfo(sourceEditor->filePath()).absoluteFilePath();
+
+    QSet<QString> scannedPaths;
+    if (!sourcePath.isEmpty()) {
+        scannedPaths.insert(sourcePath);
+    }
+
+    // 2. Other open tabs. Use their in-memory contents so unsaved edits still
+    //    participate in Ctrl+Click navigation.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (!editor || editor == sourceEditor) {
+            continue;
+        }
+
+        const QString editorPath = editor->filePath().isEmpty()
+            ? QString()
+            : QFileInfo(editor->filePath()).absoluteFilePath();
+
+        if (!editorPath.isEmpty()) {
+            scannedPaths.insert(editorPath);
+        }
+
+        const SourceSymbolTable symbols =
+            parseSourceSymbols(editor->toPlainText());
+
+        const int line = definitionLineInTable(symbols, symbol, -1, false);
+        if (line >= 0) {
+            jumpToLine(editor, line);
+            statusBar()->showMessage(
+                tr("%1 — definition in %2:%3")
+                    .arg(symbol,
+                         editorPath.isEmpty()
+                             ? tr("open tab")
+                             : QFileInfo(editorPath).fileName())
+                    .arg(line + 1),
+                2500);
+            return;
+        }
+    }
+
+    // 3. Remaining files in the project. This includes headers and .inc files,
+    //    not just compilable .c/.cpp sources.
+    QStringList projectFiles = m_projectFilesInProject;
+    projectFiles.append(projectFolderSourceFiles());
+    projectFiles.removeDuplicates();
+
+    for (const QString &filePath : std::as_const(projectFiles)) {
+        const QString absolutePath = QFileInfo(filePath).absoluteFilePath();
+
+        if (absolutePath.isEmpty()
+            || scannedPaths.contains(absolutePath)
+            || !QFileInfo::exists(absolutePath)
+            || !canContainFunctionSignatures(absolutePath)) {
+            continue;
+        }
+
+        QFile file(absolutePath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+
+        const QString source = QString::fromUtf8(file.readAll());
+        const SourceSymbolTable symbols = parseSourceSymbols(source);
+        const int line = definitionLineInTable(symbols, symbol, -1, false);
+
+        if (line < 0) {
+            continue;
+        }
+
+        if (!openFile(absolutePath)) {
+            return;
+        }
+
+        CodeEditor *targetEditor = activeEditor();
+        if (targetEditor && jumpToLine(targetEditor, line)) {
+            statusBar()->showMessage(
+                tr("%1 — definition in %2:%3")
+                    .arg(symbol, QFileInfo(absolutePath).fileName())
+                    .arg(line + 1),
+                2500);
+        }
+        return;
+    }
+
+    statusBar()->showMessage(
+        tr("No definition found for %1").arg(symbol),
+        3000);
+}
+
 
 void MainWindow::jumpToSymbol(QTreeWidgetItem *item, int column)
 {
@@ -3879,6 +4602,331 @@ void MainWindow::applyEditorFont()
     }
 }
 
+void MainWindow::applyTheme()
+{
+    const auto C = [](const QColor &colour) {
+        return ideThemeColorName(colour);
+    };
+
+    setStyleSheet(QStringLiteral(
+        "QMainWindow, QWidget { background-color:%1; color:%2; }"
+        "QLabel { background-color:%1; color:%3; border:none; }"
+
+        "QToolBar { background-color:%1; border:none; spacing:1px; padding:1px; }"
+        "QToolButton { background-color:%1; color:%3; border:none; border-radius:0px; padding:3px; }"
+        "QToolButton:hover { background-color:%4; }"
+        "QToolButton:pressed { background-color:%5; }"
+
+        "QPushButton { background-color:%1; color:%2; border:1px solid %6; border-radius:0px; padding:4px 8px; }"
+        "QPushButton:hover { background-color:%4; border:1px solid %5; }"
+        "QPushButton:pressed { background-color:%5; color:%3; }"
+
+        "QTreeWidget { background-color:%7; color:%2; border:1px solid %8; "
+        " alternate-background-color:%9; border-radius:0px; }"
+        "QTreeWidget::item { border-radius:0px; padding:1px; }"
+        "QTreeWidget::item:selected { background-color:%5; color:%3; }"
+        "QTreeWidget::item:hover { background-color:%4; }"
+
+        "QTabWidget::pane { background-color:%1; border:1px solid %8; border-radius:0px; }"
+        "QTabBar::tab { background-color:%1; color:%10; border:1px solid %6; "
+        " border-bottom:none; border-radius:0px; padding:5px 10px; }"
+        "QTabBar::tab:selected { background-color:%5; color:%3; }"
+        "QTabBar::tab:hover:!selected { background-color:%4; }"
+
+        "QStatusBar { background-color:%1; color:%10; border-top:1px solid %6; }"
+        "QSplitter::handle { background-color:%4; }"
+        "QSplitter::handle:hover { background-color:%5; }"
+
+        "QMenu { background-color:%11; color:%2; border:1px solid %6; }"
+        "QMenu::item { padding:5px 24px 5px 8px; }"
+        "QMenu::item:selected { background-color:%5; color:%3; }"
+
+        "QScrollBar:vertical { background:%11; width:12px; margin:0px; }"
+        "QScrollBar:horizontal { background:%11; height:12px; margin:0px; }"
+        "QScrollBar::handle:vertical { background:%12; min-height:20px; border-radius:0px; }"
+        "QScrollBar::handle:horizontal { background:%12; min-width:20px; border-radius:0px; }"
+        "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background:%13; }"
+        "QScrollBar:add-line, QScrollBar:sub-line { width:0px; height:0px; }"
+
+        "QLineEdit, QPlainTextEdit, QSpinBox { background-color:%7; color:%2; "
+        " border:1px solid %6; border-radius:0px; "
+        " selection-background-color:%5; selection-color:%3; }"
+
+        "QToolTip { background-color:%14; color:%15; border:2px solid %5; "
+        " padding:5px 5px; font-size:12px; font-weight:500; }")
+        .arg(C(m_theme.windowBackground))      // 1
+        .arg(C(m_theme.text))                  // 2
+        .arg(C(m_theme.brightText))            // 3
+        .arg(C(m_theme.hover))                 // 4
+        .arg(C(m_theme.accent))                // 5
+        .arg(C(m_theme.border))                // 6
+        .arg(C(m_theme.inputBackground))       // 7
+        .arg(C(m_theme.treeBorder))            // 8
+        .arg(C(m_theme.alternateBackground))   // 9
+        .arg(C(m_theme.mutedText))             // 10
+        .arg(C(m_theme.menuBackground))        // 11
+        .arg(C(m_theme.scrollHandle))          // 12
+        .arg(C(m_theme.scrollHandleHover))     // 13
+        .arg(C(m_theme.tooltipBackground))     // 14
+        .arg(C(m_theme.tooltipText)));         // 15
+
+    if (m_projectFiles) {
+        m_projectFiles->setStyleSheet(QStringLiteral(
+            "QTreeWidget { border:1px solid %1; border-radius:0px; }"
+            "QTreeWidget::item { border-radius:0px; }"
+            "QTreeWidget::item:selected { background-color:%2; color:%3; }"
+            "QTreeWidget::item:selected:hover { border:1px solid %4; background-color:%2; }")
+            .arg(C(m_theme.treeBorder),
+                 C(m_theme.accent),
+                 C(m_theme.brightText),
+                 C(m_theme.border)));
+    }
+
+    if (m_functionvarList) {
+        m_functionvarList->setStyleSheet(QStringLiteral(
+            "QTreeWidget { border:1px solid %1; border-radius:0px; }"
+            "QTreeWidget::item { border-radius:0px; }"
+            "QTreeWidget::item:selected { background-color:%2; color:%3; }"
+            "QTreeWidget::item:selected:hover { border:1px solid %4; background-color:%2; }")
+            .arg(C(m_theme.treeBorder),
+                 C(m_theme.accent),
+                 C(m_theme.brightText),
+                 C(m_theme.border)));
+    }
+
+    if (m_editorTabs) {
+        m_editorTabs->setStyleSheet(QStringLiteral(
+            "QTabWidget::pane { border:1px solid %1; border-radius:0px; }"
+            "QTabBar::tab { background:%2; color:%3; border:1px solid %1; "
+            " border-bottom:none; border-radius:0px; padding:6px 12px; margin-right:-6px; }"
+            "QTabBar::tab:selected { background:%4; color:%5; border-radius:0px; }"
+            "QTabBar::tab:hover:!selected { background:%6; border-radius:0px; }"
+            "QTabBar::close-button { image:url(:/icons/close_tab.png); border-radius:0px; "
+            " subcontrol-position:right; subcontrol-origin:padding; width:14px; height:14px; background:transparent; }"
+            "QTabBar::close-button:hover { background:%7; border-radius:0px; }")
+            .arg(C(m_theme.treeBorder),
+                 C(m_theme.panelBackground),
+                 C(m_theme.mutedText),
+                 C(m_theme.accent),
+                 C(m_theme.brightText),
+                 C(m_theme.hover),
+                 C(m_theme.outputError)));
+    }
+
+    if (m_quickTipLabel) {
+        m_quickTipLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background:%1; color:%2; border-top:1px solid %3; "
+            " border-bottom:1px solid %3; padding:3px 6px; }")
+            .arg(C(m_theme.quickTipBackground),
+                 C(m_theme.quickTipText),
+                 C(m_theme.quickTipBorder)));
+    }
+
+    if (m_outputPane) {
+        m_outputPane->setStyleSheet(QStringLiteral(
+            "QPlainTextEdit { background:%1; color:%2; "
+            " selection-background-color:%3; selection-color:%4; }")
+            .arg(C(m_theme.outputBackground),
+                 C(m_theme.outputNormal),
+                 C(m_theme.selectionBackground),
+                 C(m_theme.selectionText)));
+    }
+
+    if (m_editorTabs) {
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+            if (editor) {
+                editor->setTheme(m_theme);
+            }
+        }
+    }
+}
+
+void MainWindow::clearCompilerDiagnostics()
+{
+    m_compilerStderrBuffer.clear();
+    m_compilerDiagnostics.clear();
+
+    if (!m_editorTabs) {
+        return;
+    }
+
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+        if (editor) {
+            editor->clearDiagnostics();
+        }
+    }
+}
+
+QString MainWindow::normalizedDiagnosticPath(const QString &compilerPath) const
+{
+    QString path = compilerPath.trimmed();
+    if (path.isEmpty()) {
+        return {};
+    }
+
+    QFileInfo info(path);
+    if (info.isAbsolute()) {
+        return info.absoluteFilePath();
+    }
+
+    if (m_compilerProcess && !m_compilerProcess->workingDirectory().isEmpty()) {
+        const QString fromWorkingDirectory =
+            QFileInfo(QDir(m_compilerProcess->workingDirectory()).filePath(path))
+                .absoluteFilePath();
+
+        if (QFileInfo::exists(fromWorkingDirectory)) {
+            return fromWorkingDirectory;
+        }
+    }
+
+    if (!m_projectPath.isEmpty()) {
+        const QString fromProject =
+            QFileInfo(QDir(m_projectPath).filePath(path)).absoluteFilePath();
+
+        if (QFileInfo::exists(fromProject)) {
+            return fromProject;
+        }
+    }
+
+    return QFileInfo(path).absoluteFilePath();
+}
+
+void MainWindow::processCompilerStderrChunk(const QString &text)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+
+    m_compilerStderrBuffer += text;
+
+    int newlineIndex = -1;
+    while ((newlineIndex = m_compilerStderrBuffer.indexOf(QLatin1Char('\n'))) >= 0) {
+        QString line = m_compilerStderrBuffer.left(newlineIndex);
+        m_compilerStderrBuffer.remove(0, newlineIndex + 1);
+
+        if (line.endsWith(QLatin1Char('\r'))) {
+            line.chop(1);
+        }
+
+        processCompilerDiagnosticLine(line);
+    }
+}
+
+void MainWindow::processCompilerDiagnosticLine(const QString &line)
+{
+    static const QRegularExpression diagnosticExpression(
+        QStringLiteral(R"(^(.+?):(\d+)(?::(\d+))?:\s*(fatal error|error|warning):\s*(.*)$)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const QRegularExpressionMatch match = diagnosticExpression.match(line);
+    if (!match.hasMatch()) {
+        return;
+    }
+
+    QString filePath = normalizedDiagnosticPath(match.captured(1));
+
+    bool lineOk = false;
+    const int oneBasedLine = match.captured(2).toInt(&lineOk);
+    if (!lineOk || oneBasedLine <= 0 || filePath.isEmpty()) {
+        return;
+    }
+
+    bool columnOk = false;
+    const int oneBasedColumn = match.captured(3).toInt(&columnOk);
+
+    const QString severityText = match.captured(4).toLower();
+    const EditorDiagnostic::Severity severity =
+        severityText == QStringLiteral("warning")
+            ? EditorDiagnostic::Severity::Warning
+            : EditorDiagnostic::Severity::Error;
+
+    EditorDiagnostic diagnostic;
+    diagnostic.line = oneBasedLine - 1;
+    diagnostic.column = columnOk && oneBasedColumn > 0 ? oneBasedColumn - 1 : -1;
+    diagnostic.severity = severity;
+    diagnostic.message = match.captured(5).trimmed();
+
+    CodeEditor *matchedEditor = nullptr;
+
+    if (m_editorTabs) {
+        // Prefer an exact absolute-path match.
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+            if (!editor || editor->filePath().isEmpty()) {
+                continue;
+            }
+
+            const QString editorPath =
+                QFileInfo(editor->filePath()).absoluteFilePath();
+
+            if (editorPath == filePath) {
+                matchedEditor = editor;
+                filePath = editorPath;
+                break;
+            }
+        }
+
+        // Some toolchains print only a bare file name. Fall back only when
+        // that name uniquely identifies one open editor.
+        if (!matchedEditor) {
+            const QString diagnosticName = QFileInfo(filePath).fileName();
+            CodeEditor *nameMatch = nullptr;
+
+            for (int i = 0; i < m_editorTabs->count(); ++i) {
+                auto *editor = qobject_cast<CodeEditor *>(m_editorTabs->widget(i));
+                if (!editor || editor->filePath().isEmpty()) {
+                    continue;
+                }
+
+                if (QFileInfo(editor->filePath()).fileName() == diagnosticName) {
+                    if (nameMatch) {
+                        nameMatch = nullptr; // ambiguous
+                        break;
+                    }
+                    nameMatch = editor;
+                }
+            }
+
+            if (nameMatch) {
+                matchedEditor = nameMatch;
+                filePath = QFileInfo(nameMatch->filePath()).absoluteFilePath();
+            }
+        }
+    }
+
+    QList<EditorDiagnostic> &diagnostics = m_compilerDiagnostics[filePath];
+
+    const bool duplicate = std::any_of(
+        diagnostics.cbegin(),
+        diagnostics.cend(),
+        [&](const EditorDiagnostic &existing) {
+            return existing.line == diagnostic.line
+                && existing.column == diagnostic.column
+                && existing.severity == diagnostic.severity
+                && existing.message == diagnostic.message;
+        });
+
+    if (!duplicate) {
+        diagnostics.append(diagnostic);
+    }
+
+    if (matchedEditor) {
+        applyCompilerDiagnostics(matchedEditor);
+    }
+}
+
+void MainWindow::applyCompilerDiagnostics(CodeEditor *editor)
+{
+    if (!editor || editor->filePath().isEmpty()) {
+        return;
+    }
+
+    const QString path = QFileInfo(editor->filePath()).absoluteFilePath();
+    editor->setDiagnostics(m_compilerDiagnostics.value(path));
+}
+
 void MainWindow::appendOutputText(const QString &text, OutputKind kind)
 {
     if (!m_outputPane || text.isEmpty()) {
@@ -3888,25 +4936,25 @@ void MainWindow::appendOutputText(const QString &text, OutputKind kind)
     QColor color;
     switch (kind) {
     case OutputKind::Header:
-        color = QColor(120, 220, 255);
+        color = m_theme.outputHeader;
         break;
     case OutputKind::Path:
-        color = QColor(170, 205, 255);
+        color = m_theme.outputPath;
         break;
     case OutputKind::Success:
-        color = QColor(80, 255, 120);
+        color = m_theme.outputSuccess;
         break;
     case OutputKind::Error:
-        color = QColor(255, 90, 90);
+        color = m_theme.outputError;
         break;
     case OutputKind::Warning:
-        color = QColor(255, 210, 90);
+        color = m_theme.outputWarning;
         break;
     case OutputKind::Muted:
-        color = QColor(150, 165, 150);
+        color = m_theme.outputMuted;
         break;
     case OutputKind::Normal:
-        color = QColor(220, 235, 210);
+        color = m_theme.outputNormal;
         break;
     }
 
@@ -3928,11 +4976,39 @@ void MainWindow::appendOutputLine(const QString &text, OutputKind kind)
 void MainWindow::loadOptions()
 {
     QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    m_editorFontPointSize = settings.value(QStringLiteral("editor/fontPointSize"), 10).toInt();
+
+    m_editorFontPointSize =
+        qBound(6,
+               settings.value(QStringLiteral("editor/fontPointSize"), 10).toInt(),
+               36);
+
+    m_theme = defaultIDETheme();
+
+    for (const IDEThemeColorField &field : ideThemeColorFields()) {
+        const QString key =
+            QStringLiteral("theme/") + QLatin1String(field.key);
+
+        if (!settings.contains(key)) {
+            continue;
+        }
+
+        const QColor colour(settings.value(key).toString());
+        if (colour.isValid()) {
+            m_theme.*(field.member) = colour;
+        }
+    }
 }
 
 void MainWindow::saveOptions() const
 {
     QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    settings.setValue(QStringLiteral("editor/fontPointSize"), m_editorFontPointSize);
+    settings.setValue(
+        QStringLiteral("editor/fontPointSize"),
+        m_editorFontPointSize);
+
+    for (const IDEThemeColorField &field : ideThemeColorFields()) {
+        settings.setValue(
+            QStringLiteral("theme/") + QLatin1String(field.key),
+            ideThemeColorName(m_theme.*(field.member)));
+    }
 }

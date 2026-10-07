@@ -2,6 +2,7 @@
 
 #include "csyntaxhighlighter.h"
 
+#include <algorithm>
 #include <QAbstractItemView>
 #include <QCompleter>
 #include <QFile>
@@ -9,27 +10,305 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QKeyEvent>
+#include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QColor>
+#include <QToolTip>
+#include <QHelpEvent>
+#include <QEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QStringListModel>
 #include <QTextBlock>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QTextStream>
 #include <QWidget>
 
 namespace {
+constexpr int CodeMinimapWidth = 92;
+
+class CodeMinimap : public QWidget
+{
+public:
+    explicit CodeMinimap(CodeEditor *editor)
+        : QWidget(editor)
+        , m_editor(editor)
+        , m_dragging(false)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+        setAttribute(Qt::WA_OpaquePaintEvent);
+
+        connect(editor->document(), &QTextDocument::contentsChanged, this, [this]() {
+            update();
+        });
+        connect(editor->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+            update();
+        });
+        connect(editor->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) {
+            update();
+        });
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), m_editor->theme().minimapBackground);
+
+        if (!m_editor) {
+            return;
+        }
+
+        const QStringList lines = m_editor->toPlainText().split(QLatin1Char('\n'));
+        const int lineCount = qMax(1, lines.size());
+        const qreal usableHeight = qMax(1, height() - 2);
+        //const qreal yScale = usableHeight / static_cast<qreal>(lineCount);
+        const qreal yScale = qMin<qreal>(
+            3.0,
+            usableHeight / static_cast<qreal>(lineCount)
+            );
+
+        for (int i = 0; i < lines.size(); ++i) {
+            const QString &line = lines.at(i);
+            const QString trimmed = line.trimmed();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+
+            int leadingSpaces = 0;
+            while (leadingSpaces < line.size() && line.at(leadingSpaces).isSpace()) {
+                ++leadingSpaces;
+            }
+
+            const int x = qMin(width() - 4, 3 + leadingSpaces / 2);
+            const int visibleChars = qMin(120, qMax(1, trimmed.size()));
+            const int lineWidth = qMin(width() - x - 2, qMax(2, visibleChars / 2));
+            const int y = 1 + qRound(i * yScale);
+
+            QColor lineColor = m_editor->theme().minimapText;
+            if (trimmed.startsWith(QStringLiteral("//"))
+                || trimmed.startsWith(QStringLiteral("/*"))
+                || trimmed.startsWith(QLatin1Char('*'))) {
+                lineColor = m_editor->theme().minimapComment;
+            } else if (trimmed.startsWith(QLatin1Char('#'))) {
+                lineColor = m_editor->theme().minimapPreprocessor;
+            } else if (trimmed.startsWith(QStringLiteral("typedef"))
+                       || trimmed.startsWith(QStringLiteral("struct"))
+                       || trimmed.startsWith(QStringLiteral("enum"))) {
+                lineColor = m_editor->theme().minimapType;
+            } else if (trimmed.contains(QLatin1Char('"'))
+                       || trimmed.contains(QLatin1Char('\''))) {
+                lineColor = m_editor->theme().minimapString;
+            } else if (trimmed.contains(QLatin1Char('('))
+                       && trimmed.contains(QLatin1Char(')'))) {
+                lineColor = m_editor->theme().minimapFunction;
+            }
+
+            painter.setPen(lineColor);
+            painter.drawLine(x, y, x + lineWidth, y);
+        }
+
+        QScrollBar *bar = m_editor->verticalScrollBar();
+        const int maximum = bar->maximum();
+        const int pageStep = qMax(1, bar->pageStep());
+        const int totalRange = maximum + pageStep;
+
+        qreal viewTop = 0.0;
+        qreal viewHeight = height();
+        if (maximum > 0 && totalRange > 0) {
+            viewTop = (static_cast<qreal>(bar->value()) / totalRange) * height();
+            viewHeight = (static_cast<qreal>(pageStep) / totalRange) * height();
+            viewHeight = qMax<qreal>(12.0, viewHeight);
+            if (viewTop + viewHeight > height()) {
+                viewTop = qMax<qreal>(0.0, height() - viewHeight);
+            }
+        }
+
+        const QRectF viewportRect(1.5, viewTop + 0.5, width() - 2.0, qMin<qreal>(viewHeight, height()) - 1.0);
+        painter.fillRect(viewportRect, m_editor->theme().minimapViewportFill);
+        painter.setPen(m_editor->theme().minimapViewportBorder);
+        painter.drawRect(viewportRect);
+
+        // Compiler diagnostics: thin ticks on the far-right edge.
+        // Warnings are painted first so an error wins when both share a line.
+        const int markerWidth = 5;
+        const int markerHeight = qMax(2, qRound(yScale));
+
+        painter.setPen(Qt::NoPen);
+
+        auto paintDiagnostics = [&](EditorDiagnostic::Severity severity, const QColor &color) {
+            painter.setBrush(color);
+
+            for (const EditorDiagnostic &diagnostic : m_editor->diagnostics()) {
+                if (diagnostic.severity != severity
+                    || diagnostic.line < 0
+                    || diagnostic.line >= lineCount) {
+                    continue;
+                }
+
+                const int y = qBound(
+                    0,
+                    1 + qRound(diagnostic.line * yScale) - markerHeight / 2,
+                    qMax(0, height() - markerHeight));
+
+                painter.drawRect(width() - markerWidth, y, markerWidth, markerHeight);
+            }
+        };
+
+        paintDiagnostics(
+            EditorDiagnostic::Severity::Warning,
+            m_editor->theme().diagnosticWarning);
+        paintDiagnostics(
+            EditorDiagnostic::Severity::Error,
+            m_editor->theme().diagnosticError);
+
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(m_editor->theme().minimapDivider);
+        painter.drawLine(0, 0, 0, height());
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            if (event->position().x() >= width() - 10
+                && jumpToDiagnosticAtY(event->position().y())) {
+                event->accept();
+                return;
+            }
+
+            m_dragging = true;
+            scrollToY(event->position().y());
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_dragging && (event->buttons() & Qt::LeftButton)) {
+            scrollToY(event->position().y());
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_dragging = false;
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    bool jumpToDiagnosticAtY(qreal y)
+    {
+        if (!m_editor || height() <= 1) {
+            return false;
+        }
+
+        const int lineCount = qMax(1, m_editor->blockCount());
+        const qreal usableHeight = qMax(1, height() - 2);
+        const qreal yScale = qMin<qreal>(
+            3.0,
+            usableHeight / static_cast<qreal>(lineCount));
+
+        int bestLine = -1;
+        qreal bestDistance = 1000000.0;
+
+        for (const EditorDiagnostic &diagnostic : m_editor->diagnostics()) {
+            if (diagnostic.line < 0 || diagnostic.line >= lineCount) {
+                continue;
+            }
+
+            const qreal markerY = 1.0 + diagnostic.line * yScale;
+            const qreal distance = qAbs(markerY - y);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestLine = diagnostic.line;
+            }
+        }
+
+        const qreal hitDistance = qMax<qreal>(4.0, yScale * 2.0);
+        if (bestLine < 0 || bestDistance > hitDistance) {
+            return false;
+        }
+
+        const QTextBlock block = m_editor->document()->findBlockByNumber(bestLine);
+        if (!block.isValid()) {
+            return false;
+        }
+
+        QTextCursor cursor(block);
+        m_editor->setTextCursor(cursor);
+        m_editor->centerCursor();
+        m_editor->setFocus();
+        return true;
+    }
+
+    void scrollToY(qreal y)
+    {
+        if (!m_editor || height() <= 1) {
+            return;
+        }
+
+        QScrollBar *bar = m_editor->verticalScrollBar();
+        const qreal ratio = qBound<qreal>(0.0, y / static_cast<qreal>(height()), 1.0);
+        bar->setValue(qRound(ratio * bar->maximum()));
+    }
+
+    CodeEditor *m_editor;
+    bool m_dragging;
+};
+
 class LineNumberArea : public QWidget
 {
     public:
         explicit LineNumberArea(CodeEditor *editor)
             : QWidget(editor)
             , m_editor(editor)
+            , m_diagnosticPopup(new QLabel(nullptr, Qt::ToolTip | Qt::FramelessWindowHint))
         {
+            setMouseTracking(true);
+
+            /*
+             * This is deliberately a QLabel popup rather than QToolTip.
+             * That means it is completely independent of the application's
+             * global QToolTip stylesheet.
+             */
+            m_diagnosticPopup->setObjectName(QStringLiteral("compilerDiagnosticPopup"));
+            m_diagnosticPopup->setTextFormat(Qt::RichText);
+            m_diagnosticPopup->setWordWrap(true);
+            m_diagnosticPopup->setFixedWidth(620);
+            m_diagnosticPopup->setMargin(0);
+            m_diagnosticPopup->setAttribute(Qt::WA_ShowWithoutActivating);
+            const IDETheme &theme = m_editor->theme();
+            m_diagnosticPopup->setStyleSheet(QStringLiteral(
+                "QLabel#compilerDiagnosticPopup {"
+                " background-color:%1;"
+                " color:%2;"
+                " border:2px solid %3;"
+                " padding:12px 16px;"
+                " font-size:14px;"
+                " font-weight:500;"
+                "}")
+                .arg(ideThemeColorName(theme.diagnosticPopupBackground),
+                     ideThemeColorName(theme.diagnosticPopupText),
+                     ideThemeColorName(theme.diagnosticError)));
+            m_diagnosticPopup->hide();
         }
 
-
+        ~LineNumberArea() override
+        {
+            delete m_diagnosticPopup;
+        }
 
         QSize sizeHint() const override
         {
@@ -42,8 +321,74 @@ class LineNumberArea : public QWidget
             m_editor->lineNumberAreaPaintEvent(event);
         }
 
+        void mouseMoveEvent(QMouseEvent *event) override
+        {
+            const QString tip =
+                m_editor->diagnosticToolTipAtY(qRound(event->position().y()));
+
+            if (!tip.isEmpty()) {
+                /*
+                 * Change the popup border depending on the most important
+                 * diagnostic on this line. Error wins over warning.
+                 */
+                const bool hasError = tip.contains(QStringLiteral("ERROR"));
+                const IDETheme &theme = m_editor->theme();
+                const QColor borderColour =
+                    hasError ? theme.diagnosticError
+                             : theme.diagnosticWarning;
+
+                m_diagnosticPopup->setStyleSheet(QStringLiteral(
+                    "QLabel#compilerDiagnosticPopup {"
+                    " background-color:%1;"
+                    " color:%2;"
+                    " border:2px solid %3;"
+                    " padding:12px 16px;"
+                    " font-size:14px;"
+                    " font-weight:500;"
+                    "}")
+                    .arg(ideThemeColorName(theme.diagnosticPopupBackground),
+                         ideThemeColorName(theme.diagnosticPopupText),
+                         ideThemeColorName(borderColour)));
+
+                m_diagnosticPopup->setText(tip);
+                m_diagnosticPopup->adjustSize();
+
+                const QPoint globalPos =
+                    event->globalPosition().toPoint() + QPoint(16, 16);
+
+                m_diagnosticPopup->move(globalPos);
+                m_diagnosticPopup->show();
+                m_diagnosticPopup->raise();
+            } else {
+                m_diagnosticPopup->hide();
+            }
+
+            QWidget::mouseMoveEvent(event);
+        }
+
+        void leaveEvent(QEvent *event) override
+        {
+            m_diagnosticPopup->hide();
+            QWidget::leaveEvent(event);
+        }
+
+        bool event(QEvent *event) override
+        {
+            /*
+             * Swallow Qt's normal delayed tooltip event. Diagnostics are shown
+             * immediately by mouseMoveEvent() using our custom popup instead.
+             */
+            if (event->type() == QEvent::ToolTip) {
+                event->accept();
+                return true;
+            }
+
+            return QWidget::event(event);
+        }
+
     private:
         CodeEditor *m_editor;
+        QLabel *m_diagnosticPopup;
     };
 
     QString functionNameFromSignature(const QString &signature)
@@ -100,7 +445,9 @@ class LineNumberArea : public QWidget
 }
 
 CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
+    , m_theme(defaultIDETheme())
     , m_lineNumberArea(new LineNumberArea(this))
+    , m_minimap(new CodeMinimap(this))
     , m_highlighter(new CSyntaxHighlighter(document()))
     , m_completer(new QCompleter(this))
     , m_completionModel(new QStringListModel(this))
@@ -110,18 +457,19 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     setFont(fixedFont);
     setLineWrapMode(QPlainTextEdit::NoWrap);
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
+    setMouseTracking(true);
+    viewport()->setMouseTracking(true);
     document()->setModified(false);
 
-    QPalette p = palette();
-    p.setColor(QPalette::Base, QColor(0x00, 0x10, 0x20));
-    p.setColor(QPalette::Text, QColor(0xd8, 0xe8, 0xd0));
-    setPalette(p);
 
     connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
     connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
         emit quickTipCandidateChanged(textUnderCursor());
+    });
+    connect(this, &CodeEditor::updateRequest, this, [this](const QRect &, int) {
+        m_minimap->update();
     });
     updateLineNumberAreaWidth(4);
     highlightCurrentLine();
@@ -134,8 +482,14 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     m_completer->setWrapAround(false);
 
     connect(m_completer, qOverload<const QString &>(&QCompleter::activated), this, [this](const QString &completion) {
-        insertFunctionCompletion(completion);
+        if (m_memberCompletionActive) {
+            insertMemberCompletion(completion);
+        } else {
+            insertFunctionCompletion(completion);
+        }
     });
+
+    setTheme(m_theme);
 }
 
 CodeEditor::~CodeEditor() = default;
@@ -152,18 +506,261 @@ void CodeEditor::setFilePath(const QString &path)
 
 void CodeEditor::setFunctionCompletions(const QStringList &signatures)
 {
-    QStringList sortedSignatures = signatures;
-    sortedSignatures.removeDuplicates();
-    sortedSignatures.sort(Qt::CaseInsensitive);
-    m_completionModel->setStringList(sortedSignatures);
+    m_functionCompletions = signatures;
+    m_functionCompletions.removeDuplicates();
+    m_functionCompletions.sort(Qt::CaseInsensitive);
+
+    if (!m_memberCompletionActive) {
+        m_completionModel->setStringList(m_functionCompletions);
+    }
 }
 
+void CodeEditor::restoreFunctionCompletionModel()
+{
+    m_memberCompletionActive = false;
+    m_memberCompletionPrefix.clear();
+    m_completionModel->setStringList(m_functionCompletions);
+}
+
+void CodeEditor::showMemberCompletions(const QStringList &members,
+                                       const QString &prefix)
+{
+    QStringList sortedMembers = members;
+    sortedMembers.removeDuplicates();
+    sortedMembers.sort(Qt::CaseInsensitive);
+
+    if (sortedMembers.isEmpty()) {
+        m_completer->popup()->hide();
+        restoreFunctionCompletionModel();
+        return;
+    }
+
+    m_memberCompletionActive = true;
+    m_memberCompletionPrefix = prefix;
+    m_completionModel->setStringList(sortedMembers);
+    m_completer->setCompletionPrefix(prefix);
+
+    if (m_completer->completionCount() == 0) {
+        m_completer->popup()->hide();
+        restoreFunctionCompletionModel();
+        return;
+    }
+
+    QRect completionRect = cursorRect();
+    completionRect.setWidth(
+        m_completer->popup()->sizeHintForColumn(0)
+        + m_completer->popup()->verticalScrollBar()->sizeHint().width());
+
+    m_completer->complete(completionRect);
+}
+
+
+void CodeEditor::refreshMemberCompletion()
+{
+    /*
+     * Re-run member discovery against the editor's current text. This is useful
+     * after the user edits a typedef/struct or variable declaration while the
+     * file is already open; no close/reopen cycle is needed.
+     */
+    requestMemberCompletionAtCursor();
+}
 
 void CodeEditor::setCompletionFont(const QFont &font)
 {
     if (m_completer) {
         m_completer->popup()->setFont(font);
     }
+}
+
+void CodeEditor::setTheme(const IDETheme &theme)
+{
+    m_theme = theme;
+
+    QPalette p = palette();
+    p.setColor(QPalette::Base, m_theme.editorBackground);
+    p.setColor(QPalette::Text, m_theme.editorText);
+    p.setColor(QPalette::Highlight, m_theme.selectionBackground);
+    p.setColor(QPalette::HighlightedText, m_theme.selectionText);
+    setPalette(p);
+
+    if (m_highlighter) {
+        m_highlighter->setTheme(m_theme);
+    }
+
+    if (m_completer && m_completer->popup()) {
+        m_completer->popup()->setStyleSheet(QStringLiteral(
+            "QAbstractItemView {"
+            " background:%1;"
+            " color:%2;"
+            " border:1px solid %3;"
+            " selection-background-color:%4;"
+            " selection-color:%5;"
+            "}")
+            .arg(ideThemeColorName(m_theme.inputBackground),
+                 ideThemeColorName(m_theme.text),
+                 ideThemeColorName(m_theme.border),
+                 ideThemeColorName(m_theme.accent),
+                 ideThemeColorName(m_theme.brightText)));
+    }
+
+    highlightCurrentLine();
+
+    if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+
+    if (m_minimap) {
+        m_minimap->update();
+    }
+
+    viewport()->update();
+}
+
+const IDETheme &CodeEditor::theme() const
+{
+    return m_theme;
+}
+
+const QList<EditorDiagnostic> &CodeEditor::diagnostics() const
+{
+    return m_diagnostics;
+}
+
+void CodeEditor::setDiagnostics(const QList<EditorDiagnostic> &diagnostics)
+{
+    m_diagnostics = diagnostics;
+
+    std::sort(
+        m_diagnostics.begin(),
+        m_diagnostics.end(),
+        [](const EditorDiagnostic &a, const EditorDiagnostic &b) {
+            if (a.line != b.line) {
+                return a.line < b.line;
+            }
+            if (a.severity != b.severity) {
+                return a.severity == EditorDiagnostic::Severity::Error;
+            }
+            if (a.column != b.column) {
+                return a.column < b.column;
+            }
+            return a.message < b.message;
+        });
+
+    m_diagnostics.erase(
+        std::unique(
+            m_diagnostics.begin(),
+            m_diagnostics.end(),
+            [](const EditorDiagnostic &a, const EditorDiagnostic &b) {
+                return a.line == b.line
+                    && a.column == b.column
+                    && a.severity == b.severity
+                    && a.message == b.message;
+            }),
+        m_diagnostics.end());
+
+    if (m_minimap) {
+        m_minimap->update();
+    }
+    if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+}
+
+void CodeEditor::clearDiagnostics()
+{
+    m_diagnostics.clear();
+
+    if (m_minimap) {
+        m_minimap->update();
+    }
+    if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+}
+
+QString CodeEditor::diagnosticToolTipAtY(int y) const
+{
+    QTextBlock block = firstVisibleBlock();
+    int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+
+    while (block.isValid()) {
+        const int bottom = top + qRound(blockBoundingRect(block).height());
+
+        if (y >= top && y < bottom) {
+            const int line = block.blockNumber();
+            QStringList errors;
+            QStringList warnings;
+
+            for (const EditorDiagnostic &diagnostic : m_diagnostics) {
+                if (diagnostic.line != line || diagnostic.message.isEmpty()) {
+                    continue;
+                }
+
+                QString text = diagnostic.message.toHtmlEscaped();
+
+                if (diagnostic.column >= 0) {
+                    text = QStringLiteral(
+                               "<span style=\"color:%1;\">Column %2:</span> %3")
+                               .arg(ideThemeColorName(m_theme.diagnosticColumn))
+                               .arg(diagnostic.column + 1)
+                               .arg(text);
+                }
+
+                if (diagnostic.severity == EditorDiagnostic::Severity::Warning) {
+                    if (!warnings.contains(text)) {
+                        warnings.append(text);
+                    }
+                } else {
+                    if (!errors.contains(text)) {
+                        errors.append(text);
+                    }
+                }
+            }
+
+            QStringList sections;
+
+            if (!errors.isEmpty()) {
+                sections.append(
+                    QStringLiteral(
+                        "<div>"
+                        "<span style=\"color:%1; font-weight:700;\">ERROR%2</span>"
+                        "<br>%3"
+                        "</div>")
+                        .arg(ideThemeColorName(m_theme.diagnosticError))
+                        .arg(errors.size() == 1 ? QString() : QStringLiteral("S"))
+                        .arg(errors.join(QStringLiteral("<br>"))));
+            }
+
+            if (!warnings.isEmpty()) {
+                sections.append(
+                    QStringLiteral(
+                        "<div>"
+                        "<span style=\"color:%1; font-weight:700;\">WARNING%2</span>"
+                        "<br>%3"
+                        "</div>")
+                        .arg(ideThemeColorName(m_theme.diagnosticWarning))
+                        .arg(warnings.size() == 1 ? QString() : QStringLiteral("S"))
+                        .arg(warnings.join(QStringLiteral("<br>"))));
+            }
+
+            if (sections.isEmpty()) {
+                return {};
+            }
+
+            return QStringLiteral(
+                       "<div style=\"white-space:pre-wrap;\">%1</div>")
+                .arg(sections.join(QStringLiteral("<br><br>")));
+        }
+
+        if (top > y) {
+            break;
+        }
+
+        block = block.next();
+        top = bottom;
+    }
+
+    return {};
 }
 
 bool CodeEditor::loadFromFile(const QString &path)
@@ -223,7 +820,7 @@ void CodeEditor::refreshLineNumberAreaWidth()
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(m_lineNumberArea);
-    painter.fillRect(event->rect(), QColor(0x00, 0x20, 0x30));
+    painter.fillRect(event->rect(), m_theme.gutterBackground);
 
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
@@ -231,10 +828,54 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     int bottom = top + qRound(blockBoundingRect(block).height());
 
     while (block.isValid() && top <= event->rect().bottom()) {
+
         if (block.isVisible() && bottom >= event->rect().top()) {
+
+            // Compiler diagnostic marker. Error wins if both severities share a line.
+            bool hasError = false;
+            bool hasWarning = false;
+
+            for (const EditorDiagnostic &diagnostic : m_diagnostics) {
+                if (diagnostic.line != blockNumber) {
+                    continue;
+                }
+
+                if (diagnostic.severity == EditorDiagnostic::Severity::Error) {
+                    hasError = true;
+                    break;
+                }
+
+                hasWarning = true;
+            }
+
+            if (hasError) {
+                painter.fillRect(
+                    0,
+                    top,
+                    4,
+                    fontMetrics().height(),
+                    m_theme.diagnosticError);
+            } else if (hasWarning) {
+                painter.fillRect(
+                    0,
+                    top,
+                    4,
+                    fontMetrics().height(),
+                    m_theme.diagnosticWarning);
+            }
+
             const QString number = QString::number(blockNumber + 1);
-            painter.setPen(QColor(0, 255, 64));
-            painter.drawText(0, top, m_lineNumberArea->width() - 6, fontMetrics().height(), Qt::AlignRight, number);
+
+            painter.setPen(m_theme.lineNumber);
+
+            painter.drawText(
+                6,
+                top,
+                m_lineNumberArea->width() - 12,
+                fontMetrics().height(),
+                Qt::AlignRight,
+                number
+                );
         }
 
         block = block.next();
@@ -369,7 +1010,7 @@ void CodeEditor::unindentSelection()
 void CodeEditor::drawIndentGuides(QPaintEvent *event)
 {
     QPainter painter(viewport());
-    QPen pen(QColor(0x10, 0x38, 0x38));
+    QPen pen(m_theme.indentGuide);
     pen.setStyle(Qt::DotLine);
     painter.setPen(pen);
 
@@ -409,10 +1050,161 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
     }
 }
 
+void CodeEditor::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton
+        && (event->modifiers() & Qt::ControlModifier)) {
+
+        QTextCursor cursor = cursorForPosition(event->position().toPoint());
+        cursor.select(QTextCursor::WordUnderCursor);
+        const QString symbol = cursor.selectedText().trimmed();
+
+        static const QRegularExpression identifierExpression(
+            QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+
+        if (identifierExpression.match(symbol).hasMatch()) {
+            emit definitionRequested(symbol, cursor.blockNumber());
+            event->accept();
+            return;
+        }
+    }
+
+    QPlainTextEdit::mousePressEvent(event);
+}
+
+void CodeEditor::mouseMoveEvent(QMouseEvent *event)
+{
+    if (event->modifiers() & Qt::ControlModifier) {
+        QTextCursor cursor = cursorForPosition(event->position().toPoint());
+        cursor.select(QTextCursor::WordUnderCursor);
+        const QString symbol = cursor.selectedText().trimmed();
+
+        static const QRegularExpression identifierExpression(
+            QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+
+        viewport()->setCursor(
+            identifierExpression.match(symbol).hasMatch()
+                ? Qt::PointingHandCursor
+                : Qt::IBeamCursor);
+    } else {
+        viewport()->setCursor(Qt::IBeamCursor);
+    }
+
+    QPlainTextEdit::mouseMoveEvent(event);
+}
+
 void CodeEditor::paintEvent(QPaintEvent *event)
 {
     QPlainTextEdit::paintEvent(event);
     drawIndentGuides(event);
+}
+
+bool CodeEditor::handleAutoPairKey(QKeyEvent *event)
+{
+    if (!event
+        || event->modifiers().testFlag(Qt::ControlModifier)
+        || event->modifiers().testFlag(Qt::AltModifier)
+        || event->modifiers().testFlag(Qt::MetaModifier)) {
+        return false;
+    }
+
+    const QString typed = event->text();
+    if (typed.size() != 1) {
+        return false;
+    }
+
+    const QChar ch = typed.at(0);
+    QChar closing;
+
+    if (ch == QLatin1Char('(')) {
+        closing = QLatin1Char(')');
+    } else if (ch == QLatin1Char('[')) {
+        closing = QLatin1Char(']');
+    } else if (ch == QLatin1Char('{')) {
+        closing = QLatin1Char('}');
+    } else if (ch == QLatin1Char(')')
+               || ch == QLatin1Char(']')
+               || ch == QLatin1Char('}')) {
+        /*
+         * If the closer already exists under the caret, step over it instead
+         * of creating "))", "]]" or "}}".
+         */
+        QTextCursor cursor = textCursor();
+        const QString text = toPlainText();
+
+        if (cursor.position() < text.size()
+            && text.at(cursor.position()) == ch) {
+            cursor.movePosition(QTextCursor::NextCharacter);
+            setTextCursor(cursor);
+            return true;
+        }
+
+        return false;
+    } else {
+        return false;
+    }
+
+    QTextCursor cursor = textCursor();
+
+    /*
+     * If text is selected, wrap it rather than throwing the selection away.
+     * Example: select "fish" and type '(' -> "(fish)".
+     */
+    if (cursor.hasSelection()) {
+        const QString selected = cursor.selectedText();
+        cursor.insertText(QString(ch) + selected + QString(closing));
+        setTextCursor(cursor);
+        return true;
+    }
+
+    cursor.insertText(QString(ch) + QString(closing));
+    cursor.movePosition(QTextCursor::PreviousCharacter);
+    setTextCursor(cursor);
+    return true;
+}
+
+bool CodeEditor::handlePairedBackspace(QKeyEvent *event)
+{
+    if (!event || event->key() != Qt::Key_Backspace) {
+        return false;
+    }
+
+    QTextCursor cursor = textCursor();
+
+    if (cursor.hasSelection() || cursor.position() <= 0) {
+        return false;
+    }
+
+    const QString text = toPlainText();
+    const int position = cursor.position();
+
+    if (position >= text.size()) {
+        return false;
+    }
+
+    const QChar left = text.at(position - 1);
+    const QChar right = text.at(position);
+
+    const bool isPair =
+        (left == QLatin1Char('(') && right == QLatin1Char(')'))
+        || (left == QLatin1Char('[') && right == QLatin1Char(']'))
+        || (left == QLatin1Char('{') && right == QLatin1Char('}'));
+
+    if (!isPair) {
+        return false;
+    }
+
+    cursor.beginEditBlock();
+    cursor.movePosition(QTextCursor::PreviousCharacter);
+    cursor.movePosition(
+        QTextCursor::NextCharacter,
+        QTextCursor::KeepAnchor,
+        2);
+    cursor.removeSelectedText();
+    cursor.endEditBlock();
+
+    setTextCursor(cursor);
+    return true;
 }
 
 void CodeEditor::keyPressEvent(QKeyEvent *event)
@@ -428,13 +1220,36 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         switch (event->key()) {
         case Qt::Key_Tab:
         case Qt::Key_Return:
-        case Qt::Key_Enter:
-            insertFunctionCompletion(m_completer->currentCompletion());
-            m_completer->popup()->hide();
+        case Qt::Key_Enter: {
+            QString completion = m_completer->currentCompletion();
+
+            /*
+             * When the user moves through the popup with Up/Down, QCompleter's
+             * currentCompletion() can still point at the first proxy-model item.
+             * The popup selection is the authoritative keyboard choice.
+             */
+            if (m_completer->popup()->currentIndex().isValid()) {
+                completion =
+                    m_completer->popup()->currentIndex()
+                        .data(Qt::DisplayRole)
+                        .toString();
+            }
+
+            if (m_memberCompletionActive) {
+                insertMemberCompletion(completion);
+            } else {
+                insertFunctionCompletion(completion);
+                m_completer->popup()->hide();
+            }
+
             event->accept();
             return;
+        }
         case Qt::Key_Escape:
             m_completer->popup()->hide();
+            if (m_memberCompletionActive) {
+                restoreFunctionCompletionModel();
+            }
             event->accept();
             return;
         default:
@@ -443,9 +1258,38 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     }
 
     // Enter keeps the current indentation.
-    // If the text before the cursor ends in '{', the new line gets one extra indent level.
+    // If the caret is between {}, create the inner line and leave the closing
+    // brace aligned with the line which opened the block.
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        insertAutoIndent();
+        QTextCursor cursor = textCursor();
+        const QString blockText = cursor.block().text();
+        const int pos = cursor.positionInBlock();
+
+        const bool betweenBraces =
+            pos > 0
+            && pos < blockText.size()
+            && blockText.at(pos - 1) == QLatin1Char('{')
+            && blockText.at(pos) == QLatin1Char('}');
+
+        if (betweenBraces) {
+            const QString baseIndent = leadingWhitespace(blockText);
+            const QString innerIndent =
+                baseIndent + QString(indentWidthColumns(), QLatin1Char(' '));
+
+            cursor.beginEditBlock();
+            cursor.insertBlock();
+            cursor.insertText(innerIndent);
+            cursor.insertBlock();
+            cursor.insertText(baseIndent);
+            cursor.movePosition(QTextCursor::PreviousBlock);
+            cursor.movePosition(QTextCursor::EndOfBlock);
+            cursor.endEditBlock();
+
+            setTextCursor(cursor);
+        } else {
+            insertAutoIndent();
+        }
+
         event->accept();
         return;
     }
@@ -461,6 +1305,16 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
             setTextCursor(cursor);
         }
 
+        event->accept();
+        return;
+    }
+
+    if (handlePairedBackspace(event)) {
+        event->accept();
+        return;
+    }
+
+    if (handleAutoPairKey(event)) {
         event->accept();
         return;
     }
@@ -485,6 +1339,10 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
 
     QPlainTextEdit::keyPressEvent(event);
 
+    if (m_completer && requestMemberCompletionAtCursor()) {
+        return;
+    }
+
     const QString completionPrefix = textUnderCursor();
     if (!m_completer || completionPrefix.length() < 2 || event->text().isEmpty()) {
         if (m_completer) {
@@ -506,14 +1364,22 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     m_completer->complete(completionRect);
 }
 
-void CodeEditor::resizeEvent(QResizeEvent *event){
+void CodeEditor::resizeEvent(QResizeEvent *event)
+{
     QPlainTextEdit::resizeEvent(event);
+
     const QRect contents = contentsRect();
-    m_lineNumberArea->setGeometry(QRect(contents.left(), contents.top(), lineNumberAreaWidth(), contents.height()));
+    m_lineNumberArea->setGeometry(
+        QRect(contents.left(), contents.top(), lineNumberAreaWidth(), contents.height()));
+
+    const QRect view = viewport()->geometry();
+    m_minimap->setGeometry(
+        QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
 }
 
-void CodeEditor::updateLineNumberAreaWidth(int){
-    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+void CodeEditor::updateLineNumberAreaWidth(int)
+{
+    setViewportMargins(lineNumberAreaWidth(), 0, CodeMinimapWidth, 0);
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
@@ -535,7 +1401,7 @@ void CodeEditor::highlightCurrentLine()
 
     if (!isReadOnly()) {
         QTextEdit::ExtraSelection selection;
-        selection.format.setBackground(palette().alternateBase().color().lighter(106));
+        selection.format.setBackground(m_theme.currentLine);
         //selection.format.setBackground(QColor(0,0,0));
         selection.format.setProperty(QTextFormat::FullWidthSelection, true);
         selection.cursor = textCursor();
@@ -578,6 +1444,72 @@ QString CodeEditor::textUnderCursor() const
     }
 
     return text.mid(start, end - start);
+}
+
+bool CodeEditor::requestMemberCompletionAtCursor()
+{
+    QTextCursor cursor = textCursor();
+    const QString beforeCursor =
+        cursor.block().text().left(cursor.positionInBlock());
+
+    /*
+     * Match the common/basic-C forms:
+     *
+     *     bob.
+     *     bob.x
+     *     bob->
+     *     bob->x
+     *
+     * The member prefix is optional, so the popup can appear immediately
+     * after '.' or '>'.
+     */
+    static const QRegularExpression memberExpression(
+        QStringLiteral(
+            R"(([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|->)\s*([A-Za-z_][A-Za-z0-9_]*)?$)"));
+
+    const QRegularExpressionMatch match =
+        memberExpression.match(beforeCursor);
+
+    if (!match.hasMatch()) {
+        if (m_memberCompletionActive) {
+            m_completer->popup()->hide();
+            restoreFunctionCompletionModel();
+        }
+        return false;
+    }
+
+    const QString objectName = match.captured(1);
+    const QString prefix = match.captured(2);
+
+    emit memberCompletionRequested(
+        objectName,
+        cursor.blockNumber(),
+        prefix);
+
+    return true;
+}
+
+void CodeEditor::insertMemberCompletion(const QString &member)
+{
+    if (member.isEmpty()) {
+        restoreFunctionCompletionModel();
+        return;
+    }
+
+    QTextCursor cursor = textCursor();
+
+    if (!m_memberCompletionPrefix.isEmpty()) {
+        cursor.movePosition(
+            QTextCursor::PreviousCharacter,
+            QTextCursor::KeepAnchor,
+            m_memberCompletionPrefix.length());
+    }
+
+    cursor.insertText(member);
+    setTextCursor(cursor);
+
+    m_completer->popup()->hide();
+    restoreFunctionCompletionModel();
 }
 
 void CodeEditor::insertFunctionCompletion(const QString &signature)
