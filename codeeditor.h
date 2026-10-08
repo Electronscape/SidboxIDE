@@ -3,6 +3,8 @@
 
 #include <QPlainTextEdit>
 #include <QList>
+#include <QMetaObject>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include "idetheme.h"
@@ -13,6 +15,7 @@ class QFont;
 class QPaintEvent;
 class QResizeEvent;
 class QStringListModel;
+class QTimer;
 class QWidget;
 
 struct EditorDiagnostic
@@ -63,6 +66,10 @@ public:
     int lineNumberAreaWidth() const;
     void refreshLineNumberAreaWidth();
     void lineNumberAreaPaintEvent(QPaintEvent *event);
+    bool foldMarkerAtY(int y) const;
+    void toggleFoldAtY(int y);
+    void collapseAllFolds();
+    void expandAllFolds();
 
 signals:
     void quickTipRequested(const QString &symbol);
@@ -106,6 +113,12 @@ private:
     void indentSelection();
     void unindentSelection();
     void drawIndentGuides(QPaintEvent *event);
+    void attachFoldTracking();
+    void rebuildFoldRegions();
+    void applyFoldVisibility();
+    int visibleBlockNumberAtY(int y) const;
+    int foldEndForStart(int startBlock) const;
+    bool isFolded(int startBlock) const;
 
     QWidget *m_lineNumberArea;
     QWidget *m_minimap;
@@ -113,6 +126,9 @@ private:
     CSyntaxHighlighter *m_highlighter;
     QCompleter *m_completer;
     QStringListModel *m_completionModel;
+    QTimer *m_foldRefreshTimer;
+    QList<QPair<int, int>> m_foldRegions;
+    QMetaObject::Connection m_foldDocumentChangedConnection;
     QStringList m_functionCompletions;
     QStringList m_projectTypeNames;
     QStringList m_apiSyntaxNames;

@@ -12,13 +12,16 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QMenu>
 #include <QPainter>
+#include <QPolygon>
 #include <QColor>
 #include <QToolTip>
 #include <QHelpEvent>
 #include <QEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QSet>
 #include <QStringListModel>
 #include <QTextBlock>
 #include <QTextEdit>
@@ -30,6 +33,28 @@
 
 namespace {
 constexpr int CodeMinimapWidth = 92;
+constexpr int FoldGutterWidth = 16;
+constexpr int FoldMarkerHitLeft = 4;
+constexpr int FoldMarkerHitRight = 20;
+
+class FoldBlockData : public QTextBlockUserData
+{
+public:
+    bool folded = false;
+};
+
+FoldBlockData *foldDataForBlock(QTextBlock block, bool create)
+{
+    auto *data =
+        dynamic_cast<FoldBlockData *>(block.userData());
+
+    if (!data && create) {
+        data = new FoldBlockData;
+        block.setUserData(data);
+    }
+
+    return data;
+}
 
 QString includePathAtCursor(const QTextCursor &cursor)
 {
@@ -459,10 +484,73 @@ class LineNumberArea : public QWidget
             m_editor->lineNumberAreaPaintEvent(event);
         }
 
+        void mousePressEvent(QMouseEvent *event) override
+        {
+            const int x =
+                qRound(event->position().x());
+            const int y =
+                qRound(event->position().y());
+
+            if (event->button() == Qt::RightButton) {
+                m_diagnosticPopup->hide();
+
+                QMenu menu(this);
+
+                QAction *collapseAllAction =
+                    menu.addAction(
+                        tr("Collapse All Foldable Regions"));
+
+                QAction *expandAllAction =
+                    menu.addAction(
+                        tr("Expand All Foldable Regions"));
+
+                QAction *chosen =
+                    menu.exec(
+                        event->globalPosition()
+                            .toPoint());
+
+                if (chosen == collapseAllAction) {
+                    m_editor->collapseAllFolds();
+                } else if (chosen == expandAllAction) {
+                    m_editor->expandAllFolds();
+                }
+
+                event->accept();
+                return;
+            }
+
+            if (event->button() == Qt::LeftButton
+                && x >= FoldMarkerHitLeft
+                && x <= FoldMarkerHitRight
+                && m_editor->foldMarkerAtY(y)) {
+                m_editor->toggleFoldAtY(y);
+                event->accept();
+                return;
+            }
+
+            QWidget::mousePressEvent(event);
+        }
+
         void mouseMoveEvent(QMouseEvent *event) override
         {
+            const int x =
+                qRound(event->position().x());
+            const int y =
+                qRound(event->position().y());
+
+            if (x >= FoldMarkerHitLeft
+                && x <= FoldMarkerHitRight
+                && m_editor->foldMarkerAtY(y)) {
+                setCursor(Qt::PointingHandCursor);
+                m_diagnosticPopup->hide();
+                QWidget::mouseMoveEvent(event);
+                return;
+            }
+
+            setCursor(Qt::ArrowCursor);
+
             const QString tip =
-                m_editor->diagnosticToolTipAtY(qRound(event->position().y()));
+                m_editor->diagnosticToolTipAtY(y);
 
             if (!tip.isEmpty()) {
                 /*
@@ -589,6 +677,7 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     , m_highlighter(new CSyntaxHighlighter(document()))
     , m_completer(new QCompleter(this))
     , m_completionModel(new QStringListModel(this))
+    , m_foldRefreshTimer(new QTimer(this))
     , m_selectedArgument(-1)
 {
     const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -603,6 +692,18 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     viewport()->setMouseTracking(true);
     document()->setModified(false);
 
+    /*
+     * Folding discovery is deliberately debounced. Scanning brace structure is
+     * cheap, but there is no reason to walk a large source file on every single
+     * keystroke. The text stays immediate and the fold gutter catches up just
+     * after typing pauses.
+     */
+    m_foldRefreshTimer->setSingleShot(true);
+    m_foldRefreshTimer->setInterval(240);
+    connect(m_foldRefreshTimer, &QTimer::timeout,
+            this, &CodeEditor::rebuildFoldRegions);
+    attachFoldTracking();
+    m_foldRefreshTimer->start();
 
     connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
@@ -1083,6 +1184,15 @@ void CodeEditor::shareDocumentFrom(CodeEditor *sourceEditor)
 
     QPlainTextEdit::setDocument(sourceEditor->document());
 
+    /*
+     * Folding visibility belongs to QTextDocument, so split views naturally
+     * see the same collapsed blocks. Copy the already-known region list so the
+     * secondary gutter gets its markers immediately, then follow future edits
+     * on the newly shared document.
+     */
+    m_foldRegions = sourceEditor->m_foldRegions;
+    attachFoldTracking();
+
     if (m_minimap) {
         static_cast<CodeMinimap *>(m_minimap)
             ->attachDocument(document());
@@ -1150,7 +1260,9 @@ int CodeEditor::lineNumberAreaWidth() const
         ++digits;
     }
 
-    return 12 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    return FoldGutterWidth
+        + 12
+        + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
 void CodeEditor::refreshLineNumberAreaWidth()
@@ -1205,14 +1317,48 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                     m_theme.diagnosticWarning);
             }
 
-            const QString number = QString::number(blockNumber + 1);
+            const int foldEnd =
+                foldEndForStart(blockNumber);
+
+            if (foldEnd > blockNumber) {
+                const bool folded =
+                    isFolded(blockNumber);
+
+                const int centreY =
+                    top + fontMetrics().height() / 2;
+
+                QPolygon triangle;
+
+                if (folded) {
+                    // Right-facing triangle: collapsed.
+                    triangle
+                        << QPoint(8, centreY - 4)
+                        << QPoint(8, centreY + 4)
+                        << QPoint(14, centreY);
+                } else {
+                    // Down-facing triangle: expanded.
+                    triangle
+                        << QPoint(6, centreY - 3)
+                        << QPoint(14, centreY - 3)
+                        << QPoint(10, centreY + 3);
+                }
+
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(m_theme.lineNumber);
+                painter.drawPolygon(triangle);
+                painter.setBrush(Qt::NoBrush);
+            }
+
+            const QString number =
+                QString::number(blockNumber + 1);
 
             painter.setPen(m_theme.lineNumber);
 
             painter.drawText(
-                6,
+                FoldGutterWidth + 6,
                 top,
-                m_lineNumberArea->width() - 12,
+                m_lineNumberArea->width()
+                    - FoldGutterWidth - 12,
                 fontMetrics().height(),
                 Qt::AlignRight,
                 number
@@ -1224,6 +1370,554 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
         bottom = top + qRound(blockBoundingRect(block).height());
         ++blockNumber;
     }
+}
+
+void CodeEditor::attachFoldTracking()
+{
+    QObject::disconnect(m_foldDocumentChangedConnection);
+
+    if (!document()) {
+        return;
+    }
+
+    m_foldDocumentChangedConnection =
+        connect(
+            document(),
+            &QTextDocument::contentsChanged,
+            this,
+            [this]() {
+                if (m_foldRefreshTimer) {
+                    m_foldRefreshTimer->start();
+                }
+            });
+}
+
+void CodeEditor::rebuildFoldRegions()
+{
+    if (!document()) {
+        m_foldRegions.clear();
+        return;
+    }
+
+    struct OpenBrace {
+        int braceBlock = -1;
+        int anchorBlock = -1;
+    };
+
+    QList<OpenBrace> stack;
+    QList<QPair<int, int>> regions;
+
+    bool inBlockComment = false;
+    int previousCodeBlock = -1;
+
+    QTextBlock block =
+        document()->firstBlock();
+
+    while (block.isValid()) {
+        const int blockNumber =
+            block.blockNumber();
+
+        const QString line =
+            block.text();
+
+        bool inDoubleQuote = false;
+        bool inSingleQuote = false;
+        bool escaped = false;
+        bool lineHasCode = false;
+
+        for (int i = 0; i < line.size(); ++i) {
+            const QChar ch = line.at(i);
+            const QChar next =
+                i + 1 < line.size()
+                    ? line.at(i + 1)
+                    : QChar();
+
+            if (inBlockComment) {
+                if (ch == QLatin1Char('*')
+                    && next == QLatin1Char('/')) {
+                    inBlockComment = false;
+                    ++i;
+                }
+                continue;
+            }
+
+            if (inDoubleQuote) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\\')) {
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('"')) {
+                    inDoubleQuote = false;
+                }
+
+                continue;
+            }
+
+            if (inSingleQuote) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\\')) {
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\'')) {
+                    inSingleQuote = false;
+                }
+
+                continue;
+            }
+
+            if (ch == QLatin1Char('/')
+                && next == QLatin1Char('/')) {
+                // The remainder of this physical line is a C++-style comment.
+                break;
+            }
+
+            if (ch == QLatin1Char('/')
+                && next == QLatin1Char('*')) {
+                inBlockComment = true;
+                ++i;
+                continue;
+            }
+
+            if (ch == QLatin1Char('"')) {
+                inDoubleQuote = true;
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('\'')) {
+                inSingleQuote = true;
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('{')) {
+                /*
+                 * Allman-style C puts the opening brace on the next line:
+                 *
+                 *     void thing(void)
+                 *     {
+                 *
+                 * Anchor that fold marker to the preceding code line so the
+                 * useful declaration/function signature remains visible when
+                 * collapsed. Same idea applies beautifully to large arrays.
+                 */
+                const bool codeBeforeBrace =
+                    lineHasCode
+                    || !line.left(i).trimmed().isEmpty();
+
+                const int anchorBlock =
+                    !codeBeforeBrace
+                        && previousCodeBlock >= 0
+                        ? previousCodeBlock
+                        : blockNumber;
+
+                stack.append(
+                    {blockNumber, anchorBlock});
+
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('}')) {
+                if (!stack.isEmpty()) {
+                    const OpenBrace open =
+                        stack.takeLast();
+
+                    if (blockNumber > open.anchorBlock) {
+                        bool merged = false;
+
+                        /*
+                         * More than one opening brace can occur on the same
+                         * source line (nested initialisers are the usual case).
+                         * A gutter has room for one marker, so let that marker
+                         * represent the outermost range from that line.
+                         */
+                        for (QPair<int, int> &region : regions) {
+                            if (region.first
+                                == open.anchorBlock) {
+                                region.second =
+                                    qMax(
+                                        region.second,
+                                        blockNumber);
+                                merged = true;
+                                break;
+                            }
+                        }
+
+                        if (!merged) {
+                            regions.append(
+                                qMakePair(
+                                    open.anchorBlock,
+                                    blockNumber));
+                        }
+                    }
+                }
+
+                lineHasCode = true;
+                continue;
+            }
+
+            if (!ch.isSpace()) {
+                lineHasCode = true;
+            }
+        }
+
+        if (lineHasCode) {
+            previousCodeBlock = blockNumber;
+        }
+
+        block = block.next();
+    }
+
+    std::sort(
+        regions.begin(),
+        regions.end(),
+        [](const QPair<int, int> &a,
+           const QPair<int, int> &b) {
+            if (a.first != b.first) {
+                return a.first < b.first;
+            }
+
+            return a.second > b.second;
+        });
+
+    m_foldRegions = regions;
+
+    QSet<int> validStarts;
+    for (const QPair<int, int> &region
+         : std::as_const(m_foldRegions)) {
+        validStarts.insert(region.first);
+    }
+
+    bool hasFoldedRegion = false;
+    bool clearedStaleFold = false;
+
+    /*
+     * Fold state is attached to QTextBlocks rather than raw line numbers.
+     * QTextBlock user data follows the block when lines are inserted above it,
+     * which keeps a collapsed function attached to that function while editing.
+     */
+    block = document()->firstBlock();
+    while (block.isValid()) {
+        if (auto *data =
+                foldDataForBlock(block, false)) {
+            if (data->folded
+                && !validStarts.contains(
+                    block.blockNumber())) {
+                data->folded = false;
+                clearedStaleFold = true;
+            }
+
+            if (data->folded) {
+                hasFoldedRegion = true;
+            }
+        }
+
+        block = block.next();
+    }
+
+    if (hasFoldedRegion || clearedStaleFold) {
+        applyFoldVisibility();
+    } else if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+}
+
+int CodeEditor::visibleBlockNumberAtY(int y) const
+{
+    QTextBlock block =
+        firstVisibleBlock();
+
+    int top =
+        qRound(
+            blockBoundingGeometry(block)
+                .translated(contentOffset())
+                .top());
+
+    while (block.isValid()) {
+        const int height =
+            qRound(blockBoundingRect(block).height());
+
+        const int bottom =
+            top + height;
+
+        if (block.isVisible()
+            && height > 0
+            && y >= top
+            && y < bottom) {
+            return block.blockNumber();
+        }
+
+        if (top > y) {
+            break;
+        }
+
+        block = block.next();
+        top = bottom;
+    }
+
+    return -1;
+}
+
+int CodeEditor::foldEndForStart(int startBlock) const
+{
+    for (const QPair<int, int> &region
+         : m_foldRegions) {
+        if (region.first == startBlock) {
+            return region.second;
+        }
+
+        if (region.first > startBlock) {
+            break;
+        }
+    }
+
+    return -1;
+}
+
+bool CodeEditor::isFolded(int startBlock) const
+{
+    const QTextBlock block =
+        document()
+            ? document()->findBlockByNumber(
+                  startBlock)
+            : QTextBlock();
+
+    if (!block.isValid()) {
+        return false;
+    }
+
+    const auto *data =
+        dynamic_cast<const FoldBlockData *>(
+            block.userData());
+
+    return data && data->folded;
+}
+
+bool CodeEditor::foldMarkerAtY(int y) const
+{
+    const int blockNumber =
+        visibleBlockNumberAtY(y);
+
+    return blockNumber >= 0
+        && foldEndForStart(blockNumber)
+            > blockNumber;
+}
+
+void CodeEditor::toggleFoldAtY(int y)
+{
+    const int startBlock =
+        visibleBlockNumberAtY(y);
+
+    const int endBlock =
+        foldEndForStart(startBlock);
+
+    if (startBlock < 0
+        || endBlock <= startBlock) {
+        return;
+    }
+
+    QTextBlock start =
+        document()->findBlockByNumber(
+            startBlock);
+
+    if (!start.isValid()) {
+        return;
+    }
+
+    FoldBlockData *data =
+        foldDataForBlock(start, true);
+
+    if (!data) {
+        return;
+    }
+
+    const bool folding =
+        !data->folded;
+
+    data->folded = folding;
+
+    if (folding) {
+        const int cursorBlock =
+            textCursor().blockNumber();
+
+        if (cursorBlock > startBlock
+            && cursorBlock <= endBlock) {
+            QTextCursor cursor(start);
+            cursor.movePosition(
+                QTextCursor::EndOfBlock);
+            setTextCursor(cursor);
+        }
+    }
+
+    applyFoldVisibility();
+    ensureCursorVisible();
+}
+
+void CodeEditor::collapseAllFolds()
+{
+    if (!document()) {
+        return;
+    }
+
+    /*
+     * Mark every discovered fold region as collapsed, including nested ones.
+     * That means when an outer function/struct is expanded later, any nested
+     * regions the user asked to collapse-all remain collapsed too.
+     */
+    for (const QPair<int, int> &region
+         : std::as_const(m_foldRegions)) {
+        QTextBlock block =
+            document()->findBlockByNumber(
+                region.first);
+
+        if (!block.isValid()) {
+            continue;
+        }
+
+        FoldBlockData *data =
+            foldDataForBlock(block, true);
+
+        if (data) {
+            data->folded = true;
+        }
+    }
+
+    /*
+     * Do not leave the caret sitting inside a block which is about to become
+     * invisible. Move it to the nearest visible fold anchor instead.
+     */
+    const int cursorBlock =
+        textCursor().blockNumber();
+
+    int targetAnchor = -1;
+
+    for (const QPair<int, int> &region
+         : std::as_const(m_foldRegions)) {
+        if (cursorBlock > region.first
+            && cursorBlock <= region.second) {
+            targetAnchor =
+                targetAnchor < 0
+                    ? region.first
+                    : qMin(targetAnchor,
+                           region.first);
+        }
+    }
+
+    if (targetAnchor >= 0) {
+        const QTextBlock block =
+            document()->findBlockByNumber(
+                targetAnchor);
+
+        if (block.isValid()) {
+            QTextCursor cursor(block);
+            cursor.movePosition(
+                QTextCursor::EndOfBlock);
+            setTextCursor(cursor);
+        }
+    }
+
+    applyFoldVisibility();
+    ensureCursorVisible();
+}
+
+void CodeEditor::expandAllFolds()
+{
+    if (!document()) {
+        return;
+    }
+
+    /*
+     * Clear fold state from every current folding anchor. Hidden QTextBlocks
+     * themselves are restored by applyFoldVisibility().
+     */
+    for (const QPair<int, int> &region
+         : std::as_const(m_foldRegions)) {
+        QTextBlock block =
+            document()->findBlockByNumber(
+                region.first);
+
+        if (!block.isValid()) {
+            continue;
+        }
+
+        if (auto *data =
+                foldDataForBlock(block, false)) {
+            data->folded = false;
+        }
+    }
+
+    applyFoldVisibility();
+    ensureCursorVisible();
+}
+
+void CodeEditor::applyFoldVisibility()
+{
+    if (!document()) {
+        return;
+    }
+
+    /*
+     * Rebuild visibility from fold state each time. This makes nested folding
+     * predictable: an inner fold can remain folded while its outer function is
+     * collapsed, then reappear still folded when the outer function expands.
+     */
+    QTextBlock block =
+        document()->firstBlock();
+
+    while (block.isValid()) {
+        block.setVisible(true);
+        block.setLineCount(1);
+        block = block.next();
+    }
+
+    for (const QPair<int, int> &region
+         : std::as_const(m_foldRegions)) {
+        if (!isFolded(region.first)) {
+            continue;
+        }
+
+        QTextBlock hidden =
+            document()
+                ->findBlockByNumber(
+                    region.first)
+                .next();
+
+        while (hidden.isValid()
+               && hidden.blockNumber()
+                   <= region.second) {
+            hidden.setVisible(false);
+            hidden.setLineCount(0);
+            hidden = hidden.next();
+        }
+    }
+
+    /*
+     * Visibility does not alter the source text, but QPlainTextDocumentLayout
+     * needs to recalculate block geometry / scrollbar range.
+     */
+    document()->markContentsDirty(
+        0,
+        document()->characterCount());
+
+    if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+
+    viewport()->update();
+    updateGeometry();
 }
 
 void CodeEditor::focusInEvent(QFocusEvent *event)
