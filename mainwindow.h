@@ -29,6 +29,7 @@ class QTabWidget;
 class QSplitter;
 class QTimer;
 class QFileSystemWatcher;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow
 {
@@ -39,6 +40,9 @@ public:
     ~MainWindow() override;
 
     void showStartupProjectChooser();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private:
 
@@ -113,6 +117,7 @@ private:
     void restoreSymbolTreeExpansionState(CodeEditor *editor);
 
     void refreshFunctionCompletions();
+    void refreshActiveEditorAnalysis();
     void ensureApiCatalog();
     void refreshApiCatalog();
     void showPassiveQuickTip(const QString &symbol);
@@ -195,6 +200,7 @@ private:
     FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
     QTimer *m_projectAnalysisTimer;
+    QTimer *m_symbolTreeRefreshTimer;
     QTimer *m_compileProgressDelayTimer;
     QFileSystemWatcher *m_fileWatcher;
     QSet<QString> m_pendingExternalReloads;
@@ -207,6 +213,13 @@ private:
     QStringList m_projectFilesInProject;
     QHash<QString, QString> m_apiTips;
     QStringList m_apiSignatures;
+
+    /*
+     * Per-file semantic caches let normal typing refresh only the active tab.
+     * A full project scan rebuilds these on project load/rescan/save.
+     */
+    QHash<QString, QStringList> m_cachedFileFunctionSignatures;
+    QHash<QString, QStringList> m_cachedFileTypeNames;
 
     QString m_compilerStderrBuffer;
     QHash<QString, QList<EditorDiagnostic>> m_compilerDiagnostics;

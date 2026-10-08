@@ -18,6 +18,7 @@
 #include <QColor>
 #include <QToolTip>
 #include <QHelpEvent>
+#include <QHash>
 #include <QEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -100,6 +101,7 @@ public:
         , m_editor(editor)
         , m_dragging(false)
         , m_sourceRefreshTimer(new QTimer(this))
+        , m_dragScrollTimer(new QTimer(this))
     {
         setCursor(Qt::PointingHandCursor);
         setMouseTracking(true);
@@ -112,10 +114,24 @@ public:
          * catch up shortly after typing pauses.
          */
         m_sourceRefreshTimer->setSingleShot(true);
+        /* First stage of the typing trickle. */
         m_sourceRefreshTimer->setInterval(180);
         connect(m_sourceRefreshTimer, &QTimer::timeout,
                 this, [this]() {
                     rebuildSourceCache();
+                });
+
+        /*
+         * Mouse-move events can arrive much faster than the editor can repaint.
+         * Coalesce minimap dragging to roughly one scroll operation per frame.
+         * This is especially important after folding because Qt is also
+         * recalculating visible QTextBlock geometry.
+         */
+        m_dragScrollTimer->setSingleShot(true);
+        m_dragScrollTimer->setInterval(16);
+        connect(m_dragScrollTimer, &QTimer::timeout,
+                this, [this]() {
+                    scrollToY(m_pendingScrollY);
                 });
 
         attachDocument(editor->document());
@@ -138,12 +154,16 @@ public:
         QObject::disconnect(m_documentChangedConnection);
 
         m_cachedLines.clear();
+        m_sourceLineToVisibleIndex.clear();
 
         if (document) {
             m_documentChangedConnection =
                 connect(document, &QTextDocument::contentsChanged,
                         this, [this]() {
-                            m_sourceRefreshTimer->start();
+                            if (m_sourceRefreshTimer
+                                && !m_sourceRefreshTimer->isActive()) {
+                                m_sourceRefreshTimer->start();
+                            }
                         });
         }
 
@@ -151,6 +171,20 @@ public:
          * Populate immediately for an already-existing shared document.
          * A normal newly-opened file will then use the debounce for edits.
          */
+        rebuildSourceCache();
+    }
+
+    void refreshNow()
+    {
+        /*
+         * Folding changes QTextBlock visibility but does not change document
+         * text, so QTextDocument::contentsChanged is not emitted. Let the
+         * editor explicitly refresh the minimap whenever a fold is toggled.
+         */
+        if (m_sourceRefreshTimer) {
+            m_sourceRefreshTimer->stop();
+        }
+
         rebuildSourceCache();
     }
 
@@ -164,7 +198,7 @@ protected:
             return;
         }
 
-        const QStringList &lines = m_cachedLines;
+        const QList<CachedLine> &lines = m_cachedLines;
         const int lineCount = qMax(1, lines.size());
         const qreal usableHeight = qMax(1, height() - 2);
         //const qreal yScale = usableHeight / static_cast<qreal>(lineCount);
@@ -174,7 +208,7 @@ protected:
             );
 
         for (int i = 0; i < lines.size(); ++i) {
-            const QString &line = lines.at(i);
+            const QString &line = lines.at(i).text;
             const QString trimmed = line.trimmed();
             if (trimmed.isEmpty()) {
                 continue;
@@ -214,22 +248,81 @@ protected:
         }
 
         QScrollBar *bar = m_editor->verticalScrollBar();
-        const int maximum = bar->maximum();
-        const int pageStep = qMax(1, bar->pageStep());
-        const int totalRange = maximum + pageStep;
 
-        qreal viewTop = 0.0;
-        qreal viewHeight = height();
-        if (maximum > 0 && totalRange > 0) {
-            viewTop = (static_cast<qreal>(bar->value()) / totalRange) * height();
-            viewHeight = (static_cast<qreal>(pageStep) / totalRange) * height();
-            viewHeight = qMax<qreal>(12.0, viewHeight);
-            if (viewTop + viewHeight > height()) {
-                viewTop = qMax<qreal>(0.0, height() - viewHeight);
+        /*
+         * Keep the viewport glass in the same coordinate space as the minimap
+         * source itself.
+         *
+         * yScale is capped at 3 px/visible line, so after folding a small file
+         * may occupy only the top part of the minimap. The old glass mapping
+         * still used the ENTIRE widget height, which made the mouse travel a
+         * huge distance while the lens crept slowly through a handful of lines.
+         */
+        const qreal contentTop = 1.0;
+        const qreal contentBottom =
+            qMin<qreal>(
+                height() - 1.0,
+                contentTop
+                    + qMax(
+                        0,
+                        lineCount - 1)
+                        * yScale);
+
+        int firstVisibleIndex = 0;
+
+        const int firstVisibleSourceLine =
+            m_editor->firstVisibleSourceBlockNumber();
+
+        if (firstVisibleSourceLine >= 0) {
+            const auto it =
+                m_sourceLineToVisibleIndex.constFind(
+                    firstVisibleSourceLine);
+
+            if (it != m_sourceLineToVisibleIndex.constEnd()) {
+                firstVisibleIndex = it.value();
             }
         }
 
-        const QRectF viewportRect(1.5, viewTop + 0.5, width() - 2.0, qMin<qreal>(viewHeight, height()) - 1.0);
+        qreal viewTop =
+            contentTop
+            + firstVisibleIndex * yScale;
+
+        /*
+         * QScrollBar::pageStep() is in visual lines for QPlainTextEdit, so it
+         * already ignores folded-away blocks. Convert that straight into the
+         * same minimap line spacing.
+         */
+        qreal viewHeight =
+            qMax<qreal>(
+                12.0,
+                qMax(1, bar->pageStep()) * yScale);
+
+        const qreal contentHeight =
+            qMax<qreal>(
+                1.0,
+                contentBottom - contentTop + yScale);
+
+        viewHeight =
+            qMin<qreal>(
+                viewHeight,
+                contentHeight);
+
+        const qreal maxViewTop =
+            qMax<qreal>(
+                contentTop,
+                contentBottom - viewHeight + yScale);
+
+        viewTop =
+            qBound<qreal>(
+                contentTop,
+                viewTop,
+                maxViewTop);
+
+        const QRectF viewportRect(
+            1.5,
+            viewTop + 0.5,
+            width() - 2.0,
+            qMax<qreal>(1.0, viewHeight - 1.0));
         painter.fillRect(viewportRect, m_editor->theme().minimapViewportFill);
         painter.setPen(m_editor->theme().minimapViewportBorder);
         painter.drawRect(viewportRect);
@@ -246,14 +339,30 @@ protected:
 
             for (const EditorDiagnostic &diagnostic : m_editor->diagnostics()) {
                 if (diagnostic.severity != severity
-                    || diagnostic.line < 0
-                    || diagnostic.line >= lineCount) {
+                    || diagnostic.line < 0) {
                     continue;
                 }
 
+                const auto visibleIt =
+                    m_sourceLineToVisibleIndex.constFind(
+                        diagnostic.line);
+
+                /*
+                 * A diagnostic inside a collapsed region is intentionally not
+                 * drawn as a misleading tick on some unrelated visible row.
+                 * Expanding the fold restores it immediately.
+                 */
+                if (visibleIt
+                    == m_sourceLineToVisibleIndex.constEnd()) {
+                    continue;
+                }
+
+                const int visibleLine =
+                    visibleIt.value();
+
                 const int y = qBound(
                     0,
-                    1 + qRound(diagnostic.line * yScale) - markerHeight / 2,
+                    1 + qRound(visibleLine * yScale) - markerHeight / 2,
                     qMax(0, height() - markerHeight));
 
                 painter.drawRect(width() - markerWidth, y, markerWidth, markerHeight);
@@ -282,20 +391,23 @@ protected:
             }
 
             m_dragging = true;
-            scrollToY(event->position().y());
+            queueScrollToY(event->position().y());
             event->accept();
             return;
         }
+
         QWidget::mousePressEvent(event);
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
     {
-        if (m_dragging && (event->buttons() & Qt::LeftButton)) {
-            scrollToY(event->position().y());
+        if (m_dragging
+            && (event->buttons() & Qt::LeftButton)) {
+            queueScrollToY(event->position().y());
             event->accept();
             return;
         }
+
         QWidget::mouseMoveEvent(event);
     }
 
@@ -303,23 +415,61 @@ protected:
     {
         if (event->button() == Qt::LeftButton) {
             m_dragging = false;
+
+            /*
+             * Apply the last requested position immediately on release so the
+             * glass lands exactly where the mouse was let go.
+             */
+            if (m_dragScrollTimer
+                && m_dragScrollTimer->isActive()) {
+                m_dragScrollTimer->stop();
+                scrollToY(m_pendingScrollY);
+            }
+
             event->accept();
             return;
         }
+
         QWidget::mouseReleaseEvent(event);
     }
 
 private:
     void rebuildSourceCache()
     {
-        if (!m_editor) {
-            m_cachedLines.clear();
+        m_cachedLines.clear();
+        m_sourceLineToVisibleIndex.clear();
+
+        if (!m_editor
+            || !m_editor->document()) {
             update();
             return;
         }
 
-        m_cachedLines =
-            m_editor->toPlainText().split(QLatin1Char('\n'));
+        /*
+         * Cache only visible QTextBlocks. This keeps minimap painting cheap
+         * while making the minimap represent the editor exactly as it appears
+         * after code folding.
+         */
+        QTextBlock block =
+            m_editor->document()->firstBlock();
+
+        while (block.isValid()) {
+            if (block.isVisible()) {
+                const int visibleIndex =
+                    m_cachedLines.size();
+
+                m_cachedLines.append(
+                    {block.text(),
+                     block.blockNumber()});
+
+                m_sourceLineToVisibleIndex.insert(
+                    block.blockNumber(),
+                    visibleIndex);
+            }
+
+            block = block.next();
+        }
+
         update();
     }
 
@@ -329,8 +479,12 @@ private:
             return false;
         }
 
-        const int lineCount = qMax(1, m_editor->blockCount());
-        const qreal usableHeight = qMax(1, height() - 2);
+        const int lineCount =
+            qMax(1, m_cachedLines.size());
+
+        const qreal usableHeight =
+            qMax(1, height() - 2);
+
         const qreal yScale = qMin<qreal>(
             3.0,
             usableHeight / static_cast<qreal>(lineCount));
@@ -339,12 +493,27 @@ private:
         qreal bestDistance = 1000000.0;
 
         for (const EditorDiagnostic &diagnostic : m_editor->diagnostics()) {
-            if (diagnostic.line < 0 || diagnostic.line >= lineCount) {
+            if (diagnostic.line < 0) {
                 continue;
             }
 
-            const qreal markerY = 1.0 + diagnostic.line * yScale;
-            const qreal distance = qAbs(markerY - y);
+            const auto visibleIt =
+                m_sourceLineToVisibleIndex.constFind(
+                    diagnostic.line);
+
+            if (visibleIt
+                == m_sourceLineToVisibleIndex.constEnd()) {
+                continue;
+            }
+
+            const qreal markerY =
+                1.0
+                + visibleIt.value()
+                    * yScale;
+
+            const qreal distance =
+                qAbs(markerY - y);
+
             if (distance < bestDistance) {
                 bestDistance = distance;
                 bestLine = diagnostic.line;
@@ -368,66 +537,148 @@ private:
         return true;
     }
 
+    void queueScrollToY(qreal y)
+    {
+        m_pendingScrollY =
+            qBound<qreal>(
+                0.0,
+                y,
+                qMax<qreal>(
+                    0.0,
+                    height() - 1.0));
+
+        if (m_dragScrollTimer
+            && !m_dragScrollTimer->isActive()) {
+            m_dragScrollTimer->start();
+        }
+    }
+
     void scrollToY(qreal y)
     {
-        if (!m_editor || height() <= 1) {
+        if (!m_editor
+            || !m_editor->document()
+            || height() <= 1
+            || m_cachedLines.isEmpty()) {
             return;
         }
 
-        QScrollBar *bar = m_editor->verticalScrollBar();
-        const int maximum = bar->maximum();
-        const int pageStep = qMax(1, bar->pageStep());
-        const int totalRange = maximum + pageStep;
+        const int lineCount =
+            qMax(1, m_cachedLines.size());
 
-        if (maximum <= 0 || totalRange <= 0) {
-            bar->setValue(0);
+        const qreal usableHeight =
+            qMax(1, height() - 2);
+
+        const qreal yScale =
+            qMin<qreal>(
+                3.0,
+                usableHeight
+                    / static_cast<qreal>(
+                        lineCount));
+
+        /*
+         * The drawn minimap source may occupy less than the full widget after
+         * folding because yScale is capped at 3 px/line.
+         *
+         * Treat only that drawn source range as draggable navigation space:
+         *   - inside it, the target follows the mouse directly;
+         *   - above/below it, navigation clamps to the first/last visible line.
+         */
+        const qreal contentTop = 1.0;
+        const qreal contentBottom =
+            qMin<qreal>(
+                height() - 1.0,
+                contentTop
+                    + qMax(
+                        0,
+                        lineCount - 1)
+                        * yScale);
+
+        const qreal clampedY =
+            qBound<qreal>(
+                contentTop,
+                y,
+                contentBottom);
+
+        int visibleIndex = 0;
+
+        if (yScale > 0.0) {
+            visibleIndex =
+                qBound(
+                    0,
+                    qRound(
+                        (clampedY - contentTop)
+                        / yScale),
+                    lineCount - 1);
+        }
+
+        const int sourceLine =
+            m_cachedLines.at(
+                visibleIndex).sourceLine;
+
+        const QTextBlock block =
+            m_editor->document()
+                ->findBlockByNumber(
+                    sourceLine);
+
+        if (!block.isValid()
+            || !block.isVisible()) {
             return;
         }
 
         /*
-         * Match the exact mapping used to draw the minimap viewport.
-         *
-         * Previously the click Y position was mapped directly onto the
-         * scrollbar maximum. That effectively treated the mouse position as
-         * the TOP of the editor viewport, so clicks could appear to overshoot
-         * or undershoot the bit of code the user was aiming at.
-         *
-         * Instead, put the CENTRE of the visible editor viewport on the mouse
-         * position. This makes a click on a minimap line land around that same
-         * line in the middle of the editor.
+         * A fold/unfold can change the number of visual lines without changing
+         * QTextDocument::blockCount(). Make absolutely sure QPlainTextEdit's
+         * vertical range matches the current visible blocks before clamping
+         * this minimap drag.
          */
-        const qreal minimapHeight = static_cast<qreal>(height());
+        m_editor->recalculateFoldScrollBarRange();
 
-        qreal viewHeight =
-            (static_cast<qreal>(pageStep)
-             / static_cast<qreal>(totalRange))
-            * minimapHeight;
+        QScrollBar *bar =
+            m_editor->verticalScrollBar();
 
-        // Keep this in sync with paintEvent().
-        viewHeight = qMax<qreal>(12.0, viewHeight);
-        viewHeight = qMin<qreal>(viewHeight, minimapHeight);
+        if (!bar) {
+            return;
+        }
 
-        const qreal desiredViewTop =
-            qBound<qreal>(
-                0.0,
-                y - (viewHeight * 0.5),
-                qMax<qreal>(0.0, minimapHeight - viewHeight));
-
-        const qreal value =
-            (desiredViewTop / minimapHeight)
-            * static_cast<qreal>(totalRange);
-
-        bar->setValue(
-            qBound(
+        /*
+         * m_cachedLines already contains only VISIBLE source blocks, in the
+         * same order QPlainTextEdit displays them. Since this editor is NoWrap,
+         * visibleIndex is therefore the correct visual-line position.
+         *
+         * Do not use QTextBlock::firstLineNumber() here. Immediately after
+         * expanding folds Qt may not have finished rebuilding every block's
+         * internal line-number cache yet, which could make minimap dragging
+         * stop short of the newly-restored bottom of the file.
+         */
+        const int centredValue =
+            visibleIndex
+            - qMax(
                 0,
-                qRound(value),
-                maximum));
+                bar->pageStep() / 2);
+
+        const int newValue =
+            qBound(
+                bar->minimum(),
+                centredValue,
+                bar->maximum());
+
+        if (bar->value() != newValue) {
+            bar->setValue(newValue);
+        }
     }
+
+    struct CachedLine {
+        QString text;
+        int sourceLine = -1;
+    };
 
     CodeEditor *m_editor;
     bool m_dragging;
     QTimer *m_sourceRefreshTimer;
-    QStringList m_cachedLines;
+    QTimer *m_dragScrollTimer;
+    qreal m_pendingScrollY = 0.0;
+    QList<CachedLine> m_cachedLines;
+    QHash<int, int> m_sourceLineToVisibleIndex;
     QMetaObject::Connection m_documentChangedConnection;
 };
 
@@ -699,7 +950,8 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
      * after typing pauses.
      */
     m_foldRefreshTimer->setSingleShot(true);
-    m_foldRefreshTimer->setInterval(240);
+    /* Second stage of the typing trickle. */
+    m_foldRefreshTimer->setInterval(360);
     connect(m_foldRefreshTimer, &QTimer::timeout,
             this, &CodeEditor::rebuildFoldRegions);
     attachFoldTracking();
@@ -1101,7 +1353,7 @@ QString CodeEditor::diagnosticToolTipAtY(int y) const
             break;
         }
 
-        block = block.next();
+        block = nextVisibleBlockFast(block);
         top = bottom;
     }
 
@@ -1265,6 +1517,80 @@ int CodeEditor::lineNumberAreaWidth() const
         + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
+int CodeEditor::firstVisibleSourceBlockNumber() const
+{
+    const QTextBlock block =
+        firstVisibleBlock();
+
+    return block.isValid()
+        ? block.blockNumber()
+        : -1;
+}
+
+void CodeEditor::recalculateFoldScrollBarRange()
+{
+    if (!document()) {
+        return;
+    }
+
+    QScrollBar *bar =
+        verticalScrollBar();
+
+    if (!bar) {
+        return;
+    }
+
+    /*
+     * Folding changes QTextBlock visibility without changing blockCount().
+     * QPlainTextEdit therefore sometimes keeps the old vertical maximum until
+     * another larger layout event (such as closing/reopening the tab) occurs.
+     *
+     * CodeEditor is NoWrap, so every visible QTextBlock is one visual line.
+     * Recalculate the range directly from what is ACTUALLY visible now.
+     */
+    int visibleBlocks = 0;
+
+    QTextBlock block =
+        document()->firstBlock();
+
+    while (block.isValid()) {
+        if (block.isVisible()) {
+            ++visibleBlocks;
+        }
+
+        block = block.next();
+    }
+
+    const int pageStep =
+        qMax(1, bar->pageStep());
+
+    const int expectedMaximum =
+        qMax(
+            0,
+            visibleBlocks - pageStep);
+
+    /*
+     * setRange() can cause QPlainTextEdit to move the scrollbar while its
+     * internal layout is being rebuilt. Preserve the user's current view
+     * explicitly so recalculating fold geometry never means "go to line 1".
+     */
+    const int oldValue =
+        bar->value();
+
+    if (bar->minimum() != 0
+        || bar->maximum() != expectedMaximum) {
+        bar->setRange(
+            0,
+            expectedMaximum);
+    }
+
+    bar->setValue(
+        qBound(
+            bar->minimum(),
+            oldValue,
+            bar->maximum()));
+}
+
 void CodeEditor::refreshLineNumberAreaWidth()
 {
     updateLineNumberAreaWidth(0);
@@ -1365,10 +1691,17 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                 );
         }
 
-        block = block.next();
+        block = nextVisibleBlockFast(block);
         top = bottom;
-        bottom = top + qRound(blockBoundingRect(block).height());
-        ++blockNumber;
+
+        if (block.isValid()) {
+            blockNumber = block.blockNumber();
+            bottom =
+                top
+                + qRound(
+                    blockBoundingRect(block)
+                        .height());
+        }
     }
 }
 
@@ -1386,7 +1719,8 @@ void CodeEditor::attachFoldTracking()
             &QTextDocument::contentsChanged,
             this,
             [this]() {
-                if (m_foldRefreshTimer) {
+                if (m_foldRefreshTimer
+                    && !m_foldRefreshTimer->isActive()) {
                     m_foldRefreshTimer->start();
                 }
             });
@@ -1664,7 +1998,7 @@ int CodeEditor::visibleBlockNumberAtY(int y) const
             break;
         }
 
-        block = block.next();
+        block = nextVisibleBlockFast(block);
         top = bottom;
     }
 
@@ -1706,6 +2040,50 @@ bool CodeEditor::isFolded(int startBlock) const
     return data && data->folded;
 }
 
+QTextBlock CodeEditor::nextVisibleBlockFast(
+    const QTextBlock &block) const
+{
+    if (!block.isValid()) {
+        return {};
+    }
+
+    /*
+     * A collapsed fold can hide thousands of QTextBlocks whose layout height
+     * is zero. Walking block.next() through all of them on every repaint makes
+     * scrolling look like the application has frozen.
+     *
+     * When the current visible block is a folded anchor, jump directly to the
+     * block after that region instead of visiting every hidden block.
+     */
+    const int startBlock =
+        block.blockNumber();
+
+    const int endBlock =
+        foldEndForStart(startBlock);
+
+    if (endBlock > startBlock
+        && isFolded(startBlock)
+        && document()) {
+        return document()->findBlockByNumber(
+            endBlock + 1);
+    }
+
+    QTextBlock next =
+        block.next();
+
+    /*
+     * Normally the folded-anchor jump above handles every hidden run. This is
+     * just a defensive fallback for any transient layout state while Qt is
+     * recalculating block visibility.
+     */
+    while (next.isValid()
+           && !next.isVisible()) {
+        next = next.next();
+    }
+
+    return next;
+}
+
 bool CodeEditor::foldMarkerAtY(int y) const
 {
     const int blockNumber =
@@ -1718,6 +2096,11 @@ bool CodeEditor::foldMarkerAtY(int y) const
 
 void CodeEditor::toggleFoldAtY(int y)
 {
+    const int preservedScrollValue =
+        verticalScrollBar()
+            ? verticalScrollBar()->value()
+            : -1;
+
     const int startBlock =
         visibleBlockNumberAtY(y);
 
@@ -1762,8 +2145,8 @@ void CodeEditor::toggleFoldAtY(int y)
         }
     }
 
-    applyFoldVisibility();
-    ensureCursorVisible();
+    applyFoldVisibility(
+        preservedScrollValue);
 }
 
 void CodeEditor::collapseAllFolds()
@@ -1771,6 +2154,11 @@ void CodeEditor::collapseAllFolds()
     if (!document()) {
         return;
     }
+
+    const int preservedScrollValue =
+        verticalScrollBar()
+            ? verticalScrollBar()->value()
+            : -1;
 
     /*
      * Mark every discovered fold region as collapsed, including nested ones.
@@ -1829,8 +2217,8 @@ void CodeEditor::collapseAllFolds()
         }
     }
 
-    applyFoldVisibility();
-    ensureCursorVisible();
+    applyFoldVisibility(
+        preservedScrollValue);
 }
 
 void CodeEditor::expandAllFolds()
@@ -1838,6 +2226,11 @@ void CodeEditor::expandAllFolds()
     if (!document()) {
         return;
     }
+
+    const int preservedScrollValue =
+        verticalScrollBar()
+            ? verticalScrollBar()->value()
+            : -1;
 
     /*
      * Clear fold state from every current folding anchor. Hidden QTextBlocks
@@ -1859,11 +2252,12 @@ void CodeEditor::expandAllFolds()
         }
     }
 
-    applyFoldVisibility();
-    ensureCursorVisible();
+    applyFoldVisibility(
+        preservedScrollValue);
 }
 
-void CodeEditor::applyFoldVisibility()
+void CodeEditor::applyFoldVisibility(
+    int preferredScrollValue)
 {
     if (!document()) {
         return;
@@ -1912,9 +2306,92 @@ void CodeEditor::applyFoldVisibility()
         0,
         document()->characterCount());
 
+    /*
+     * Recalculate the gutter/editor scroll geometry as part of EVERY folding
+     * change. This path is shared by:
+     *
+     *   - clicking one fold triangle
+     *   - Collapse All
+     *   - Expand All
+     *
+     * so none of those operations can leave the scrollbar carrying the range
+     * from the previous folded state.
+     */
+    recalculateFoldScrollBarRange();
+
+    if (preferredScrollValue >= 0
+        && verticalScrollBar()) {
+        QScrollBar *bar =
+            verticalScrollBar();
+
+        bar->setValue(
+            qBound(
+                bar->minimum(),
+                preferredScrollValue,
+                bar->maximum()));
+    }
+
+    updateLineNumberAreaWidth(0);
+
     if (m_lineNumberArea) {
         m_lineNumberArea->update();
     }
+
+    if (m_minimap) {
+        static_cast<CodeMinimap *>(m_minimap)
+            ->refreshNow();
+    }
+
+    /*
+     * Qt may perform its own queued document-layout work after this function
+     * returns. Re-assert the correct range after those passes too. The 20 ms
+     * refresh was already useful on this setup; the 80 ms pass protects
+     * against a later Qt scrollbar/layout update restoring the stale range.
+     */
+    const auto settleFoldGeometry =
+        [this, preferredScrollValue]() {
+            recalculateFoldScrollBarRange();
+
+            if (preferredScrollValue >= 0
+                && verticalScrollBar()) {
+                QScrollBar *bar =
+                    verticalScrollBar();
+
+                bar->setValue(
+                    qBound(
+                        bar->minimum(),
+                        preferredScrollValue,
+                        bar->maximum()));
+            }
+
+            updateLineNumberAreaWidth(0);
+
+            if (m_lineNumberArea) {
+                m_lineNumberArea->update();
+            }
+
+            if (m_minimap) {
+                static_cast<CodeMinimap *>(m_minimap)
+                    ->refreshNow();
+            }
+
+            viewport()->update();
+        };
+
+    QTimer::singleShot(
+        0,
+        this,
+        settleFoldGeometry);
+
+    QTimer::singleShot(
+        20,
+        this,
+        settleFoldGeometry);
+
+    QTimer::singleShot(
+        80,
+        this,
+        settleFoldGeometry);
 
     viewport()->update();
     updateGeometry();
@@ -2119,8 +2596,6 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
                     const QChar ch = text.at(i);
 
                     if (ch == QLatin1Char('\t')) {
-                        const qreal before =
-                            line.cursorToX(i);
                         const qreal after =
                             line.cursorToX(i + 1);
 
@@ -2155,8 +2630,6 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
                     ++i;
 
                     if (spacesInRun == indentWidth) {
-                        const qreal before =
-                            line.cursorToX(spaceRunStart);
                         const qreal after =
                             line.cursorToX(i);
 
@@ -2178,10 +2651,16 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
             }
         }
 
-        block = block.next();
+        block = nextVisibleBlockFast(block);
         top = bottom;
-        bottom =
-            top + qRound(blockBoundingRect(block).height());
+
+        if (block.isValid()) {
+            bottom =
+                top
+                + qRound(
+                    blockBoundingRect(block)
+                        .height());
+        }
     }
 }
 
@@ -2300,10 +2779,11 @@ bool CodeEditor::handleAutoPairKey(QKeyEvent *event)
          * of creating "))", "]]" or "}}".
          */
         QTextCursor cursor = textCursor();
-        const QString text = toPlainText();
+        const QString blockText = cursor.block().text();
+        const int position = cursor.positionInBlock();
 
-        if (cursor.position() < text.size()
-            && text.at(cursor.position()) == ch) {
+        if (position < blockText.size()
+            && blockText.at(position) == ch) {
             cursor.movePosition(QTextCursor::NextCharacter);
             setTextCursor(cursor);
             return true;
@@ -2345,15 +2825,15 @@ bool CodeEditor::handlePairedBackspace(QKeyEvent *event)
         return false;
     }
 
-    const QString text = toPlainText();
-    const int position = cursor.position();
+    const QString blockText = cursor.block().text();
+    const int position = cursor.positionInBlock();
 
-    if (position >= text.size()) {
+    if (position <= 0 || position >= blockText.size()) {
         return false;
     }
 
-    const QChar left = text.at(position - 1);
-    const QChar right = text.at(position);
+    const QChar left = blockText.at(position - 1);
+    const QChar right = blockText.at(position);
 
     const bool isPair =
         (left == QLatin1Char('(') && right == QLatin1Char(')'))
@@ -2605,17 +3085,20 @@ void CodeEditor::highlightCurrentLine()
 
 QString CodeEditor::textUnderCursor() const
 {
-    const QString text = toPlainText();
-    int position = textCursor().position();
-    if (position > text.length()) {
-        position = text.length();
-    }
+    /*
+     * This runs from cursorPositionChanged, so inspect only the current line.
+     * The old version copied the entire document with toPlainText().
+     */
+    const QTextCursor cursor = textCursor();
+    const QString text = cursor.block().text();
+    int position = qBound(0, cursor.positionInBlock(), text.size());
 
     auto isIdentifierChar = [](QChar ch) {
         return ch.isLetterOrNumber() || ch == QLatin1Char('_');
     };
 
-    if (position > 0 && (position == text.length() || !isIdentifierChar(text.at(position)))
+    if (position > 0
+        && (position == text.length() || !isIdentifierChar(text.at(position)))
         && isIdentifierChar(text.at(position - 1))) {
         --position;
     }

@@ -12,6 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QColor>
 #include <QAbstractButton>
 #include <QCoreApplication>
@@ -1874,6 +1875,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_findReplaceDialog(nullptr)
     , m_compilerProcess(new QProcess(this))
     , m_projectAnalysisTimer(new QTimer(this))
+    , m_symbolTreeRefreshTimer(new QTimer(this))
     , m_compileProgressDelayTimer(new QTimer(this))
     , m_fileWatcher(new QFileSystemWatcher(this))
     , m_buildStep(BuildStep::None)
@@ -1896,17 +1898,19 @@ MainWindow::MainWindow(QWidget *parent)
     refreshApiCatalog();
 
     /*
-     * Project-wide function/type discovery scans multiple source files.
-     * Running it on every single keystroke makes large resource-heavy projects
-     * feel frozen. Coalesce bursts of edits into one refresh shortly after the
-     * user stops typing.
+     * Typing refreshes are staggered rather than debounced into one big burst.
+     * Each timer is started only when idle, so continuous typing still allows
+     * small pieces of maintenance work to trickle through.
      */
     m_projectAnalysisTimer->setSingleShot(true);
-    m_projectAnalysisTimer->setInterval(350);
-    connect(m_projectAnalysisTimer, &QTimer::timeout, this, [this]() {
-        refreshFunctionCompletions();
-        refreshSymbolTree();
-    });
+    m_projectAnalysisTimer->setInterval(720);
+    connect(m_projectAnalysisTimer, &QTimer::timeout,
+            this, &MainWindow::refreshActiveEditorAnalysis);
+
+    m_symbolTreeRefreshTimer->setSingleShot(true);
+    m_symbolTreeRefreshTimer->setInterval(900);
+    connect(m_symbolTreeRefreshTimer, &QTimer::timeout,
+            this, &MainWindow::refreshSymbolTree);
 
     /*
      * Reload open files when another editor/tool writes them on disk.
@@ -2044,6 +2048,170 @@ bool MainWindow::closeEditorTab(int index)
     m_projectAnalysisTimer->start();
 
     return true;
+}
+
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!event) {
+        return;
+    }
+
+    QList<CodeEditor *> unsavedEditors;
+    QStringList unsavedNames;
+
+    /*
+     * Only inspect each tab's primary editor. Split views can share the same
+     * QTextDocument, so walking every CodeEditor widget would report the same
+     * modified file twice.
+     */
+    for (int i = 0;
+         i < m_editorTabs->count();
+         ++i) {
+        CodeEditor *editor =
+            primaryEditorForTab(
+                m_editorTabs->widget(i));
+
+        if (!editor) {
+            continue;
+        }
+
+        const bool untitledHasWork =
+            editor->filePath().isEmpty()
+            && !editor->toPlainText().isEmpty();
+
+        if (!editor->document()->isModified()
+            && !untitledHasWork) {
+            continue;
+        }
+
+        unsavedEditors.append(editor);
+
+        QString name =
+            editor->filePath().isEmpty()
+                ? tabTitleForEditor(editor)
+                      .remove(QLatin1Char('*'))
+                : QFileInfo(editor->filePath())
+                      .fileName();
+
+        if (name.isEmpty()) {
+            name = tr("Untitled source");
+        }
+
+        unsavedNames.append(name);
+    }
+
+    if (unsavedEditors.isEmpty()) {
+        event->accept();
+        return;
+    }
+
+    QString details;
+
+    const int shownCount =
+        qMin(8, unsavedNames.size());
+
+    for (int i = 0; i < shownCount; ++i) {
+        details +=
+            QStringLiteral("\n  • %1")
+                .arg(unsavedNames.at(i));
+    }
+
+    if (unsavedNames.size() > shownCount) {
+        details +=
+            tr("\n  • ...and %1 more")
+                .arg(
+                    unsavedNames.size()
+                    - shownCount);
+    }
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Unsaved Work"));
+    box.setText(
+        unsavedEditors.size() == 1
+            ? tr("There is 1 file with unsaved work.")
+            : tr("There are %1 files with unsaved work.")
+                  .arg(unsavedEditors.size()));
+
+    box.setInformativeText(
+        tr("Save before closing Sidbox IDE?%1")
+            .arg(details));
+
+    QPushButton *saveButton =
+        box.addButton(
+            tr("Save"),
+            QMessageBox::AcceptRole);
+
+    QPushButton *discardButton =
+        box.addButton(
+            tr("Discard"),
+            QMessageBox::DestructiveRole);
+
+    QPushButton *cancelButton =
+        box.addButton(
+            QMessageBox::Cancel);
+
+    box.setDefaultButton(saveButton);
+    box.setEscapeButton(cancelButton);
+    box.exec();
+
+    QAbstractButton *clicked =
+        box.clickedButton();
+
+    if (clicked == cancelButton
+        || !clicked) {
+        event->ignore();
+        return;
+    }
+
+    if (clicked == discardButton) {
+        event->accept();
+        return;
+    }
+
+    if (clicked != saveButton) {
+        event->ignore();
+        return;
+    }
+
+    /*
+     * Save only the files that actually need attention. Untitled tabs naturally
+     * use the existing Save As dialog through saveEditor(). If the user cancels
+     * any Save As, abort the IDE shutdown so nothing is lost accidentally.
+     */
+    for (CodeEditor *editor :
+         std::as_const(unsavedEditors)) {
+        if (!editor) {
+            continue;
+        }
+
+        if (!saveEditor(editor)) {
+            event->ignore();
+            statusBar()->showMessage(
+                tr("Close cancelled — unsaved work remains"),
+                3000);
+            return;
+        }
+    }
+
+    /*
+     * If this is a normal saved project, persist the tab/project metadata too.
+     * Do not force a .proj Save As when the user is simply working from loose
+     * files in an empty IDE session.
+     */
+    if (!m_projectFilePath.isEmpty()) {
+        if (!saveProjectFile(
+                m_projectFilePath)) {
+            event->ignore();
+            statusBar()->showMessage(
+                tr("Close cancelled — project could not be saved"),
+                3000);
+            return;
+        }
+    }
+
+    event->accept();
 }
 
 
@@ -6058,8 +6226,17 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
          * after the tab is installed.
          */
         if (!editor->isResourceMode()
-            && tabIndexForEditor(editor) >= 0) {
-            m_projectAnalysisTimer->start();
+            && tabIndexForEditor(editor) >= 0
+            && editor == activeEditor()) {
+            if (m_projectAnalysisTimer
+                && !m_projectAnalysisTimer->isActive()) {
+                m_projectAnalysisTimer->start();
+            }
+
+            if (m_symbolTreeRefreshTimer
+                && !m_symbolTreeRefreshTimer->isActive()) {
+                m_symbolTreeRefreshTimer->start();
+            }
         }
 
         if (editor->isResourceMode()) {
@@ -6416,6 +6593,15 @@ bool MainWindow::saveEditor(CodeEditor *editor)
 
     const QString newPath =
         QFileInfo(editor->filePath()).absoluteFilePath();
+
+    if (!oldPath.isEmpty()
+        && oldPath != newPath) {
+        m_cachedFileFunctionSignatures.remove(
+            oldPath);
+        m_cachedFileTypeNames.remove(
+            oldPath);
+    }
+
     const bool projectListChanged =
         !m_projectFilesInProject.contains(newPath);
 
@@ -6611,7 +6797,13 @@ bool MainWindow::loadProjectFile(const QString &filePath)
         createNewSourceFile();
     }
 
-    m_projectAnalysisTimer->start();
+    /*
+     * Project load is a project-level event, so build the per-file caches once.
+     * Normal typing after this point only refreshes the active tab.
+     */
+    refreshFunctionCompletions();
+    refreshSymbolTree();
+
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     return true;
 }
@@ -6702,6 +6894,8 @@ void MainWindow::clearEditorTabs()
         }
     }
     m_pendingExternalReloads.clear();
+    m_cachedFileFunctionSignatures.clear();
+    m_cachedFileTypeNames.clear();
 
     while (m_editorTabs->count() > 0) {
         QWidget *widget = m_editorTabs->widget(0);
@@ -7853,19 +8047,152 @@ void MainWindow::refreshFunctionCompletions()
 {
     ensureApiCatalog();
 
-    QStringList completions = projectFunctionSignatures();
-    const QStringList typeNames = projectTypeNames();
-    const QStringList apiNames = apiSyntaxNames();
+    m_cachedFileFunctionSignatures.clear();
+    m_cachedFileTypeNames.clear();
+
+    QHash<QString, CodeEditor *> openEditors;
+
+    /*
+     * Open tabs win over disk so a deliberate full refresh still sees unsaved
+     * source correctly. Build a path -> editor map once rather than walking all
+     * tabs repeatedly for every project file.
+     */
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        CodeEditor *editor =
+            primaryEditorForTab(
+                m_editorTabs->widget(i));
+
+        if (!editor
+            || editor->isResourceMode()
+            || editor->filePath().isEmpty()) {
+            continue;
+        }
+
+        const QString path =
+            QFileInfo(editor->filePath())
+                .absoluteFilePath();
+
+        openEditors.insert(path, editor);
+    }
+
+    QStringList projectFiles =
+        m_projectFilesInProject;
+
+    projectFiles.append(
+        projectFolderSourceFiles());
+
+    for (auto it = openEditors.constBegin();
+         it != openEditors.constEnd();
+         ++it) {
+        if (!projectFiles.contains(it.key())) {
+            projectFiles.append(it.key());
+        }
+    }
+
+    projectFiles.removeDuplicates();
+
+    for (const QString &rawPath :
+         std::as_const(projectFiles)) {
+        const QString path =
+            QFileInfo(rawPath)
+                .absoluteFilePath();
+
+        if (path.isEmpty()
+            || !canContainFunctionSignatures(path)) {
+            continue;
+        }
+
+        QString source;
+
+        if (CodeEditor *editor =
+                openEditors.value(path, nullptr)) {
+            source = editor->toPlainText();
+        } else {
+            QFile file(path);
+
+            if (!file.exists()
+                || !file.open(
+                    QIODevice::ReadOnly
+                    | QIODevice::Text)) {
+                continue;
+            }
+
+            source =
+                QString::fromUtf8(
+                    file.readAll());
+        }
+
+        QStringList functions =
+            functionSignaturesFromText(source);
+
+        QStringList types;
+
+        const SourceSymbolTable symbols =
+            parseSourceSymbols(source);
+
+        for (const SourceNamedSymbol &type :
+             symbols.types) {
+            if (!type.name.isEmpty()) {
+                types.append(type.name);
+            }
+        }
+
+        functions.removeDuplicates();
+        types.removeDuplicates();
+
+        m_cachedFileFunctionSignatures.insert(
+            path,
+            functions);
+
+        m_cachedFileTypeNames.insert(
+            path,
+            types);
+    }
+
+    QStringList completions =
+        m_apiSignatures;
+
+    QStringList typeNames;
+
+    for (auto it =
+             m_cachedFileFunctionSignatures.constBegin();
+         it !=
+             m_cachedFileFunctionSignatures.constEnd();
+         ++it) {
+        completions.append(it.value());
+    }
+
+    for (auto it =
+             m_cachedFileTypeNames.constBegin();
+         it !=
+             m_cachedFileTypeNames.constEnd();
+         ++it) {
+        typeNames.append(it.value());
+    }
+
+    typeNames.removeDuplicates();
+    typeNames.sort(Qt::CaseInsensitive);
 
     completions.append(typeNames);
     completions.removeDuplicates();
     completions.sort(Qt::CaseInsensitive);
 
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        const QList<CodeEditor *> editors =
-            editorsForTab(m_editorTabs->widget(i));
+    const QStringList apiNames =
+        apiSyntaxNames();
 
-        for (CodeEditor *editor : editors) {
+    for (int i = 0;
+         i < m_editorTabs->count();
+         ++i) {
+        const QList<CodeEditor *> editors =
+            editorsForTab(
+                m_editorTabs->widget(i));
+
+        for (CodeEditor *editor :
+             editors) {
+            if (!editor) {
+                continue;
+            }
+
             if (editor->isResourceMode()) {
                 editor->setFunctionCompletions({});
                 editor->setProjectTypeNames({});
@@ -7873,10 +8200,155 @@ void MainWindow::refreshFunctionCompletions()
                 continue;
             }
 
-            editor->setFunctionCompletions(completions);
-            editor->setProjectTypeNames(typeNames);
-            editor->setApiSyntaxNames(apiNames);
+            editor->setFunctionCompletions(
+                completions);
+
+            editor->setProjectTypeNames(
+                typeNames);
+
+            editor->setApiSyntaxNames(
+                apiNames);
         }
+    }
+}
+
+
+void MainWindow::refreshActiveEditorAnalysis()
+{
+    CodeEditor *editor =
+        activeEditor();
+
+    if (!editor) {
+        return;
+    }
+
+    if (editor->isResourceMode()) {
+        editor->setFunctionCompletions({});
+        editor->setProjectTypeNames({});
+        editor->setApiSyntaxNames({});
+        return;
+    }
+
+    ensureApiCatalog();
+
+    /*
+     * This is the normal typing path: inspect ONE document only.
+     * Everything from other project files comes from the last cached full scan.
+     */
+    const QString source =
+        editor->toPlainText();
+
+    QStringList localFunctions =
+        functionSignaturesFromText(source);
+
+    QStringList localTypes;
+
+    const SourceSymbolTable symbols =
+        parseSourceSymbols(source);
+
+    for (const SourceNamedSymbol &type :
+         symbols.types) {
+        if (!type.name.isEmpty()) {
+            localTypes.append(type.name);
+        }
+    }
+
+    localFunctions.removeDuplicates();
+    localTypes.removeDuplicates();
+
+    const QString editorPath =
+        editor->filePath().isEmpty()
+            ? QString()
+            : QFileInfo(editor->filePath())
+                  .absoluteFilePath();
+
+    if (!editorPath.isEmpty()) {
+        /*
+         * Replace only this file's cached contribution. Renaming/removing a
+         * function therefore removes the stale completion on the next 500 ms
+         * refresh without touching any other source file.
+         */
+        m_cachedFileFunctionSignatures.insert(
+            editorPath,
+            localFunctions);
+
+        m_cachedFileTypeNames.insert(
+            editorPath,
+            localTypes);
+    }
+
+    QStringList completions =
+        m_apiSignatures;
+
+    QStringList typeNames;
+
+    for (auto it =
+             m_cachedFileFunctionSignatures.constBegin();
+         it !=
+             m_cachedFileFunctionSignatures.constEnd();
+         ++it) {
+        completions.append(it.value());
+    }
+
+    for (auto it =
+             m_cachedFileTypeNames.constBegin();
+         it !=
+             m_cachedFileTypeNames.constEnd();
+         ++it) {
+        typeNames.append(it.value());
+    }
+
+    /*
+     * Untitled files do not have a stable cache key yet, so keep their local
+     * symbols live without pretending they belong to another project file.
+     */
+    if (editorPath.isEmpty()) {
+        completions.append(localFunctions);
+        typeNames.append(localTypes);
+    }
+
+    typeNames.removeDuplicates();
+    typeNames.sort(Qt::CaseInsensitive);
+
+    completions.append(typeNames);
+    completions.removeDuplicates();
+    completions.sort(Qt::CaseInsensitive);
+
+    const QStringList apiNames =
+        apiSyntaxNames();
+
+    /*
+     * Only update views belonging to the CURRENT tab. A split tab can contain
+     * two CodeEditor widgets sharing the same document, so update both views
+     * without touching every other open tab.
+     */
+    QWidget *currentTab =
+        m_editorTabs
+            ? m_editorTabs->currentWidget()
+            : nullptr;
+
+    if (!currentTab) {
+        return;
+    }
+
+    const QList<CodeEditor *> currentEditors =
+        editorsForTab(currentTab);
+
+    for (CodeEditor *current :
+         currentEditors) {
+        if (!current
+            || current->isResourceMode()) {
+            continue;
+        }
+
+        current->setFunctionCompletions(
+            completions);
+
+        current->setProjectTypeNames(
+            typeNames);
+
+        current->setApiSyntaxNames(
+            apiNames);
     }
 }
 
@@ -8010,11 +8482,21 @@ QString MainWindow::quickTipForSymbol(const QString &symbol) const
         }
     }
 
-    const QStringList signatures = projectFunctionSignatures();
-    for (const QString &signature : signatures) {
-        const int parenIndex = signature.indexOf(QLatin1Char('('));
-        if (parenIndex > 0 && signature.left(parenIndex).compare(name, Qt::CaseInsensitive) == 0) {
-            return signature;
+    /*
+     * Passive quick tips run from cursorPositionChanged. Use the already-built
+     * per-file cache here; never rescan the whole project just because the
+     * caret moved by one character.
+     */
+    for (auto it = m_cachedFileFunctionSignatures.constBegin();
+         it != m_cachedFileFunctionSignatures.constEnd(); ++it) {
+        for (const QString &signature : it.value()) {
+            const int parenIndex = signature.indexOf(QLatin1Char('('));
+            const QString functionName =
+                parenIndex > 0 ? signature.left(parenIndex) : signature;
+
+            if (functionName.compare(name, Qt::CaseInsensitive) == 0) {
+                return signature;
+            }
         }
     }
 

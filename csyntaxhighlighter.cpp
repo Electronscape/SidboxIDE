@@ -23,14 +23,17 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
      */
     m_localTypeRefreshTimer = new QTimer(this);
     m_localTypeRefreshTimer->setSingleShot(true);
-    m_localTypeRefreshTimer->setInterval(320);
+    /* Third stage of the typing trickle. */
+    m_localTypeRefreshTimer->setInterval(540);
 
     connect(m_localTypeRefreshTimer, &QTimer::timeout,
             this, &CSyntaxHighlighter::rebuildLocalTypeNames);
 
     connect(parent, &QTextDocument::contentsChanged,
             this, [this]() {
-                if (!m_resourceMode && m_localTypeRefreshTimer) {
+                if (!m_resourceMode
+                    && m_localTypeRefreshTimer
+                    && !m_localTypeRefreshTimer->isActive()) {
                     m_localTypeRefreshTimer->start();
                 }
             });

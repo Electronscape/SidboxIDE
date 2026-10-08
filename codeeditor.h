@@ -7,6 +7,7 @@
 #include <QPair>
 #include <QString>
 #include <QStringList>
+#include <QTextBlock>
 #include "idetheme.h"
 
 class CSyntaxHighlighter;
@@ -70,6 +71,8 @@ public:
     void toggleFoldAtY(int y);
     void collapseAllFolds();
     void expandAllFolds();
+    int firstVisibleSourceBlockNumber() const;
+    void recalculateFoldScrollBarRange();
 
 signals:
     void quickTipRequested(const QString &symbol);
@@ -115,10 +118,11 @@ private:
     void drawIndentGuides(QPaintEvent *event);
     void attachFoldTracking();
     void rebuildFoldRegions();
-    void applyFoldVisibility();
+    void applyFoldVisibility(int preferredScrollValue = -1);
     int visibleBlockNumberAtY(int y) const;
     int foldEndForStart(int startBlock) const;
     bool isFolded(int startBlock) const;
+    QTextBlock nextVisibleBlockFast(const QTextBlock &block) const;
 
     QWidget *m_lineNumberArea;
     QWidget *m_minimap;
