@@ -89,6 +89,9 @@ private:
     void openCurrentTabInExistingSplit();
     void toggleCurrentEditorSplit();
     void updateCursorPositionStatus();
+    void navigateEditorStructure(CodeEditor *editor, int direction);
+    void selectNextEditorTab();
+    void showCatalogueProgress(CodeEditor *editor, int percent);
     CodeEditor *createEditor(const QString &filePath = QString());
     void watchEditorFile(CodeEditor *editor);
     void unwatchEditorFile(CodeEditor *editor);
@@ -171,6 +174,7 @@ private:
     void appendOutputLine(const QString &text, OutputKind kind);
 
     void clearCompilerDiagnostics();
+    void updateProjectDiagnosticMarkers();
     void processCompilerStderrChunk(const QString &text);
     OutputKind compilerOutputKindForLine(const QString &line) const;
     void processCompilerDiagnosticLine(const QString &line);
@@ -200,7 +204,6 @@ private:
     FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
     QTimer *m_projectAnalysisTimer;
-    QTimer *m_symbolTreeRefreshTimer;
     QTimer *m_compileProgressDelayTimer;
     QFileSystemWatcher *m_fileWatcher;
     QSet<QString> m_pendingExternalReloads;

@@ -6,6 +6,73 @@
 #include <QTextDocument>
 #include <QTimer>
 
+namespace {
+const QSet<QString> &cKeywordSet()
+{
+    static const QSet<QString> keywords = {
+        QStringLiteral("auto"),
+        QStringLiteral("break"),
+        QStringLiteral("case"),
+        QStringLiteral("char"),
+        QStringLiteral("const"),
+        QStringLiteral("continue"),
+        QStringLiteral("default"),
+        QStringLiteral("do"),
+        QStringLiteral("double"),
+        QStringLiteral("else"),
+        QStringLiteral("enum"),
+        QStringLiteral("extern"),
+        QStringLiteral("float"),
+        QStringLiteral("for"),
+        QStringLiteral("goto"),
+        QStringLiteral("if"),
+        QStringLiteral("inline"),
+        QStringLiteral("int"),
+        QStringLiteral("long"),
+        QStringLiteral("register"),
+        QStringLiteral("restrict"),
+        QStringLiteral("return"),
+        QStringLiteral("short"),
+        QStringLiteral("signed"),
+        QStringLiteral("sizeof"),
+        QStringLiteral("static"),
+        QStringLiteral("struct"),
+        QStringLiteral("switch"),
+        QStringLiteral("typedef"),
+        QStringLiteral("union"),
+        QStringLiteral("unsigned"),
+        QStringLiteral("void"),
+        QStringLiteral("volatile"),
+        QStringLiteral("while"),
+        QStringLiteral("_Bool"),
+        QStringLiteral("_Complex"),
+        QStringLiteral("_Imaginary"),
+        QStringLiteral("int8_t"),
+        QStringLiteral("int16_t"),
+        QStringLiteral("int32_t"),
+        QStringLiteral("int64_t"),
+        QStringLiteral("uint8_t"),
+        QStringLiteral("uint16_t"),
+        QStringLiteral("uint32_t"),
+        QStringLiteral("uint64_t")
+    };
+
+    return keywords;
+}
+
+const QSet<QString> &stmNameSet()
+{
+    static const QSet<QString> names = {
+        QStringLiteral("MEMALIGN32"),
+        QStringLiteral("MEMALIGN16"),
+        QStringLiteral("MEMALIGN8"),
+        QStringLiteral("MEMALIGN4")
+    };
+
+    return names;
+}
+}
+
 CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
     : QSyntaxHighlighter(parent)
     , m_commentStartExpression(QStringLiteral("/\\*"))
@@ -23,21 +90,26 @@ CSyntaxHighlighter::CSyntaxHighlighter(QTextDocument *parent)
      */
     m_localTypeRefreshTimer = new QTimer(this);
     m_localTypeRefreshTimer->setSingleShot(true);
-    /* Third stage of the typing trickle. */
-    m_localTypeRefreshTimer->setInterval(540);
+    /*
+     * Typedef/local-type discovery is a current-document pass. Delay it until
+     * typing has been quiet for half a second.
+     */
+    m_localTypeRefreshTimer->setInterval(500);
 
     connect(m_localTypeRefreshTimer, &QTimer::timeout,
             this, &CSyntaxHighlighter::rebuildLocalTypeNames);
 
-    connect(parent, &QTextDocument::contentsChanged,
-            this, [this]() {
-                if (!m_resourceMode
-                    && m_localTypeRefreshTimer
-                    && !m_localTypeRefreshTimer->isActive()) {
-                    m_localTypeRefreshTimer->start();
-                }
-            });
 }
+
+void CSyntaxHighlighter::refreshLocalTypeNamesNow()
+{
+    if (m_localTypeRefreshTimer) {
+        m_localTypeRefreshTimer->stop();
+    }
+
+    rebuildLocalTypeNames();
+}
+
 
 void CSyntaxHighlighter::setTheme(const IDETheme &theme)
 {
@@ -159,19 +231,13 @@ void CSyntaxHighlighter::rebuildRules()
 {
     m_highlightingRules.clear();
 
-    QTextCharFormat keywordFormat;
-    keywordFormat.setForeground(m_theme.syntaxKeyword);
-
     /*
-     * One compiled expression is substantially cheaper than running one regex
-     * for every C keyword on every text block.
+     * Keywords are recognised by the linear identifier scanner in
+     * highlightBlock(). Avoid running a whole-line regex just to rediscover the
+     * same identifier boundaries needed for typedef/API highlighting.
      */
-    m_highlightingRules.append({
-        QRegularExpression(
-            QStringLiteral(
-                R"(\b(?:auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|restrict|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while|_Bool|_Complex|_Imaginary|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t)\b)")),
-        keywordFormat
-    });
+    m_keywordFormat.setForeground(
+        m_theme.syntaxKeyword);
 
     /*
      * .res files deliberately use the lightest possible highlighting path.
@@ -183,16 +249,8 @@ void CSyntaxHighlighter::rebuildRules()
         return;
     }
 
-    QTextCharFormat stmFormat;
-    stmFormat.setForeground(m_theme.syntaxSTM32);
-    m_stm32Format = stmFormat;
-
-    m_highlightingRules.append({
-        QRegularExpression(
-            QStringLiteral(
-                R"(\b(?:MEMALIGN32|MEMALIGN16|MEMALIGN8|MEMALIGN4)\b)")),
-        stmFormat
-    });
+    m_stm32Format.setForeground(
+        m_theme.syntaxSTM32);
 
     QTextCharFormat apiFormat;
     apiFormat.setForeground(m_theme.syntaxAPI);
@@ -200,13 +258,8 @@ void CSyntaxHighlighter::rebuildRules()
 
     m_typedefFormat.setForeground(m_theme.syntaxType);
 
-    QTextCharFormat preprocessorFormat;
-    preprocessorFormat.setForeground(m_theme.syntaxPreprocessor);
-    m_preprocessorFormat = preprocessorFormat;
-    m_highlightingRules.append({
-        QRegularExpression(QStringLiteral("^\\s*#\\s*\\w+.*")),
-        preprocessorFormat
-    });
+    m_preprocessorFormat.setForeground(
+        m_theme.syntaxPreprocessor);
 
     m_stringFormat.setForeground(m_theme.syntaxString);
 
@@ -415,144 +468,258 @@ QStringList CSyntaxHighlighter::typedefNames() const
     return names;
 }
 
-void CSyntaxHighlighter::highlightBlock(const QString &text)
+void CSyntaxHighlighter::highlightBlock(
+    const QString &text)
 {
     if (m_resourceMode) {
+        /*
+         * Resource mode is intentionally tiny. Two generic rules (numbers and
+         * function-ish identifiers) are enough; generated resource data avoids
+         * project/API/type catalogues entirely.
+         */
         setCurrentBlockState(0);
-        for (const HighlightingRule &rule : m_highlightingRules) {
-            QRegularExpressionMatchIterator matchIterator =
+
+        for (const HighlightingRule &rule :
+             std::as_const(m_highlightingRules)) {
+            QRegularExpressionMatchIterator iterator =
                 rule.pattern.globalMatch(text);
-            while (matchIterator.hasNext()) {
-                const QRegularExpressionMatch match = matchIterator.next();
-                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+
+            while (iterator.hasNext()) {
+                const QRegularExpressionMatch match =
+                    iterator.next();
+
+                setFormat(
+                    match.capturedStart(),
+                    match.capturedLength(),
+                    rule.format);
             }
         }
+
+        int i = 0;
+
+        while (i < text.size()) {
+            if (!text.at(i).isLetter()
+                && text.at(i)
+                    != QLatin1Char('_')) {
+                ++i;
+                continue;
+            }
+
+            const int start = i++;
+
+            while (i < text.size()
+                   && (text.at(i).isLetterOrNumber()
+                       || text.at(i)
+                          == QLatin1Char('_'))) {
+                ++i;
+            }
+
+            const QString identifier =
+                text.mid(
+                    start,
+                    i - start);
+
+            if (cKeywordSet().contains(
+                    identifier)) {
+                setFormat(
+                    start,
+                    i - start,
+                    m_keywordFormat);
+            }
+        }
+
         return;
     }
 
-    const bool inPreprocessor = (previousBlockState() == 2);
-    const bool isPreprocessorLine = inPreprocessor || text.trimmed().startsWith('#');
+    const bool inPreprocessor =
+        previousBlockState() == 2;
+
+    const bool isPreprocessorLine =
+        inPreprocessor
+        || text.trimmed()
+               .startsWith(
+                   QLatin1Char('#'));
 
     if (isPreprocessorLine) {
-        setFormat(0, text.length(), m_preprocessorFormat);
+        setFormat(
+            0,
+            text.length(),
+            m_preprocessorFormat);
     } else {
         /*
-         * Apply project/local type names FIRST.
-         *
-         * The normal syntax rules are applied afterwards, so strings and
-         * comments correctly win over the type colour. Previously a known
-         * typedef such as BlobT inside:
-         *
-         *     // extern BlobT thing;
-         *
-         * was painted green after the comment rule had already run.
+         * Keep regex for the two places where it is genuinely convenient:
+         * numeric literals and function-call shape. Everything identifier-like
+         * is handled in ONE linear pass below.
          */
-        /*
-         * Scan identifiers once and use the pre-built QSet for type lookup.
-         * Previously this constructed and ran one QRegularExpression for every
-         * known type name on every source line.
-         */
-        static const QRegularExpression identifierExpression(
-            QStringLiteral(R"(\b[A-Za-z_][A-Za-z0-9_]*\b)"));
+        for (const HighlightingRule &rule :
+             std::as_const(m_highlightingRules)) {
+            QRegularExpressionMatchIterator iterator =
+                rule.pattern.globalMatch(text);
 
-        QRegularExpressionMatchIterator typeIterator =
-            identifierExpression.globalMatch(text);
+            while (iterator.hasNext()) {
+                const QRegularExpressionMatch match =
+                    iterator.next();
 
-        while (typeIterator.hasNext()) {
-            const QRegularExpressionMatch match =
-                typeIterator.next();
-
-            if (m_knownTypeNameSet.contains(match.captured(0))) {
                 setFormat(
                     match.capturedStart(),
                     match.capturedLength(),
-                    m_typedefFormat);
+                    rule.format);
             }
         }
 
-        /*
-         * These rules deliberately come second. In particular, quotation and
-         * comment formats overwrite type colouring where appropriate.
-         */
-        for (const HighlightingRule &rule : std::as_const(m_highlightingRules)) {
-            QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
-            while (matchIterator.hasNext()) {
-                const QRegularExpressionMatch match = matchIterator.next();
-                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+        auto isIdentifierStart =
+            [](QChar ch) {
+                return ch.isLetter()
+                    || ch == QLatin1Char('_');
+            };
+
+        auto isIdentifierChar =
+            [](QChar ch) {
+                return ch.isLetterOrNumber()
+                    || ch == QLatin1Char('_');
+            };
+
+        int i = 0;
+
+        while (i < text.size()) {
+            if (!isIdentifierStart(
+                    text.at(i))) {
+                ++i;
+                continue;
             }
-        }
 
-        /*
-         * Sidbox API symbols deliberately run AFTER the generic function/type
-         * rules so API calls, constants and API typedef names keep their own
-         * colour instead of being repainted as ordinary C symbols.
-         *
-         * Scan identifiers once per line and compare against the catalog rather
-         * than running one regular expression per API name.
-         */
-        QRegularExpressionMatchIterator apiIterator =
-            identifierExpression.globalMatch(text);
+            const int start = i++;
 
-        while (apiIterator.hasNext()) {
-            const QRegularExpressionMatch match =
-                apiIterator.next();
-            const QString identifier = match.captured(0);
+            while (i < text.size()
+                   && isIdentifierChar(
+                       text.at(i))) {
+                ++i;
+            }
 
-            if (identifier == QStringLiteral("printf")
-                || m_externalApiNameSet.contains(identifier)) {
+            const int length =
+                i - start;
+
+            const QString identifier =
+                text.mid(
+                    start,
+                    length);
+
+            if (identifier
+                    == QStringLiteral("printf")
+                || m_externalApiNameSet
+                       .contains(identifier)) {
                 setFormat(
-                    match.capturedStart(),
-                    match.capturedLength(),
+                    start,
+                    length,
                     m_customAPIFormat);
+            } else if (m_knownTypeNameSet
+                           .contains(
+                               identifier)) {
+                setFormat(
+                    start,
+                    length,
+                    m_typedefFormat);
+            } else if (stmNameSet()
+                           .contains(
+                               identifier)) {
+                setFormat(
+                    start,
+                    length,
+                    m_stm32Format);
+            } else if (cKeywordSet()
+                           .contains(
+                               identifier)) {
+                setFormat(
+                    start,
+                    length,
+                    m_keywordFormat);
             }
         }
 
         /*
-         * Strings and // comments are protected regions and must win over API
-         * colouring. Multi-line comments are applied immediately afterwards.
+         * Strings/comments are applied last and therefore win over any token
+         * colouring inside their text.
          */
-        applyStringsAndSingleLineComments(text);
+        applyStringsAndSingleLineComments(
+            text);
     }
 
     applyMultiLineComments(text);
 
-    if (isPreprocessorLine && text.trimmed().endsWith('\\')) {
+    if (isPreprocessorLine
+        && text.trimmed()
+               .endsWith(
+                   QLatin1Char('\\'))) {
         setCurrentBlockState(2);
     }
 }
 
-void CSyntaxHighlighter::applyStringsAndSingleLineComments(const QString &text)
+void CSyntaxHighlighter::applyStringsAndSingleLineComments(
+    const QString &text)
 {
-    static const QRegularExpression doubleQuoted(
-        QStringLiteral("\"([^\"\\\\]|\\\\.)*\""));
-    static const QRegularExpression singleQuoted(
-        QStringLiteral("'([^'\\\\]|\\\\.)*'"));
-    static const QRegularExpression singleLineComment(
-        QStringLiteral("//[^\\n]*"));
+    /*
+     * One pass replaces three regex passes and also fixes the classic
+     * "http://..."-inside-a-string problem: // is only a comment opener while
+     * the scanner is actually in normal C code.
+     */
+    int i = 0;
 
-    QRegularExpressionMatchIterator iterator =
-        doubleQuoted.globalMatch(text);
-    while (iterator.hasNext()) {
-        const QRegularExpressionMatch match = iterator.next();
-        setFormat(match.capturedStart(),
-                  match.capturedLength(),
-                  m_stringFormat);
-    }
+    while (i < text.size()) {
+        const QChar ch =
+            text.at(i);
 
-    iterator = singleQuoted.globalMatch(text);
-    while (iterator.hasNext()) {
-        const QRegularExpressionMatch match = iterator.next();
-        setFormat(match.capturedStart(),
-                  match.capturedLength(),
-                  m_stringFormat);
-    }
+        const QChar next =
+            i + 1 < text.size()
+                ? text.at(i + 1)
+                : QChar();
 
-    iterator = singleLineComment.globalMatch(text);
-    while (iterator.hasNext()) {
-        const QRegularExpressionMatch match = iterator.next();
-        setFormat(match.capturedStart(),
-                  match.capturedLength(),
-                  m_singleLineCommentFormat);
+        if (ch == QLatin1Char('/')
+            && next == QLatin1Char('/')) {
+            setFormat(
+                i,
+                text.size() - i,
+                m_singleLineCommentFormat);
+            return;
+        }
+
+        if (ch != QLatin1Char('"')
+            && ch != QLatin1Char('\'')) {
+            ++i;
+            continue;
+        }
+
+        const QChar quote = ch;
+        const int start = i++;
+        bool escaped = false;
+
+        while (i < text.size()) {
+            const QChar current =
+                text.at(i);
+
+            if (escaped) {
+                escaped = false;
+                ++i;
+                continue;
+            }
+
+            if (current
+                == QLatin1Char('\\')) {
+                escaped = true;
+                ++i;
+                continue;
+            }
+
+            ++i;
+
+            if (current == quote) {
+                break;
+            }
+        }
+
+        setFormat(
+            start,
+            i - start,
+            m_stringFormat);
     }
 }
 

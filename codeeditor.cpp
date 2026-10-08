@@ -3,6 +3,7 @@
 #include "csyntaxhighlighter.h"
 
 #include <algorithm>
+#include <utility>
 #include <QAbstractItemView>
 #include <QCompleter>
 #include <QFile>
@@ -108,17 +109,15 @@ public:
         setAttribute(Qt::WA_OpaquePaintEvent);
 
         /*
-         * Rebuilding the minimap requires reading/splitting the whole document.
-         * Doing that on every keystroke becomes noticeable in larger sources.
-         * Let the editor text remain completely immediate and let the minimap
-         * catch up shortly after typing pauses.
+         * Minimap rebuilds are cooperative. Large 100-200 KB sources are walked
+         * in small QTextBlock batches with a zero-timeout timer, yielding to Qt
+         * between batches so typing/scrolling always wins.
          */
         m_sourceRefreshTimer->setSingleShot(true);
-        /* First stage of the typing trickle. */
-        m_sourceRefreshTimer->setInterval(180);
+        m_sourceRefreshTimer->setInterval(0);
         connect(m_sourceRefreshTimer, &QTimer::timeout,
                 this, [this]() {
-                    rebuildSourceCache();
+                    continueQueuedRefresh();
                 });
 
         /*
@@ -152,24 +151,14 @@ public:
     void attachDocument(QTextDocument *document)
     {
         QObject::disconnect(m_documentChangedConnection);
+        Q_UNUSED(document);
 
+        cancelQueuedRefresh();
         m_cachedLines.clear();
         m_sourceLineToVisibleIndex.clear();
 
-        if (document) {
-            m_documentChangedConnection =
-                connect(document, &QTextDocument::contentsChanged,
-                        this, [this]() {
-                            if (m_sourceRefreshTimer
-                                && !m_sourceRefreshTimer->isActive()) {
-                                m_sourceRefreshTimer->start();
-                            }
-                        });
-        }
-
         /*
          * Populate immediately for an already-existing shared document.
-         * A normal newly-opened file will then use the debounce for edits.
          */
         rebuildSourceCache();
     }
@@ -177,15 +166,41 @@ public:
     void refreshNow()
     {
         /*
-         * Folding changes QTextBlock visibility but does not change document
-         * text, so QTextDocument::contentsChanged is not emitted. Let the
-         * editor explicitly refresh the minimap whenever a fold is toggled.
+         * Explicit folding operations still need an exact cache immediately.
          */
+        cancelQueuedRefresh();
+        rebuildSourceCache();
+    }
+
+    void refreshQueued()
+    {
+        if (!m_editor || !m_editor->document()) {
+            return;
+        }
+
         if (m_sourceRefreshTimer) {
             m_sourceRefreshTimer->stop();
         }
 
-        rebuildSourceCache();
+        m_pendingLines.clear();
+        m_pendingSourceLineToVisibleIndex.clear();
+        m_pendingBlock =
+            m_editor->document()->firstBlock();
+
+        if (m_sourceRefreshTimer) {
+            m_sourceRefreshTimer->start();
+        }
+    }
+
+    void cancelQueuedRefresh()
+    {
+        if (m_sourceRefreshTimer) {
+            m_sourceRefreshTimer->stop();
+        }
+
+        m_pendingLines.clear();
+        m_pendingSourceLineToVisibleIndex.clear();
+        m_pendingBlock = QTextBlock();
     }
 
 protected:
@@ -434,6 +449,53 @@ protected:
     }
 
 private:
+    void continueQueuedRefresh()
+    {
+        if (!m_editor || !m_editor->document()) {
+            cancelQueuedRefresh();
+            return;
+        }
+
+        /*
+         * A fixed block budget is predictable and tiny. Even generated C with
+         * thousands of lines yields back to the event loop every 96 blocks.
+         */
+        int budget = 96;
+
+        while (m_pendingBlock.isValid()
+               && budget-- > 0) {
+            if (m_pendingBlock.isVisible()) {
+                const int visibleIndex =
+                    m_pendingLines.size();
+
+                m_pendingLines.append(
+                    {m_pendingBlock.text(),
+                     m_pendingBlock.blockNumber()});
+
+                m_pendingSourceLineToVisibleIndex.insert(
+                    m_pendingBlock.blockNumber(),
+                    visibleIndex);
+            }
+
+            m_pendingBlock =
+                m_pendingBlock.next();
+        }
+
+        if (m_pendingBlock.isValid()) {
+            m_sourceRefreshTimer->start();
+            return;
+        }
+
+        m_cachedLines =
+            std::move(m_pendingLines);
+
+        m_sourceLineToVisibleIndex =
+            std::move(
+                m_pendingSourceLineToVisibleIndex);
+
+        update();
+    }
+
     void rebuildSourceCache()
     {
         m_cachedLines.clear();
@@ -679,6 +741,9 @@ private:
     qreal m_pendingScrollY = 0.0;
     QList<CachedLine> m_cachedLines;
     QHash<int, int> m_sourceLineToVisibleIndex;
+    QList<CachedLine> m_pendingLines;
+    QHash<int, int> m_pendingSourceLineToVisibleIndex;
+    QTextBlock m_pendingBlock;
     QMetaObject::Connection m_documentChangedConnection;
 };
 
@@ -928,7 +993,7 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     , m_highlighter(new CSyntaxHighlighter(document()))
     , m_completer(new QCompleter(this))
     , m_completionModel(new QStringListModel(this))
-    , m_foldRefreshTimer(new QTimer(this))
+    , m_foldScanTimer(new QTimer(this))
     , m_selectedArgument(-1)
 {
     const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -944,18 +1009,20 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     document()->setModified(false);
 
     /*
-     * Folding discovery is deliberately debounced. Scanning brace structure is
-     * cheap, but there is no reason to walk a large source file on every single
-     * keystroke. The text stays immediate and the fold gutter catches up just
-     * after typing pauses.
+     * Whole-document fold/minimap/type discovery is coordinated by MainWindow.
+     * Normal typing stays on the lightweight QTextDocument/QSyntaxHighlighter
+     * path until navigation occurs or typing has been idle for two seconds.
      */
-    m_foldRefreshTimer->setSingleShot(true);
-    /* Second stage of the typing trickle. */
-    m_foldRefreshTimer->setInterval(360);
-    connect(m_foldRefreshTimer, &QTimer::timeout,
-            this, &CodeEditor::rebuildFoldRegions);
     attachFoldTracking();
-    m_foldRefreshTimer->start();
+
+    /*
+     * Fold discovery uses the same cooperative idea as the minimap: scan a
+     * small number of QTextBlocks, yield, then continue.
+     */
+    m_foldScanTimer->setSingleShot(true);
+    m_foldScanTimer->setInterval(0);
+    connect(m_foldScanTimer, &QTimer::timeout,
+            this, &CodeEditor::continueQueuedFoldRegionScan);
 
     connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
@@ -1719,12 +1786,330 @@ void CodeEditor::attachFoldTracking()
             &QTextDocument::contentsChanged,
             this,
             [this]() {
-                if (m_foldRefreshTimer
-                    && !m_foldRefreshTimer->isActive()) {
-                    m_foldRefreshTimer->start();
+                /*
+                 * Editing invalidates any in-flight cooperative catalogue. Stop
+                 * the current batch immediately; the next navigation/idle sync
+                 * will restart from the fresh document state.
+                 */
+                m_deferredEditorStateDirty = true;
+                ++m_deferredScanGeneration;
+
+                if (m_foldScanTimer) {
+                    m_foldScanTimer->stop();
+                }
+
+                if (m_minimap) {
+                    static_cast<CodeMinimap *>(m_minimap)
+                        ->cancelQueuedRefresh();
                 }
             });
 }
+
+void CodeEditor::syncDeferredEditorStateNow()
+{
+    if (!m_deferredEditorStateDirty) {
+        return;
+    }
+
+    /*
+     * IMPORTANT: this function must return almost immediately. Enter/arrows can
+     * call it from the input path, so never walk a 100-200 KB document here.
+     *
+     * Folding and minimap updates are started as cooperative event-loop jobs.
+     * Local/project type names are supplied by MainWindow's background semantic
+     * catalogue, so there is no second full-file typedef scan here.
+     */
+    m_deferredEditorStateDirty = false;
+
+    startQueuedFoldRegionScan();
+
+    if (m_minimap) {
+        static_cast<CodeMinimap *>(m_minimap)
+            ->refreshQueued();
+    }
+}
+
+void CodeEditor::requestDeferredAnalysisSync()
+{
+    if (!m_deferredEditorStateDirty) {
+        return;
+    }
+
+    syncDeferredEditorStateNow();
+    emit deferredAnalysisSyncRequested();
+}
+
+
+void CodeEditor::startQueuedFoldRegionScan()
+{
+    if (!document() || !m_foldScanTimer) {
+        return;
+    }
+
+    m_foldScanTimer->stop();
+
+    m_pendingFoldRegions.clear();
+    m_pendingFoldStack.clear();
+    m_foldScanInBlockComment = false;
+    m_foldScanPreviousCodeBlock = -1;
+    m_foldScanBlock =
+        document()->firstBlock();
+
+    m_foldScanRunningGeneration =
+        m_deferredScanGeneration;
+
+    m_foldScanTimer->start();
+}
+
+void CodeEditor::continueQueuedFoldRegionScan()
+{
+    if (!document()
+        || !m_foldScanTimer
+        || m_foldScanRunningGeneration
+            != m_deferredScanGeneration) {
+        return;
+    }
+
+    int budget = 64;
+
+    while (m_foldScanBlock.isValid()
+           && budget-- > 0) {
+        const int blockNumber =
+            m_foldScanBlock.blockNumber();
+
+        const QString line =
+            m_foldScanBlock.text();
+
+        bool inDoubleQuote = false;
+        bool inSingleQuote = false;
+        bool escaped = false;
+        bool lineHasCode = false;
+
+        for (int i = 0; i < line.size(); ++i) {
+            const QChar ch =
+                line.at(i);
+
+            const QChar next =
+                i + 1 < line.size()
+                    ? line.at(i + 1)
+                    : QChar();
+
+            if (m_foldScanInBlockComment) {
+                if (ch == QLatin1Char('*')
+                    && next == QLatin1Char('/')) {
+                    m_foldScanInBlockComment = false;
+                    ++i;
+                }
+                continue;
+            }
+
+            if (inDoubleQuote) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\\')) {
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('"')) {
+                    inDoubleQuote = false;
+                }
+                continue;
+            }
+
+            if (inSingleQuote) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\\')) {
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch == QLatin1Char('\'')) {
+                    inSingleQuote = false;
+                }
+                continue;
+            }
+
+            if (ch == QLatin1Char('/')
+                && next == QLatin1Char('/')) {
+                break;
+            }
+
+            if (ch == QLatin1Char('/')
+                && next == QLatin1Char('*')) {
+                m_foldScanInBlockComment = true;
+                ++i;
+                continue;
+            }
+
+            if (ch == QLatin1Char('"')) {
+                inDoubleQuote = true;
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('\'')) {
+                inSingleQuote = true;
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('{')) {
+                const bool codeBeforeBrace =
+                    lineHasCode
+                    || !line.left(i)
+                            .trimmed()
+                            .isEmpty();
+
+                const int anchorBlock =
+                    !codeBeforeBrace
+                    && m_foldScanPreviousCodeBlock >= 0
+                        ? m_foldScanPreviousCodeBlock
+                        : blockNumber;
+
+                m_pendingFoldStack.append(
+                    qMakePair(
+                        blockNumber,
+                        anchorBlock));
+
+                lineHasCode = true;
+                continue;
+            }
+
+            if (ch == QLatin1Char('}')) {
+                if (!m_pendingFoldStack.isEmpty()) {
+                    const QPair<int, int> open =
+                        m_pendingFoldStack.takeLast();
+
+                    if (blockNumber > open.second) {
+                        bool merged = false;
+
+                        for (QPair<int, int> &region :
+                             m_pendingFoldRegions) {
+                            if (region.first
+                                == open.second) {
+                                region.second =
+                                    qMax(
+                                        region.second,
+                                        blockNumber);
+                                merged = true;
+                                break;
+                            }
+                        }
+
+                        if (!merged) {
+                            m_pendingFoldRegions.append(
+                                qMakePair(
+                                    open.second,
+                                    blockNumber));
+                        }
+                    }
+                }
+
+                lineHasCode = true;
+                continue;
+            }
+
+            if (!ch.isSpace()) {
+                lineHasCode = true;
+            }
+        }
+
+        if (lineHasCode) {
+            m_foldScanPreviousCodeBlock =
+                blockNumber;
+        }
+
+        m_foldScanBlock =
+            m_foldScanBlock.next();
+    }
+
+    if (m_foldScanRunningGeneration
+        != m_deferredScanGeneration) {
+        return;
+    }
+
+    if (m_foldScanBlock.isValid()) {
+        m_foldScanTimer->start();
+        return;
+    }
+
+    finishQueuedFoldRegionScan();
+}
+
+void CodeEditor::finishQueuedFoldRegionScan()
+{
+    if (!document()
+        || m_foldScanRunningGeneration
+            != m_deferredScanGeneration) {
+        return;
+    }
+
+    std::sort(
+        m_pendingFoldRegions.begin(),
+        m_pendingFoldRegions.end(),
+        [](const QPair<int, int> &a,
+           const QPair<int, int> &b) {
+            if (a.first != b.first) {
+                return a.first < b.first;
+            }
+
+            return a.second > b.second;
+        });
+
+    m_foldRegions =
+        m_pendingFoldRegions;
+
+    QSet<int> validStarts;
+
+    for (const QPair<int, int> &region :
+         std::as_const(m_foldRegions)) {
+        validStarts.insert(region.first);
+    }
+
+    bool hasFoldedRegion = false;
+    bool clearedStaleFold = false;
+
+    QTextBlock block =
+        document()->firstBlock();
+
+    while (block.isValid()) {
+        if (auto *data =
+                foldDataForBlock(block, false)) {
+            if (data->folded
+                && !validStarts.contains(
+                    block.blockNumber())) {
+                data->folded = false;
+                clearedStaleFold = true;
+            }
+
+            if (data->folded) {
+                hasFoldedRegion = true;
+            }
+        }
+
+        block = block.next();
+    }
+
+    if (hasFoldedRegion
+        || clearedStaleFold) {
+        applyFoldVisibility();
+    } else if (m_lineNumberArea) {
+        m_lineNumberArea->update();
+    }
+
+    m_pendingFoldRegions.clear();
+    m_pendingFoldStack.clear();
+    m_foldScanBlock = QTextBlock();
+}
+
 
 void CodeEditor::rebuildFoldRegions()
 {
@@ -2700,7 +3085,16 @@ void CodeEditor::mousePressEvent(QMouseEvent *event)
         }
     }
 
+    const int oldCursorPosition =
+        textCursor().position();
+
     QPlainTextEdit::mousePressEvent(event);
+
+    if (event->button() == Qt::LeftButton
+        && textCursor().position()
+            != oldCursorPosition) {
+        requestDeferredAnalysisSync();
+    }
 }
 
 void CodeEditor::mouseMoveEvent(QMouseEvent *event)
@@ -2779,8 +3173,11 @@ bool CodeEditor::handleAutoPairKey(QKeyEvent *event)
          * of creating "))", "]]" or "}}".
          */
         QTextCursor cursor = textCursor();
-        const QString blockText = cursor.block().text();
-        const int position = cursor.positionInBlock();
+        const QString blockText =
+            cursor.block().text();
+
+        const int position =
+            cursor.positionInBlock();
 
         if (position < blockText.size()
             && blockText.at(position) == ch) {
@@ -2825,15 +3222,22 @@ bool CodeEditor::handlePairedBackspace(QKeyEvent *event)
         return false;
     }
 
-    const QString blockText = cursor.block().text();
-    const int position = cursor.positionInBlock();
+    const QString blockText =
+        cursor.block().text();
 
-    if (position <= 0 || position >= blockText.size()) {
+    const int position =
+        cursor.positionInBlock();
+
+    if (position <= 0
+        || position >= blockText.size()) {
         return false;
     }
 
-    const QChar left = blockText.at(position - 1);
-    const QChar right = blockText.at(position);
+    const QChar left =
+        blockText.at(position - 1);
+
+    const QChar right =
+        blockText.at(position);
 
     const bool isPair =
         (left == QLatin1Char('(') && right == QLatin1Char(')'))
@@ -2907,6 +3311,74 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         }
     }
 
+    /*
+     * Structural/source navigation shortcuts.
+     *
+     * These are intercepted BEFORE QPlainTextEdit gets them, so they never
+     * perform the normal Ctrl+arrow scrolling behaviour first.
+     */
+    const Qt::KeyboardModifiers modifiers =
+        event->modifiers();
+
+    const bool controlOnly =
+        (modifiers & Qt::ControlModifier)
+        && !(modifiers & Qt::ShiftModifier)
+        && !(modifiers & Qt::AltModifier)
+        && !(modifiers & Qt::MetaModifier);
+
+    if (controlOnly
+        && (event->key() == Qt::Key_Up
+            || event->key() == Qt::Key_Down)) {
+
+        /*
+         * If the document has changed, start the non-blocking catalogue catch-up
+         * before navigating. MainWindow deliberately uses the LAST completed
+         * catalogue for this keypress, so navigation remains instant.
+         */
+        requestDeferredAnalysisSync();
+
+        emit structureNavigationRequested(
+            event->key() == Qt::Key_Up
+                ? -1
+                : 1);
+
+        event->accept();
+        return;
+    }
+
+    if (controlOnly
+        && (event->key() == Qt::Key_PageUp
+            || event->key() == Qt::Key_PageDown)) {
+
+        QTextCursor cursor =
+            textCursor();
+
+        cursor.movePosition(
+            event->key() == Qt::Key_PageUp
+                ? QTextCursor::Start
+                : QTextCursor::End);
+
+        setTextCursor(cursor);
+        centerCursor();
+
+        requestDeferredAnalysisSync();
+
+        event->accept();
+        return;
+    }
+
+    /*
+     * Shift+Tab is now Sidbox's editor-tab cycler. Qt commonly reports this as
+     * Key_Backtab rather than Key_Tab+Shift, so handle both forms.
+     */
+    if (event->key() == Qt::Key_Backtab
+        || (event->key() == Qt::Key_Tab
+            && (modifiers & Qt::ShiftModifier))) {
+        emit nextEditorTabRequested();
+        event->accept();
+        return;
+    }
+
     // Enter keeps the current indentation.
     // If the caret is between {}, create the inner line and leave the closing
     // brace aligned with the line which opened the block.
@@ -2940,6 +3412,12 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
             insertAutoIndent();
         }
 
+        /*
+         * Enter is both an edit and a navigation action. It is one of the
+         * explicit points where the user wants deferred state caught up now.
+         */
+        requestDeferredAnalysisSync();
+
         event->accept();
         return;
     }
@@ -2969,25 +3447,22 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    // Shift+Tab removes one indentation level from every selected line,
-    // or from the current line when there is no selection.
-    if (event->key() == Qt::Key_Backtab
-        || (event->key() == Qt::Key_Tab && (event->modifiers() & Qt::ShiftModifier))) {
-
-        QTextCursor cursor = textCursor();
-
-        if (!cursor.hasSelection()) {
-            cursor.movePosition(QTextCursor::StartOfBlock);
-            cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
-            setTextCursor(cursor);
-        }
-
-        unindentSelection();
-        event->accept();
-        return;
-    }
-
     QPlainTextEdit::keyPressEvent(event);
+
+    switch (event->key()) {
+    case Qt::Key_Left:
+    case Qt::Key_Right:
+    case Qt::Key_Up:
+    case Qt::Key_Down:
+    case Qt::Key_Home:
+    case Qt::Key_End:
+    case Qt::Key_PageUp:
+    case Qt::Key_PageDown:
+        requestDeferredAnalysisSync();
+        break;
+    default:
+        break;
+    }
 
     if (m_resourceMode) {
         if (m_completer && m_completer->popup()) {
@@ -3085,39 +3560,48 @@ void CodeEditor::highlightCurrentLine()
 
 QString CodeEditor::textUnderCursor() const
 {
-    /*
-     * This runs from cursorPositionChanged, so inspect only the current line.
-     * The old version copied the entire document with toPlainText().
-     */
-    const QTextCursor cursor = textCursor();
-    const QString text = cursor.block().text();
-    int position = qBound(0, cursor.positionInBlock(), text.size());
+    const QTextCursor cursor =
+        textCursor();
+
+    const QString text =
+        cursor.block().text();
+
+    int position =
+        qBound(
+            0,
+            cursor.positionInBlock(),
+            text.size());
 
     auto isIdentifierChar = [](QChar ch) {
-        return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+        return ch.isLetterOrNumber()
+            || ch == QLatin1Char('_');
     };
 
     if (position > 0
-        && (position == text.length() || !isIdentifierChar(text.at(position)))
+        && (position == text.size()
+            || !isIdentifierChar(text.at(position)))
         && isIdentifierChar(text.at(position - 1))) {
         --position;
     }
 
-    if (position >= text.length() || !isIdentifierChar(text.at(position))) {
+    if (position >= text.size()
+        || !isIdentifierChar(text.at(position))) {
         return {};
     }
 
-    int start = position;
-    while (start > 0 && isIdentifierChar(text.at(start - 1))) {
-        --start;
+    int first = position;
+    while (first > 0
+           && isIdentifierChar(text.at(first - 1))) {
+        --first;
     }
 
-    int end = position + 1;
-    while (end < text.length() && isIdentifierChar(text.at(end))) {
-        ++end;
+    int last = position + 1;
+    while (last < text.size()
+           && isIdentifierChar(text.at(last))) {
+        ++last;
     }
 
-    return text.mid(start, end - start);
+    return text.mid(first, last - first);
 }
 
 bool CodeEditor::requestMemberCompletionAtCursor()

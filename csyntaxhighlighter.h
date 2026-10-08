@@ -19,6 +19,7 @@ public:
     void setExternalTypeNames(const QStringList &names);
     void setExternalApiNames(const QStringList &names);
     void setResourceMode(bool enabled);
+    void refreshLocalTypeNamesNow();
 
 protected:
     void highlightBlock(const QString &text) override;
@@ -39,6 +40,7 @@ private:
     QList<HighlightingRule> m_highlightingRules;
     QRegularExpression m_commentStartExpression;
     QRegularExpression m_commentEndExpression;
+    QTextCharFormat m_keywordFormat;
     QTextCharFormat m_multiLineCommentFormat;
     QTextCharFormat m_singleLineCommentFormat;
     QTextCharFormat m_stringFormat;

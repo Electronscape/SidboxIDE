@@ -73,8 +73,12 @@ public:
     void expandAllFolds();
     int firstVisibleSourceBlockNumber() const;
     void recalculateFoldScrollBarRange();
+    void syncDeferredEditorStateNow();
 
 signals:
+    void deferredAnalysisSyncRequested();
+    void structureNavigationRequested(int direction);
+    void nextEditorTabRequested();
     void quickTipRequested(const QString &symbol);
     void quickTipCandidateChanged(const QString &symbol);
     void definitionRequested(const QString &symbol, int sourceLine);
@@ -118,6 +122,10 @@ private:
     void drawIndentGuides(QPaintEvent *event);
     void attachFoldTracking();
     void rebuildFoldRegions();
+    void startQueuedFoldRegionScan();
+    void continueQueuedFoldRegionScan();
+    void finishQueuedFoldRegionScan();
+    void requestDeferredAnalysisSync();
     void applyFoldVisibility(int preferredScrollValue = -1);
     int visibleBlockNumberAtY(int y) const;
     int foldEndForStart(int startBlock) const;
@@ -130,8 +138,16 @@ private:
     CSyntaxHighlighter *m_highlighter;
     QCompleter *m_completer;
     QStringListModel *m_completionModel;
-    QTimer *m_foldRefreshTimer;
     QList<QPair<int, int>> m_foldRegions;
+    QTimer *m_foldScanTimer = nullptr;
+    QTextBlock m_foldScanBlock;
+    QList<QPair<int, int>> m_pendingFoldRegions;
+    QList<QPair<int, int>> m_pendingFoldStack;
+    bool m_foldScanInBlockComment = false;
+    int m_foldScanPreviousCodeBlock = -1;
+    int m_deferredScanGeneration = 0;
+    int m_foldScanRunningGeneration = 0;
+    bool m_deferredEditorStateDirty = true;
     QMetaObject::Connection m_foldDocumentChangedConnection;
     QStringList m_functionCompletions;
     QStringList m_projectTypeNames;

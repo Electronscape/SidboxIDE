@@ -43,11 +43,15 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPixmap>
+#include <QPainter>
 #include <QPushButton>
 #include <QPoint>
 #include <QProcess>
 #include <QProgressBar>
+#include <QPointer>
 #include <QRegularExpression>
+#include <QRunnable>
+#include <QThreadPool>
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QSettings>
@@ -63,9 +67,11 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QStandardPaths>
 #include <QStyle>
 #include <functional>
+#include <utility>
 
 namespace {
 constexpr int ProjectFileVersion = 2;
@@ -173,6 +179,60 @@ QIcon editorTabIconForFile(const QString &filePath,
 
     return QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
 }
+
+
+QIcon projectFileIconWithErrorBadge(
+    const QIcon &baseIcon,
+    const QColor &errorColour)
+{
+    /*
+     * Reuse the normal project-file icon and paint a small red diagnostic dot in
+     * its lower-right corner. No extra resource image is needed.
+     */
+    constexpr int IconSize = 20;
+    constexpr int BadgeSize = 8;
+
+    QPixmap pixmap =
+        baseIcon.pixmap(
+            IconSize,
+            IconSize);
+
+    if (pixmap.isNull()) {
+        pixmap =
+            QPixmap(
+                IconSize,
+                IconSize);
+
+        pixmap.fill(
+            Qt::transparent);
+    }
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(
+        QPainter::Antialiasing,
+        true);
+
+    const QRect badgeRect(
+        qMax(0, pixmap.width() - BadgeSize - 1),
+        qMax(0, pixmap.height() - BadgeSize - 1),
+        BadgeSize,
+        BadgeSize);
+
+    painter.setPen(
+        QColor(
+            20,
+            20,
+            20));
+
+    painter.setBrush(
+        errorColour);
+
+    painter.drawEllipse(
+        badgeRect);
+
+    return QIcon(pixmap);
+}
+
 
 QString formattedFileSize(qint64 bytes)
 {
@@ -645,6 +705,452 @@ struct SourceSymbolTable
     QList<SourceFunctionSymbol> functions;
 };
 
+
+QVariantList structureNavigationLines(
+    const SourceSymbolTable &symbols)
+{
+    QList<int> lines;
+
+    for (const SourceNamedSymbol &type :
+         symbols.types) {
+        if (type.line >= 0) {
+            lines.append(type.line);
+        }
+    }
+
+    for (const SourceFunctionSymbol &function :
+         symbols.functions) {
+        if (function.line >= 0) {
+            lines.append(function.line);
+        }
+    }
+
+    std::sort(
+        lines.begin(),
+        lines.end());
+
+    lines.erase(
+        std::unique(
+            lines.begin(),
+            lines.end()),
+        lines.end());
+
+    QVariantList result;
+    result.reserve(lines.size());
+
+    for (int line : std::as_const(lines)) {
+        result.append(line);
+    }
+
+    return result;
+}
+
+
+void populateSourceSymbolTree(
+    QTreeWidget *tree,
+    const SourceSymbolTable &symbols)
+{
+    if (!tree) {
+        return;
+    }
+
+    tree->setUpdatesEnabled(false);
+
+    const QIcon functionIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_function.png"));
+
+    const QIcon globalIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_globals.png"));
+
+    const QIcon typeIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_types.png"));
+
+    const QIcon defineIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_defines.png"));
+
+    const QIcon parameterIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_params.png"));
+
+    const QIcon localIcon(
+        QStringLiteral(
+            ":/icons/tree_scope_locals.png"));
+
+    auto addNoneItem =
+        [](QTreeWidgetItem *parent) {
+            auto *noneItem =
+                new QTreeWidgetItem(parent);
+
+            noneItem->setText(
+                0,
+                QObject::tr("(none)"));
+
+            noneItem->setFlags(
+                noneItem->flags()
+                & ~Qt::ItemIsSelectable);
+        };
+
+    auto *definesItem =
+        new QTreeWidgetItem(tree);
+
+    definesItem->setText(
+        0,
+        QObject::tr("Defines"));
+
+    definesItem->setIcon(
+        0,
+        defineIcon);
+
+    definesItem->setExpanded(false);
+
+    if (symbols.defines.isEmpty()) {
+        addNoneItem(definesItem);
+    } else {
+        for (const SourceNamedSymbol &define :
+             symbols.defines) {
+            auto *item =
+                new QTreeWidgetItem(
+                    definesItem);
+
+            item->setText(
+                0,
+                define.name);
+
+            item->setIcon(
+                0,
+                defineIcon);
+
+            item->setData(
+                0,
+                Qt::UserRole,
+                define.line);
+
+            item->setToolTip(
+                0,
+                QObject::tr(
+                    "#define — double-click to jump to line %1")
+                    .arg(define.line + 1));
+        }
+
+        definesItem->setText(
+            0,
+            QStringLiteral("Defines (%1)")
+                .arg(
+                    definesItem->childCount()));
+    }
+
+    definesItem->setData(
+        0,
+        Qt::UserRole + 10,
+        QStringLiteral("defines"));
+
+    auto *typesItem =
+        new QTreeWidgetItem(tree);
+
+    typesItem->setText(
+        0,
+        QObject::tr("Types"));
+
+    typesItem->setIcon(
+        0,
+        typeIcon);
+
+    typesItem->setExpanded(false);
+
+    if (symbols.types.isEmpty()) {
+        addNoneItem(typesItem);
+    } else {
+        for (const SourceNamedSymbol &type :
+             symbols.types) {
+            auto *item =
+                new QTreeWidgetItem(
+                    typesItem);
+
+            item->setText(
+                0,
+                type.name);
+
+            item->setIcon(
+                0,
+                typeIcon);
+
+            item->setData(
+                0,
+                Qt::UserRole,
+                type.line);
+
+            item->setToolTip(
+                0,
+                QObject::tr(
+                    "Type — double-click to jump to line %1")
+                    .arg(type.line + 1));
+
+            item->setData(
+                0,
+                Qt::UserRole + 10,
+                QStringLiteral("type:%1")
+                    .arg(type.name));
+
+            for (const SourceVariableSymbol &member :
+                 type.members) {
+                auto *memberItem =
+                    new QTreeWidgetItem(item);
+
+                memberItem->setText(
+                    0,
+                    member.name);
+
+                memberItem->setIcon(
+                    0,
+                    localIcon);
+
+                memberItem->setData(
+                    0,
+                    Qt::UserRole,
+                    member.line);
+
+                memberItem->setToolTip(
+                    0,
+                    QObject::tr(
+                        "Member — double-click to jump to line %1")
+                        .arg(member.line + 1));
+            }
+        }
+
+        typesItem->setText(
+            0,
+            QStringLiteral("Types (%1)")
+                .arg(
+                    typesItem->childCount()));
+    }
+
+    typesItem->setData(
+        0,
+        Qt::UserRole + 10,
+        QStringLiteral("types"));
+
+    auto *globalsItem =
+        new QTreeWidgetItem(tree);
+
+    globalsItem->setText(
+        0,
+        QObject::tr("Globals"));
+
+    globalsItem->setIcon(
+        0,
+        globalIcon);
+
+    globalsItem->setExpanded(false);
+
+    if (symbols.globals.isEmpty()) {
+        addNoneItem(globalsItem);
+    } else {
+        for (const SourceVariableSymbol &global :
+             symbols.globals) {
+            auto *item =
+                new QTreeWidgetItem(
+                    globalsItem);
+
+            item->setText(
+                0,
+                global.name
+                    + global.arraySuffix);
+
+            item->setIcon(
+                0,
+                globalIcon);
+
+            item->setData(
+                0,
+                Qt::UserRole,
+                global.line);
+
+            item->setToolTip(
+                0,
+                QObject::tr(
+                    "Global — double-click to jump to line %1")
+                    .arg(global.line + 1));
+        }
+
+        globalsItem->setText(
+            0,
+            QStringLiteral("Globals (%1)")
+                .arg(
+                    globalsItem->childCount()));
+    }
+
+    globalsItem->setData(
+        0,
+        Qt::UserRole + 10,
+        QStringLiteral("globals"));
+
+    auto *functionsItem =
+        new QTreeWidgetItem(tree);
+
+    functionsItem->setText(
+        0,
+        QObject::tr("Functions"));
+
+    functionsItem->setExpanded(false);
+
+    functionsItem->setIcon(
+        0,
+        functionIcon);
+
+    functionsItem->setData(
+        0,
+        Qt::UserRole + 10,
+        QStringLiteral("functions"));
+
+    if (symbols.functions.isEmpty()) {
+        addNoneItem(functionsItem);
+    } else {
+        for (const SourceFunctionSymbol &function :
+             symbols.functions) {
+            auto *functionItem =
+                new QTreeWidgetItem(
+                    functionsItem);
+
+            functionItem->setText(
+                0,
+                function.signature);
+
+            functionItem->setIcon(
+                0,
+                functionIcon);
+
+            functionItem->setData(
+                0,
+                Qt::UserRole,
+                function.line);
+
+            functionItem->setToolTip(
+                0,
+                QObject::tr(
+                    "Function — double-click to jump to line %1")
+                    .arg(function.line + 1));
+
+            functionItem->setData(
+                0,
+                Qt::UserRole + 10,
+                QStringLiteral("function:%1")
+                    .arg(function.signature));
+
+            if (!function.parameters.isEmpty()) {
+                auto *parametersItem =
+                    new QTreeWidgetItem(
+                        functionItem);
+
+                parametersItem->setText(
+                    0,
+                    QObject::tr("Parameters"));
+
+                parametersItem->setIcon(
+                    0,
+                    parameterIcon);
+
+                parametersItem->setExpanded(true);
+
+                for (const SourceVariableSymbol &parameter :
+                     function.parameters) {
+                    auto *item =
+                        new QTreeWidgetItem(
+                            parametersItem);
+
+                    item->setText(
+                        0,
+                        parameter.name
+                            + parameter.arraySuffix);
+
+                    item->setIcon(
+                        0,
+                        parameterIcon);
+
+                    item->setData(
+                        0,
+                        Qt::UserRole,
+                        parameter.line);
+
+                    item->setToolTip(
+                        0,
+                        QObject::tr(
+                            "Parameter — double-click to jump to function"));
+                }
+
+                parametersItem->setData(
+                    0,
+                    Qt::UserRole + 10,
+                    QStringLiteral(
+                        "function:%1:parameters")
+                        .arg(function.signature));
+            }
+
+            if (!function.locals.isEmpty()) {
+                auto *localsItem =
+                    new QTreeWidgetItem(
+                        functionItem);
+
+                localsItem->setText(
+                    0,
+                    QObject::tr("Locals"));
+
+                localsItem->setIcon(
+                    0,
+                    localIcon);
+
+                localsItem->setExpanded(true);
+
+                for (const SourceVariableSymbol &local :
+                     function.locals) {
+                    auto *item =
+                        new QTreeWidgetItem(
+                            localsItem);
+
+                    item->setText(
+                        0,
+                        local.name
+                            + local.arraySuffix);
+
+                    item->setIcon(
+                        0,
+                        localIcon);
+
+                    item->setData(
+                        0,
+                        Qt::UserRole,
+                        local.line);
+
+                    item->setToolTip(
+                        0,
+                        QObject::tr(
+                            "Local — double-click to jump to line %1")
+                            .arg(local.line + 1));
+                }
+
+                localsItem->setData(
+                    0,
+                    Qt::UserRole + 10,
+                    QStringLiteral(
+                        "function:%1:locals")
+                        .arg(function.signature));
+            }
+        }
+
+        functionsItem->setText(
+            0,
+            QStringLiteral("Functions (%1)")
+                .arg(
+                    functionsItem->childCount()));
+    }
+
+    tree->setUpdatesEnabled(true);
+    tree->viewport()->update();
+}
+
 QString sanitizedCSource(const QString &source)
 {
     QString result = source;
@@ -748,7 +1254,25 @@ int sourceLineForOffset(const QString &source, int offset)
     if (offset <= 0) {
         return 0;
     }
-    return source.left(qMin(offset, source.size())).count(QLatin1Char('\n'));
+
+    /*
+     * Do not allocate source.left(...) for every symbol. Large generated files
+     * may contain thousands of symbols; repeatedly copying prefixes turns a
+     * simple line lookup into a surprising amount of memory churn.
+     */
+    const int limit =
+        qMin(offset, source.size());
+
+    int line = 0;
+
+    for (int i = 0; i < limit; ++i) {
+        if (source.at(i)
+            == QLatin1Char('\n')) {
+            ++line;
+        }
+    }
+
+    return line;
 }
 
 int matchingBracePosition(const QString &text, int openingBrace)
@@ -1308,10 +1832,11 @@ QList<SourceVariableSymbol> variableSymbolsInRange(const QString &sanitized,
     return symbols;
 }
 
-QList<SourceNamedSymbol> defineSymbolsFromSource(const QString &source)
+QList<SourceNamedSymbol> defineSymbolsFromSource(
+    const QString &source,
+    const QString &sanitized)
 {
     QList<SourceNamedSymbol> symbols;
-    const QString sanitized = sanitizedCSource(source);
 
     static const QRegularExpression defineExpression(
         QStringLiteral(R"((?:^|\n)\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*))"),
@@ -1332,10 +1857,11 @@ QList<SourceNamedSymbol> defineSymbolsFromSource(const QString &source)
     return symbols;
 }
 
-QList<SourceNamedSymbol> typeSymbolsFromSource(const QString &source)
+QList<SourceNamedSymbol> typeSymbolsFromSource(
+    const QString &source,
+    const QString &sanitized)
 {
     QList<SourceNamedSymbol> symbols;
-    const QString sanitized = sanitizedCSource(source);
 
     auto appendUnique = [&symbols](const QString &name,
                                    int line,
@@ -1600,16 +2126,226 @@ void maskTypeDeclarations(QString *text)
     }
 }
 
-SourceSymbolTable parseSourceSymbols(const QString &source)
+QStringList functionSignaturesFromSanitizedFast(
+    const QString &source,
+    const QString &sanitized)
+{
+    /*
+     * Fast completion catalogue: one linear pass, no regex backtracking.
+     *
+     * We only care about global function declarations/definitions here. The
+     * detailed symbol browser still uses parseSourceSymbols(), but it runs in a
+     * background worker. This scanner is deliberately tiny and predictable for
+     * 100-200 KB generated files.
+     */
+    QStringList signatures;
+
+    static const QSet<QString> ignoredNames = {
+        QStringLiteral("if"),
+        QStringLiteral("for"),
+        QStringLiteral("while"),
+        QStringLiteral("switch"),
+        QStringLiteral("return"),
+        QStringLiteral("sizeof"),
+        QStringLiteral("__attribute__"),
+        QStringLiteral("__declspec")
+    };
+
+    int braceDepth = 0;
+
+    for (int i = 0; i < sanitized.size(); ++i) {
+        const QChar ch =
+            sanitized.at(i);
+
+        if (ch == QLatin1Char('{')) {
+            ++braceDepth;
+            continue;
+        }
+
+        if (ch == QLatin1Char('}')) {
+            braceDepth =
+                qMax(0, braceDepth - 1);
+            continue;
+        }
+
+        if (braceDepth != 0
+            || ch != QLatin1Char('(')) {
+            continue;
+        }
+
+        int nameEnd = i - 1;
+
+        while (nameEnd >= 0
+               && sanitized.at(nameEnd).isSpace()) {
+            --nameEnd;
+        }
+
+        if (nameEnd < 0
+            || !(sanitized.at(nameEnd).isLetterOrNumber()
+                 || sanitized.at(nameEnd)
+                    == QLatin1Char('_'))) {
+            continue;
+        }
+
+        int nameStart = nameEnd;
+
+        while (nameStart > 0) {
+            const QChar prev =
+                sanitized.at(nameStart - 1);
+
+            if (!prev.isLetterOrNumber()
+                && prev != QLatin1Char('_')) {
+                break;
+            }
+
+            --nameStart;
+        }
+
+        const QString name =
+            sanitized.mid(
+                nameStart,
+                nameEnd - nameStart + 1);
+
+        if (name.isEmpty()
+            || ignoredNames.contains(name)) {
+            continue;
+        }
+
+        int parenDepth = 1;
+        int closeParen = -1;
+
+        for (int j = i + 1;
+             j < sanitized.size();
+             ++j) {
+            const QChar inner =
+                sanitized.at(j);
+
+            if (inner == QLatin1Char('(')) {
+                ++parenDepth;
+            } else if (inner
+                       == QLatin1Char(')')) {
+                --parenDepth;
+
+                if (parenDepth == 0) {
+                    closeParen = j;
+                    break;
+                }
+            }
+        }
+
+        if (closeParen < 0) {
+            break;
+        }
+
+        int after =
+            closeParen + 1;
+
+        while (after < sanitized.size()
+               && sanitized.at(after).isSpace()) {
+            ++after;
+        }
+
+        if (after >= sanitized.size()
+            || (sanitized.at(after)
+                    != QLatin1Char(';')
+                && sanitized.at(after)
+                    != QLatin1Char('{'))) {
+            i = closeParen;
+            continue;
+        }
+
+        /*
+         * A function needs a declaration/type before its name. This rejects
+         * macro-ish "(...)" constructs and most accidental expression hits.
+         */
+        int declarationStart =
+            nameStart - 1;
+
+        while (declarationStart >= 0) {
+            const QChar before =
+                sanitized.at(declarationStart);
+
+            if (before == QLatin1Char(';')
+                || before == QLatin1Char('}')
+                || before == QLatin1Char('{')) {
+                ++declarationStart;
+                break;
+            }
+
+            --declarationStart;
+        }
+
+        declarationStart =
+            qMax(0, declarationStart);
+
+        if (sanitized
+                .mid(
+                    declarationStart,
+                    nameStart - declarationStart)
+                .trimmed()
+                .isEmpty()) {
+            i = closeParen;
+            continue;
+        }
+
+        const QString arguments =
+            source.mid(
+                      i + 1,
+                      closeParen - i - 1)
+                .simplified();
+
+        signatures.append(
+            QStringLiteral("%1(%2)")
+                .arg(
+                    name,
+                    arguments));
+
+        i = closeParen;
+    }
+
+    signatures.removeDuplicates();
+    signatures.sort(Qt::CaseInsensitive);
+    return signatures;
+}
+
+
+SourceSymbolTable parseSourceSymbolsFromSanitized(
+    const QString &source,
+    const QString &sanitized,
+    const std::function<void(int)> &progress = {})
 {
     SourceSymbolTable table;
-    table.defines = defineSymbolsFromSource(source);
-    table.types = typeSymbolsFromSource(source);
-    const QString sanitized = sanitizedCSource(source);
+
+    if (progress) {
+        progress(25);
+    }
+
+    table.defines =
+        defineSymbolsFromSource(
+            source,
+            sanitized);
+
+    if (progress) {
+        progress(35);
+    }
+
+    table.types =
+        typeSymbolsFromSource(
+            source,
+            sanitized);
+
+    if (progress) {
+        progress(52);
+    }
+
     QString globalsOnly = sanitized;
 
     // Struct/typedef members are fields of their type, not globals.
     maskTypeDeclarations(&globalsOnly);
+
+    if (progress) {
+        progress(58);
+    }
 
     static const QRegularExpression functionExpression(
         QStringLiteral(
@@ -1620,8 +2356,29 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
         QRegularExpression::MultilineOption);
 
     QRegularExpressionMatchIterator iterator = functionExpression.globalMatch(sanitized);
+    int lastFunctionProgress = 58;
+
     while (iterator.hasNext()) {
         const QRegularExpressionMatch match = iterator.next();
+
+        if (progress
+            && !sanitized.isEmpty()) {
+            const int scanProgress =
+                58
+                + qBound(
+                    0,
+                    (match.capturedStart(0) * 24)
+                        / sanitized.size(),
+                    24);
+
+            if (scanProgress > lastFunctionProgress) {
+                lastFunctionProgress =
+                    scanProgress;
+
+                progress(
+                    scanProgress);
+            }
+        }
         const QString functionName = match.captured(2).trimmed();
 
         static const QStringList ignoredFunctionNames = {
@@ -1673,9 +2430,35 @@ SourceSymbolTable parseSourceSymbols(const QString &source)
         }
     }
 
-    table.globals = variableSymbolsInRange(globalsOnly, source, 0, globalsOnly.size());
+    if (progress) {
+        progress(84);
+    }
+
+    table.globals =
+        variableSymbolsInRange(
+            globalsOnly,
+            source,
+            0,
+            globalsOnly.size());
+
+    if (progress) {
+        progress(92);
+    }
+
     return table;
 }
+
+SourceSymbolTable parseSourceSymbols(
+    const QString &source)
+{
+    const QString sanitized =
+        sanitizedCSource(source);
+
+    return parseSourceSymbolsFromSanitized(
+        source,
+        sanitized);
+}
+
 
 QString variableTypeInTable(const SourceSymbolTable &table,
                             const QString &variableName,
@@ -1875,7 +2658,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_findReplaceDialog(nullptr)
     , m_compilerProcess(new QProcess(this))
     , m_projectAnalysisTimer(new QTimer(this))
-    , m_symbolTreeRefreshTimer(new QTimer(this))
     , m_compileProgressDelayTimer(new QTimer(this))
     , m_fileWatcher(new QFileSystemWatcher(this))
     , m_buildStep(BuildStep::None)
@@ -1898,19 +2680,31 @@ MainWindow::MainWindow(QWidget *parent)
     refreshApiCatalog();
 
     /*
-     * Typing refreshes are staggered rather than debounced into one big burst.
-     * Each timer is started only when idle, so continuous typing still allows
-     * small pieces of maintenance work to trickle through.
+     * Project-wide function/type discovery scans multiple source files.
+     * Running it on every single keystroke makes large resource-heavy projects
+     * feel frozen. Coalesce bursts of edits into one refresh shortly after the
+     * user stops typing.
      */
     m_projectAnalysisTimer->setSingleShot(true);
-    m_projectAnalysisTimer->setInterval(720);
-    connect(m_projectAnalysisTimer, &QTimer::timeout,
-            this, &MainWindow::refreshActiveEditorAnalysis);
+    /*
+     * Ordinary typing only restarts this idle timer. No whole-document semantic,
+     * fold, minimap or typedef scan runs while characters are continuously
+     * arriving. Two seconds after the LAST edit, synchronise the active tab.
+     */
+    m_projectAnalysisTimer->setInterval(2000);
+    connect(m_projectAnalysisTimer, &QTimer::timeout, this, [this]() {
+        CodeEditor *editor = activeEditor();
 
-    m_symbolTreeRefreshTimer->setSingleShot(true);
-    m_symbolTreeRefreshTimer->setInterval(900);
-    connect(m_symbolTreeRefreshTimer, &QTimer::timeout,
-            this, &MainWindow::refreshSymbolTree);
+        if (editor) {
+            /*
+             * Local fold/minimap catalogues are cooperative event-loop jobs.
+             * The semantic/tree catalogue is a background worker.
+             */
+            editor->syncDeferredEditorStateNow();
+        }
+
+        refreshActiveEditorAnalysis();
+    });
 
     /*
      * Reload open files when another editor/tool writes them on disk.
@@ -2916,13 +3710,22 @@ void MainWindow::setupInterface()
     connect(m_editorTabs, &QTabWidget::currentChanged, this, [this](int) {
         updateCursorPositionStatus();
 
+        if (m_projectAnalysisTimer) {
+            m_projectAnalysisTimer->stop();
+        }
+
         /*
-         * Parsing the active source for the Functions & Variables tree can be
-         * noticeable on a large file. Queue it so the selected tab paints
-         * immediately instead of making the click/open feel sticky.
+         * Changing tabs is an explicit navigation action. Let the tab paint,
+         * then catch up any deferred state for the newly active source.
          */
         QTimer::singleShot(0, this, [this]() {
-            refreshSymbolTree();
+            CodeEditor *editor = activeEditor();
+
+            if (editor) {
+                editor->syncDeferredEditorStateNow();
+            }
+
+            refreshActiveEditorAnalysis();
         });
     });
     connect(m_functionvarList, &QTreeWidget::itemDoubleClicked,
@@ -6171,10 +6974,199 @@ bool MainWindow::reloadEditorFromDisk(CodeEditor *editor)
 }
 
 
+
+void MainWindow::navigateEditorStructure(
+    CodeEditor *editor,
+    int direction)
+{
+    if (!editor
+        || editor != activeEditor()) {
+        return;
+    }
+
+    const QVariantList storedLines =
+        editor->property(
+            "sidboxStructureLines")
+            .toList();
+
+    QList<int> lines;
+    lines.reserve(
+        storedLines.size());
+
+    for (const QVariant &value :
+         storedLines) {
+        const int line =
+            value.toInt();
+
+        if (line >= 0) {
+            lines.append(line);
+        }
+    }
+
+    std::sort(
+        lines.begin(),
+        lines.end());
+
+    lines.erase(
+        std::unique(
+            lines.begin(),
+            lines.end()),
+        lines.end());
+
+    if (lines.isEmpty()) {
+        /*
+         * The first catalogue for a freshly-opened/edited source may still be
+         * running. Ask for it without blocking this shortcut.
+         */
+        if (editor->property(
+                "sidboxAnalysisDirty")
+                .toBool()
+            || editor->property(
+                "sidboxAnalysisWorkerRunning")
+                .toBool()) {
+
+            refreshActiveEditorAnalysis();
+
+            statusBar()->showMessage(
+                tr("Rebuilding catalogue: %1%")
+                    .arg(
+                        editor->property(
+                            "sidboxCatalogueProgress")
+                            .toInt()),
+                1200);
+        } else {
+            statusBar()->showMessage(
+                tr("No functions or typedef/struct types in this file"),
+                1800);
+        }
+
+        return;
+    }
+
+    const int currentLine =
+        editor->textCursor()
+            .blockNumber();
+
+    int targetLine = -1;
+
+    if (direction < 0) {
+        for (auto it = lines.crbegin();
+             it != lines.crend();
+             ++it) {
+            if (*it < currentLine) {
+                targetLine = *it;
+                break;
+            }
+        }
+    } else {
+        for (int line :
+             std::as_const(lines)) {
+            if (line > currentLine) {
+                targetLine = line;
+                break;
+            }
+        }
+    }
+
+    if (targetLine < 0) {
+        statusBar()->showMessage(
+            direction < 0
+                ? tr("Already at the first function/type")
+                : tr("Already at the last function/type"),
+            1200);
+        return;
+    }
+
+    const QTextBlock block =
+        editor->document()
+            ->findBlockByNumber(
+                targetLine);
+
+    if (!block.isValid()) {
+        return;
+    }
+
+    QTextCursor cursor(block);
+    editor->setTextCursor(cursor);
+    editor->centerCursor();
+    editor->setFocus();
+
+    updateCursorPositionStatus();
+}
+
+
+void MainWindow::selectNextEditorTab()
+{
+    if (!m_editorTabs
+        || m_editorTabs->count() <= 0) {
+        return;
+    }
+
+    const int current =
+        m_editorTabs->currentIndex();
+
+    const int next =
+        current < 0
+            ? 0
+            : (current + 1)
+                % m_editorTabs->count();
+
+    m_editorTabs->setCurrentIndex(next);
+
+    if (CodeEditor *editor =
+            activeEditor()) {
+        editor->setFocus();
+    }
+}
+
+
+void MainWindow::showCatalogueProgress(
+    CodeEditor *editor,
+    int percent)
+{
+    if (!editor) {
+        return;
+    }
+
+    const int boundedPercent =
+        qBound(
+            0,
+            percent,
+            100);
+
+    editor->setProperty(
+        "sidboxCatalogueProgress",
+        boundedPercent);
+
+    if (editor != activeEditor()) {
+        return;
+    }
+
+    statusBar()->showMessage(
+        tr("Rebuilding catalogue: %1%")
+            .arg(boundedPercent),
+        boundedPercent >= 100
+            ? 1100
+            : 0);
+}
+
+
 CodeEditor *MainWindow::createEditor(const QString &filePath)
 {
     auto *editor = new CodeEditor(m_editorTabs);
     editor->setFilePath(filePath);
+
+    editor->setProperty(
+        "sidboxAnalysisDirty",
+        true);
+
+    editor->setProperty(
+        "sidboxCatalogueProgress",
+        0);
+
+    editor->setProperty(
+        "sidboxStructureLines",
+        QVariantList());
 
     const bool resourceMode = isResourceSource(filePath);
     editor->setResourceMode(resourceMode);
@@ -6218,41 +7210,71 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     connect(editor->document(), &QTextDocument::modificationChanged, this, [this, editor]() {
         updateTabTitle(editor);
     });
-    connect(editor->document(), &QTextDocument::contentsChanged, this, [this, editor]() {
+    connect(editor->document(), &QTextDocument::contentsChanged,
+            this, [this, editor]() {
         /*
-         * loadFromFile() calls setPlainText() before the editor is inserted
-         * into the tab widget. Do not perform a project-wide parse in the
-         * middle of that initial load; openFile() performs the normal refresh
-         * after the tab is installed.
+         * Every edit invalidates any worker result already in flight. The worker
+         * is not force-killed (it is off the UI thread anyway); its stale result
+         * is simply discarded when it finishes.
+         */
+        const int generation =
+            editor->property(
+                "sidboxAnalysisGeneration")
+                .toInt()
+            + 1;
+
+        editor->setProperty(
+            "sidboxAnalysisGeneration",
+            generation);
+
+        editor->setProperty(
+            "sidboxAnalysisDirty",
+            true);
+
+        /*
+         * Normal typing only pushes the guaranteed catch-up pass two seconds
+         * into the future.
          */
         if (!editor->isResourceMode()
-            && tabIndexForEditor(editor) >= 0
-            && editor == activeEditor()) {
-            if (m_projectAnalysisTimer
-                && !m_projectAnalysisTimer->isActive()) {
-                m_projectAnalysisTimer->start();
-            }
-
-            if (m_symbolTreeRefreshTimer
-                && !m_symbolTreeRefreshTimer->isActive()) {
-                m_symbolTreeRefreshTimer->start();
-            }
+            && editor == activeEditor()
+            && tabIndexForEditor(editor) >= 0) {
+            m_projectAnalysisTimer->start();
         }
+    });
 
-        if (editor->isResourceMode()) {
+    connect(editor, &CodeEditor::deferredAnalysisSyncRequested,
+            this, [this, editor]() {
+        if (editor != activeEditor()) {
             return;
         }
 
         /*
-         * Struct/member completion itself is cheap unless the caret is
-         * actually after '.' or '->', so keep this responsive.
+         * Arrow/Home/End/Page keys, Enter, and mouse caret movement are explicit
+         * sync points. Cancel the pending idle timer and refresh the active tab
+         * immediately. CodeEditor only emits this when edits are actually dirty,
+         * so repeatedly pressing arrows does not repeatedly rescan unchanged code.
          */
-        QMetaObject::invokeMethod(
+        if (m_projectAnalysisTimer) {
+            m_projectAnalysisTimer->stop();
+        }
+
+        /*
+         * This returns immediately: heavy semantic parsing now runs in the
+         * thread pool, while fold/minimap work is sliced across event-loop turns.
+         */
+        refreshActiveEditorAnalysis();
+    });
+
+    connect(editor, &CodeEditor::structureNavigationRequested,
+            this, [this, editor](int direction) {
+        navigateEditorStructure(
             editor,
-            [editor]() {
-                editor->refreshMemberCompletion();
-            },
-            Qt::QueuedConnection);
+            direction);
+    });
+
+    connect(editor, &CodeEditor::nextEditorTabRequested,
+            this, [this]() {
+        selectNextEditorTab();
     });
 
     connect(editor, &CodeEditor::quickTipRequested, this, &MainWindow::showQuickTip);
@@ -7091,6 +8113,34 @@ void MainWindow::refreshProjectFiles()
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
         }
 
+        const QString absoluteFilePath =
+            fileInfo.absoluteFilePath();
+
+        bool hasCompilerError = false;
+
+        const auto diagnosticIt =
+            m_compilerDiagnostics.constFind(
+                absoluteFilePath);
+
+        if (diagnosticIt
+            != m_compilerDiagnostics.constEnd()) {
+            for (const EditorDiagnostic &diagnostic :
+                 diagnosticIt.value()) {
+                if (diagnostic.severity
+                    == EditorDiagnostic::Severity::Error) {
+                    hasCompilerError = true;
+                    break;
+                }
+            }
+        }
+
+        if (hasCompilerError) {
+            fileIcon =
+                projectFileIconWithErrorBadge(
+                    fileIcon,
+                    m_theme.diagnosticError);
+        }
+
         /* Files outside the project directory remain top-level entries. */
         if (relativePath == QStringLiteral("..")
             || relativePath.startsWith(QStringLiteral("../"))) {
@@ -7128,6 +8178,120 @@ void MainWindow::refreshProjectFiles()
 
     m_projectFiles->expandAll();
 }
+
+
+void MainWindow::updateProjectDiagnosticMarkers()
+{
+    if (!m_projectFiles) {
+        return;
+    }
+
+    auto fileHasError =
+        [this](const QString &path) {
+            const QString absolutePath =
+                QFileInfo(path)
+                    .absoluteFilePath();
+
+            const auto it =
+                m_compilerDiagnostics
+                    .constFind(
+                        absolutePath);
+
+            if (it
+                == m_compilerDiagnostics
+                       .constEnd()) {
+                return false;
+            }
+
+            for (const EditorDiagnostic &diagnostic :
+                 it.value()) {
+                if (diagnostic.severity
+                    == EditorDiagnostic::Severity::Error) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+    std::function<void(QTreeWidgetItem *)>
+        updateItem;
+
+    updateItem =
+        [this,
+         &fileHasError,
+         &updateItem](QTreeWidgetItem *item) {
+            if (!item) {
+                return;
+            }
+
+            const bool isFolder =
+                item->data(
+                        0,
+                        Qt::UserRole + 1)
+                    .toBool();
+
+            if (!isFolder) {
+                const QString filePath =
+                    item->data(
+                            0,
+                            Qt::UserRole)
+                        .toString();
+
+                if (!filePath.isEmpty()) {
+                    QIcon icon =
+                        editorTabIconForFile(
+                            filePath);
+
+                    const bool hasError =
+                        fileHasError(
+                            filePath);
+
+                    if (hasError) {
+                        icon =
+                            projectFileIconWithErrorBadge(
+                                icon,
+                                m_theme.diagnosticError);
+                    }
+
+                    item->setIcon(
+                        0,
+                        icon);
+
+                    QString tooltip =
+                        QDir::toNativeSeparators(
+                            QFileInfo(filePath)
+                                .absoluteFilePath());
+
+                    if (hasError) {
+                        tooltip +=
+                            tr("\nCompiler error in this file");
+                    }
+
+                    item->setToolTip(
+                        0,
+                        tooltip);
+                }
+            }
+
+            for (int i = 0;
+                 i < item->childCount();
+                 ++i) {
+                updateItem(
+                    item->child(i));
+            }
+        };
+
+    for (int i = 0;
+         i < m_projectFiles
+                 ->topLevelItemCount();
+         ++i) {
+        updateItem(
+            m_projectFiles
+                ->topLevelItem(i));
+    }
+}
+
 
 void MainWindow::saveSymbolTreeExpansionState(CodeEditor *editor)
 {
@@ -7198,13 +8362,13 @@ void MainWindow::refreshSymbolTree()
         return;
     }
 
-    // Save the tree state belonging to the editor
-    // that is CURRENTLY represented by the tree.
     if (m_symbolTreeEditor) {
-        saveSymbolTreeExpansionState(m_symbolTreeEditor);
+        saveSymbolTreeExpansionState(
+            m_symbolTreeEditor);
     }
 
-    CodeEditor *editor = activeEditor();
+    CodeEditor *editor =
+        activeEditor();
 
     m_functionvarList->clear();
 
@@ -7214,202 +8378,45 @@ void MainWindow::refreshSymbolTree()
     }
 
     if (editor->isResourceMode()) {
-        auto *resourceItem = new QTreeWidgetItem(m_functionvarList);
-        resourceItem->setText(0, tr("Resource file — analysis disabled"));
-        resourceItem->setFlags(resourceItem->flags() & ~Qt::ItemIsSelectable);
+        auto *resourceItem =
+            new QTreeWidgetItem(
+                m_functionvarList);
+
+        resourceItem->setText(
+            0,
+            tr("Resource file — analysis disabled"));
+
+        resourceItem->setFlags(
+            resourceItem->flags()
+            & ~Qt::ItemIsSelectable);
+
         m_symbolTreeEditor = editor;
         return;
     }
 
+    /*
+     * This synchronous version is retained for explicit project-level actions.
+     * Normal editing uses refreshActiveEditorAnalysis(), which parses off the UI
+     * thread and feeds the resulting table straight into this same tree builder.
+     */
     const SourceSymbolTable symbols =
-        parseSourceSymbols(editor->toPlainText());
+        parseSourceSymbols(
+            editor->toPlainText());
 
+    populateSourceSymbolTree(
+        m_functionvarList,
+        symbols);
 
-    const QIcon functionIcon(QStringLiteral(":/icons/tree_scope_function.png"));
-    const QIcon globalIcon(QStringLiteral(":/icons/tree_scope_globals.png"));
-    const QIcon typeIcon(QStringLiteral(":/icons/tree_scope_types.png"));
-    const QIcon defineIcon(QStringLiteral(":/icons/tree_scope_defines.png"));
-    const QIcon parameterIcon(QStringLiteral(":/icons/tree_scope_params.png"));
+    editor->setProperty(
+        "sidboxStructureLines",
+        structureNavigationLines(
+            symbols));
 
-    const QIcon localIcon(QStringLiteral(":/icons/tree_scope_locals.png"));
+    restoreSymbolTreeExpansionState(
+        editor);
 
-    auto addNoneItem = [](QTreeWidgetItem *parent) {
-        auto *noneItem = new QTreeWidgetItem(parent);
-        noneItem->setText(0, QObject::tr("(none)"));
-        noneItem->setFlags(noneItem->flags() & ~Qt::ItemIsSelectable);
-    };
-
-    auto *definesItem = new QTreeWidgetItem(m_functionvarList);
-    definesItem->setText(0, tr("Defines"));
-
-    definesItem->setIcon(0, defineIcon);
-    definesItem->setExpanded(false);
-
-    if (symbols.defines.isEmpty()) {
-        addNoneItem(definesItem);
-    } else {
-        for (const SourceNamedSymbol &define : symbols.defines) {
-            auto *item = new QTreeWidgetItem(definesItem);
-            item->setText(0, define.name);
-            item->setIcon(0, defineIcon);
-            item->setData(0, Qt::UserRole, define.line);
-            item->setToolTip(0, tr("#define — double-click to jump to line %1").arg(define.line + 1));
-        }
-        definesItem->setText(0,
-            QStringLiteral("Defines (%1)")
-                .arg(definesItem->childCount())
-            );
-    }
-    definesItem->setData(
-        0,
-        Qt::UserRole + 10,
-        QStringLiteral("defines")
-        );
-
-
-    auto *typesItem = new QTreeWidgetItem(m_functionvarList);
-    typesItem->setText(0, tr("Types"));
-    typesItem->setIcon(0, typeIcon);
-    typesItem->setExpanded(false);
-
-    if (symbols.types.isEmpty()) {
-        addNoneItem(typesItem);
-    } else {
-        for (const SourceNamedSymbol &type : symbols.types) {
-            auto *item = new QTreeWidgetItem(typesItem);
-            item->setText(0, type.name);
-            item->setIcon(0, typeIcon);
-            item->setData(0, Qt::UserRole, type.line);
-            item->setToolTip(0, tr("Type — double-click to jump to line %1").arg(type.line + 1));
-            item->setData(
-                0,
-                Qt::UserRole + 10,
-                QStringLiteral("type:%1").arg(type.name));
-
-            for (const SourceVariableSymbol &member : type.members) {
-                auto *memberItem = new QTreeWidgetItem(item);
-                memberItem->setText(0, member.name);
-                memberItem->setIcon(0, localIcon);
-                memberItem->setData(0, Qt::UserRole, member.line);
-                memberItem->setToolTip(
-                    0,
-                    tr("Member — double-click to jump to line %1")
-                        .arg(member.line + 1));
-            }
-        }
-        typesItem->setText(0,
-            QStringLiteral("Types (%1)")
-                .arg(typesItem->childCount())
-            );
-    }
-    typesItem->setData(
-        0,
-        Qt::UserRole + 10,
-        QStringLiteral("types")
-        );
-
-    auto *globalsItem = new QTreeWidgetItem(m_functionvarList);
-    globalsItem->setText(0, tr("Globals"));
-    globalsItem->setIcon(0, globalIcon);
-    globalsItem->setExpanded(false);
-
-    if (symbols.globals.isEmpty()) {
-        addNoneItem(globalsItem);
-    } else {
-        for (const SourceVariableSymbol &global : symbols.globals) {
-            auto *item = new QTreeWidgetItem(globalsItem);
-            item->setText(0, global.name + global.arraySuffix);
-            item->setIcon(0, globalIcon);
-            item->setData(0, Qt::UserRole, global.line);
-            item->setToolTip(0, tr("Global — double-click to jump to line %1").arg(global.line + 1));
-        }
-        globalsItem->setText(0,
-            QStringLiteral("Globals (%1)")
-                .arg(globalsItem->childCount())
-            );
-    }
-    globalsItem->setData(
-        0,
-        Qt::UserRole + 10,
-        QStringLiteral("globals")
-        );
-
-    auto *functionsItem = new QTreeWidgetItem(m_functionvarList);
-    functionsItem->setText(0, tr("Functions"));
-    functionsItem->setExpanded(false);
-    functionsItem->setIcon(0, functionIcon);
-    functionsItem->setData(
-        0,
-        Qt::UserRole + 10,
-        QStringLiteral("functions")
-        );
-
-    if (symbols.functions.isEmpty()) {
-        addNoneItem(functionsItem);
-    } else {
-        for (const SourceFunctionSymbol &function : symbols.functions) {
-            auto *functionItem = new QTreeWidgetItem(functionsItem);
-            functionItem->setText(0, function.signature);
-            functionItem->setIcon(0, functionIcon);
-            functionItem->setData(0, Qt::UserRole, function.line);
-            functionItem->setToolTip(0, tr("Function — double-click to jump to line %1").arg(function.line + 1));
-            functionItem->setData(
-                0,
-                Qt::UserRole + 10,
-                QStringLiteral("function:%1").arg(function.signature)
-                );
-
-            if (!function.parameters.isEmpty()) {
-                auto *parametersItem = new QTreeWidgetItem(functionItem);
-                parametersItem->setText(0, tr("Parameters"));
-                parametersItem->setIcon(0, parameterIcon);
-                parametersItem->setExpanded(true);
-                for (const SourceVariableSymbol &parameter : function.parameters) {
-                    auto *item = new QTreeWidgetItem(parametersItem);
-                    item->setText(0, parameter.name + parameter.arraySuffix);
-                    item->setIcon(0, parameterIcon);
-                    item->setData(0, Qt::UserRole, parameter.line);
-                    item->setToolTip(0, tr("Parameter — double-click to jump to function"));
-                }
-                parametersItem->setData(
-                    0,
-                    Qt::UserRole + 10,
-                    QStringLiteral("function:%1:parameters").arg(function.signature)
-                    );
-            }
-
-            if (!function.locals.isEmpty()) {
-                auto *localsItem = new QTreeWidgetItem(functionItem);
-                localsItem->setText(0, tr("Locals"));
-                localsItem->setIcon(0, localIcon);
-                localsItem->setExpanded(true);
-                for (const SourceVariableSymbol &local : function.locals) {
-                    auto *item = new QTreeWidgetItem(localsItem);
-                    item->setText(0, local.name + local.arraySuffix);
-                    item->setIcon(0, localIcon);
-                    item->setData(0, Qt::UserRole, local.line);
-                    item->setToolTip(0, tr("Local — double-click to jump to line %1").arg(local.line + 1));
-                }
-                localsItem->setData(
-                    0,
-                    Qt::UserRole + 10,
-                    QStringLiteral("function:%1:locals").arg(function.signature)
-                    );
-            }
-
-        }
-        functionsItem->setText(
-            0,
-            QStringLiteral("Functions (%1)")
-                .arg(functionsItem->childCount())
-            );
-    }
-
-
-
-    restoreSymbolTreeExpansionState(editor);
-
-    m_symbolTreeEditor = editor;
+    m_symbolTreeEditor =
+        editor;
 }
 
 void MainWindow::completeStructMembers(CodeEditor *sourceEditor,
@@ -8122,13 +9129,20 @@ void MainWindow::refreshFunctionCompletions()
                     file.readAll());
         }
 
+        const QString sanitized =
+            sanitizedCSource(source);
+
         QStringList functions =
-            functionSignaturesFromText(source);
+            functionSignaturesFromSanitizedFast(
+                source,
+                sanitized);
 
         QStringList types;
 
         const SourceSymbolTable symbols =
-            parseSourceSymbols(source);
+            parseSourceSymbolsFromSanitized(
+                source,
+                sanitized);
 
         for (const SourceNamedSymbol &type :
              symbols.types) {
@@ -8232,29 +9246,39 @@ void MainWindow::refreshActiveEditorAnalysis()
     ensureApiCatalog();
 
     /*
-     * This is the normal typing path: inspect ONE document only.
-     * Everything from other project files comes from the last cached full scan.
+     * If a worker is already cataloguing this tab, do not queue an army of
+     * expensive copies/parses behind it. Remember that another pass is wanted;
+     * the completed worker will either apply its still-current result or launch
+     * one fresh pass if edits made it stale.
+     */
+    if (editor->property(
+            "sidboxAnalysisWorkerRunning")
+            .toBool()) {
+        editor->setProperty(
+            "sidboxAnalysisRerun",
+            true);
+
+        showCatalogueProgress(
+            editor,
+            editor->property(
+                "sidboxCatalogueProgress")
+                .toInt());
+
+        return;
+    }
+
+    /*
+     * Copying ~100-200 KB once is cheap compared with parsing it repeatedly on
+     * the GUI thread. From this point onward the heavy work happens in a
+     * QThreadPool worker.
      */
     const QString source =
         editor->toPlainText();
 
-    QStringList localFunctions =
-        functionSignaturesFromText(source);
-
-    QStringList localTypes;
-
-    const SourceSymbolTable symbols =
-        parseSourceSymbols(source);
-
-    for (const SourceNamedSymbol &type :
-         symbols.types) {
-        if (!type.name.isEmpty()) {
-            localTypes.append(type.name);
-        }
-    }
-
-    localFunctions.removeDuplicates();
-    localTypes.removeDuplicates();
+    const int generation =
+        editor->property(
+            "sidboxAnalysisGeneration")
+            .toInt();
 
     const QString editorPath =
         editor->filePath().isEmpty()
@@ -8262,94 +9286,370 @@ void MainWindow::refreshActiveEditorAnalysis()
             : QFileInfo(editor->filePath())
                   .absoluteFilePath();
 
-    if (!editorPath.isEmpty()) {
-        /*
-         * Replace only this file's cached contribution. Renaming/removing a
-         * function therefore removes the stale completion on the next 500 ms
-         * refresh without touching any other source file.
-         */
-        m_cachedFileFunctionSignatures.insert(
-            editorPath,
-            localFunctions);
+    editor->setProperty(
+        "sidboxAnalysisWorkerRunning",
+        true);
 
-        m_cachedFileTypeNames.insert(
-            editorPath,
-            localTypes);
-    }
+    editor->setProperty(
+        "sidboxAnalysisRerun",
+        false);
 
-    QStringList completions =
-        m_apiSignatures;
+    showCatalogueProgress(
+        editor,
+        0);
 
-    QStringList typeNames;
+    QPointer<MainWindow> self(this);
+    QPointer<CodeEditor> guardedEditor(editor);
 
-    for (auto it =
-             m_cachedFileFunctionSignatures.constBegin();
-         it !=
-             m_cachedFileFunctionSignatures.constEnd();
-         ++it) {
-        completions.append(it.value());
-    }
+    QThreadPool::globalInstance()->start(
+        QRunnable::create(
+            [self,
+             guardedEditor,
+             source,
+             generation,
+             editorPath]() mutable {
 
-    for (auto it =
-             m_cachedFileTypeNames.constBegin();
-         it !=
-             m_cachedFileTypeNames.constEnd();
-         ++it) {
-        typeNames.append(it.value());
-    }
+                int lastProgress = 0;
 
-    /*
-     * Untitled files do not have a stable cache key yet, so keep their local
-     * symbols live without pretending they belong to another project file.
-     */
-    if (editorPath.isEmpty()) {
-        completions.append(localFunctions);
-        typeNames.append(localTypes);
-    }
+                auto reportProgress =
+                    [self,
+                     guardedEditor,
+                     generation,
+                     &lastProgress](int percent) {
+                        if (!self
+                            || !guardedEditor) {
+                            return;
+                        }
 
-    typeNames.removeDuplicates();
-    typeNames.sort(Qt::CaseInsensitive);
+                        const int bounded =
+                            qBound(
+                                0,
+                                percent,
+                                100);
 
-    completions.append(typeNames);
-    completions.removeDuplicates();
-    completions.sort(Qt::CaseInsensitive);
+                        /*
+                         * Avoid filling the GUI event queue with duplicate
+                         * percentages when a source contains many functions.
+                         */
+                        if (bounded <= lastProgress) {
+                            return;
+                        }
 
-    const QStringList apiNames =
-        apiSyntaxNames();
+                        lastProgress =
+                            bounded;
 
-    /*
-     * Only update views belonging to the CURRENT tab. A split tab can contain
-     * two CodeEditor widgets sharing the same document, so update both views
-     * without touching every other open tab.
-     */
-    QWidget *currentTab =
-        m_editorTabs
-            ? m_editorTabs->currentWidget()
-            : nullptr;
+                        QMetaObject::invokeMethod(
+                            self.data(),
+                            [self,
+                             guardedEditor,
+                             generation,
+                             bounded]() {
+                                if (!self
+                                    || !guardedEditor) {
+                                    return;
+                                }
 
-    if (!currentTab) {
-        return;
-    }
+                                CodeEditor *editor =
+                                    guardedEditor.data();
 
-    const QList<CodeEditor *> currentEditors =
-        editorsForTab(currentTab);
+                                if (self->activeEditor()
+                                        != editor
+                                    || editor->property(
+                                           "sidboxAnalysisGeneration")
+                                           .toInt()
+                                           != generation) {
+                                    return;
+                                }
 
-    for (CodeEditor *current :
-         currentEditors) {
-        if (!current
-            || current->isResourceMode()) {
-            continue;
-        }
+                                self->showCatalogueProgress(
+                                    editor,
+                                    bounded);
+                            },
+                            Qt::QueuedConnection);
+                    };
 
-        current->setFunctionCompletions(
-            completions);
+                /*
+                 * Sanitize ONCE, then reuse that copy for both the detailed
+                 * symbol catalogue and the ultra-light function signature pass.
+                 */
+                const QString sanitized =
+                    sanitizedCSource(source);
 
-        current->setProjectTypeNames(
-            typeNames);
+                reportProgress(18);
 
-        current->setApiSyntaxNames(
-            apiNames);
-    }
+                SourceSymbolTable symbols =
+                    parseSourceSymbolsFromSanitized(
+                        source,
+                        sanitized,
+                        reportProgress);
+
+                QStringList localFunctions =
+                    functionSignaturesFromSanitizedFast(
+                        source,
+                        sanitized);
+
+                reportProgress(96);
+
+                QStringList localTypes;
+
+                for (const SourceNamedSymbol &type :
+                     symbols.types) {
+                    if (!type.name.isEmpty()) {
+                        localTypes.append(
+                            type.name);
+                    }
+                }
+
+                localFunctions.removeDuplicates();
+                localTypes.removeDuplicates();
+
+                QVariantList structureLines =
+                    structureNavigationLines(
+                        symbols);
+
+                if (!self) {
+                    return;
+                }
+
+                QMetaObject::invokeMethod(
+                    self.data(),
+                    [self,
+                     guardedEditor,
+                     generation,
+                     editorPath,
+                     symbols = std::move(symbols),
+                     localFunctions =
+                         std::move(localFunctions),
+                     localTypes =
+                         std::move(localTypes),
+                     structureLines =
+                         std::move(structureLines)]() mutable {
+
+                        if (!self
+                            || !guardedEditor) {
+                            return;
+                        }
+
+                        CodeEditor *editor =
+                            guardedEditor.data();
+
+                        editor->setProperty(
+                            "sidboxAnalysisWorkerRunning",
+                            false);
+
+                        const bool rerunRequested =
+                            editor->property(
+                                "sidboxAnalysisRerun")
+                                .toBool();
+
+                        editor->setProperty(
+                            "sidboxAnalysisRerun",
+                            false);
+
+                        /*
+                         * Any edit increments the generation. A stale worker is
+                         * simply ignored — no half-old catalogue is ever applied.
+                         */
+                        const bool stillCurrent =
+                            editor->property(
+                                "sidboxAnalysisGeneration")
+                                .toInt()
+                                == generation;
+
+                        if (!stillCurrent
+                            || self->activeEditor()
+                                != editor) {
+
+                            if (self->activeEditor()
+                                    == editor) {
+                                self->statusBar()
+                                    ->showMessage(
+                                        self->tr(
+                                            "Catalogue changed — waiting for the next sync"),
+                                        900);
+                            }
+
+                            if (rerunRequested
+                                && self->activeEditor()
+                                    == editor) {
+                                QTimer::singleShot(
+                                    0,
+                                    self.data(),
+                                    [self]() {
+                                        if (self) {
+                                            self
+                                                ->refreshActiveEditorAnalysis();
+                                        }
+                                    });
+                            }
+
+                            return;
+                        }
+
+                        if (!editorPath.isEmpty()) {
+                            self
+                                ->m_cachedFileFunctionSignatures
+                                .insert(
+                                    editorPath,
+                                    localFunctions);
+
+                            self
+                                ->m_cachedFileTypeNames
+                                .insert(
+                                    editorPath,
+                                    localTypes);
+                        }
+
+                        QStringList completions =
+                            self->m_apiSignatures;
+
+                        QStringList typeNames;
+
+                        for (auto it =
+                                 self
+                                     ->m_cachedFileFunctionSignatures
+                                     .constBegin();
+                             it !=
+                                 self
+                                     ->m_cachedFileFunctionSignatures
+                                     .constEnd();
+                             ++it) {
+                            completions.append(
+                                it.value());
+                        }
+
+                        for (auto it =
+                                 self
+                                     ->m_cachedFileTypeNames
+                                     .constBegin();
+                             it !=
+                                 self
+                                     ->m_cachedFileTypeNames
+                                     .constEnd();
+                             ++it) {
+                            typeNames.append(
+                                it.value());
+                        }
+
+                        if (editorPath.isEmpty()) {
+                            completions.append(
+                                localFunctions);
+
+                            typeNames.append(
+                                localTypes);
+                        }
+
+                        typeNames.removeDuplicates();
+                        typeNames.sort(
+                            Qt::CaseInsensitive);
+
+                        completions.append(
+                            typeNames);
+
+                        completions.removeDuplicates();
+                        completions.sort(
+                            Qt::CaseInsensitive);
+
+                        const QStringList apiNames =
+                            self->apiSyntaxNames();
+
+                        QWidget *currentTab =
+                            self->m_editorTabs
+                                ? self
+                                      ->m_editorTabs
+                                      ->currentWidget()
+                                : nullptr;
+
+                        if (currentTab) {
+                            const QList<CodeEditor *>
+                                currentEditors =
+                                    self->editorsForTab(
+                                        currentTab);
+
+                            for (CodeEditor *current :
+                                 currentEditors) {
+                                if (!current
+                                    || current
+                                        ->isResourceMode()) {
+                                    continue;
+                                }
+
+                                current
+                                    ->setFunctionCompletions(
+                                        completions);
+
+                                current
+                                    ->setProjectTypeNames(
+                                        typeNames);
+
+                                current
+                                    ->setApiSyntaxNames(
+                                        apiNames);
+                            }
+                        }
+
+                        editor->setProperty(
+                            "sidboxStructureLines",
+                            structureLines);
+
+                        /*
+                         * Reuse the already-parsed worker result for the tree.
+                         * Previously the tree called parseSourceSymbols() AGAIN
+                         * immediately after active-tab completion analysis.
+                         */
+                        if (self->m_functionvarList) {
+                            if (self
+                                    ->m_symbolTreeEditor) {
+                                self
+                                    ->saveSymbolTreeExpansionState(
+                                        self
+                                            ->m_symbolTreeEditor);
+                            }
+
+                            self
+                                ->m_functionvarList
+                                ->clear();
+
+                            populateSourceSymbolTree(
+                                self
+                                    ->m_functionvarList,
+                                symbols);
+
+                            self
+                                ->restoreSymbolTreeExpansionState(
+                                    editor);
+
+                            self->m_symbolTreeEditor =
+                                editor;
+                        }
+
+                        editor->setProperty(
+                            "sidboxAnalysisDirty",
+                            false);
+
+                        self->showCatalogueProgress(
+                            editor,
+                            100);
+
+                        /*
+                         * A navigation event may have requested one newer pass
+                         * while this worker was running. Do that pass now, but
+                         * still off the UI thread.
+                         */
+                        if (rerunRequested) {
+                            QTimer::singleShot(
+                                0,
+                                self.data(),
+                                [self]() {
+                                    if (self) {
+                                        self
+                                            ->refreshActiveEditorAnalysis();
+                                    }
+                                });
+                        }
+                    },
+                    Qt::QueuedConnection);
+            }));
 }
 
 
@@ -8483,18 +9783,26 @@ QString MainWindow::quickTipForSymbol(const QString &symbol) const
     }
 
     /*
-     * Passive quick tips run from cursorPositionChanged. Use the already-built
-     * per-file cache here; never rescan the whole project just because the
-     * caret moved by one character.
+     * This function is used by passive cursor tips. Cursor movement happens on
+     * normal typing too, so never launch a whole-project scan here.
      */
-    for (auto it = m_cachedFileFunctionSignatures.constBegin();
-         it != m_cachedFileFunctionSignatures.constEnd(); ++it) {
+    for (auto it =
+             m_cachedFileFunctionSignatures.constBegin();
+         it !=
+             m_cachedFileFunctionSignatures.constEnd();
+         ++it) {
         for (const QString &signature : it.value()) {
-            const int parenIndex = signature.indexOf(QLatin1Char('('));
-            const QString functionName =
-                parenIndex > 0 ? signature.left(parenIndex) : signature;
+            const int parenIndex =
+                signature.indexOf(QLatin1Char('('));
 
-            if (functionName.compare(name, Qt::CaseInsensitive) == 0) {
+            const QString functionName =
+                parenIndex > 0
+                    ? signature.left(parenIndex)
+                    : signature;
+
+            if (functionName.compare(
+                    name,
+                    Qt::CaseInsensitive) == 0) {
                 return signature;
             }
         }
@@ -8785,30 +10093,22 @@ QStringList MainWindow::projectTypeNames() const
     return names;
 }
 
-QStringList MainWindow::functionSignaturesFromText(const QString &text) const
+QStringList MainWindow::functionSignaturesFromText(
+    const QString &text) const
 {
-    static const QStringList ignoredNames = {
-        QStringLiteral("if"), QStringLiteral("for"), QStringLiteral("while"),
-        QStringLiteral("switch"), QStringLiteral("return"), QStringLiteral("sizeof")
-    };
-    static const QRegularExpression functionExpression(
-        QStringLiteral("(?:^|[\\n;{}])\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\s+|[*]\\s*)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^;{}()]*)\\)\\s*(?=[;{])"),
-        QRegularExpression::MultilineOption);
+    /*
+     * The old implementation used a global QRegularExpression over the whole
+     * file. For Sidbox's catalogue use-case a tiny linear C scanner is both
+     * cheaper and more predictable on 100-200 KB sources.
+     */
+    const QString sanitized =
+        sanitizedCSource(text);
 
-    QStringList signatures;
-    QRegularExpressionMatchIterator iterator = functionExpression.globalMatch(text);
-    while (iterator.hasNext()) {
-        const QRegularExpressionMatch match = iterator.next();
-        const QString name = match.captured(1).trimmed();
-        const QString arguments = match.captured(2).simplified();
-        if (!name.isEmpty() && !ignoredNames.contains(name)) {
-            signatures.append(QStringLiteral("%1(%2)").arg(name, arguments));
-        }
-    }
-
-    signatures.removeDuplicates();
-    return signatures;
+    return functionSignaturesFromSanitizedFast(
+        text,
+        sanitized);
 }
+
 
 QList<ProjectSearchResult> MainWindow::findInProject(
     const QString &needle,
@@ -9523,6 +10823,8 @@ void MainWindow::clearCompilerDiagnostics()
     m_compilerStderrBuffer.clear();
     m_compilerDiagnostics.clear();
 
+    updateProjectDiagnosticMarkers();
+
     if (!m_editorTabs) {
         return;
     }
@@ -9709,6 +11011,11 @@ void MainWindow::processCompilerDiagnosticLine(const QString &line)
 
     if (!duplicate) {
         diagnostics.append(diagnostic);
+    }
+
+    if (severity
+        == EditorDiagnostic::Severity::Error) {
+        updateProjectDiagnosticMarkers();
     }
 
     if (matchedEditor) {

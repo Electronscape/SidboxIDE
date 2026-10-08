@@ -1,0 +1,61 @@
+Sidbox IDE - navigation / compiler file marker / catalogue progress
+====================================================================
+
+Built from the exact latest source files uploaded on 2026-10-08.
+
+New shortcuts
+-------------
+Ctrl + Up
+    Jump to previous function or type/typedef/struct/enum/union catalogue entry.
+
+Ctrl + Down
+    Jump to next function or type/typedef/struct/enum/union catalogue entry.
+
+Ctrl + Page Up
+    Jump to the top of the current file.
+
+Ctrl + Page Down
+    Jump to the bottom of the current file.
+
+Shift + Tab
+    Select the next editor tab.
+    Wraps from the final tab back to the first tab.
+
+Structural navigation uses the LAST completed background catalogue so a
+keypress never waits for parsing. If the source is dirty, it also starts a
+new non-blocking catalogue update in the background.
+
+Compiler project-tree marker
+----------------------------
+Any project file with at least one compiler ERROR receives a small red badge
+over its normal file icon in Files in Project.
+
+Warnings alone do not produce the red badge.
+
+The marker is removed automatically when compiler diagnostics are cleared at
+the beginning of the next compile.
+
+Catalogue progress
+------------------
+The status bar now shows:
+
+    Rebuilding catalogue: NN%
+
+while the active-tab worker is rebuilding semantic data.
+
+Progress is staged through the real catalogue phases (sanitisation, defines,
+types, function scan, globals, completion signature pass). The worker remains
+off the UI thread.
+
+Performance behaviour preserved
+-------------------------------
+- semantic parsing stays in QThreadPool
+- stale worker results are discarded
+- folding stays cooperative / event-loop sliced
+- minimap stays cooperative / event-loop sliced
+- normal typing is not blocked by catalogue work
+- 2-second idle catch-up remains
+- existing folding/minimap/diagnostic/unsaved-close behaviour is retained
+
+Static source checks passed.
+Qt compilation is not available in this environment.
