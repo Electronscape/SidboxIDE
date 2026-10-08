@@ -19,6 +19,8 @@ qt_add_executable(SidboxIDE
     projectsettingsdialog.h
     mainwindow.cpp
     mainwindow.h
+    guidesigner.cpp
+    guidesigner.h
     mainwindow.ui
     findreplacedialog.cpp
     findreplacedialog.h
@@ -54,6 +56,7 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/search_term.png
         icons/ide_icon_32x32.png
         icons/toolbar_cheatsheet.png
+        icons/toolbar_guidesigner.png
         icons/tree_file_res.png
     )
 

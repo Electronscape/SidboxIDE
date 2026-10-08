@@ -32,15 +32,11 @@ typedef struct API_SYS_TIMERS {
     void    (*cancel) (CGTimer t);
 } API_SYS_TIMERS;
 
-/* @brief Allocates a GUI/OS timer and returns its timer handle. */
 #define SBOS_CreateTimer()  (GUICoderGirl->timers->create())
-/* @brief Releases a previously allocated GUI/OS timer. */
 #define SBOS_FreeTimer(timer)  (GUICoderGirl->timers->free(timer))
 
-/* @brief Starts/configures a timer with delay, repeat period, callback and user pointer. */
 #define SBOS_TimerSet(timer, delay_ms, period_ms, callback, user)  (GUICoderGirl->timers->set(timer, delay_ms, period_ms, callback, user))
 
-/* @brief Cancels a running GUI/OS timer without freeing its handle. */
 #define SBOS_TimerCancel(timer)  (GUICoderGirl->timers->cancel(timer))
 
 #ifdef __cplusplus

@@ -1,0 +1,113 @@
+Sidbox IDE — GUI Designer refactor / pixel-preview fix
+========================================================
+
+Baseline
+--------
+Built from the user's latest uploaded `Archive (2).tar.gz`.
+
+1. GUI Designer moved out of mainwindow.cpp
+--------------------------------------------
+The complete CoderGirl designer implementation is now in:
+
+    guidesigner.cpp
+
+and the small MainWindow-facing interface is in:
+
+    guidesigner.h
+
+MainWindow keeps using SidboxGuiDesigner through the public interface, while the
+large implementation class is private to guidesigner.cpp.
+
+CMakeLists.txt now includes both new files.
+
+This removes roughly 7,500 lines of designer/render/generator code from
+mainwindow.cpp so future designer work is much easier to isolate.
+
+2. Window chrome right/bottom edge correction
+----------------------------------------------
+The preview's thick frame previously used QRect adjustments that effectively
+pulled the right/bottom outline inward by one logical pixel.
+
+The frame is now drawn with explicit integer top/bottom/left/right lines:
+
+    left   = wr.left()   + i
+    right  = wr.right()  - i
+    top    = wr.top()    + i
+    bottom = wr.bottom() - i
+
+which mirrors CoderGirl's draw_rect_outline_thick() geometry.
+
+3. Bottom blue-line correction
+------------------------------
+The old preview painted the outer/inner bevels BEFORE the resize gutter.
+
+The firmware does the opposite:
+    - frame/client
+    - resize/dock chrome
+    - outer bevel
+    - inner bevel
+    - title chrome
+
+The preview now follows that same order. This prevents the blue resize gutter
+from overwriting the final bottom/right bevel pixels.
+
+The 20x20 resize box bevel now also uses the full box rather than an inset
+19x19-ish QRect.
+
+4. Resize glyph now matches firmware
+------------------------------------
+The improvised three-line gripper has been removed.
+
+drawCoderGirlResizeGlyph() now draws the exact non-zero pixels from CoderGirl's
+16x16 `glyph_resize[]`: the little triangular/down-right resize arrow in the
+bottom-right corner.
+
+5. Integer zoom model
+---------------------
+Zoom choices are now:
+
+    100%
+    150%
+    200%
+    400%
+
+250% has been removed.
+
+The designer no longer stores zoom as qreal / 1.0 / 1.5 / 2.0 etc.
+
+It stores an integer percentage:
+
+    int m_zoomPercent = 150;
+
+CoderGirl is rendered to a native 480x320 QImage first. That finished image is
+then scaled to the integer-sized viewport with smooth pixmap transformation
+disabled. Therefore logical window/gadget rendering always happens at exact
+integer Sidbox pixels, even while displaying at 150%.
+
+Mouse/device coordinates are converted back with integer rational arithmetic:
+
+    device * 100 / zoomPercent
+
+rather than dividing by a floating-point zoom factor.
+
+6. Existing designer work preserved
+------------------------------------
+Static checks confirm the latest features are still present, including:
+    - BitmapView demo backing/source generation
+    - SBOS_BitmapviewSetImageSize()
+    - CGEVT_SYS_REPAINT generation
+    - BVF_PERSISTANT selector
+    - drag/drop toolbox
+    - double-click gadget -> generated source
+    - gadget Enabled output
+    - Undo/grid snap
+    - callback routing
+    - generated C machinery
+
+Validation
+----------
+- Structural brace/paren checks: PASS
+- Refactor/interface static checks: PASS
+- Pixel/zoom static checks: PASS
+- Full Qt compile not run because Qt6 development packages are unavailable in
+  this environment.

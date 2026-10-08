@@ -109,60 +109,39 @@ uint32_t LoadSFX(char *filename, uint8_t **snddata);
 /////////////////////////////////////////////////////////
 
 // AUDIO HARDWARE SETUP //
-/* @brief Sets the audio DMA buffer size used by the SIDBOX audio hardware layer. */
 #define set_audio_dma(size)  (AUDIOBase->audhl->setbuffsize(size))
 #define set_music_dma (*(AUDIOBase->audhl->musicdmaenable))
-/* @brief Disables audio DMA playback. */
 #define audio_dma_disable() (AUDIOBase->audhl->dmadisable())
-/* @brief Enables audio DMA playback. */
 #define audio_dma_enable()  (AUDIOBase->audhl->dmaenable())
-/* @brief Alias for audio_dma_disable(). */
 #define disable_audio_dma() audio_dma_disable()
-/* @brief Alias for audio_dma_enable(). */
 #define enable_audio_dma()  audio_dma_enable()
-/* @brief Returns/views the current DMA left/right buffers, frame count and playback cursor. */
 #define audio_dma_buffer_view(left, right, frames, play_cursor)  (AUDIOBase->audhl->dmabufferview(left, right, frames, play_cursor))
 
 // MIDI INTERFACING //
-/* @brief Sends a raw MIDI packet buffer through the SIDBOX MIDI output. */
 #define midi_out(packetBuffer, packetSize) (AUDIOBase->audhl->midi_out(packetBuffer, packetSize))
 
 // opens a music file and begins playing
-/* @brief Loads and starts a music file at the requested subsong. */
 #define music_play(filename, subsong) (AUDIOMUSIC->play(filename, subsong))
-/* @brief Stops the currently playing music. */
 #define music_stop()                  (AUDIOMUSIC->stop())
-/* @brief Starts MOD music directly from a block already held in memory. */
 #define music_mod_from_ram_play(src, len) (AUDIOMUSIC->modfromMem(src, len))
 
 // update music routine and timers, recommend using this on each frame, or every other frame
-/* @brief Runs the music playback/update routine; normally call once per frame or every other frame. */
 #define music_update() (AUDIOMUSIC->CallMusicRoutine())
 
 // SOUND INTERFACING //
-/* @brief Assigns sample data to a sound channel, including sample count and 8/16-bit format. */
 #define sound_assign(chan, data, samples, bitsize)  (AUDIOSound->assignsample(chan, data, samples, bitsize))    // void (*assignsample)  (uint8_t channel, void *sample, uint32_t samples, uint8_t bitsize);   // 0 = 8bits, 1 = 16bits
-/* @brief Starts playback of the sample assigned to a sound channel. */
 #define sound_play(chan)              (AUDIOSound->playsample    (chan))
-/* @brief Stops sample playback on a sound channel. */
 #define sound_stop(chan)              (AUDIOSound->stopsample    (chan))
-/* @brief Sets a sound channel playback frequency in hertz. */
 #define sound_setfrequency(chan, hz)  (AUDIOSound->setsamplefreq (chan, hz)) 
-/* @brief Sets a sound channel volume from 0 to 255. */
 #define sound_setvolume(chan, vol)    (AUDIOSound->setsamplevol  (chan, vol))  // 0 to 255
-/* @brief Sets stereo panning for a sound channel from -127 to +127. */
 #define sound_setpanning(chan, pan)   (AUDIOSound->setsamplepan  (chan, pan))  // -127 to 127
-/* @brief Sets the sample loop start/end positions; use 0,0 to clear the loop range. */
 #define sound_setloop(chan, from, to) (AUDIOSound->setsampleloop (chan, from, to))   // set both to 0 to stop loop
-/* @brief Enables or disables looping on a sound channel. */
 #define sound_enableloop(chan, en)    (AUDIOSound->setloopenable (chan, en))
 
 
 
 // direct sid interface
-/* @brief Starts the live SID interface. */
 #define audio_livesid()               (AUDIOBase->audhl->startsidlive())
-/* @brief Writes a value directly to a SID chip register. */
 #define audio_sidpoke(chip, reg, val) (AUDIOBase->audhl->sidpoke(chip, reg, val))
 
 

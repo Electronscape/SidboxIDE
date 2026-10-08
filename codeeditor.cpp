@@ -3368,13 +3368,33 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     }
 
     /*
-     * Shift+Tab is now Sidbox's editor-tab cycler. Qt commonly reports this as
-     * Key_Backtab rather than Key_Tab+Shift, so handle both forms.
+     * Shift+Tab has two useful editor meanings:
+     *
+     *   selection present -> unindent the selected lines
+     *   no selection      -> cycle to the next editor tab
+     *
+     * Do not steal Alt+Tab / Ctrl+Tab from the desktop or any future IDE
+     * shortcut. Qt may report Shift+Tab as Key_Backtab, so accept both forms
+     * only when no Alt/Ctrl/Meta modifier is present.
      */
-    if (event->key() == Qt::Key_Backtab
-        || (event->key() == Qt::Key_Tab
-            && (modifiers & Qt::ShiftModifier))) {
-        emit nextEditorTabRequested();
+    const bool shiftTab =
+        !(modifiers & Qt::AltModifier)
+        && !(modifiers & Qt::ControlModifier)
+        && !(modifiers & Qt::MetaModifier)
+        && (event->key() == Qt::Key_Backtab
+            || (event->key() == Qt::Key_Tab
+                && (modifiers & Qt::ShiftModifier)));
+
+    if (shiftTab) {
+        QTextCursor cursor =
+            textCursor();
+
+        if (cursor.hasSelection()) {
+            unindentSelection();
+        } else {
+            emit nextEditorTabRequested();
+        }
+
         event->accept();
         return;
     }

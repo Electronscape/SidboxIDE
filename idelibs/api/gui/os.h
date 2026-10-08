@@ -10,5 +10,4 @@
 
 
 
-/* @brief Runs the GUI/OS background event service; call regularly when the applet owns its main loop. */
 #define sysevents()	(API->gui->osupdate())	// call this if you want OS background service feedback

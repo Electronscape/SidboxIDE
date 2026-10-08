@@ -72,40 +72,25 @@ typedef struct  {
 #define SYSBase (API->system)
 #define SYSFileSystem (SYSBase->sys_fileio)
 // system defines
-/* @brief Restores/resumes the SIDBOX desktop environment. */
 #define restore_desktop()                                  (SYSBase->desktop_restore())
-/* @brief Suspends the SIDBOX desktop environment while the applet takes control. */
 #define suspend_desktop()                                  (SYSBase->desktop_suspend())
 
 
 
 //#define suspect_desktop()                                  suspend_desktop()
-/* @brief Opens a filesystem slot using the requested file number, path and open-mode flags. */
 #define sfopen(u8_filenum, s_filename, u8_filemode)       (SYSFileSystem->sbopen(u8_filenum, s_filename, u8_filemode))
-/* @brief Reads bytes from an open SIDBOX filesystem slot into a buffer. */
 #define sfread(u8_filenum, ptr_buffer, u32_len, u32_retb) (SYSFileSystem->sbread(u8_filenum, ptr_buffer, u32_len, u32_retb))
-/* @brief Closes an open SIDBOX filesystem slot. */
 #define sfclose(u8_filenum)                               (SYSFileSystem->sbclose(u8_filenum))
-/* @brief Writes bytes from a buffer to an open SIDBOX filesystem slot. */
 #define sfwrite(u8_filenum, ptr_buffer, u32_len, u32_retb) (SYSFileSystem->sbwrite(u8_filenum, ptr_buffer, u32_len, u32_retb))
-/* @brief Moves the current file position to the requested offset. */
 #define sflseek(u8_filenum, u32_offset)                   (SYSFileSystem->sblseek(u8_filenum, u32_offset))
-/* @brief Changes the current filesystem directory. */
 #define sfchdir(s_path)                                   (SYSFileSystem->sbchdir(s_path))
-/* @brief Copies the current working directory into the supplied buffer. */
 #define sfgetcwd(ptr_buffer, u32_len)                     (SYSFileSystem->sbgetcwd(ptr_buffer, u32_len))
-/* @brief Copies a filesystem object from source path to destination path. */
 #define sfcopy(s_source, s_dest)                          (SYSFileSystem->sbcopy(s_source, s_dest))
-/* @brief Creates a directory. */
 #define sfmkdir(s_path)                                   (SYSFileSystem->sbmkdir(s_path))
-/* @brief Reads file/directory flags and size for a path. */
 #define sfstat(s_path, ptr_flags, ptr_size)               (SYSFileSystem->sbstat(s_path, ptr_flags, ptr_size))
-/* @brief Opens a directory and returns an opaque directory handle. */
 #define sfopendir(s_path)                                 (SYSFileSystem->sbopendir(s_path))
-/* @brief Reads the next directory entry into the supplied name/flags/size outputs. */
 #define sfreaddir(ptr_handle, ptr_name, u32_name_len, ptr_flags, ptr_size) \
     (SYSFileSystem->sbreaddir(ptr_handle, ptr_name, u32_name_len, ptr_flags, ptr_size))
-/* @brief Closes an open directory handle. */
 #define sfclosedir(ptr_handle)                            (SYSFileSystem->sbclosedir(ptr_handle))
 
 

@@ -51,40 +51,24 @@ typedef struct {
 } API_CRT;
 
 #define CRTBase       (API->crt)
-/* @brief Enables SIDBOX CRT/RGBI output. */
 #define crt_enable()  (CRTBase->enable())
-/* @brief Disables SIDBOX CRT/RGBI output. */
 #define crt_disable() (CRTBase->disable())
-/* @brief Returns whether CRT/RGBI output is currently enabled. */
 #define crt_enabled() (CRTBase->enabled())
-/* @brief Sets the CRT border colour. */
 #define crt_setborder(colour) (CRTBase->setborder(colour))
-/* @brief Returns the current CRT border colour. */
 #define crt_getborder() (CRTBase->getborder())
-/* @brief Waits for the next CRT frame boundary. */
 #define crt_vsync()   (CRTBase->waitframe())
 #define crt_waitframe() (CRTBase->waitframe())
-/* @brief Renders a complete CRT pixel buffer with the supplied border colour. */
 #define crt_render(pixels, border) (CRTBase->render(pixels, border))
-/* @brief Clears the CRT drawing buffer to one colour. */
 #define crt_clear(colour) (CRTBase->clear(colour))
-/* @brief Plots one CRT pixel at x,y. */
 #define crt_plot(x, y, colour) (CRTBase->plot(x, y, colour))
-/* @brief Draws a filled CRT rectangle using the supplied colour. */
 #define crt_rect(x, y, w, h, colour) (CRTBase->rect(x, y, w, h, colour))
-/* @brief Draws text into the CRT buffer using the supplied colour. */
 #define crt_text(x, y, str, colour) (CRTBase->text(x, y, str, colour))
-/* @brief Flushes/presents pending CRT drawing work. */
 #define crt_flush() (CRTBase->flush())
-/* @brief Displays the built-in CRT test card. */
 #define crt_testcard() (CRTBase->testcard())
-/* @brief Displays the built-in ZX-style CRT splash screen. */
 #define crt_zxsplash() (CRTBase->zxsplash())
 
 // SDK functions 
-/* @brief Draws an 8-bit image into a CRT pixel buffer at the requested position. */
 void CRT_DrawImage(uint8_t *src, int16_t x, int16_t y, uint16_t width, uint16_t height, uint8_t *crt_pixel_buffer);
-/* @brief Converts/frames an image into the CRT pixel-buffer format. */
 void CRT_FrameImage(uint8_t *src, uint8_t *crt_pixel_buffer);
 
 #ifdef __cplusplus
