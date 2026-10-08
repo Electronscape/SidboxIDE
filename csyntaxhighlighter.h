@@ -2,9 +2,12 @@
 #define CSYNTAXHIGHLIGHTER_H
 
 #include <QRegularExpression>
+#include <QSet>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
 #include "idetheme.h"
+
+class QTimer;
 
 class CSyntaxHighlighter : public QSyntaxHighlighter
 {
@@ -30,6 +33,7 @@ private:
     void applyMultiLineComments(const QString &text);
     QStringList typedefNames() const;
     void rebuildLocalTypeNames();
+    void rebuildKnownTypeNameSet();
     void rebuildRules();
 
     QList<HighlightingRule> m_highlightingRules;
@@ -46,6 +50,16 @@ private:
     QStringList m_localTypeNames;
     QStringList m_externalTypeNames;
     QStringList m_externalApiNames;
+
+    /*
+     * highlightBlock() is called once per text block. Membership tests in a
+     * QSet avoid repeatedly walking the project/API QStringLists for every
+     * identifier on every line.
+     */
+    QSet<QString> m_knownTypeNameSet;
+    QSet<QString> m_externalApiNameSet;
+
+    QTimer *m_localTypeRefreshTimer = nullptr;
     bool m_resourceMode = false;
 };
 

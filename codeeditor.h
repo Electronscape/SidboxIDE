@@ -54,9 +54,11 @@ public:
     void clearDiagnostics();
     QString diagnosticToolTipAtY(int y) const;
 
-    bool loadFromFile(const QString &path);
+    bool loadFromFile(const QString &path, bool deferSyntaxHighlighting = false);
+    void enableSyntaxHighlighting();
     bool save();
     bool saveAs(const QString &path);
+    void shareDocumentFrom(CodeEditor *sourceEditor);
 
     int lineNumberAreaWidth() const;
     void refreshLineNumberAreaWidth();
@@ -66,6 +68,7 @@ signals:
     void quickTipRequested(const QString &symbol);
     void quickTipCandidateChanged(const QString &symbol);
     void definitionRequested(const QString &symbol, int sourceLine);
+    void includeFileRequested(const QString &includeName);
     void memberCompletionRequested(const QString &objectName,
                                    int sourceLine,
                                    const QString &prefix);
@@ -111,6 +114,8 @@ private:
     QCompleter *m_completer;
     QStringListModel *m_completionModel;
     QStringList m_functionCompletions;
+    QStringList m_projectTypeNames;
+    QStringList m_apiSyntaxNames;
     QString m_memberCompletionPrefix;
     bool m_memberCompletionActive = false;
     bool m_resourceMode = false;

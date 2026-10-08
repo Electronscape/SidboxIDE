@@ -127,6 +127,7 @@ int main(int argc, char *argv[])
     w.show();
     QTimer::singleShot(0, &w, [&w, appIcon]() {
         applySidboxIcon(&w, appIcon);
+        w.showStartupProjectChooser();
     });
     QTimer::singleShot(250, &w, [&w, appIcon]() {
         applySidboxIcon(&w, appIcon);

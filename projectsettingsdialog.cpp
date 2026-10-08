@@ -29,6 +29,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_extraCompilerFlagsEdit(new QLineEdit(this))
     , m_modSizeSpinBox(new QSpinBox(this))
     , m_appSizeSpinBox(new QSpinBox(this))
+    , m_outputAppNameEdit(new QLineEdit(this))
     , m_linkerScriptEdit(new QLineEdit(this))
     , m_defaultLinkerLabel(new QLabel(this))
 {
@@ -48,6 +49,12 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     m_appSizeSpinBox->setRange(16, 1024 * 1024);
     m_appSizeSpinBox->setSingleStep(8);
     m_appSizeSpinBox->setSuffix(tr(" KB"));
+
+    m_outputAppNameEdit->setPlaceholderText(
+        tr("Leave blank to use the project name (example: run.app)"));
+    m_outputAppNameEdit->setToolTip(
+        tr("Filename for the compiled Sidbox .app beside the project. "
+           "If .app is omitted, the IDE adds it automatically."));
 
     m_linkerScriptEdit->setPlaceholderText(tr("Use default for project type"));
 
@@ -77,6 +84,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->setContentsMargins(12, 12, 12, 12);
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
     formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
+    formLayout->addRow(tr("Output .app name"), m_outputAppNameEdit);
     formLayout->addRow(tr("MOD size"), m_modSizeSpinBox);
     formLayout->addRow(tr("Linker script"), linkerLayout);
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);
@@ -183,6 +191,16 @@ int ProjectSettingsDialog::appSizeKb() const
 void ProjectSettingsDialog::setAppSizeKb(int sizeKb)
 {
     m_appSizeSpinBox->setValue(qMax(16, sizeKb));
+}
+
+QString ProjectSettingsDialog::outputAppName() const
+{
+    return m_outputAppNameEdit->text().trimmed();
+}
+
+void ProjectSettingsDialog::setOutputAppName(const QString &name)
+{
+    m_outputAppNameEdit->setText(name);
 }
 
 QString ProjectSettingsDialog::customLinkerScriptPath() const

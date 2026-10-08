@@ -24,8 +24,11 @@ class QTreeWidgetItem;
 class QPlainTextEdit;
 class QToolBar;
 class QProcess;
+class QProgressBar;
 class QTabWidget;
+class QSplitter;
 class QTimer;
+class QFileSystemWatcher;
 
 class MainWindow : public QMainWindow
 {
@@ -34,6 +37,8 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    void showStartupProjectChooser();
 
 private:
 
@@ -64,10 +69,27 @@ private:
     void removeSelectedProjectFile();
     void renameSelectedProjectFile();
     void handleCompilerFinished(int exitCode);
+    void setCompileProgressStage(const QString &text);
+    void finishCompileProgress();
+    bool closeEditorTab(int index);
 
     CodeEditor *activeEditor() const;
+    CodeEditor *primaryEditorForTab(QWidget *tabWidget) const;
+    QList<CodeEditor *> editorsForTab(QWidget *tabWidget) const;
+    int tabIndexForEditor(CodeEditor *editor) const;
+    int editorSplitTabIndex() const;
+    QSplitter *editorSplitWidget() const;
+    CodeEditor *splitHostEditor(QSplitter *splitter) const;
+    CodeEditor *splitSecondaryEditor(QSplitter *splitter) const;
+    void updateEditorSplitPresentation();
+    void openCurrentTabInExistingSplit();
+    void toggleCurrentEditorSplit();
     void updateCursorPositionStatus();
     CodeEditor *createEditor(const QString &filePath = QString());
+    void watchEditorFile(CodeEditor *editor);
+    void unwatchEditorFile(CodeEditor *editor);
+    void handleExternalFileChange(const QString &filePath);
+    bool reloadEditorFromDisk(CodeEditor *editor);
     bool openFile(const QString &filePath);
     bool openApiReference(const QString &filePath, int line);
     bool saveEditor(CodeEditor *editor);
@@ -77,9 +99,11 @@ private:
     void addProjectFile(const QString &filePath);
     void clearEditorTabs();
     void refreshProjectFiles();
+    void rescanProjectFiles();
     void refreshSymbolTree();
     void jumpToSymbol(QTreeWidgetItem *item, int column);
     void goToDefinition(CodeEditor *sourceEditor, const QString &symbol, int sourceLine);
+    void openIncludedFile(CodeEditor *sourceEditor, const QString &includeName);
     void completeStructMembers(CodeEditor *sourceEditor,
                                const QString &objectName,
                                int sourceLine,
@@ -165,11 +189,15 @@ private:
     QTreeWidget *m_functionvarList;
     QLabel *m_quickTipLabel;
     QLabel *m_cursorPositionLabel = nullptr;
+    QProgressBar *m_compileProgressBar = nullptr;
     QPlainTextEdit *m_outputPane;
     QToolBar *m_outputToolBar;
     FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
     QTimer *m_projectAnalysisTimer;
+    QTimer *m_compileProgressDelayTimer;
+    QFileSystemWatcher *m_fileWatcher;
+    QSet<QString> m_pendingExternalReloads;
     BuildStep m_buildStep;
     QString m_pendingElfPath;
     QString m_pendingAsmPath;
@@ -183,6 +211,7 @@ private:
     QString m_compilerStderrBuffer;
     QHash<QString, QList<EditorDiagnostic>> m_compilerDiagnostics;
     QString m_linkerScriptPath;
+    QString m_outputAppName;
     QString m_projectType;
     int m_modSizeKb;
     int m_appSizeKb;

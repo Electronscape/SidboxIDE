@@ -24,10 +24,48 @@
 #include <QTextEdit>
 #include <QTextDocument>
 #include <QTextStream>
+#include <QTextLayout>
+#include <QTimer>
 #include <QWidget>
 
 namespace {
 constexpr int CodeMinimapWidth = 92;
+
+QString includePathAtCursor(const QTextCursor &cursor)
+{
+    const QString line = cursor.block().text();
+
+    /*
+     * Recognise both:
+     *
+     *     #include "thing.h"
+     *     #include <thing.h>
+     *
+     * Only the filename/path between the delimiters is clickable. This keeps
+     * Ctrl+Click on ordinary identifiers using the normal go-to-definition
+     * path.
+     */
+    static const QRegularExpression includeExpression(
+        QStringLiteral(
+            R"(^\s*#\s*include\s*[<"]([^>"]+)[>"])"));
+
+    const QRegularExpressionMatch match =
+        includeExpression.match(line);
+
+    if (!match.hasMatch()) {
+        return {};
+    }
+
+    const int start = match.capturedStart(1);
+    const int end = match.capturedEnd(1);
+    const int position = cursor.positionInBlock();
+
+    if (position < start || position > end) {
+        return {};
+    }
+
+    return match.captured(1).trimmed();
+}
 
 class CodeMinimap : public QWidget
 {
@@ -36,20 +74,59 @@ public:
         : QWidget(editor)
         , m_editor(editor)
         , m_dragging(false)
+        , m_sourceRefreshTimer(new QTimer(this))
     {
         setCursor(Qt::PointingHandCursor);
         setMouseTracking(true);
         setAttribute(Qt::WA_OpaquePaintEvent);
 
-        connect(editor->document(), &QTextDocument::contentsChanged, this, [this]() {
-            update();
-        });
+        /*
+         * Rebuilding the minimap requires reading/splitting the whole document.
+         * Doing that on every keystroke becomes noticeable in larger sources.
+         * Let the editor text remain completely immediate and let the minimap
+         * catch up shortly after typing pauses.
+         */
+        m_sourceRefreshTimer->setSingleShot(true);
+        m_sourceRefreshTimer->setInterval(180);
+        connect(m_sourceRefreshTimer, &QTimer::timeout,
+                this, [this]() {
+                    rebuildSourceCache();
+                });
+
+        attachDocument(editor->document());
+
         connect(editor->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+            /*
+             * Scrolling still repaints immediately, but paintEvent() uses the
+             * cached source lines so it no longer converts the whole document
+             * to plain text on every scrollbar movement.
+             */
             update();
         });
         connect(editor->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) {
             update();
         });
+    }
+
+    void attachDocument(QTextDocument *document)
+    {
+        QObject::disconnect(m_documentChangedConnection);
+
+        m_cachedLines.clear();
+
+        if (document) {
+            m_documentChangedConnection =
+                connect(document, &QTextDocument::contentsChanged,
+                        this, [this]() {
+                            m_sourceRefreshTimer->start();
+                        });
+        }
+
+        /*
+         * Populate immediately for an already-existing shared document.
+         * A normal newly-opened file will then use the debounce for edits.
+         */
+        rebuildSourceCache();
     }
 
 protected:
@@ -62,7 +139,7 @@ protected:
             return;
         }
 
-        const QStringList lines = m_editor->toPlainText().split(QLatin1Char('\n'));
+        const QStringList &lines = m_cachedLines;
         const int lineCount = qMax(1, lines.size());
         const qreal usableHeight = qMax(1, height() - 2);
         //const qreal yScale = usableHeight / static_cast<qreal>(lineCount);
@@ -208,6 +285,19 @@ protected:
     }
 
 private:
+    void rebuildSourceCache()
+    {
+        if (!m_editor) {
+            m_cachedLines.clear();
+            update();
+            return;
+        }
+
+        m_cachedLines =
+            m_editor->toPlainText().split(QLatin1Char('\n'));
+        update();
+    }
+
     bool jumpToDiagnosticAtY(qreal y)
     {
         if (!m_editor || height() <= 1) {
@@ -311,6 +401,9 @@ private:
 
     CodeEditor *m_editor;
     bool m_dragging;
+    QTimer *m_sourceRefreshTimer;
+    QStringList m_cachedLines;
+    QMetaObject::Connection m_documentChangedConnection;
 };
 
 class LineNumberArea : public QWidget
@@ -501,6 +594,10 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     setFont(fixedFont);
     setLineWrapMode(QPlainTextEdit::NoWrap);
+    /*
+     * Tabs are stored as real '\t' characters, but displayed four columns
+     * wide to match the existing Sidbox source style.
+     */
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
     setMouseTracking(true);
     viewport()->setMouseTracking(true);
@@ -514,9 +611,6 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
         if (!m_resourceMode) {
             emit quickTipCandidateChanged(textUnderCursor());
         }
-    });
-    connect(this, &CodeEditor::updateRequest, this, [this](const QRect &, int) {
-        m_minimap->update();
     });
     updateLineNumberAreaWidth(4);
     highlightCurrentLine();
@@ -564,15 +658,19 @@ void CodeEditor::setFunctionCompletions(const QStringList &signatures)
 
 void CodeEditor::setProjectTypeNames(const QStringList &typeNames)
 {
+    m_projectTypeNames = typeNames;
+
     if (m_highlighter) {
-        m_highlighter->setExternalTypeNames(typeNames);
+        m_highlighter->setExternalTypeNames(m_projectTypeNames);
     }
 }
 
 void CodeEditor::setApiSyntaxNames(const QStringList &apiNames)
 {
+    m_apiSyntaxNames = apiNames;
+
     if (m_highlighter) {
-        m_highlighter->setExternalApiNames(apiNames);
+        m_highlighter->setExternalApiNames(m_apiSyntaxNames);
     }
 }
 
@@ -613,8 +711,7 @@ void CodeEditor::setResourceMode(bool enabled)
 
     if (m_minimap) {
         const QRect view = viewport()->geometry();
-        m_minimap->setGeometry(
-            QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
+        m_minimap->setGeometry(QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
         m_minimap->raise();
     }
 
@@ -699,7 +796,7 @@ void CodeEditor::setTheme(const IDETheme &theme)
      */
     QColor editorBackground = m_theme.editorBackground;
     if (m_resourceMode) {
-        editorBackground = QColor(52, 52, 52);
+        editorBackground = QColor(16, 16, 16);
     }
 
     p.setColor(QPalette::Base, editorBackground);
@@ -910,11 +1007,27 @@ QString CodeEditor::diagnosticToolTipAtY(int y) const
     return {};
 }
 
-bool CodeEditor::loadFromFile(const QString &path)
+bool CodeEditor::loadFromFile(
+    const QString &path,
+    bool deferSyntaxHighlighting)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
+    }
+
+    /*
+     * When opening a new tab, let the plain QTextDocument appear first.
+     * QSyntaxHighlighter otherwise processes the document while setPlainText()
+     * is still inside the open-file call, which makes the tab itself feel
+     * slower than it really is.
+     *
+     * MainWindow calls enableSyntaxHighlighting() shortly after the tab has
+     * been inserted and painted.
+     */
+    if (deferSyntaxHighlighting && m_highlighter) {
+        delete m_highlighter;
+        m_highlighter = nullptr;
     }
 
     QTextStream stream(&file);
@@ -923,6 +1036,87 @@ bool CodeEditor::loadFromFile(const QString &path)
     document()->setModified(false);
     return true;
 }
+
+void CodeEditor::enableSyntaxHighlighting()
+{
+    if (m_highlighter) {
+        return;
+    }
+
+    /*
+     * Reattach normal highlighting after the editor is visible. The current
+     * theme and cached project/API names are restored here, so the file first
+     * appears immediately as plain text and then gains its syntax colours.
+     */
+    m_highlighter =
+        new CSyntaxHighlighter(document());
+
+    m_highlighter->setResourceMode(m_resourceMode);
+    m_highlighter->setTheme(m_theme);
+
+    if (!m_resourceMode) {
+        m_highlighter->setExternalTypeNames(
+            m_projectTypeNames);
+        m_highlighter->setExternalApiNames(
+            m_apiSyntaxNames);
+    }
+
+    viewport()->update();
+}
+
+void CodeEditor::shareDocumentFrom(CodeEditor *sourceEditor)
+{
+    if (!sourceEditor || sourceEditor == this) {
+        return;
+    }
+
+    /*
+     * The secondary split view must show and edit the exact same QTextDocument
+     * as the primary view.  Do NOT give the shared document a second syntax
+     * highlighter: highlighting belongs to the document, so the primary
+     * editor's highlighter is already visible in both views.
+     */
+    if (m_highlighter) {
+        delete m_highlighter;
+        m_highlighter = nullptr;
+    }
+
+    QPlainTextEdit::setDocument(sourceEditor->document());
+
+    if (m_minimap) {
+        static_cast<CodeMinimap *>(m_minimap)
+            ->attachDocument(document());
+    }
+
+    m_filePath = sourceEditor->filePath();
+    m_resourceMode = sourceEditor->isResourceMode();
+
+    /*
+     * shareDocumentFrom() is also used by split views. Copy the already-built
+     * completion list from the source editor so opening a split does not need
+     * another project-wide scan just to make the second pane useful.
+     */
+    m_functionCompletions = sourceEditor->m_functionCompletions;
+    m_projectTypeNames = sourceEditor->m_projectTypeNames;
+    m_apiSyntaxNames = sourceEditor->m_apiSyntaxNames;
+    m_memberCompletionActive = false;
+    m_memberCompletionPrefix.clear();
+    if (m_completionModel) {
+        m_completionModel->setStringList(m_functionCompletions);
+    }
+
+    setReadOnly(sourceEditor->isReadOnly());
+    setTheme(sourceEditor->theme());
+    setDiagnostics(sourceEditor->diagnostics());
+
+    if (m_minimap) {
+        m_minimap->update();
+    }
+
+    updateLineNumberAreaWidth(0);
+    viewport()->update();
+}
+
 
 bool CodeEditor::save()
 {
@@ -1069,7 +1263,12 @@ void CodeEditor::insertAutoIndent()
     const QString trimmedBefore = beforeCursor.trimmed();
     const bool opensBlock = trimmedBefore.endsWith(QLatin1Char(123));
     if (opensBlock) {
-        nextIndent += QString(indentWidthColumns(), QLatin1Char(32));
+        /*
+         * Sidbox sources use real tab characters for indentation. Keep the
+         * visual tab width at four columns, but store one '\t' in the file
+         * instead of four space characters.
+         */
+        nextIndent += QLatin1Char('\t');
     }
 
     cursor.beginEditBlock();
@@ -1100,7 +1299,7 @@ void CodeEditor::indentSelection()
 
     QTextCursor editCursor(document()->findBlock(start));
     const QTextBlock endBlock = document()->findBlock(end);
-    const QString indent(indentWidthColumns(), QLatin1Char(32));
+    const QString indent(QLatin1Char('\t'));
 
     editCursor.beginEditBlock();
     while (editCursor.block().isValid()) {
@@ -1161,39 +1360,134 @@ void CodeEditor::drawIndentGuides(QPaintEvent *event)
     pen.setStyle(Qt::DotLine);
     painter.setPen(pen);
 
-    const int spaceWidth = qMax(1, fontMetrics().horizontalAdvance(QLatin1Char(32)));
     const int indentWidth = indentWidthColumns();
+
     QTextBlock block = firstVisibleBlock();
-    int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
-    int bottom = top + qRound(blockBoundingRect(block).height());
+    int top =
+        qRound(
+            blockBoundingGeometry(block)
+                .translated(contentOffset())
+                .top());
 
-    while (block.isValid() && top <= event->rect().bottom()) {
-        if (block.isVisible() && bottom >= event->rect().top()) {
-            int columns = 0;
+    int bottom =
+        top + qRound(blockBoundingRect(block).height());
+
+    while (block.isValid()
+           && top <= event->rect().bottom()) {
+
+        if (block.isVisible()
+            && bottom >= event->rect().top()) {
+
             const QString text = block.text();
-            for (const QChar ch : text) {
-                if (ch == QLatin1Char(32)) {
-                    ++columns;
-                } else if (ch == QLatin1Char(9)) {
-                    columns += indentWidth - (columns % indentWidth);
-                } else {
-                    break;
+            const QTextLayout *layout = block.layout();
+
+            if (layout && layout->lineCount() > 0) {
+                const QTextLine line = layout->lineAt(0);
+
+                const qreal left =
+                    blockBoundingGeometry(block)
+                        .translated(contentOffset())
+                        .left();
+
+                int leadingEnd = 0;
+                while (leadingEnd < text.size()) {
+                    const QChar ch = text.at(leadingEnd);
+
+                    if (ch == QLatin1Char('\t')
+                        || ch == QLatin1Char(' ')) {
+                        ++leadingEnd;
+                    } else {
+                        break;
+                    }
                 }
-            }
 
-            const qreal left = blockBoundingGeometry(block).translated(contentOffset()).left();
-            for (int column = indentWidth; column <= columns; column += indentWidth) {
-                const int x = qRound(left + column * spaceWidth);
-                if (x >= event->rect().left() && x <= event->rect().right()) {
+                /*
+                 * IMPORTANT:
+                 *
+                 * Do not calculate guide positions as
+                 *     4 * widthOf(' ')
+                 *
+                 * Qt lays out a real tab using QTextLayout's tab stops, and
+                 * that rendered distance can differ slightly from four space
+                 * glyphs because of font metrics / DPI / fractional widths.
+                 *
+                 * cursorToX() gives us the EXACT x position Qt used when it
+                 * rendered the text. The guide follows the real tab stop,
+                 * then moves one physical pixel back into the indentation
+                 * whitespace. That lets us paint it above the active-line
+                 * background without drawing through the first code glyph.
+                 */
+                int i = 0;
+                int spacesInRun = 0;
+                int spaceRunStart = 0;
 
-                    painter.drawLine(x, top, x, bottom);
+                while (i < leadingEnd) {
+                    const QChar ch = text.at(i);
+
+                    if (ch == QLatin1Char('\t')) {
+                        const qreal before =
+                            line.cursorToX(i);
+                        const qreal after =
+                            line.cursorToX(i + 1);
+
+                        const int x =
+                            qRound(left + after) - 1;
+
+                        if (x >= event->rect().left()
+                            && x <= event->rect().right()) {
+                            painter.drawLine(
+                                x,
+                                top,
+                                x,
+                                bottom);
+                        }
+
+                        ++i;
+                        spacesInRun = 0;
+                        continue;
+                    }
+
+                    /*
+                     * Keep old files which still contain groups of spaces
+                     * looking sensible too. A complete four-space indent is
+                     * measured by QTextLayout as well. The same one-pixel
+                     * inset keeps legacy space indentation clear of code text.
+                     */
+                    if (spacesInRun == 0) {
+                        spaceRunStart = i;
+                    }
+
+                    ++spacesInRun;
+                    ++i;
+
+                    if (spacesInRun == indentWidth) {
+                        const qreal before =
+                            line.cursorToX(spaceRunStart);
+                        const qreal after =
+                            line.cursorToX(i);
+
+                        const int x =
+                            qRound(left + after) - 1;
+
+                        if (x >= event->rect().left()
+                            && x <= event->rect().right()) {
+                            painter.drawLine(
+                                x,
+                                top,
+                                x,
+                                bottom);
+                        }
+
+                        spacesInRun = 0;
+                    }
                 }
             }
         }
 
         block = block.next();
         top = bottom;
-        bottom = top + qRound(blockBoundingRect(block).height());
+        bottom =
+            top + qRound(blockBoundingRect(block).height());
     }
 }
 
@@ -1203,7 +1497,23 @@ void CodeEditor::mousePressEvent(QMouseEvent *event)
         && event->button() == Qt::LeftButton
         && (event->modifiers() & Qt::ControlModifier)) {
 
-        QTextCursor cursor = cursorForPosition(event->position().toPoint());
+        QTextCursor cursor =
+            cursorForPosition(event->position().toPoint());
+
+        /*
+         * #include navigation gets first refusal because include paths can
+         * contain '.', '/', '-' and other characters which are not ordinary C
+         * identifier characters.
+         */
+        const QString includeName =
+            includePathAtCursor(cursor);
+
+        if (!includeName.isEmpty()) {
+            emit includeFileRequested(includeName);
+            event->accept();
+            return;
+        }
+
         cursor.select(QTextCursor::WordUnderCursor);
         const QString symbol = cursor.selectedText().trimmed();
 
@@ -1222,18 +1532,27 @@ void CodeEditor::mousePressEvent(QMouseEvent *event)
 
 void CodeEditor::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!m_resourceMode && (event->modifiers() & Qt::ControlModifier)) {
-        QTextCursor cursor = cursorForPosition(event->position().toPoint());
-        cursor.select(QTextCursor::WordUnderCursor);
-        const QString symbol = cursor.selectedText().trimmed();
+    if (!m_resourceMode
+        && (event->modifiers() & Qt::ControlModifier)) {
 
-        static const QRegularExpression identifierExpression(
-            QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        QTextCursor cursor =
+            cursorForPosition(event->position().toPoint());
 
-        viewport()->setCursor(
-            identifierExpression.match(symbol).hasMatch()
-                ? Qt::PointingHandCursor
-                : Qt::IBeamCursor);
+        if (!includePathAtCursor(cursor).isEmpty()) {
+            viewport()->setCursor(Qt::PointingHandCursor);
+        } else {
+            cursor.select(QTextCursor::WordUnderCursor);
+            const QString symbol =
+                cursor.selectedText().trimmed();
+
+            static const QRegularExpression identifierExpression(
+                QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+
+            viewport()->setCursor(
+                identifierExpression.match(symbol).hasMatch()
+                    ? Qt::PointingHandCursor
+                    : Qt::IBeamCursor);
+        }
     } else {
         viewport()->setCursor(Qt::IBeamCursor);
     }
@@ -1243,6 +1562,15 @@ void CodeEditor::mouseMoveEvent(QMouseEvent *event)
 
 void CodeEditor::paintEvent(QPaintEvent *event)
 {
+    /*
+     * Let Qt paint the editor first. This includes the active-line background.
+     * Then paint the indentation guides so they remain visible across that
+     * highlighted line.
+     *
+     * drawIndentGuides() keeps each guide one physical pixel inside the
+     * indentation whitespace, so although the guides are painted last they do
+     * not sit on top of the first code glyph at a tab boundary.
+     */
     QPlainTextEdit::paintEvent(event);
     drawIndentGuides(event);
 }
@@ -1422,7 +1750,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         if (betweenBraces) {
             const QString baseIndent = leadingWhitespace(blockText);
             const QString innerIndent =
-                baseIndent + QString(indentWidthColumns(), QLatin1Char(' '));
+                baseIndent + QLatin1Char('\t');
 
             cursor.beginEditBlock();
             cursor.insertBlock();
@@ -1449,7 +1777,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         if (cursor.hasSelection()) {
             indentSelection();
         } else {
-            cursor.insertText(QString(indentWidthColumns(), QLatin1Char(' ')));
+            cursor.insertText(QString(QLatin1Char('\t')));
             setTextCursor(cursor);
         }
 

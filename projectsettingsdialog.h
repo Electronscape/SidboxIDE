@@ -26,6 +26,9 @@ public:
     int appSizeKb() const;
     void setAppSizeKb(int sizeKb);
 
+    QString outputAppName() const;
+    void setOutputAppName(const QString &name);
+
     QString customLinkerScriptPath() const;
     void setCustomLinkerScriptPath(const QString &path);
     void setDefaultLinkerScriptPath(const QString &path);
@@ -63,6 +66,7 @@ private:
     QLineEdit *m_extraCompilerFlagsEdit;
     QSpinBox *m_modSizeSpinBox;
     QSpinBox *m_appSizeSpinBox;
+    QLineEdit *m_outputAppNameEdit;
     QLineEdit *m_linkerScriptEdit;
     QLabel *m_defaultLinkerLabel;
     QString m_guiDefaultLinkerScriptPath;

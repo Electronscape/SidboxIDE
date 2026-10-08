@@ -82,4 +82,15 @@ qt_generate_deploy_app_script(
     OUTPUT_SCRIPT deploy_script
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
+
+target_compile_options(SidboxIDE PRIVATE
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-march=native>
+    $<$<CONFIG:Release>:-flto>
+)
+
+target_link_options(SidboxIDE PRIVATE
+    $<$<CONFIG:Release>:-flto>
+)
+
 install(SCRIPT ${deploy_script})
