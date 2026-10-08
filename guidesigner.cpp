@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QDrag>
 #include <QDragEnterEvent>
+#include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -62,6 +63,7 @@
 #include <QSize>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QTimer>
 #include <QString>
 #include <QStringList>
 #include <QTableWidget>
@@ -1043,52 +1045,128 @@ public:
     std::function<void(int, int, int, int)> reorderRequested;
 
 protected:
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        // This only paints feedback. The working dropEvent model update
+        // remains the sole authority for reordering menu data.
+        m_indicatorRect = QRect();
+        m_indicatorLine = -1;
+        QTreeWidgetItem *source = currentItem();
+        QTreeWidgetItem *target = itemAt(event->position().toPoint());
+        if (event->source() != this || !source || !target) {
+            viewport()->update();
+            event->ignore();
+            return;
+        }
+
+        const bool movingTitle = !source->parent();
+        if (movingTitle) {
+            QTreeWidgetItem *title = target->parent() ? target->parent() : target;
+            const QRect rect = visualItemRect(title);
+            m_indicatorLine = event->position().y() >= rect.center().y()
+                                  ? rect.bottom() + 1 : rect.top();
+        } else if (target->parent()) {
+            const QRect rect = visualItemRect(target);
+            m_indicatorLine = event->position().y() >= rect.center().y()
+                                  ? rect.bottom() + 1 : rect.top();
+        } else {
+            // Dropping an entry on a menu title appends it to that menu.
+            m_indicatorRect = visualItemRect(target);
+        }
+        viewport()->update();
+        event->acceptProposedAction();
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        m_indicatorRect = QRect();
+        m_indicatorLine = -1;
+        viewport()->update();
+        QTreeWidget::dragLeaveEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QTreeWidget::paintEvent(event);
+        if (m_indicatorLine < 0 && m_indicatorRect.isNull())
+            return;
+
+        QPainter painter(viewport());
+        const QColor indicator = palette().color(QPalette::Highlight);
+        if (!m_indicatorRect.isNull()) {
+            painter.fillRect(m_indicatorRect, QColor(indicator.red(),
+                             indicator.green(), indicator.blue(), 65));
+            painter.setPen(QPen(indicator, 2));
+            painter.drawRect(m_indicatorRect.adjusted(1, 1, -2, -2));
+        } else {
+            painter.setPen(QPen(indicator, 2));
+            painter.drawLine(2, m_indicatorLine, viewport()->width() - 3,
+                             m_indicatorLine);
+        }
+    }
+
     void dropEvent(QDropEvent *event) override
     {
+        m_indicatorRect = QRect();
+        m_indicatorLine = -1;
+        viewport()->update();
         if (event->source() != this || !currentItem()) {
             event->ignore();
             return;
         }
 
         QTreeWidgetItem *source = currentItem();
-        const int fromMenu = source->data(0, Qt::UserRole).toInt();
-        const int fromItem = source->data(0, Qt::UserRole + 1).toInt();
         QTreeWidgetItem *target = itemAt(event->position().toPoint());
-        const DropIndicatorPosition position = dropIndicatorPosition();
-        int toMenu = -1;
-        int toIndex = 0;
-
-        if (fromItem < 0) {
-            // A title may only move among top-level titles.
-            if (!target) {
-                toIndex = topLevelItemCount();
-            } else {
-                QTreeWidgetItem *title = target->parent() ? target->parent() : target;
-                toIndex = indexOfTopLevelItem(title);
-                if (target->parent() || position == BelowItem || position == OnItem)
-                    ++toIndex;
-            }
-        } else {
-            if (!target) {
-                toMenu = topLevelItemCount() - 1;
-                if (toMenu < 0) { event->ignore(); return; }
-                toIndex = topLevelItem(toMenu)->childCount();
-            } else if (target->parent()) {
-                toMenu = indexOfTopLevelItem(target->parent());
-                toIndex = target->parent()->indexOfChild(target);
-                if (position == BelowItem || position == OnItem)
-                    ++toIndex;
-            } else {
-                toMenu = indexOfTopLevelItem(target);
-                toIndex = position == AboveItem ? 0 : target->childCount();
-            }
+        if (!target) {
+            event->ignore();
+            return;
         }
 
-        if (reorderRequested)
-            reorderRequested(fromMenu, fromItem, toMenu, toIndex);
-        event->setDropAction(Qt::MoveAction);
-        event->accept();
+        const int fromMenu = source->data(0, Qt::UserRole).toInt();
+        const int fromItem = source->data(0, Qt::UserRole + 1).toInt();
+        const bool movingTitle = source->parent() == nullptr;
+        int toMenu = -1;
+        int toIndex = -1;
+
+        if (movingTitle) {
+            // Drop anywhere on a menu title or its children to position
+            // the complete menu before or after that title.
+            QTreeWidgetItem *title = target->parent() ? target->parent() : target;
+            const QRect rect = visualItemRect(title);
+            toIndex = indexOfTopLevelItem(title)
+                      + (event->position().y() >= rect.center().y() ? 1 : 0);
+        } else if (target->parent()) {
+            // Children can only be inserted between existing items.
+            QTreeWidgetItem *parent = target->parent();
+            toMenu = indexOfTopLevelItem(parent);
+            const QRect rect = visualItemRect(target);
+            toIndex = parent->indexOfChild(target)
+                      + (event->position().y() >= rect.center().y() ? 1 : 0);
+        } else {
+            // Dropping on a menu heading appends the entry there,
+            // including menus that have no items yet.
+            toMenu = indexOfTopLevelItem(target);
+            toIndex = target->childCount();
+        }
+
+        if (fromMenu < 0 || toIndex < 0
+            || (!movingTitle && (fromItem < 0 || toMenu < 0))) {
+            event->ignore();
+            return;
+        }
+
+        // Qt must never move/reparent tree nodes itself. Apply the change
+        // to the authoritative menu model after the drag has unwound.
+        event->ignore();
+        QTimer::singleShot(0, this, [this, fromMenu, fromItem, toMenu, toIndex]() {
+            if (reorderRequested)
+                reorderRequested(fromMenu, fromItem, toMenu, toIndex);
+        });
     }
+
+private:
+    QRect m_indicatorRect;
+    int m_indicatorLine = -1;
 };
 
 
@@ -2724,6 +2802,15 @@ protected:
              || m_windowDragging)
             && event->button()
                == Qt::LeftButton) {
+            // A click selects a gadget but must not modify the design.
+            // Only commit if the drag/resize actually changed geometry.
+            const bool windowGesture = m_windowResizing || m_windowDragging;
+            const bool geometryChanged = windowGesture
+                ? (m_window && m_window->rect != m_startRect)
+                : (m_gadgets && m_selected >= 0
+                   && m_selected < m_gadgets->size()
+                   && m_gadgets->at(m_selected).rect != m_startRect);
+
             m_dragging = false;
             m_resizing = false;
             m_windowResizing = false;
@@ -2731,7 +2818,7 @@ protected:
             m_windowResizeEdges = {};
             m_gadgetResizeEdges = {};
 
-            if (geometryCommitted) {
+            if (geometryChanged && geometryCommitted) {
                 geometryCommitted();
             }
 
@@ -4048,6 +4135,121 @@ public:
         setProperty("sidboxGuiDesigner", true);
         setProperty("sidboxGuiDesignerPath", m_filePath);
 
+        // Scoped designer theme: match the main IDE without overriding the
+        // native checkbox indicators or the custom-painted SIDBOX canvas.
+        setStyleSheet(QStringLiteral(R"QSS(
+            QToolBar {
+                background-color: #101010;
+                border: none;
+                spacing: 1px;
+                padding: 1px;
+            }
+            QToolButton {
+                background-color: #101010;
+                color: #ffffff;
+                border: none;
+                border-radius: 0px;
+                padding: 3px;
+            }
+            QToolButton:hover { background-color: #202020; }
+            QToolButton:pressed { background-color: #2858A8; }
+            QPushButton {
+                background-color: #101010;
+                color: #dddddd;
+                border: 1px solid #303030;
+                border-radius: 0px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #202020;
+                border: 1px solid #506090;
+            }
+            QPushButton:pressed {
+                background-color: #2858A8;
+                color: #ffffff;
+            }
+            QListWidget, QTreeWidget, QTableWidget {
+                background-color: #050505;
+                color: #dddddd;
+                border: 1px solid #102048;
+                border-radius: 0px;
+                alternate-background-color: #0b0b0b;
+            }
+            QListWidget::item, QTreeWidget::item, QTableWidget::item {
+                border-radius: 0px;
+                margin: 0px;
+            }
+            QListWidget::item:selected, QTreeWidget::item:selected,
+            QTableWidget::item:selected {
+                background-color: #2858A8;
+                color: #ffffff;
+                border-radius: 0px;
+            }
+            QTreeWidget::item:hover:!selected { background-color: #161616; }
+            QCheckBox {
+                color: #dddddd;
+                background-color: transparent;
+                spacing: 6px;
+            }
+            QComboBox, QSpinBox {
+                background-color: #101010;
+                color: #dddddd;
+                border: 1px solid #303030;
+                border-radius: 0px;
+                padding: 4px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #050505;
+                color: #dddddd;
+                selection-background-color: #2858A8;
+                selection-color: #ffffff;
+            }
+            QLineEdit, QPlainTextEdit {
+                background-color: #050505;
+                color: #dddddd;
+                border: 1px solid #303030;
+                border-radius: 0px;
+                selection-background-color: #2858A8;
+                selection-color: #ffffff;
+            }
+            QSplitter::handle { background-color: #202020; }
+            QSplitter::handle:hover { background-color: #2858A8; }
+            QMenu {
+                background-color: #080808;
+                color: #dddddd;
+                border: 1px solid #303030;
+            }
+            QMenu::item { padding: 5px 24px 5px 8px; }
+            QMenu::item:selected {
+                background-color: #2858A8;
+                color: #ffffff;
+            }
+            QScrollBar:vertical {
+                background: #080808;
+                width: 12px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #303030;
+                min-height: 20px;
+                border-radius: 0px;
+            }
+            QScrollBar::handle:vertical:hover { background: #505050; }
+            QScrollBar:add-line:vertical, QScrollBar:sub-line:vertical { height: 0px; }
+            QScrollBar:horizontal {
+                background: #080808;
+                height: 12px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #303030;
+                min-width: 20px;
+                border-radius: 0px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #505050; }
+            QScrollBar:add-line:horizontal, QScrollBar:sub-line:horizontal { width: 0px; }
+        )QSS"));
+
         auto *outer = new QVBoxLayout(this);
         outer->setContentsMargins(0, 0, 0, 0);
         outer->setSpacing(0);
@@ -4414,10 +4616,12 @@ public:
 
     bool saveDesignAndGenerate() override
     {
-        if (!saveDesign()) {
+        // Compiling or saving must not overwrite a generated source that is
+        // already current. Explicit Generate... remains available at any time.
+        const bool regenerate = m_needsGeneration || !QFile::exists(outputPath(m_detached));
+        if (m_modified && !saveDesign())
             return false;
-        }
-        return generateCFile(false);
+        return !regenerate || generateCFile(false);
     }
 
 private:
@@ -4425,6 +4629,7 @@ private:
     {
         if (m_modified == modified) return;
         m_modified = modified;
+        if (modified) m_needsGeneration = true;
         if (tabTitleChanged) tabTitleChanged();
     }
 
@@ -5712,7 +5917,10 @@ private:
 
         const QString callback = safeCIdentifier(item.callback,
                                                   QStringLiteral("MenuCallback"));
-        if (!generateCFile(false))
+        if (m_modified && !saveDesign())
+            return;
+        if ((m_needsGeneration || !QFile::exists(generatedCPath()))
+            && !generateCFile(false))
             return;
 
         if (sourceNavigationRequested)
@@ -5729,7 +5937,11 @@ private:
             return;
         }
 
-        if (!generateCFile(false)) {
+        if (m_modified && !saveDesign()) {
+            return;
+        }
+        if ((m_needsGeneration || !QFile::exists(generatedCPath()))
+            && !generateCFile(false)) {
             return;
         }
 
@@ -5970,7 +6182,10 @@ private:
     {
         auto *edit = new QLineEdit(value, m_propertyHost);
         m_propertyLayout->addRow(label, edit);
-        connect(edit, &QLineEdit::editingFinished, this, [this, edit, changed]() {
+        connect(edit, &QLineEdit::editingFinished, this, [this, edit, value, changed]() {
+            // Focus changes (for example, selecting another gadget) also emit
+            // editingFinished. They must not dirty an unchanged design.
+            if (edit->text() == value) return;
             pushUndoSnapshot();
             changed(edit->text());
             setModified(true);
@@ -6360,6 +6575,7 @@ private:
         auto *list =
             new QListWidget(
                 m_propertyHost);
+
 
         list->setSelectionMode(
             QAbstractItemView::NoSelection);
@@ -7546,6 +7762,8 @@ private:
         m_detached = root.value(QStringLiteral("detached")).toBool(false);
         m_sourceName = root.value(QStringLiteral("sourceFile")).toString();
         m_sketchName = root.value(QStringLiteral("sketchFile")).toString();
+        // Old .sbui projects without this field regenerate once, then remember.
+        m_needsGeneration = root.value(QStringLiteral("needsGeneration")).toBool(true);
         if (m_generationMode) {
             const QSignalBlocker blocker(m_generationMode);
             m_generationMode->setCurrentIndex(m_detached ? 1 : 0);
@@ -7690,6 +7908,7 @@ private:
         root.insert(QStringLiteral("detached"), m_detached);
         root.insert(QStringLiteral("sourceFile"), m_sourceName);
         root.insert(QStringLiteral("sketchFile"), m_sketchName);
+        root.insert(QStringLiteral("needsGeneration"), m_needsGeneration);
         QSaveFile file(m_filePath); if (!file.open(QIODevice::WriteOnly|QIODevice::Text)) { QMessageBox::warning(this,QObject::tr("GUI Designer"),QObject::tr("Could not save %1").arg(QDir::toNativeSeparators(m_filePath))); return false; }
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)); if (!file.commit()) return false;
         setModified(false); return true;
@@ -8999,8 +9218,13 @@ private:
               << "_items);\n";
         }
 
-        s << "\t\t\tSBOS_CloseWindow(win);\n"
-             "\t\t\treturn CGPROC_HANDLED;\n";
+        s << "\t\t\tSBOS_CloseWindow(win);\n";
+        if (!m_menus.isEmpty()) {
+            s << "\t\t\tSBOS_DestroyMenu(&"
+              << win
+              << "_Menu);\n";
+        }
+        s << "\t\t\treturn CGPROC_HANDLED;\n";
 
         if (hasBitmapView) {
             s << "\n"
@@ -9308,7 +9532,10 @@ private:
             return false;
         }
 
-        if (chooseDestination || m_modified) saveDesign();
+        // Only mark the default destination current. Generating to the other
+        // destination must not suppress the next normal automatic generation.
+        if (sketch == m_detached) m_needsGeneration = false;
+        if (!saveDesign()) return false;
         if (generatedFilesChanged) {
             generatedFilesChanged(
                 m_filePath,
@@ -9343,6 +9570,7 @@ private:
     QString m_sketchName;
     QComboBox *m_generationMode = nullptr;
     bool m_modified = false;
+    bool m_needsGeneration = true;
     GuiDesignerWindow m_window;
     QList<GuiDesignerGadget> m_gadgets;
     QList<GuiDesignerMenuTitle> m_menus;
