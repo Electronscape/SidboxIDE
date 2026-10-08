@@ -67,6 +67,9 @@ private:
     void createProjectFileInDirectory(const QString &directoryPath);
     void createResourceFile();
     void createResourceFileInDirectory(const QString &directoryPath);
+    void createGuiDesigner();
+    bool openGuiDesigner(const QString &filePath);
+    bool saveGuiDesignerTab(QWidget *widget);
     void createProjectFolderInDirectory(const QString &directoryPath);
     QString projectContextDirectory(QTreeWidgetItem *item) const;
     void moveProjectFile(const QString &sourceFilePath, const QString &targetDirectory);
