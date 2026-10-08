@@ -3269,6 +3269,28 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    /* Ctrl+Tab belongs to the IDE, even if completion is currently open. */
+    const Qt::KeyboardModifiers earlyModifiers =
+        event->modifiers();
+
+    const bool earlyControlOnly =
+        (earlyModifiers & Qt::ControlModifier)
+        && !(earlyModifiers & Qt::ShiftModifier)
+        && !(earlyModifiers & Qt::AltModifier)
+        && !(earlyModifiers & Qt::MetaModifier);
+
+    if (earlyControlOnly
+        && event->key() == Qt::Key_Tab) {
+        if (m_completer
+            && m_completer->popup()->isVisible()) {
+            m_completer->popup()->hide();
+        }
+
+        emit nextEditorTabRequested();
+        event->accept();
+        return;
+    }
+
     // If the completion popup is open, Tab/Enter accept the current completion first.
     if (m_completer && m_completer->popup()->isVisible()) {
         switch (event->key()) {
@@ -3368,14 +3390,12 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
     }
 
     /*
-     * Shift+Tab has two useful editor meanings:
-     *
-     *   selection present -> unindent the selected lines
-     *   no selection      -> cycle to the next editor tab
-     *
-     * Do not steal Alt+Tab / Ctrl+Tab from the desktop or any future IDE
-     * shortcut. Qt may report Shift+Tab as Key_Backtab, so accept both forms
-     * only when no Alt/Ctrl/Meta modifier is present.
+     * Editor tab switching now lives on Ctrl+Tab. Shift+Tab is reserved for
+     * code indentation, matching normal source-editor behaviour.
+     */
+    /*
+     * Shift+Tab always unindents the current/selected line block. Qt may report
+     * it as Key_Backtab, so accept both forms when Alt/Ctrl/Meta are absent.
      */
     const bool shiftTab =
         !(modifiers & Qt::AltModifier)
@@ -3386,15 +3406,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
                 && (modifiers & Qt::ShiftModifier)));
 
     if (shiftTab) {
-        QTextCursor cursor =
-            textCursor();
-
-        if (cursor.hasSelection()) {
-            unindentSelection();
-        } else {
-            emit nextEditorTabRequested();
-        }
-
+        unindentSelection();
         event->accept();
         return;
     }

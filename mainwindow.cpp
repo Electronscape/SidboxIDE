@@ -144,7 +144,7 @@ bool isProjectExplorerSuffix(const QString &suffix)
     return lower == QStringLiteral("c") || lower == QStringLiteral("h")
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
         || lower == QStringLiteral("md") || lower == QStringLiteral("res")
-        || lower == QStringLiteral("sbui");
+        || lower == QStringLiteral("sbui") || lower == QStringLiteral("uis");
 }
 
 QIcon editorTabIconForFile(const QString &filePath,
@@ -168,6 +168,7 @@ QIcon editorTabIconForFile(const QString &filePath,
     }
 
     if (suffix == QStringLiteral("c")
+        || suffix == QStringLiteral("uis")
         || suffix == QStringLiteral("cc")
         || suffix == QStringLiteral("cpp")) {
         return QIcon(QStringLiteral(":/icons/tree_file_c.png"));
@@ -191,7 +192,7 @@ QIcon editorTabIconForFile(const QString &filePath,
     }
 
     if (suffix == QStringLiteral("sbui")) {
-        return QIcon(QStringLiteral(":/icons/project_settings.png"));
+        return QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
     }
 
     if (suffix == QStringLiteral("md")) {
@@ -2899,6 +2900,16 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
+    const auto savePaneLayout = [this]() {
+        auto *splitter = findChild<QSplitter *>(QStringLiteral("mainThreePaneSplitter"));
+        if (!splitter) return;
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("layout/projectTreeWidth"),
+                          splitter->property("projectTreeWidth").toInt());
+        settings.setValue(QStringLiteral("layout/editorRightWidth"),
+                          splitter->property("editorRightWidth").toInt());
+    };
+
     QList<SidboxGuiDesigner *> unsavedDesigners;
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(m_editorTabs->widget(i))) {
@@ -2972,6 +2983,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 
     if (unsavedEditors.isEmpty()) {
+        savePaneLayout();
         event->accept();
         return;
     }
@@ -3036,6 +3048,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 
     if (clicked == discardButton) {
+        savePaneLayout();
         event->accept();
         return;
     }
@@ -3081,6 +3094,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }
     }
 
+    savePaneLayout();
     event->accept();
 }
 
@@ -3879,8 +3893,72 @@ void MainWindow::setupInterface()
     mainSplitter->setStretchFactor(1, 5);
     mainSplitter->setStretchFactor(2, 1);
     mainSplitter->setSizes({300, 1200, 300});
+    mainSplitter->setObjectName(QStringLiteral("mainThreePaneSplitter"));
 
+    // Remember widths rather than restoring the complete splitter state. A
+    // hidden right pane must never change the project tree's chosen width.
+    QSettings paneSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    const int projectWidth = qMax(80, paneSettings.value(
+        QStringLiteral("layout/projectTreeWidth"), 300).toInt());
+    const int editorRightWidth = qMax(80, paneSettings.value(
+        QStringLiteral("layout/editorRightWidth"), 300).toInt());
+    mainSplitter->setProperty("projectTreeWidth", projectWidth);
+    mainSplitter->setProperty("editorRightWidth", editorRightWidth);
+    mainSplitter->setProperty("switchingTabs", false);
+    mainSplitter->setStretchFactor(0, 0);
+    mainSplitter->setStretchFactor(1, 1);
+    mainSplitter->setStretchFactor(2, 0);
+    mainSplitter->setSizes({projectWidth, 1200, editorRightWidth});
 
+    // One fixed-by-tab-switch project width; the user can still drag its handle.
+    // In designer mode the right pane disappears and the editor fills that space.
+    // In code mode the previously chosen right-pane width is restored.
+    connect(m_editorTabs, &QTabWidget::currentChanged, this,
+            [this, mainSplitter, rightPane](int) {
+        const bool designing = dynamic_cast<SidboxGuiDesigner *>(
+            m_editorTabs->currentWidget()) != nullptr;
+        const int left = mainSplitter->property("projectTreeWidth").toInt();
+        const int right = mainSplitter->property("editorRightWidth").toInt();
+        mainSplitter->setProperty("switchingTabs", true);
+        if (designing) rightPane->hide();
+        else rightPane->show();
+        const int total = qMax(1, mainSplitter->width());
+        if (designing) mainSplitter->setSizes({left, qMax(1, total - left), 0});
+        else mainSplitter->setSizes({left, qMax(1, total - left - right), right});
+        // Defer until Qt has processed the show/hide layout update.
+        QTimer::singleShot(0, mainSplitter, [mainSplitter, rightPane]() {
+            const int left = mainSplitter->property("projectTreeWidth").toInt();
+            const int right = mainSplitter->property("editorRightWidth").toInt();
+            const int total = qMax(1, mainSplitter->width());
+            if (rightPane->isHidden())
+                mainSplitter->setSizes({left, qMax(1, total - left), 0});
+            else
+                mainSplitter->setSizes({left, qMax(1, total - left - right), right});
+            mainSplitter->setProperty("switchingTabs", false);
+        });
+    });
+    connect(mainSplitter, &QSplitter::splitterMoved, this,
+            [mainSplitter, rightPane](int, int) {
+        if (mainSplitter->property("switchingTabs").toBool()) return;
+        const QList<int> widths = mainSplitter->sizes();
+        if (widths.size() != 3) return;
+        if (widths[0] >= 80)
+            mainSplitter->setProperty("projectTreeWidth", widths[0]);
+        if (!rightPane->isHidden() && widths[2] >= 80)
+            mainSplitter->setProperty("editorRightWidth", widths[2]);
+    });
+
+    // The main window launches maximised. Apply the stored widths after its
+    // final geometry has been calculated instead of relying on initial sizes.
+    QTimer::singleShot(0, mainSplitter, [mainSplitter, rightPane]() {
+        const int left = mainSplitter->property("projectTreeWidth").toInt();
+        const int right = mainSplitter->property("editorRightWidth").toInt();
+        const int total = qMax(1, mainSplitter->width());
+        if (rightPane->isHidden())
+            mainSplitter->setSizes({left, qMax(1, total - left), 0});
+        else
+            mainSplitter->setSizes({left, qMax(1, total - left - right), right});
+    });
 
     setCentralWidget(mainSplitter);
     applyTheme();
@@ -4203,7 +4281,7 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
     }
 
     auto *designer = createSidboxGuiDesigner(absolutePath, m_editorTabs);
-    const int index = m_editorTabs->addTab(designer, QIcon(QStringLiteral(":/icons/project_settings.png")), designer->displayName());
+    const int index = m_editorTabs->addTab(designer, QIcon(QStringLiteral(":/icons/toolbar_guidesigner.png")), designer->displayName());
     m_editorTabs->setTabToolTip(index, tr("CoderGirl visual design\n%1").arg(QDir::toNativeSeparators(absolutePath)));
 
     designer->tabTitleChanged = [this, designer]() {
@@ -6415,7 +6493,7 @@ void MainWindow::renameSelectedProjectFile()
 
     const QString newPath = QFileInfo(oldInfo.dir().filePath(newName)).absoluteFilePath();
     if (!isProjectExplorerFile(newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui"));
+        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui, .uis"));
         return;
     }
 
@@ -7661,7 +7739,8 @@ bool MainWindow::openFile(const QString &filePath)
         || suffix == QStringLiteral("cc")
         || suffix == QStringLiteral("cpp")
         || suffix == QStringLiteral("hpp")
-        || suffix == QStringLiteral("inc");
+        || suffix == QStringLiteral("inc")
+        || suffix == QStringLiteral("uis");
 
     if (isSourceLike
         && openingFileInfo.exists()
@@ -8429,8 +8508,10 @@ void MainWindow::refreshProjectFiles()
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_res.png"));
         } else if (suffix == QStringLiteral("txt")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
+        } else if (suffix == QStringLiteral("uis")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
         } else if (suffix == QStringLiteral("sbui")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/project_settings.png"));
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
         } else if (suffix == QStringLiteral("md")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_md.png"));
         } else {
@@ -10256,7 +10337,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
     const QStringList filters = {
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
-        QStringLiteral("*.sbui")
+        QStringLiteral("*.sbui"), QStringLiteral("*.uis")
     };
 
     QDirIterator iterator(m_projectPath, filters, QDir::Files, QDirIterator::Subdirectories);

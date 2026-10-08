@@ -18,9 +18,11 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHash>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QInputDialog>
@@ -38,6 +40,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QObject>
@@ -52,6 +55,8 @@
 #include <QRect>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
+#include <QSignalBlocker>
 #include <QScrollArea>
 #include <QSet>
 #include <QSize>
@@ -59,6 +64,7 @@
 #include <QSplitter>
 #include <QString>
 #include <QStringList>
+#include <QTableWidget>
 #include <QTextStream>
 #include <QTimer>
 #include <QToolBar>
@@ -97,6 +103,13 @@ struct GuiDesignerGadget
     int cellHeight = 18;
     int cellsX = 4;
     int cellsY = 4;
+
+    /*
+     * GridSelect label text, one entry per cell in row-major order.
+     * CoderGirl's public designer contract is four visible characters max.
+     */
+    QStringList gridCellText;
+
     int bitmapWidth = 64;
     int bitmapHeight = 64;
 
@@ -107,11 +120,20 @@ struct GuiDesignerGadget
     QString bitmapSource;
 
     /*
+     * Optional designer-embedded indexed bitmap. When non-empty this contains
+     * one Sidbox CLUT index per source pixel, row-major. The original PNG path
+     * is informational only; the converted bytes are stored in the .sbui so
+     * the project stays portable.
+     */
+    QByteArray bitmapPixels;
+    QString bitmapImagePath;
+
+    /*
      * Designer-side initial ListBox contents.
      *
-     * The current public applet API exposes listbox_create(), but not the
-     * ItemList attach/add functions yet. Keep these in the .sbui and preview so
-     * the design is ready for that API as soon as it is exported.
+     * Generated applets create a caller-owned ItemLists_t model, add these
+     * strings to it, then attach that model to the ListBox. This deliberately
+     * mirrors the firmware API: the ListBox itself does not own its item list.
      */
     QStringList listItems;
 };
@@ -182,6 +204,115 @@ static const quint32 kCoderGirlClut[256] = {
     0xFFC9FF00, 0xFFC9FF55, 0xFFC9FFAA, 0xFFC9FFFF, 0xFFDBFF00, 0xFFDBFF55, 0xFFDBFFAA, 0xFFDBFFFF,
     0xFFEDFF00, 0xFFEDFF55, 0xFFEDFFAA, 0xFFEDFFFF, 0xFFFFFF00, 0xFFFFFF55, 0xFFFFFFAA, 0xFFFFFFFF
 };
+
+static quint8 nearestCoderGirlClutIndex(QRgb pixel)
+{
+    /*
+     * Palette entry 0 is transparent. Preserve transparent PNG pixels there,
+     * but never choose it accidentally for an opaque black pixel.
+     */
+    if (qAlpha(pixel) < 128) {
+        return 0u;
+    }
+
+    const int r = qRed(pixel);
+    const int g = qGreen(pixel);
+    const int b = qBlue(pixel);
+
+    quint8 bestIndex = 1u;
+    quint32 bestDistance = 0xffffffffu;
+
+    for (int i = 1; i < 256; ++i) {
+        const QRgb candidate =
+            static_cast<QRgb>(
+                kCoderGirlClut[i]);
+
+        const int dr = r - qRed(candidate);
+        const int dg = g - qGreen(candidate);
+        const int db = b - qBlue(candidate);
+
+        const quint32 distance =
+            static_cast<quint32>(
+                dr * dr
+                + dg * dg
+                + db * db);
+
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = static_cast<quint8>(i);
+
+            if (distance == 0u) {
+                break;
+            }
+        }
+    }
+
+    return bestIndex;
+}
+
+static QByteArray convertImageToCoderGirlIndices(const QImage &source)
+{
+    if (source.isNull()) {
+        return {};
+    }
+
+    const QImage image =
+        source.convertToFormat(
+            QImage::Format_ARGB32);
+
+    const qsizetype pixelCount =
+        static_cast<qsizetype>(image.width())
+        * static_cast<qsizetype>(image.height());
+
+    if (pixelCount <= 0) {
+        return {};
+    }
+
+    QByteArray indexed;
+    indexed.resize(pixelCount);
+
+    /*
+     * PNGs often contain large runs/repeated colours. Cache exact source RGBAs
+     * so a 480x320 import does not perform 256 palette-distance tests for every
+     * single pixel.
+     */
+    QHash<quint32, quint8> cache;
+    cache.reserve(1024);
+
+    qsizetype out = 0;
+
+    for (int y = 0; y < image.height(); ++y) {
+        const QRgb *row =
+            reinterpret_cast<const QRgb *>(
+                image.constScanLine(y));
+
+        for (int x = 0; x < image.width(); ++x) {
+            const quint32 colour =
+                static_cast<quint32>(
+                    row[x]);
+
+            auto it = cache.constFind(colour);
+            quint8 index = 0u;
+
+            if (it == cache.constEnd()) {
+                index =
+                    nearestCoderGirlClutIndex(
+                        row[x]);
+
+                cache.insert(
+                    colour,
+                    index);
+            } else {
+                index = it.value();
+            }
+
+            indexed[out++] =
+                static_cast<char>(index);
+        }
+    }
+
+    return indexed;
+}
 
 /*
  * CoderGirl's actual 8x8 system glyphs. The firmware renderer stretches every
@@ -890,6 +1021,77 @@ protected:
 };
 
 
+// Menu editor drag/drop changes the data model, not only the tree display.
+// Titles reorder as complete menus; entries may move within/between menus.
+class GuiDesignerMenuTree : public QTreeWidget
+{
+public:
+    explicit GuiDesignerMenuTree(QWidget *parent = nullptr)
+        : QTreeWidget(parent)
+    {
+        setDragEnabled(true);
+        setAcceptDrops(true);
+        viewport()->setAcceptDrops(true);
+        setDragDropMode(QAbstractItemView::InternalMove);
+        setDefaultDropAction(Qt::MoveAction);
+        setSelectionMode(QAbstractItemView::SingleSelection);
+        setDropIndicatorShown(true);
+    }
+
+    // fromItem == -1 means a menu title, otherwise an item in fromMenu.
+    // Destination indices are insertion positions in the original model.
+    std::function<void(int, int, int, int)> reorderRequested;
+
+protected:
+    void dropEvent(QDropEvent *event) override
+    {
+        if (event->source() != this || !currentItem()) {
+            event->ignore();
+            return;
+        }
+
+        QTreeWidgetItem *source = currentItem();
+        const int fromMenu = source->data(0, Qt::UserRole).toInt();
+        const int fromItem = source->data(0, Qt::UserRole + 1).toInt();
+        QTreeWidgetItem *target = itemAt(event->position().toPoint());
+        const DropIndicatorPosition position = dropIndicatorPosition();
+        int toMenu = -1;
+        int toIndex = 0;
+
+        if (fromItem < 0) {
+            // A title may only move among top-level titles.
+            if (!target) {
+                toIndex = topLevelItemCount();
+            } else {
+                QTreeWidgetItem *title = target->parent() ? target->parent() : target;
+                toIndex = indexOfTopLevelItem(title);
+                if (target->parent() || position == BelowItem || position == OnItem)
+                    ++toIndex;
+            }
+        } else {
+            if (!target) {
+                toMenu = topLevelItemCount() - 1;
+                if (toMenu < 0) { event->ignore(); return; }
+                toIndex = topLevelItem(toMenu)->childCount();
+            } else if (target->parent()) {
+                toMenu = indexOfTopLevelItem(target->parent());
+                toIndex = target->parent()->indexOfChild(target);
+                if (position == BelowItem || position == OnItem)
+                    ++toIndex;
+            } else {
+                toMenu = indexOfTopLevelItem(target);
+                toIndex = position == AboveItem ? 0 : target->childCount();
+            }
+        }
+
+        if (reorderRequested)
+            reorderRequested(fromMenu, fromItem, toMenu, toIndex);
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+    }
+};
+
+
 class GuiDesignerCanvas : public QWidget
 {
 public:
@@ -905,7 +1107,7 @@ public:
         setMouseTracking(true);
         setAcceptDrops(true);
         setFocusPolicy(Qt::StrongFocus);
-        setZoomPercent(150);
+        setZoomPercent(200);
     }
 
     std::function<void(int)> selectionChanged;
@@ -913,10 +1115,13 @@ public:
     std::function<void()> geometryCommitted;
     std::function<void(const QString &, const QPoint &)> gadgetDropped;
     std::function<void(int)> gadgetDoubleClicked;
+    std::function<void(int, int)> menuItemActivated;
     std::function<void()> copyRequested;
     std::function<void()> pasteRequested;
     std::function<void()> deleteRequested;
+    std::function<void()> undoRequested;
     std::function<void(int, int, bool)> nudgeRequested;
+    std::function<void(int, int, bool)> resizeRequested;
 
     int selectedIndex() const { return m_selected; }
 
@@ -1510,7 +1715,8 @@ private:
                  */
                 p.save();
                 p.setClipRect(
-                    gr);
+                    gr,
+                    Qt::IntersectClip);
 
                 QColor disabledOverlay(
                     0,
@@ -1820,6 +2026,14 @@ protected:
          * editors keep their normal Ctrl+C/Ctrl+V behaviour because this
          * handler only runs while the Canvas owns keyboard focus.
          */
+        if (event->matches(QKeySequence::Undo)) {
+            if (undoRequested) {
+                undoRequested();
+                event->accept();
+                return;
+            }
+        }
+
         if (event->matches(QKeySequence::Copy)) {
             if (m_selected >= 0
                 && copyRequested) {
@@ -1886,6 +2100,26 @@ protected:
                     dx,
                     dy,
                     event->isAutoRepeat());
+                event->accept();
+                return;
+            }
+        }
+
+        if (m_selected >= 0
+            && (event->modifiers() & Qt::ControlModifier)
+            && !(event->modifiers()
+                 & (Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            int dw = 0;
+            int dh = 0;
+            switch (event->key()) {
+            case Qt::Key_Left:  dw = -1; break;
+            case Qt::Key_Right: dw = 1; break;
+            case Qt::Key_Up:    dh = -1; break;
+            case Qt::Key_Down:  dh = 1; break;
+            default: break;
+            }
+            if ((dw || dh) && resizeRequested) {
+                resizeRequested(dw, dh, event->isAutoRepeat());
                 event->accept();
                 return;
             }
@@ -1958,6 +2192,44 @@ protected:
         }
 
         const QPoint logical = toLogical(event->position());
+
+        // The menu bar belongs to the display, not to the window/gadgets.
+        // In the designer, a click previews its entries and selecting one
+        // navigates to the generated user callback (it does not execute C).
+        if (m_menus && !m_menus->isEmpty()
+            && logical.y() >= 0 && logical.y() < 21
+            && logical.x() >= 0 && logical.x() < 480) {
+            int menuX = 0;
+            for (int menuIndex = 0; menuIndex < m_menus->size(); ++menuIndex) {
+                const GuiDesignerMenuTitle &title = m_menus->at(menuIndex);
+                const int titleWidth = coderGirlTextWidth(title.title) + 16;
+                if (logical.x() >= menuX && logical.x() < menuX + titleWidth) {
+                    QMenu dropdown(this);
+                    for (int itemIndex = 0; itemIndex < title.items.size(); ++itemIndex) {
+                        const GuiDesignerMenuItem &item = title.items.at(itemIndex);
+                        if (item.text.trimmed() == QStringLiteral("---")
+                            || item.flags.contains(QStringLiteral("CG_MENUITEMF_SEPARATOR"))) {
+                            dropdown.addSeparator();
+                            continue;
+                        }
+                        QAction *action = dropdown.addAction(item.text);
+                        action->setCheckable(item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKABLE")));
+                        action->setChecked(item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKED")));
+                        connect(action, &QAction::triggered, this,
+                                [this, menuIndex, itemIndex]() {
+                            if (menuItemActivated)
+                                menuItemActivated(menuIndex, itemIndex);
+                        });
+                    }
+                    dropdown.exec(mapToGlobal(QPoint((menuX + 1) * m_zoomPercent / 100,
+                                                        21 * m_zoomPercent / 100)));
+                    event->accept();
+                    return;
+                }
+                menuX += titleWidth;
+            }
+        }
+
         const QPoint origin = clientOrigin();
         const QRect client =
             clientViewportRect();
@@ -3032,6 +3304,12 @@ private:
         if (g.type
             == QStringLiteral(
                 "Label")) {
+            p.fillRect(r, face);
+
+            if (g.flags.contains(QStringLiteral("GAD_TOOL_INSET"))) {
+                drawCoderGirlBevel(p, r, true);
+            }
+
             drawCoderGirlText(
                 p,
                 r.x(),
@@ -3355,21 +3633,18 @@ private:
                 coderGirlPen(
                     windowBackPen));
 
-            drawCoderGirlBevel(
-                p,
-                r,
-                true);
+            if (!g.flags.contains(QStringLiteral("GAD_TOOL_NOBORDER"))) {
+                drawCoderGirlBevel(
+                    p,
+                    r,
+                    g.flags.contains(QStringLiteral("GAD_TOOL_INSET")));
+            }
 
             int y =
                 r.y() + 2;
 
             const QStringList rows =
-                g.listItems.isEmpty()
-                    ? QStringList{
-                          QStringLiteral(
-                              "(empty list)")
-                      }
-                    : g.listItems;
+                g.listItems;
 
             for (int row = 0;
                  row < rows.size()
@@ -3445,6 +3720,33 @@ private:
                             p,
                             cell,
                             true);
+
+                        const int index =
+                            row * cols + col;
+
+                        const QString label =
+                            g.gridCellText
+                                .value(index)
+                                .left(4);
+
+                        if (!label.isEmpty()) {
+                            const int tx =
+                                cell.x()
+                                + (cell.width()
+                                   - coderGirlTextWidth(label))
+                                      / 2;
+
+                            const int ty =
+                                cell.y()
+                                + (cell.height() - 16) / 2;
+
+                            drawCoderGirlText(
+                                p,
+                                tx,
+                                ty,
+                                label,
+                                text);
+                        }
                     }
                 }
             }
@@ -3455,26 +3757,116 @@ private:
         if (g.type
             == QStringLiteral(
                 "Canvas")) {
-            p.fillRect(
-                r,
+            /*
+             * Match firmware draw_canvas(): Canvas is a primitive renderer,
+             * not a framed gadget. The client background was already painted
+             * by the Window, so only draw the selected primitive here.
+             */
+            const QString mode =
+                g.typeFlags.trimmed().isEmpty()
+                    ? QStringLiteral("CNV_RECT")
+                    : g.typeFlags.trimmed();
+
+            const QColor fpen =
                 coderGirlPen(
-                    windowBackPen));
+                    g.fPen >= 0
+                        ? g.fPen
+                        : defaultFPenForType(
+                              g.type));
 
-            drawCoderGirlBevel(
-                p,
-                r,
-                true);
+            const QColor bpen =
+                coderGirlPen(
+                    g.bPen >= 0
+                        ? g.bPen
+                        : windowBackPen);
 
-            p.setPen(
-                coderGirlPen(3));
+            if (mode == QStringLiteral("CNV_LINE")) {
+                p.setPen(fpen);
+                p.drawLine(
+                    r.left(),
+                    r.top(),
+                    r.right(),
+                    r.bottom());
+                return;
+            }
 
+            if (mode == QStringLiteral("CNV_RECTF")) {
+                p.fillRect(
+                    r,
+                    fpen);
+                return;
+            }
+
+            if (mode == QStringLiteral("CNV_BEVEL")) {
+                const bool inset =
+                    g.flags.contains(
+                        QStringLiteral("GAD_TOOL_INSET"));
+
+                const QColor topLeft =
+                    inset ? bpen : fpen;
+
+                const QColor bottomRight =
+                    inset ? fpen : bpen;
+
+                p.setPen(topLeft);
+                p.drawLine(
+                    r.left(),
+                    r.top(),
+                    r.right(),
+                    r.top());
+                p.drawLine(
+                    r.left(),
+                    r.top(),
+                    r.left(),
+                    r.bottom());
+
+                p.setPen(bottomRight);
+                if (r.width() > 1) {
+                    p.drawLine(
+                        r.left(),
+                        r.bottom(),
+                        r.right() - 1,
+                        r.bottom());
+                }
+                p.drawLine(
+                    r.right(),
+                    r.top(),
+                    r.right(),
+                    r.bottom());
+                return;
+            }
+
+            /* CNV_RECT (and safe fallback): one-pixel FPen outline. */
+            p.setPen(fpen);
             p.drawLine(
-                r.topLeft(),
-                r.bottomRight());
+                r.left(),
+                r.top(),
+                r.right(),
+                r.top());
 
-            p.drawLine(
-                r.topRight(),
-                r.bottomLeft());
+            if (r.height() > 1) {
+                p.drawLine(
+                    r.left(),
+                    r.bottom(),
+                    r.right(),
+                    r.bottom());
+            }
+
+            if (r.height() > 2) {
+                p.drawLine(
+                    r.left(),
+                    r.top() + 1,
+                    r.left(),
+                    r.bottom() - 1);
+
+                if (r.width() > 1) {
+                    p.drawLine(
+                        r.right(),
+                        r.top() + 1,
+                        r.right(),
+                        r.bottom() - 1);
+                }
+            }
 
             return;
         }
@@ -3487,18 +3879,85 @@ private:
                 coderGirlPen(
                     windowBackPen));
 
-            drawCoderGirlBevel(
-                p,
-                r,
-                true);
+            const bool noBorder =
+                designerWindowFlag(
+                    g.flags,
+                    QStringLiteral(
+                        "GAD_TOOL_NOBORDER"));
+
+            if (!noBorder) {
+                drawCoderGirlBevel(
+                    p,
+                    r,
+                    true);
+            }
+
+            const int inset =
+                noBorder
+                    ? 0
+                    : 1;
+
+            const QRect imageRect =
+                r.adjusted(
+                    inset,
+                    inset,
+                    -inset,
+                    -inset);
+
+            if (!g.bitmapPixels.isEmpty()
+                && g.bitmapWidth > 0
+                && g.bitmapHeight > 0
+                && g.bitmapPixels.size()
+                   >= static_cast<qsizetype>(
+                          g.bitmapWidth)
+                      * static_cast<qsizetype>(
+                          g.bitmapHeight)) {
+                QImage image(
+                    g.bitmapWidth,
+                    g.bitmapHeight,
+                    QImage::Format_ARGB32);
+
+                qsizetype sourceIndex = 0;
+
+                for (int y = 0;
+                     y < g.bitmapHeight;
+                     ++y) {
+                    QRgb *row =
+                        reinterpret_cast<QRgb *>(
+                            image.scanLine(y));
+
+                    for (int x = 0;
+                         x < g.bitmapWidth;
+                         ++x) {
+                        const quint8 pen =
+                            static_cast<quint8>(
+                                g.bitmapPixels.at(
+                                    sourceIndex++));
+
+                        row[x] =
+                            static_cast<QRgb>(
+                                kCoderGirlClut[pen]);
+                    }
+                }
+
+                p.save();
+                p.setClipRect(
+                    imageRect,
+                    Qt::IntersectClip);
+                p.drawImage(
+                    imageRect.topLeft(),
+                    image);
+                p.restore();
+                return;
+            }
 
             const int cell = 8;
 
-            for (int y = r.top() + 2;
-                 y < r.bottom() - 1;
+            for (int y = imageRect.top();
+                 y <= imageRect.bottom();
                  y += cell) {
-                for (int x = r.left() + 2;
-                     x < r.right() - 1;
+                for (int x = imageRect.left();
+                     x <= imageRect.right();
                      x += cell) {
                     if (((x / cell)
                          + (y / cell))
@@ -3509,12 +3968,14 @@ private:
                                 y,
                                 qMin(
                                     cell,
-                                    r.right()
-                                        - x),
+                                    imageRect.right()
+                                        - x
+                                        + 1),
                                 qMin(
                                     cell,
-                                    r.bottom()
-                                        - y)),
+                                    imageRect.bottom()
+                                        - y
+                                        + 1)),
                             coderGirlPen(6));
                     }
                 }
@@ -3564,7 +4025,7 @@ private:
     GuiDesignerWindow *m_window = nullptr;
     QList<GuiDesignerGadget> *m_gadgets = nullptr;
     QList<GuiDesignerMenuTitle> *m_menus = nullptr;
-    int m_zoomPercent = 150;
+    int m_zoomPercent = 200;
     int m_gridSnap = 0;
     int m_selected = -1;
     bool m_dragging = false;
@@ -3611,7 +4072,17 @@ public:
             m_undoAction);
 
         QAction *save = top->addAction(QObject::tr("Save Design"));
-        QAction *generate = top->addAction(QObject::tr("Generate C"));
+        QAction *generate = top->addAction(QObject::tr("Generate..."));
+        top->addWidget(new QLabel(QObject::tr("  Code: "), top));
+        m_generationMode = new QComboBox(top);
+        m_generationMode->addItem(QObject::tr("Normal (.c)"), false);
+        m_generationMode->addItem(QObject::tr("Sketch / Detached (.uis)"), true);
+        top->addWidget(m_generationMode);
+        connect(m_generationMode, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int index) {
+                    m_detached = m_generationMode->itemData(index).toBool();
+                    setModified(true);
+                });
         top->addSeparator();
 
         top->addWidget(
@@ -3666,7 +4137,7 @@ public:
             400);
 
         zoom->setCurrentIndex(
-            1);
+            2);
 
         top->addWidget(zoom);
         m_statusLabel = new QLabel(QObject::tr("480 × 320 Sidbox screen"), top);
@@ -3702,7 +4173,7 @@ public:
         leftLayout->addWidget(addButton);
 
         leftLayout->addWidget(new QLabel(QObject::tr("Menus"), left));
-        m_menuTree = new QTreeWidget(left);
+        m_menuTree = new GuiDesignerMenuTree(left);
         m_menuTree->setHeaderHidden(true);
         m_menuTree->setMinimumHeight(120);
         leftLayout->addWidget(m_menuTree, 1);
@@ -3742,6 +4213,21 @@ public:
         splitter->setStretchFactor(2, 0);
         splitter->setSizes({210, 900, 310});
 
+        // Designer toolbox/canvas/properties have their own splitter state.
+        // Never share this with the main window's project/editor splitter.
+        QSettings designerSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        const QByteArray designerState = designerSettings.value(
+            QStringLiteral("layout/guiDesignerSplitter")).toByteArray();
+        if (!designerState.isEmpty())
+            splitter->restoreState(designerState);
+
+        connect(splitter, &QSplitter::splitterMoved, this,
+                [splitter](int, int) {
+            QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+            settings.setValue(QStringLiteral("layout/guiDesignerSplitter"),
+                              splitter->saveState());
+        });
+
         connect(addButton, &QPushButton::clicked, this, [this]() {
             QListWidgetItem *item = m_toolbox->currentItem();
             if (item) addGadget(item->text());
@@ -3758,7 +4244,7 @@ public:
             });
 
         connect(save, &QAction::triggered, this, [this]() { saveDesignAndGenerate(); });
-        connect(generate, &QAction::triggered, this, [this]() { generateCFile(false); });
+        connect(generate, &QAction::triggered, this, [this]() { generateCFile(true, true); });
 
         connect(
             m_snapCombo,
@@ -3805,6 +4291,33 @@ public:
         connect(removeMenu, &QPushButton::clicked, this, [this]() { removeMenuEntry(); });
         connect(m_menuTree, &QTreeWidget::itemDoubleClicked, this,
                 [this](QTreeWidgetItem *item, int) { editMenuEntry(item); });
+        // Apply drag/drop to m_menus, so .sbui saving, generation and preview
+        // all use the same reordered model. Keep callback names unchanged.
+        static_cast<GuiDesignerMenuTree *>(m_menuTree)->reorderRequested =
+            [this](int fromMenu, int fromItem, int toMenu, int toIndex) {
+                if (fromMenu < 0 || fromMenu >= m_menus.size()) return;
+                if (fromItem < 0) {
+                    if (toIndex < 0 || toIndex > m_menus.size()) return;
+                    if (toIndex == fromMenu || toIndex == fromMenu + 1) return;
+                    pushUndoSnapshot();
+                    const GuiDesignerMenuTitle moving = m_menus.takeAt(fromMenu);
+                    if (toIndex > fromMenu) --toIndex;
+                    m_menus.insert(toIndex, moving);
+                } else {
+                    if (fromItem >= m_menus[fromMenu].items.size()
+                        || toMenu < 0 || toMenu >= m_menus.size()
+                        || toIndex < 0 || toIndex > m_menus[toMenu].items.size()) return;
+                    if (fromMenu == toMenu
+                        && (toIndex == fromItem || toIndex == fromItem + 1)) return;
+                    pushUndoSnapshot();
+                    const GuiDesignerMenuItem moving = m_menus[fromMenu].items.takeAt(fromItem);
+                    if (fromMenu == toMenu && toIndex > fromItem) --toIndex;
+                    m_menus[toMenu].items.insert(toIndex, moving);
+                }
+                rebuildMenuTree();
+                setModified(true);
+                m_canvas->update();
+            };
 
         m_canvas->selectionChanged = [this](int) { rebuildProperties(); };
 
@@ -3819,9 +4332,19 @@ public:
                 jumpToGadgetSource(index);
             };
 
+        m_canvas->menuItemActivated =
+            [this](int menuIndex, int itemIndex) {
+                jumpToMenuItemSource(menuIndex, itemIndex);
+            };
+
         m_canvas->copyRequested =
             [this]() {
                 copySelectedGadget();
+            };
+
+        m_canvas->undoRequested =
+            [this]() {
+                undoLastDesignerChange();
             };
 
         m_canvas->pasteRequested =
@@ -3840,6 +4363,11 @@ public:
                     dx,
                     dy,
                     autoRepeat);
+            };
+
+        m_canvas->resizeRequested =
+            [this](int dw, int dh, bool autoRepeat) {
+                resizeSelectedGadget(dw, dh, autoRepeat);
             };
 
         m_canvas->geometryChangeStarted = [this]() {
@@ -3907,7 +4435,7 @@ private:
         if (type == QStringLiteral("Label")) return QRect(x, y, 120, 18);
         if (type == QStringLiteral("Checkbox") || type == QStringLiteral("Radio")) return QRect(x, y, 130, 20);
         if (type == QStringLiteral("Slider") || type == QStringLiteral("Scrollbar")) return QRect(x, y, 150, 18);
-        if (type == QStringLiteral("ProgressBar")) return QRect(x, y, 150, 18);
+        if (type == QStringLiteral("ProgressBar")) return QRect(x, y, 150, 24);
         if (type == QStringLiteral("TextArea") || type == QStringLiteral("ListBox")) return QRect(x, y, 170, 80);
         if (type == QStringLiteral("GridSelect")) return QRect(x, y, 98, 74);
         if (type == QStringLiteral("Canvas") || type == QStringLiteral("BitmapView")) return QRect(x, y, 120, 80);
@@ -3991,16 +4519,30 @@ private:
         g.cellHeight = o.value(QStringLiteral("cellHeight")).toInt(18);
         g.cellsX = o.value(QStringLiteral("cellsX")).toInt(4);
         g.cellsY = o.value(QStringLiteral("cellsY")).toInt(4);
+
+        for (const QJsonValue &cellValue :
+             o.value(QStringLiteral("gridCellText")).toArray()) {
+            g.gridCellText.append(
+                cellValue.toString().left(4));
+        }
+
         g.bitmapWidth = o.value(QStringLiteral("bitmapWidth")).toInt(64);
         g.bitmapHeight = o.value(QStringLiteral("bitmapHeight")).toInt(64);
         g.bitmapSource = o.value(QStringLiteral("bitmapSource")).toString();
+        g.bitmapImagePath = o.value(QStringLiteral("bitmapImagePath")).toString();
+        g.bitmapPixels = QByteArray::fromBase64(
+            o.value(QStringLiteral("bitmapPixelsBase64"))
+                .toString()
+                .toLatin1());
 
         for (const QJsonValue &itemValue :
              o.value(QStringLiteral("listItems")).toArray()) {
             g.listItems.append(itemValue.toString());
         }
 
+        normaliseGridCellText(&g);
         syncGridSelectGeometry(&g);
+        normaliseBitmapView(&g);
         *out = g;
         return true;
     }
@@ -4330,6 +4872,38 @@ private:
         }
     }
 
+    void resizeSelectedGadget(int dw, int dh, bool autoRepeat)
+    {
+        if (!m_canvas) return;
+        const int selected = m_canvas->selectedIndex();
+        if (selected < 0 || selected >= m_gadgets.size()) return;
+
+        GuiDesignerGadget &g = m_gadgets[selected];
+        // GridSelect derives its dimensions from cell count and cell size.
+        if (g.type == QStringLiteral("GridSelect")) return;
+
+        const int step = m_canvas->gridSnap() > 1
+                             ? m_canvas->gridSnap() : 1;
+        const QSize clientSize = m_canvas->clientViewportSize();
+        const int maxW = qMax(4, clientSize.width() - g.rect.x());
+        const int maxH = qMax(4, clientSize.height() - g.rect.y());
+        const int width = qBound(4, g.rect.width() + dw * step, maxW);
+        const int height = qBound(4, g.rect.height() + dh * step, maxH);
+        if (width == g.rect.width() && height == g.rect.height()) return;
+
+        if (!autoRepeat) pushUndoSnapshot();
+        g.rect.setSize(QSize(width, height));
+        syncDesignerDemoBitmapSize(&g);
+        setModified(true);
+        m_canvas->update();
+        rebuildProperties();
+        if (m_statusLabel) {
+            m_statusLabel->setText(
+                QObject::tr("%1: %2 × %3 (%4 px resize)")
+                    .arg(g.name).arg(width).arg(height).arg(step));
+        }
+    }
+
     static QStringList windowFlagChoices()
     {
         return {
@@ -4429,7 +5003,8 @@ private:
                 QStringLiteral("GAD_TOOL_OPAQUE_TEXT"),
                 QStringLiteral("GAD_TOOL_TOGGLE")
             });
-        } else if (type == QStringLiteral("Label")) {
+        } else if (type == QStringLiteral("Label")
+                   || type == QStringLiteral("Canvas")) {
             flags.append(
                 QStringLiteral(
                     "GAD_TOOL_INSET"));
@@ -4505,6 +5080,32 @@ private:
                        "GAD_TOOL_NOBORDER"))
             ? 0
             : 2;
+    }
+
+    static void normaliseGridCellText(
+        GuiDesignerGadget *g)
+    {
+        if (!g
+            || g->type
+               != QStringLiteral(
+                   "GridSelect")) {
+            return;
+        }
+
+        const int cellCount =
+            qBound(
+                1,
+                g->cellsX * g->cellsY,
+                256);
+
+        while (g->gridCellText.size() > cellCount) {
+            g->gridCellText.removeLast();
+        }
+
+        for (QString &text :
+             g->gridCellText) {
+            text = text.left(4);
+        }
     }
 
     static void syncGridSelectGeometry(
@@ -4977,6 +5578,9 @@ private:
                     itemValue.toString());
             }
 
+            normaliseGridCellText(
+                &g);
+
             syncGridSelectGeometry(
                 &g);
 
@@ -5096,6 +5700,27 @@ private:
         }
     }
 
+    void jumpToMenuItemSource(int menuIndex, int itemIndex)
+    {
+        if (menuIndex < 0 || menuIndex >= m_menus.size()
+            || itemIndex < 0 || itemIndex >= m_menus.at(menuIndex).items.size())
+            return;
+
+        const GuiDesignerMenuItem &item = m_menus.at(menuIndex).items.at(itemIndex);
+        if (item.callback.trimmed().isEmpty())
+            return;
+
+        const QString callback = safeCIdentifier(item.callback,
+                                                  QStringLiteral("MenuCallback"));
+        if (!generateCFile(false))
+            return;
+
+        if (sourceNavigationRequested)
+            sourceNavigationRequested(generatedCPath(),
+                QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(callback),
+                QStringLiteral("static void %1(").arg(callback));
+    }
+
     void jumpToGadgetSource(
         int index)
     {
@@ -5203,6 +5828,7 @@ private:
 
         if (type == QStringLiteral("TextBox")) g.typeFlags = QStringLiteral("TB_SINGLELINE");
         if (type == QStringLiteral("TextArea")) g.typeFlags = QStringLiteral("TA_DEFAULT");
+        if (type == QStringLiteral("ProgressBar")) g.value = 50;
         if (type == QStringLiteral("Canvas")) g.typeFlags = QStringLiteral("CNV_RECT");
         if (type == QStringLiteral("BitmapView")) {
             g.typeFlags =
@@ -5253,6 +5879,9 @@ private:
             g.typeFlags =
                 QStringLiteral(
                     "GAD_GRIDSEL_JUST_ONE");
+
+            normaliseGridCellText(
+                &g);
 
             syncGridSelectGeometry(
                 &g);
@@ -5636,7 +6265,8 @@ private:
                 QStringLiteral("bitmap"))
             + QStringLiteral("_pixels");
 
-        return g.bitmapSource
+        return g.bitmapPixels.isEmpty()
+            && g.bitmapSource
                    .trimmed()
                == expected;
     }
@@ -5652,7 +6282,7 @@ private:
     }
 
     void syncDesignerDemoBitmapSize(
-        GuiDesignerGadget *g)
+        GuiDesignerGadget *g) const
     {
         if (!g
             || !isDesignerDemoBitmap(
@@ -5678,7 +6308,7 @@ private:
     }
 
     void normaliseBitmapView(
-        GuiDesignerGadget *g)
+        GuiDesignerGadget *g) const
     {
         if (!g
             || g->type
@@ -5708,6 +6338,16 @@ private:
         } else {
             g->bitmapWidth = qMax(1, g->bitmapWidth);
             g->bitmapHeight = qMax(1, g->bitmapHeight);
+
+            const qsizetype expected =
+                static_cast<qsizetype>(g->bitmapWidth)
+                * static_cast<qsizetype>(g->bitmapHeight);
+
+            if (!g->bitmapPixels.isEmpty()
+                && g->bitmapPixels.size() != expected) {
+                g->bitmapPixels.clear();
+                g->bitmapImagePath.clear();
+            }
         }
     }
 
@@ -5814,6 +6454,146 @@ private:
         return list;
     }
 
+    QTableWidget *addGridCellTextTable(int selected)
+    {
+        if (selected < 0
+            || selected >= m_gadgets.size()) {
+            return nullptr;
+        }
+
+        GuiDesignerGadget &g =
+            m_gadgets[selected];
+
+        const int cols =
+            qMax(1, g.cellsX);
+
+        const int rows =
+            qMax(1, g.cellsY);
+
+        auto *table =
+            new QTableWidget(
+                rows,
+                cols,
+                m_propertyHost);
+
+        table->setMinimumHeight(120);
+        table->setMaximumHeight(210);
+        table->setSelectionMode(
+            QAbstractItemView::SingleSelection);
+        table->setSelectionBehavior(
+            QAbstractItemView::SelectItems);
+        table->horizontalHeader()->setDefaultSectionSize(46);
+        table->verticalHeader()->setDefaultSectionSize(24);
+        table->horizontalHeader()->setMinimumSectionSize(34);
+        table->verticalHeader()->setMinimumSectionSize(20);
+        table->setToolTip(
+            QObject::tr(
+                "GridSelect cell text. Maximum 4 characters per cell."));
+
+        for (int row = 0;
+             row < rows;
+             ++row) {
+            for (int col = 0;
+                 col < cols;
+                 ++col) {
+                const int cell =
+                    row * cols + col;
+
+                if (cell >= 256) {
+                    auto *disabled =
+                        new QTableWidgetItem(
+                            QStringLiteral("—"));
+
+                    disabled->setFlags(
+                        disabled->flags()
+                        & ~Qt::ItemIsEditable);
+
+                    table->setItem(
+                        row,
+                        col,
+                        disabled);
+                    continue;
+                }
+
+                auto *item =
+                    new QTableWidgetItem(
+                        g.gridCellText
+                            .value(cell)
+                            .left(4));
+
+                table->setItem(
+                    row,
+                    col,
+                    item);
+            }
+        }
+
+        m_propertyLayout->addRow(
+            QObject::tr(
+                "Cell text"),
+            table);
+
+        connect(
+            table,
+            &QTableWidget::cellChanged,
+            this,
+            [this,
+             table,
+             selected](int row, int col) {
+                if (selected < 0
+                    || selected >= m_gadgets.size()) {
+                    return;
+                }
+
+                GuiDesignerGadget &g =
+                    m_gadgets[selected];
+
+                const int cell =
+                    row * qMax(1, g.cellsX)
+                    + col;
+
+                if (cell < 0
+                    || cell >= 256) {
+                    return;
+                }
+
+                QTableWidgetItem *item =
+                    table->item(row, col);
+
+                if (!item) {
+                    return;
+                }
+
+                QString value =
+                    item->text()
+                        .left(4);
+
+                if (item->text() != value) {
+                    const QSignalBlocker blocker(table);
+                    item->setText(value);
+                }
+
+                pushUndoSnapshot();
+
+                while (g.gridCellText.size()
+                       <= cell) {
+                    g.gridCellText.append(
+                        QString());
+                }
+
+                g.gridCellText[cell] =
+                    value;
+
+                normaliseGridCellText(
+                    &g);
+
+                setModified(true);
+                m_canvas->update();
+            });
+
+        return table;
+    }
+
     QPlainTextEdit *addStringListEditor(
         const QString &label,
         const QStringList &items,
@@ -5832,7 +6612,7 @@ private:
 
         edit->setToolTip(
             QObject::tr(
-                "One ListBox item per line"));
+                "One value per line"));
 
         m_propertyLayout->addRow(
             label,
@@ -5863,6 +6643,170 @@ private:
             });
 
         return edit;
+    }
+
+    void importBitmapPng(int index)
+    {
+        if (index < 0
+            || index >= m_gadgets.size()
+            || m_gadgets[index].type
+               != QStringLiteral(
+                   "BitmapView")) {
+            return;
+        }
+
+        const QString path =
+            QFileDialog::getOpenFileName(
+                this,
+                QObject::tr(
+                    "Attach BitmapView PNG"),
+                QFileInfo(m_filePath)
+                    .absolutePath(),
+                QObject::tr(
+                    "PNG images (*.png)"));
+
+        if (path.isEmpty()) {
+            return;
+        }
+
+        QImage image(path);
+
+        if (image.isNull()) {
+            QMessageBox::warning(
+                this,
+                QObject::tr(
+                    "BitmapView PNG"),
+                QObject::tr(
+                    "Could not load the selected PNG."));
+            return;
+        }
+
+        const qsizetype pixelCount =
+            static_cast<qsizetype>(image.width())
+            * static_cast<qsizetype>(image.height());
+
+        if (image.width() <= 0
+            || image.height() <= 0
+            || image.width() > 32767
+            || image.height() > 32767
+            || pixelCount > 4194304) {
+            QMessageBox::warning(
+                this,
+                QObject::tr(
+                    "BitmapView PNG"),
+                QObject::tr(
+                    "The PNG is too large for an embedded BitmapView image. "
+                    "Maximum embedded size is 4,194,304 pixels."));
+            return;
+        }
+
+        const QByteArray indexed =
+            convertImageToCoderGirlIndices(
+                image);
+
+        if (indexed.size() != pixelCount) {
+            QMessageBox::warning(
+                this,
+                QObject::tr(
+                    "BitmapView PNG"),
+                QObject::tr(
+                    "The PNG could not be converted to the Sidbox CLUT."));
+            return;
+        }
+
+        pushUndoSnapshot();
+
+        GuiDesignerGadget &g =
+            m_gadgets[index];
+
+        g.bitmapWidth = image.width();
+        g.bitmapHeight = image.height();
+        g.bitmapPixels = indexed;
+        g.bitmapImagePath =
+            QFileInfo(path)
+                .absoluteFilePath();
+
+        g.bitmapSource =
+            safeCIdentifier(
+                g.name,
+                QStringLiteral(
+                    "bitmap"))
+            + QStringLiteral(
+                "_pixels");
+
+        /* Embedded PNG bytes are always written row-major. */
+        QStringList bitmapFlags =
+            splitFlagExpression(
+                g.typeFlags);
+
+        bitmapFlags.removeAll(
+            QStringLiteral(
+                "BVF_SRC_XMAJOR"));
+
+        if (!bitmapFlags.contains(
+                QStringLiteral(
+                    "BVF_SRC_ROWMAJOR"))) {
+            bitmapFlags.append(
+                QStringLiteral(
+                    "BVF_SRC_ROWMAJOR"));
+        }
+
+        g.typeFlags =
+            bitmapFlags.join(
+                QStringLiteral(
+                    " | "));
+
+        setModified(true);
+        m_canvas->update();
+        rebuildProperties();
+
+        if (m_statusLabel) {
+            m_statusLabel->setText(
+                QObject::tr(
+                    "PNG converted: %1 x %2 -> %3 Sidbox 8-bit pixels")
+                    .arg(g.bitmapWidth)
+                    .arg(g.bitmapHeight)
+                    .arg(g.bitmapPixels.size()));
+        }
+    }
+
+    void restoreDefaultBitmap(int index)
+    {
+        if (index < 0
+            || index >= m_gadgets.size()
+            || m_gadgets[index].type
+               != QStringLiteral(
+                   "BitmapView")) {
+            return;
+        }
+
+        pushUndoSnapshot();
+
+        GuiDesignerGadget &g =
+            m_gadgets[index];
+
+        g.bitmapPixels.clear();
+        g.bitmapImagePath.clear();
+        g.bitmapSource =
+            safeCIdentifier(
+                g.name,
+                QStringLiteral(
+                    "bitmap"))
+            + QStringLiteral(
+                "_pixels");
+
+        syncDesignerDemoBitmapSize(
+            &g);
+
+        setModified(true);
+        m_canvas->update();
+        rebuildProperties();
+
+        if (m_statusLabel) {
+            m_statusLabel->setText(
+                QObject::tr(
+                    "BitmapView restored to designer demo image"));
+        }
     }
 
     void rebuildProperties()
@@ -6164,7 +7108,8 @@ private:
                 {
                     QStringLiteral("CNV_LINE"),
                     QStringLiteral("CNV_RECT"),
-                    QStringLiteral("CNV_RECTF")
+                    QStringLiteral("CNV_RECTF"),
+                    QStringLiteral("CNV_BEVEL")
                 },
                 currentMode,
                 [this, selected](const QString &v) {
@@ -6179,6 +7124,9 @@ private:
                 255,
                 [this, selected](int v) {
                     m_gadgets[selected].cellWidth = v;
+                    normaliseGridCellText(
+                        &m_gadgets[selected]);
+
                     syncGridSelectGeometry(
                         &m_gadgets[selected]);
 
@@ -6197,6 +7145,9 @@ private:
                 255,
                 [this, selected](int v) {
                     m_gadgets[selected].cellHeight = v;
+                    normaliseGridCellText(
+                        &m_gadgets[selected]);
+
                     syncGridSelectGeometry(
                         &m_gadgets[selected]);
 
@@ -6215,6 +7166,9 @@ private:
                 255,
                 [this, selected](int v) {
                     m_gadgets[selected].cellsX = v;
+                    normaliseGridCellText(
+                        &m_gadgets[selected]);
+
                     syncGridSelectGeometry(
                         &m_gadgets[selected]);
 
@@ -6233,6 +7187,9 @@ private:
                 255,
                 [this, selected](int v) {
                     m_gadgets[selected].cellsY = v;
+                    normaliseGridCellText(
+                        &m_gadgets[selected]);
+
                     syncGridSelectGeometry(
                         &m_gadgets[selected]);
 
@@ -6243,16 +7200,82 @@ private:
                             rebuildProperties();
                         });
                 });
+            addGridCellTextTable(
+                selected);
         }
         if (g.type == QStringLiteral("BitmapView")) {
             addSpin(QObject::tr("Bitmap width"), g.bitmapWidth, 1, 32767, [this, selected](int v) { m_gadgets[selected].bitmapWidth = v; });
             addSpin(QObject::tr("Bitmap height"), g.bitmapHeight, 1, 32767, [this, selected](int v) { m_gadgets[selected].bitmapHeight = v; });
-            addLine(
-                QObject::tr("Bitmap source"),
-                g.bitmapSource,
-                [this, selected](const QString &v) {
-                    m_gadgets[selected].bitmapSource = v.trimmed();
+            QLineEdit *bitmapSourceEdit =
+                addLine(
+                    QObject::tr("Bitmap source"),
+                    g.bitmapSource,
+                    [this, selected](const QString &v) {
+                        m_gadgets[selected].bitmapSource = v.trimmed();
+                    });
+
+            if (!g.bitmapPixels.isEmpty()) {
+                bitmapSourceEdit->setEnabled(false);
+                bitmapSourceEdit->setToolTip(
+                    QObject::tr(
+                        "Attached PNGs use the designer-generated aligned pixel array."));
+            }
+
+            auto *importPng =
+                new QPushButton(
+                    QObject::tr("Attach PNG -> Sidbox 8-bit"),
+                    m_propertyHost);
+
+            m_propertyLayout->addRow(
+                QObject::tr("Image"),
+                importPng);
+
+            connect(
+                importPng,
+                &QPushButton::clicked,
+                this,
+                [this, selected]() {
+                    importBitmapPng(selected);
                 });
+
+            if (!g.bitmapPixels.isEmpty()) {
+                auto *imageInfo =
+                    new QLabel(
+                        QObject::tr("%1 x %2, %3 indexed bytes%4")
+                            .arg(g.bitmapWidth)
+                            .arg(g.bitmapHeight)
+                            .arg(g.bitmapPixels.size())
+                            .arg(
+                                g.bitmapImagePath.isEmpty()
+                                    ? QString()
+                                    : QObject::tr("\n%1")
+                                          .arg(
+                                              QDir::toNativeSeparators(
+                                                  g.bitmapImagePath))),
+                        m_propertyHost);
+
+                imageInfo->setWordWrap(true);
+                m_propertyLayout->addRow(
+                    QObject::tr("Attached PNG"),
+                    imageInfo);
+
+                auto *useDemo =
+                    new QPushButton(
+                        QObject::tr("Use default demo bitmap"),
+                        m_propertyHost);
+
+                m_propertyLayout->addRow(
+                    QString(),
+                    useDemo);
+
+                connect(
+                    useDemo,
+                    &QPushButton::clicked,
+                    this,
+                    [this, selected]() {
+                        restoreDefaultBitmap(selected);
+                    });
+            }
         }
 
         if (g.type == QStringLiteral("ListBox")) {
@@ -6520,6 +7543,13 @@ private:
         const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &error);
         if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
         const QJsonObject root = doc.object();
+        m_detached = root.value(QStringLiteral("detached")).toBool(false);
+        m_sourceName = root.value(QStringLiteral("sourceFile")).toString();
+        m_sketchName = root.value(QStringLiteral("sketchFile")).toString();
+        if (m_generationMode) {
+            const QSignalBlocker blocker(m_generationMode);
+            m_generationMode->setCurrentIndex(m_detached ? 1 : 0);
+        }
         const QJsonObject w = root.value(QStringLiteral("window")).toObject();
         m_window.name = w.value(QStringLiteral("name")).toString(QStringLiteral("MainWindow"));
         m_window.title = w.value(QStringLiteral("title")).toString(QStringLiteral("CoderGirl Application"));
@@ -6543,10 +7573,25 @@ private:
             g.typeFlags=o.value(QStringLiteral("typeFlags")).toString();
             g.cellWidth=o.value(QStringLiteral("cellWidth")).toInt(24); g.cellHeight=o.value(QStringLiteral("cellHeight")).toInt(18);
             g.cellsX=o.value(QStringLiteral("cellsX")).toInt(4); g.cellsY=o.value(QStringLiteral("cellsY")).toInt(4);
+
+            for (const QJsonValue &cellValue :
+                 o.value(QStringLiteral("gridCellText")).toArray()) {
+                g.gridCellText.append(
+                    cellValue.toString().left(4));
+            }
+
             g.bitmapWidth=o.value(QStringLiteral("bitmapWidth")).toInt(64); g.bitmapHeight=o.value(QStringLiteral("bitmapHeight")).toInt(64);
             g.bitmapSource =
                 o.value(QStringLiteral("bitmapSource"))
                     .toString();
+            g.bitmapImagePath =
+                o.value(QStringLiteral("bitmapImagePath"))
+                    .toString();
+            g.bitmapPixels =
+                QByteArray::fromBase64(
+                    o.value(QStringLiteral("bitmapPixelsBase64"))
+                        .toString()
+                        .toLatin1());
 
             for (const QJsonValue &itemValue :
                  o.value(
@@ -6613,8 +7658,18 @@ private:
         o.insert(QStringLiteral("onActivate"),g.onActivate); o.insert(QStringLiteral("onChange"),g.onChange); o.insert(QStringLiteral("callbackRoute"),g.callbackRoute); o.insert(QStringLiteral("minimum"),g.minimum); o.insert(QStringLiteral("maximum"),g.maximum); o.insert(QStringLiteral("value"),g.value);
         o.insert(QStringLiteral("orientation"),g.orientation); o.insert(QStringLiteral("checked"),g.checked); o.insert(QStringLiteral("enabled"),g.enabled); o.insert(QStringLiteral("group"),g.group); o.insert(QStringLiteral("typeFlags"),g.typeFlags);
         o.insert(QStringLiteral("cellWidth"),g.cellWidth); o.insert(QStringLiteral("cellHeight"),g.cellHeight); o.insert(QStringLiteral("cellsX"),g.cellsX); o.insert(QStringLiteral("cellsY"),g.cellsY);
+
+        QJsonArray gridCellText;
+        for (const QString &cellText : g.gridCellText) {
+            gridCellText.append(cellText.left(4));
+        }
+        o.insert(QStringLiteral("gridCellText"), gridCellText);
+
         o.insert(QStringLiteral("bitmapWidth"),g.bitmapWidth); o.insert(QStringLiteral("bitmapHeight"),g.bitmapHeight);
         o.insert(QStringLiteral("bitmapSource"), g.bitmapSource);
+        o.insert(QStringLiteral("bitmapImagePath"), g.bitmapImagePath);
+        o.insert(QStringLiteral("bitmapPixelsBase64"),
+                 QString::fromLatin1(g.bitmapPixels.toBase64()));
 
         QJsonArray listItems;
         for (const QString &item : g.listItems) {
@@ -6631,10 +7686,76 @@ private:
         w.insert(QStringLiteral("x"),m_window.rect.x()); w.insert(QStringLiteral("y"),m_window.rect.y()); w.insert(QStringLiteral("w"),m_window.rect.width()); w.insert(QStringLiteral("h"),m_window.rect.height());
         QJsonArray gadgets; for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) gadgets.append(gadgetToJson(g));
         QJsonArray menus; for (const GuiDesignerMenuTitle &menu : std::as_const(m_menus)) { QJsonObject mo; mo.insert(QStringLiteral("title"),menu.title); QJsonArray items; for (const GuiDesignerMenuItem &item : menu.items) { QJsonObject io; io.insert(QStringLiteral("name"),item.name); io.insert(QStringLiteral("text"),item.text); io.insert(QStringLiteral("callback"),item.callback); io.insert(QStringLiteral("flags"),item.flags); items.append(io); } mo.insert(QStringLiteral("items"),items); menus.append(mo); }
-        QJsonObject root; root.insert(QStringLiteral("format"),QStringLiteral("SidboxGUI")); root.insert(QStringLiteral("version"),6); root.insert(QStringLiteral("screenWidth"),480); root.insert(QStringLiteral("screenHeight"),320); root.insert(QStringLiteral("designerGridSnap"),m_canvas ? m_canvas->gridSnap() : 0); root.insert(QStringLiteral("window"),w); root.insert(QStringLiteral("gadgets"),gadgets); root.insert(QStringLiteral("menus"),menus);
+        QJsonObject root; root.insert(QStringLiteral("format"),QStringLiteral("SidboxGUI")); root.insert(QStringLiteral("version"),7); root.insert(QStringLiteral("screenWidth"),480); root.insert(QStringLiteral("screenHeight"),320); root.insert(QStringLiteral("designerGridSnap"),m_canvas ? m_canvas->gridSnap() : 0); root.insert(QStringLiteral("window"),w); root.insert(QStringLiteral("gadgets"),gadgets); root.insert(QStringLiteral("menus"),menus);
+        root.insert(QStringLiteral("detached"), m_detached);
+        root.insert(QStringLiteral("sourceFile"), m_sourceName);
+        root.insert(QStringLiteral("sketchFile"), m_sketchName);
         QSaveFile file(m_filePath); if (!file.open(QIODevice::WriteOnly|QIODevice::Text)) { QMessageBox::warning(this,QObject::tr("GUI Designer"),QObject::tr("Could not save %1").arg(QDir::toNativeSeparators(m_filePath))); return false; }
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)); if (!file.commit()) return false;
         setModified(false); return true;
+    }
+
+    static QString normalisePreservedUserBlock(const QString &raw)
+    {
+        QString text = raw;
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+        QStringList lines =
+            text.split(
+                QLatin1Char('\n'),
+                Qt::KeepEmptyParts);
+
+        while (!lines.isEmpty()
+               && lines.first().trimmed().isEmpty()) {
+            lines.removeFirst();
+        }
+
+        while (!lines.isEmpty()
+               && lines.last().trimmed().isEmpty()) {
+            lines.removeLast();
+        }
+
+        int commonIndent = -1;
+
+        for (const QString &line :
+             lines) {
+            if (line.trimmed().isEmpty()) {
+                continue;
+            }
+
+            int indent = 0;
+
+            while (indent < line.size()
+                   && (line.at(indent) == QLatin1Char(' ')
+                       || line.at(indent) == QLatin1Char('\t'))) {
+                ++indent;
+            }
+
+            if (commonIndent < 0
+                || indent < commonIndent) {
+                commonIndent = indent;
+            }
+        }
+
+        if (commonIndent > 0) {
+            for (QString &line :
+                 lines) {
+                int remove = 0;
+
+                while (remove < commonIndent
+                       && remove < line.size()
+                       && (line.at(remove) == QLatin1Char(' ')
+                           || line.at(remove) == QLatin1Char('\t'))) {
+                    ++remove;
+                }
+
+                line.remove(0, remove);
+            }
+        }
+
+        return lines.join(
+            QLatin1Char('\n'));
     }
 
     QHash<QString, QString> preservedUserBlocks(const QString &oldSource, const QStringList &keys) const
@@ -6670,7 +7791,12 @@ private:
             const int end = oldSource.indexOf(endMarker, contentStart);
             if (end < 0) break;
 
-            result.insert(key, oldSource.mid(contentStart, end - contentStart).trimmed());
+            result.insert(
+                key,
+                normalisePreservedUserBlock(
+                    oldSource.mid(
+                        contentStart,
+                        end - contentStart)));
             searchFrom = end + endMarker.size();
         }
 
@@ -6679,7 +7805,20 @@ private:
 
     QString generatedCPath() const
     {
-        QFileInfo info(m_filePath); return info.dir().filePath(info.completeBaseName() + QStringLiteral(".c"));
+        const QFileInfo info(m_filePath);
+        const QString name = m_detached
+            ? (m_sketchName.isEmpty() ? info.completeBaseName() + QStringLiteral(".uis") : m_sketchName)
+            : (m_sourceName.isEmpty() ? info.completeBaseName() + QStringLiteral(".c") : m_sourceName);
+        return info.dir().absoluteFilePath(name);
+    }
+
+    QString outputPath(bool sketch) const
+    {
+        const QFileInfo info(m_filePath);
+        const QString name = sketch
+            ? (m_sketchName.isEmpty() ? info.completeBaseName() + QStringLiteral(".uis") : m_sketchName)
+            : (m_sourceName.isEmpty() ? info.completeBaseName() + QStringLiteral(".c") : m_sourceName);
+        return info.dir().absoluteFilePath(name);
     }
 
     QString appletTypeFlagExpression(
@@ -6991,16 +8130,62 @@ private:
             .arg(text, flags);
     }
 
-    bool generateCFile(bool showMessage)
+    bool generateCFile(bool showMessage, bool chooseDestination = false)
     {
-        const QString cPath =
-            generatedCPath();
+        bool sketch = m_detached;
+        if (chooseDestination) {
+            QMessageBox box(QMessageBox::Question, QObject::tr("Generate GUI Source"),
+                QObject::tr("Where should the generated source go?"),
+                QMessageBox::NoButton, this);
+            QPushButton *sketchButton = box.addButton(QObject::tr("Create / Update Sketch (.uis)"), QMessageBox::AcceptRole);
+            QPushButton *sourceButton = box.addButton(QObject::tr("Overwrite / Generate C (.c)"), QMessageBox::AcceptRole);
+            box.addButton(QMessageBox::Cancel);
+            box.setDefaultButton(m_detached ? sketchButton : sourceButton);
+            box.exec();
+            if (box.clickedButton() == sketchButton) sketch = true;
+            else if (box.clickedButton() == sourceButton) sketch = false;
+            else return false;
+        }
+        if (!sketch && chooseDestination) {
+            const QString chosen = QFileDialog::getSaveFileName(this,
+                QObject::tr("Choose C source file"), outputPath(false),
+                QObject::tr("C source (*.c)"));
+            if (chosen.isEmpty()) return false;
+            if (QFileInfo(chosen).suffix().compare(QStringLiteral("c"), Qt::CaseInsensitive) != 0) {
+                QMessageBox::warning(this, QObject::tr("GUI Designer"), QObject::tr("Choose a .c filename."));
+                return false;
+            }
+            m_sourceName = QDir(QFileInfo(m_filePath).absolutePath()).relativeFilePath(chosen);
+            setModified(true);
+        }
+        const QString cPath = outputPath(sketch);
+        if (sketch && m_sketchName.isEmpty()) {
+            m_sketchName = QFileInfo(cPath).fileName();
+            setModified(true);
+        }
+        if (!sketch && !m_detached && m_sourceName.isEmpty()) {
+            m_sourceName = QFileInfo(cPath).fileName();
+            setModified(true);
+        }
 
         QString oldSource;
 
         if (beforeGenerate
             && !beforeGenerate(cPath)) {
             return false;
+        }
+
+        if (!sketch && QFile::exists(cPath)) {
+            if (QMessageBox::warning(this, QObject::tr("Overwrite custom source?"),
+                    QObject::tr("Generating will replace %1. Custom code outside protected USER blocks may be lost. A .bak copy will be saved first.")
+                        .arg(QDir::toNativeSeparators(cPath)),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+                return false;
+            QFile::remove(cPath + QStringLiteral(".bak"));
+            if (!QFile::copy(cPath, cPath + QStringLiteral(".bak"))) {
+                QMessageBox::warning(this, QObject::tr("Backup failed"), QObject::tr("Source was not overwritten because the backup failed."));
+                return false;
+            }
         }
 
         QFile old(cPath);
@@ -7109,6 +8294,28 @@ private:
               << ";\n";
         }
 
+        /*
+         * ListBox data lives in a separate caller-owned ItemLists_t model.
+         * Keep the model static so it remains alive for as long as the Window
+         * and its ListBox gadget are alive.
+         */
+        for (const GuiDesignerGadget &g :
+             m_gadgets) {
+            if (g.type != QStringLiteral("ListBox")
+                || g.listItems.isEmpty()) {
+                continue;
+            }
+
+            const QString n =
+                safeCIdentifier(
+                    g.name,
+                    QStringLiteral("listbox"));
+
+            s << "static ItemLists_t "
+              << n
+              << "_items;\n";
+        }
+
         if (!m_menus.isEmpty()) {
             s << "static cg_menu_t "
               << win
@@ -7129,6 +8336,76 @@ private:
         }
 
         QList<GuiDesignerGadget> demoBitmaps;
+
+        for (const GuiDesignerGadget &g :
+             m_gadgets) {
+            if (g.type
+                    != QStringLiteral("BitmapView")
+                || g.bitmapPixels.isEmpty()) {
+                continue;
+            }
+
+            const QString n =
+                safeCIdentifier(
+                    g.name,
+                    QStringLiteral("bitmap"));
+
+            const QString source =
+                safeCIdentifier(
+                    g.bitmapSource,
+                    n + QStringLiteral("_pixels"));
+
+            const QString macro =
+                n.toUpper();
+
+            s << "\n#define "
+              << macro
+              << "_BITMAP_W "
+              << qMax(1, g.bitmapWidth)
+              << "u\n";
+
+            s << "#define "
+              << macro
+              << "_BITMAP_H "
+              << qMax(1, g.bitmapHeight)
+              << "u\n";
+
+            s << "/* PNG converted by the Sidbox GUI Designer to exact 8-bit CLUT indices. */\n";
+            s << "static uint8_t MEMALIGN32 "
+              << source
+              << "["
+              << macro
+              << "_BITMAP_W * "
+              << macro
+              << "_BITMAP_H] = {\n";
+
+            for (qsizetype i = 0;
+                 i < g.bitmapPixels.size();
+                 ++i) {
+                if ((i % 16) == 0) {
+                    s << "\t";
+                }
+
+                const quint8 value =
+                    static_cast<quint8>(
+                        g.bitmapPixels.at(i));
+
+                s << QStringLiteral("0x%1")
+                         .arg(value, 2, 16, QLatin1Char('0'))
+                         .toUpper();
+
+                if (i + 1 < g.bitmapPixels.size()) {
+                    s << ", ";
+                }
+
+                if ((i % 16) == 15
+                    || i + 1 == g.bitmapPixels.size()) {
+                    s << "\n";
+                }
+            }
+
+            s << "};\n";
+        }
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
@@ -7455,19 +8732,68 @@ private:
                       : QStringLiteral("0u"))
               << ");\n";
 
+            if (g.type == QStringLiteral("GridSelect")) {
+                const int cellCount =
+                    qMin(
+                        256,
+                        qMax(1, g.cellsX * g.cellsY));
+
+                for (int cell = 0;
+                     cell < cellCount
+                     && cell < g.gridCellText.size();
+                     ++cell) {
+                    const QString cellText =
+                        g.gridCellText
+                            .at(cell)
+                            .left(4);
+
+                    if (cellText.isEmpty()) {
+                        continue;
+                    }
+
+                    s << "\tAPI->gui->gadgets->gridselect_set_cell_text("
+                      << n
+                      << ", \""
+                      << escapedCString(cellText)
+                      << "\", "
+                      << cell
+                      << ");\n";
+                }
+            }
+
+            if (g.type == QStringLiteral("ProgressBar")) {
+                const int minimum =
+                    qMin(g.minimum, g.maximum);
+
+                const int maximum =
+                    qMax(g.minimum, g.maximum);
+
+                const int value =
+                    qBound(
+                        minimum,
+                        g.value,
+                        maximum);
+
+                s << "\tAPI->gui->gadgets->progressbar_set_minmax("
+                  << n
+                  << ", "
+                  << minimum
+                  << ", "
+                  << maximum
+                  << ");\n";
+
+                s << "\tAPI->gui->gadgets->progressbar_set_value("
+                  << n
+                  << ", "
+                  << value
+                  << ");\n";
+            }
+
             if (g.type == QStringLiteral("Slider")
                 || g.type == QStringLiteral("Scrollbar")) {
                 s << "\t/* Initial value "
                   << g.value
                   << " is stored in the .sbui; current applet API has no exported value setter yet. */\n";
-            } else if (g.type == QStringLiteral("ProgressBar")) {
-                s << "\t/* Progress range "
-                  << g.minimum
-                  << ".."
-                  << g.maximum
-                  << " and value "
-                  << g.value
-                  << " are stored in the .sbui; current applet API has no exported progress setters yet. */\n";
             }
 
             if (gadgetUsesDirectCallbacks(g)
@@ -7490,24 +8816,31 @@ private:
 
             if (g.type == QStringLiteral("ListBox")
                 && !g.listItems.isEmpty()) {
-                s << "\t/* Designer-preloaded ListBox items for "
-                  << n
-                  << ":\n";
+                const QString itemList =
+                    n + QStringLiteral("_items");
+
+                s << "\t/* ListBox owns no strings/model: build a caller-owned ItemList and attach it. */\n";
+                s << "\tAPI->gui->gadgets->itemlist_init(&"
+                  << itemList
+                  << ");\n";
 
                 for (int itemIndex = 0;
                      itemIndex < g.listItems.size();
                      ++itemIndex) {
-                    s << "\t   ["
-                      << itemIndex
-                      << "] \""
+                    s << "\tAPI->gui->gadgets->itemlist_add(&"
+                      << itemList
+                      << ", \""
                       << escapedCString(
                              g.listItems.at(
                                  itemIndex))
-                      << "\"\n";
+                      << "\", 0u);\n";
                 }
 
-                s << "\t   The current public applet API exposes listbox_create(),"
-                     " but not ItemList add/attach yet. */\n";
+                s << "\tAPI->gui->gadgets->listbox_attach_itemlist("
+                  << n
+                  << ", &"
+                  << itemList
+                  << ");\n";
             }
 
             s << "\tAPI->gui->gadgets->repaint("
@@ -7640,8 +8973,33 @@ private:
             }
         }
 
-        s << "\t\t\t/* </SIDBOX-GUI:USER WINDOW_CLOSE> */\n"
-             "\t\t\tSBOS_CloseWindow(win);\n"
+        s << "\t\t\t/* </SIDBOX-GUI:USER WINDOW_CLOSE> */\n";
+
+        /*
+         * ListBoxes do not own ItemLists_t. Detach and free designer-created
+         * models before the Window destroys its gadgets.
+         */
+        for (const GuiDesignerGadget &g :
+             m_gadgets) {
+            if (g.type != QStringLiteral("ListBox")
+                || g.listItems.isEmpty()) {
+                continue;
+            }
+
+            const QString n =
+                safeCIdentifier(
+                    g.name,
+                    QStringLiteral("listbox"));
+
+            s << "\t\t\tAPI->gui->gadgets->listbox_attach_itemlist("
+              << n
+              << ", NULL);\n";
+            s << "\t\t\tAPI->gui->gadgets->itemlist_deinit(&"
+              << n
+              << "_items);\n";
+        }
+
+        s << "\t\t\tSBOS_CloseWindow(win);\n"
              "\t\t\treturn CGPROC_HANDLED;\n";
 
         if (hasBitmapView) {
@@ -7950,6 +9308,7 @@ private:
             return false;
         }
 
+        if (chooseDestination || m_modified) saveDesign();
         if (generatedFilesChanged) {
             generatedFilesChanged(
                 m_filePath,
@@ -7979,6 +9338,10 @@ private:
     }
 
     QString m_filePath;
+    bool m_detached = false;
+    QString m_sourceName;
+    QString m_sketchName;
+    QComboBox *m_generationMode = nullptr;
     bool m_modified = false;
     GuiDesignerWindow m_window;
     QList<GuiDesignerGadget> m_gadgets;

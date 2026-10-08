@@ -1,0 +1,21 @@
+Sidbox IDE / GUI Designer feature pass
+======================================
+
+Based on the latest refactored guidesigner.cpp/.h source plus the keyboard-control patch.
+
+- GridSelect now has editable per-cell text, max 4 chars, previewed in CoderGirl font.
+- Ctrl+Z explicitly undoes designer changes.
+- ProgressBar generator now emits min/max/value through new public API tail entries.
+- New ProgressBars default to 50% so they are visibly a progress bar.
+- BitmapView can attach a PNG, convert to exact Sidbox 256-colour CLUT indices, store bytes in .sbui, preview them, and generate a MEMALIGN32 indexed array.
+- Shift+Tab now unindents source; Ctrl+Tab cycles source tabs.
+- Protected USER blocks are de-indented before reinsertion so regeneration no longer walks code rightward.
+- .sbui format bumped to version 7 for GridSelect text / embedded bitmap data.
+
+API REQUIREMENT
+GridSelect cell text and ProgressBar range/value require the accompanying public API + firmware API patch. New function pointers are appended to API_GUI_GADGETS, preserving existing member offsets.
+
+Validation:
+- public applet API smoke compile: PASS
+- representative generated C smoke compile: PASS
+- full Qt IDE compile unavailable here (Qt6 development package absent)

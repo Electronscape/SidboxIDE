@@ -13,6 +13,16 @@ typedef uint32_t    BMV_FLAGS_T;
 typedef uint32_t    GAD_TOOL_FLAGS;
 typedef uint32_t    CGGadget;
 
+/*
+ * Public layout of the caller-owned CoderGirl ItemList model.
+ * Keep this binary-identical to firmware cg_itemlist.h.
+ */
+typedef struct ItemLists_t {
+    void     **items;
+    uint16_t count;
+    uint16_t cap;
+} ItemLists_t;
+
 typedef void (*fnCallback)(void *gadget, int32_t a, int32_t b, int32_t c, int32_t d);
 
 // control types
@@ -68,6 +78,17 @@ typedef struct API_GUI_GADGETS {
     uint32_t (*textarea_get_text)     (CGGadget hTa, char *out, uint32_t outCap);
     void     (*bitmapview_set_bitmap) (CGGadget bitmapview, void *bitmap);
     void     (*bitmapview_set_size)   (CGGadget bitmapview, uint16_t width, uint16_t height);
+
+    /* Appended in API vNext: existing member offsets remain unchanged. */
+    uint32_t (*gridselect_set_cell_text)(CGGadget grid, const char *text, int16_t cellindex);
+    void     (*progressbar_set_value)  (CGGadget progress, int16_t value);
+    void     (*progressbar_set_minmax) (CGGadget progress, int16_t minimum, int16_t maximum);
+
+    /* Appended ListBox model API; all earlier offsets remain unchanged. */
+    void     (*itemlist_init)          (ItemLists_t *list);
+    void     (*itemlist_deinit)        (ItemLists_t *list);
+    int      (*itemlist_add)           (ItemLists_t *list, const char *text, uint32_t flags);
+    int16_t  (*listbox_attach_itemlist)(CGGadget listbox, ItemLists_t *list);
 } API_GUI_GADGETS;
 
 typedef API_GUI_GADGETS API_GUI_Gadgets;
@@ -103,8 +124,8 @@ typedef API_GUI_GADGETS API_GUI_Gadgets;
 //// Gadget Canvas draw type
 #define CNV_LINE                (0)
 #define CNV_RECT                (1)
-#define CNV_RECTF               (2)
-#define CNV_BEVEL               (2)
+#define CNV_BEVEL               (2)    // historical firmware value; keep stable
+#define CNV_RECTF               (3)    // filled rectangle must be distinct from bevel
 
 
 //CGGadget SBOS_CreateButton     (CGWindow win, int16_t x, int16_t y, int16_t w, int16_t h, const char *text, GAD_TOOL_FLAGS flags);
@@ -162,6 +183,26 @@ typedef struct {
 #define SBOS_BitmapviewSetImageSize(bitmapview, width, height) \
     (GUICoderGirl->gadgets->bitmapview_set_size(bitmapview, width, height))
 
+#define SBOS_GridSelectSetCellText(grid, text, cellindex) \
+    (GUICoderGirl->gadgets->gridselect_set_cell_text(grid, text, cellindex))
+
+#define SBOS_ProgressbarSetValue(progress, value) \
+    (GUICoderGirl->gadgets->progressbar_set_value(progress, value))
+
+#define SBOS_ProgressbarSetMinMax(progress, minimum, maximum) \
+    (GUICoderGirl->gadgets->progressbar_set_minmax(progress, minimum, maximum))
+
+#define SBOS_Itemlist_Init(list) \
+    (GUICoderGirl->gadgets->itemlist_init(list))
+
+#define SBOS_Itemlist_Deinit(list) \
+    (GUICoderGirl->gadgets->itemlist_deinit(list))
+
+#define SBOS_Itemlist_Add(list, text, flags) \
+    (GUICoderGirl->gadgets->itemlist_add(list, text, flags))
+
+#define SBOS_ListboxAttachItemlist(listbox, list) \
+    (GUICoderGirl->gadgets->listbox_attach_itemlist(listbox, list))
 
 
 #ifdef __cplusplus
