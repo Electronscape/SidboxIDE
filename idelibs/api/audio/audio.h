@@ -66,7 +66,7 @@ typedef struct {
     void (*loadsfx)       (void);
     void (*playsample)    (uint8_t channel);
     void (*stopsample)    (uint8_t channel);
-    void (*assignsample)  (uint8_t channel, void *sample, uint32_t samples, uint8_t bitsize);   // 0 = 8bits, 1 = 16bits
+    void (*assignsample)  (uint8_t channel, const void *sample, uint32_t samples, uint8_t bitsize);   // 0 = 8bits, 1 = 16bits
     void (*setsamplefreq) (uint8_t channel, uint16_t hz);
     void (*setsamplevol)  (uint8_t channel, uint16_t vol);
     void (*setsamplepan)  (uint8_t channel, int8_t pan); // -127 to 127

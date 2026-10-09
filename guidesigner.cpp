@@ -74,6 +74,9 @@
 #include <QSet>
 #include <QSize>
 #include <QSpinBox>
+#include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QSplitter>
 #include <QTimer>
 #include <QString>
@@ -1022,6 +1025,58 @@ constexpr const char *GuiDesignerGadgetMimeType =
 constexpr const char *GuiDesignerClipboardMimeType =
     "application/x-sidbox-codergirl-gadget-json";
 
+class GuiDesignerPaletteDelegate : public QStyledItemDelegate
+{
+public:
+    explicit GuiDesignerPaletteDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        Q_UNUSED(option);
+        Q_UNUSED(index);
+        return QSize(76, 34);
+    }
+
+    void paint(QPainter *painter,
+               const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        painter->save();
+
+        const QRect rect = option.rect;
+        const bool selected = (option.state & QStyle::State_Selected);
+        const bool hovered = (option.state & QStyle::State_MouseOver);
+
+        if (selected) {
+            painter->fillRect(rect, option.palette.highlight());
+        } else if (hovered) {
+            painter->fillRect(rect, option.palette.base().color().lighter(106));
+        }
+
+        const QVariant iconVar = index.data(Qt::DecorationRole);
+        const QIcon icon = qvariant_cast<QIcon>(iconVar);
+        const QSize iconSize(64, 24);
+        const QPixmap pix = icon.pixmap(iconSize,
+                                        selected ? QIcon::Selected : QIcon::Normal,
+                                        QIcon::Off);
+        const QRect iconRect(rect.x() + (rect.width() - iconSize.width()) / 2,
+                             rect.y() + (rect.height() - iconSize.height()) / 2,
+                             iconSize.width(), iconSize.height());
+        painter->drawPixmap(iconRect.topLeft(), pix);
+
+        if (selected) {
+            painter->setPen(QPen(option.palette.highlight(), 1));
+            painter->drawRect(rect.adjusted(0, 0, -1, -1));
+        }
+
+        painter->restore();
+    }
+};
+
 class GuiDesignerToolbox : public QListWidget
 {
 public:
@@ -1041,6 +1096,8 @@ public:
         setUniformItemSizes(true);
         setSelectionMode(QAbstractItemView::SingleSelection);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setMouseTracking(true);
+        setItemDelegate(new GuiDesignerPaletteDelegate(this));
         setDragEnabled(true);
         setDragDropMode(QAbstractItemView::DragOnly);
         setDefaultDropAction(Qt::CopyAction);

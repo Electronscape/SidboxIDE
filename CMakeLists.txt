@@ -71,6 +71,9 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/gadget_canvas.png
         icons/gadget_gridselect.png
         icons/gadget_listbox.png
+        icons/gadget_radio.png
+        icons/gadget_slider.png
+        icons/gadget_timer.png
     )
 
 set(CMAKE_AUTORCC ON)
