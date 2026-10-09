@@ -228,6 +228,7 @@ private:
     QHash<QString, QStringList> m_cachedFileTypeNames;
 
     QString m_compilerStderrBuffer;
+    bool m_buildLinkSizeOverflow = false;
     QHash<QString, QList<EditorDiagnostic>> m_compilerDiagnostics;
     QString m_linkerScriptPath;
     QString m_outputAppName;

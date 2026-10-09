@@ -5805,6 +5805,93 @@ void MainWindow::compileActiveFile()
         return;
     }
 
+    /*
+     * Preflight only what is knowable without running the linker: generated
+     * embedded PCM bytes.  Compiler code, BSS, alignment, and stack are NOT
+     * included in this estimate.  The linked ELF remains authoritative.
+     */
+    qint64 embeddedSfxBytes = 0;
+    int embeddedSfxCount = 0;
+    {
+        QSet<QString> compiledFiles;
+        for (const QString &source : sourceFiles) {
+            compiledFiles.insert(QFileInfo(source).absoluteFilePath());
+        }
+
+        QDirIterator designs(m_projectPath, QStringList{QStringLiteral("*.sbui")},
+                             QDir::Files, QDirIterator::Subdirectories);
+        while (designs.hasNext()) {
+            const QString designPath = designs.next();
+            const QFileInfo designInfo(designPath);
+            const QString assetSource = designInfo.dir().absoluteFilePath(
+                designInfo.completeBaseName() + QStringLiteral("res/media_sfx.c"));
+            const QString legacySource = designInfo.dir().absoluteFilePath(
+                designInfo.completeBaseName() + QStringLiteral("_sfx.c"));
+            if (!compiledFiles.contains(QFileInfo(assetSource).absoluteFilePath())
+                && !compiledFiles.contains(QFileInfo(legacySource).absoluteFilePath())) {
+                continue;
+            }
+
+            QFile designFile(designPath);
+            if (!designFile.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            const QJsonDocument document =
+                QJsonDocument::fromJson(designFile.readAll());
+            for (const QJsonValue &value :
+                 document.object().value(QStringLiteral("gadgets")).toArray()) {
+                const QJsonObject gadget = value.toObject();
+                if (gadget.value(QStringLiteral("type")).toString() != QStringLiteral("Media")
+                    || gadget.value(QStringLiteral("mediaMode")).toString() != QStringLiteral("SFX")
+                    || !gadget.value(QStringLiteral("mediaEmbedSfx")).toBool()) {
+                    continue;
+                }
+                const QByteArray pcm = QByteArray::fromBase64(
+                    gadget.value(QStringLiteral("mediaEmbeddedPcmBase64"))
+                        .toString().toLatin1());
+                if (!pcm.isEmpty()) {
+                    // Generated arrays use MEMALIGN32, plus a length constant.
+                    embeddedSfxBytes += (pcm.size() + 31LL) & ~31LL;
+                    embeddedSfxBytes += 4;
+                    ++embeddedSfxCount;
+                }
+            }
+        }
+    }
+
+    const qint64 reservedBytes = qint64(m_appSizeKb) * 1024;
+    if (m_linkerScriptPath.isEmpty() && embeddedSfxBytes > 0 && reservedBytes > 0
+        && embeddedSfxBytes * 100 >= reservedBytes * 70) {
+        QMessageBox warning(this);
+        warning.setIcon(QMessageBox::Warning);
+        warning.setWindowTitle(tr("Applet memory preflight"));
+        warning.setText(tr("Embedded sound data is using much of the applet allowance."));
+        warning.setInformativeText(
+            tr("%1 embedded SFX sample(s) account for approximately %2 of the "
+               "configured %3 KB applet allowance.\n\n"
+               "This does NOT include program code, other data, BSS or stack. "
+               "Only the linker can calculate final RAM usage. Increasing the "
+               "limit also changes the applet's memory reservation, so check "
+               "your SIDBOX memory layout first.")
+                .arg(embeddedSfxCount)
+                .arg(formattedFileSize(embeddedSfxBytes))
+                .arg(m_appSizeKb));
+        QPushButton *settingsButton = warning.addButton(
+            tr("Project Settings..."), QMessageBox::ActionRole);
+        QPushButton *continueButton = warning.addButton(
+            tr("Compile Anyway"), QMessageBox::AcceptRole);
+        warning.addButton(QMessageBox::Cancel);
+        warning.setDefaultButton(continueButton);
+        warning.exec();
+        if (warning.clickedButton() == settingsButton) {
+            showProjectSettings();
+            return; // Run Compile again after reviewing the new size.
+        }
+        if (warning.clickedButton() != continueButton) {
+            return;
+        }
+    }
+
     QString linkerError;
     if (m_linkerScriptPath.isEmpty() && !updateProjectLinkerScript(&linkerError)) {
         QMessageBox::warning(this, tr("Compile"), tr("Could not prepare the project linker script:\n%1").arg(linkerError));
@@ -5945,6 +6032,14 @@ void MainWindow::compileActiveFile()
     appendOutputLine(
         tr("Applet size: %1 KB").arg(m_appSizeKb),
         OutputKind::Header);
+    if (embeddedSfxBytes > 0) {
+        appendOutputLine(
+            tr("Embedded SFX: %1 sample(s), approximately %2 RAM before "
+               "code, BSS and stack")
+                .arg(embeddedSfxCount)
+                .arg(formattedFileSize(embeddedSfxBytes)),
+            OutputKind::Muted);
+    }
     appendOutputLine(
         tr("Optimisation: %1").arg(m_compilerOptimization),
         OutputKind::Header);
@@ -5995,6 +6090,7 @@ void MainWindow::compileActiveFile()
         appendOutputLine(tr("  %1").arg(QDir(libsPath).relativeFilePath(apiSource)), OutputKind::Muted);
     }
 
+    m_buildLinkSizeOverflow = false;
     m_pendingElfPath = outputPath;
     m_pendingAppPath = appOutputPath;
     m_pendingAsmPath = asmOutputPath;
@@ -6599,6 +6695,14 @@ void MainWindow::finishCompileProgress()
 void MainWindow::handleCompilerFinished(int exitCode)
 {
     if (m_buildStep == BuildStep::Linking && !m_compilerStderrBuffer.isEmpty()) {
+        const QString finalLine = m_compilerStderrBuffer.toLower();
+        if (finalLine.contains(QStringLiteral("applet image exceeds selected app size"))
+            || (finalLine.contains(QStringLiteral("applet"))
+                && finalLine.contains(QStringLiteral("region"))
+                && (finalLine.contains(QStringLiteral("overflowed"))
+                    || finalLine.contains(QStringLiteral("will not fit"))))) {
+            m_buildLinkSizeOverflow = true;
+        }
         appendOutputLine(
             m_compilerStderrBuffer,
             compilerOutputKindForLine(m_compilerStderrBuffer));
@@ -6612,10 +6716,91 @@ void MainWindow::handleCompilerFinished(int exitCode)
             m_buildStep = BuildStep::None;
             finishCompileProgress();
             statusBar()->showMessage(tr("Compile failed"));
+            if (m_buildLinkSizeOverflow) {
+                QMessageBox memoryWarning(this);
+                memoryWarning.setIcon(QMessageBox::Warning);
+                memoryWarning.setWindowTitle(tr("Applet memory limit exceeded"));
+                memoryWarning.setText(
+                    tr("The linker could not fit the applet into its allocated RAM."));
+                memoryWarning.setInformativeText(
+                    tr("Current applet allowance: %1 KB. The limit includes code, "
+                       "embedded sounds, data, BSS and stack.\n\n"
+                       "You can review Applet size in Project Settings. "
+                       "Don't increase it beyond your reserved SDRAM layout.\n\n"
+                       "The full linker error remains in the Build Output.")
+                        .arg(m_appSizeKb));
+                QPushButton *settingsButton = memoryWarning.addButton(
+                    tr("Project Settings..."), QMessageBox::ActionRole);
+                memoryWarning.addButton(QMessageBox::Close);
+                memoryWarning.exec();
+                if (memoryWarning.clickedButton() == settingsButton) {
+                    showProjectSettings();
+                }
+            }
             return;
         }
 
         appendOutputLine(tr("Link finished successfully."), OutputKind::Success);
+
+        // Use linked symbols, not the on-disk .app size.  __stack_end__
+        // includes the reserved stack; .app binary file size does not.
+        QString nmExecutable = compilerPath();
+        if (nmExecutable.endsWith(QStringLiteral("gcc"))) {
+            nmExecutable.chop(3);
+            nmExecutable += QStringLiteral("nm");
+        } else if (nmExecutable.endsWith(QStringLiteral("gcc.exe"))) {
+            nmExecutable.chop(7);
+            nmExecutable += QStringLiteral("nm.exe");
+        }
+        if (QFileInfo::exists(nmExecutable)) {
+            QProcess nm;
+            nm.start(nmExecutable, {QStringLiteral("-n"), m_pendingElfPath});
+            if (nm.waitForFinished(3000) && nm.exitStatus() == QProcess::NormalExit
+                && nm.exitCode() == 0) {
+                const QString symbols = QString::fromLocal8Bit(nm.readAllStandardOutput());
+                const QRegularExpression entry(
+                    QStringLiteral(R"(^([0-9a-fA-F]+)\s+[A-Za-z]\s+(_appstart|__stack_end__)\s*$)"),
+                    QRegularExpression::MultilineOption);
+                quint64 start = 0;
+                quint64 end = 0;
+                bool foundStart = false;
+                bool foundEnd = false;
+                auto matches = entry.globalMatch(symbols);
+                while (matches.hasNext()) {
+                    const QRegularExpressionMatch match = matches.next();
+                    bool ok = false;
+                    const quint64 address = match.captured(1).toULongLong(&ok, 16);
+                    if (!ok) continue;
+                    if (match.captured(2) == QStringLiteral("_appstart")) {
+                        start = address;
+                        foundStart = true;
+                    } else {
+                        end = address;
+                        foundEnd = true;
+                    }
+                }
+                if (foundStart && foundEnd && end >= start) {
+                    const qint64 used = qint64(end - start);
+                    if (!m_linkerScriptPath.isEmpty()) {
+                        appendOutputLine(
+                            tr("Applet RAM used: %1 (including stack; custom linker controls the limit)")
+                                .arg(formattedFileSize(used)),
+                            OutputKind::Header);
+                    } else {
+                        const qint64 allowance = qint64(m_appSizeKb) * 1024;
+                        appendOutputLine(
+                            tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve)")
+                                .arg(formattedFileSize(used))
+                                .arg(formattedFileSize(allowance))
+                                .arg(allowance > 0 ? qRound(100.0 * used / allowance) : 0)
+                                .arg(formattedFileSize(qMax(qint64(0), allowance - used))),
+                            allowance > 0 && used * 100 >= allowance * 90
+                                ? OutputKind::Warning : OutputKind::Success);
+                    }
+                }
+            }
+        }
+
         appendOutputLine(tr("Generating .asm output..."), OutputKind::Header);
 
         QString objdumpExec = objcopyPath();
@@ -7756,8 +7941,8 @@ bool MainWindow::openFile(const QString &filePath)
      * behaviour if they choose Open Anyway.
      */
     const QFileInfo openingFileInfo(filePath);
-    const qint64 largeSourceThreshold = 1024LL * 1024LL;
-    const qint64 veryLargeSourceThreshold = 1024LL * 1024LL;
+    const qint64 largeSourceThreshold = 2048LL * 1024LL;
+    const qint64 veryLargeSourceThreshold = 4096LL * 1024LL;
     const QString suffix = openingFileInfo.suffix().toLower();
 
     const bool isSourceLike =
@@ -11345,6 +11530,15 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
             line.chop(1);
         }
 
+        const QString lowerLine = line.toLower();
+        if (m_buildStep == BuildStep::Linking
+            && (lowerLine.contains(QStringLiteral("applet image exceeds selected app size"))
+                || ((lowerLine.contains(QStringLiteral("region"))
+                     && lowerLine.contains(QStringLiteral("applet")))
+                    && (lowerLine.contains(QStringLiteral("overflowed"))
+                        || lowerLine.contains(QStringLiteral("will not fit")))))) {
+            m_buildLinkSizeOverflow = true;
+        }
         appendOutputLine(line, compilerOutputKindForLine(line));
         processCompilerDiagnosticLine(line);
     }

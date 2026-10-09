@@ -131,6 +131,9 @@ typedef struct {
     void     (*normalmouse)          (void);
     void     (*window_mouse_busy)    (CGWindow win, uint8_t busy);
     uint8_t  (*window_mouse_is_busy) (CGWindow win);
+    /* Runtime owner window interaction control (OS build with this API required). */
+    void     (*window_disable) (CGWindow win);
+    void     (*window_enable)  (CGWindow win);
 } API_GUI_Windows;
 
 
@@ -151,6 +154,8 @@ typedef struct {
 #define SetMouseNormal()        (GUICoderGirl->windows->normalmouse())
 #define WindowMouseBusy(win, busy)   (GUICoderGirl->windows->window_mouse_busy((win), (busy)))
 #define WindowMouseIsBusy(win)       (GUICoderGirl->windows->window_mouse_is_busy(win))
+#define SBOS_WindowDisable(win)      (GUICoderGirl->windows->window_disable((win)))
+#define SBOS_WindowEnable(win)       (GUICoderGirl->windows->window_enable((win)))
 
 
 #ifdef __cplusplus

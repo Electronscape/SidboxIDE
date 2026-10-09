@@ -62,6 +62,7 @@
 #include <QPlainTextEdit>
 #include <QPoint>
 #include <QPointF>
+#include <QPolygon>
 #include <QPointer>
 #include <QPixmap>
 #include <QPushButton>
@@ -168,7 +169,43 @@ struct GuiDesignerGadget
     int timerPeriodMs = 1000;
     bool timerRepeat = true;
     bool timerAutoStart = true;
+
+    // Designer-only Media object. The firmware sees only ordinary audio API calls.
+    QString mediaMode = QStringLiteral("SFX"); // SFX or Music
+    QString mediaFile;
+    // For compatibility, .sbui stores imported PCM8 bytes XOR 0x80.
+    // The generated media_sfx.c reverses that transformation: BETH mixes unsigned PCM8.
+    // The generated <design>res/media_sfx.c is compilable data, separate from the window source.
+    bool mediaEmbedSfx = false;
+    QString mediaEmbeddedName;
+    QByteArray mediaEmbeddedPcm;
+    int mediaChannel = 0;    // BETH: 8 PCM voices, 0..7
+    int mediaVolume = 200;   // documented default range 0..255
+    int mediaPan = 0;        // -127..127
+    int mediaFrequency = 22050;
+    int mediaSubsong = 0;
+    bool mediaLoop = false;  // PCM only; music looping is engine/format-specific
+    bool mediaAutoStart = false;
+    // Buttons may target a named virtual Media component.
+    QString mediaTarget;
+    QString mediaAction = QStringLiteral("Play");
+
+    // Virtual non-blocking CoderGirl dialogs; no physical canvas gadget.
+    QString dialogTitle = QStringLiteral("Select a file");
+    QString dialogMessage = QStringLiteral("Are you sure?");
+    QString dialogDir = QStringLiteral("sdcard:/");
+    QString dialogFilter = QStringLiteral("*.*");
+    QString dialogKind = QStringLiteral("Message"); // Message / Info
+    QString dialogButtons = QStringLiteral("OK/Cancel");
+    bool dialogBlockOwner = false;
+    QString dialogTarget; // Button -> virtual FileRequester/MessageBox name
 };
+
+static bool isVirtualDesignerGadget(const QString &type)
+{
+    return type == QStringLiteral("Timer") || type == QStringLiteral("Media")
+        || type == QStringLiteral("FileRequester") || type == QStringLiteral("MessageBox");
+}
 
 static QStringList designerTabTitles(const GuiDesignerGadget &g)
 {
@@ -1943,8 +1980,8 @@ private:
                 m_gadgets->at(i);
             if (!visibleOnTab(g)) continue;
             if (paintPass == 0 && g.type != QStringLiteral("TabGroup")) continue;
-            if (paintPass == 1 && (g.type == QStringLiteral("TabGroup") || g.type == QStringLiteral("Timer"))) continue;
-            if (paintPass == 2 && g.type != QStringLiteral("Timer")) continue;
+            if (paintPass == 1 && (g.type == QStringLiteral("TabGroup") || isVirtualDesignerGadget(g.type))) continue;
+            if (paintPass == 2 && !isVirtualDesignerGadget(g.type)) continue;
 
             const QRect gr =
                 g.rect.translated(
@@ -2044,7 +2081,7 @@ private:
                     anchorColour);
 
                 if (g.type != QStringLiteral("GridSelect")
-                    && g.type != QStringLiteral("Timer")) {
+                    && !isVirtualDesignerGadget(g.type)) {
                     for (const QRect &handle :
                          windowResizeHandles(gr)) {
                         p.drawRect(handle);
@@ -2458,7 +2495,7 @@ protected:
             clientOrigin();
 
         for (int i = m_gadgets->size()-1; i >= 0; --i) {
-            if (m_gadgets->at(i).type == QStringLiteral("Timer")
+            if (isVirtualDesignerGadget(m_gadgets->at(i).type)
                 && m_gadgets->at(i).rect.translated(origin).contains(logical)) {
                 setSelectedIndex(i);
                 if (gadgetDoubleClicked) gadgetDoubleClicked(i);
@@ -2584,7 +2621,7 @@ protected:
             }
         } else if (m_selected < m_gadgets->size()
                    && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
-                   && m_gadgets->at(m_selected).type != QStringLiteral("Timer")) {
+                   && !isVirtualDesignerGadget(m_gadgets->at(m_selected).type)) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
                     .rect
@@ -2664,8 +2701,8 @@ protected:
                  --i) {
                 if (!visibleOnTab(m_gadgets->at(i))) continue;
                 const QString &type = m_gadgets->at(i).type;
-                if (pass == 0 && type != QStringLiteral("Timer")) continue;
-                if (pass == 1 && (type == QStringLiteral("Timer") || type == QStringLiteral("TabGroup"))) continue;
+                if (pass == 0 && !isVirtualDesignerGadget(type)) continue;
+                if (pass == 1 && (isVirtualDesignerGadget(type) || type == QStringLiteral("TabGroup"))) continue;
                 if (pass == 2 && type != QStringLiteral("TabGroup")) continue;
                 const QRect gr =
                     m_gadgets->at(i)
@@ -2696,7 +2733,7 @@ protected:
                     .translated(origin);
 
             m_gadgetResizeEdges =
-                m_gadgets->at(hit).type == QStringLiteral("Timer")
+                isVirtualDesignerGadget(m_gadgets->at(hit).type)
                     ? Qt::Edges() : windowResizeEdgesAt(logical, gr);
 
             m_resizing =
@@ -3010,7 +3047,7 @@ protected:
                    && m_gadgets
                    && m_selected < m_gadgets->size()
                    && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
-                   && m_gadgets->at(m_selected).type != QStringLiteral("Timer")) {
+                   && !isVirtualDesignerGadget(m_gadgets->at(m_selected).type)) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
                     .rect
@@ -3702,6 +3739,49 @@ private:
                 g.hPen >= 0
                     ? g.hPen
                     : 3);
+
+        if (g.type == QStringLiteral("FileRequester") || g.type == QStringLiteral("MessageBox")) {
+            // Virtual requester glyphs: not part of the generated SIDBOX window.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.setPen(QPen(QColor(225, 232, 244), 1));
+            if (g.type == QStringLiteral("FileRequester")) {
+                p.drawRect(QRect(r.x()+4, r.y()+9, 16, 10));
+                p.drawRect(QRect(r.x()+5, r.y()+6, 7, 4));
+            } else {
+                p.drawRect(QRect(r.x()+5, r.y()+5, 14, 12));
+                p.drawLine(r.x()+9, r.y()+20, r.x()+13, r.y()+17);
+                p.drawLine(r.x()+12, r.y()+8, r.x()+12, r.y()+12);
+                p.drawPoint(r.x()+12, r.y()+14);
+            }
+            p.restore();
+            return;
+        }
+        if (g.type == QStringLiteral("Media")) {
+            // A designer-only media component; no SIDBOX gadget is created.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.setBrush(QColor(225, 232, 244));
+            p.setPen(Qt::NoPen);
+            const int x = r.x() + 5, y = r.y() + 5;
+            QPolygon speaker;
+            speaker << QPoint(x,y+5) << QPoint(x+4,y+5)
+                    << QPoint(x+9,y+1) << QPoint(x+9,y+15)
+                    << QPoint(x+4,y+11) << QPoint(x,y+11);
+            p.drawPolygon(speaker);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawArc(QRect(x+7, y+3, 12, 12), -60*16, 120*16);
+            p.drawArc(QRect(x+5, y, 17, 17), -60*16, 120*16);
+            p.restore();
+            return;
+        }
 
         if (g.type == QStringLiteral("Timer")) {
             // A non-visual design-time component: a crisp 24x24 stopwatch.
@@ -4830,7 +4910,8 @@ public:
             QStringLiteral("TextBox"), QStringLiteral("TextArea"), QStringLiteral("ListBox"),
             QStringLiteral("Scrollbar"), QStringLiteral("GridSelect"), QStringLiteral("Canvas"),
             QStringLiteral("BitmapView"), QStringLiteral("TabGroup"),
-            QStringLiteral("Timer")
+            QStringLiteral("Timer"), QStringLiteral("Media"),
+            QStringLiteral("FileRequester"), QStringLiteral("MessageBox")
         };
         const QHash<QString, QString> gadgetTooltips = {
             {QStringLiteral("BitmapView"), QObject::tr("Displays an indexed PNG bitmap")},
@@ -4847,15 +4928,19 @@ public:
             {QStringLiteral("TabGroup"), QObject::tr("Virtual grouped pages with selectable tabs")},
             {QStringLiteral("TextArea"), QObject::tr("Multi-line text area")},
             {QStringLiteral("TextBox"), QObject::tr("Single-line editable text")},
-            {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")}
+            {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")},
+            {QStringLiteral("Media"), QObject::tr("Virtual audio playback: sound effects or music; not a SIDBOX screen gadget")},
+            {QStringLiteral("FileRequester"), QObject::tr("Non-modal CoderGirl file picker with select/cancel callbacks")},
+            {QStringLiteral("MessageBox"), QObject::tr("Non-modal CoderGirl MessageBox or InfoBox with result callback")}
         };
         QStringList sortedGadgets = gadgetTypes;
         sortedGadgets.sort(Qt::CaseInsensitive);
         for (const QString &type : sortedGadgets) {
             // Add your 64x24 PNG to CMakeLists.txt's qt_add_resources(...)
             // FILES list to replace this placeholder automatically.
-            const QString resourcePath = QStringLiteral(":/icons/gadget_%1.png")
-                                             .arg(type.toLower());
+            const QString resourcePath = type == QStringLiteral("Media")
+                ? QStringLiteral(":/icons/gadgets_media.png")
+                : QStringLiteral(":/icons/gadget_%1.png").arg(type.toLower());
             QPixmap tile(resourcePath);
             if (tile.isNull()) {
                 tile = QPixmap(64, 24);
@@ -5202,8 +5287,31 @@ public:
         // Compiling or saving must not overwrite a generated source that is
         // already current. Explicit Generate... remains available at any time.
         if (!validateProjectWindows(false)) return false;
+        bool generatedResourceMissing = false;
+        if (!m_detached) {
+            const QFileInfo designInfo(m_filePath);
+            const QDir resources(designInfo.dir().absoluteFilePath(
+                designInfo.completeBaseName() + QStringLiteral("res")));
+            const bool bitmapAvailable = QFile::exists(
+                resources.filePath(QStringLiteral("bitmapview.c")));
+            const bool mediaAvailable = QFile::exists(
+                resources.filePath(QStringLiteral("media_sfx.c")));
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type == QStringLiteral("Media") && g.mediaMode == QStringLiteral("SFX")
+                    && g.mediaEmbedSfx && !mediaAvailable) {
+                    generatedResourceMissing = true;
+                    break;
+                }
+                if (g.type == QStringLiteral("BitmapView")
+                    && (!g.bitmapPixels.isEmpty() || isDesignerDemoBitmap(g))
+                    && !bitmapAvailable) {
+                    generatedResourceMissing = true;
+                    break;
+                }
+            }
+        }
         const bool regenerate = m_needsGeneration || !QFile::exists(outputPath(m_detached))
-                                || linkedWindowCallStale();
+                                || linkedWindowCallStale() || generatedResourceMissing;
         if (m_modified && !saveDesign())
             return false;
         return !regenerate || generateCFile(false);
@@ -5615,7 +5723,7 @@ private:
     {
         const int x = 18 + (ordinal % 5) * 14;
         const int y = 24 + (ordinal % 8) * 18;
-        if (type == QStringLiteral("Timer")) return QRect(x, y, 24, 24);
+        if (isVirtualDesignerGadget(type)) return QRect(x, y, 24, 24);
         if (type == QStringLiteral("TabGroup")) return QRect(12, 26, 310, 172);
         if (type == QStringLiteral("Label")) return QRect(x, y, 120, 18);
         if (type == QStringLiteral("Checkbox") || type == QStringLiteral("Radio")) return QRect(x, y, 130, 20);
@@ -5633,6 +5741,9 @@ private:
         QString stem;
         if (type == QStringLiteral("TabGroup")) stem = QStringLiteral("tabs");
         else if (type == QStringLiteral("Timer")) stem = QStringLiteral("timer");
+        else if (type == QStringLiteral("Media")) stem = QStringLiteral("media");
+        else if (type == QStringLiteral("FileRequester")) stem = QStringLiteral("fileRequest");
+        else if (type == QStringLiteral("MessageBox")) stem = QStringLiteral("messageBox");
         else if (type == QStringLiteral("Button")) stem = QStringLiteral("btn");
         else if (type == QStringLiteral("Label")) stem = QStringLiteral("lbl");
         else if (type == QStringLiteral("Checkbox")) stem = QStringLiteral("chk");
@@ -5710,6 +5821,29 @@ private:
         g.timerPeriodMs = qBound(1, o.value(QStringLiteral("timerPeriodMs")).toInt(1000), 86400000);
         g.timerRepeat = o.value(QStringLiteral("timerRepeat")).toBool(true);
         g.timerAutoStart = o.value(QStringLiteral("timerAutoStart")).toBool(true);
+        g.mediaMode = o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
+        g.mediaFile = o.value(QStringLiteral("mediaFile")).toString();
+        g.mediaEmbedSfx = o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
+        g.mediaEmbeddedName = o.value(QStringLiteral("mediaEmbeddedName")).toString();
+        g.mediaEmbeddedPcm = QByteArray::fromBase64(
+            o.value(QStringLiteral("mediaEmbeddedPcmBase64")).toString().toLatin1());
+        g.mediaChannel = o.value(QStringLiteral("mediaChannel")).toInt(0);
+        g.mediaVolume = o.value(QStringLiteral("mediaVolume")).toInt(200);
+        g.mediaPan = o.value(QStringLiteral("mediaPan")).toInt(0);
+        g.mediaFrequency = o.value(QStringLiteral("mediaFrequency")).toInt(22050);
+        g.mediaSubsong = o.value(QStringLiteral("mediaSubsong")).toInt(0);
+        g.mediaLoop = o.value(QStringLiteral("mediaLoop")).toBool(false);
+        g.mediaAutoStart = o.value(QStringLiteral("mediaAutoStart")).toBool(false);
+        g.mediaTarget = o.value(QStringLiteral("mediaTarget")).toString();
+        g.mediaAction = o.value(QStringLiteral("mediaAction")).toString(QStringLiteral("Play"));
+        g.dialogTitle = o.value(QStringLiteral("dialogTitle")).toString(QStringLiteral("Select a file"));
+        g.dialogMessage = o.value(QStringLiteral("dialogMessage")).toString(QStringLiteral("Are you sure?"));
+        g.dialogDir = o.value(QStringLiteral("dialogDir")).toString(QStringLiteral("sdcard:/"));
+        g.dialogFilter = o.value(QStringLiteral("dialogFilter")).toString(QStringLiteral("*.*"));
+        g.dialogKind = o.value(QStringLiteral("dialogKind")).toString(QStringLiteral("Message"));
+        g.dialogButtons = o.value(QStringLiteral("dialogButtons")).toString(QStringLiteral("OK/Cancel"));
+        g.dialogBlockOwner = o.value(QStringLiteral("dialogBlockOwner")).toBool(false);
+        g.dialogTarget = o.value(QStringLiteral("dialogTarget")).toString();
         g.cellWidth = o.value(QStringLiteral("cellWidth")).toInt(24);
         g.cellHeight = o.value(QStringLiteral("cellHeight")).toInt(18);
         g.cellsX = o.value(QStringLiteral("cellsX")).toInt(4);
@@ -5846,6 +5980,7 @@ private:
 
         g.name =
             uniqueGadgetName(g.type);
+        // A pasted button retains its Media link; pasted Media has a fresh name.
 
         /*
          * Designer-generated callback names should follow the new gadget name.
@@ -5860,6 +5995,15 @@ private:
             && g.onActivate == QStringLiteral("On_%1_Tick").arg(oldName)) {
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
         }
+        if (g.type == QStringLiteral("FileRequester")) {
+            if (g.onActivate == QStringLiteral("On_%1_Selected").arg(oldName))
+                g.onActivate = QStringLiteral("On_%1_Selected").arg(g.name);
+            if (g.onChange == QStringLiteral("On_%1_Cancelled").arg(oldName))
+                g.onChange = QStringLiteral("On_%1_Cancelled").arg(g.name);
+        }
+        if (g.type == QStringLiteral("MessageBox")
+            && g.onActivate == QStringLiteral("On_%1_Result").arg(oldName))
+            g.onActivate = QStringLiteral("On_%1_Result").arg(g.name);
 
         if (g.onChange == oldAutoChange) {
             g.onChange =
@@ -5972,8 +6116,11 @@ private:
 
         pushUndoSnapshot();
         m_gadgets.removeAt(selected);
-        for (GuiDesignerGadget &child : m_gadgets)
+        for (GuiDesignerGadget &child : m_gadgets) {
             if (child.tabOwner == deletedName) { child.tabOwner.clear(); child.tabPage = 0; }
+            if (child.mediaTarget == deletedName) child.mediaTarget.clear();
+            if (child.dialogTarget == deletedName) child.dialogTarget.clear();
+        }
 
         const int nextSelected =
             m_gadgets.isEmpty()
@@ -6129,7 +6276,7 @@ private:
 
         GuiDesignerGadget &g = m_gadgets[selected];
         // GridSelect derives its dimensions from cell count and cell size.
-        if (g.type == QStringLiteral("GridSelect") || g.type == QStringLiteral("Timer")) return;
+        if (g.type == QStringLiteral("GridSelect") || isVirtualDesignerGadget(g.type)) return;
 
         const int step = m_canvas->gridSnap() > 1
                              ? m_canvas->gridSnap() : 1;
@@ -6842,6 +6989,20 @@ private:
 
         QString preferred;
 
+        if (g.type == QStringLiteral("FileRequester") || g.type == QStringLiteral("MessageBox")) {
+            if (sourceNavigationRequested)
+                sourceNavigationRequested(generatedCPath(),
+                    QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(g.onActivate), g.onActivate);
+            return;
+        }
+        if (g.type == QStringLiteral("Media")) {
+            if (sourceNavigationRequested)
+                sourceNavigationRequested(generatedCPath(),
+                    QStringLiteral("static void %1_Play(void)").arg(safeCIdentifier(g.name, QStringLiteral("media"))),
+                    QStringLiteral("%1_Play(void)").arg(safeCIdentifier(g.name, QStringLiteral("media"))));
+            return;
+        }
+
         if (!callback.isEmpty()) {
             preferred =
                 QStringLiteral(
@@ -6900,6 +7061,14 @@ private:
         }
         if (type == QStringLiteral("Timer"))
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
+        if (type == QStringLiteral("FileRequester")) {
+            g.onActivate = QStringLiteral("On_%1_Selected").arg(g.name);
+            g.onChange = QStringLiteral("On_%1_Cancelled").arg(g.name);
+        }
+        if (type == QStringLiteral("MessageBox")) {
+            g.dialogTitle = QStringLiteral("Confirmation");
+            g.onActivate = QStringLiteral("On_%1_Result").arg(g.name);
+        }
         if (type == QStringLiteral("Checkbox") || type == QStringLiteral("Radio")
             || type == QStringLiteral("Slider") || type == QStringLiteral("Scrollbar")
             || type == QStringLiteral("ListBox") || type == QStringLiteral("GridSelect")
@@ -7021,7 +7190,7 @@ private:
 
         // Creating a control while a TabGroup is selected places it on the
         // active page. Drag/drop into a TabGroup body does the same.
-        if (type != QStringLiteral("TabGroup") && type != QStringLiteral("Timer")) {
+        if (type != QStringLiteral("TabGroup") && !isVirtualDesignerGadget(type)) {
             int owner = -1;
             if (dropPosition.x() >= 0) {
                 for (int i = m_gadgets.size()-1; i >= 0; --i) {
@@ -7994,8 +8163,8 @@ private:
         m_propertyLayout->addRow(new QLabel(QStringLiteral("<b>%1</b>")
             .arg(m_canvas->selectedIndex() < 0 ? QObject::tr("Window")
                  : (m_canvas->selectedIndex() < m_gadgets.size()
-                    && m_gadgets[m_canvas->selectedIndex()].type == QStringLiteral("Timer"))
-                       ? QObject::tr("Virtual Timer") : QObject::tr("Gadget")), m_propertyHost));
+                    && (isVirtualDesignerGadget(m_gadgets[m_canvas->selectedIndex()].type)))
+                       ? QObject::tr("Virtual Component") : QObject::tr("Gadget")), m_propertyHost));
 
         const int selected = m_canvas->selectedIndex();
         if (selected < 0 || selected >= m_gadgets.size()) {
@@ -8064,6 +8233,15 @@ private:
                 for (GuiDesignerGadget &child : m_gadgets)
                     if (child.tabOwner == old) child.tabOwner = gg.name;
             }
+            if ((gg.type == QStringLiteral("FileRequester") || gg.type == QStringLiteral("MessageBox"))
+                && gg.name != old) {
+                for (GuiDesignerGadget &child : m_gadgets)
+                    if (child.dialogTarget == old) child.dialogTarget = gg.name;
+            }
+            if (gg.type == QStringLiteral("Media") && gg.name != old) {
+                for (GuiDesignerGadget &child : m_gadgets)
+                    if (child.mediaTarget == old) child.mediaTarget = gg.name;
+            }
 
             if (gg.type == QStringLiteral("BitmapView")
                 && gg.bitmapSource == oldDemoBitmap) {
@@ -8076,6 +8254,15 @@ private:
 
             if (gg.onActivate == QStringLiteral("On_%1_Activate").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Activate").arg(gg.name);
+            if (gg.type == QStringLiteral("FileRequester")) {
+                if (gg.onActivate == QStringLiteral("On_%1_Selected").arg(old))
+                    gg.onActivate = QStringLiteral("On_%1_Selected").arg(gg.name);
+                if (gg.onChange == QStringLiteral("On_%1_Cancelled").arg(old))
+                    gg.onChange = QStringLiteral("On_%1_Cancelled").arg(gg.name);
+            }
+            if (gg.type == QStringLiteral("MessageBox")
+                && gg.onActivate == QStringLiteral("On_%1_Result").arg(old))
+                gg.onActivate = QStringLiteral("On_%1_Result").arg(gg.name);
             if (gg.type == QStringLiteral("Timer")
                 && gg.onActivate == QStringLiteral("On_%1_Tick").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Tick").arg(gg.name);
@@ -8084,6 +8271,194 @@ private:
         });
         auto *type = new QLabel(g.type, m_propertyHost);
         m_propertyLayout->addRow(QObject::tr("Type"), type);
+        if (g.type == QStringLiteral("FileRequester") || g.type == QStringLiteral("MessageBox")) {
+            auto *hint = new QLabel(g.type == QStringLiteral("FileRequester")
+                ? QObject::tr("Virtual non-modal file requester. Select/cancel events return to the owner window.")
+                : QObject::tr("Virtual non-modal MessageBox / InfoBox. Results return to the owner window."), m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addLine(QObject::tr("Dialog title"), g.dialogTitle,
+                [this, selected](const QString &v) { m_gadgets[selected].dialogTitle = v; });
+            if (g.type == QStringLiteral("FileRequester")) {
+                addLine(QObject::tr("Initial directory"), g.dialogDir,
+                    [this, selected](const QString &v) { m_gadgets[selected].dialogDir = v; });
+                addLine(QObject::tr("Filter (*.wav|*.mod)"), g.dialogFilter,
+                    [this, selected](const QString &v) { m_gadgets[selected].dialogFilter = v; });
+                addLine(QObject::tr("On file selected (const char *path)"), g.onActivate,
+                    [this, selected](const QString &v) { m_gadgets[selected].onActivate = safeCIdentifier(v, QStringLiteral("OnFileSelected")); });
+                addLine(QObject::tr("On cancelled (void)"), g.onChange,
+                    [this, selected](const QString &v) { m_gadgets[selected].onChange = safeCIdentifier(v, QStringLiteral("OnFileCancelled")); });
+            } else {
+                addStringChoice(QObject::tr("Dialog kind"),
+                    {QStringLiteral("Message"), QStringLiteral("Info")}, g.dialogKind,
+                    [this, selected](const QString &v) {
+                        m_gadgets[selected].dialogKind = v;
+                        QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+                    });
+                addLine(QObject::tr("Message"), g.dialogMessage,
+                    [this, selected](const QString &v) { m_gadgets[selected].dialogMessage = v; });
+                if (g.dialogKind == QStringLiteral("Message")) {
+                    addStringChoice(QObject::tr("Buttons"),
+                        {QStringLiteral("OK"), QStringLiteral("OK/Cancel"),
+                         QStringLiteral("Yes/No"), QStringLiteral("Yes/No/Cancel")}, g.dialogButtons,
+                        [this, selected](const QString &v) { m_gadgets[selected].dialogButtons = v; });
+                }
+                addLine(QObject::tr("On result (int32_t result)"), g.onActivate,
+                    [this, selected](const QString &v) { m_gadgets[selected].onActivate = safeCIdentifier(v, QStringLiteral("OnMessageResult")); });
+            }
+            addCheck(QObject::tr("Block owner interactions"), g.dialogBlockOwner,
+                [this, selected](bool v) { m_gadgets[selected].dialogBlockOwner = v; });
+            return;
+        }
+        if (g.type == QStringLiteral("Media")) {
+            auto *hint = new QLabel(QObject::tr(
+                "Virtual Media: appears only in the designer. "
+                "Playback uses the SIDBOX audio API; sound effects occupy a BETH PCM channel."),
+                m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addStringChoice(QObject::tr("Media mode"),
+                {QStringLiteral("SFX"), QStringLiteral("Music")}, g.mediaMode,
+                [this, selected](const QString &v) {
+                    m_gadgets[selected].mediaMode = v;
+                    QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+                });
+            if (g.mediaMode == QStringLiteral("SFX")) {
+                addCheck(QObject::tr("Embed WAV in applet"), g.mediaEmbedSfx,
+                    [this, selected](bool v) {
+                        m_gadgets[selected].mediaEmbedSfx = v;
+                        QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+                    });
+                if (g.mediaEmbedSfx) {
+                    auto *source = new QLineEdit(m_propertyHost);
+                    source->setReadOnly(true);
+                    source->setText(g.mediaEmbeddedPcm.isEmpty()
+                        ? QObject::tr("No WAV imported")
+                        : QObject::tr("%1 (%2 PCM bytes)")
+                              .arg(g.mediaEmbeddedName)
+                              .arg(qlonglong(g.mediaEmbeddedPcm.size())));
+                    m_propertyLayout->addRow(QObject::tr("Embedded sample"), source);
+                    auto *import = new QPushButton(QObject::tr("Import 8-bit WAV..."), m_propertyHost);
+                    m_propertyLayout->addRow(import);
+                    connect(import, &QPushButton::clicked, this, [this, selected]() {
+                        if (selected < 0 || selected >= m_gadgets.size()) return;
+                        const QString fileName = QFileDialog::getOpenFileName(this,
+                            QObject::tr("Embed PCM WAV"), QString(),
+                            QObject::tr("WAV files (*.wav);;All files (*)"));
+                        if (fileName.isEmpty()) return;
+                        QFile wav(fileName);
+                        if (!wav.open(QIODevice::ReadOnly)) {
+                            QMessageBox::warning(this, QObject::tr("Media"),
+                                QObject::tr("Could not open %1").arg(fileName));
+                            return;
+                        }
+                        const QByteArray bytes = wav.readAll();
+                        auto u16 = [&bytes](qsizetype pos) -> quint32 {
+                            const auto *d = reinterpret_cast<const uchar *>(bytes.constData());
+                            return quint32(d[pos]) | (quint32(d[pos + 1]) << 8);
+                        };
+                        auto u32 = [&bytes](qsizetype pos) -> quint32 {
+                            const auto *d = reinterpret_cast<const uchar *>(bytes.constData());
+                            return quint32(d[pos]) | (quint32(d[pos + 1]) << 8)
+                                | (quint32(d[pos + 2]) << 16) | (quint32(d[pos + 3]) << 24);
+                        };
+                        bool valid = bytes.size() >= 44 && bytes.mid(0, 4) == "RIFF"
+                            && bytes.mid(8, 4) == "WAVE";
+                        bool fmtFound = false;
+                        bool dataFound = false;
+                        quint32 sampleRate = 0;
+                        QByteArray pcm;
+                        if (valid) {
+                            qsizetype pos = 12;
+                            while (pos + 8 <= bytes.size()) {
+                                const quint32 chunkLength = u32(pos + 4);
+                                const qsizetype content = pos + 8;
+                                if (chunkLength > quint64(bytes.size() - content)) {
+                                    valid = false;
+                                    break;
+                                }
+                                const QByteArray kind = bytes.mid(pos, 4);
+                                if (kind == "fmt " && chunkLength >= 16) {
+                                    fmtFound = u16(content) == 1 && u16(content + 2) == 1
+                                        && u16(content + 14) == 8;
+                                    sampleRate = u32(content + 4);
+                                } else if (kind == "data") {
+                                    pcm = bytes.mid(content, chunkLength);
+                                    dataFound = true;
+                                }
+                                pos = content + qsizetype(chunkLength) + qsizetype(chunkLength & 1u);
+                            }
+                        }
+                        if (!valid || !fmtFound || !dataFound || pcm.isEmpty() || sampleRate == 0
+                            || sampleRate > 65535) {
+                            QMessageBox::warning(this, QObject::tr("Unsupported WAV"),
+                                QObject::tr("Select a mono, uncompressed 8-bit PCM WAV (sample rate 1..65535 Hz)."));
+                            return;
+                        }
+                        // Preserve the existing .sbui byte encoding (PCM8 XOR 0x80).
+                        // When generating media_sfx.c, reverse it for BETH's unsigned PCM8 mixer.
+                        for (qsizetype i = 0; i < pcm.size(); ++i)
+                            pcm[i] = char(uchar(pcm.at(i)) ^ 0x80u);
+                        pushUndoSnapshot();
+                        auto &media = m_gadgets[selected];
+                        media.mediaEmbeddedPcm = pcm;
+                        media.mediaEmbeddedName = QFileInfo(fileName).fileName();
+                        media.mediaFrequency = int(sampleRate);
+                        setModified(true);
+                        rebuildProperties();
+                    });
+                    auto *info = new QLabel(QObject::tr(
+                        "Compiled as unsigned PCM8 in a separate generated media_sfx.c file. "
+                        "This increases the applet image size; keep samples short."), m_propertyHost);
+                    info->setWordWrap(true);
+                    m_propertyLayout->addRow(info);
+                } else {
+                    addLine(QObject::tr("SIDBOX WAV path"), g.mediaFile,
+                        [this, selected](const QString &v) {
+                            m_gadgets[selected].mediaFile = v.trimmed();
+                        });
+                }
+                addSpin(QObject::tr("PCM channel (0–7)"), g.mediaChannel, 0, 7,
+                    [this, selected](int v) { m_gadgets[selected].mediaChannel = v; });
+                addSpin(QObject::tr("Frequency (Hz)"), g.mediaFrequency, 1, 65535,
+                    [this, selected](int v) { m_gadgets[selected].mediaFrequency = v; });
+                addSpin(QObject::tr("Volume (0–255)"), g.mediaVolume, 0, 255,
+                    [this, selected](int v) { m_gadgets[selected].mediaVolume = v; });
+                addSpin(QObject::tr("Pan (-127..127)"), g.mediaPan, -127, 127,
+                    [this, selected](int v) { m_gadgets[selected].mediaPan = v; });
+                addCheck(QObject::tr("Loop sound"), g.mediaLoop,
+                    [this, selected](bool v) { m_gadgets[selected].mediaLoop = v; });
+                auto *sfxHint = new QLabel(QObject::tr(
+                    "SFX: use mono 8-bit PCM WAV. BETH mixes unsigned PCM8 "
+                    "(128 = silence), so generated playback preserves WAV sample bytes. "
+                    "LoadSFX requires a simple WAV header."), m_propertyHost);
+                sfxHint->setWordWrap(true);
+                m_propertyLayout->addRow(sfxHint);
+            } else {
+                addLine(QObject::tr("SIDBOX music path"), g.mediaFile,
+                    [this, selected](const QString &v) {
+                        m_gadgets[selected].mediaFile = v.trimmed();
+                    });
+                addSpin(QObject::tr("Subsong"), g.mediaSubsong, 0, 255,
+                    [this, selected](int v) { m_gadgets[selected].mediaSubsong = v; });
+                auto *musicHint = new QLabel(QObject::tr(
+                    "Music playback uses music_play/music_stop. Your applet loop "
+                    "must call music_update() often enough for the music engine."), m_propertyHost);
+                musicHint->setWordWrap(true);
+                m_propertyLayout->addRow(musicHint);
+            }
+            addCheck(QObject::tr("Start with window"), g.mediaAutoStart,
+                [this, selected](bool v) { m_gadgets[selected].mediaAutoStart = v; });
+            return;
+        }
         if (g.type == QStringLiteral("Timer")) {
             auto *hint = new QLabel(QObject::tr(
                 "Virtual stopwatch: visible only in the designer. "
@@ -8235,6 +8610,51 @@ private:
             }
         }
         if (g.type == QStringLiteral("Button")) {
+            auto *dialogTarget = new QComboBox(m_propertyHost);
+            dialogTarget->addItem(QObject::tr("None — ordinary callback"), QString());
+            for (const GuiDesignerGadget &candidate : std::as_const(m_gadgets)) {
+                if (candidate.type == QStringLiteral("FileRequester") || candidate.type == QStringLiteral("MessageBox"))
+                    dialogTarget->addItem(candidate.name, candidate.name);
+            }
+            dialogTarget->setCurrentIndex(qMax(0, dialogTarget->findData(g.dialogTarget)));
+            m_propertyLayout->addRow(QObject::tr("Dialog target"), dialogTarget);
+            connect(dialogTarget, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, dialogTarget](int) {
+                const QString next = dialogTarget->currentData().toString();
+                if (selected >= m_gadgets.size() || m_gadgets[selected].dialogTarget == next) return;
+                pushUndoSnapshot();
+                GuiDesignerGadget &button = m_gadgets[selected];
+                button.dialogTarget = next;
+                if (!next.isEmpty() && button.onActivate.isEmpty())
+                    button.onActivate = QStringLiteral("On_%1_Activate").arg(button.name);
+                setModified(true);
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+            });
+            auto *mediaTarget = new QComboBox(m_propertyHost);
+            mediaTarget->addItem(QObject::tr("None — ordinary callback"), QString());
+            for (const GuiDesignerGadget &candidate : std::as_const(m_gadgets)) {
+                if (candidate.type == QStringLiteral("Media"))
+                    mediaTarget->addItem(candidate.name, candidate.name);
+            }
+            mediaTarget->setCurrentIndex(qMax(0, mediaTarget->findData(g.mediaTarget)));
+            m_propertyLayout->addRow(QObject::tr("Media target"), mediaTarget);
+            connect(mediaTarget, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, mediaTarget](int) {
+                const QString next = mediaTarget->currentData().toString();
+                if (selected >= m_gadgets.size() || m_gadgets[selected].mediaTarget == next) return;
+                pushUndoSnapshot();
+                GuiDesignerGadget &button = m_gadgets[selected];
+                button.mediaTarget = next;
+                if (!next.isEmpty() && button.onActivate.isEmpty())
+                    button.onActivate = QStringLiteral("On_%1_Activate").arg(button.name);
+                setModified(true);
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+            });
+            if (!g.mediaTarget.isEmpty()) {
+                addStringChoice(QObject::tr("Media action"),
+                    {QStringLiteral("Play"), QStringLiteral("Stop")}, g.mediaAction,
+                    [this, selected](const QString &v) { m_gadgets[selected].mediaAction = v; });
+            }
             auto *target = new QComboBox(m_propertyHost);
             target->addItem(QObject::tr("None — ordinary callback"), QString());
             target->setToolTip(QObject::tr("Choose another SBUI window to open when this button is activated."));
@@ -9013,6 +9433,29 @@ private:
             g.timerPeriodMs=qBound(1,o.value(QStringLiteral("timerPeriodMs")).toInt(1000),86400000);
             g.timerRepeat=o.value(QStringLiteral("timerRepeat")).toBool(true);
             g.timerAutoStart=o.value(QStringLiteral("timerAutoStart")).toBool(true);
+            g.mediaMode=o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
+            g.mediaFile=o.value(QStringLiteral("mediaFile")).toString();
+            g.mediaEmbedSfx=o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
+            g.mediaEmbeddedName=o.value(QStringLiteral("mediaEmbeddedName")).toString();
+            g.mediaEmbeddedPcm=QByteArray::fromBase64(
+                o.value(QStringLiteral("mediaEmbeddedPcmBase64")).toString().toLatin1());
+            g.mediaChannel=o.value(QStringLiteral("mediaChannel")).toInt(0);
+            g.mediaVolume=o.value(QStringLiteral("mediaVolume")).toInt(200);
+            g.mediaPan=o.value(QStringLiteral("mediaPan")).toInt(0);
+            g.mediaFrequency=o.value(QStringLiteral("mediaFrequency")).toInt(22050);
+            g.mediaSubsong=o.value(QStringLiteral("mediaSubsong")).toInt(0);
+            g.mediaLoop=o.value(QStringLiteral("mediaLoop")).toBool(false);
+            g.mediaAutoStart=o.value(QStringLiteral("mediaAutoStart")).toBool(false);
+            g.mediaTarget=o.value(QStringLiteral("mediaTarget")).toString();
+            g.mediaAction=o.value(QStringLiteral("mediaAction")).toString(QStringLiteral("Play"));
+            g.dialogTitle = o.value(QStringLiteral("dialogTitle")).toString(QStringLiteral("Select a file"));
+            g.dialogMessage = o.value(QStringLiteral("dialogMessage")).toString(QStringLiteral("Are you sure?"));
+            g.dialogDir = o.value(QStringLiteral("dialogDir")).toString(QStringLiteral("sdcard:/"));
+            g.dialogFilter = o.value(QStringLiteral("dialogFilter")).toString(QStringLiteral("*.*"));
+            g.dialogKind = o.value(QStringLiteral("dialogKind")).toString(QStringLiteral("Message"));
+            g.dialogButtons = o.value(QStringLiteral("dialogButtons")).toString(QStringLiteral("OK/Cancel"));
+            g.dialogBlockOwner = o.value(QStringLiteral("dialogBlockOwner")).toBool(false);
+            g.dialogTarget = o.value(QStringLiteral("dialogTarget")).toString();
             g.cellWidth=o.value(QStringLiteral("cellWidth")).toInt(24); g.cellHeight=o.value(QStringLiteral("cellHeight")).toInt(18);
             g.cellsX=o.value(QStringLiteral("cellsX")).toInt(4); g.cellsY=o.value(QStringLiteral("cellsY")).toInt(4);
 
@@ -9103,6 +9546,29 @@ private:
         o.insert(QStringLiteral("timerPeriodMs"),g.timerPeriodMs);
         o.insert(QStringLiteral("timerRepeat"),g.timerRepeat);
         o.insert(QStringLiteral("timerAutoStart"),g.timerAutoStart);
+        o.insert(QStringLiteral("mediaMode"),g.mediaMode);
+        o.insert(QStringLiteral("mediaFile"),g.mediaFile);
+        o.insert(QStringLiteral("mediaEmbedSfx"),g.mediaEmbedSfx);
+        o.insert(QStringLiteral("mediaEmbeddedName"),g.mediaEmbeddedName);
+        o.insert(QStringLiteral("mediaEmbeddedPcmBase64"),
+                 QString::fromLatin1(g.mediaEmbeddedPcm.toBase64()));
+        o.insert(QStringLiteral("mediaChannel"),g.mediaChannel);
+        o.insert(QStringLiteral("mediaVolume"),g.mediaVolume);
+        o.insert(QStringLiteral("mediaPan"),g.mediaPan);
+        o.insert(QStringLiteral("mediaFrequency"),g.mediaFrequency);
+        o.insert(QStringLiteral("mediaSubsong"),g.mediaSubsong);
+        o.insert(QStringLiteral("mediaLoop"),g.mediaLoop);
+        o.insert(QStringLiteral("mediaAutoStart"),g.mediaAutoStart);
+        o.insert(QStringLiteral("mediaTarget"),g.mediaTarget);
+        o.insert(QStringLiteral("mediaAction"),g.mediaAction);
+        o.insert(QStringLiteral("dialogTitle"),g.dialogTitle);
+        o.insert(QStringLiteral("dialogMessage"),g.dialogMessage);
+        o.insert(QStringLiteral("dialogDir"),g.dialogDir);
+        o.insert(QStringLiteral("dialogFilter"),g.dialogFilter);
+        o.insert(QStringLiteral("dialogKind"),g.dialogKind);
+        o.insert(QStringLiteral("dialogButtons"),g.dialogButtons);
+        o.insert(QStringLiteral("dialogBlockOwner"),g.dialogBlockOwner);
+        o.insert(QStringLiteral("dialogTarget"),g.dialogTarget);
         o.insert(QStringLiteral("cellWidth"),g.cellWidth); o.insert(QStringLiteral("cellHeight"),g.cellHeight); o.insert(QStringLiteral("cellsX"),g.cellsX); o.insert(QStringLiteral("cellsY"),g.cellsY);
 
         QJsonArray gridCellText;
@@ -9622,6 +10088,74 @@ private:
                 return false;
             }
         }
+        // The sample data and music player are global resources on SIDBOX.
+        // Within one design, a PCM channel must have a single owner.
+        QSet<int> usedSfxChannels;
+        QSet<QString> mediaNames;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media")) continue;
+            mediaNames.insert(g.name);
+            if (g.mediaMode == QStringLiteral("SFX") && g.mediaEmbedSfx) {
+                if (g.mediaEmbeddedPcm.isEmpty()) {
+                    QMessageBox::warning(this, QObject::tr("Embedded sound required"),
+                        QObject::tr("Import a WAV into Media %1 before generating.").arg(g.name));
+                    return false;
+                }
+            } else if (g.mediaFile.trimmed().isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Media source required"),
+                    QObject::tr("Media %1 needs a SIDBOX filename before generating.").arg(g.name));
+                return false;
+            }
+            if (g.mediaMode == QStringLiteral("SFX")) {
+                if (g.mediaChannel < 0 || g.mediaChannel > 7 || usedSfxChannels.contains(g.mediaChannel)) {
+                    QMessageBox::warning(this, QObject::tr("SFX channel conflict"),
+                        QObject::tr("Each SFX Media object needs a unique channel (0–7). Check %1.").arg(g.name));
+                    return false;
+                }
+                usedSfxChannels.insert(g.mediaChannel);
+            }
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Button") && !g.mediaTarget.isEmpty()) {
+                if (!mediaNames.contains(g.mediaTarget)) {
+                    QMessageBox::warning(this, QObject::tr("Missing Media target"),
+                        QObject::tr("Button %1 references a missing Media object: %2")
+                            .arg(g.name, g.mediaTarget));
+                    return false;
+                }
+                if (g.onActivate.isEmpty()) {
+                    QMessageBox::warning(this, QObject::tr("Missing callback"),
+                        QObject::tr("Button %1 must have an On activate callback for its Media action.").arg(g.name));
+                    return false;
+                }
+            }
+        }
+        QSet<QString> dialogNames;
+        QSet<QString> dialogCallbackNames;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("FileRequester") && g.type != QStringLiteral("MessageBox")) continue;
+            dialogNames.insert(g.name);
+            if (g.onActivate.trimmed().isEmpty()
+                || (g.type == QStringLiteral("FileRequester") && g.onChange.trimmed().isEmpty())
+                || dialogCallbackNames.contains(g.onActivate)
+                || (!g.onChange.isEmpty() && dialogCallbackNames.contains(g.onChange))
+                || g.onActivate == g.onChange) {
+                QMessageBox::warning(this, QObject::tr("Dialog callbacks"),
+                    QObject::tr("Dialog %1 needs unique, non-empty result callbacks.").arg(g.name));
+                return false;
+            }
+            dialogCallbackNames.insert(g.onActivate);
+            if (g.type == QStringLiteral("FileRequester")) dialogCallbackNames.insert(g.onChange);
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Button") && !g.dialogTarget.isEmpty()) {
+                if (!dialogNames.contains(g.dialogTarget) || g.onActivate.isEmpty()) {
+                    QMessageBox::warning(this, QObject::tr("Missing dialog target"),
+                        QObject::tr("Button %1 needs an existing dialog target and an activation callback.").arg(g.name));
+                    return false;
+                }
+            }
+        }
         const QString cPath = outputPath(sketch);
         if (sketch && m_sketchName.isEmpty()) {
             m_sketchName = QFileInfo(cPath).fileName();
@@ -9668,11 +10202,22 @@ private:
 
         QStringList gadgetCallbacks;
         QStringList timerCallbacks;
+        QStringList dialogCallbackNamesForGeneration;
         QStringList directGadgetCallbacks;
         QStringList menuCallbacks;
 
         for (const GuiDesignerGadget &g :
              std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Media")) continue;
+            if (g.type == QStringLiteral("FileRequester") || g.type == QStringLiteral("MessageBox")) {
+                callbackKeys << g.onActivate;
+                dialogCallbackNamesForGeneration << g.onActivate;
+                if (g.type == QStringLiteral("FileRequester")) {
+                    callbackKeys << g.onChange;
+                    dialogCallbackNamesForGeneration << g.onChange;
+                }
+                continue;
+            }
             if (g.type == QStringLiteral("Timer")) {
                 if (!g.onActivate.isEmpty()) {
                     callbackKeys << g.onActivate;
@@ -9719,6 +10264,7 @@ private:
         callbackKeys.removeDuplicates();
         gadgetCallbacks.removeDuplicates();
         timerCallbacks.removeDuplicates();
+        dialogCallbackNamesForGeneration.removeDuplicates();
         directGadgetCallbacks.removeDuplicates();
         // Different callback types have incompatible C signatures.
         for (const QString &cb : std::as_const(timerCallbacks)) {
@@ -9730,6 +10276,13 @@ private:
             }
         }
         menuCallbacks.removeDuplicates();
+        for (const QString &cb : std::as_const(dialogCallbackNamesForGeneration)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb) || timerCallbacks.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Dialog callback collision"),
+                    QObject::tr("Dialog callback %1 also belongs to another gadget/menu/timer.").arg(cb));
+                return false;
+            }
+        }
 
         const QHash<QString, QString> saved =
             preservedUserBlocks(
@@ -9767,6 +10320,36 @@ private:
             linkedFunctions.insert(createFunction);
         }
 
+        QHash<QString, QString> mediaLinkedActions;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Button") || g.mediaTarget.isEmpty()) continue;
+            const QString cb = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
+            const QString name = safeCIdentifier(g.mediaTarget, QStringLiteral("media"));
+            const QString call = name + (g.mediaAction == QStringLiteral("Stop")
+                ? QStringLiteral("_Stop();") : QStringLiteral("_Play();"));
+            if (mediaLinkedActions.contains(cb) && mediaLinkedActions.value(cb) != call) {
+                QMessageBox::warning(this, QObject::tr("Shared callback conflict"),
+                    QObject::tr("Callback %1 is used by buttons with different Media actions. "
+                                "Give those buttons separate callback names.").arg(cb));
+                return false;
+            }
+            mediaLinkedActions.insert(cb, call);
+        }
+
+        QHash<QString, QString> dialogLinkedActions;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Button") || g.dialogTarget.isEmpty()) continue;
+            const QString cb = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
+            const QString call = safeCIdentifier(g.dialogTarget, QStringLiteral("dialog")) + QStringLiteral("_Show();");
+            if ((dialogLinkedActions.contains(cb) && dialogLinkedActions.value(cb) != call)
+                || mediaLinkedActions.contains(cb) || linkedCallbacks.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Shared callback conflict"),
+                    QObject::tr("Button callback %1 has conflicting built-in actions. Give the buttons separate callbacks.").arg(cb));
+                return false;
+            }
+            dialogLinkedActions.insert(cb, call);
+        }
+
         // Each virtual TabGroup reserves a separate 1..255 CoderGirl group
         // for every page. Group 0 remains visible at all times.
         QHash<QString,int> tabBase;
@@ -9787,7 +10370,47 @@ private:
 
         s << "#include \"apis.h\"\n"
              "#include <stddef.h>\n"
-             "#include <stdint.h>\n\n";
+             "#include <stdint.h>\n"
+             "#include <stdlib.h>\n";
+        if (!dialogNames.isEmpty())
+            s << "#include <stdio.h>\n"; // printf() in generated dialog demos.
+        s << "\n";
+
+        // Embedded samples live in <design>res/media_sfx.c, not this source.
+        // .sbui stores PCM8 XOR 0x80 for compatibility; generated media_sfx.c
+        // reverses that encoding to the unsigned PCM8 bytes BETH actually mixes.
+        const QString samplePrefix = safeCIdentifier(
+            QFileInfo(m_filePath).completeBaseName(), QStringLiteral("window"));
+        const QString bitmapPrefix = samplePrefix;
+        // Keep generated binary assets out of the human-readable window C file.
+        const QFileInfo designInfo(m_filePath);
+        const QString resourceDir = designInfo.dir().absoluteFilePath(
+            designInfo.completeBaseName() + QStringLiteral("res"));
+        const QString bitmapResourcePath = QDir(resourceDir).filePath(QStringLiteral("bitmapview.c"));
+        const QString mediaResourcePath = QDir(resourceDir).filePath(QStringLiteral("media_sfx.c"));
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media") || g.mediaMode != QStringLiteral("SFX")
+                || !g.mediaEmbedSfx) continue;
+            const QString symbol = samplePrefix + QStringLiteral("_")
+                + safeCIdentifier(g.name, QStringLiteral("media")) + QStringLiteral("_pcm");
+            s << "extern const uint8_t " << symbol << "[];\n"
+              << "extern const uint32_t " << symbol << "_length;\n";
+        }
+        // Embedded and demo BitmapView storage lives in bitmapview.c.
+        // A design-specific prefix prevents cross-window global symbol clashes.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("BitmapView")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("bitmap"));
+            const QString source = bitmapPrefix + QStringLiteral("_")
+                + safeCIdentifier(g.bitmapSource, n + QStringLiteral("_pixels"));
+            if (!g.bitmapPixels.isEmpty() || isDesignerDemoBitmap(g)) {
+                s << "extern uint8_t " << source << "[];\n";
+            }
+            if (isDesignerDemoBitmap(g)) {
+                s << "extern void " << bitmapPrefix << "_" << n << "_InitDemoBitmap(void);\n";
+            }
+        }
+        s << "\n";
 
         QStringList sortedFunctions = linkedFunctions.values();
         sortedFunctions.sort();
@@ -9807,8 +10430,15 @@ private:
           << win
           << "_is_open = 0u;\n";
 
+        const bool hasDialogs = !dialogNames.isEmpty();
+        if (hasDialogs) {
+            s << "static CGWindow " << win << "_active_dialog = (CGWindow)0xFFu;\n"
+              << "static uint8_t " << win << "_dialog_block_owner = 0u;\n";
+        }
         for (const GuiDesignerGadget &g :
              m_gadgets) {
+            if (g.type == QStringLiteral("Media") || g.type == QStringLiteral("FileRequester")
+                || g.type == QStringLiteral("MessageBox")) continue;
             if (g.type == QStringLiteral("Timer")) {
                 s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("timer"))
                   << " = CGTIMER_INVALID;\n";
@@ -9873,6 +10503,12 @@ private:
         }
 
         QList<GuiDesignerGadget> demoBitmaps;
+        QString bitmapText;
+        QTextStream bitmaps(&bitmapText);
+        bitmaps << "/* SIDBOX-IDE GENERATED BITMAPVIEW: "
+                << designInfo.fileName() << " */\n"
+                << "/* Auto-generated CLUT bitmap data. Do not hand-edit. */\n"
+                << "#include \"apis.h\"\n\n";
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
@@ -9887,28 +10523,26 @@ private:
                     g.name,
                     QStringLiteral("bitmap"));
 
-            const QString source =
-                safeCIdentifier(
-                    g.bitmapSource,
-                    n + QStringLiteral("_pixels"));
+            const QString source = bitmapPrefix + QStringLiteral("_")
+                + safeCIdentifier(g.bitmapSource, n + QStringLiteral("_pixels"));
 
             const QString macro =
                 n.toUpper();
 
-            s << "\n#define "
+            bitmaps << "\n#define "
               << macro
               << "_BITMAP_W "
               << qMax(1, g.bitmapWidth)
               << "u\n";
 
-            s << "#define "
+            bitmaps << "#define "
               << macro
               << "_BITMAP_H "
               << qMax(1, g.bitmapHeight)
               << "u\n";
 
-            s << "/* PNG converted by the Sidbox GUI Designer to exact 8-bit CLUT indices. */\n";
-            s << "static uint8_t MEMALIGN32 "
+            bitmaps << "/* PNG converted by the Sidbox GUI Designer to exact 8-bit CLUT indices. */\n";
+            bitmaps << "uint8_t MEMALIGN32 "
               << source
               << "["
               << macro
@@ -9920,28 +10554,28 @@ private:
                  i < g.bitmapPixels.size();
                  ++i) {
                 if ((i % 16) == 0) {
-                    s << "\t";
+                    bitmaps << "\t";
                 }
 
                 const quint8 value =
                     static_cast<quint8>(
                         g.bitmapPixels.at(i));
 
-                s << QStringLiteral("0x%1")
+                bitmaps << QStringLiteral("0x%1")
                          .arg(value, 2, 16, QLatin1Char('0'))
                          .toUpper();
 
                 if (i + 1 < g.bitmapPixels.size()) {
-                    s << ", ";
+                    bitmaps << ", ";
                 }
 
                 if ((i % 16) == 15
                     || i + 1 == g.bitmapPixels.size()) {
-                    s << "\n";
+                    bitmaps << "\n";
                 }
             }
 
-            s << "};\n";
+            bitmaps << "};\n";
         }
 
         for (const GuiDesignerGadget &g :
@@ -9958,39 +10592,160 @@ private:
                     QStringLiteral(
                         "bitmap"));
 
-            const QString source =
-                safeCIdentifier(
-                    g.bitmapSource,
-                    n
-                    + QStringLiteral(
-                        "_pixels"));
+            const QString source = bitmapPrefix + QStringLiteral("_")
+                + safeCIdentifier(g.bitmapSource, n + QStringLiteral("_pixels"));
 
             const QString macro =
                 n.toUpper();
 
-            s << "\n#define "
+            bitmaps << "\n#define "
               << macro
               << "_BITMAP_W "
               << qMax(1, g.bitmapWidth)
               << "u\n";
 
-            s << "#define "
+            bitmaps << "#define "
               << macro
               << "_BITMAP_H "
               << qMax(1, g.bitmapHeight)
               << "u\n";
 
-            s << "/* Designer demo bitmap for "
+            bitmaps << "/* Designer demo bitmap for "
               << n
               << ": storage exactly matches the generated BitmapView dimensions. */\n";
 
-            s << "static uint8_t MEMALIGN32 "
+            bitmaps << "uint8_t MEMALIGN32 "
               << source
               << "["
               << macro
               << "_BITMAP_W * "
               << macro
               << "_BITMAP_H];\n";
+        }
+
+        // Dialogs are virtual objects; only their CoderGirl system requesters have window handles.
+        if (hasDialogs) {
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != QStringLiteral("FileRequester") && g.type != QStringLiteral("MessageBox")) continue;
+                const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
+                s << "static CGWindow " << n << "_requester = (CGWindow)0xFFu;\n";
+            }
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type == QStringLiteral("FileRequester")) {
+                    const QString n = safeCIdentifier(g.name, QStringLiteral("fileRequest"));
+                    s << "static char " << n << "_initial_dir[] = \"" << escapedCString(g.dialogDir)
+                      << "\";\nstatic char " << n << "_selected_path[FILERQ_OUTCAP];\n";
+                }
+            }
+            // Use CoderGirl's real window disable flag, not per-gadget enabled()
+            // calls (which would erase applet-managed enabled/disabled states).
+            // Window messages still reach the owner while input is disabled.
+            s << "\nstatic void " << win << "_SetDialogOwnerBlocked(uint8_t blocked)\n{\n"
+              << "\tif (" << win << "_dialog_block_owner == (blocked ? 1u : 0u)) return;\n"
+              << "\t" << win << "_dialog_block_owner = blocked ? 1u : 0u;\n"
+              << "\tif (blocked) SBOS_WindowDisable(" << win << ");\n"
+              << "\telse SBOS_WindowEnable(" << win << ");\n"
+              << "}\n\n";
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != QStringLiteral("FileRequester") && g.type != QStringLiteral("MessageBox")) continue;
+                const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
+                s << "static void " << n << "_Show(void)\n{\n"
+                  << "\tif (" << win << "_active_dialog != (CGWindow)0xFFu) return;\n"
+                  << "\tCGWindow requester;\n";
+                if (g.type == QStringLiteral("FileRequester")) {
+                    s << "\trequester = SBOS_FileRequestFilter(" << win << ", \""
+                      << escapedCString(g.dialogTitle) << "\", " << n << "_initial_dir, \""
+                      << escapedCString(g.dialogFilter) << "\");\n";
+                } else if (g.dialogKind == QStringLiteral("Info")) {
+                    s << "\trequester = SBOS_InfoBox(" << win << ", \""
+                      << escapedCString(g.dialogTitle) << "\", \""
+                      << escapedCString(g.dialogMessage) << "\");\n";
+                } else {
+                    QString flags = QStringLiteral("MSGBOXF_OKCANCEL");
+                    if (g.dialogButtons == QStringLiteral("OK")) flags = QStringLiteral("MSGBOXF_OK");
+                    if (g.dialogButtons == QStringLiteral("Yes/No")) flags = QStringLiteral("MSGBOXF_YESNO");
+                    if (g.dialogButtons == QStringLiteral("Yes/No/Cancel")) flags = QStringLiteral("MSGBOXF_YESNOCANCEL");
+                    s << "\trequester = SBOS_MessageBox(" << win << ", \""
+                      << escapedCString(g.dialogTitle) << "\", \""
+                      << escapedCString(g.dialogMessage) << "\", " << flags << ");\n";
+                }
+                s << "\tif (requester == (CGWindow)0xFFu) return;\n"
+                  << "\t" << win << "_active_dialog = requester;\n"
+                  << "\t" << n << "_requester = requester;\n";
+                if (g.dialogBlockOwner)
+                    s << "\t" << win << "_SetDialogOwnerBlocked(1u);\n";
+                s << "}\n\n";
+            }
+        }
+
+        // Media playback helpers are independent of the callback routing mode.
+        // Samples belong to the generated window and are released on close.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("media"));
+            const bool embedded = g.mediaMode == QStringLiteral("SFX") && g.mediaEmbedSfx;
+            if (!embedded)
+                s << "\nstatic char " << n << "_file[] = \""
+                  << escapedCString(g.mediaFile) << "\";\n";
+            if (g.mediaMode == QStringLiteral("SFX")) {
+                if (embedded) {
+                    const QString symbol = samplePrefix + QStringLiteral("_") + n
+                        + QStringLiteral("_pcm");
+                    s << "\nstatic void " << n << "_Play(void)\n{\n"
+                      << "\tsound_stop(" << g.mediaChannel << "u);\n"
+                      << "\tsound_assign(" << g.mediaChannel << "u, " << symbol << ", "
+                      << symbol << "_length, SAMP_S8);\n";
+                } else {
+                    s << "static uint8_t *" << n << "_data = NULL;\n"
+                      << "static uint32_t " << n << "_size = 0u;\n";
+                    s << "static void " << n << "_Play(void)\n{\n"
+                      << "\tif (!" << n << "_data) {\n"
+                      << "\t\t" << n << "_size = LoadSFX(" << n << "_file, &" << n << "_data);\n"
+                      << "\t\tif (!" << n << "_size || !" << n << "_data) return;\n"
+                      << "\t\t/* Keep WAV PCM8 unsigned: BETH subtracts 128 in its mixer. */\n"
+                      << "\t}\n"
+                      << "\tsound_stop(" << g.mediaChannel << "u);\n"
+                      << "\tsound_assign(" << g.mediaChannel << "u, " << n << "_data, "
+                      << n << "_size, SAMP_S8);\n";
+                }
+                s << "\tsound_setfrequency(" << g.mediaChannel << "u, "
+                  << qBound(1, g.mediaFrequency, 65535) << "u);\n"
+                  << "\tsound_setvolume(" << g.mediaChannel << "u, "
+                  << qBound(0, g.mediaVolume, 255) << "u);\n"
+                  << "\tsound_setpanning(" << g.mediaChannel << "u, "
+                  << qBound(-127, g.mediaPan, 127) << ");\n";
+                if (g.mediaLoop)
+                    s << "\tsound_setloop(" << g.mediaChannel << "u, 0u, "
+                      << (embedded
+                            ? (samplePrefix + QStringLiteral("_") + n + QStringLiteral("_pcm_length"))
+                            : (n + QStringLiteral("_size"))) << ");\n"
+                      << "\tsound_enableloop(" << g.mediaChannel << "u, 1u);\n";
+                else
+                    s << "\tsound_enableloop(" << g.mediaChannel << "u, 0u);\n";
+                s << "\tsound_play(" << g.mediaChannel << "u);\n}\n";
+                s << "static void " << n << "_Stop(void)\n{\n"
+                  << "\tsound_stop(" << g.mediaChannel << "u);\n}\n";
+                s << "static void " << n << "_Cleanup(void)\n{\n";
+                if (!embedded) s << "\tif (!" << n << "_data) return;\n";
+                s << "\tsound_stop(" << g.mediaChannel << "u);\n"
+                  << "\tsound_assign(" << g.mediaChannel << "u, NULL, 0u, SAMP_S8);\n";
+                if (!embedded)
+                    s << "\tfree(" << n << "_data);\n"
+                      << "\t" << n << "_data = NULL;\n"
+                      << "\t" << n << "_size = 0u;\n";
+                s << "}\n";
+            } else {
+                s << "static uint8_t " << n << "_active = 0u;\n"
+                  << "static void " << n << "_Play(void)\n{\n"
+                  << "\tmusic_play(" << n << "_file, "
+                  << qBound(0, g.mediaSubsong, 255) << "u);\n"
+                  << "\t" << n << "_active = 1u;\n}\n"
+                  << "static void " << n << "_Stop(void)\n{\n"
+                  << "\tif (!" << n << "_active) return;\n"
+                  << "\tmusic_stop();\n"
+                  << "\t" << n << "_active = 0u;\n}\n"
+                  << "/* NOTE: call music_update() from your applet's cooperative main loop. */\n";
+            }
         }
 
         s << "\nstatic CGWindowProcRes "
@@ -10004,6 +10759,14 @@ private:
               << "_SIDBOX_OnTab(void *source, int32_t a, int32_t b, int32_t c, int32_t d);\n";
         }
 
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("FileRequester")) {
+                s << "static void " << g.onActivate << "(const char *path);\n"
+                  << "static void " << g.onChange << "(void);\n";
+            } else if (g.type == QStringLiteral("MessageBox")) {
+                s << "static void " << g.onActivate << "(int32_t result);\n";
+            }
+        }
         for (const QString &cb :
              gadgetCallbacks) {
             s << "static void "
@@ -10037,33 +10800,14 @@ private:
                     QStringLiteral(
                         "bitmap"));
 
-            s << "static void "
-              << n
-              << "_InitDemoBitmap(void);\n";
-        }
-
-        s << "\n";
-
-        for (const GuiDesignerGadget &g :
-             demoBitmaps) {
-            const QString n =
-                safeCIdentifier(
-                    g.name,
-                    QStringLiteral(
-                        "bitmap"));
-
-            const QString source =
-                safeCIdentifier(
-                    g.bitmapSource,
-                    n
-                    + QStringLiteral(
-                        "_pixels"));
+            const QString source = bitmapPrefix + QStringLiteral("_")
+                + safeCIdentifier(g.bitmapSource, n + QStringLiteral("_pixels"));
 
             const QString macro =
                 n.toUpper();
 
-            s << "static void "
-              << n
+            bitmaps << "void "
+              << bitmapPrefix << "_" << n
               << "_InitDemoBitmap(void)\n"
                  "{\n"
                  "\tfor (uint16_t y = 0; y < "
@@ -10175,6 +10919,15 @@ private:
              "\t"
           << win
           << "_is_open = 1u;\n";
+        if (hasDialogs) {
+            s << "\t" << win << "_active_dialog = (CGWindow)0xFFu;\n"
+              << "\t" << win << "_dialog_block_owner = 0u;\n";
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type == QStringLiteral("FileRequester") || g.type == QStringLiteral("MessageBox"))
+                    s << "\t" << safeCIdentifier(g.name, QStringLiteral("dialog"))
+                      << "_requester = (CGWindow)0xFFu;\n";
+            }
+        }
 
         s << "\tSBOS_SetWindowProc("
           << win
@@ -10263,7 +11016,7 @@ private:
         for (int groupPass = 0; groupPass < 2; ++groupPass) {
         for (const GuiDesignerGadget &g :
              m_gadgets) {
-            if (g.type == QStringLiteral("Timer")) continue;
+            if (isVirtualDesignerGadget(g.type)) continue;
             if ((g.type == QStringLiteral("TabGroup")) != (groupPass == 0)) continue;
             const QString n =
                 safeCIdentifier(
@@ -10272,8 +11025,7 @@ private:
                         "gadget"));
 
             if (isDesignerDemoBitmap(g)) {
-                s << "\t"
-                  << n
+                s << "\t" << bitmapPrefix << "_" << n
                   << "_InitDemoBitmap();\n";
             }
 
@@ -10308,10 +11060,15 @@ private:
 
             if (g.type == QStringLiteral("BitmapView")
                 && !g.bitmapSource.trimmed().isEmpty()) {
+                const QString bitmapSourceSymbol =
+                    (!g.bitmapPixels.isEmpty() || isDesignerDemoBitmap(g))
+                        ? bitmapPrefix + QStringLiteral("_")
+                              + safeCIdentifier(g.bitmapSource, n + QStringLiteral("_pixels"))
+                        : g.bitmapSource.trimmed();
                 s << "\tSBOS_BitmapviewSetBitmap("
                   << n
                   << ", "
-                  << g.bitmapSource.trimmed()
+                  << bitmapSourceSymbol
                   << ");\n";
 
                 s << "\tSBOS_BitmapviewSetImageSize("
@@ -10524,6 +11281,12 @@ private:
               << ");\n";
         }
 
+        // Virtual media components optionally start after all window gadgets exist.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Media") && g.mediaAutoStart)
+                s << "\t" << safeCIdentifier(g.name, QStringLiteral("media")) << "_Play();\n";
+        }
+
         // Timers belong to the generated window, but are never GUI gadgets.
         // Allocate AFTER the window and gadgets exist, and free BEFORE close.
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
@@ -10566,7 +11329,7 @@ private:
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
-            if (g.type == QStringLiteral("Timer") || gadgetUsesDirectCallbacks(g)) {
+            if (isVirtualDesignerGadget(g.type) || gadgetUsesDirectCallbacks(g)) {
                 continue;
             }
 
@@ -10619,8 +11382,11 @@ private:
              "\tswitch (m->mtype) {\n"
              "\tcase CGMSG_WINDOW:\n"
              "\t\tswitch (m->eventClass) {\n"
-             "\t\tcase CGEVT_WIN_CLOSE_REQUEST:\n"
-             "\t\t\t/* <SIDBOX-GUI:USER WINDOW_CLOSE> */\n";
+             "\t\tcase CGEVT_WIN_CLOSE_REQUEST:\n";
+        if (hasDialogs)
+            s << "\t\t\t/* Keep the owner alive until its non-modal dialog completes. */\n"
+              << "\t\t\tif (" << win << "_active_dialog != (CGWindow)0xFFu) return CGPROC_HANDLED;\n";
+        s << "\t\t\t/* <SIDBOX-GUI:USER WINDOW_CLOSE> */\n";
 
         const QString closeBody =
             saved.value(
@@ -10663,6 +11429,16 @@ private:
             s << "\t\t\tAPI->gui->gadgets->itemlist_deinit(&"
               << n
               << "_items);\n";
+        }
+
+        // Stop playback and release PCM buffers BEFORE destroying this window.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("media"));
+            if (g.mediaMode == QStringLiteral("SFX"))
+                s << "\t\t\t" << n << "_Cleanup();\n";
+            else
+                s << "\t\t\t" << n << "_Stop();\n";
         }
 
         // Cooperative timers must not fire into a window after it closes.
@@ -10717,6 +11493,54 @@ private:
                  "\t\t\treturn CGPROC_DEFAULT;\n";
         }
 
+        if (hasDialogs) {
+            // Dialog libraries post CGMSG_WINDOW events using CG_PostWindowMsg().
+            s << "\n\t\tcase CGEVT_SYS_FILERQ_DONE:\n";
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != QStringLiteral("FileRequester")) continue;
+                const QString n = safeCIdentifier(g.name, QStringLiteral("fileRequest"));
+                s << "\t\t\tif (" << win << "_active_dialog == (CGWindow)m->d"
+                  << " && " << n << "_requester == (CGWindow)m->d) {\n"
+                  << "\t\t\t\t" << win << "_active_dialog = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\t" << n << "_requester = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\tif (" << win << "_dialog_block_owner) " << win << "_SetDialogOwnerBlocked(0u);\n"
+                  << "\t\t\t\tif (m->a && m->c) {\n"
+                  << "\t\t\t\t\tconst char *src = MSG_AS_PTR(const char, m->c);\n"
+                  << "\t\t\t\t\tuint32_t i = 0u;\n"
+                  << "\t\t\t\t\tfor (; i + 1u < sizeof(" << n << "_selected_path) && src[i]; ++i)\n"
+                  << "\t\t\t\t\t\t" << n << "_selected_path[i] = src[i];\n"
+                  << "\t\t\t\t\t" << n << "_selected_path[i] = 0;\n"
+                  << "\t\t\t\t\t" << g.onActivate << "(" << n << "_selected_path);\n"
+                  << "\t\t\t\t} else { " << g.onChange << "(); }\n"
+                  << "\t\t\t\treturn CGPROC_HANDLED;\n\t\t\t}\n";
+            }
+            s << "\t\t\tbreak;\n\t\tcase CGEVT_SYS_MSGBOX_DONE:\n";
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != QStringLiteral("MessageBox") || g.dialogKind == QStringLiteral("Info")) continue;
+                const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
+                s << "\t\t\tif (" << win << "_active_dialog == (CGWindow)m->d"
+                  << " && " << n << "_requester == (CGWindow)m->d) {\n"
+                  << "\t\t\t\t" << win << "_active_dialog = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\t" << n << "_requester = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\tif (" << win << "_dialog_block_owner) " << win << "_SetDialogOwnerBlocked(0u);\n"
+                  << "\t\t\t\t" << g.onActivate << "(m->a);\n"
+                  << "\t\t\t\treturn CGPROC_HANDLED;\n\t\t\t}\n";
+            }
+            s << "\t\t\tbreak;\n\t\tcase CGEVT_SYS_INFOBOX_DONE:\n";
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != QStringLiteral("MessageBox") || g.dialogKind != QStringLiteral("Info")) continue;
+                const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
+                s << "\t\t\tif (" << win << "_active_dialog == (CGWindow)m->d"
+                  << " && " << n << "_requester == (CGWindow)m->d) {\n"
+                  << "\t\t\t\t" << win << "_active_dialog = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\t" << n << "_requester = (CGWindow)0xFFu;\n"
+                  << "\t\t\t\tif (" << win << "_dialog_block_owner) " << win << "_SetDialogOwnerBlocked(0u);\n"
+                  << "\t\t\t\t" << g.onActivate << "(m->a);\n"
+                  << "\t\t\t\treturn CGPROC_HANDLED;\n\t\t\t}\n";
+            }
+            s << "\t\t\tbreak;\n";
+        }
+
         s << "\n"
              "\t\tdefault:\n"
              "\t\t\tbreak;\n"
@@ -10725,8 +11549,9 @@ private:
 
         if (hasWindowRoutedGadget) {
             s << "\n"
-                 "\tcase CGMSG_GADGET:\n"
-                 "\t\tswitch (m->eventClass) {\n";
+                 "\tcase CGMSG_GADGET:\n";
+            if (hasDialogs) s << "\t\tif (" << win << "_dialog_block_owner) return CGPROC_HANDLED;\n";
+            s << "\t\tswitch (m->eventClass) {\n";
 
             for (const QString &eventClass :
                  gadgetEventClasses) {
@@ -10823,8 +11648,9 @@ private:
 
         if (hasWindowRoutedMenu) {
             s << "\n"
-                 "\tcase CGMSG_MENU:\n"
-                 "\t\tswitch (m->eventClass) {\n"
+                 "\tcase CGMSG_MENU:\n";
+            if (hasDialogs) s << "\t\tif (" << win << "_dialog_block_owner) return CGPROC_HANDLED;\n";
+            s << "\t\tswitch (m->eventClass) {\n"
                  "\t\tcase CGEVT_MENU_SELECTED:\n";
 
             for (const GuiDesignerMenuTitle &menu :
@@ -10879,8 +11705,15 @@ private:
               << "(CGGadget gadget, int32_t a, int32_t b, int32_t c, int32_t d)\n"
                  "{\n"
                  "\t(void)gadget; (void)a; (void)b; (void)c; (void)d;\n";
+            if (hasDialogs) s << "\tif (" << win << "_dialog_block_owner) return;\n";
             if (linkedCallbacks.contains(cb)) {
                 s << "\t" << linkedCallbacks.value(cb) << "();\n";
+            }
+            if (mediaLinkedActions.contains(cb)) {
+                s << "\t" << mediaLinkedActions.value(cb) << "\n";
+            }
+            if (dialogLinkedActions.contains(cb)) {
+                s << "\t" << dialogLinkedActions.value(cb) << "\n";
             }
             s << "\t/* <SIDBOX-GUI:USER "
               << cb
@@ -10927,8 +11760,9 @@ private:
               << cb
               << "(cg_menu_t menu, cg_menuitem_t item, void *userdata)\n"
                  "{\n"
-                 "\t(void)menu; (void)item; (void)userdata;\n"
-                 "\t/* <SIDBOX-GUI:USER "
+                 "\t(void)menu; (void)item; (void)userdata;\n";
+            if (hasDialogs) s << "\tif (" << win << "_dialog_block_owner) return;\n";
+            s << "\t/* <SIDBOX-GUI:USER "
               << cb
               << "> */\n";
 
@@ -10951,6 +11785,67 @@ private:
               << cb
               << "> */\n"
                  "}\n\n";
+        }
+
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("FileRequester") && g.type != QStringLiteral("MessageBox")) continue;
+            const auto userBody = [&saved, &s](const QString &cb) {
+                s << "\t/* <SIDBOX-GUI:USER " << cb << "> */\n";
+                const QString body = saved.value(cb);
+                if (body.isEmpty()) s << "\t/* TODO: handle dialog result here. */\n";
+                else for (const QString &line : body.split(QLatin1Char('\n')))
+                    s << "\t" << line << "\n";
+                s << "\t/* </SIDBOX-GUI:USER " << cb << "> */\n";
+            };
+            const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
+            if (g.type == QStringLiteral("FileRequester")) {
+                s << "static void " << g.onActivate << "(const char *path)\n{\n"
+                  << "\t/* GENERATED EXAMPLE: the selected filename is supplied in path.\n"
+                     "\t   Use path in the USER block below to open the chosen file.\n"
+                     "\t   Copy it to your own buffer if you must retain it across later requests. */\n"
+                  << "\tif (path && path[0] != '\\0') {\n"
+                  << "\t\tprintf(\"[" << n << "] Selected file: %s\\n\", path);\n"
+                  << "\t} else {\n"
+                  << "\t\tprintf(\"[" << n << "] Empty filename returned\\n\");\n"
+                  << "\t}\n";
+                userBody(g.onActivate);
+                s << "}\n\nstatic void " << g.onChange << "(void)\n{\n"
+                  << "\t/* GENERATED EXAMPLE: Cancel was pressed; no filename is returned. */\n"
+                  << "\tprintf(\"[" << n << "] File selection cancelled\\n\");\n";
+                userBody(g.onChange);
+                s << "}\n\n";
+            } else {
+                s << "static void " << g.onActivate << "(int32_t result)\n{\n"
+                  << "\t/* GENERATED EXAMPLE: result is NOT discarded.\n"
+                     "\t   Put your application behaviour in the USER block below. */\n";
+                if (g.dialogKind == QStringLiteral("Info")) {
+                    s << "\tif (result == INFOBOX_OK) {\n"
+                      << "\t\tprintf(\"[" << n << "] InfoBox acknowledged (OK)\\n\");\n"
+                      << "\t} else {\n"
+                      << "\t\tprintf(\"[" << n << "] InfoBox result: %ld\\n\", (long)result);\n"
+                      << "\t}\n";
+                } else {
+                    s << "\tswitch (result) {\n"
+                      << "\tcase MSGBOX_OK:\n"
+                      << "\t\tprintf(\"[" << n << "] OK pressed\\n\");\n"
+                      << "\t\tbreak;\n"
+                      << "\tcase MSGBOX_YES:\n"
+                      << "\t\tprintf(\"[" << n << "] YES pressed\\n\");\n"
+                      << "\t\tbreak;\n"
+                      << "\tcase MSGBOX_NO:\n"
+                      << "\t\tprintf(\"[" << n << "] NO pressed\\n\");\n"
+                      << "\t\tbreak;\n"
+                      << "\tcase MSGBOX_CANCEL:\n"
+                      << "\t\tprintf(\"[" << n << "] CANCEL pressed\\n\");\n"
+                      << "\t\tbreak;\n"
+                      << "\tdefault:\n"
+                      << "\t\tprintf(\"[" << n << "] Unknown result: %ld\\n\", (long)result);\n"
+                      << "\t\tbreak;\n"
+                      << "\t}\n";
+                }
+                userBody(g.onActivate);
+                s << "}\n\n";
+            }
         }
 
         QStringList orphanKeys =
@@ -10989,6 +11884,106 @@ private:
             s << "#endif\n";
         }
 
+        // Resource sources are generated beside this .sbui in <name>res/.
+        // The project's recursive .c discovery picks up both source files.
+        const QByteArray bitmapMarker("/* SIDBOX-IDE GENERATED BITMAPVIEW: ");
+        const QByteArray sfxMarker("/* SIDBOX-IDE GENERATED EMBEDDED SFX: ");
+        const QByteArray ownerName = designInfo.fileName().toUtf8();
+        QString assetText;
+        QTextStream assets(&assetText);
+        assets << "/* SIDBOX-IDE GENERATED EMBEDDED SFX: "
+               << designInfo.fileName() << " */\n"
+               << "/* Auto-generated unsigned PCM8 data. Do not hand-edit. */\n"
+               << "#include \"apis.h\"\n\n";
+        bool anyEmbedded = false;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media") || g.mediaMode != QStringLiteral("SFX")
+                || !g.mediaEmbedSfx) continue;
+            anyEmbedded = true;
+            const QString symbol = samplePrefix + QStringLiteral("_")
+                + safeCIdentifier(g.name, QStringLiteral("media")) + QStringLiteral("_pcm");
+            assets << "/* " << g.mediaEmbeddedPcm.size() << " unsigned PCM8 samples */\n"
+                   << "const uint8_t MEMALIGN32 " << symbol << "[] = {\n";
+            for (qsizetype i = 0; i < g.mediaEmbeddedPcm.size(); ++i) {
+                if (i % 16 == 0) assets << "    ";
+                assets << "0x" << QStringLiteral("%1").arg(
+                    (uchar(g.mediaEmbeddedPcm.at(i)) ^ 0x80u), 2, 16, QLatin1Char('0'));
+                if (i + 1 != g.mediaEmbeddedPcm.size()) assets << ", ";
+                if (i % 16 == 15 || i + 1 == g.mediaEmbeddedPcm.size()) assets << "\n";
+            }
+            assets << "};\n"
+                   << "const uint32_t " << symbol << "_length = "
+                   << g.mediaEmbeddedPcm.size() << "u;\n\n";
+        }
+        const bool anyBitmap = !demoBitmaps.isEmpty() || std::any_of(
+            m_gadgets.cbegin(), m_gadgets.cend(), [](const GuiDesignerGadget &g) {
+                return g.type == QStringLiteral("BitmapView") && !g.bitmapPixels.isEmpty();
+            });
+        const QString oldSfxPath = designInfo.dir().absoluteFilePath(
+            designInfo.completeBaseName() + QStringLiteral("_sfx.c"));
+
+        // Validate ALL destinations before writing any generated source.
+        // Never overwrite a programmer-owned .c file in a resources folder.
+        if (!sketch) {
+            for (const auto &entry : {
+                 qMakePair(bitmapResourcePath, bitmapMarker),
+                 qMakePair(mediaResourcePath, sfxMarker),
+                 qMakePair(oldSfxPath, sfxMarker) }) {
+                if (!QFile::exists(entry.first)) continue;
+                QFile previous(entry.first);
+                if (!previous.open(QIODevice::ReadOnly) ||
+                    !previous.read(256).startsWith(entry.second + ownerName)) {
+                    QMessageBox::warning(this, QObject::tr("Generated resource conflict"),
+                        QObject::tr("%1 already exists but is not recognised as a generated "
+                                    "resource for this design. It will not be overwritten.")
+                            .arg(QDir::toNativeSeparators(entry.first)));
+                    return false;
+                }
+            }
+        }
+
+        // Preserve tracked generated sources when assets are removed: an empty
+        // generated unit cannot leave stale linker symbols behind.
+        const auto writeResource = [this](const QString &path, const QString &contents,
+                                          bool createIfMissing) -> bool {
+            const QFileInfo fileInfo(path);
+            if (!createIfMissing && !fileInfo.exists()) return true;
+            QFile old(path);
+            if (old.open(QIODevice::ReadOnly) && old.readAll() == contents.toUtf8())
+                return true;
+            if (!QDir().mkpath(fileInfo.absolutePath())) {
+                QMessageBox::warning(this, QObject::tr("Resource directory error"),
+                    QObject::tr("Cannot create directory %1").arg(fileInfo.absolutePath()));
+                return false;
+            }
+            QSaveFile target(path);
+            const QByteArray bytes = contents.toUtf8();
+            if (!target.open(QIODevice::WriteOnly | QIODevice::Text)
+                || target.write(bytes) != bytes.size() || !target.commit()) {
+                QMessageBox::warning(this, QObject::tr("Generated resource error"),
+                    QObject::tr("Cannot write %1").arg(QDir::toNativeSeparators(path)));
+                return false;
+            }
+            return true;
+        };
+
+        // Generating a .uis sketch must not mutate compilable resources:
+        // Detached mode belongs to the programmer, not the code generator.
+        if (!sketch &&
+            (!writeResource(bitmapResourcePath, bitmapText, anyBitmap) ||
+             !writeResource(mediaResourcePath, assetText, anyEmbedded)))
+            return false;
+
+        // The old <design>_sfx.c lived alongside the .sbui. Retain a harmless
+        // marked stub instead of deleting it (it may be listed in .proj).
+        // This prevents duplicate PCM definitions after migration.
+        const QString migratedSfxStub = QStringLiteral(
+            "/* SIDBOX-IDE GENERATED EMBEDDED SFX: %1 */\n"
+            "/* Migrated to %2res/media_sfx.c. Kept for existing .proj references. */\n")
+            .arg(designInfo.fileName(), designInfo.completeBaseName());
+        if (!sketch && !writeResource(oldSfxPath, migratedSfxStub, false))
+            return false;
+
         QSaveFile file(cPath);
         if (!file.open(
                 QIODevice::WriteOnly
@@ -11020,6 +12015,10 @@ private:
             generatedFilesChanged(
                 m_filePath,
                 cPath);
+            if (!sketch && (anyBitmap || QFile::exists(bitmapResourcePath)))
+                generatedFilesChanged(m_filePath, bitmapResourcePath);
+            if (!sketch && (anyEmbedded || QFile::exists(mediaResourcePath)))
+                generatedFilesChanged(m_filePath, mediaResourcePath);
         }
 
         m_statusLabel->setText(
