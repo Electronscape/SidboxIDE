@@ -703,6 +703,9 @@ struct SourceVariableSymbol
      * rather than stopping on this declaration.
      */
     bool externDeclaration = false;
+
+    // MEMALIGN4/8/16/32: display metadata, not part of the C identifier.
+    bool aligned = false;
 };
 
 struct SourceNamedSymbol
@@ -982,7 +985,8 @@ void populateSourceSymbolTree(
             item->setText(
                 0,
                 global.name
-                    + global.arraySuffix);
+                    + global.arraySuffix
+                    + (global.aligned ? QStringLiteral(" (aligned)") : QString()));
 
             item->setIcon(
                 0,
@@ -1088,7 +1092,8 @@ void populateSourceSymbolTree(
                     item->setText(
                         0,
                         parameter.name
-                            + parameter.arraySuffix);
+                            + parameter.arraySuffix
+                            + (parameter.aligned ? QStringLiteral(" (aligned)") : QString()));
 
                     item->setIcon(
                         0,
@@ -1137,7 +1142,8 @@ void populateSourceSymbolTree(
                     item->setText(
                         0,
                         local.name
-                            + local.arraySuffix);
+                            + local.arraySuffix
+                            + (local.aligned ? QStringLiteral(" (aligned)") : QString()));
 
                     item->setIcon(
                         0,
@@ -1541,6 +1547,11 @@ QString typeNameFromDeclaration(const QString &statement,
             R"(\b(?:const|volatile|restrict|static|extern|register|auto|signed|unsigned|long|short)\b)"));
 
     typePart.remove(qualifierExpression);
+
+    // Alignment macros decorate the variable, they are not its type.
+    static const QRegularExpression alignmentExpression(
+        QStringLiteral(R"(\bMEMALIGN(?:4|8|16|32)\b)"));
+    typePart.remove(alignmentExpression);
     typePart = typePart.simplified();
 
     // "struct Foo", "union Foo" and "enum Foo" should resolve to Foo.
@@ -1649,15 +1660,27 @@ QList<SourceVariableSymbol> variableSymbolsFromStatement(const QString &statemen
             .match(text)
             .hasMatch();
 
+    static const QRegularExpression alignmentExpression(
+        QStringLiteral(R"(\bMEMALIGN(?:4|8|16|32)\b)"));
+
     for (const QString &declarator : declarators) {
         const QString name = variableNameFromDeclarator(declarator);
         if (!name.isEmpty()) {
+            // Look only before the symbol itself: initializer contents must
+            // not make an otherwise unaligned variable appear aligned.
+            const int namePos = declarator.indexOf(
+                QRegularExpression(QStringLiteral(R"(\b%1\b)")
+                    .arg(QRegularExpression::escape(name))));
+            const bool isAligned = namePos > 0
+                && alignmentExpression.match(declarator.left(namePos)).hasMatch();
+
             symbols.append({
                 name,
                 line,
                 declarationType,
                 arraySuffixFromDeclarator(declarator, name),
-                isExternDeclaration
+                isExternDeclaration,
+                isAligned
             });
         }
     }
@@ -1692,7 +1715,7 @@ QList<SourceVariableSymbol> braceInitialisedArraySymbolsInRange(
 
     static const QRegularExpression arrayStartExpression(
         QStringLiteral(
-            R"((?:^|[\n;{}])\s*((?:(?:const|volatile|static|extern|register)\s+)*(?:(?:struct|union|enum)\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]]*\]\s*=\s*\{))"),
+            R"((?:^|[\n;{}])\s*((?:(?:const|volatile|static|extern|register)\s+)*(?:(?:struct|union|enum)\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s*\*)*(?:\s+MEMALIGN(?:4|8|16|32))?\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\[[^\]]*\]\s*)+\s*=\s*\{))"),
         QRegularExpression::MultilineOption);
 
     int searchFrom = start;
@@ -4280,7 +4303,11 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
         }
     }
 
+    // Available during the designer constructor, including initial properties.
+    m_editorTabs->setProperty("sidboxProjectRoot", m_projectPath);
     auto *designer = createSidboxGuiDesigner(absolutePath, m_editorTabs);
+    // Let the designer discover every .sbui in the project, including subfolders.
+    designer->setProperty("sidboxProjectRoot", m_projectPath);
     const int index = m_editorTabs->addTab(designer, QIcon(QStringLiteral(":/icons/toolbar_guidesigner.png")), designer->displayName());
     m_editorTabs->setTabToolTip(index, tr("CoderGirl visual design\n%1").arg(QDir::toNativeSeparators(absolutePath)));
 
@@ -7729,7 +7756,7 @@ bool MainWindow::openFile(const QString &filePath)
      * behaviour if they choose Open Anyway.
      */
     const QFileInfo openingFileInfo(filePath);
-    const qint64 largeSourceThreshold = 200LL * 1024LL;
+    const qint64 largeSourceThreshold = 1024LL * 1024LL;
     const qint64 veryLargeSourceThreshold = 1024LL * 1024LL;
     const QString suffix = openingFileInfo.suffix().toLower();
 

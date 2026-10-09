@@ -89,6 +89,9 @@ typedef struct API_GUI_GADGETS {
     void     (*itemlist_deinit)        (ItemLists_t *list);
     int      (*itemlist_add)           (ItemLists_t *list, const char *text, uint32_t flags);
     int16_t  (*listbox_attach_itemlist)(CGGadget listbox, ItemLists_t *list);
+
+    /* Appended for virtual TabGroup pressed-state selection; ABI offsets stable. */
+    void     (*button_set_toggle)       (CGGadget button, uint8_t pressed);
 } API_GUI_GADGETS;
 
 typedef API_GUI_GADGETS API_GUI_Gadgets;

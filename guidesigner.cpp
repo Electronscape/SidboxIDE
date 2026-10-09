@@ -10,9 +10,13 @@
 #include <QCheckBox>
 #include <QApplication>
 #include <QClipboard>
+#include <QButtonGroup>
+#include <QDialog>
 #include <QColor>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
@@ -22,8 +26,13 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFont>
+#include <QFontMetrics>
+#include <QFocusEvent>
+#include <QGridLayout>
 #include <QHash>
 #include <QHeaderView>
+#include <QIcon>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QInputDialog>
@@ -39,6 +48,7 @@
 #include <QLineEdit>
 #include <QList>
 #include <QListWidget>
+#include <QListView>
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QMenu>
@@ -52,6 +62,8 @@
 #include <QPlainTextEdit>
 #include <QPoint>
 #include <QPointF>
+#include <QPointer>
+#include <QPixmap>
 #include <QPushButton>
 #include <QRect>
 #include <QRegularExpression>
@@ -70,6 +82,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -88,6 +101,13 @@ struct GuiDesignerGadget
     int hPen = -1;
     QString onActivate;
     QString onChange;
+    QString openWindowFile; // Project-relative .sbui target; empty means normal callback only.
+    // Virtual TabGroup membership. A blank owner means always visible.
+    QString tabOwner;
+    int tabPage = 0;
+    // Virtual TabGroup: page initially visible when the generated window opens.
+    // This is independent of `value`, which is the designer preview page.
+    int defaultTabPage = 0;
 
     // -1 = follow Window callback mode, 0 = WindowProc events, 1 = own direct callback.
     int callbackRoute = -1;
@@ -138,7 +158,24 @@ struct GuiDesignerGadget
      * mirrors the firmware API: the ListBox itself does not own its item list.
      */
     QStringList listItems;
+
+    // Virtual (designer-only) cooperative timer; no on-screen SIDBOX gadget.
+    // period = 0 selects a one-shot in the public CoderGirl timer API.
+    int timerDelayMs = 1000;
+    int timerPeriodMs = 1000;
+    bool timerRepeat = true;
+    bool timerAutoStart = true;
 };
+
+static QStringList designerTabTitles(const GuiDesignerGadget &g)
+{
+    QStringList titles;
+    for (const QString &s : g.text.split(QLatin1Char('|'))) {
+        if (!s.trimmed().isEmpty()) titles << s.trimmed();
+    }
+    if (titles.isEmpty()) titles << QStringLiteral("Page 1");
+    return titles.mid(0, 8);
+}
 
 struct GuiDesignerWindow
 {
@@ -991,6 +1028,19 @@ public:
     explicit GuiDesignerToolbox(QWidget *parent = nullptr)
         : QListWidget(parent)
     {
+        // A compact, two-column graphic palette. Its labels live in UserRole
+        // and tooltips rather than beneath the 64x24 artwork.
+        setViewMode(QListView::IconMode);
+        setFlow(QListView::LeftToRight);
+        setWrapping(true);
+        setResizeMode(QListView::Adjust);
+        setMovement(QListView::Static);
+        setIconSize(QSize(64, 24));
+        setGridSize(QSize(76, 34));
+        setSpacing(2);
+        setUniformItemSizes(true);
+        setSelectionMode(QAbstractItemView::SingleSelection);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setDragEnabled(true);
         setDragDropMode(QAbstractItemView::DragOnly);
         setDefaultDropAction(Qt::CopyAction);
@@ -1012,12 +1062,14 @@ protected:
         mime->setData(
             QString::fromLatin1(
                 GuiDesignerGadgetMimeType),
-            item->text().toUtf8());
+            item->data(Qt::UserRole).toString().toUtf8());
 
         auto *drag =
             new QDrag(this);
 
         drag->setMimeData(mime);
+        drag->setPixmap(item->icon().pixmap(QSize(64, 24)));
+        drag->setHotSpot(QPoint(32, 12));
         drag->exec(Qt::CopyAction);
     }
 };
@@ -1200,6 +1252,11 @@ public:
     std::function<void()> undoRequested;
     std::function<void(int, int, bool)> nudgeRequested;
     std::function<void(int, int, bool)> resizeRequested;
+    std::function<void(bool)> layerRequested;
+    // Printable canvas keys edit a selected gadget's Text without taking focus
+    // away from the designer. The owner handles Undo and property synchronisation.
+    std::function<void(const QString &, bool)> textInputRequested;
+    std::function<bool()> textEditingFinished;
 
     int selectedIndex() const { return m_selected; }
 
@@ -1221,6 +1278,61 @@ public:
     QSize clientViewportSize() const
     {
         return clientViewportRect().size();
+    }
+
+    // Inclusive range of legal top-left positions for a virtual TabGroup.
+    // All pages share this movement limit, including pages not in preview.
+    QRect tabGroupPositionBounds(int index) const
+    {
+        if (!m_gadgets || index < 0 || index >= m_gadgets->size()
+            || m_gadgets->at(index).type != QStringLiteral("TabGroup"))
+            return QRect();
+        const GuiDesignerGadget &group = m_gadgets->at(index);
+        const QSize client = clientViewportSize();
+        int lowX = -group.rect.left();
+        int lowY = -group.rect.top();
+        int highX = client.width() - group.rect.right() - 1;
+        int highY = client.height() - group.rect.bottom() - 1;
+        for (int i = 0; i < m_gadgets->size(); ++i) {
+            if (i == index || m_gadgets->at(i).tabOwner != group.name)
+                continue;
+            const QRect r = m_gadgets->at(i).rect;
+            lowX = qMax(lowX, -r.left());
+            lowY = qMax(lowY, -r.top());
+            highX = qMin(highX, client.width() - r.right() - 1);
+            highY = qMin(highY, client.height() - r.bottom() - 1);
+        }
+        const QPoint pos = group.rect.topLeft();
+        // An old design might contain an off-screen gadget; don't let
+        // incompatible constraints unexpectedly move anything.
+        if (lowX > highX || lowY > highY)
+            return QRect(pos, QSize(1, 1));
+        return QRect(QPoint(pos.x() + lowX, pos.y() + lowY),
+                     QPoint(pos.x() + highX, pos.y() + highY));
+    }
+
+    // Move the selected virtual TabGroup and ALL its member gadgets. These
+    // stay window-relative: no new parent-coordinate system is introduced.
+    bool moveTabGroupWithMembers(int index, const QPoint &wanted)
+    {
+        if (!m_gadgets || index < 0 || index >= m_gadgets->size()
+            || m_gadgets->at(index).type != QStringLiteral("TabGroup"))
+            return false;
+        const GuiDesignerGadget &group = m_gadgets->at(index);
+        const QRect bounds = tabGroupPositionBounds(index);
+        const QPoint position(qBound(bounds.left(), wanted.x(), bounds.right()),
+                              qBound(bounds.top(), wanted.y(), bounds.bottom()));
+        const QPoint delta = position - group.rect.topLeft();
+        if (delta.isNull()) return false;
+
+        const QString owner = group.name;
+        for (int i = 0; i < m_gadgets->size(); ++i) {
+            GuiDesignerGadget &g = (*m_gadgets)[i];
+            if (i == index || g.tabOwner == owner)
+                g.rect.translate(delta);
+        }
+        update();
+        return true;
     }
 
     /*
@@ -1766,11 +1878,16 @@ private:
         p.setClipRect(
             clientRect);
 
+        for (int paintPass = 0; paintPass < 3; ++paintPass) {
         for (int i = 0;
              i < m_gadgets->size();
              ++i) {
             const GuiDesignerGadget &g =
                 m_gadgets->at(i);
+            if (!visibleOnTab(g)) continue;
+            if (paintPass == 0 && g.type != QStringLiteral("TabGroup")) continue;
+            if (paintPass == 1 && (g.type == QStringLiteral("TabGroup") || g.type == QStringLiteral("Timer"))) continue;
+            if (paintPass == 2 && g.type != QStringLiteral("Timer")) continue;
 
             const QRect gr =
                 g.rect.translated(
@@ -1826,7 +1943,16 @@ private:
                 p.restore();
             }
 
-            if (i == m_selected) {
+        }
+
+        } // TabGroup backgrounds, ordinary contents, then non-visual timer icons
+
+        // Always draw selection handles last. In particular the TabGroup
+        // frame stays behind its contents, but its resize anchors must not.
+        if (m_selected >= 0 && m_selected < m_gadgets->size()
+            && visibleOnTab(m_gadgets->at(m_selected))) {
+            const GuiDesignerGadget &g = m_gadgets->at(m_selected);
+            const QRect gr = g.rect.translated(origin);
                 p.setPen(
                     QPen(
                         QColor(
@@ -1839,12 +1965,15 @@ private:
                 p.setBrush(
                     Qt::NoBrush);
 
+                // Cosmetic only: QRect's right/bottom pixel is inclusive.
+                // Keep the selection border 1 logical pixel tighter on
+                // those edges; hit testing and handle positions stay intact.
                 p.drawRect(
                     gr.adjusted(
                         -2,
                         -2,
-                        2,
-                        2));
+                        1,
+                        1));
 
                 const QColor anchorColour(
                     255,
@@ -1857,9 +1986,8 @@ private:
                 p.setBrush(
                     anchorColour);
 
-                if (g.type
-                    != QStringLiteral(
-                        "GridSelect")) {
+                if (g.type != QStringLiteral("GridSelect")
+                    && g.type != QStringLiteral("Timer")) {
                     for (const QRect &handle :
                          windowResizeHandles(gr)) {
                         p.drawRect(handle);
@@ -1872,7 +2000,6 @@ private:
                             anchorColour);
                     }
                 }
-            }
         }
 
         p.restore();
@@ -1926,12 +2053,14 @@ private:
             p.setBrush(
                 Qt::NoBrush);
 
+            // Match gadget reticles: remove the extra right/bottom pixel.
+            // No change to window geometry or the resize handles.
             p.drawRect(
                 wr.adjusted(
                     -2,
                     -2,
-                    2,
-                    2));
+                    1,
+                    1));
 
             /*
              * Eight resize anchors around the actual CoderGirl window.
@@ -2203,7 +2332,49 @@ protected:
             }
         }
 
+        // Keep editing confined to the selected canvas gadget. Shortcuts above
+        // take priority; Ctrl/Alt/Meta combinations must remain shortcuts.
+        if (m_selected >= 0
+            && !(event->modifiers() & (Qt::ControlModifier
+                                     | Qt::AltModifier
+                                     | Qt::MetaModifier))) {
+            if ((event->key() == Qt::Key_Return
+                 || event->key() == Qt::Key_Enter
+                 || event->key() == Qt::Key_Escape)
+                && textEditingFinished && textEditingFinished()) {
+                event->accept();
+                return;
+            }
+
+            if (event->key() == Qt::Key_Backspace && textInputRequested) {
+                textInputRequested(QString(), true);
+                event->accept();
+                return;
+            }
+
+            const QString typed = event->text();
+            bool printable = !typed.isEmpty();
+            for (const QChar ch : typed) {
+                if (!ch.isPrint()) {
+                    printable = false;
+                    break;
+                }
+            }
+            if (printable && textInputRequested) {
+                textInputRequested(typed, false);
+                event->accept();
+                return;
+            }
+        }
+
         QWidget::keyPressEvent(event);
+    }
+
+    void focusOutEvent(QFocusEvent *event) override
+    {
+        // Typing is one Undo operation until the canvas loses focus.
+        if (textEditingFinished) textEditingFinished();
+        QWidget::focusOutEvent(event);
     }
 
     void mouseDoubleClickEvent(QMouseEvent *event) override
@@ -2229,12 +2400,23 @@ protected:
         const QPoint origin =
             clientOrigin();
 
+        for (int i = m_gadgets->size()-1; i >= 0; --i) {
+            if (m_gadgets->at(i).type == QStringLiteral("Timer")
+                && m_gadgets->at(i).rect.translated(origin).contains(logical)) {
+                setSelectedIndex(i);
+                if (gadgetDoubleClicked) gadgetDoubleClicked(i);
+                event->accept();
+                return;
+            }
+        }
+
         for (int i =
                  static_cast<int>(
                      m_gadgets->size())
                  - 1;
              i >= 0;
              --i) {
+            if (!visibleOnTab(m_gadgets->at(i))) continue;
             const QRect gadgetRect =
                 m_gadgets->at(i)
                     .rect
@@ -2344,9 +2526,8 @@ protected:
                 return;
             }
         } else if (m_selected < m_gadgets->size()
-                   && m_gadgets->at(m_selected).type
-                      != QStringLiteral(
-                          "GridSelect")) {
+                   && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
+                   && m_gadgets->at(m_selected).type != QStringLiteral("Timer")) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
                     .rect
@@ -2401,12 +2582,34 @@ protected:
             return;
         }
 
+        // Click a virtual TabGroup header to preview its other page.
+        if (client.contains(logical)) {
+            for (int i = m_gadgets->size()-1; i >= 0; --i) {
+                GuiDesignerGadget &g = (*m_gadgets)[i];
+                if (g.type != QStringLiteral("TabGroup")) continue;
+                const QRect r = g.rect.translated(origin);
+                if (!QRect(r.x(), r.y(), r.width(), 24).contains(logical)) continue;
+                const QStringList titles = designerTabTitles(g);
+                const int next = qBound(0, (logical.x()-r.x()) / qMax(1, r.width()/titles.size()), titles.size()-1);
+                g.value = next; // preview state only: not a source modification
+                setSelectedIndex(i);
+                update();
+                event->accept();
+                return;
+            }
+        }
         int hit = -1;
 
         if (client.contains(logical)) {
+            for (int pass = 0; pass < 3 && hit < 0; ++pass) {
             for (int i = m_gadgets->size() - 1;
                  i >= 0;
                  --i) {
+                if (!visibleOnTab(m_gadgets->at(i))) continue;
+                const QString &type = m_gadgets->at(i).type;
+                if (pass == 0 && type != QStringLiteral("Timer")) continue;
+                if (pass == 1 && (type == QStringLiteral("Timer") || type == QStringLiteral("TabGroup"))) continue;
+                if (pass == 2 && type != QStringLiteral("TabGroup")) continue;
                 const QRect gr =
                     m_gadgets->at(i)
                         .rect
@@ -2418,6 +2621,7 @@ protected:
                     hit = i;
                     break;
                 }
+            }
             }
         }
 
@@ -2435,9 +2639,8 @@ protected:
                     .translated(origin);
 
             m_gadgetResizeEdges =
-                windowResizeEdgesAt(
-                    logical,
-                    gr);
+                m_gadgets->at(hit).type == QStringLiteral("Timer")
+                    ? Qt::Edges() : windowResizeEdgesAt(logical, gr);
 
             m_resizing =
                 m_gadgetResizeEdges
@@ -2640,7 +2843,10 @@ protected:
                             r.top()),
                         maxY));
 
-                g.rect = r;
+                if (g.type == QStringLiteral("TabGroup"))
+                    moveTabGroupWithMembers(m_selected, r.topLeft());
+                else
+                    g.rect = r;
             } else {
                 QRect r =
                     m_startRect;
@@ -2746,9 +2952,8 @@ protected:
         } else if (m_selected >= 0
                    && m_gadgets
                    && m_selected < m_gadgets->size()
-                   && m_gadgets->at(m_selected).type
-                      != QStringLiteral(
-                          "GridSelect")) {
+                   && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
+                   && m_gadgets->at(m_selected).type != QStringLiteral("Timer")) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
                     .rect
@@ -2792,6 +2997,49 @@ protected:
         }
 
         QWidget::mouseMoveEvent(event);
+    }
+
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (!m_gadgets || !m_window || !event) {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        const QPoint logical = toLogical(event->pos());
+        const QRect client = clientViewportRect();
+        if (!client.contains(logical)) return;
+        const QPoint origin = clientOrigin();
+        int hit = -1;
+        // Preserve an already selected gadget (particularly a TabGroup)
+        // when the pointer is inside its bounds, even if children overlap.
+        if (m_selected >= 0 && m_selected < m_gadgets->size()
+            && visibleOnTab(m_gadgets->at(m_selected))
+            && m_gadgets->at(m_selected).rect.translated(origin).contains(logical))
+            hit = m_selected;
+        if (hit < 0) {
+            for (int pass = 0; pass < 2 && hit < 0; ++pass) {
+                for (int i = m_gadgets->size() - 1; i >= 0; --i) {
+                    const GuiDesignerGadget &g = m_gadgets->at(i);
+                    if (!visibleOnTab(g) ||
+                        (g.type == QStringLiteral("TabGroup")) != (pass == 1))
+                        continue;
+                    if (g.rect.translated(origin).contains(logical)) {
+                        hit = i;
+                        break;
+                    }
+                }
+            }
+        }
+        if (hit < 0) return;
+        if (hit != m_selected) setSelectedIndex(hit);
+
+        QMenu menu(this);
+        QAction *front = menu.addAction(QObject::tr("Bring Gadget to Front"));
+        QAction *back = menu.addAction(QObject::tr("Send Gadget to Back"));
+        QAction *chosen = menu.exec(event->globalPos());
+        if (chosen == front && layerRequested) layerRequested(true);
+        else if (chosen == back && layerRequested) layerRequested(false);
+        event->accept();
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override
@@ -2940,6 +3188,16 @@ private:
         }
 
         return {};
+    }
+
+    bool visibleOnTab(const GuiDesignerGadget &g) const
+    {
+        if (g.tabOwner.isEmpty() || !m_gadgets) return true;
+        for (const GuiDesignerGadget &tabs : std::as_const(*m_gadgets)) {
+            if (tabs.type == QStringLiteral("TabGroup") && tabs.name == g.tabOwner)
+                return g.tabPage == qBound(0, tabs.value, designerTabTitles(tabs).size()-1);
+        }
+        return true; // Missing owner: keep content editable, validation rejects generation.
     }
 
     QPoint toLogical(const QPointF &pos) const
@@ -3387,6 +3645,67 @@ private:
                 g.hPen >= 0
                     ? g.hPen
                     : 3);
+
+        if (g.type == QStringLiteral("Timer")) {
+            // A non-visual design-time component: a crisp 24x24 stopwatch.
+            // No corresponding object is drawn on the actual SIDBOX screen.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            const int cx = r.center().x();
+            const int cy = r.center().y() + 2;
+            p.setPen(QPen(QColor(226, 231, 239), 2));
+            p.drawEllipse(QRect(cx - 7, cy - 7, 14, 14));
+            p.drawLine(cx, cy, cx, cy - 5);
+            p.drawLine(cx, cy, cx + 4, cy + 2);
+            p.setPen(QPen(QColor(90, 164, 238), 2));
+            p.drawLine(cx - 3, cy - 10, cx + 3, cy - 10);
+            p.drawLine(cx, cy - 10, cx, cy - 8);
+            p.drawLine(cx + 6, cy - 7, cx + 8, cy - 9);
+            p.restore();
+            return;
+        }
+
+        if (g.type == QStringLiteral("TabGroup")) {
+            const QStringList tabs = designerTabTitles(g);
+            const int header = 24;
+            const QRect bevel = r.adjusted(0, header, 0, 0);
+
+            // TabGroup is a virtual Canvas bevel plus ordinary Buttons.
+            // Its pen colours belong to the bevel, not to the tab buttons.
+            p.fillRect(bevel, coderGirlPen(windowBackPen));
+            const QColor bevelFPen = coderGirlPen(
+                g.fPen >= 0 ? g.fPen : defaultFPenForType(QStringLiteral("Canvas")));
+            const QColor bevelBPen = coderGirlPen(
+                g.bPen >= 0 ? g.bPen : windowBackPen);
+            const bool inset = g.flags.contains(QStringLiteral("GAD_TOOL_INSET"));
+            const QColor topLeft = inset ? bevelBPen : bevelFPen;
+            const QColor bottomRight = inset ? bevelFPen : bevelBPen;
+            if (bevel.width() > 1 && bevel.height() > 1) {
+                p.setPen(topLeft);
+                p.drawLine(bevel.left(), bevel.top(), bevel.right(), bevel.top());
+                p.drawLine(bevel.left(), bevel.top(), bevel.left(), bevel.bottom());
+                p.setPen(bottomRight);
+                p.drawLine(bevel.left(), bevel.bottom(), bevel.right() - 1, bevel.bottom());
+                p.drawLine(bevel.right(), bevel.top(), bevel.right(), bevel.bottom());
+            }
+
+            const QColor buttonFace = defaultBPenForType(QStringLiteral("Button"), windowBackPen);
+            const QColor buttonText = coderGirlPen(defaultFPenForType(QStringLiteral("Button")));
+            const int tabWidth = qMax(1, r.width() / tabs.size());
+            for (int i = 0; i < tabs.size(); ++i) {
+                const QRect button(r.x() + i * tabWidth, r.y(),
+                                   (i == tabs.size() - 1 ? r.width() - i * tabWidth : tabWidth),
+                                   header);
+                p.fillRect(button, buttonFace);
+                drawCoderGirlBevel(p, button, i == qBound(0, g.value, tabs.size()-1));
+                drawCoderGirlText(p, button.x()+4, button.y()+7,
+                                  tabs.at(i).left(qMax(1, (button.width()-8)/8)), buttonText);
+            }
+            return;
+        }
 
         if (g.type
             == QStringLiteral(
@@ -3976,7 +4295,8 @@ private:
                 drawCoderGirlBevel(
                     p,
                     r,
-                    true);
+                    g.flags.contains(
+                        QStringLiteral("GAD_TOOL_INSET")));
             }
 
             const int inset =
@@ -4068,6 +4388,82 @@ private:
                 }
             }
 
+            return;
+        }
+
+        if (g.type == QStringLiteral("Button")) {
+            // Match cg_gad_button.c::draw_button() in the SIDBOX core.
+            p.fillRect(r, face);
+            if (!designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_NOBORDER")))
+                drawCoderGirlBevel(p, r, false);
+
+            const bool cycle = designerWindowFlag(
+                g.flags, QStringLiteral("GAD_TOOL_CYCLEBUTTON"));
+            const bool below = designerWindowFlag(
+                g.flags, QStringLiteral("GAD_TOOL_ALIGN_BELOW"));
+            const QString caption = cycle
+                ? g.text.section(QLatin1Char('|'), 0, 0)
+                : g.text;
+            const int charWidth = coderGirlTextWidth(caption);
+            const int leftPad = cycle ? 24 : 0;
+
+            if (cycle) {
+                // Core/codergirl/graphics/cg_glyphs.c: glyph_cycle (16x16,
+                // column-major CLUT indices). 0 is transparent.
+                static const quint8 cycleGlyph[256] = {
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                };
+                const int gx = r.x() + 4;
+                const int gy = r.y() + (r.height() - 16) / 2;
+                p.save();
+                p.setClipRect(r, Qt::IntersectClip);
+                p.setPen(coderGirlPen(16)); // PEN_WIN_BEVEL_L
+                p.drawLine(gx + 21, gy - 2, gx + 21,
+                           gy - 2 + qMax(0, r.height() - 7));
+                p.setPen(coderGirlPen(2)); // PEN_WIN_BEVEL_H
+                p.drawLine(gx + 22, gy - 2, gx + 22,
+                           gy - 2 + qMax(0, r.height() - 7));
+                for (int col = 0; col < 16; ++col) {
+                    for (int row = 0; row < 16; ++row) {
+                        const quint8 pen = cycleGlyph[col * 16 + row];
+                        if (pen)
+                            p.fillRect(gx + 2 + col, gy + row, 1, 1,
+                                       coderGirlPen(pen));
+                    }
+                }
+                p.restore();
+            }
+
+            int tx = r.x() + leftPad
+                   + (qMax(0, r.width() - leftPad) - charWidth) / 2;
+            int ty = r.y() + (r.height() - 16) / 2;
+            if (below) {
+                ty = r.y() + r.height() + 2;
+                if (designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_ALIGN_LEFT")))
+                    tx = r.x() + 2;
+                else if (designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_ALIGN_RIGHT")))
+                    tx = r.x() + r.width() - 2 - charWidth;
+                else
+                    tx = r.x() + (r.width() - charWidth) / 2;
+            }
+            if (designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_OPAQUE_TEXT")))
+                p.fillRect(QRect(tx - 2, ty - 1, charWidth + 4, 18), face);
+            drawCoderGirlText(p, tx, ty, caption, text);
             return;
         }
 
@@ -4175,6 +4571,11 @@ public:
                 border-radius: 0px;
                 alternate-background-color: #0b0b0b;
             }
+            /* Gadget artwork sits on a medium-grey palette background. */
+            QListWidget#coderGirlGadgetPalette {
+                background-color: #7B7B7B;
+                alternate-background-color: #7B7B7B;
+            }
             QListWidget::item, QTreeWidget::item, QTableWidget::item {
                 border-radius: 0px;
                 margin: 0px;
@@ -4275,6 +4676,10 @@ public:
 
         QAction *save = top->addAction(QObject::tr("Save Design"));
         QAction *generate = top->addAction(QObject::tr("Generate..."));
+        QAction *paletteAction = top->addAction(QObject::tr("Palette..."));
+        connect(paletteAction, &QAction::triggered, this, [this]() {
+            showPaletteDialog();
+        });
         top->addWidget(new QLabel(QObject::tr("  Code: "), top));
         m_generationMode = new QComboBox(top);
         m_generationMode->addItem(QObject::tr("Normal (.c)"), false);
@@ -4357,18 +4762,74 @@ public:
         auto *leftLayout = new QVBoxLayout(left);
         leftLayout->setContentsMargins(6, 6, 6, 6);
         leftLayout->setSpacing(5);
-        auto *toolLabel = new QLabel(QObject::tr("CoderGirl Gadgets"), left);
+        auto *toolLabel = new QLabel(QObject::tr("CoderGirl Gadget Palette"), left);
         leftLayout->addWidget(toolLabel);
 
         m_toolbox = new GuiDesignerToolbox(left);
+        m_toolbox->setObjectName(QStringLiteral("coderGirlGadgetPalette"));
         const QStringList gadgetTypes = {
             QStringLiteral("Button"), QStringLiteral("Label"), QStringLiteral("Checkbox"),
             QStringLiteral("Radio"), QStringLiteral("Slider"), QStringLiteral("ProgressBar"),
             QStringLiteral("TextBox"), QStringLiteral("TextArea"), QStringLiteral("ListBox"),
             QStringLiteral("Scrollbar"), QStringLiteral("GridSelect"), QStringLiteral("Canvas"),
-            QStringLiteral("BitmapView")
+            QStringLiteral("BitmapView"), QStringLiteral("TabGroup"),
+            QStringLiteral("Timer")
         };
-        m_toolbox->addItems(gadgetTypes);
+        const QHash<QString, QString> gadgetTooltips = {
+            {QStringLiteral("BitmapView"), QObject::tr("Displays an indexed PNG bitmap")},
+            {QStringLiteral("Button"), QObject::tr("Clickable button; supports activation callbacks")},
+            {QStringLiteral("Canvas"), QObject::tr("Draws lines, rectangles and bevels")},
+            {QStringLiteral("Checkbox"), QObject::tr("On/off checkbox with checked state")},
+            {QStringLiteral("GridSelect"), QObject::tr("Selectable grid of text cells")},
+            {QStringLiteral("Label"), QObject::tr("Static text label")},
+            {QStringLiteral("ListBox"), QObject::tr("Scrollable list of selectable items")},
+            {QStringLiteral("ProgressBar"), QObject::tr("Displays progress between minimum and maximum")},
+            {QStringLiteral("Radio"), QObject::tr("Radio-style selection control")},
+            {QStringLiteral("Scrollbar"), QObject::tr("Horizontal or vertical scrollbar")},
+            {QStringLiteral("Slider"), QObject::tr("Adjustable numeric slider")},
+            {QStringLiteral("TabGroup"), QObject::tr("Virtual grouped pages with selectable tabs")},
+            {QStringLiteral("TextArea"), QObject::tr("Multi-line text area")},
+            {QStringLiteral("TextBox"), QObject::tr("Single-line editable text")},
+            {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")}
+        };
+        QStringList sortedGadgets = gadgetTypes;
+        sortedGadgets.sort(Qt::CaseInsensitive);
+        for (const QString &type : sortedGadgets) {
+            // Add your 64x24 PNG to CMakeLists.txt's qt_add_resources(...)
+            // FILES list to replace this placeholder automatically.
+            const QString resourcePath = QStringLiteral(":/icons/gadget_%1.png")
+                                             .arg(type.toLower());
+            QPixmap tile(resourcePath);
+            if (tile.isNull()) {
+                tile = QPixmap(64, 24);
+                tile.fill(QColor(QStringLiteral("#111824")));
+                QPainter painter(&tile);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                painter.setPen(QColor(QStringLiteral("#385079")));
+                painter.drawRect(0, 0, 63, 23);
+                painter.fillRect(QRect(2, 3, 18, 18), QColor(QStringLiteral("#2858A8")));
+                painter.setPen(Qt::white);
+                if (type == QStringLiteral("Timer")) {
+                    // Miniature stopwatch in the placeholder until artwork arrives.
+                    painter.drawEllipse(QRect(5, 7, 12, 12));
+                    painter.drawLine(11, 13, 11, 9);
+                    painter.drawLine(11, 13, 15, 15);
+                    painter.drawLine(9, 5, 13, 5);
+                } else {
+                    painter.drawText(QRect(2, 3, 18, 18), Qt::AlignCenter, type.left(1));
+                }
+                QFont tileFont = painter.font();
+                tileFont.setPixelSize(9);
+                painter.setFont(tileFont);
+                painter.setPen(QColor(QStringLiteral("#E0E6F0")));
+                painter.drawText(QRect(23, 0, 39, 24), Qt::AlignVCenter | Qt::AlignLeft,
+                                 painter.fontMetrics().elidedText(type, Qt::ElideRight, 39));
+            }
+            auto *item = new QListWidgetItem(QIcon(tile), QString(), m_toolbox);
+            item->setData(Qt::UserRole, type);
+            item->setToolTip(QStringLiteral("%1\n%2").arg(type, gadgetTooltips.value(type)));
+            item->setSizeHint(QSize(72, 30));
+        }
         leftLayout->addWidget(m_toolbox, 1);
 
         auto *addButton = new QPushButton(QObject::tr("Add Selected Gadget"), left);
@@ -4432,10 +4893,10 @@ public:
 
         connect(addButton, &QPushButton::clicked, this, [this]() {
             QListWidgetItem *item = m_toolbox->currentItem();
-            if (item) addGadget(item->text());
+            if (item) addGadget(item->data(Qt::UserRole).toString());
         });
         connect(m_toolbox, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
-            if (item) addGadget(item->text());
+            if (item) addGadget(item->data(Qt::UserRole).toString());
         });
         connect(
             m_undoAction,
@@ -4521,7 +4982,61 @@ public:
                 m_canvas->update();
             };
 
-        m_canvas->selectionChanged = [this](int) { rebuildProperties(); };
+        m_canvas->selectionChanged = [this](int) {
+            m_inlineTextEditing = false;
+            rebuildProperties();
+        };
+
+        m_canvas->textInputRequested = [this](const QString &typed, bool backspace) {
+            const int selected = m_canvas->selectedIndex();
+            if (selected < 0 || selected >= m_gadgets.size()) return;
+            GuiDesignerGadget &g = m_gadgets[selected];
+            if (g.type != QStringLiteral("Button")
+                && g.type != QStringLiteral("Label")
+                && g.type != QStringLiteral("Checkbox")
+                && g.type != QStringLiteral("Radio")
+                && g.type != QStringLiteral("TextBox")
+                && g.type != QStringLiteral("TextArea"))
+                return;
+
+            // A single Undo restores the original text for this typing run.
+            if (!m_inlineTextEditing) {
+                if (backspace && g.text.isEmpty()) return;
+                pushUndoSnapshot();
+                m_inlineTextEditing = true;
+                m_inlineTextIndex = selected;
+                m_inlineReplaceOnFirstKey = !backspace;
+            }
+
+            QString updated = g.text;
+            if (backspace) {
+                if (updated.isEmpty()) return;
+                updated.chop(1);
+            } else if (m_inlineTextIndex == selected && m_inlineReplaceOnFirstKey) {
+                updated = typed;
+            } else {
+                updated += typed;
+            }
+            m_inlineReplaceOnFirstKey = false;
+            if (updated == g.text) return;
+            g.text = updated;
+            if (m_textPropertyEdit) {
+                const QSignalBlocker block(m_textPropertyEdit.data());
+                m_textPropertyEdit->setText(updated);
+                // Keep editingFinished from treating this programmatic update
+                // as a second user edit when the field later loses focus.
+                m_textPropertyEdit->setProperty("designerCommittedText", updated);
+            }
+            setModified(true);
+            m_canvas->update();
+        };
+
+        m_canvas->textEditingFinished = [this]() -> bool {
+            if (!m_inlineTextEditing) return false;
+            m_inlineTextEditing = false;
+            m_inlineReplaceOnFirstKey = true;
+            return true;
+        };
 
         m_canvas->gadgetDropped =
             [this](const QString &type,
@@ -4561,6 +5076,7 @@ public:
 
         m_canvas->nudgeRequested =
             [this](int dx, int dy, bool autoRepeat) {
+                m_inlineTextEditing = false;
                 nudgeSelectedGadget(
                     dx,
                     dy,
@@ -4569,8 +5085,13 @@ public:
 
         m_canvas->resizeRequested =
             [this](int dw, int dh, bool autoRepeat) {
+                m_inlineTextEditing = false;
                 resizeSelectedGadget(dw, dh, autoRepeat);
             };
+
+        m_canvas->layerRequested = [this](bool toFront) {
+            changeSelectedGadgetLayer(toFront);
+        };
 
         m_canvas->geometryChangeStarted = [this]() {
             pushUndoSnapshot();
@@ -4596,6 +5117,11 @@ public:
         if (QFileInfo::exists(m_filePath)) {
             loadDesign();
         } else {
+            // New design starts with a name derived from its filename,
+            // rather than giving every new project window "MainWindow".
+            m_window.name = safeCIdentifier(
+                QFileInfo(m_filePath).completeBaseName(),
+                QStringLiteral("MainWindow"));
             setModified(true);
         }
 
@@ -4618,13 +5144,408 @@ public:
     {
         // Compiling or saving must not overwrite a generated source that is
         // already current. Explicit Generate... remains available at any time.
-        const bool regenerate = m_needsGeneration || !QFile::exists(outputPath(m_detached));
+        if (!validateProjectWindows(false)) return false;
+        const bool regenerate = m_needsGeneration || !QFile::exists(outputPath(m_detached))
+                                || linkedWindowCallStale();
         if (m_modified && !saveDesign())
             return false;
         return !regenerate || generateCFile(false);
     }
 
 private:
+    // MainWindow supplies the project root; standalone designers fall back to
+    // the .sbui directory. Links are stored relative to this location.
+    QString designProjectRoot() const
+    {
+        QString supplied = property("sidboxProjectRoot").toString();
+        if (supplied.isEmpty() && parentWidget())
+            supplied = parentWidget()->property("sidboxProjectRoot").toString();
+        return !supplied.isEmpty() && QFileInfo(supplied).isDir()
+            ? QDir(supplied).absolutePath()
+            : QFileInfo(m_filePath).absolutePath();
+    }
+
+    // A marked source function is the authoritative entry for linked windows.
+    // Older generated sources without the marker retain the _Create convention.
+    // This always reads the *compilable* .c; a detached .uis is only a sketch.
+    QString windowEntryForDesign(const QString &designPath) const
+    {
+        QFile file(designPath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+        if (!document.isObject()) return {};
+        const QJsonObject root = document.object();
+        const QString windowName = root.value(QStringLiteral("window"))
+                                      .toObject().value(QStringLiteral("name")).toString();
+        if (windowName.trimmed().isEmpty()) return {};
+        const QString fallback = safeCIdentifier(windowName, QStringLiteral("MainWindow"))
+                                 + QStringLiteral("_Create");
+        const QFileInfo info(designPath);
+        const QString sourceName = root.value(QStringLiteral("sourceFile")).toString();
+        QFile source(info.dir().absoluteFilePath(sourceName.isEmpty()
+            ? info.completeBaseName() + QStringLiteral(".c") : sourceName));
+        if (!source.open(QIODevice::ReadOnly | QIODevice::Text)) return fallback;
+        const QString code = QString::fromUtf8(source.readAll());
+        if (!code.contains(QStringLiteral("$IDE:OpenWindow"))) return fallback;
+
+        // The marker must immediately precede one exported void name(void)
+        // function definition. A marker above a declaration is not sufficient.
+        static const QRegularExpression entryPattern(QStringLiteral(
+            R"(//[ \t]*\$IDE:OpenWindow[ \t]*//[ \t]*\r?\n[ \t]*void[ \t]+([A-Za-z_][A-Za-z_0-9]*)[ \t]*\([ \t]*(?:void[ \t]*)?\)[ \t\r\n]*\{)"));
+        auto matches = entryPattern.globalMatch(code);
+        if (!matches.hasNext()) return {};  // malformed marker: don't guess
+        const QString name = matches.next().captured(1);
+        if (matches.hasNext()) return {};   // ambiguous: don't choose randomly
+        return name;
+    }
+
+    // Audit *all* saved .sbui names, not just the selected target. The current
+    // editor's unsaved name replaces its disk entry in the audit.
+    bool validateProjectWindows(bool requireCompiledTargets)
+    {
+        const QDir project(designProjectRoot());
+        QHash<QString, QString> symbols;
+        const QString thisFile = QFileInfo(m_filePath).absoluteFilePath();
+        QDirIterator it(project.absolutePath(), {QStringLiteral("*.sbui")},
+                        QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString path = QFileInfo(it.next()).absoluteFilePath();
+            QString windowName;
+            if (path == thisFile) {
+                windowName = m_window.name;
+            } else {
+                QFile file(path);
+                if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+                const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+                if (!doc.isObject()) continue;
+                windowName = doc.object().value(QStringLiteral("window"))
+                                 .toObject().value(QStringLiteral("name")).toString();
+            }
+            const QString symbol = safeCIdentifier(windowName, QStringLiteral("MainWindow"));
+            const QString key = symbol.toCaseFolded();
+            if (symbols.contains(key)) {
+                QMessageBox::warning(this, QObject::tr("Duplicate window name"),
+                    QObject::tr("Both %1 and %2 use window name '%3'.\n\n"
+                                "Each .sbui in the project must have a unique C window name. "
+                                "Rename one in its Window properties before generating.")
+                        .arg(project.relativeFilePath(symbols.value(key)),
+                             project.relativeFilePath(path), symbol));
+                return false;
+            }
+            symbols.insert(key, path);
+        }
+        // A new, unsaved design is not yet included by the iterator.
+        if (!QFile::exists(thisFile)) {
+            const QString symbol = safeCIdentifier(m_window.name, QStringLiteral("MainWindow"));
+            if (symbols.contains(symbol.toCaseFolded())) {
+                QMessageBox::warning(this, QObject::tr("Duplicate window name"),
+                    QObject::tr("The window name '%1' is already used by %2.")
+                        .arg(symbol, project.relativeFilePath(symbols.value(symbol.toCaseFolded()))));
+                return false;
+            }
+        }
+
+        QSet<QString> linkedCallbacks;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.openWindowFile.isEmpty()) continue;
+            const QString target = QFileInfo(project.absoluteFilePath(g.openWindowFile)).absoluteFilePath();
+            const bool withinProject = target.startsWith(project.absolutePath() + QDir::separator());
+            if (g.type != QStringLiteral("Button") || !withinProject || target == thisFile
+                || !QFileInfo::exists(target)) {
+                QMessageBox::warning(this, QObject::tr("Invalid window link"),
+                    QObject::tr("Button %1 links to a missing, self-referencing or external design:\n%2")
+                        .arg(g.name, g.openWindowFile));
+                return false;
+            }
+            if (g.onActivate.trimmed().isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Invalid window link"),
+                    QObject::tr("Button %1 needs an On activate callback for its window link.").arg(g.name));
+                return false;
+            }
+            // Callback names are functions, not gadget-specific dispatch keys.
+            // A shared callback would otherwise open a window for unrelated buttons.
+            const QString callback = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
+            if (linkedCallbacks.contains(callback)) {
+                QMessageBox::warning(this, QObject::tr("Shared linked callback"),
+                    QObject::tr("Linked buttons cannot share activation callback %1.").arg(callback));
+                return false;
+            }
+            linkedCallbacks.insert(callback);
+            QFile file(target);
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            const QString targetName = doc.object().value(QStringLiteral("window"))
+                                            .toObject().value(QStringLiteral("name")).toString();
+            if (!doc.isObject() || targetName.trimmed().isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Invalid window link"),
+                    QObject::tr("Target %1 has no readable window name.").arg(g.openWindowFile));
+                return false;
+            }
+            if (windowEntryForDesign(target).isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Invalid window entry"),
+                    QObject::tr("%1 has an invalid or duplicate $IDE:OpenWindow marker.\n"
+                                "Put // $IDE:OpenWindow // immediately above one public "
+                                "void FunctionName(void) definition.")
+                        .arg(g.openWindowFile));
+                return false;
+            }
+            if (requireCompiledTargets) {
+                const QString sourceName = doc.object().value(QStringLiteral("sourceFile")).toString();
+                const QString source = QFileInfo(target).dir().absoluteFilePath(
+                    sourceName.isEmpty() ? QFileInfo(target).completeBaseName() + QStringLiteral(".c")
+                                         : sourceName);
+                if (QFileInfo(source).suffix().compare(QStringLiteral("c"), Qt::CaseInsensitive) != 0
+                    || !QFileInfo::exists(source)) {
+                    QMessageBox::warning(this, QObject::tr("Linked source missing"),
+                        QObject::tr("Generate the .c source for %1 before generating this linked applet.\n"
+                                    "Expected source: %2")
+                            .arg(g.openWindowFile, QDir::toNativeSeparators(source)));
+                    return false;
+                }
+            }
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.openWindowFile.isEmpty()) continue;
+            const QString callback = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
+            for (const GuiDesignerGadget &other : std::as_const(m_gadgets)) {
+                if (&g != &other && (other.onActivate == callback || other.onChange == callback)) {
+                    QMessageBox::warning(this, QObject::tr("Shared linked callback"),
+                        QObject::tr("Button %1 shares callback %2 with another gadget. "
+                                    "Assign a unique On activate callback to the linked button.")
+                            .arg(g.name, callback));
+                    return false;
+                }
+            }
+        }
+        // TabGroup uses the existing per-window group visibility API.
+        // Group 0 is reserved for permanent/window chrome gadgets.
+        int tabPageCount = 0;
+        QSet<QString> tabNames;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("TabGroup")) {
+                const QString key = safeCIdentifier(g.name, QStringLiteral("tabs"));
+                if (tabNames.contains(key)) {
+                    QMessageBox::warning(this, QObject::tr("Tab Group"),
+                        QObject::tr("Duplicate Tab Group name: %1").arg(key));
+                    return false;
+                }
+                tabNames.insert(key);
+                if (g.text.split(QLatin1Char('|'), Qt::SkipEmptyParts).size() > 8) {
+                    QMessageBox::warning(this, QObject::tr("Tab Group"),
+                        QObject::tr("%1 supports a maximum of 8 tabs.").arg(g.name));
+                    return false;
+                }
+                if (g.rect.width() < designerTabTitles(g).size() * 24
+                    || g.rect.height() < 48) {
+                    QMessageBox::warning(this, QObject::tr("Tab Group"),
+                        QObject::tr("Tab Group %1 is too small for its buttons (minimum 24 px per tab and 48 px tall).")
+                        .arg(g.name));
+                    return false;
+                }
+                tabPageCount += designerTabTitles(g).size();
+            }
+        }
+        if (tabPageCount > 255) {
+            QMessageBox::warning(this, QObject::tr("Tab Group"),
+                QObject::tr("Tab Groups exceed the 255 available nonzero CoderGirl group IDs."));
+            return false;
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.tabOwner.isEmpty()) continue;
+            if (g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_RIGHT"))
+                || g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_BOTTOM"))) {
+                QMessageBox::warning(this, QObject::tr("Tab Group"),
+                    QObject::tr("Docked gadget %1 cannot be tab-controlled: the firmware intentionally keeps docked gadgets visible.")
+                    .arg(g.name));
+                return false;
+            }
+            bool valid = false;
+            for (const GuiDesignerGadget &tabs : std::as_const(m_gadgets)) {
+                if (tabs.type == QStringLiteral("TabGroup") && tabs.name == g.tabOwner
+                    && g.tabPage >= 0 && g.tabPage < designerTabTitles(tabs).size()) {
+                    valid = true; break;
+                }
+            }
+            if (!valid) {
+                QMessageBox::warning(this, QObject::tr("Tab Group"),
+                    QObject::tr("Gadget %1 refers to an invalid tab or a deleted Tab Group.").arg(g.name));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Catch a renamed linked window on the next compile, even if the linking
+    // .sbui itself has not changed since the previous generation.
+    bool linkedWindowCallStale() const
+    {
+        bool hasLinks = false;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (!g.openWindowFile.isEmpty()) { hasLinks = true; break; }
+        }
+        if (!hasLinks) return false;
+        QFile output(outputPath(m_detached));
+        if (!output.open(QIODevice::ReadOnly | QIODevice::Text)) return true;
+        const QString text = QString::fromUtf8(output.readAll());
+        const QDir project(designProjectRoot());
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.openWindowFile.isEmpty()) continue;
+            const QString symbol = windowEntryForDesign(project.absoluteFilePath(g.openWindowFile));
+            if (symbol.isEmpty()) return true;
+            if (!text.contains(QStringLiteral("extern void %1(void);").arg(symbol))
+                || !text.contains(QStringLiteral("\t%1();").arg(symbol))) return true;
+        }
+        return false;
+    }
+
+    // Returns the selected pen only in picker mode. -2 means cancelled;
+    // -1 means the gadget should continue using its default pen.
+    int showPaletteDialog(int initialPen = -1, bool picker = false,
+                          bool allowDefault = false)
+    {
+        // This is the 256-entry preview CLUT compiled into the designer.
+        // It does not read the live CLUT from a running SIDBOX.
+        QDialog dialog(this);
+        dialog.setWindowTitle(picker ? QObject::tr("Choose SIDBOX pen colour")
+                                     : QObject::tr("CoderGirl colour palette"));
+        auto *layout = new QVBoxLayout(&dialog);
+        layout->setSpacing(8);
+
+        auto *help = new QLabel(
+            picker
+                ? QObject::tr("Choose a colour from the 256-entry designer CLUT, "
+                              "then click Use selected pen. "
+                              "The running SIDBOX may have a different palette.")
+                : QObject::tr("Designer default CLUT (256 colours). "
+                              "Click a swatch to see its pen index and ARGB value. "
+                              "Runtime palette changes on SIDBOX are not read automatically."),
+            &dialog);
+        help->setWordWrap(true);
+        layout->addWidget(help);
+
+        auto *scroller = new QScrollArea(&dialog);
+        scroller->setWidgetResizable(false);
+        scroller->setAlignment(Qt::AlignCenter);
+        auto *swatches = new QWidget(scroller);
+        auto *grid = new QGridLayout(swatches);
+        grid->setContentsMargins(4, 4, 4, 4);
+        grid->setSpacing(2);
+        auto *selection = new QButtonGroup(&dialog);
+        selection->setExclusive(true);
+
+        const int gadgetIndex = m_canvas ? m_canvas->selectedIndex() : -1;
+        int currentIndex = initialPen;
+        if (currentIndex < 0) {
+            currentIndex = qBound(0, m_window.backPen, 255);
+            if (!picker && gadgetIndex >= 0 && gadgetIndex < m_gadgets.size()
+                && m_gadgets[gadgetIndex].fPen >= 0) {
+                currentIndex = qBound(0, m_gadgets[gadgetIndex].fPen, 255);
+            }
+        }
+        currentIndex = qBound(0, currentIndex, 255);
+
+        auto *details = new QLabel(&dialog);
+        const auto updateDetails = [details](int index) {
+            const QString argb = QString::number(kCoderGirlClut[index], 16)
+                                     .rightJustified(8, QLatin1Char('0'))
+                                     .toUpper();
+            details->setText(
+                QObject::tr("Pen %1 (0x%2)      ARGB #%3")
+                    .arg(index)
+                    .arg(QString::number(index, 16)
+                             .rightJustified(2, QLatin1Char('0'))
+                             .toUpper())
+                    .arg(argb));
+        };
+
+        for (int index = 0; index < 256; ++index) {
+            // Paint the swatches ourselves so alpha=0 is visibly transparent.
+            QPixmap sample(23, 23);
+            sample.fill(Qt::transparent);
+            {
+                QPainter painter(&sample);
+                for (int y = 0; y < 23; y += 6) {
+                    for (int x = 0; x < 23; x += 6) {
+                        painter.fillRect(QRect(x, y, 6, 6),
+                            ((x + y) / 6) % 2 ? QColor(190, 190, 190)
+                                               : QColor(100, 100, 100));
+                    }
+                }
+                painter.fillRect(sample.rect(),
+                    QColor::fromRgba(kCoderGirlClut[index]));
+            }
+
+            auto *button = new QToolButton(swatches);
+            button->setCheckable(true);
+            button->setFixedSize(28, 28);
+            button->setIcon(QIcon(sample));
+            button->setIconSize(QSize(23, 23));
+            button->setToolTip(
+                QObject::tr("Pen %1: #%2")
+                    .arg(index)
+                    .arg(QString::number(kCoderGirlClut[index], 16)
+                             .rightJustified(8, QLatin1Char('0'))
+                             .toUpper()));
+            selection->addButton(button, index);
+            grid->addWidget(button, index / 16, index % 16);
+            button->setChecked(index == currentIndex);
+            connect(button, &QToolButton::clicked, &dialog,
+                    [&, index]() {
+                        currentIndex = index;
+                        updateDetails(index);
+                    });
+        }
+        swatches->setStyleSheet(QStringLiteral(
+            "QToolButton { border: 1px solid #303030; border-radius: 0px; "
+            "padding: 1px; background: #101010; } "
+            "QToolButton:checked { border: 2px solid #2858A8; } "
+            "QToolButton:hover { border: 2px solid #ffffff; }"));
+        scroller->setWidget(swatches);
+        layout->addWidget(scroller, 1);
+        updateDetails(currentIndex);
+        layout->addWidget(details);
+
+        auto *controls = new QHBoxLayout;
+        auto *copyIndex = new QPushButton(QObject::tr("Copy pen index"), &dialog);
+        auto *copyArgb = new QPushButton(QObject::tr("Copy ARGB"), &dialog);
+        auto *close = new QPushButton(picker ? QObject::tr("Cancel")
+                                              : QObject::tr("Close"), &dialog);
+        controls->addWidget(copyIndex);
+        controls->addWidget(copyArgb);
+        controls->addStretch(1);
+        if (picker) {
+            if (allowDefault) {
+                auto *useDefault = new QPushButton(QObject::tr("Use default (-1)"), &dialog);
+                controls->addWidget(useDefault);
+                connect(useDefault, &QPushButton::clicked, &dialog,
+                        [&dialog, &currentIndex]() {
+                            currentIndex = -1;
+                            dialog.accept();
+                        });
+            }
+            auto *usePen = new QPushButton(QObject::tr("Use selected pen"), &dialog);
+            controls->addWidget(usePen);
+            connect(usePen, &QPushButton::clicked, &dialog, &QDialog::accept);
+        }
+        controls->addWidget(close);
+        layout->addLayout(controls);
+
+        connect(copyIndex, &QPushButton::clicked, &dialog, [&currentIndex]() {
+            QApplication::clipboard()->setText(QString::number(currentIndex));
+        });
+        connect(copyArgb, &QPushButton::clicked, &dialog, [&currentIndex]() {
+            QApplication::clipboard()->setText(
+                QStringLiteral("0x")
+                + QString::number(kCoderGirlClut[currentIndex], 16)
+                      .rightJustified(8, QLatin1Char('0'))
+                      .toUpper());
+        });
+        connect(close, &QPushButton::clicked, &dialog, &QDialog::reject);
+        dialog.resize(560, 650);
+        const int result = dialog.exec();
+        return picker && result == QDialog::Accepted ? currentIndex : -2;
+    }
+
     void setModified(bool modified)
     {
         if (m_modified == modified) return;
@@ -4637,6 +5558,8 @@ private:
     {
         const int x = 18 + (ordinal % 5) * 14;
         const int y = 24 + (ordinal % 8) * 18;
+        if (type == QStringLiteral("Timer")) return QRect(x, y, 24, 24);
+        if (type == QStringLiteral("TabGroup")) return QRect(12, 26, 310, 172);
         if (type == QStringLiteral("Label")) return QRect(x, y, 120, 18);
         if (type == QStringLiteral("Checkbox") || type == QStringLiteral("Radio")) return QRect(x, y, 130, 20);
         if (type == QStringLiteral("Slider") || type == QStringLiteral("Scrollbar")) return QRect(x, y, 150, 18);
@@ -4651,7 +5574,9 @@ private:
     QString uniqueGadgetName(const QString &type) const
     {
         QString stem;
-        if (type == QStringLiteral("Button")) stem = QStringLiteral("btn");
+        if (type == QStringLiteral("TabGroup")) stem = QStringLiteral("tabs");
+        else if (type == QStringLiteral("Timer")) stem = QStringLiteral("timer");
+        else if (type == QStringLiteral("Button")) stem = QStringLiteral("btn");
         else if (type == QStringLiteral("Label")) stem = QStringLiteral("lbl");
         else if (type == QStringLiteral("Checkbox")) stem = QStringLiteral("chk");
         else if (type == QStringLiteral("Radio")) stem = QStringLiteral("rad");
@@ -4711,6 +5636,10 @@ private:
         g.hPen = o.value(QStringLiteral("hPen")).toInt(-1);
         g.onActivate = o.value(QStringLiteral("onActivate")).toString();
         g.onChange = o.value(QStringLiteral("onChange")).toString();
+        g.openWindowFile = o.value(QStringLiteral("openWindowFile")).toString();
+        g.tabOwner = o.value(QStringLiteral("tabOwner")).toString();
+        g.tabPage = o.value(QStringLiteral("tabPage")).toInt(0);
+        g.defaultTabPage = o.value(QStringLiteral("defaultTabPage")).toInt(0);
         g.callbackRoute = o.value(QStringLiteral("callbackRoute")).toInt(-1);
         g.minimum = o.value(QStringLiteral("minimum")).toInt(0);
         g.maximum = o.value(QStringLiteral("maximum")).toInt(100);
@@ -4720,6 +5649,10 @@ private:
         g.enabled = o.value(QStringLiteral("enabled")).toBool(true);
         g.group = o.value(QStringLiteral("group")).toInt(0);
         g.typeFlags = o.value(QStringLiteral("typeFlags")).toString();
+        g.timerDelayMs = qBound(1, o.value(QStringLiteral("timerDelayMs")).toInt(1000), 86400000);
+        g.timerPeriodMs = qBound(1, o.value(QStringLiteral("timerPeriodMs")).toInt(1000), 86400000);
+        g.timerRepeat = o.value(QStringLiteral("timerRepeat")).toBool(true);
+        g.timerAutoStart = o.value(QStringLiteral("timerAutoStart")).toBool(true);
         g.cellWidth = o.value(QStringLiteral("cellWidth")).toInt(24);
         g.cellHeight = o.value(QStringLiteral("cellHeight")).toInt(18);
         g.cellsX = o.value(QStringLiteral("cellsX")).toInt(4);
@@ -4866,6 +5799,10 @@ private:
                 QStringLiteral("On_%1_Activate")
                     .arg(g.name);
         }
+        if (g.type == QStringLiteral("Timer")
+            && g.onActivate == QStringLiteral("On_%1_Tick").arg(oldName)) {
+            g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
+        }
 
         if (g.onChange == oldAutoChange) {
             g.onChange =
@@ -4978,6 +5915,8 @@ private:
 
         pushUndoSnapshot();
         m_gadgets.removeAt(selected);
+        for (GuiDesignerGadget &child : m_gadgets)
+            if (child.tabOwner == deletedName) { child.tabOwner.clear(); child.tabPage = 0; }
 
         const int nextSelected =
             m_gadgets.isEmpty()
@@ -4996,6 +5935,46 @@ private:
                 QObject::tr("Deleted %1")
                     .arg(deletedName));
         }
+    }
+
+    void changeSelectedGadgetLayer(bool toFront)
+    {
+        if (!m_canvas) return;
+        const int selected = m_canvas->selectedIndex();
+        if (selected < 0 || selected >= m_gadgets.size()) return;
+
+        // TabGroup backgrounds are intentionally kept behind ordinary page
+        // gadgets. Front/back therefore reorders within the same paint layer.
+        const bool isTab = m_gadgets[selected].type == QStringLiteral("TabGroup");
+        int other = -1;
+        if (toFront) {
+            for (int i = m_gadgets.size() - 1; i >= 0; --i) {
+                if ((m_gadgets[i].type == QStringLiteral("TabGroup")) == isTab) {
+                    other = i;
+                    break;
+                }
+            }
+        } else {
+            for (int i = 0; i < m_gadgets.size(); ++i) {
+                if ((m_gadgets[i].type == QStringLiteral("TabGroup")) == isTab) {
+                    other = i;
+                    break;
+                }
+            }
+        }
+        if (other < 0 || other == selected) return;
+        pushUndoSnapshot();
+        const GuiDesignerGadget moving = m_gadgets.takeAt(selected);
+        const int target = toFront ? (other > selected ? other : other + 1)
+                                   : (other < selected ? other : other - 1);
+        m_gadgets.insert(target, moving);
+        m_canvas->setSelectedIndex(target);
+        setModified(true);
+        m_canvas->update();
+        if (m_statusLabel)
+            m_statusLabel->setText(toFront
+                ? QObject::tr("%1: brought to front").arg(moving.name)
+                : QObject::tr("%1: sent to back").arg(moving.name));
     }
 
     void nudgeSelectedGadget(
@@ -5051,8 +6030,12 @@ private:
                 oldPos.y() + dy * step,
                 maxY));
 
-        if (newPos == oldPos) {
-            return;
+        if (newPos == oldPos) return;
+        if (g.type == QStringLiteral("TabGroup")) {
+            const QRect bounds = m_canvas->tabGroupPositionBounds(selected);
+            if (QPoint(qBound(bounds.left(), newPos.x(), bounds.right()),
+                       qBound(bounds.top(), newPos.y(), bounds.bottom())) == oldPos)
+                return;
         }
 
         /* One Undo step for one held-arrow movement, not every auto-repeat. */
@@ -5060,7 +6043,11 @@ private:
             pushUndoSnapshot();
         }
 
-        g.rect.moveTopLeft(newPos);
+        if (g.type == QStringLiteral("TabGroup")) {
+            m_canvas->moveTabGroupWithMembers(selected, newPos);
+        } else {
+            g.rect.moveTopLeft(newPos);
+        }
         syncDesignerDemoBitmapSize(&g);
 
         setModified(true);
@@ -5085,7 +6072,7 @@ private:
 
         GuiDesignerGadget &g = m_gadgets[selected];
         // GridSelect derives its dimensions from cell count and cell size.
-        if (g.type == QStringLiteral("GridSelect")) return;
+        if (g.type == QStringLiteral("GridSelect") || g.type == QStringLiteral("Timer")) return;
 
         const int step = m_canvas->gridSnap() > 1
                              ? m_canvas->gridSnap() : 1;
@@ -5604,196 +6591,17 @@ private:
 
         m_gadgets.clear();
 
+        // Undo snapshots use gadgetToJson(), just like .sbui files.
+        // Restore using the same complete gadget decoder as clipboard
+        // paste instead of a partial field-by-field implementation.
+        // In particular, BitmapView requires bitmapPixelsBase64 and
+        // bitmapImagePath or undoing an unrelated edit erases its image.
         for (const QJsonValue &value :
-             root.value(
-                     QStringLiteral(
-                         "gadgets"))
-                 .toArray()) {
-            const QJsonObject o =
-                value.toObject();
-
-            GuiDesignerGadget g;
-
-            g.type =
-                o.value(
-                     QStringLiteral("type"))
-                    .toString();
-
-            g.name =
-                o.value(
-                     QStringLiteral("name"))
-                    .toString();
-
-            g.rect =
-                QRect(
-                    o.value(
-                         QStringLiteral("x"))
-                        .toInt(),
-                    o.value(
-                         QStringLiteral("y"))
-                        .toInt(),
-                    o.value(
-                         QStringLiteral("w"))
-                        .toInt(80),
-                    o.value(
-                         QStringLiteral("h"))
-                        .toInt(20));
-
-            g.text =
-                o.value(
-                     QStringLiteral("text"))
-                    .toString();
-
-            g.flags =
-                o.value(
-                     QStringLiteral("flags"))
-                    .toString(
-                        QStringLiteral(
-                            "GAD_TOOL_DEFAULT"));
-
-            g.bPen =
-                o.value(
-                     QStringLiteral("bPen"))
-                    .toInt(-1);
-
-            g.fPen =
-                o.value(
-                     QStringLiteral("fPen"))
-                    .toInt(-1);
-
-            g.hPen =
-                o.value(
-                     QStringLiteral("hPen"))
-                    .toInt(-1);
-
-            g.onActivate =
-                o.value(
-                     QStringLiteral(
-                         "onActivate"))
-                    .toString();
-
-            g.onChange =
-                o.value(
-                     QStringLiteral(
-                         "onChange"))
-                    .toString();
-
-            g.callbackRoute =
-                o.value(
-                     QStringLiteral(
-                         "callbackRoute"))
-                    .toInt(-1);
-
-            g.minimum =
-                o.value(
-                     QStringLiteral(
-                         "minimum"))
-                    .toInt(0);
-
-            g.maximum =
-                o.value(
-                     QStringLiteral(
-                         "maximum"))
-                    .toInt(100);
-
-            g.value =
-                o.value(
-                     QStringLiteral(
-                         "value"))
-                    .toInt(0);
-
-            g.orientation =
-                o.value(
-                     QStringLiteral(
-                         "orientation"))
-                    .toInt(1);
-
-            g.checked =
-                o.value(
-                     QStringLiteral(
-                         "checked"))
-                    .toInt(0);
-
-            g.enabled =
-                o.value(
-                     QStringLiteral(
-                         "enabled"))
-                    .toBool(true);
-
-            g.group =
-                o.value(
-                     QStringLiteral(
-                         "group"))
-                    .toInt(0);
-
-            g.typeFlags =
-                o.value(
-                     QStringLiteral(
-                         "typeFlags"))
-                    .toString();
-
-            g.cellWidth =
-                o.value(
-                     QStringLiteral(
-                         "cellWidth"))
-                    .toInt(24);
-
-            g.cellHeight =
-                o.value(
-                     QStringLiteral(
-                         "cellHeight"))
-                    .toInt(18);
-
-            g.cellsX =
-                o.value(
-                     QStringLiteral(
-                         "cellsX"))
-                    .toInt(4);
-
-            g.cellsY =
-                o.value(
-                     QStringLiteral(
-                         "cellsY"))
-                    .toInt(4);
-
-            g.bitmapWidth =
-                o.value(
-                     QStringLiteral(
-                         "bitmapWidth"))
-                    .toInt(64);
-
-            g.bitmapHeight =
-                o.value(
-                     QStringLiteral(
-                         "bitmapHeight"))
-                    .toInt(64);
-
-            g.bitmapSource =
-                o.value(
-                     QStringLiteral(
-                         "bitmapSource"))
-                    .toString();
-
-            for (const QJsonValue &itemValue :
-                 o.value(
-                     QStringLiteral(
-                         "listItems"))
-                    .toArray()) {
-                g.listItems.append(
-                    itemValue.toString());
+             root.value(QStringLiteral("gadgets")).toArray()) {
+            GuiDesignerGadget gadget;
+            if (gadgetFromJsonObject(value.toObject(), &gadget)) {
+                m_gadgets.append(gadget);
             }
-
-            normaliseGridCellText(
-                &g);
-
-            syncGridSelectGeometry(
-                &g);
-
-            normaliseBitmapView(
-                &g);
-
-            m_gadgets.append(
-                g);
         }
 
         normalizeRadioGroups();
@@ -5883,6 +6691,8 @@ private:
 
     void undoLastDesignerChange()
     {
+        m_inlineTextEditing = false;
+        m_inlineReplaceOnFirstKey = true;
         if (m_undoStates.isEmpty()) {
             return;
         }
@@ -6014,7 +6824,8 @@ private:
         g.type = type;
         g.name = uniqueGadgetName(type);
         g.rect = defaultRectForType(type, m_gadgets.size());
-        g.text = (type == QStringLiteral("Button")) ? QStringLiteral("Button")
+        g.text = (type == QStringLiteral("TabGroup")) ? QStringLiteral("General|Advanced")
+               : (type == QStringLiteral("Button")) ? QStringLiteral("Button")
                : (type == QStringLiteral("Label")) ? QStringLiteral("Label")
                : (type == QStringLiteral("Checkbox")) ? QStringLiteral("Checkbox")
                : (type == QStringLiteral("Radio")) ? QStringLiteral("Radio")
@@ -6030,6 +6841,8 @@ private:
             || type == QStringLiteral("BitmapView")) {
             g.onActivate = QStringLiteral("On_%1_Activate").arg(g.name);
         }
+        if (type == QStringLiteral("Timer"))
+            g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
         if (type == QStringLiteral("Checkbox") || type == QStringLiteral("Radio")
             || type == QStringLiteral("Slider") || type == QStringLiteral("Scrollbar")
             || type == QStringLiteral("ListBox") || type == QStringLiteral("GridSelect")
@@ -6038,6 +6851,8 @@ private:
             g.onChange = QStringLiteral("On_%1_Change").arg(g.name);
         }
 
+        // Match the original TabGroup bevel: old designs were always inset.
+        if (type == QStringLiteral("TabGroup")) g.flags = QStringLiteral("GAD_TOOL_INSET");
         if (type == QStringLiteral("TextBox")) g.typeFlags = QStringLiteral("TB_SINGLELINE");
         if (type == QStringLiteral("TextArea")) g.typeFlags = QStringLiteral("TA_DEFAULT");
         if (type == QStringLiteral("ProgressBar")) g.value = 50;
@@ -6147,6 +6962,32 @@ private:
                 topLeft);
         }
 
+        // Creating a control while a TabGroup is selected places it on the
+        // active page. Drag/drop into a TabGroup body does the same.
+        if (type != QStringLiteral("TabGroup") && type != QStringLiteral("Timer")) {
+            int owner = -1;
+            if (dropPosition.x() >= 0) {
+                for (int i = m_gadgets.size()-1; i >= 0; --i) {
+                    if (m_gadgets[i].type == QStringLiteral("TabGroup")
+                        && m_gadgets[i].rect.adjusted(0, 24, 0, 0).contains(dropPosition)) {
+                        owner = i;
+                        break;
+                    }
+                }
+            }
+            if (owner < 0 && m_canvas && m_canvas->selectedIndex() >= 0) {
+                const int i = m_canvas->selectedIndex();
+                if (m_gadgets[i].type == QStringLiteral("TabGroup")) owner = i;
+            }
+            if (owner >= 0) {
+                const GuiDesignerGadget &tabs = m_gadgets[owner];
+                g.tabOwner = tabs.name;
+                g.tabPage = qBound(0, tabs.value, designerTabTitles(tabs).size()-1);
+                if (dropPosition.x() < 0) {
+                    g.rect.moveTopLeft(tabs.rect.topLeft() + QPoint(12, 42));
+                }
+            }
+        }
         m_gadgets.append(g);
         m_canvas->setSelectedIndex(m_gadgets.size() - 1);
         setModified(true);
@@ -6155,6 +6996,7 @@ private:
 
     void clearPropertyRows()
     {
+        m_textPropertyEdit.clear();
         while (m_propertyLayout->rowCount() > 0) {
             m_propertyLayout->removeRow(0);
         }
@@ -6177,15 +7019,79 @@ private:
         return spin;
     }
 
+    void addPen(const QString &label, int value, int min,
+                const std::function<void(int)> &changed)
+    {
+        auto *row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(5);
+
+        auto *spin = new QSpinBox(m_propertyHost);
+        spin->setRange(min, 255);
+        spin->setValue(value);
+        spin->setMinimumWidth(62);
+        spin->setMaximumWidth(90);
+        spin->setToolTip(QObject::tr("SIDBOX palette index; -1 uses the gadget default"));
+        row->addWidget(spin);
+
+        auto *swatch = new QLabel(m_propertyHost);
+        swatch->setFixedSize(20, 20);
+        swatch->setAlignment(Qt::AlignCenter);
+        const auto updateSwatch = [swatch](int pen) {
+            if (pen < 0) {
+                swatch->setText(QStringLiteral("–"));
+                swatch->setStyleSheet(QStringLiteral(
+                    "QLabel { background-color: #252525; color: #dddddd; "
+                    "border: 1px solid #505050; border-radius: 0px; }"));
+                swatch->setToolTip(QObject::tr("Default pen"));
+            } else {
+                const QColor colour = coderGirlPen(pen);
+                swatch->clear();
+                swatch->setStyleSheet(QStringLiteral(
+                    "QLabel { background-color: %1; border: 1px solid #505050; "
+                    "border-radius: 0px; }").arg(colour.alpha() ? colour.name()
+                                                              : QStringLiteral("#505050")));
+                swatch->setToolTip(QObject::tr("Pen %1: ARGB #%2")
+                    .arg(pen)
+                    .arg(QString::number(kCoderGirlClut[pen], 16)
+                         .rightJustified(8, QLatin1Char('0')).toUpper()));
+            }
+        };
+        updateSwatch(value);
+        row->addWidget(swatch);
+
+        auto *choose = new QPushButton(QObject::tr("Choose"), m_propertyHost);
+        choose->setToolTip(QObject::tr("Choose from the 256-colour SIDBOX CLUT"));
+        row->addWidget(choose);
+        row->addStretch(1);
+        m_propertyLayout->addRow(label, row);
+
+        connect(spin, qOverload<int>(&QSpinBox::valueChanged), this,
+                [this, changed, updateSwatch](int v) {
+                    pushUndoSnapshot();
+                    changed(v);
+                    setModified(true);
+                    updateSwatch(v);
+                    m_canvas->update();
+                });
+        connect(choose, &QPushButton::clicked, this, [this, spin, min]() {
+            const int result = showPaletteDialog(spin->value(), true, min < 0);
+            if (result >= min && result <= 255)
+                spin->setValue(result); // One normal undoable property edit.
+        });
+    }
+
     QLineEdit *addLine(const QString &label, const QString &value,
                        const std::function<void(const QString &)> &changed)
     {
         auto *edit = new QLineEdit(value, m_propertyHost);
+        edit->setProperty("designerCommittedText", value);
         m_propertyLayout->addRow(label, edit);
-        connect(edit, &QLineEdit::editingFinished, this, [this, edit, value, changed]() {
+        connect(edit, &QLineEdit::editingFinished, this, [this, edit, changed]() {
             // Focus changes (for example, selecting another gadget) also emit
-            // editingFinished. They must not dirty an unchanged design.
-            if (edit->text() == value) return;
+            // editingFinished. Only genuine changes should dirty the design;
+            // inline canvas typing updates the committed baseline as well.
+            if (edit->text() == edit->property("designerCommittedText").toString()) return;
             pushUndoSnapshot();
             changed(edit->text());
             setModified(true);
@@ -7029,7 +7935,10 @@ private:
     {
         clearPropertyRows();
         m_propertyLayout->addRow(new QLabel(QStringLiteral("<b>%1</b>")
-            .arg(m_canvas->selectedIndex() < 0 ? QObject::tr("Window") : QObject::tr("Gadget")), m_propertyHost));
+            .arg(m_canvas->selectedIndex() < 0 ? QObject::tr("Window")
+                 : (m_canvas->selectedIndex() < m_gadgets.size()
+                    && m_gadgets[m_canvas->selectedIndex()].type == QStringLiteral("Timer"))
+                       ? QObject::tr("Virtual Timer") : QObject::tr("Gadget")), m_propertyHost));
 
         const int selected = m_canvas->selectedIndex();
         if (selected < 0 || selected >= m_gadgets.size()) {
@@ -7078,7 +7987,7 @@ private:
                     rebuildProperties();
                 });
 
-            addSpin(QObject::tr("Back Pen"), m_window.backPen, 0, 255, [this](int v) { m_window.backPen = v; });
+            addPen(QObject::tr("Back Pen"), m_window.backPen, 0, [this](int v) { m_window.backPen = v; });
             return;
         }
 
@@ -7094,6 +8003,10 @@ private:
                 + QStringLiteral("_pixels");
 
             gg.name = safeCIdentifier(v, QStringLiteral("gadget"));
+            if (gg.type == QStringLiteral("TabGroup") && gg.name != old) {
+                for (GuiDesignerGadget &child : m_gadgets)
+                    if (child.tabOwner == old) child.tabOwner = gg.name;
+            }
 
             if (gg.type == QStringLiteral("BitmapView")
                 && gg.bitmapSource == oldDemoBitmap) {
@@ -7106,13 +8019,243 @@ private:
 
             if (gg.onActivate == QStringLiteral("On_%1_Activate").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Activate").arg(gg.name);
+            if (gg.type == QStringLiteral("Timer")
+                && gg.onActivate == QStringLiteral("On_%1_Tick").arg(old))
+                gg.onActivate = QStringLiteral("On_%1_Tick").arg(gg.name);
             if (gg.onChange == QStringLiteral("On_%1_Change").arg(old))
                 gg.onChange = QStringLiteral("On_%1_Change").arg(gg.name);
         });
         auto *type = new QLabel(g.type, m_propertyHost);
         m_propertyLayout->addRow(QObject::tr("Type"), type);
-        addSpin(QObject::tr("X"), g.rect.x(), 0, 2000, [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
-        addSpin(QObject::tr("Y"), g.rect.y(), 0, 2000, [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+        if (g.type == QStringLiteral("Timer")) {
+            auto *hint = new QLabel(QObject::tr(
+                "Virtual stopwatch: visible only in the designer. "
+                "Uses CoderGirl cooperative timers, not a hardware IRQ."),
+                m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addSpin(QObject::tr("Initial delay (ms)"), g.timerDelayMs, 1, 86400000,
+                [this, selected](int v) { m_gadgets[selected].timerDelayMs = v; });
+            addSpin(QObject::tr("Repeat period (ms)"), g.timerPeriodMs, 1, 86400000,
+                [this, selected](int v) { m_gadgets[selected].timerPeriodMs = v; });
+            addCheck(QObject::tr("Repeat"), g.timerRepeat,
+                [this, selected](bool v) { m_gadgets[selected].timerRepeat = v; });
+            addCheck(QObject::tr("Start with window"), g.timerAutoStart,
+                [this, selected](bool v) { m_gadgets[selected].timerAutoStart = v; });
+            addLine(QObject::tr("On tick"), g.onActivate,
+                [this, selected](const QString &v) {
+                    m_gadgets[selected].onActivate = v.trimmed().isEmpty()
+                        ? QString() : safeCIdentifier(v, QStringLiteral("OnTimerTick"));
+                });
+            return;
+        }
+        auto *layerButtons = new QWidget(m_propertyHost);
+        auto *layerLayout = new QHBoxLayout(layerButtons);
+        layerLayout->setContentsMargins(0, 0, 0, 0);
+        auto *toFront = new QPushButton(QObject::tr("Bring to Front"), layerButtons);
+        auto *toBack = new QPushButton(QObject::tr("Send to Back"), layerButtons);
+        toFront->setToolTip(QObject::tr("Put this gadget in front of others of the same layer."));
+        toBack->setToolTip(QObject::tr("Put this gadget behind others of the same layer."));
+        layerLayout->addWidget(toFront);
+        layerLayout->addWidget(toBack);
+        m_propertyLayout->addRow(QObject::tr("Order"), layerButtons);
+        // Rebuilding properties deletes these buttons: defer until the click
+        // signal completes, just like the existing dropdown controls.
+        connect(toFront, &QPushButton::clicked, this,
+                [this]() { QTimer::singleShot(0, this,
+                    [this]() { changeSelectedGadgetLayer(true); }); });
+        connect(toBack, &QPushButton::clicked, this,
+                [this]() { QTimer::singleShot(0, this,
+                    [this]() { changeSelectedGadgetLayer(false); }); });
+        if (g.type == QStringLiteral("TabGroup")) {
+            addLine(QObject::tr("Tabs (| separated)"), g.text, [this, selected](const QString &value) {
+                m_gadgets[selected].text = value;
+                const int lastPage = designerTabTitles(m_gadgets[selected]).size() - 1;
+                m_gadgets[selected].value = qBound(0, m_gadgets[selected].value, lastPage);
+                m_gadgets[selected].defaultTabPage = qBound(
+                    0, m_gadgets[selected].defaultTabPage, lastPage);
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+            });
+            auto *preview = new QComboBox(m_propertyHost);
+            const QStringList pages = designerTabTitles(g);
+            for (int i=0;i<pages.size();++i) preview->addItem(pages[i], i);
+            preview->setCurrentIndex(qBound(0, g.value, pages.size()-1));
+            m_propertyLayout->addRow(QObject::tr("Preview page"), preview);
+            connect(preview, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected](int index) {
+                if (selected < 0 || selected >= m_gadgets.size() || index < 0) return;
+                m_gadgets[selected].value = index; // preview-only
+                m_canvas->update();
+            });
+
+            // Unlike Preview page, this is saved to the .sbui and determines
+            // the visible gadget group when the real SIDBOX window is created.
+            auto *defaultPage = new QComboBox(m_propertyHost);
+            for (int i = 0; i < pages.size(); ++i)
+                defaultPage->addItem(pages.at(i), i);
+            defaultPage->setCurrentIndex(qBound(0, g.defaultTabPage, pages.size()-1));
+            defaultPage->setToolTip(QObject::tr(
+                "The tab shown initially when this window opens on SIDBOX. "
+                "Changing Preview page alone does not change this setting."));
+            m_propertyLayout->addRow(QObject::tr("Default selected tab"), defaultPage);
+            connect(defaultPage, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, preview](int index) {
+                if (selected < 0 || selected >= m_gadgets.size() || index < 0
+                    || m_gadgets[selected].defaultTabPage == index) return;
+                pushUndoSnapshot();
+                m_gadgets[selected].defaultTabPage = index;
+                m_gadgets[selected].value = index; // preview the new default
+                setModified(true);
+                // Keep the preview combobox in sync without treating its
+                // change as an independent design edit.
+                const QSignalBlocker block(preview);
+                preview->setCurrentIndex(index);
+                m_canvas->update();
+            });
+
+            addPen(QObject::tr("Bevel BPen"), g.bPen, -1, [this, selected](int pen) {
+                m_gadgets[selected].bPen = pen;
+            });
+            addPen(QObject::tr("Bevel FPen"), g.fPen, -1, [this, selected](int pen) {
+                m_gadgets[selected].fPen = pen;
+            });
+            addChoice(QObject::tr("Bevel direction"),
+                      {{QObject::tr("Inset (GAD_TOOL_INSET)"), 1},
+                       {QObject::tr("Outset (default)"), 0}},
+                      g.flags.contains(QStringLiteral("GAD_TOOL_INSET")) ? 1 : 0,
+                      [this, selected](int direction) {
+                QStringList flags = splitFlagExpression(m_gadgets[selected].flags);
+                flags.removeAll(QStringLiteral("GAD_TOOL_INSET"));
+                flags.removeAll(QStringLiteral("GAD_TOOL_DEFAULT"));
+                if (direction == 1) flags.prepend(QStringLiteral("GAD_TOOL_INSET"));
+                if (flags.isEmpty()) flags.append(QStringLiteral("GAD_TOOL_DEFAULT"));
+                m_gadgets[selected].flags = flags.join(QStringLiteral(" | "));
+            });
+        } else {
+            auto *owner = new QComboBox(m_propertyHost);
+            owner->addItem(QObject::tr("Always visible"), QString());
+            for (const GuiDesignerGadget &candidate : std::as_const(m_gadgets)) {
+                if (candidate.type == QStringLiteral("TabGroup"))
+                    owner->addItem(candidate.name, candidate.name);
+            }
+            const int existing = owner->findData(g.tabOwner);
+            owner->setCurrentIndex(qMax(0, existing));
+            m_propertyLayout->addRow(QObject::tr("Tab group"), owner);
+            connect(owner, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, owner](int) {
+                if (selected >= m_gadgets.size()) return;
+                const QString next=owner->currentData().toString();
+                if (m_gadgets[selected].tabOwner == next) return;
+                pushUndoSnapshot();
+                m_gadgets[selected].tabOwner = next;
+                m_gadgets[selected].tabPage = 0;
+                setModified(true);
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); m_canvas->update(); });
+            });
+            if (!g.tabOwner.isEmpty()) {
+                for (const GuiDesignerGadget &tabs : std::as_const(m_gadgets)) {
+                    if (tabs.type != QStringLiteral("TabGroup") || tabs.name != g.tabOwner) continue;
+                    auto *page = new QComboBox(m_propertyHost);
+                    const QStringList titles = designerTabTitles(tabs);
+                    for (int i=0;i<titles.size();++i) page->addItem(titles[i], i);
+                    page->setCurrentIndex(qBound(0, g.tabPage, titles.size()-1));
+                    m_propertyLayout->addRow(QObject::tr("Tab page"), page);
+                    connect(page, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                            [this, selected](int index) {
+                        if (selected >= m_gadgets.size() || index < 0
+                            || m_gadgets[selected].tabPage == index) return;
+                        pushUndoSnapshot();
+                        m_gadgets[selected].tabPage = index;
+                        setModified(true);
+                        m_canvas->update();
+                    });
+                    break;
+                }
+            }
+        }
+        if (g.type == QStringLiteral("Button")) {
+            auto *target = new QComboBox(m_propertyHost);
+            target->addItem(QObject::tr("None — ordinary callback"), QString());
+            target->setToolTip(QObject::tr("Choose another SBUI window to open when this button is activated."));
+            const QDir root(designProjectRoot());
+            const QString own = QFileInfo(m_filePath).absoluteFilePath();
+            QDirIterator designs(root.absolutePath(), {QStringLiteral("*.sbui")},
+                                 QDir::Files, QDirIterator::Subdirectories);
+            QStringList paths;
+            while (designs.hasNext()) {
+                const QString path = QFileInfo(designs.next()).absoluteFilePath();
+                if (path != own) paths.append(root.relativeFilePath(path));
+            }
+            paths.sort(Qt::CaseInsensitive);
+            for (const QString &path : std::as_const(paths)) {
+                QFile file(root.absoluteFilePath(path));
+                QString windowName;
+                if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+                    windowName = doc.object().value(QStringLiteral("window"))
+                                    .toObject().value(QStringLiteral("name")).toString();
+                }
+                if (!windowName.isEmpty()) {
+                    target->addItem(QStringLiteral("%1  (%2)").arg(windowName, path), path);
+                    const QString entry = windowEntryForDesign(root.absoluteFilePath(path));
+                    target->setItemData(target->count() - 1,
+                                        entry.isEmpty() ? QObject::tr("Invalid window entry marker")
+                                                        : QObject::tr("Calls %1() ").arg(entry),
+                                        Qt::ToolTipRole);
+                }
+            }
+            int selectedTarget = target->findData(g.openWindowFile);
+            if (selectedTarget < 0 && !g.openWindowFile.isEmpty()) {
+                target->addItem(QObject::tr("Missing: %1").arg(g.openWindowFile), g.openWindowFile);
+                selectedTarget = target->count() - 1;
+            }
+            target->setCurrentIndex(qMax(0, selectedTarget));
+            m_propertyLayout->addRow(QObject::tr("Open window"), target);
+            connect(target, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, target](int) {
+                if (selected < 0 || selected >= m_gadgets.size()) return;
+                const QString next = target->currentData().toString();
+                if (next == m_gadgets[selected].openWindowFile) return;
+                pushUndoSnapshot();
+                GuiDesignerGadget &button = m_gadgets[selected];
+                button.openWindowFile = next;
+                if (!next.isEmpty() && button.onActivate.trimmed().isEmpty())
+                    button.onActivate = QStringLiteral("On_%1_Activate").arg(button.name);
+                setModified(true);
+                // removeRow() deletes property widgets; never destroy the
+                // combo box while it is still delivering its own signal.
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+            });
+        }
+
+        const QRect tabMoveBounds = g.type == QStringLiteral("TabGroup")
+            ? m_canvas->tabGroupPositionBounds(selected) : QRect();
+        addSpin(QObject::tr("X"), g.rect.x(),
+                g.type == QStringLiteral("TabGroup") ? tabMoveBounds.left() : 0,
+                g.type == QStringLiteral("TabGroup") ? tabMoveBounds.right() : 2000,
+                [this, selected](int v) {
+            if (selected < 0 || selected >= m_gadgets.size()) return;
+            if (m_gadgets[selected].type == QStringLiteral("TabGroup"))
+                m_canvas->moveTabGroupWithMembers(selected,
+                    QPoint(v, m_gadgets[selected].rect.y()));
+            else
+                m_gadgets[selected].rect.moveLeft(v);
+        });
+        addSpin(QObject::tr("Y"), g.rect.y(),
+                g.type == QStringLiteral("TabGroup") ? tabMoveBounds.top() : 0,
+                g.type == QStringLiteral("TabGroup") ? tabMoveBounds.bottom() : 2000,
+                [this, selected](int v) {
+            if (selected < 0 || selected >= m_gadgets.size()) return;
+            if (m_gadgets[selected].type == QStringLiteral("TabGroup"))
+                m_canvas->moveTabGroupWithMembers(selected,
+                    QPoint(m_gadgets[selected].rect.x(), v));
+            else
+                m_gadgets[selected].rect.moveTop(v);
+        });
 
         if (g.type
             == QStringLiteral(
@@ -7147,7 +8290,13 @@ private:
         if (g.type == QStringLiteral("Button") || g.type == QStringLiteral("Label")
             || g.type == QStringLiteral("Checkbox") || g.type == QStringLiteral("Radio")
             || g.type == QStringLiteral("TextBox") || g.type == QStringLiteral("TextArea")) {
-            addLine(QObject::tr("Text"), g.text, [this, selected](const QString &v) { m_gadgets[selected].text = v; });
+            m_textPropertyEdit = addLine(
+                QObject::tr("Text"), g.text,
+                [this, selected](const QString &v) {
+                    m_inlineTextEditing = false;
+                    m_inlineReplaceOnFirstKey = true;
+                    m_gadgets[selected].text = v;
+                });
         }
 
         addCheck(
@@ -7161,26 +8310,23 @@ private:
                 }
             });
 
-        addFlagList(
-            QObject::tr("Gadget flags"),
-            g.flags,
-            gadgetFlagChoices(g.type),
-            [this, selected](const QString &v) {
-                if (selected >= 0
-                    && selected < m_gadgets.size()) {
-                    m_gadgets[selected].flags =
-                        v;
-
-                    syncGridSelectGeometry(
-                        &m_gadgets[selected]);
-
-                    syncDesignerDemoBitmapSize(
-                        &m_gadgets[selected]);
-                }
-            });
-        addSpin(QObject::tr("BPen (-1 default)"), g.bPen, -1, 255, [this, selected](int v) { m_gadgets[selected].bPen = v; });
-        addSpin(QObject::tr("FPen (-1 default)"), g.fPen, -1, 255, [this, selected](int v) { m_gadgets[selected].fPen = v; });
-        addSpin(QObject::tr("HPen (-1 default)"), g.hPen, -1, 255, [this, selected](int v) { m_gadgets[selected].hPen = v; });
+        if (g.type != QStringLiteral("TabGroup")) {
+            addFlagList(
+                QObject::tr("Gadget flags"),
+                g.flags,
+                gadgetFlagChoices(g.type),
+                [this, selected](const QString &v) {
+                    if (selected >= 0
+                        && selected < m_gadgets.size()) {
+                        m_gadgets[selected].flags = v;
+                        syncGridSelectGeometry(&m_gadgets[selected]);
+                        syncDesignerDemoBitmapSize(&m_gadgets[selected]);
+                    }
+                });
+            addPen(QObject::tr("BPen"), g.bPen, -1, [this, selected](int v) { m_gadgets[selected].bPen = v; });
+            addPen(QObject::tr("FPen"), g.fPen, -1, [this, selected](int v) { m_gadgets[selected].fPen = v; });
+            addPen(QObject::tr("HPen"), g.hPen, -1, [this, selected](int v) { m_gadgets[selected].hPen = v; });
+        }
 
         addChoice(
             QObject::tr("Callback routing"),
@@ -7455,25 +8601,29 @@ private:
                 });
 
             if (!g.bitmapPixels.isEmpty()) {
-                auto *imageInfo =
-                    new QLabel(
-                        QObject::tr("%1 x %2, %3 indexed bytes%4")
-                            .arg(g.bitmapWidth)
-                            .arg(g.bitmapHeight)
-                            .arg(g.bitmapPixels.size())
-                            .arg(
-                                g.bitmapImagePath.isEmpty()
-                                    ? QString()
-                                    : QObject::tr("\n%1")
-                                          .arg(
-                                              QDir::toNativeSeparators(
-                                                  g.bitmapImagePath))),
-                        m_propertyHost);
+                const QString bitmapDetails =
+                    QObject::tr("%1 x %2, %3 indexed bytes")
+                        .arg(g.bitmapWidth)
+                        .arg(g.bitmapHeight)
+                        .arg(g.bitmapPixels.size());
 
-                imageInfo->setWordWrap(true);
+                m_propertyLayout->addRow(
+                    QObject::tr("Image size"),
+                    new QLabel(bitmapDetails, m_propertyHost));
+
+                auto *imagePath = new QLineEdit(
+                    QDir::toNativeSeparators(g.bitmapImagePath),
+                    m_propertyHost);
+                imagePath->setReadOnly(true);
+                imagePath->setCursorPosition(0);
+                imagePath->setToolTip(
+                    g.bitmapImagePath.isEmpty()
+                        ? bitmapDetails
+                        : QDir::toNativeSeparators(g.bitmapImagePath)
+                              + QStringLiteral("\n") + bitmapDetails);
                 m_propertyLayout->addRow(
                     QObject::tr("Attached PNG"),
-                    imageInfo);
+                    imagePath);
 
                 auto *useDemo =
                     new QPushButton(
@@ -7783,12 +8933,29 @@ private:
             g.type=o.value(QStringLiteral("type")).toString(); g.name=o.value(QStringLiteral("name")).toString();
             g.rect=QRect(o.value(QStringLiteral("x")).toInt(),o.value(QStringLiteral("y")).toInt(),o.value(QStringLiteral("w")).toInt(80),o.value(QStringLiteral("h")).toInt(20));
             g.text=o.value(QStringLiteral("text")).toString(); g.flags=o.value(QStringLiteral("flags")).toString(QStringLiteral("GAD_TOOL_DEFAULT"));
+            // Before v9 the virtual bevel was always inset regardless of its
+            // saved flags. Preserve that appearance for existing .sbui files.
+            if (g.type == QStringLiteral("TabGroup")
+                && root.value(QStringLiteral("version")).toInt(8) < 9
+                && !g.flags.contains(QStringLiteral("GAD_TOOL_INSET"))) {
+                QStringList flags = splitFlagExpression(g.flags);
+                flags.removeAll(QStringLiteral("GAD_TOOL_DEFAULT"));
+                flags.prepend(QStringLiteral("GAD_TOOL_INSET"));
+                g.flags = flags.join(QStringLiteral(" | "));
+            }
             g.bPen=o.value(QStringLiteral("bPen")).toInt(-1); g.fPen=o.value(QStringLiteral("fPen")).toInt(-1); g.hPen=o.value(QStringLiteral("hPen")).toInt(-1);
             g.onActivate=o.value(QStringLiteral("onActivate")).toString(); g.onChange=o.value(QStringLiteral("onChange")).toString();
+            g.tabOwner=o.value(QStringLiteral("tabOwner")).toString(); g.tabPage=o.value(QStringLiteral("tabPage")).toInt(0);
+            g.defaultTabPage=o.value(QStringLiteral("defaultTabPage")).toInt(0);
+            g.openWindowFile=o.value(QStringLiteral("openWindowFile")).toString();
             g.callbackRoute=o.value(QStringLiteral("callbackRoute")).toInt(-1);
             g.minimum=o.value(QStringLiteral("minimum")).toInt(0); g.maximum=o.value(QStringLiteral("maximum")).toInt(100); g.value=o.value(QStringLiteral("value")).toInt(0);
             g.orientation=o.value(QStringLiteral("orientation")).toInt(1); g.checked=o.value(QStringLiteral("checked")).toInt(0); g.enabled=o.value(QStringLiteral("enabled")).toBool(true); g.group=o.value(QStringLiteral("group")).toInt(0);
             g.typeFlags=o.value(QStringLiteral("typeFlags")).toString();
+            g.timerDelayMs=qBound(1,o.value(QStringLiteral("timerDelayMs")).toInt(1000),86400000);
+            g.timerPeriodMs=qBound(1,o.value(QStringLiteral("timerPeriodMs")).toInt(1000),86400000);
+            g.timerRepeat=o.value(QStringLiteral("timerRepeat")).toBool(true);
+            g.timerAutoStart=o.value(QStringLiteral("timerAutoStart")).toBool(true);
             g.cellWidth=o.value(QStringLiteral("cellWidth")).toInt(24); g.cellHeight=o.value(QStringLiteral("cellHeight")).toInt(18);
             g.cellsX=o.value(QStringLiteral("cellsX")).toInt(4); g.cellsY=o.value(QStringLiteral("cellsY")).toInt(4);
 
@@ -7873,8 +9040,12 @@ private:
         QJsonObject o; o.insert(QStringLiteral("type"),g.type); o.insert(QStringLiteral("name"),g.name);
         o.insert(QStringLiteral("x"),g.rect.x()); o.insert(QStringLiteral("y"),g.rect.y()); o.insert(QStringLiteral("w"),g.rect.width()); o.insert(QStringLiteral("h"),g.rect.height());
         o.insert(QStringLiteral("text"),g.text); o.insert(QStringLiteral("flags"),g.flags); o.insert(QStringLiteral("bPen"),g.bPen); o.insert(QStringLiteral("fPen"),g.fPen); o.insert(QStringLiteral("hPen"),g.hPen);
-        o.insert(QStringLiteral("onActivate"),g.onActivate); o.insert(QStringLiteral("onChange"),g.onChange); o.insert(QStringLiteral("callbackRoute"),g.callbackRoute); o.insert(QStringLiteral("minimum"),g.minimum); o.insert(QStringLiteral("maximum"),g.maximum); o.insert(QStringLiteral("value"),g.value);
+        o.insert(QStringLiteral("onActivate"),g.onActivate); o.insert(QStringLiteral("onChange"),g.onChange); o.insert(QStringLiteral("openWindowFile"),g.openWindowFile); o.insert(QStringLiteral("tabOwner"),g.tabOwner); o.insert(QStringLiteral("tabPage"),g.tabPage); o.insert(QStringLiteral("defaultTabPage"),g.defaultTabPage); o.insert(QStringLiteral("callbackRoute"),g.callbackRoute); o.insert(QStringLiteral("minimum"),g.minimum); o.insert(QStringLiteral("maximum"),g.maximum); o.insert(QStringLiteral("value"),g.value);
         o.insert(QStringLiteral("orientation"),g.orientation); o.insert(QStringLiteral("checked"),g.checked); o.insert(QStringLiteral("enabled"),g.enabled); o.insert(QStringLiteral("group"),g.group); o.insert(QStringLiteral("typeFlags"),g.typeFlags);
+        o.insert(QStringLiteral("timerDelayMs"),g.timerDelayMs);
+        o.insert(QStringLiteral("timerPeriodMs"),g.timerPeriodMs);
+        o.insert(QStringLiteral("timerRepeat"),g.timerRepeat);
+        o.insert(QStringLiteral("timerAutoStart"),g.timerAutoStart);
         o.insert(QStringLiteral("cellWidth"),g.cellWidth); o.insert(QStringLiteral("cellHeight"),g.cellHeight); o.insert(QStringLiteral("cellsX"),g.cellsX); o.insert(QStringLiteral("cellsY"),g.cellsY);
 
         QJsonArray gridCellText;
@@ -7900,11 +9071,12 @@ private:
 
     bool saveDesign()
     {
+        if (!validateProjectWindows(false)) return false;
         QJsonObject w; w.insert(QStringLiteral("name"),m_window.name); w.insert(QStringLiteral("title"),m_window.title); w.insert(QStringLiteral("flags"),m_window.flags); w.insert(QStringLiteral("backPen"),m_window.backPen); w.insert(QStringLiteral("callbackMode"),m_window.callbackMode);
         w.insert(QStringLiteral("x"),m_window.rect.x()); w.insert(QStringLiteral("y"),m_window.rect.y()); w.insert(QStringLiteral("w"),m_window.rect.width()); w.insert(QStringLiteral("h"),m_window.rect.height());
         QJsonArray gadgets; for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) gadgets.append(gadgetToJson(g));
         QJsonArray menus; for (const GuiDesignerMenuTitle &menu : std::as_const(m_menus)) { QJsonObject mo; mo.insert(QStringLiteral("title"),menu.title); QJsonArray items; for (const GuiDesignerMenuItem &item : menu.items) { QJsonObject io; io.insert(QStringLiteral("name"),item.name); io.insert(QStringLiteral("text"),item.text); io.insert(QStringLiteral("callback"),item.callback); io.insert(QStringLiteral("flags"),item.flags); items.append(io); } mo.insert(QStringLiteral("items"),items); menus.append(mo); }
-        QJsonObject root; root.insert(QStringLiteral("format"),QStringLiteral("SidboxGUI")); root.insert(QStringLiteral("version"),7); root.insert(QStringLiteral("screenWidth"),480); root.insert(QStringLiteral("screenHeight"),320); root.insert(QStringLiteral("designerGridSnap"),m_canvas ? m_canvas->gridSnap() : 0); root.insert(QStringLiteral("window"),w); root.insert(QStringLiteral("gadgets"),gadgets); root.insert(QStringLiteral("menus"),menus);
+        QJsonObject root; root.insert(QStringLiteral("format"),QStringLiteral("SidboxGUI")); root.insert(QStringLiteral("version"),9); root.insert(QStringLiteral("screenWidth"),480); root.insert(QStringLiteral("screenHeight"),320); root.insert(QStringLiteral("designerGridSnap"),m_canvas ? m_canvas->gridSnap() : 0); root.insert(QStringLiteral("window"),w); root.insert(QStringLiteral("gadgets"),gadgets); root.insert(QStringLiteral("menus"),menus);
         root.insert(QStringLiteral("detached"), m_detached);
         root.insert(QStringLiteral("sourceFile"), m_sourceName);
         root.insert(QStringLiteral("sketchFile"), m_sketchName);
@@ -8136,6 +9308,12 @@ private:
          * API_GUI_GADGETS. Calling the API table directly keeps generated code
          * compiling without waiting for wrapper macros.
          */
+        if (g.type == QStringLiteral("TabGroup")) {
+            return QStringLiteral(
+                "API->gui->gadgets->canvas_create(%1, %2, %3, %4, %5, CNV_BEVEL, %6)")
+                .arg(win).arg(r.x()).arg(r.y()+24).arg(r.width())
+                .arg(qMax(1,r.height()-24)).arg(flags);
+        }
         if (g.type
             == QStringLiteral(
                 "Button")) {
@@ -8377,6 +9555,16 @@ private:
             m_sourceName = QDir(QFileInfo(m_filePath).absolutePath()).relativeFilePath(chosen);
             setModified(true);
         }
+        if (!validateProjectWindows(!sketch)) return false;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Timer") && g.timerAutoStart
+                && g.onActivate.trimmed().isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Timer callback required"),
+                    QObject::tr("Timer %1 starts with the window, so it requires an On tick callback.")
+                        .arg(g.name));
+                return false;
+            }
+        }
         const QString cPath = outputPath(sketch);
         if (sketch && m_sketchName.isEmpty()) {
             m_sketchName = QFileInfo(cPath).fileName();
@@ -8422,11 +9610,19 @@ private:
                    "WINDOW_CLOSE");
 
         QStringList gadgetCallbacks;
+        QStringList timerCallbacks;
         QStringList directGadgetCallbacks;
         QStringList menuCallbacks;
 
         for (const GuiDesignerGadget &g :
              std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Timer")) {
+                if (!g.onActivate.isEmpty()) {
+                    callbackKeys << g.onActivate;
+                    timerCallbacks << g.onActivate;
+                }
+                continue;
+            }
             if (!g.onActivate.isEmpty()) {
                 callbackKeys << g.onActivate;
                 gadgetCallbacks << g.onActivate;
@@ -8465,7 +9661,17 @@ private:
 
         callbackKeys.removeDuplicates();
         gadgetCallbacks.removeDuplicates();
+        timerCallbacks.removeDuplicates();
         directGadgetCallbacks.removeDuplicates();
+        // Different callback types have incompatible C signatures.
+        for (const QString &cb : std::as_const(timerCallbacks)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Timer callback collision"),
+                    QObject::tr("Timer callback %1 is also used by a gadget or menu. "
+                                "Give it a unique name.").arg(cb));
+                return false;
+            }
+        }
         menuCallbacks.removeDuplicates();
 
         const QHash<QString, QString> saved =
@@ -8484,6 +9690,37 @@ private:
             + QStringLiteral(
                 "_WindowProc");
 
+        // Resolve linked windows from their saved .sbui, not a cached C name.
+        // This keeps the generated call aligned when a target window is renamed.
+        QHash<QString, QString> linkedCallbacks;
+        QSet<QString> linkedFunctions;
+        const QDir root(designProjectRoot());
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Button") || g.openWindowFile.isEmpty()) continue;
+            QFile file(root.absoluteFilePath(g.openWindowFile));
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            const QString targetName = doc.object().value(QStringLiteral("window"))
+                                        .toObject().value(QStringLiteral("name")).toString();
+            if (!doc.isObject() || targetName.isEmpty()) return false;
+            const QString createFunction = windowEntryForDesign(root.absoluteFilePath(g.openWindowFile));
+            if (createFunction.isEmpty()) return false;
+            linkedCallbacks.insert(safeCIdentifier(g.onActivate, QStringLiteral("OnActivate")),
+                                   createFunction);
+            linkedFunctions.insert(createFunction);
+        }
+
+        // Each virtual TabGroup reserves a separate 1..255 CoderGirl group
+        // for every page. Group 0 remains visible at all times.
+        QHash<QString,int> tabBase;
+        int nextTabGroupId = 1;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("TabGroup")) {
+                tabBase.insert(g.name, nextTabGroupId);
+                nextTabGroupId += designerTabTitles(g).size();
+            }
+        }
+
         QString out;
         QTextStream s(&out);
 
@@ -8495,22 +9732,46 @@ private:
              "#include <stddef.h>\n"
              "#include <stdint.h>\n\n";
 
+        QStringList sortedFunctions = linkedFunctions.values();
+        sortedFunctions.sort();
+        for (const QString &create : std::as_const(sortedFunctions)) {
+            s << "extern void " << create << "(void);\n";
+        }
+        if (!linkedFunctions.isEmpty()) s << "\n";
+
         /*
          * Application GUI handles are deliberately file-local. The real applet
          * examples also keep Window/Gadget/Menu state static.
          */
         s << "static CGWindow "
           << win
-          << ";\n";
+          << ";\n"
+             "static uint8_t "
+          << win
+          << "_is_open = 0u;\n";
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
+            if (g.type == QStringLiteral("Timer")) {
+                s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("timer"))
+                  << " = CGTIMER_INVALID;\n";
+                continue;
+            }
             s << "static CGGadget "
               << safeCIdentifier(
                      g.name,
                      QStringLiteral(
                          "gadget"))
               << ";\n";
+        }
+
+        // Generated physical tab header buttons (the TabGroup itself is
+        // virtual: a bevel and these ordinary CoderGirl buttons).
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("TabGroup")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("tabs"));
+            for (int page = 0; page < designerTabTitles(g).size(); ++page)
+                s << "static CGGadget " << n << "_tab_" << page << ";\n";
         }
 
         /*
@@ -8679,11 +9940,22 @@ private:
           << proc
           << "(CGWindow win, const CGMessage_t *m);\n";
 
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("TabGroup")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("tabs"));
+            s << "static void " << win << "_" << n
+              << "_SIDBOX_OnTab(void *source, int32_t a, int32_t b, int32_t c, int32_t d);\n";
+        }
+
         for (const QString &cb :
              gadgetCallbacks) {
             s << "static void "
               << cb
               << "(CGGadget gadget, int32_t a, int32_t b, int32_t c, int32_t d);\n";
+        }
+
+        for (const QString &cb : std::as_const(timerCallbacks)) {
+            s << "static void " << cb << "(void *user);\n";
         }
 
         for (const QString &cb :
@@ -8769,10 +10041,50 @@ private:
                  "}\n\n";
         }
 
-        s << "void "
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("TabGroup")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("tabs"));
+            const int base = tabBase.value(g.name);
+            const int count = designerTabTitles(g).size();
+            s << "static void " << win << "_" << n
+              << "_SIDBOX_OnTab(void *source, int32_t a, int32_t b, int32_t c, int32_t d)\n"
+                 "{\n"
+                 "\t(void)a; (void)b; (void)c; (void)d;\n"
+                 "\tconst CGGadget clicked = API->gui->gadgets->get_id(source);\n";
+            for (int page=0; page<count; ++page) {
+                s << (page == 0 ? "\tif" : "\telse if")
+                  << " (clicked == " << n << "_tab_" << page << ") {\n";
+                for (int group=0; group<count; ++group)
+                    s << "\t\tAPI->gui->gadgets->set_group_visible(" << win << ", "
+                      << (base+group) << "u, " << (group == page ? "1u" : "0u") << ");\n";
+                for (int other=0; other<count; ++other)
+                    s << "\t\tAPI->gui->gadgets->button_set_toggle(" << n
+                      << "_tab_" << other << ", " << (other == page ? "1u" : "0u")
+                      << ");\n";
+                s << "\t}\n";
+            }
+            s << "}\n\n";
+        }
+
+        s << "// $IDE:OpenWindow //\n"
+             "void "
           << win
           << "_Create(void)\n"
              "{\n";
+
+        // A CoderGirl window ID of 0 is valid. Do not use the handle as a
+        // boolean: the firmware also clears a destroyed window handle to 0.
+        s << "\tif ("
+          << win
+          << "_is_open) {\n"
+             "\t\tSBOS_WindowToFront("
+          << win
+          << ");\n"
+             "\t\tSBOS_WindowSetFocus("
+          << win
+          << ");\n"
+             "\t\treturn;\n"
+             "\t}\n\n";
 
         s << "\t"
           << win
@@ -8795,6 +10107,17 @@ private:
                         "SBX_WIN_DEFAULT")
                   : m_window.flags)
           << ");\n";
+
+        // Public apis.h does not expose SBW_INVALID_ID; the firmware uses
+        // 0xFF. Failed creation must not mark this window as open.
+        s << "\tif ("
+          << win
+          << " == (CGWindow)0xFFu) {\n"
+             "\t\treturn;\n"
+             "\t}\n"
+             "\t"
+          << win
+          << "_is_open = 1u;\n";
 
         s << "\tSBOS_SetWindowProc("
           << win
@@ -8880,8 +10203,11 @@ private:
               << ");\n\n";
         }
 
+        for (int groupPass = 0; groupPass < 2; ++groupPass) {
         for (const GuiDesignerGadget &g :
              m_gadgets) {
+            if (g.type == QStringLiteral("Timer")) continue;
+            if ((g.type == QStringLiteral("TabGroup")) != (groupPass == 0)) continue;
             const QString n =
                 safeCIdentifier(
                     g.name,
@@ -8901,6 +10227,27 @@ private:
                      g,
                      win)
               << ";\n";
+
+            if (g.type == QStringLiteral("TabGroup")) {
+                s << "\tAPI->gui->gadgets->set_group_id(" << n << ", 0u);\n";
+                const QStringList titles = designerTabTitles(g);
+                const int width = qMax(1, g.rect.width()/titles.size());
+                for (int page = 0; page < titles.size(); ++page) {
+                    const int cellWidth = page == titles.size()-1
+                        ? g.rect.width() - page*width : width;
+                    const QString handle = n + QStringLiteral("_tab_%1").arg(page);
+                    s << "\t" << handle
+                      << " = API->gui->gadgets->button_create(" << win << ", "
+                      << (g.rect.x()+page*width) << ", " << g.rect.y()
+                      << ", " << cellWidth << ", 24, \""
+                      << escapedCString(titles.at(page))
+                      << "\", GAD_TOOL_DEFAULT | GAD_TOOL_TOGGLE);\n";
+                    s << "\tAPI->gui->gadgets->set_group_id(" << handle << ", 0u);\n";
+                    s << "\tAPI->gui->gadgets->set_callback(" << handle
+                      << ", " << win << "_" << n
+                      << "_SIDBOX_OnTab, NULL);\n";
+                }
+            }
 
             if (g.type == QStringLiteral("BitmapView")
                 && !g.bitmapSource.trimmed().isEmpty()) {
@@ -8941,6 +10288,15 @@ private:
                   << ", "
                   << g.hPen
                   << ");\n";
+            }
+
+            // Group 0 always stays visible. Assign it explicitly even if
+            // another window left CoderGirl's global creation group nonzero.
+            if (!tabBase.isEmpty()) {
+                const int groupId = (!g.tabOwner.isEmpty() && tabBase.contains(g.tabOwner))
+                    ? tabBase.value(g.tabOwner) + g.tabPage : 0;
+                s << "\tAPI->gui->gadgets->set_group_id(" << n
+                  << ", " << groupId << "u);\n";
             }
 
             s << "\tAPI->gui->gadgets->enabled("
@@ -9066,6 +10422,23 @@ private:
               << n
               << ");\n\n";
         }
+        } // create tab chrome before ordinary page gadgets
+
+        // Make only the configured initial page visible for each TabGroup.
+        // Group zero still holds the bevel and the permanent tab buttons.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("TabGroup")) continue;
+            const int base = tabBase.value(g.name);
+            const int count = designerTabTitles(g).size();
+            const int initialPage = qBound(0, g.defaultTabPage, count - 1);
+            for (int page = 0; page < count; ++page) {
+                s << "\tAPI->gui->gadgets->set_group_visible(" << win << ", "
+                  << (base+page) << "u, " << (page == initialPage ? "1u" : "0u") << ");\n";
+                s << "\tAPI->gui->gadgets->button_set_toggle("
+                  << safeCIdentifier(g.name, QStringLiteral("tabs"))
+                  << "_tab_" << page << ", " << (page == initialPage ? "1u" : "0u") << ");\n";
+            }
+        }
 
         s << "\tSBOS_WindowToFront("
           << win
@@ -9094,6 +10467,23 @@ private:
               << ");\n";
         }
 
+        // Timers belong to the generated window, but are never GUI gadgets.
+        // Allocate AFTER the window and gadgets exist, and free BEFORE close.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Timer")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("timer"));
+            s << "\t" << n << " = SBOS_CreateTimer();\n";
+            if (g.timerAutoStart && !g.onActivate.trimmed().isEmpty()) {
+                s << "\tif (" << n << " != CGTIMER_INVALID) {\n"
+                  << "\t\tif (SBOS_TimerSet(" << n << ", "
+                  << qBound(1, g.timerDelayMs, 86400000) << "u, "
+                  << (g.timerRepeat ? qBound(1, g.timerPeriodMs, 86400000) : 0)
+                  << "u, " << g.onActivate << ", NULL) != 0) {\n"
+                  << "\t\t\tSBOS_FreeTimer(" << n << ");\n"
+                  << "\t\t\t" << n << " = CGTIMER_INVALID;\n"
+                  << "\t\t}\n\t}\n";
+            }
+        }
         s << "}\n\n";
 
         /*
@@ -9119,7 +10509,7 @@ private:
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
-            if (gadgetUsesDirectCallbacks(g)) {
+            if (g.type == QStringLiteral("Timer") || gadgetUsesDirectCallbacks(g)) {
                 continue;
             }
 
@@ -9218,7 +10608,23 @@ private:
               << "_items);\n";
         }
 
-        s << "\t\t\tSBOS_CloseWindow(win);\n";
+        // Cooperative timers must not fire into a window after it closes.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Timer")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("timer"));
+            s << "\t\t\tif (" << n << " != CGTIMER_INVALID) {\n"
+              << "\t\t\t\tSBOS_TimerCancel(" << n << ");\n"
+              << "\t\t\t\tSBOS_FreeTimer(" << n << ");\n"
+              << "\t\t\t\t" << n << " = CGTIMER_INVALID;\n"
+              << "\t\t\t}\n";
+        }
+
+        // Mark the window closed before the firmware clears its handle.
+        // This also allows the public _Create() function to reopen it later.
+        s << "\t\t\t"
+          << win
+          << "_is_open = 0u;\n"
+             "\t\t\tSBOS_CloseWindow(win);\n";
         if (!m_menus.isEmpty()) {
             s << "\t\t\tSBOS_DestroyMenu(&"
               << win
@@ -9415,8 +10821,11 @@ private:
               << cb
               << "(CGGadget gadget, int32_t a, int32_t b, int32_t c, int32_t d)\n"
                  "{\n"
-                 "\t(void)gadget; (void)a; (void)b; (void)c; (void)d;\n"
-                 "\t/* <SIDBOX-GUI:USER "
+                 "\t(void)gadget; (void)a; (void)b; (void)c; (void)d;\n";
+            if (linkedCallbacks.contains(cb)) {
+                s << "\t" << linkedCallbacks.value(cb) << "();\n";
+            }
+            s << "\t/* <SIDBOX-GUI:USER "
               << cb
               << "> */\n";
 
@@ -9439,6 +10848,20 @@ private:
               << cb
               << "> */\n"
                  "}\n\n";
+        }
+
+        for (const QString &cb : std::as_const(timerCallbacks)) {
+            s << "static void " << cb << "(void *user)\n"
+                 "{\n\t(void)user;\n"
+                 "\t/* <SIDBOX-GUI:USER " << cb << "> */\n";
+            const QString body = saved.value(cb);
+            if (body.isEmpty()) {
+                s << "\t/* TODO: timer tick; keep callbacks cooperative and short. */\n";
+            } else {
+                for (const QString &line : body.split(QLatin1Char('\n')))
+                    s << "\t" << line << "\n";
+            }
+            s << "\t/* </SIDBOX-GUI:USER " << cb << "> */\n}\n\n";
         }
 
         for (const QString &cb :
@@ -9583,6 +11006,10 @@ private:
     QAction *m_undoAction = nullptr;
     QComboBox *m_snapCombo = nullptr;
     QList<QByteArray> m_undoStates;
+    QPointer<QLineEdit> m_textPropertyEdit;
+    bool m_inlineTextEditing = false;
+    bool m_inlineReplaceOnFirstKey = true;
+    int m_inlineTextIndex = -1;
     bool m_restoringUndo = false;
 };
 
