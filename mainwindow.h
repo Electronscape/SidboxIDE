@@ -233,8 +233,12 @@ private:
     QString m_linkerScriptPath;
     QString m_outputAppName;
     QString m_projectType;
+    QString m_appletFormat = QStringLiteral("v1");
+    bool m_currentBuildIsV2 = false;
     int m_modSizeKb;
     int m_appSizeKb;
+    int m_v2HeapKb; // bounded allocation in experimental v2 only
+    int m_v2StackKb; // reserved in v2 image; actual calls still use OS stack
     int m_editorFontPointSize;
     QString m_compilerOptimization;
     QString m_extraCompilerFlags;

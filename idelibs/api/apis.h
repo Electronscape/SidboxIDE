@@ -298,8 +298,15 @@ typedef struct __attribute__((aligned(4))) {
 } API_Root;
 
 //// memory assignment /////////////////////////////////////////////////////////////////////////
-extern const char __sidbox_api_location;   // const char is the classic “linker symbol” type
+extern const char __sidbox_api_location;   // Used by the original fixed-address V1 linker.
+#ifdef SIDBOX_APPLET_V2
+/* The API table lives in internal SRAM; this address is invariant even when
+ * CoderGirl relocates an applet in SDRAM. Avoid a PIE dynamic relocation
+ * against an absolute linker symbol outside the applet image. */
+#define SIDBOX_API_BASE ((uintptr_t)0x2001F000u)
+#else
 #define SIDBOX_API_BASE ((uintptr_t)&__sidbox_api_location)
+#endif
 #define API ((volatile const API_Root *)SIDBOX_API_BASE)
 
 #include "gui/os.h"

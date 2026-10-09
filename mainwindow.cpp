@@ -2714,6 +2714,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_projectType(GuiProjectType)
     , m_modSizeKb(0)
     , m_appSizeKb(128)
+    , m_v2HeapKb(16)
+    , m_v2StackKb(8)
     , m_editorFontPointSize(10)
     , m_compilerOptimization(QStringLiteral("-Ofast"))
     , m_compilerSuppressWarnings(true)
@@ -4049,6 +4051,9 @@ void MainWindow::createNewProject()
 
     m_modSizeKb = 0;
     m_appSizeKb = 128;
+    m_appletFormat = QStringLiteral("v1");
+    m_v2HeapKb = 16;
+    m_v2StackKb = 8;
     m_outputAppName.clear();
     m_linkerScriptPath.clear();
 
@@ -5701,8 +5706,11 @@ void MainWindow::showProjectSettings()
 {
     ProjectSettingsDialog dialog(this);
     dialog.setProjectType(m_projectType);
+    dialog.setAppletFormat(m_appletFormat);
     dialog.setModSizeKb(m_modSizeKb);
     dialog.setAppSizeKb(m_appSizeKb);
+    dialog.setV2HeapKb(m_v2HeapKb);
+    dialog.setV2StackKb(m_v2StackKb);
     dialog.setOutputAppName(m_outputAppName);
     dialog.setCustomLinkerScriptPath(m_linkerScriptPath);
     dialog.setDefaultLinkerScriptPaths(
@@ -5723,8 +5731,11 @@ void MainWindow::showProjectSettings()
     }
 
     m_projectType = normalizedProjectType(dialog.projectType());
+    m_appletFormat = (m_projectType == GuiProjectType) ? dialog.appletFormat() : QStringLiteral("v1");
     m_modSizeKb = dialog.modSizeKb();
     m_appSizeKb = dialog.appSizeKb();
+    m_v2HeapKb = dialog.v2HeapKb();
+    m_v2StackKb = dialog.v2StackKb();
     m_outputAppName =
         normalizedAppOutputName(dialog.outputAppName());
     m_linkerScriptPath = dialog.customLinkerScriptPath();
@@ -5892,6 +5903,26 @@ void MainWindow::compileActiveFile()
         }
     }
 
+    const bool v2Build = normalizedProjectType(m_projectType) == GuiProjectType &&
+        m_appletFormat == QStringLiteral("v2");
+    if (v2Build && !m_linkerScriptPath.isEmpty()) {
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("Experimental V2 requires its dedicated gui_v2.ld template. "
+               "Set the Linker script field to Default, or select V1 for your custom script."));
+        return;
+    }
+    if (v2Build && m_v2HeapKb == 0) {
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("GUI V2 builds currently require at least 4 KB of bounded heap "
+               "for their C runtime. Choose a non-zero V2 heap allowance."));
+        return;
+    }
+    if (v2Build && m_appSizeKb > 512) {
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("The experimental firmware loader currently accepts at most 512 KB "
+               "per V2 applet. Reduce the applet allowance or build V1."));
+        return;
+    }
     QString linkerError;
     if (m_linkerScriptPath.isEmpty() && !updateProjectLinkerScript(&linkerError)) {
         QMessageBox::warning(this, tr("Compile"), tr("Could not prepare the project linker script:\n%1").arg(linkerError));
@@ -5911,7 +5942,7 @@ void MainWindow::compileActiveFile()
         return;
     }
 
-    if (!QFileInfo::exists(selectedObjcopy)) {
+    if (!v2Build && !QFileInfo::exists(selectedObjcopy)) {
         QMessageBox::warning(this, tr("Compile"), tr("The bundled Sidbox objcopy was not found:\n%1").arg(QDir::toNativeSeparators(selectedObjcopy)));
         return;
     }
@@ -5956,6 +5987,14 @@ void MainWindow::compileActiveFile()
         QStringLiteral("--specs=nano.specs"),
         QStringLiteral("-mno-unaligned-access"),
         QStringLiteral("-DSIDBOX_STARTUP_HEADER_IN_ASM"),
+    };
+    if (v2Build) {
+        arguments << QStringLiteral("-DSIDBOX_V2_HEAP_BYTES=%1").arg(m_v2HeapKb * 1024)
+                  << QStringLiteral("-DSIDBOX_APPLET_V2")
+                  << QStringLiteral("-fPIE") << QStringLiteral("-fPIC")
+                  << QStringLiteral("-fno-plt");
+    }
+    arguments << QStringList{
         QStringLiteral("-I"), apiDir.absolutePath(),
         QStringLiteral("-I"), QDir(libsPath).filePath(QStringLiteral("libraries")),
     };
@@ -6006,9 +6045,14 @@ void MainWindow::compileActiveFile()
     arguments << libraryFiles;
     arguments << QStringLiteral("-T") << selectedLinkerScript;
     arguments << QStringLiteral("-Wl,-Map=%1").arg(mapOutputPath);
-    arguments << QStringLiteral("-Wl,--gc-sections")
-              << QStringLiteral("-static")
-              << QStringLiteral("--specs=nosys.specs");
+    arguments << QStringLiteral("-Wl,--gc-sections");
+    if (v2Build) {
+        arguments << QStringLiteral("-pie") << QStringLiteral("-Wl,-Bsymbolic")
+                  << QStringLiteral("-Wl,--no-undefined");
+    } else {
+        arguments << QStringLiteral("-static");
+    }
+    arguments << QStringLiteral("--specs=nosys.specs");
 
     arguments << QStringLiteral("-Wl,--start-group")
               << QStringLiteral("-lc")
@@ -6022,6 +6066,13 @@ void MainWindow::compileActiveFile()
     appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(selectedCompiler)), OutputKind::Path);
     appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
     appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
+    appendOutputLine(v2Build
+        ? tr("Applet format: V2 (EXPERIMENTAL PIE; unsupported relocations are rejected)")
+        : tr("Applet format: V1 (legacy fixed-address)"), OutputKind::Header);
+    if (v2Build) {
+        appendOutputLine(tr("V2 heap: %1 KB bounded; stack: %2 KB reserved ONLY (OS stack shared)")
+            .arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Warning);
+    }
     appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
     appendOutputLine(tr("Build folder: %1").arg(QDir::toNativeSeparators(buildPath)), OutputKind::Path);
     appendOutputLine(tr("ELF: %1").arg(QDir::toNativeSeparators(outputPath)), OutputKind::Path);
@@ -6091,6 +6142,7 @@ void MainWindow::compileActiveFile()
     }
 
     m_buildLinkSizeOverflow = false;
+    m_currentBuildIsV2 = v2Build;
     m_pendingElfPath = outputPath;
     m_pendingAppPath = appOutputPath;
     m_pendingAsmPath = asmOutputPath;
@@ -6780,7 +6832,10 @@ void MainWindow::handleCompilerFinished(int exitCode)
                     }
                 }
                 if (foundStart && foundEnd && end >= start) {
-                    const qint64 used = qint64(end - start);
+                    // V2: the ELF includes reserved .stack, but the heap is an
+                    // additional uninitialised allocation appended by the packer.
+                    const qint64 used = qint64(end - start) +
+                        (m_currentBuildIsV2 ? qint64(m_v2HeapKb) * 1024 : 0);
                     if (!m_linkerScriptPath.isEmpty()) {
                         appendOutputLine(
                             tr("Applet RAM used: %1 (including stack; custom linker controls the limit)")
@@ -6789,11 +6844,12 @@ void MainWindow::handleCompilerFinished(int exitCode)
                     } else {
                         const qint64 allowance = qint64(m_appSizeKb) * 1024;
                         appendOutputLine(
-                            tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve)")
+                            tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve%5)")
                                 .arg(formattedFileSize(used))
                                 .arg(formattedFileSize(allowance))
                                 .arg(allowance > 0 ? qRound(100.0 * used / allowance) : 0)
-                                .arg(formattedFileSize(qMax(qint64(0), allowance - used))),
+                                .arg(formattedFileSize(qMax(qint64(0), allowance - used)))
+                                .arg(m_currentBuildIsV2 ? tr(" and bounded heap") : QString()),
                             allowance > 0 && used * 100 >= allowance * 90
                                 ? OutputKind::Warning : OutputKind::Success);
                     }
@@ -6835,23 +6891,53 @@ void MainWindow::handleCompilerFinished(int exitCode)
             appendOutputLine(tr("ASM size: %1 bytes").arg(QLocale().toString(asmSize)), OutputKind::Success);
         }
 
-        appendOutputLine(tr("Generating .app binary..."), OutputKind::Header);
-
         m_buildStep = BuildStep::Objcopy;
         setCompileProgressStage(tr("Creating applet..."));
         m_compilerProcess->setWorkingDirectory(m_projectPath);
-        m_compilerProcess->start(objcopyPath(), {
-                                                    QStringLiteral("-O"),
-                                                    QStringLiteral("binary"),
-                                                    m_pendingElfPath,
-                                                    m_pendingAppPath
-                                                });
+        if (m_currentBuildIsV2) {
+            appendOutputLine(tr("Packing and validating relocatable V2 ELF..."), OutputKind::Header);
+            // Built from v2_packer.cpp at the IDE source root, but deployed
+            // together with the other build tools under idelibs/tools/.
+            // Never fall back to Python or to the legacy V1 objcopy path.
+            const QString packerName =
+#ifdef Q_OS_WIN
+                QStringLiteral("sidbox-v2-packer.exe");
+#else
+                QStringLiteral("sidbox-v2-packer");
+#endif
+            const QString packerPath = QDir(ideLibsPath()).filePath(
+                QStringLiteral("tools/") + packerName);
+            const QFileInfo packerInfo(packerPath);
+            if (!packerInfo.isFile() || !packerInfo.isExecutable()) {
+                appendOutputLine(tr("Native V2 packer missing or not executable: %1. "
+                                    "Rebuild SidboxIDE to stage it in idelibs/tools.")
+                    .arg(QDir::toNativeSeparators(packerPath)), OutputKind::Error);
+                m_buildStep = BuildStep::None;
+                finishCompileProgress();
+                statusBar()->showMessage(tr("Compile failed"));
+                return;
+            }
+            m_compilerProcess->start(packerPath, {
+                m_pendingElfPath, m_pendingAppPath,
+                QStringLiteral("--heap"), QString::number(m_v2HeapKb * 1024)
+            });
+        } else {
+            appendOutputLine(tr("Generating legacy V1 .app binary..."), OutputKind::Header);
+            m_compilerProcess->start(objcopyPath(), {
+                QStringLiteral("-O"), QStringLiteral("binary"),
+                m_pendingElfPath, m_pendingAppPath
+            });
+        }
         return;
     }
 
     if (m_buildStep == BuildStep::Objcopy) {
         if (exitCode != 0) {
-            appendOutputLine(tr("Objcopy failed with exit code %1.").arg(exitCode), OutputKind::Error);
+            appendOutputLine(m_currentBuildIsV2
+                ? tr("V2 packer rejected this ELF (exit %1). Inspect relocation errors; V1 remains available.").arg(exitCode)
+                : tr("Objcopy failed with exit code %1.").arg(exitCode), OutputKind::Error);
+            // Keep any previously working .app; the packer only publishes on success.
+            // Do not leave an incomplete or mislabelled V2 image behind.
             m_buildStep = BuildStep::None;
             finishCompileProgress();
             statusBar()->showMessage(tr("Compile failed"));
@@ -6859,7 +6945,9 @@ void MainWindow::handleCompilerFinished(int exitCode)
         }
 
         const qint64 appSize = QFileInfo(m_pendingAppPath).size();
-        appendOutputLine(tr("APP generated: %1").arg(QDir::toNativeSeparators(m_pendingAppPath)), OutputKind::Success);
+        appendOutputLine(tr("%1 APP generated: %2")
+            .arg(m_currentBuildIsV2 ? QStringLiteral("V2") : QStringLiteral("V1"),
+                 QDir::toNativeSeparators(m_pendingAppPath)), OutputKind::Success);
         if (appSize >= 0) {
             appendOutputLine(tr("APP size: %1 bytes").arg(QLocale().toString(appSize)), OutputKind::Success);
         }
@@ -8279,6 +8367,7 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
         m_outputAppName.clear();
         m_modSizeKb = 0;
         m_projectType = GuiProjectType;
+        m_appletFormat = QStringLiteral("v1");
         m_compilerOptimization = QStringLiteral("-Ofast");
         m_compilerSuppressWarnings = true;
         m_compilerWall = false;
@@ -8326,8 +8415,13 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
     m_projectType = normalizedProjectType(root.value(QStringLiteral("projectType")).toString(GuiProjectType));
+    m_appletFormat = (m_projectType == GuiProjectType &&
+        root.value(QStringLiteral("appletFormat")).toString() == QStringLiteral("v2"))
+        ? QStringLiteral("v2") : QStringLiteral("v1");
     m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
     m_appSizeKb = root.value(QStringLiteral("appSizeKb")).toInt(128);
+    m_v2HeapKb = qBound(0, root.value(QStringLiteral("v2HeapKb")).toInt(16), 512);
+    m_v2StackKb = qBound(1, root.value(QStringLiteral("v2StackKb")).toInt(8), 128);
     m_outputAppName =
         normalizedAppOutputName(
             root.value(QStringLiteral("outputAppName")).toString());
@@ -8467,11 +8561,15 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     QJsonObject root;
     root.insert(QStringLiteral("version"), ProjectFileVersion);
     root.insert(QStringLiteral("projectType"), normalizedProjectType(m_projectType));
+    root.insert(QStringLiteral("appletFormat"),
+                m_projectType == GameProjectType ? QStringLiteral("v1") : m_appletFormat);
     root.insert(QStringLiteral("files"), files);
     root.insert(QStringLiteral("openTabs"), openTabsArray);
     root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));
     root.insert(QStringLiteral("modSizeKb"), m_modSizeKb);
     root.insert(QStringLiteral("appSizeKb"), m_appSizeKb);
+    root.insert(QStringLiteral("v2HeapKb"), m_v2HeapKb);
+    root.insert(QStringLiteral("v2StackKb"), m_v2StackKb);
     root.insert(QStringLiteral("outputAppName"), m_outputAppName);
 
     QJsonObject compiler;
@@ -11163,7 +11261,10 @@ bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
         return false;
     }
 
-    const QString sourcePath = defaultLinkerScriptPath();
+    const QString sourcePath = (normalizedProjectType(m_projectType) == GuiProjectType &&
+        m_appletFormat == QStringLiteral("v2"))
+        ? QDir(ideLibsPath()).filePath(QStringLiteral("gui_v2.ld"))
+        : defaultLinkerScriptPath();
     QFile sourceFile(sourcePath);
     if (!sourceFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorMessage) {
@@ -11177,9 +11278,16 @@ bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
         ? QStringLiteral("0")
         : QStringLiteral("1");
 
-    if (!replaceLinkerAssignment(&scriptText, QStringLiteral("_profile_is_desktop"), profileValue)
-        || !replaceLinkerAssignment(&scriptText, QStringLiteral("_requested_app_size"), hexBytes(m_appSizeKb))
-        || !replaceLinkerAssignment(&scriptText, QStringLiteral("_largest_modfile"), hexBytes(m_modSizeKb))) {
+    const bool linkerV2 = normalizedProjectType(m_projectType) == GuiProjectType &&
+        m_appletFormat == QStringLiteral("v2");
+    const bool linkedSettingsOk = linkerV2
+        ? (replaceLinkerAssignment(&scriptText, QStringLiteral("_v2_app_limit"), hexBytes(m_appSizeKb))
+           && replaceLinkerAssignment(&scriptText, QStringLiteral("_v2_stack_bytes"), hexBytes(m_v2StackKb))
+           && replaceLinkerAssignment(&scriptText, QStringLiteral("_v2_heap_bytes"), hexBytes(m_v2HeapKb)))
+        : (replaceLinkerAssignment(&scriptText, QStringLiteral("_profile_is_desktop"), profileValue)
+           && replaceLinkerAssignment(&scriptText, QStringLiteral("_requested_app_size"), hexBytes(m_appSizeKb))
+           && replaceLinkerAssignment(&scriptText, QStringLiteral("_largest_modfile"), hexBytes(m_modSizeKb)));
+    if (!linkedSettingsOk) {
         if (errorMessage) {
             *errorMessage = tr("The template linker script is missing an expected Sidbox setting.");
         }

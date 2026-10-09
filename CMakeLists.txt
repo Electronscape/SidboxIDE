@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 project(SidboxIDE LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
 
 qt_standard_project_setup()
@@ -86,6 +88,27 @@ target_link_libraries(SidboxIDE
         Qt::Core
         Qt::Gui
         Qt::Widgets
+)
+
+# Native host-side converter: ELF32 ARM PIE -> CoderGirl SBAPV2.
+# Keep its SOURCE beside mainwindow.cpp, but stage its BINARY beside the
+# other IDE toolchain utilities, under idelibs/tools/.
+add_executable(sidbox-v2-packer v2_packer.cpp)
+set_target_properties(sidbox-v2-packer PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+set(SIDBOX_IDELIBS_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/idelibs/tools")
+add_custom_command(TARGET sidbox-v2-packer POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${SIDBOX_IDELIBS_TOOLS_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:sidbox-v2-packer>"
+        "${SIDBOX_IDELIBS_TOOLS_DIR}/$<TARGET_FILE_NAME:sidbox-v2-packer>"
+    COMMENT "Installing native V2 packer into idelibs/tools"
+    VERBATIM
+)
+# Building only SidboxIDE in Qt Creator must also rebuild/stage the packer.
+add_dependencies(SidboxIDE sidbox-v2-packer)
+# Installed layouts keep the same app-relative idelibs/tools lookup.
+install(TARGETS sidbox-v2-packer
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs/tools"
 )
 
 install(FILES icons/icon.png

@@ -5,7 +5,9 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -19,6 +21,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     : QDialog(parent)
     , m_tabs(new QTabWidget(this))
     , m_projectTypeCombo(new QComboBox(this))
+    , m_appletFormatCombo(new QComboBox(this))
     , m_optimizationCombo(new QComboBox(this))
     , m_suppressWarningsCheck(new QCheckBox(tr("Suppress all compiler warnings (-w)"), this))
     , m_wallCheck(new QCheckBox(tr("Common warnings (-Wall)"), this))
@@ -29,6 +32,9 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_extraCompilerFlagsEdit(new QLineEdit(this))
     , m_modSizeSpinBox(new QSpinBox(this))
     , m_appSizeSpinBox(new QSpinBox(this))
+    , m_v2HeapSpinBox(new QSpinBox(this))
+    , m_v2StackSpinBox(new QSpinBox(this))
+    , m_v2PlanningGroup(new QGroupBox(tr("Experimental GUI Applet V2 - memory planning only"), this))
     , m_outputAppNameEdit(new QLineEdit(this))
     , m_linkerScriptEdit(new QLineEdit(this))
     , m_defaultLinkerLabel(new QLabel(this))
@@ -39,6 +45,12 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     m_projectTypeCombo->addItem(tr("Game"), QStringLiteral("game"));
     connect(m_projectTypeCombo, &QComboBox::currentIndexChanged, this, [this]() {
         updateDefaultLinkerLabel();
+        const bool gui = projectType() == QStringLiteral("gui");
+        if (!gui) {
+            m_appletFormatCombo->setCurrentIndex(0); // Game is always legacy v1.
+        }
+        m_appletFormatCombo->setEnabled(gui);
+        m_v2PlanningGroup->setEnabled(gui);
     });
 
     m_modSizeSpinBox->setRange(0, 1024 * 1024);
@@ -83,11 +95,47 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     auto *formLayout = new QFormLayout(generalPage);
     formLayout->setContentsMargins(12, 12, 12, 12);
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
+    m_appletFormatCombo->addItem(tr("Legacy V1 - fixed SDRAM address"), QStringLiteral("v1"));
+    m_appletFormatCombo->addItem(tr("Experimental V2 - relocatable GUI"), QStringLiteral("v2"));
+    m_appletFormatCombo->setToolTip(tr("V2 requires PIE code and a compatible experimental firmware loader. "
+                                        "Unsupported relocations or dependencies will cause a safe build failure."));
+    formLayout->addRow(tr("Applet format"), m_appletFormatCombo);
     formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
     formLayout->addRow(tr("Output .app name"), m_outputAppNameEdit);
     formLayout->addRow(tr("MOD size"), m_modSizeSpinBox);
     formLayout->addRow(tr("Linker script"), linkerLayout);
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);
+
+    // V2 uses a dedicated PIE linker and strict relocation packer.
+    // Its heap is bounded; the stack reserve is NOT an independent task stack.
+    connect(m_appletFormatCombo, &QComboBox::currentIndexChanged, this, [this]() {
+        updateDefaultLinkerLabel();
+        m_v2PlanningGroup->setTitle(appletFormat() == QStringLiteral("v2")
+            ? tr("Experimental V2 memory requirements")
+            : tr("Experimental V2 memory requirements (V1 ignores these)"));
+    });
+    m_v2HeapSpinBox->setRange(0, 512);
+    m_v2HeapSpinBox->setSingleStep(4);
+    m_v2HeapSpinBox->setSuffix(tr(" KB"));
+    m_v2HeapSpinBox->setSpecialValueText(tr("No heap reserved"));
+    m_v2HeapSpinBox->setValue(16);
+    m_v2StackSpinBox->setRange(1, 128);
+    m_v2StackSpinBox->setSingleStep(4);
+    m_v2StackSpinBox->setSuffix(tr(" KB"));
+    m_v2StackSpinBox->setValue(8);
+    auto *v2Form = new QFormLayout(m_v2PlanningGroup);
+    v2Form->addRow(tr("V2 heap allowance"), m_v2HeapSpinBox);
+    v2Form->addRow(tr("V2 stack reserve"), m_v2StackSpinBox);
+    auto *v2Note = new QLabel(
+        tr("V2 heap is reserved and bounded within the relocated applet memory. "
+           "Stack allowance reserves RAM in the image, but execution and callbacks "
+           "STILL use CoderGirl's OS call stack; this is NOT stack isolation. "
+           "V2 builds are experimental and may reject ordinary libc or compiler relocations. "
+           "V1 builds remain unchanged."), m_v2PlanningGroup);
+    v2Note->setWordWrap(true);
+    v2Form->addRow(v2Note);
+    formLayout->addRow(m_v2PlanningGroup);
+    m_v2PlanningGroup->setEnabled(true);
     m_tabs->addTab(generalPage, tr("General"));
 
     m_optimizationCombo->addItem(tr("No optimisation (-O0)"), QStringLiteral("-O0"));
@@ -157,7 +205,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     layout->addWidget(m_tabs);
     layout->addWidget(buttons);
 
-    resize(700, 460);
+    resize(760, 560);
 }
 
 QString ProjectSettingsDialog::projectType() const
@@ -191,6 +239,39 @@ int ProjectSettingsDialog::appSizeKb() const
 void ProjectSettingsDialog::setAppSizeKb(int sizeKb)
 {
     m_appSizeSpinBox->setValue(qMax(16, sizeKb));
+}
+
+QString ProjectSettingsDialog::appletFormat() const
+{
+    return projectType() == QStringLiteral("game")
+        ? QStringLiteral("v1") : m_appletFormatCombo->currentData().toString();
+}
+
+void ProjectSettingsDialog::setAppletFormat(const QString &format)
+{
+    m_appletFormatCombo->setCurrentIndex(format == QStringLiteral("v2") ? 1 : 0);
+    if (projectType() == QStringLiteral("game"))
+        m_appletFormatCombo->setCurrentIndex(0);
+}
+
+int ProjectSettingsDialog::v2HeapKb() const
+{
+    return m_v2HeapSpinBox->value();
+}
+
+void ProjectSettingsDialog::setV2HeapKb(int sizeKb)
+{
+    m_v2HeapSpinBox->setValue(sizeKb);
+}
+
+int ProjectSettingsDialog::v2StackKb() const
+{
+    return m_v2StackSpinBox->value();
+}
+
+void ProjectSettingsDialog::setV2StackKb(int sizeKb)
+{
+    m_v2StackSpinBox->setValue(sizeKb);
 }
 
 QString ProjectSettingsDialog::outputAppName() const
@@ -229,9 +310,12 @@ void ProjectSettingsDialog::setDefaultLinkerScriptPaths(const QString &guiPath, 
 
 void ProjectSettingsDialog::updateDefaultLinkerLabel()
 {
-    const QString path = projectType() == QStringLiteral("game")
+    QString path = projectType() == QStringLiteral("game")
         ? m_gameDefaultLinkerScriptPath
         : m_guiDefaultLinkerScriptPath;
+    if (projectType() == QStringLiteral("gui") && appletFormat() == QStringLiteral("v2")) {
+        path = QDir(QFileInfo(path).absolutePath()).filePath(QStringLiteral("gui_v2.ld"));
+    }
     m_defaultLinkerLabel->setText(QDir::toNativeSeparators(path));
 }
 

@@ -5,6 +5,7 @@
 #include <QString>
 
 class QCheckBox;
+class QGroupBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -25,6 +26,15 @@ public:
     void setModSizeKb(int sizeKb);
     int appSizeKb() const;
     void setAppSizeKb(int sizeKb);
+
+    // GUI V2 planning only: these values do not alter legacy .app builds.
+    QString appletFormat() const;
+    void setAppletFormat(const QString &format);
+
+    int v2HeapKb() const;
+    void setV2HeapKb(int sizeKb);
+    int v2StackKb() const;
+    void setV2StackKb(int sizeKb);
 
     QString outputAppName() const;
     void setOutputAppName(const QString &name);
@@ -56,6 +66,7 @@ private:
 
     QTabWidget *m_tabs;
     QComboBox *m_projectTypeCombo;
+    QComboBox *m_appletFormatCombo;
     QComboBox *m_optimizationCombo;
     QCheckBox *m_suppressWarningsCheck;
     QCheckBox *m_wallCheck;
@@ -66,6 +77,9 @@ private:
     QLineEdit *m_extraCompilerFlagsEdit;
     QSpinBox *m_modSizeSpinBox;
     QSpinBox *m_appSizeSpinBox;
+    QSpinBox *m_v2HeapSpinBox;
+    QSpinBox *m_v2StackSpinBox;
+    QGroupBox *m_v2PlanningGroup;
     QLineEdit *m_outputAppNameEdit;
     QLineEdit *m_linkerScriptEdit;
     QLabel *m_defaultLinkerLabel;

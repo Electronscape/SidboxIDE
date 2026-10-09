@@ -31,6 +31,7 @@
 
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -39,8 +40,20 @@
 
 
 
-#define HEAP_START   ((uintptr_t)&__app_end)
-#define HEAP_END     ((uintptr_t)(SDRAM_BASE + SDRAM_SIZE))
+#ifdef SIDBOX_APPLET_V2
+/* V2 heap begins beyond .bss + stack reserve. Firmware has allocated the
+ * additional heap bytes from SBV2Header.heap_size and keeps that range owned
+ * by this applet. It cannot grow into the next applet or the RAM disk. */
+extern uint8_t __v2_heap_start__;
+#define HEAP_START ((uintptr_t)&__v2_heap_start__)
+#ifndef SIDBOX_V2_HEAP_BYTES
+#define SIDBOX_V2_HEAP_BYTES (16u * 1024u)
+#endif
+#define HEAP_END   (HEAP_START + (uintptr_t)SIDBOX_V2_HEAP_BYTES)
+#else
+#define HEAP_START ((uintptr_t)&__app_end)
+#define HEAP_END   ((uintptr_t)(SDRAM_BASE + SDRAM_SIZE))
+#endif
 
 static uintptr_t heap_end_u = 0;
 
@@ -77,7 +90,11 @@ static inline void irq_restore(uint32_t primask)
 
 extern int main(int argc, char *argv[]);    // our program entry point
 
+#ifdef SIDBOX_APPLET_V2
+void* heap_base = NULL; /* set at runtime; symbol can be exactly one past .bss+.stack */
+#else
 void* heap_base = (void*)(&__app_end);
+#endif
 uint32_t heap_size;
 
 extern char _end; // defined in linker script
@@ -104,7 +121,12 @@ void doWriteTest(){
 
 ///////////////// [ SIDBOX STDLIB ] ////////////////////////////////////////////////////////////////////////
 void initMalloc(){
+#ifdef SIDBOX_APPLET_V2
+    heap_size = SIDBOX_V2_HEAP_BYTES;
+    heap_base = (void*)HEAP_START;
+#else
     heap_size = (SDRAM_BASE + SDRAM_SIZE) - (uint32_t)&__app_end;
+#endif
 }
 
 #ifndef SIDBOX_STARTUP_HEADER_IN_ASM
@@ -112,12 +134,17 @@ __attribute__((section(".header")))
 const char sdex_header[8] = { 'S', 'B', 'A', 'P', 'X', '5', 'O', '2' };
 #endif
 
+#ifndef SIDBOX_APPLET_V2
 __attribute__((section(".thestart")))
 const uint32_t sdex_startaddr = (uint32_t)&_appstart;
+#endif
 
 extern void __libc_init_array(void);
 __attribute__((section(".text.applet_entry")))
 int applet_entry(int argc, char *argv[]) {
+#ifdef SIDBOX_APPLET_V2
+    initMalloc();
+#endif
     setbuf(stdout, NULL); // might need these
     setbuf(stderr, NULL);
     return main(argc, argv);
@@ -187,12 +214,31 @@ void *_sbrk(ptrdiff_t incr)
     intptr_t inc = (intptr_t)incr;
 
     uintptr_t next;
+#ifdef SIDBOX_APPLET_V2
+    if (inc >= 0) {
+        if ((uintptr_t)inc > HEAP_END - heap_end_u) {
+            errno = ENOMEM;
+            return (void*)-1;
+        }
+        next = heap_end_u + (uintptr_t)inc;
+    } else {
+        /* Avoid UB on PTRDIFF_MIN and do not subtract beyond heap start. */
+        uintptr_t dec = (uintptr_t)(-(inc + 1)) + 1u;
+        if (dec > heap_end_u - HEAP_START) {
+            errno = ENOMEM;
+            return (void*)-1;
+        }
+        next = heap_end_u - dec;
+    }
+#else
+    /* Preserve the legacy bump allocator exactly in V1 applets. */
     if (inc >= 0) {
         next = heap_end_u + (uintptr_t)inc;
     } else {
         uintptr_t dec = (uintptr_t)(-inc);
         next = heap_end_u - dec;
     }
+#endif
 
     if (next < HEAP_START || next > HEAP_END) {
         errno = ENOMEM;
