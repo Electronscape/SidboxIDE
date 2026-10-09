@@ -92,6 +92,28 @@ typedef struct API_GUI_GADGETS {
 
     /* Appended for virtual TabGroup pressed-state selection; ABI offsets stable. */
     void     (*button_set_toggle)       (CGGadget button, uint8_t pressed);
+
+    /* Appended GUI runtime controls. NEVER insert above existing members. */
+    void        (*textbox_set_text)        (CGGadget textbox, const char *text);
+    const char* (*textbox_get_text)        (CGGadget textbox);
+    uint16_t    (*textbox_get_length)      (CGGadget textbox);
+    void        (*textbox_set_caret)       (CGGadget textbox, uint16_t pos);
+    uint16_t    (*textbox_get_caret)       (CGGadget textbox);
+    void        (*textarea_set_text)       (CGGadget textarea, const char *text);
+    void        (*textarea_insert_text)    (CGGadget textarea, const char *text);
+    void        (*textarea_set_caret)      (CGGadget textarea, uint32_t line, uint32_t col);
+    void        (*textarea_get_caret)      (CGGadget textarea, uint32_t *line, uint32_t *col);
+    uint32_t    (*textarea_line_count)     (CGGadget textarea);
+    uint32_t    (*label_set_text)          (CGGadget label, const char *text);
+    uint32_t    (*label_set_colour)        (CGGadget label, int16_t fpen, int16_t bpen);
+    void        (*button_set_text)         (CGGadget button, const char *text, int8_t cycle_index);
+    void        (*checkbox_set_state)      (CGGadget checkbox, uint8_t checked);
+    int8_t      (*checkbox_get_state)      (CGGadget checkbox);
+    void        (*slider_set_value)        (CGGadget slider, uint16_t value);
+    uint16_t    (*slider_get_value)        (CGGadget slider);
+    void        (*scrollbar_set_value)     (CGGadget scrollbar, uint16_t value);
+    int16_t     (*scrollbar_get_value)     (CGGadget scrollbar);
+
 } API_GUI_GADGETS;
 
 typedef API_GUI_GADGETS API_GUI_Gadgets;
@@ -114,6 +136,8 @@ typedef API_GUI_GADGETS API_GUI_Gadgets;
 #define GAD_TOOL_ALIGN_TOP      (1 << 12)   // align the text below the gadget
 #define GAD_TOOL_OPAQUE_TEXT    (1 << 13)   // make the text background opaque
 #define GAD_TOOL_TOGGLE         (1 << 14)   // allows for toggling
+#define GAD_TOOL_LATCHDOWN      (1 << 15)   // keep pressed visual latched until owner clears it
+#define GAD_TOOL_TRANSPARENT    (1 << 16)   // transparent backgrounds
 
 //// BITMAP VIEW FLAGS
 #define BVF_SHOW_FRAME          (1 << 0)
@@ -206,6 +230,64 @@ typedef struct {
 
 #define SBOS_ListboxAttachItemlist(listbox, list) \
     (GUICoderGirl->gadgets->listbox_attach_itemlist(listbox, list))
+
+
+/* ---- GUI SDK constructors not previously exposed as convenient macros ---- */
+#define SBOS_CreateTextBox(win, x, y, w, h, text, tb_flags, flags) \
+    (GUICoderGirl->gadgets->textbox_create((win), (x), (y), (w), (h), (text), (tb_flags), (flags)))
+#define SBOS_CreateCheckbox(win, x, y, w, h, text, checked, flags) \
+    (GUICoderGirl->gadgets->checkbox_create((win), (x), (y), (w), (h), (text), (checked), (flags)))
+#define SBOS_CreateGridSelect(win, x, y, cell_w, cell_h, cells_x, cells_y, grid_flags, flags) \
+    (GUICoderGirl->gadgets->gridselect_create((win), (x), (y), (cell_w), (cell_h), (cells_x), (cells_y), (grid_flags), (flags)))
+#define SBOS_CreateListBox(win, x, y, w, h, flags) \
+    (GUICoderGirl->gadgets->listbox_create((win), (x), (y), (w), (h), (flags)))
+#define SBOS_CreateProgBar(win, x, y, w, h, flags) \
+    (GUICoderGirl->gadgets->progbar_create((win), (x), (y), (w), (h), (flags)))
+#define SBOS_CreateRadioButton(win, x, y, w, h, text, group, checked, flags) \
+    (GUICoderGirl->gadgets->radiobutton_create((win), (x), (y), (w), (h), (text), (group), (checked), (flags)))
+#define SBOS_CreateScrollbar(win, x, y, w, h, orient, min_value, max_value, step_small, step_large, flags) \
+    (GUICoderGirl->gadgets->scrollbar_create((win), (x), (y), (w), (h), (orient), (min_value), (max_value), (step_small), (step_large), (flags)))
+#define SBOS_CreateSlider(win, x, y, w, h, orient, min_value, max_value, flags) \
+    (GUICoderGirl->gadgets->slider_create((win), (x), (y), (w), (h), (orient), (min_value), (max_value), (flags)))
+
+/* ---- Firmware-backed setters/readers; firmware must be updated FIRST. ---- */
+/* TextBox returns a borrowed pointer. Copy it if retaining beyond the gadget lifetime. */
+#define SBOS_TextBoxSetText(h, text)      (GUICoderGirl->gadgets->textbox_set_text((h), (text)))
+#define SBOS_TextBoxGetText(h)            (GUICoderGirl->gadgets->textbox_get_text((h)))
+#define SBOS_TextBoxGetLen(h)             (GUICoderGirl->gadgets->textbox_get_length((h)))
+#define SBOS_TextBoxSetCaret(h, pos)      (GUICoderGirl->gadgets->textbox_set_caret((h), (pos)))
+#define SBOS_TextBoxGetCaret(h)           (GUICoderGirl->gadgets->textbox_get_caret((h)))
+#define SBOS_TextAreaSetText(h, text)     (GUICoderGirl->gadgets->textarea_set_text((h), (text)))
+#define SBOS_TextAreaInsertText(h, text)  (GUICoderGirl->gadgets->textarea_insert_text((h), (text)))
+#define SBOS_TextAreaSetCaret(h, l, c)    (GUICoderGirl->gadgets->textarea_set_caret((h), (l), (c)))
+#define SBOS_TextAreaGetCaret(h, l, c)    (GUICoderGirl->gadgets->textarea_get_caret((h), (l), (c)))
+#define SBOS_TextAreaLineCount(h)         (GUICoderGirl->gadgets->textarea_line_count((h)))
+#define SBOS_LabelSetText(h, text)        (GUICoderGirl->gadgets->label_set_text((h), (text)))
+#define SBOS_LabelSetColour(h, fg, bg)    (GUICoderGirl->gadgets->label_set_colour((h), (fg), (bg)))
+#define SBOS_ButtonSetText(h, text, ci)   (GUICoderGirl->gadgets->button_set_text((h), (text), (ci)))
+#define SBOS_CheckboxSetState(h, checked) (GUICoderGirl->gadgets->checkbox_set_state((h), (checked)))
+#define SBOS_CheckboxGetState(h)          (GUICoderGirl->gadgets->checkbox_get_state((h)))
+#define SBOS_SliderSetValue(h, value)     (GUICoderGirl->gadgets->slider_set_value((h), (value)))
+#define SBOS_SliderGetValue(h)            (GUICoderGirl->gadgets->slider_get_value((h)))
+#define SBOS_ScrollbarSetValue(h, value)  (GUICoderGirl->gadgets->scrollbar_set_value((h), (value)))
+#define SBOS_ScrollbarGetValue(h)         (GUICoderGirl->gadgets->scrollbar_get_value((h)))
+
+/* Short aliases for setting text after a FileRequester selection, etc. */
+#define SBOS_SetTextBox(h, text)          SBOS_TextBoxSetText((h), (text))
+#define SBOS_SetTextArea(h, text)         SBOS_TextAreaSetText((h), (text))
+
+/* ---- Previously available gadget API members without SDK helpers ---- */
+#define SBOS_GadgetMove(h, x, y)          (GUICoderGirl->gadgets->move((h), (x), (y)))
+#define SBOS_GadgetResize(h, w, ht)       (GUICoderGirl->gadgets->resize((h), (w), (ht)))
+#define SBOS_GadgetSetBPen(h, pen)        (GUICoderGirl->gadgets->set_bpen((h), (pen)))
+#define SBOS_GadgetSetFPen(h, pen)        (GUICoderGirl->gadgets->set_fpen((h), (pen)))
+#define SBOS_GadgetSetHPen(h, pen)        (GUICoderGirl->gadgets->set_hpen((h), (pen)))
+#define SBOS_GadgetEnabled(h, state)      (GUICoderGirl->gadgets->enabled((h), (state)))
+#define SBOS_GadgetSetGroupVisable(win, group, visible) \
+    (GUICoderGirl->gadgets->set_group_visible((win), (group), (visible)))
+#define SBOS_GadgetSetGroupId(h, id)      (GUICoderGirl->gadgets->set_group_id((h), (id)))
+#define SBOS_GadgetGetGroupId(h)          (GUICoderGirl->gadgets->get_group_id((h)))
+#define SBOS_ButtonSetToggle(h, pressed)  (GUICoderGirl->gadgets->button_set_toggle((h), (pressed)))
 
 
 #ifdef __cplusplus

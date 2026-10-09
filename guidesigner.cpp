@@ -83,6 +83,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QTimer>
 #include <QToolBar>
@@ -3762,6 +3763,7 @@ private:
         }
         if (g.type == QStringLiteral("Media")) {
             // A designer-only media component; no SIDBOX gadget is created.
+            // Keep the speaker and wave glyph comfortably inside the 24x24 box.
             p.save();
             p.setRenderHint(QPainter::Antialiasing, false);
             p.fillRect(r, QColor(16, 24, 38));
@@ -3769,16 +3771,20 @@ private:
             p.drawRect(r.adjusted(0, 0, -1, -1));
             p.setBrush(QColor(225, 232, 244));
             p.setPen(Qt::NoPen);
-            const int x = r.x() + 5, y = r.y() + 5;
+            const int x = r.x() + 4;
+            const int y = r.y() + 4;
             QPolygon speaker;
-            speaker << QPoint(x,y+5) << QPoint(x+4,y+5)
-                    << QPoint(x+9,y+1) << QPoint(x+9,y+15)
-                    << QPoint(x+4,y+11) << QPoint(x,y+11);
+            speaker << QPoint(x,     y + 6)
+                    << QPoint(x + 4, y + 6)
+                    << QPoint(x + 8, y + 2)
+                    << QPoint(x + 8, y + 14)
+                    << QPoint(x + 4, y + 10)
+                    << QPoint(x,     y + 10);
             p.drawPolygon(speaker);
             p.setBrush(Qt::NoBrush);
             p.setPen(QPen(QColor(90, 164, 238), 1));
-            p.drawArc(QRect(x+7, y+3, 12, 12), -60*16, 120*16);
-            p.drawArc(QRect(x+5, y, 17, 17), -60*16, 120*16);
+            p.drawArc(QRect(x + 6, y + 4, 9, 9), -60 * 16, 120 * 16);
+            p.drawArc(QRect(x + 4, y + 1, 13, 13), -60 * 16, 120 * 16);
             p.restore();
             return;
         }
@@ -3847,7 +3853,12 @@ private:
         if (g.type
             == QStringLiteral(
                 "Label")) {
-            p.fillRect(r, face);
+            // Transparent labels leave the already-rendered window / underlying
+            // bitmap untouched. Only the label glyphs (and optional bevel)
+            // are drawn, mirroring GAD_TOOL_TRANSPARENT in CoderGirl.
+            if (!designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_TRANSPARENT"))) {
+                p.fillRect(r, face);
+            }
 
             if (g.flags.contains(QStringLiteral("GAD_TOOL_INSET"))) {
                 drawCoderGirlBevel(p, r, true);
@@ -4713,6 +4724,26 @@ public:
                 background-color: #7B7B7B;
                 alternate-background-color: #7B7B7B;
             }
+            QTabWidget#coderGirlGadgetPaletteTabs::pane {
+                border: 1px solid #303030;
+                border-radius: 0px;
+                background-color: #7B7B7B;
+            }
+            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab {
+                background: #101010;
+                color: #dddddd;
+                border: 1px solid #303030;
+                border-radius: 0px;
+                padding: 5px 4px;
+                margin-right: 1px;
+            }
+            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab:selected {
+                background: #2858A8;
+                color: #ffffff;
+            }
+            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab:hover:!selected {
+                background: #202020;
+            }
             QListWidget::item, QTreeWidget::item, QTableWidget::item {
                 border-radius: 0px;
                 margin: 0px;
@@ -4902,17 +4933,12 @@ public:
         auto *toolLabel = new QLabel(QObject::tr("CoderGirl Gadget Palette"), left);
         leftLayout->addWidget(toolLabel);
 
-        m_toolbox = new GuiDesignerToolbox(left);
-        m_toolbox->setObjectName(QStringLiteral("coderGirlGadgetPalette"));
-        const QStringList gadgetTypes = {
-            QStringLiteral("Button"), QStringLiteral("Label"), QStringLiteral("Checkbox"),
-            QStringLiteral("Radio"), QStringLiteral("Slider"), QStringLiteral("ProgressBar"),
-            QStringLiteral("TextBox"), QStringLiteral("TextArea"), QStringLiteral("ListBox"),
-            QStringLiteral("Scrollbar"), QStringLiteral("GridSelect"), QStringLiteral("Canvas"),
-            QStringLiteral("BitmapView"), QStringLiteral("TabGroup"),
-            QStringLiteral("Timer"), QStringLiteral("Media"),
-            QStringLiteral("FileRequester"), QStringLiteral("MessageBox")
-        };
+        // Keep the graphic palette compact. Organise gadgets by what they do
+        // rather than forcing all gadgets into a single scrolling list.
+        m_toolboxTabs = new QTabWidget(left);
+        m_toolboxTabs->setObjectName(QStringLiteral("coderGirlGadgetPaletteTabs"));
+        m_toolboxTabs->setDocumentMode(true);
+
         const QHash<QString, QString> gadgetTooltips = {
             {QStringLiteral("BitmapView"), QObject::tr("Displays an indexed PNG bitmap")},
             {QStringLiteral("Button"), QObject::tr("Clickable button; supports activation callbacks")},
@@ -4933,46 +4959,83 @@ public:
             {QStringLiteral("FileRequester"), QObject::tr("Non-modal CoderGirl file picker with select/cancel callbacks")},
             {QStringLiteral("MessageBox"), QObject::tr("Non-modal CoderGirl MessageBox or InfoBox with result callback")}
         };
-        QStringList sortedGadgets = gadgetTypes;
-        sortedGadgets.sort(Qt::CaseInsensitive);
-        for (const QString &type : sortedGadgets) {
-            // Add your 64x24 PNG to CMakeLists.txt's qt_add_resources(...)
-            // FILES list to replace this placeholder automatically.
-            const QString resourcePath = type == QStringLiteral("Media")
-                ? QStringLiteral(":/icons/gadgets_media.png")
-                : QStringLiteral(":/icons/gadget_%1.png").arg(type.toLower());
-            QPixmap tile(resourcePath);
-            if (tile.isNull()) {
-                tile = QPixmap(64, 24);
-                tile.fill(QColor(QStringLiteral("#111824")));
-                QPainter painter(&tile);
-                painter.setRenderHint(QPainter::Antialiasing, false);
-                painter.setPen(QColor(QStringLiteral("#385079")));
-                painter.drawRect(0, 0, 63, 23);
-                painter.fillRect(QRect(2, 3, 18, 18), QColor(QStringLiteral("#2858A8")));
-                painter.setPen(Qt::white);
-                if (type == QStringLiteral("Timer")) {
-                    // Miniature stopwatch in the placeholder until artwork arrives.
-                    painter.drawEllipse(QRect(5, 7, 12, 12));
-                    painter.drawLine(11, 13, 11, 9);
-                    painter.drawLine(11, 13, 15, 15);
-                    painter.drawLine(9, 5, 13, 5);
-                } else {
-                    painter.drawText(QRect(2, 3, 18, 18), Qt::AlignCenter, type.left(1));
+        // Every gadget appears exactly once. The virtual components are
+        // designer-only; TabGroup belongs with them, even though it creates
+        // ordinary buttons and groups in generated SIDBOX code.
+        const QList<QPair<QString, QStringList>> paletteGroups = {
+            {QObject::tr("Controls"), {
+                QStringLiteral("Button"), QStringLiteral("Checkbox"),
+                QStringLiteral("GridSelect"), QStringLiteral("ListBox"),
+                QStringLiteral("Radio"), QStringLiteral("Scrollbar"),
+                QStringLiteral("Slider"), QStringLiteral("TextArea"),
+                QStringLiteral("TextBox")}},
+            {QObject::tr("Display"), {
+                QStringLiteral("BitmapView"), QStringLiteral("Canvas"),
+                QStringLiteral("Label"), QStringLiteral("ProgressBar")}},
+            {QObject::tr("Virtual"), {
+                QStringLiteral("FileRequester"), QStringLiteral("Media"),
+                QStringLiteral("MessageBox"), QStringLiteral("TabGroup"),
+                QStringLiteral("Timer")}}
+        };
+        for (const auto &group : paletteGroups) {
+            auto *palette = new GuiDesignerToolbox(m_toolboxTabs);
+            palette->setObjectName(QStringLiteral("coderGirlGadgetPalette"));
+            QStringList sortedGadgets = group.second;
+            sortedGadgets.sort(Qt::CaseInsensitive);
+            for (const QString &type : sortedGadgets) {
+                // Each palette keeps the original 64x24 artwork, tooltips,
+                // drag-out behaviour and double-click to create a gadget.
+                const QString resourcePath =
+                    QStringLiteral(":/icons/gadget_%1.png").arg(type.toLower());
+                QPixmap tile(resourcePath);
+                if (tile.isNull()) {
+                    tile = QPixmap(64, 24);
+                    tile.fill(QColor(QStringLiteral("#111824")));
+                    QPainter painter(&tile);
+                    painter.setRenderHint(QPainter::Antialiasing, false);
+                    painter.setPen(QColor(QStringLiteral("#385079")));
+                    painter.drawRect(0, 0, 63, 23);
+                    painter.fillRect(QRect(2, 3, 18, 18), QColor(QStringLiteral("#2858A8")));
+                    painter.setPen(Qt::white);
+                    if (type == QStringLiteral("Timer")) {
+                        // Miniature stopwatch until user artwork is available.
+                        painter.drawEllipse(QRect(5, 7, 12, 12));
+                        painter.drawLine(11, 13, 11, 9);
+                        painter.drawLine(11, 13, 15, 15);
+                        painter.drawLine(9, 5, 13, 5);
+                    } else {
+                        painter.drawText(QRect(2, 3, 18, 18), Qt::AlignCenter, type.left(1));
+                    }
+                    QFont tileFont = painter.font();
+                    tileFont.setPixelSize(9);
+                    painter.setFont(tileFont);
+                    painter.setPen(QColor(QStringLiteral("#E0E6F0")));
+                    painter.drawText(QRect(23, 0, 39, 24), Qt::AlignVCenter | Qt::AlignLeft,
+                                     painter.fontMetrics().elidedText(type, Qt::ElideRight, 39));
                 }
-                QFont tileFont = painter.font();
-                tileFont.setPixelSize(9);
-                painter.setFont(tileFont);
-                painter.setPen(QColor(QStringLiteral("#E0E6F0")));
-                painter.drawText(QRect(23, 0, 39, 24), Qt::AlignVCenter | Qt::AlignLeft,
-                                 painter.fontMetrics().elidedText(type, Qt::ElideRight, 39));
+                auto *item = new QListWidgetItem(QIcon(tile), QString(), palette);
+                item->setData(Qt::UserRole, type);
+                item->setToolTip(QStringLiteral("%1\n%2").arg(type, gadgetTooltips.value(type)));
+                item->setSizeHint(QSize(72, 30));
             }
-            auto *item = new QListWidgetItem(QIcon(tile), QString(), m_toolbox);
-            item->setData(Qt::UserRole, type);
-            item->setToolTip(QStringLiteral("%1\n%2").arg(type, gadgetTooltips.value(type)));
-            item->setSizeHint(QSize(72, 30));
+            connect(palette, &QListWidget::itemDoubleClicked, this,
+                    [this](QListWidgetItem *item) {
+                if (item) addGadget(item->data(Qt::UserRole).toString());
+            });
+            m_toolboxTabs->addTab(palette, group.first);
         }
-        leftLayout->addWidget(m_toolbox, 1);
+        leftLayout->addWidget(m_toolboxTabs, 1);
+        // Remember the selected category between designer sessions.
+        QSettings paletteSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        const int previousTab = paletteSettings.value(
+            QStringLiteral("layout/guiDesignerPaletteTab"), 0).toInt();
+        if (previousTab >= 0 && previousTab < m_toolboxTabs->count())
+            m_toolboxTabs->setCurrentIndex(previousTab);
+        connect(m_toolboxTabs, &QTabWidget::currentChanged, this,
+                [](int index) {
+            QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+            settings.setValue(QStringLiteral("layout/guiDesignerPaletteTab"), index);
+        });
 
         auto *addButton = new QPushButton(QObject::tr("Add Selected Gadget"), left);
         leftLayout->addWidget(addButton);
@@ -5034,10 +5097,10 @@ public:
         });
 
         connect(addButton, &QPushButton::clicked, this, [this]() {
-            QListWidgetItem *item = m_toolbox->currentItem();
-            if (item) addGadget(item->data(Qt::UserRole).toString());
-        });
-        connect(m_toolbox, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+            // Only add the selected gadget in the *visible* palette tab.
+            auto *palette = qobject_cast<QListWidget *>(m_toolboxTabs->currentWidget());
+            if (!palette) return;
+            QListWidgetItem *item = palette->currentItem();
             if (item) addGadget(item->data(Qt::UserRole).toString());
         });
         connect(
@@ -6399,11 +6462,13 @@ private:
                 QStringLiteral("GAD_TOOL_OPAQUE_TEXT"),
                 QStringLiteral("GAD_TOOL_TOGGLE")
             });
-        } else if (type == QStringLiteral("Label")
-                   || type == QStringLiteral("Canvas")) {
-            flags.append(
-                QStringLiteral(
-                    "GAD_TOOL_INSET"));
+        } else if (type == QStringLiteral("Label")) {
+            flags.append({
+                QStringLiteral("GAD_TOOL_INSET"),
+                QStringLiteral("GAD_TOOL_TRANSPARENT")
+            });
+        } else if (type == QStringLiteral("Canvas")) {
+            flags.append(QStringLiteral("GAD_TOOL_INSET"));
         } else if (type == QStringLiteral("Slider")) {
             flags.append({
                 QStringLiteral("GAD_TOOL_DOCKED_RIGHT"),
@@ -10376,6 +10441,19 @@ private:
             s << "#include <stdio.h>\n"; // printf() in generated dialog demos.
         s << "\n";
 
+        // The designer may be updated before the applet SDK has acquired the
+        // new flag. Define the agreed-upon bit only for generated windows that
+        // actually use it. Once the SDK defines it, that definition wins.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Label")
+                && designerWindowFlag(g.flags, QStringLiteral("GAD_TOOL_TRANSPARENT"))) {
+                s << "#ifndef GAD_TOOL_TRANSPARENT\n"
+                     "#define GAD_TOOL_TRANSPARENT (1u << 16)\n"
+                     "#endif\n\n";
+                break;
+            }
+        }
+
         // Embedded samples live in <design>res/media_sfx.c, not this source.
         // .sbui stores PCM8 XOR 0x80 for compatibility; generated media_sfx.c
         // reverses that encoding to the unsigned PCM8 bytes BETH actually mixes.
@@ -11800,24 +11878,34 @@ private:
             const QString n = safeCIdentifier(g.name, QStringLiteral("dialog"));
             if (g.type == QStringLiteral("FileRequester")) {
                 s << "static void " << g.onActivate << "(const char *path)\n{\n"
-                  << "\t/* GENERATED EXAMPLE: the selected filename is supplied in path.\n"
-                     "\t   Use path in the USER block below to open the chosen file.\n"
-                     "\t   Copy it to your own buffer if you must retain it across later requests. */\n"
+                  << "\t/*\n"
+                     "\t * EXAMPLE ONLY (documentation; does not execute).\n"
+                     "\t * The selected filename is supplied in 'path'.\n"
+                     "\t * Copy the string to your own buffer if it must survive\n"
+                     "\t * beyond this callback or after another file request.\n"
+                     "\t *\n"
                   << "\tif (path && path[0] != '\\0') {\n"
                   << "\t\tprintf(\"[" << n << "] Selected file: %s\\n\", path);\n"
                   << "\t} else {\n"
                   << "\t\tprintf(\"[" << n << "] Empty filename returned\\n\");\n"
-                  << "\t}\n";
+                  << "\t}\n"
+                  << "\t */\n";
                 userBody(g.onActivate);
                 s << "}\n\nstatic void " << g.onChange << "(void)\n{\n"
-                  << "\t/* GENERATED EXAMPLE: Cancel was pressed; no filename is returned. */\n"
-                  << "\tprintf(\"[" << n << "] File selection cancelled\\n\");\n";
+                  << "\t/*\n"
+                     "\t * EXAMPLE ONLY (documentation; does not execute).\n"
+                     "\t * Cancel was pressed; no filename is returned.\n"
+                  << "\tprintf(\"[" << n << "] File selection cancelled\\n\");\n"
+                  << "\t */\n";
                 userBody(g.onChange);
                 s << "}\n\n";
             } else {
                 s << "static void " << g.onActivate << "(int32_t result)\n{\n"
-                  << "\t/* GENERATED EXAMPLE: result is NOT discarded.\n"
-                     "\t   Put your application behaviour in the USER block below. */\n";
+                  << "\t/*\n"
+                     "\t * EXAMPLE ONLY (documentation; does not execute).\n"
+                     "\t * The user's button choice is supplied in 'result'.\n"
+                     "\t * Put your actual logic in the USER block below.\n"
+                     "\t *\n";
                 if (g.dialogKind == QStringLiteral("Info")) {
                     s << "\tif (result == INFOBOX_OK) {\n"
                       << "\t\tprintf(\"[" << n << "] InfoBox acknowledged (OK)\\n\");\n"
@@ -11843,6 +11931,7 @@ private:
                       << "\t\tbreak;\n"
                       << "\t}\n";
                 }
+                s << "\t */\n";
                 userBody(g.onActivate);
                 s << "}\n\n";
             }
@@ -12053,7 +12142,7 @@ private:
     GuiDesignerWindow m_window;
     QList<GuiDesignerGadget> m_gadgets;
     QList<GuiDesignerMenuTitle> m_menus;
-    QListWidget *m_toolbox = nullptr;
+    QTabWidget *m_toolboxTabs = nullptr;
     QTreeWidget *m_menuTree = nullptr;
     GuiDesignerCanvas *m_canvas = nullptr;
     QWidget *m_propertyHost = nullptr;
