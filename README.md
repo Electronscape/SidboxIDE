@@ -129,3 +129,238 @@ SidboxIDE/
     └── tools/
         └── cgarm-build/
             └── cgarm-build.cpp
+```
+
+---
+
+## Requirements
+
+Typical development environment:
+
+- Linux
+- Qt 6
+- CMake
+- bundled `arm-none-eabi` toolchain
+- LLVM `ld.lld`
+- SIDBOX SDK files included in `idelibs/`
+
+> The repository structure assumes the bundled SIDBOX toolchain layout used by this project.
+
+---
+
+## Building the IDE
+
+From the repository root:
+
+```bash
+mkdir build
+cd build
+cmake ..
+make -j$(nproc)
+```
+
+Or open the project in **Qt Creator** and build normally.
+
+---
+
+## Using the IDE
+
+### V1 Applets
+
+1. Open or create a project
+2. Set applet format to **V1 (legacy fixed-address)**
+3. Press **F5** to build
+
+### CGARM V2 Applets
+
+1. Open or create a project
+2. Set applet format to **CGARM (Beta) - relocatable GUI (V2 ELF)**
+3. Configure:
+   - applet size
+   - CGARM heap allowance
+   - CGARM private callback stack
+4. Press **F5** to build
+
+The IDE will:
+
+- save project resources
+- compile sources
+- call `cgarm-build`
+- link the applet
+- pack the final `.app`
+- generate assembly output
+
+If the applet is too large for the selected memory allowance, the IDE can suggest a larger size and relink without recompiling.
+
+---
+
+## `cgarm-build` Command-Line Usage
+
+`cgarm-build` is the standalone CGARM V2 compiler backend.
+
+### Build a single source file
+
+```bash
+cgarm-build hello.c -o hello.app
+```
+
+### Build a project file
+
+```bash
+cgarm-build myproject.proj -o myproject.app
+```
+
+### Dry run
+
+```bash
+cgarm-build myproject.proj -o myproject.app --dry-run
+```
+
+### Force a full rebuild
+
+```bash
+cgarm-build myproject.proj -o myproject.app --rebuild
+```
+
+### Clean CGARM build cache
+
+```bash
+cgarm-build myproject.proj --clean
+```
+
+---
+
+## Incremental Compilation
+
+CGARM builds support incremental compilation.
+
+This means:
+
+- unchanged files are skipped
+- only modified `.c` files are recompiled
+- header dependency changes trigger rebuilds where needed
+- RAM-size relinks can reuse existing objects without recompiling
+
+This makes repeated builds significantly faster during development.
+
+---
+
+## Cleaning Builds
+
+For CGARM projects, you can clean generated build cache in two ways:
+
+### From the IDE
+
+Use the **Compile** dropdown and choose:
+
+**Clean CGARM Build Cache...**
+
+### From the command line
+
+```bash
+cgarm-build myproject.proj --clean
+```
+
+This removes generated CGARM cache/intermediate files while preserving:
+
+- project source files
+- GUI Designer files
+- project settings
+- previously built `.app` files
+
+---
+
+## Editor Quality-of-Life Features
+
+- Code folding
+- Shift-click fold expansion for nested blocks
+- Alt + Up / Alt + Down scrolling
+- Build-aware source saving
+- Syntax highlighting with large-file safeguards
+
+---
+
+## Current Status
+
+### Working
+
+- V1 applet build path
+- CGARM V2 build path
+- GUI projects
+- standalone `cgarm-build`
+- `libcgarm.a`
+- incremental compilation
+- automatic RAM resize workflow
+- assembly output generation
+
+### In Progress / Future Improvements
+
+- additional IDE polish
+- continued CGARM library expansion
+- further tooling cleanup
+- ongoing testing and hardening
+
+---
+
+## Why This Exists
+
+SIDBOX is about making software for a custom platform approachable without hiding the interesting parts.
+
+The goal is to provide:
+
+- a friendly IDE
+- a working command-line toolchain
+- support for experimentation
+- enough automation that developers can focus on writing applets rather than wrestling the build system
+
+---
+
+## Contributing
+
+This project is still evolving.
+
+Bug reports, testing feedback and tooling improvements are welcome.
+
+If you are developing CGARM V2 applets, please report:
+
+- build issues
+- IDE integration issues
+- library compatibility problems
+- runtime issues on SIDBOX hardware
+
+---
+
+## License
+
+Add your preferred license here.
+
+Example:
+
+```text
+MIT License
+```
+
+or
+
+```text
+All rights reserved
+```
+
+---
+
+## Acknowledgements
+
+- SIDBOX platform development
+- CGARM runtime and tooling work
+- Qt
+- GNU Arm Embedded toolchain
+- LLVM LLD
+
+---
+
+<div align="center">
+
+**CoderGirl IDE / SIDBOX IDE**  
+Custom tools for building software on SIDBOX.
+
+</div>
