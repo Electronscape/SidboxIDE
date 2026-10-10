@@ -2781,7 +2781,17 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(m_compilerProcess, &QProcess::readyReadStandardOutput, this, [this]() {
-        appendOutputText(QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput()), OutputKind::Normal);
+        const QString text = QString::fromLocal8Bit(m_compilerProcess->readAllStandardOutput());
+        // cgarm-build normally streams errors to stderr, but recognise a
+        // linker RAM failure even if a tool emits it on stdout.
+        if (m_buildStep == BuildStep::V2CliBuilding) {
+            const QString lower = text.toLower();
+            if (lower.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance")) ||
+                lower.contains(QStringLiteral("applet image exceeds selected app size"))) {
+                m_buildLinkSizeOverflow = true;
+            }
+        }
+        appendOutputText(text, OutputKind::Normal);
     });
     connect(m_compilerProcess, &QProcess::readyReadStandardError, this, [this]() {
         const QString text =
@@ -2790,7 +2800,11 @@ MainWindow::MainWindow(QWidget *parent)
         processCompilerStderrChunk(text);
     });
     connect(m_compilerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
-        const QString toolName = m_buildStep == BuildStep::Objcopy ? tr("packer / objcopy") :
+        const QString toolName = (m_buildStep == BuildStep::V2CliBuilding ||
+                                  m_buildStep == BuildStep::V2CliProbe ||
+                                  m_buildStep == BuildStep::V2CliRelink)
+            ? tr("cgarm-build") : m_buildStep == BuildStep::Objcopy
+            ? tr("packer / objcopy") :
             m_buildStep == BuildStep::Linking && m_currentBuildIsV2 ? tr("LLVM linker") : tr("compiler");
         appendOutputLine(tr("Could not start %1. Check that the IDE's bundled toolchain exists.").arg(toolName), OutputKind::Error);
         m_buildStep = BuildStep::None;
@@ -6029,6 +6043,80 @@ void MainWindow::compileActiveFile()
     const QString mapOutputPath = QDir(buildPath).filePath(outputBaseName + QStringLiteral(".map"));
     const QString asmOutputPath = QDir(buildPath).filePath(outputBaseName + QStringLiteral(".asm"));
 
+    // Stage 5: CGARM V2 is delegated to the standalone compiler. It reads
+    // the same .proj that we save here (including Designer-generated files),
+    // compiles the six SDK sources, links libcgarm.a and packs the applet.
+    // No PATH variable is needed by the IDE; the executable is bundled.
+    // V1/Gaming continue below through their ORIGINAL compiler path.
+    if (v2Build) {
+#ifdef Q_OS_WIN
+        const QString cliName = QStringLiteral("cgarm-build.exe");
+#else
+        const QString cliName = QStringLiteral("cgarm-build");
+#endif
+        const QString cli = QDir(libsPath).filePath(
+            QStringLiteral("tools/bin/") + cliName);
+        if (!QFileInfo(cli).isFile() || !QFileInfo(cli).isExecutable()) {
+            QMessageBox::warning(this, tr("CGARM compiler missing"),
+                tr("The standalone CGARM compiler was not found or is not executable:\n%1\n\n"
+                   "Build the cgarm-build CMake target (or install the CLI under idelibs/tools/bin).\n"
+                   "V1 and Gaming projects are unaffected.")
+                    .arg(QDir::toNativeSeparators(cli)));
+            return;
+        }
+        if (!saveProjectFile(m_projectFilePath)) {
+            return; // Never build from stale project settings.
+        }
+
+        // cgarm-build sanitises its output stem for intermediate file names.
+        QString cliStem = QFileInfo(appOutputPath).completeBaseName();
+        cliStem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")),
+                        QStringLiteral("_"));
+        if (cliStem.isEmpty()) cliStem = QStringLiteral("applet");
+        m_v2BuildDirectory = QDir(m_projectPath).filePath(
+            QStringLiteral("build/cgarm/") + cliStem);
+        m_pendingElfPath = QDir(m_v2BuildDirectory).filePath(cliStem + QStringLiteral(".elf"));
+        m_pendingAsmPath = asmOutputPath;
+        m_pendingAppPath = appOutputPath;
+        m_v2CliPath = cli;
+        m_currentBuildIsV2 = true;
+        m_v2AutoResizeRetried = false;
+        m_buildLinkSizeOverflow = false;
+
+        clearCompilerDiagnostics();
+        m_outputPane->clear();
+        appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
+        appendOutputLine(tr("Applet format: CGARM (Beta) - relocatable ARM ELF (V2)"), OutputKind::Header);
+        appendOutputLine(tr("Build backend: standalone cgarm-build"), OutputKind::Header);
+        appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(cli)), OutputKind::Path);
+        appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
+        appendOutputLine(tr("APP: %1").arg(QDir::toNativeSeparators(appOutputPath)), OutputKind::Path);
+        appendOutputLine(tr("ELF: %1").arg(QDir::toNativeSeparators(m_pendingElfPath)), OutputKind::Path);
+        appendOutputLine(tr("ASM: %1").arg(QDir::toNativeSeparators(asmOutputPath)), OutputKind::Path);
+        appendOutputLine(tr("CGARM RAM: %1 KB allowance; %2 KB heap; %3 KB private PSP stack")
+            .arg(m_appSizeKb).arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Header);
+        if (embeddedSfxBytes > 0) {
+            appendOutputLine(tr("Embedded SFX: %1 sample(s), approximately %2 RAM (before code/BSS/stack)")
+                .arg(embeddedSfxCount).arg(formattedFileSize(embeddedSfxBytes)),
+                OutputKind::Warning);
+        }
+        appendOutputLine(tr("V1 and Gaming still use the original IDE compiler."), OutputKind::Muted);
+        appendOutputLine(tr("Saving .sbui designs and compiling generated C resources before linking."), OutputKind::Muted);
+        m_compilerStderrBuffer.clear();
+        m_compilerProcess->setWorkingDirectory(m_projectPath);
+        m_buildStep = BuildStep::V2CliBuilding;
+        setCompileProgressStage(tr("Building CGARM V2 via cgarm-build..."));
+        m_compilerProcess->start(m_v2CliPath, {
+            m_projectFilePath, QStringLiteral("-o"), m_pendingAppPath,
+            QStringLiteral("--sdk"), libsPath,
+            QStringLiteral("--app-kb"), QString::number(m_appSizeKb),
+            QStringLiteral("--heap-kb"), QString::number(m_v2HeapKb),
+            QStringLiteral("--stack-kb"), QString::number(m_v2StackKb)
+        });
+        return;
+    }
+
+    // The legacy V1/Gaming build starts here (unchanged).
     QStringList arguments = {
         QStringLiteral("-mcpu=cortex-m7"),
         QStringLiteral("-mthumb"),
@@ -6874,7 +6962,11 @@ void MainWindow::finishCompileProgress()
 
 void MainWindow::handleCompilerFinished(int exitCode)
 {
-    if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2Compiling)
+    if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2Compiling ||
+         m_buildStep == BuildStep::V2CliBuilding ||
+         m_buildStep == BuildStep::V2CliProbe ||
+         m_buildStep == BuildStep::V2CliRelink ||
+         m_buildStep == BuildStep::V2CliAsm)
         && !m_compilerStderrBuffer.isEmpty()) {
         const QString finalLine = m_compilerStderrBuffer.toLower();
         if (finalLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
@@ -6890,6 +6982,230 @@ void MainWindow::handleCompilerFinished(int exitCode)
             compilerOutputKindForLine(m_compilerStderrBuffer));
         processCompilerDiagnosticLine(m_compilerStderrBuffer);
         m_compilerStderrBuffer.clear();
+    }
+
+    // CGARM V2 through the standalone cgarm-build backend. The CLI already
+    // compiles, links, checks ET_DYN and packs; never pack the same ELF twice.
+    if (m_buildStep == BuildStep::V2CliBuilding ||
+        m_buildStep == BuildStep::V2CliRelink ||
+        m_buildStep == BuildStep::V2CliProbe) {
+        const BuildStep completed = m_buildStep;
+        const auto failure = [this](const QString &message) {
+            appendOutputLine(message, OutputKind::Error);
+            m_buildStep = BuildStep::None;
+            finishCompileProgress();
+            statusBar()->showMessage(tr("Compile failed"));
+        };
+        const auto runLinkOnly = [this](int allowanceKb, bool probe) {
+            m_compilerStderrBuffer.clear();
+            m_compilerProcess->setWorkingDirectory(m_projectPath);
+            m_buildStep = probe ? BuildStep::V2CliProbe : BuildStep::V2CliRelink;
+            setCompileProgressStage(probe
+                ? tr("Measuring CGARM applet RAM (512 KB probe)...")
+                : tr("Relinking resized CGARM applet..."));
+            QStringList cliArgs = {
+                m_projectFilePath, QStringLiteral("-o"), m_pendingAppPath,
+                QStringLiteral("--sdk"), ideLibsPath(),
+                QStringLiteral("--app-kb"), QString::number(allowanceKb),
+                QStringLiteral("--heap-kb"), QString::number(m_v2HeapKb),
+                QStringLiteral("--stack-kb"), QString::number(m_v2StackKb),
+                QStringLiteral("--link-only")
+            };
+            // The 512 KiB probe must NOT overwrite a working .app.
+            if (probe) cliArgs << QStringLiteral("--no-pack");
+            m_compilerProcess->start(m_v2CliPath, cliArgs);
+        };
+
+        if (completed == BuildStep::V2CliBuilding && exitCode != 0 &&
+            m_buildLinkSizeOverflow && !m_v2AutoResizeRetried &&
+            m_linkerScriptPath.isEmpty() && m_appSizeKb < 512) {
+            appendOutputLine(tr("CGARM: applet too large. Re-linking existing objects against 512 KB to measure RAM."),
+                             OutputKind::Header);
+            m_v2AutoResizeRetried = true;
+            runLinkOnly(512, true);
+            return;
+        }
+        if (completed == BuildStep::V2CliProbe) {
+            if (exitCode != 0) {
+                failure(tr("CGARM: even the 512 KB sizing probe failed. No application was published."));
+                return;
+            }
+            // Match the original Qt IDE's ELF RAM measurement: .stack is
+            // included in __stack_end__, while the bounded heap is additional.
+            QString nmExecutable = compilerPath();
+            if (nmExecutable.endsWith(QStringLiteral("gcc"))) {
+                nmExecutable.chop(3);
+                nmExecutable += QStringLiteral("nm");
+            } else if (nmExecutable.endsWith(QStringLiteral("gcc.exe"))) {
+                nmExecutable.chop(7);
+                nmExecutable += QStringLiteral("nm.exe");
+            }
+            QProcess nm;
+            nm.start(nmExecutable, {QStringLiteral("-n"), m_pendingElfPath});
+            if (!nm.waitForStarted(3000) || !nm.waitForFinished(3000) ||
+                nm.exitStatus() != QProcess::NormalExit || nm.exitCode() != 0) {
+                failure(tr("CGARM: could not measure probe ELF with arm-none-eabi-nm."));
+                return;
+            }
+            const QString symbols = QString::fromLocal8Bit(nm.readAllStandardOutput());
+            const QRegularExpression expr(
+                QStringLiteral(R"(^([0-9a-fA-F]+)\s+[A-Za-z]\s+(_appstart|__stack_end__)\s*$)"),
+                QRegularExpression::MultilineOption);
+            quint64 begin = 0, end = 0;
+            bool haveBegin = false, haveEnd = false;
+            auto matches = expr.globalMatch(symbols);
+            while (matches.hasNext()) {
+                const auto match = matches.next();
+                bool ok = false;
+                const quint64 addr = match.captured(1).toULongLong(&ok, 16);
+                if (!ok) continue;
+                if (match.captured(2) == QStringLiteral("_appstart")) {
+                    begin = addr; haveBegin = true;
+                } else {
+                    end = addr; haveEnd = true;
+                }
+            }
+            if (!haveBegin || !haveEnd || end < begin) {
+                failure(tr("CGARM: probe ELF lacks usable _appstart / __stack_end__ symbols."));
+                return;
+            }
+            const quint64 requiredBytes = end - begin + quint64(m_v2HeapKb) * 1024ULL;
+            const int minimumKb = int((requiredBytes + 1023ULL) / 1024ULL);
+            if (minimumKb <= m_appSizeKb || minimumKb > 512) {
+                failure(tr("CGARM: measured minimum RAM %1 KB; cannot recommend a larger valid allowance.")
+                        .arg(minimumKb));
+                return;
+            }
+            const int marginKb = qMax(8, (minimumKb + 9) / 10);
+            const int recommendedKb = qMin(512, ((minimumKb + marginKb + 15) / 16) * 16);
+            QMessageBox suggestion(this);
+            suggestion.setIcon(QMessageBox::Question);
+            suggestion.setWindowTitle(tr("Resize CGARM applet?"));
+            suggestion.setText(tr("This applet needs at least %1 KB of RAM.").arg(minimumKb));
+            suggestion.setInformativeText(
+                tr("Current allowance: %1 KB\nRecommended allowance: %2 KB\n"
+                   "Reserved heap: %3 KB; private callback stack: %4 KB\n\n"
+                   "Update Project Settings and relink WITHOUT recompiling? "
+                   "The firmware limit remains 512 KB.")
+                    .arg(m_appSizeKb).arg(recommendedKb).arg(m_v2HeapKb).arg(m_v2StackKb));
+            QPushButton *resizeButton = suggestion.addButton(
+                tr("Resize to %1 KB and relink").arg(recommendedKb),
+                QMessageBox::AcceptRole);
+            suggestion.addButton(tr("Keep current size"), QMessageBox::RejectRole);
+            suggestion.exec();
+            if (suggestion.clickedButton() != resizeButton) {
+                failure(tr("CGARM applet RAM resize declined; existing .app left untouched."));
+                return;
+            }
+            const int previousKb = m_appSizeKb;
+            m_appSizeKb = recommendedKb;
+            QString linkerError;
+            if (!updateProjectLinkerScript(&linkerError) ||
+                !saveProjectFile(m_projectFilePath)) {
+                m_appSizeKb = previousKb;
+                updateProjectLinkerScript(nullptr);
+                saveProjectFile(m_projectFilePath);
+                failure(tr("Could not save resized CGARM project: %1").arg(linkerError));
+                return;
+            }
+            appendOutputLine(tr("CGARM: new allowance %1 KB; re-linking existing PIC objects...")
+                             .arg(recommendedKb), OutputKind::Success);
+            runLinkOnly(recommendedKb, false);
+            return;
+        }
+        if (exitCode != 0) {
+            failure(tr("cgarm-build failed (exit %1). See the compiler/linker diagnostics above.")
+                    .arg(exitCode));
+            if (completed == BuildStep::V2CliBuilding && m_buildLinkSizeOverflow) {
+                appendOutputLine(tr("Applet RAM limit exceeded. Review Project Settings (maximum 512 KB)."),
+                                 OutputKind::Warning);
+            }
+            return;
+        }
+        if (!QFileInfo(m_pendingAppPath).isFile() ||
+            !QFileInfo(m_pendingElfPath).isFile()) {
+            failure(tr("cgarm-build exited successfully, but its .app or .elf is missing."));
+            return;
+        }
+        appendOutputLine(tr("CGARM V2 applet built: %1 (%2 bytes)")
+            .arg(QDir::toNativeSeparators(m_pendingAppPath))
+            .arg(QLocale().toString(QFileInfo(m_pendingAppPath).size())),
+            OutputKind::Success);
+        // Keep the RAM usage line that existed in the IDE-native V2 compiler.
+        // The packer allocates the bounded heap outside the linked ELF image.
+        QString nmTool = compilerPath();
+        if (nmTool.endsWith(QStringLiteral("gcc"))) {
+            nmTool.chop(3); nmTool += QStringLiteral("nm");
+        } else if (nmTool.endsWith(QStringLiteral("gcc.exe"))) {
+            nmTool.chop(7); nmTool += QStringLiteral("nm.exe");
+        }
+        QProcess nm;
+        nm.start(nmTool, {QStringLiteral("-n"), m_pendingElfPath});
+        if (nm.waitForStarted(3000) && nm.waitForFinished(3000) &&
+            nm.exitStatus() == QProcess::NormalExit && nm.exitCode() == 0) {
+            const QRegularExpression symbolsExpr(
+                QStringLiteral(R"(^([0-9a-fA-F]+)\s+[A-Za-z]\s+(_appstart|__stack_end__)\s*$)"),
+                QRegularExpression::MultilineOption);
+            const QString symbols = QString::fromLocal8Bit(nm.readAllStandardOutput());
+            quint64 first = 0, last = 0;
+            bool haveFirst = false, haveLast = false;
+            auto entries = symbolsExpr.globalMatch(symbols);
+            while (entries.hasNext()) {
+                const auto entry = entries.next();
+                bool ok = false;
+                const quint64 address = entry.captured(1).toULongLong(&ok, 16);
+                if (!ok) continue;
+                if (entry.captured(2) == QStringLiteral("_appstart")) {
+                    first = address; haveFirst = true;
+                } else {
+                    last = address; haveLast = true;
+                }
+            }
+            if (haveFirst && haveLast && last >= first) {
+                const qint64 used = qint64(last - first) + qint64(m_v2HeapKb) * 1024;
+                const qint64 limit = qint64(m_appSizeKb) * 1024;
+                appendOutputLine(tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve and bounded heap)")
+                    .arg(formattedFileSize(used)).arg(formattedFileSize(limit))
+                    .arg(limit ? qRound(100.0 * used / limit) : 0)
+                    .arg(formattedFileSize(qMax(qint64(0), limit - used))),
+                    used * 100 >= limit * 90 ? OutputKind::Warning : OutputKind::Success);
+            }
+        }
+        // Preserve the IDE's established build/<project>.asm output.
+        QString objdumpExec = objcopyPath();
+        objdumpExec.replace(QStringLiteral("objcopy"), QStringLiteral("objdump"));
+        if (!QFileInfo(objdumpExec).isExecutable()) {
+            failure(tr("Cannot generate .asm: missing arm-none-eabi-objdump: %1")
+                    .arg(objdumpExec));
+            return;
+        }
+        appendOutputLine(tr("Generating .asm output..."), OutputKind::Header);
+        m_compilerProcess->setWorkingDirectory(m_projectPath);
+        m_compilerProcess->setStandardOutputFile(m_pendingAsmPath);
+        m_buildStep = BuildStep::V2CliAsm;
+        setCompileProgressStage(tr("Generating assembly..."));
+        m_compilerProcess->start(objdumpExec, {
+            QStringLiteral("-d"), QStringLiteral("-S"), m_pendingElfPath
+        });
+        return;
+    }
+
+    if (m_buildStep == BuildStep::V2CliAsm) {
+        m_compilerProcess->setStandardOutputFile(QString());
+        if (exitCode != 0) {
+            appendOutputLine(tr("CGARM .asm generation failed (exit %1); packed .app is available.")
+                             .arg(exitCode), OutputKind::Warning);
+        } else {
+            appendOutputLine(tr("ASM generated: %1 (%2 bytes)")
+                             .arg(QDir::toNativeSeparators(m_pendingAsmPath))
+                             .arg(QLocale().toString(QFileInfo(m_pendingAsmPath).size())),
+                             OutputKind::Success);
+        }
+        appendOutputLine(tr("Compile finished successfully."), OutputKind::Success);
+        m_buildStep = BuildStep::None;
+        finishCompileProgress();
+        statusBar()->showMessage(tr("Compile successful"));
+        return;
     }
 
     if (m_buildStep == BuildStep::V2Compiling) {
@@ -11993,7 +12309,7 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
         }
 
         const QString lowerLine = line.toLower();
-        if (m_buildStep == BuildStep::Linking
+        if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2CliBuilding)
             && (lowerLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
                 || lowerLine.contains(QStringLiteral("applet image exceeds selected app size"))
                 || ((lowerLine.contains(QStringLiteral("region"))

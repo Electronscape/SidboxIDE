@@ -104,6 +104,26 @@ add_custom_command(TARGET sidbox-v2-packer POST_BUILD
     COMMENT "Installing native V2 packer into idelibs/tools"
     VERBATIM
 )
+# CGARM V2 standalone compiler frontend, built and shipped with the IDE.
+# Its source remains in development/, not in the end-user idelibs folder.
+# This first host implementation uses Linux POSIX process APIs.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(cgarm-build development/tools/cgarm-build/cgarm-build.cpp)
+    set_target_properties(cgarm-build PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_custom_command(TARGET cgarm-build POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${SIDBOX_IDELIBS_TOOLS_DIR}/bin"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:cgarm-build>"
+            "${SIDBOX_IDELIBS_TOOLS_DIR}/bin/$<TARGET_FILE_NAME:cgarm-build>"
+        COMMENT "Staging cgarm-build in idelibs/tools/bin"
+        VERBATIM
+    )
+    add_dependencies(SidboxIDE cgarm-build)
+    install(TARGETS cgarm-build
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs/tools/bin"
+    )
+endif()
+
 # Building only SidboxIDE in Qt Creator must also rebuild/stage the packer.
 add_dependencies(SidboxIDE sidbox-v2-packer)
 # Installed layouts keep the same app-relative idelibs/tools lookup.

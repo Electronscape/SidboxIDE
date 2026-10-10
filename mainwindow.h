@@ -190,7 +190,11 @@ private:
 
     enum class BuildStep {
         None,
-        V2Compiling, // GCC compiles PIC objects one by one; LLD links them afterward.
+        V2Compiling, // Legacy fallback; new CGARM builds use cgarm-build.
+        V2CliBuilding, // Independent CGARM V2 compiler, linker and packer.
+        V2CliProbe, // Re-link same PIC objects against 512 KiB for RAM sizing.
+        V2CliRelink, // Re-link and pack with the accepted new RAM allowance.
+        V2CliAsm, // Generate disassembly after CLI has finished packing.
         Linking,
         Asm,
         Objcopy
@@ -215,6 +219,7 @@ private:
     QString m_pendingElfPath;
     QString m_pendingAsmPath;
     QString m_pendingAppPath;
+    QString m_v2CliPath; // Bundled standalone cgarm-build frontend.
     // Asynchronous two-stage V2 path: bundled GCC -c -> LLVM LLD -pie.
     // Legacy V1 and gaming still use the existing GCC link command.
     QString m_v2CompilerPath;
