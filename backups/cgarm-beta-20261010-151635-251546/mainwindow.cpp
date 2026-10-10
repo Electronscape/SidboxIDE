@@ -5908,25 +5908,25 @@ void MainWindow::compileActiveFile()
     const bool v2Build = normalizedProjectType(m_projectType) == GuiProjectType &&
         m_appletFormat == QStringLiteral("v2");
     if (v2Build && !m_linkerScriptPath.isEmpty()) {
-        QMessageBox::warning(this, tr("CGARM (Beta) build"),
-            tr("CGARM (Beta) requires the gui_v2.ld linker template. "
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("Experimental V2 requires its dedicated gui_v2.ld template. "
                "Set the Linker script field to Default, or select V1 for your custom script."));
         return;
     }
     if (v2Build && (m_v2HeapKb < 4 || (m_v2HeapKb * 1024) % 32 != 0)) {
-        QMessageBox::warning(this, tr("CGARM (Beta) build"),
-            tr("CGARM requires at least 4 KB of heap, aligned to 32 bytes."));
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("GUI V2 requires at least 4 KB of heap, aligned to 32 bytes."));
         return;
     }
     if (v2Build && (m_v2StackKb < 4 || m_v2StackKb > 128 ||
                     (m_v2StackKb * 1024) % 32 != 0)) {
-        QMessageBox::warning(this, tr("CGARM (Beta) build"),
+        QMessageBox::warning(this, tr("V2 build"),
             tr("Stage 6C private callback stacks must be 4–128 KB and 32-byte aligned."));
         return;
     }
     if (v2Build && m_appSizeKb > 512) {
-        QMessageBox::warning(this, tr("CGARM (Beta) build"),
-            tr("The CGARM firmware loader currently supports at most 512 KB "
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("The experimental firmware loader currently accepts at most 512 KB "
                "per V2 applet. Reduce the applet allowance or build V1."));
         return;
     }
@@ -5943,24 +5943,40 @@ void MainWindow::compileActiveFile()
     const QString selectedObjcopy = objcopyPath();
     QStringList apiSourceFiles = sidboxApiSourceFiles();
     const QStringList libraryFiles = sidboxLibraryFiles();
-    const QString cgarmArchivePath = QDir(libsPath).filePath(
-        QStringLiteral("tools/cgarm/lib/libcgarm.a"));
     if (v2Build) {
         // V2 uses its versioned ELF header; never link the V1 startup marker.
         apiSourceFiles.removeAll(
             QDir(apiDir.absolutePath()).filePath(QStringLiteral("applet.s"))
         );
 
-        // CGARM is now a precompiled PIC static library. Compile only the
-        // project's own sources and the shared SIDBOX API sources; ld.lld
-        // extracts the required CGARM objects from libcgarm.a at link time.
+        // CGARM: Automatically discover all runtime C sources.
         // V1 and Gaming remain unchanged.
-        if (!QFileInfo(cgarmArchivePath).isFile()) {
-            QMessageBox::warning(this, tr("CGARM (Beta) build"),
-                tr("Precompiled CGARM library not found:\n%1\n\n"
-                   "Build it from development/tools/cgarm using make.")
-                    .arg(QDir::toNativeSeparators(cgarmArchivePath)));
+        const QDir cgarmLibcDir(
+            QDir(libsPath).filePath(QStringLiteral("tools/cgarm/libc"))
+        );
+
+        if (!cgarmLibcDir.exists()) {
+            QMessageBox::warning(this, tr("CGARM build"),
+                tr("CGARM library directory not found:\n%1")
+                    .arg(cgarmLibcDir.absolutePath()));
             return;
+        }
+
+        const QFileInfoList cgarmSources = cgarmLibcDir.entryInfoList(
+            QStringList{QStringLiteral("*.c")},
+            QDir::Files | QDir::Readable | QDir::NoSymLinks,
+            QDir::Name
+        );
+
+        if (cgarmSources.isEmpty()) {
+            QMessageBox::warning(this, tr("CGARM build"),
+                tr("No CGARM C source files found:\n%1")
+                    .arg(cgarmLibcDir.absolutePath()));
+            return;
+        }
+
+        for (const QFileInfo &source : cgarmSources) {
+            apiSourceFiles.append(source.absoluteFilePath());
         }
     }
 
@@ -5994,8 +6010,8 @@ void MainWindow::compileActiveFile()
             }
         }
         if (v2LldPath.isEmpty()) {
-            QMessageBox::warning(this, tr("CGARM linker missing"),
-                tr("CGARM requires LLVM ld.lld for an ARM ET_DYN executable.\n\n"
+            QMessageBox::warning(this, tr("V2 linker missing"),
+                tr("GUI V2 requires LLVM's ld.lld for a genuine ARM ET_DYN ELF.\n\n"
                    "Install the LLD tool for development, or place its executable at\n"
                    "%1\n\n"
                    "V1 and gaming mode are unaffected.")
@@ -6131,14 +6147,14 @@ void MainWindow::compileActiveFile()
     appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
     appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
     appendOutputLine(v2Build
-        ? tr("Applet format: CGARM (Beta) - relocatable ARM ELF (V2)")
+        ? tr("Applet format: V2 (EXPERIMENTAL PIE; unsupported relocations are rejected)")
         : tr("Applet format: V1 (legacy fixed-address)"), OutputKind::Header);
     if (v2Build) {
-        appendOutputLine(tr("CGARM heap: %1 KB bounded; private callback PSP stack: %2 KB (Stage 6C firmware)")
+        appendOutputLine(tr("V2 heap: %1 KB bounded; private callback PSP stack: %2 KB (Stage 6C firmware)")
             .arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Header);
-        appendOutputLine(tr("CGARM starts on MSP; window/timer callbacks use private PSP stacks. "
+        appendOutputLine(tr("V2 still enters on MSP; window/timer callbacks use PSP. "
                             "Non-PIC GNU/Newlib archives may be rejected by the linker. "
-                            "V1 and Gaming builds remain unchanged."), OutputKind::Warning);
+                            "Build a test copy first."), OutputKind::Warning);
     }
     appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
     appendOutputLine(tr("Build folder: %1").arg(QDir::toNativeSeparators(buildPath)), OutputKind::Path);
@@ -6244,28 +6260,27 @@ void MainWindow::compileActiveFile()
             QStringLiteral("-Map=%1").arg(mapOutputPath)
         };
         m_v2LinkArguments.append(m_v2CompiledObjects);
-        // All SDK/project objects precede the archive group. Keep CGARM and
-        // optional SIDBOX archives inside one group to resolve cross-library
-        // references without linking GNU/Newlib's non-PIC libc.
-        m_v2LinkArguments << QStringLiteral("--start-group") << cgarmArchivePath;
-        m_v2LinkArguments.append(libraryFiles);
-        m_v2LinkArguments << QStringLiteral("--end-group");
+        if (!libraryFiles.isEmpty()) {
+            // Existing static archives may not be PIC! LLD will reject unsafe
+            // relocations; never quietly link GNU/Newlib's non-PIC libraries.
+            m_v2LinkArguments << QStringLiteral("--start-group");
+            m_v2LinkArguments.append(libraryFiles);
+            m_v2LinkArguments << QStringLiteral("--end-group");
+        }
         m_v2LinkArguments << QStringLiteral("-o") << outputPath;
         m_v2CompileIndex = 0;
         if (m_v2CompileSources.isEmpty()) {
-            appendOutputLine(tr("CGARM has no C sources to compile."), OutputKind::Error);
+            appendOutputLine(tr("V2 has no C sources to compile."), OutputKind::Error);
             finishCompileProgress();
             statusBar()->showMessage(tr("Compile failed"));
             return;
         }
         m_buildStep = BuildStep::V2Compiling;
-        appendOutputLine(tr("CGARM linker: %1 (LLVM LLD, true ET_DYN)")
+        appendOutputLine(tr("V2 linker: %1 (LLVM LLD, true ET_DYN)")
             .arg(QDir::toNativeSeparators(v2LldPath)), OutputKind::Path);
-        appendOutputLine(tr("CGARM library: %1")
-            .arg(QDir::toNativeSeparators(cgarmArchivePath)), OutputKind::Path);
-        appendOutputLine(tr("CGARM runtime: precompiled PIC libc; GNU/Newlib libc is NOT linked. "
+        appendOutputLine(tr("CGARM runtime: freestanding PIC libc; GNU/Newlib libc is NOT linked. "
                             "Unsupported dependencies will produce a linker error."), OutputKind::Warning);
-        setCompileProgressStage(tr("Compiling applet and SDK PIC objects..."));
+        setCompileProgressStage(tr("Compiling V2 PIC objects..."));
         QStringList compileArgs = m_v2CompileFlags;
         if (isResourceSource(m_v2CompileSources.first())) {
             compileArgs << QStringLiteral("-x") << QStringLiteral("c");
@@ -6894,7 +6909,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
 
     if (m_buildStep == BuildStep::V2Compiling) {
         if (exitCode != 0) {
-            appendOutputLine(tr("CGARM PIC compilation failed for %1 (exit %2).")
+            appendOutputLine(tr("V2 PIC compilation failed for %1 (exit %2).")
                 .arg(QDir::toNativeSeparators(m_v2CompileSources.value(m_v2CompileIndex)))
                 .arg(exitCode), OutputKind::Error);
             m_buildStep = BuildStep::None;
@@ -6915,11 +6930,11 @@ void MainWindow::handleCompilerFinished(int exitCode)
             m_compilerProcess->start(m_v2CompilerPath, compileArgs);
             return;
         }
-        appendOutputLine(tr("CGARM PIC objects compiled: %1")
+        appendOutputLine(tr("V2 PIC objects compiled: %1")
             .arg(m_v2CompiledObjects.size()), OutputKind::Success);
         appendOutputLine(tr("Linking with LLVM LLD in PIE mode..."), OutputKind::Header);
         m_buildStep = BuildStep::Linking;
-        setCompileProgressStage(tr("Linking CGARM ELF..."));
+        setCompileProgressStage(tr("Linking V2 PIE..."));
         m_compilerProcess->start(m_v2LinkerPath, m_v2LinkArguments);
         return;
     }

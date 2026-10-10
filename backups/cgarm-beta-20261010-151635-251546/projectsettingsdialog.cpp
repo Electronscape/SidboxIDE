@@ -34,7 +34,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_appSizeSpinBox(new QSpinBox(this))
     , m_v2HeapSpinBox(new QSpinBox(this))
     , m_v2StackSpinBox(new QSpinBox(this))
-    , m_v2PlanningGroup(new QGroupBox(tr("CGARM (Beta) - memory requirements"), this))
+    , m_v2PlanningGroup(new QGroupBox(tr("Experimental GUI Applet V2 - memory planning only"), this))
     , m_outputAppNameEdit(new QLineEdit(this))
     , m_linkerScriptEdit(new QLineEdit(this))
     , m_defaultLinkerLabel(new QLabel(this))
@@ -96,8 +96,8 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->setContentsMargins(12, 12, 12, 12);
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
     m_appletFormatCombo->addItem(tr("Legacy V1 - fixed SDRAM address"), QStringLiteral("v1"));
-    m_appletFormatCombo->addItem(tr("CGARM (Beta) - relocatable GUI (V2 ELF)"), QStringLiteral("v2"));
-    m_appletFormatCombo->setToolTip(tr("CGARM builds position-independent V2 executables and requires compatible SIDBOX firmware. "
+    m_appletFormatCombo->addItem(tr("Experimental V2 - relocatable GUI"), QStringLiteral("v2"));
+    m_appletFormatCombo->setToolTip(tr("V2 requires PIE code and a compatible experimental firmware loader. "
                                         "Unsupported relocations or dependencies will cause a safe build failure."));
     formLayout->addRow(tr("Applet format"), m_appletFormatCombo);
     formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
@@ -111,8 +111,8 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     connect(m_appletFormatCombo, &QComboBox::currentIndexChanged, this, [this]() {
         updateDefaultLinkerLabel();
         m_v2PlanningGroup->setTitle(appletFormat() == QStringLiteral("v2")
-            ? tr("CGARM (Beta) memory requirements")
-            : tr("CGARM (Beta) memory requirements (V1 ignores these)"));
+            ? tr("Experimental V2 memory requirements")
+            : tr("Experimental V2 memory requirements (V1 ignores these)"));
     });
     m_v2HeapSpinBox->setRange(0, 512);
     m_v2HeapSpinBox->setSingleStep(4);
@@ -124,14 +124,14 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     m_v2StackSpinBox->setSuffix(tr(" KB"));
     m_v2StackSpinBox->setValue(8);
     auto *v2Form = new QFormLayout(m_v2PlanningGroup);
-    v2Form->addRow(tr("CGARM heap allowance"), m_v2HeapSpinBox);
-    v2Form->addRow(tr("CGARM private callback stack"), m_v2StackSpinBox);
+    v2Form->addRow(tr("V2 heap allowance"), m_v2HeapSpinBox);
+    v2Form->addRow(tr("V2 private callback stack"), m_v2StackSpinBox);
     auto *v2Note = new QLabel(
-        tr("CGARM heap is bounded within the relocated applet. "
+        tr("V2 heap is bounded within the relocated applet. "
            "Stage 6C firmware uses the reserved PSP stack for window and timer callbacks; "
            "initial applet_entry still executes on CoderGirl's MSP. "
            "Requires Stage 6C-compatible firmware. "
-           "Non-PIC GNU/Newlib libraries may fail CGARM relocation checks; "
+           "Ordinary GNU/Newlib libraries may still fail V2 relocation checks; "
            "an unsupported build stops safely. V1 and gaming builds remain unchanged."),
         m_v2PlanningGroup);
     v2Note->setWordWrap(true);
