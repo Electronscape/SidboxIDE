@@ -66,9 +66,6 @@ typedef struct {
     FRESULT  (*sbstream_size) (void *handle, uint32_t *length);
     FRESULT  (*sbstream_flush)(void *handle);
     FRESULT  (*sbstream_close)(void *handle);
-    /* CGARM_PHASE9: append-only ABI; requires Phase 9 firmware. */
-    FRESULT  (*sbremove)(const char *path);
-    FRESULT  (*sbrename)(const char *old_path, const char *new_path);
     /* CGARM_PHASE7_END */
 } API_FILEIO;
 
