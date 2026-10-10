@@ -839,7 +839,7 @@ class LineNumberArea : public QWidget
                 && x >= FoldMarkerHitLeft
                 && x <= FoldMarkerHitRight
                 && m_editor->foldMarkerAtY(y)) {
-                m_editor->toggleFoldAtY(y);
+                m_editor->toggleFoldAtY(y, (event->modifiers() & Qt::ShiftModifier) != 0);
                 event->accept();
                 return;
             }
@@ -2479,7 +2479,7 @@ bool CodeEditor::foldMarkerAtY(int y) const
             > blockNumber;
 }
 
-void CodeEditor::toggleFoldAtY(int y)
+void CodeEditor::toggleFoldAtY(int y, bool expandChildren)
 {
     const int preservedScrollValue =
         verticalScrollBar()
@@ -2516,6 +2516,24 @@ void CodeEditor::toggleFoldAtY(int y)
         !data->folded;
 
     data->folded = folding;
+
+    /*
+     * Shift-clicking an already-collapsed fold opens the whole subtree.
+     * A normal click preserves the independent collapsed state of children.
+     * Shift-clicking an open fold still just collapses its outer region.
+     */
+    if (!folding && expandChildren) {
+        for (const QPair<int, int> &region : std::as_const(m_foldRegions)) {
+            if (region.first <= startBlock || region.second > endBlock)
+                continue;
+
+            QTextBlock child = document()->findBlockByNumber(region.first);
+            if (child.isValid()) {
+                if (auto *childData = foldDataForBlock(child, false))
+                    childData->folded = false;
+            }
+        }
+    }
 
     if (folding) {
         const int cursorBlock =
@@ -3265,6 +3283,20 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
     if (!m_resourceMode && event->key() == Qt::Key_F1) {
         emit quickTipRequested(textUnderCursor());
+        event->accept();
+        return;
+    }
+
+    /*
+     * Alt+Up/Down scrolls the document without moving the text cursor.
+     * Use the existing QPlainTextEdit scrollbar so folded blocks are respected.
+     */
+    if (event->modifiers() == Qt::AltModifier
+        && (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)) {
+        if (QScrollBar *bar = verticalScrollBar()) {
+            const int direction = event->key() == Qt::Key_Up ? -1 : 1;
+            bar->setValue(bar->value() + direction * 3 * qMax(1, bar->singleStep()));
+        }
         event->accept();
         return;
     }

@@ -3495,6 +3495,107 @@ void MainWindow::setupInterface()
             this, &MainWindow::showFindReplaceForCurrentWord);
     connect(compileAction, &QAction::triggered, this, &MainWindow::compileActiveFile);
 
+    /*
+     * Put the infrequently used clean operation in Compile's drop-down.
+     * Ordinary F5 / clicking Compile remains exactly as before. Cleaning is
+     * V2-only and uses cgarm-build's narrow, validated cache-only --clean.
+     */
+    auto *compileMenu = new QMenu(this);
+    QAction *cleanCgarmAction = compileMenu->addAction(
+        tr("Clean CGARM Build Cache..."));
+    if (auto *compileButton =
+            qobject_cast<QToolButton *>(toolBar->widgetForAction(compileAction))) {
+        compileButton->setMenu(compileMenu);
+        compileButton->setPopupMode(QToolButton::MenuButtonPopup);
+    }
+    connect(cleanCgarmAction, &QAction::triggered, this, [this]() {
+        if (m_projectFilePath.isEmpty()) {
+            QMessageBox::information(this, tr("Clean CGARM Build"),
+                                     tr("Open a CGARM project first."));
+            return;
+        }
+        if (normalizedProjectType(m_projectType) != GuiProjectType
+            || m_appletFormat != QStringLiteral("v2")) {
+            QMessageBox::information(this, tr("Clean CGARM Build"),
+                tr("This command applies to CGARM V2 only. "
+                   "The V1 and Gaming build systems are unchanged."));
+            return;
+        }
+        if (m_compilerProcess->state() != QProcess::NotRunning) {
+            QMessageBox::information(this, tr("Clean CGARM Build"),
+                tr("Wait for the current build to finish before cleaning."));
+            return;
+        }
+
+        const QString baseName = QFileInfo(m_projectFilePath).completeBaseName();
+        const QString appFileName = m_outputAppName.isEmpty()
+            ? baseName + QStringLiteral(".app")
+            : normalizedAppOutputName(m_outputAppName);
+        const QString appPath = QDir(m_projectPath).filePath(appFileName);
+
+        QString cacheStem = QFileInfo(appPath).completeBaseName();
+        cacheStem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")),
+                          QStringLiteral("_"));
+        if (cacheStem.isEmpty()) cacheStem = QStringLiteral("applet");
+        const QString cachePath = QDir(m_projectPath).filePath(
+            QStringLiteral("build/cgarm/") + cacheStem);
+
+        const auto answer = QMessageBox::question(this,
+            tr("Clean CGARM Build Cache"),
+            tr("Remove this project's generated CGARM intermediate files?\n\n%1\n\n"
+               "Your source files, GUI designs, and last working .app "
+               "will be kept. The next F5 will recompile all sources.")
+                .arg(QDir::toNativeSeparators(cachePath)),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) return;
+
+#ifdef Q_OS_WIN
+        const QString cliName = QStringLiteral("cgarm-build.exe");
+#else
+        const QString cliName = QStringLiteral("cgarm-build");
+#endif
+        const QString cli = QDir(ideLibsPath()).filePath(
+            QStringLiteral("tools/bin/") + cliName);
+        if (!QFileInfo(cli).isFile() || !QFileInfo(cli).isExecutable()) {
+            QMessageBox::warning(this, tr("Clean CGARM Build"),
+                tr("Cannot find the CGARM builder:\n%1")
+                    .arg(QDir::toNativeSeparators(cli)));
+            return;
+        }
+
+        QProcess cleaner;
+        cleaner.setWorkingDirectory(m_projectPath);
+        cleaner.setProcessChannelMode(QProcess::MergedChannels);
+        cleaner.start(cli, {m_projectFilePath,
+                            QStringLiteral("-o"), appPath,
+                            QStringLiteral("--clean")});
+        if (!cleaner.waitForStarted(3000)) {
+            QMessageBox::warning(this, tr("Clean CGARM Build"),
+                tr("Could not launch cgarm-build:\n%1")
+                    .arg(cleaner.errorString()));
+            return;
+        }
+        if (!cleaner.waitForFinished(30000)) {
+            cleaner.kill();
+            cleaner.waitForFinished();
+            QMessageBox::warning(this, tr("Clean CGARM Build"),
+                                 tr("Cleaning timed out."));
+            return;
+        }
+        const QString report = QString::fromLocal8Bit(cleaner.readAll());
+        appendOutputLine(tr("CGARM build cache clean:"), OutputKind::Header);
+        appendOutputText(report, cleaner.exitStatus() == QProcess::NormalExit
+                                 && cleaner.exitCode() == 0
+                             ? OutputKind::Success : OutputKind::Error);
+        if (cleaner.exitStatus() != QProcess::NormalExit
+            || cleaner.exitCode() != 0) {
+            QMessageBox::warning(this, tr("Clean CGARM Build"),
+                tr("Cleaning failed. See the compiler output for details."));
+            return;
+        }
+        statusBar()->showMessage(tr("CGARM build cache cleaned; next F5 rebuilds all sources."), 8000);
+    });
+
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
 
 
@@ -4464,8 +4565,12 @@ bool MainWindow::saveProject()
             continue;
         }
 
-        // Skip untitled/unsaved tabs so QFileDialog isn't popped up for each one
-        if (editor->filePath().isEmpty()) {
+        // Project Save skips untitled tabs as before. A saved editor that
+        // has not changed must not be rewritten: doing so invalidates the
+        // incremental compiler's object-cache timestamps.
+        if (editor->filePath().isEmpty()
+            || !editor->document()
+            || !editor->document()->isModified()) {
             continue;
         }
 
@@ -5793,7 +5898,13 @@ void MainWindow::compileActiveFile()
             primaryEditorForTab(
                 m_editorTabs->widget(i));
 
+        // Only save untitled or modified documents. Rewriting unchanged
+        // tabs would update their timestamps and defeat incremental builds.
+        // Source editors are still saved before any GUI Designer regeneration.
         if (openEditor
+            && (openEditor->filePath().isEmpty()
+                || (openEditor->document()
+                    && openEditor->document()->isModified()))
             && !saveEditor(openEditor)) {
             QMessageBox::warning(
                 this,

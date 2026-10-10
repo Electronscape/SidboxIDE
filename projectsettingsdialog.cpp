@@ -107,7 +107,6 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);
 
     // V2 uses a dedicated PIE linker and strict relocation packer.
-    // Stage 6C firmware runs opted-in V2 window/timer callbacks on private PSP.
     connect(m_appletFormatCombo, &QComboBox::currentIndexChanged, this, [this]() {
         updateDefaultLinkerLabel();
         m_v2PlanningGroup->setTitle(appletFormat() == QStringLiteral("v2")
@@ -126,16 +125,6 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     auto *v2Form = new QFormLayout(m_v2PlanningGroup);
     v2Form->addRow(tr("CGARM heap allowance"), m_v2HeapSpinBox);
     v2Form->addRow(tr("CGARM private callback stack"), m_v2StackSpinBox);
-    auto *v2Note = new QLabel(
-        tr("CGARM heap is bounded within the relocated applet. "
-           "Stage 6C firmware uses the reserved PSP stack for window and timer callbacks; "
-           "initial applet_entry still executes on CoderGirl's MSP. "
-           "Requires Stage 6C-compatible firmware. "
-           "Non-PIC GNU/Newlib libraries may fail CGARM relocation checks; "
-           "an unsupported build stops safely. V1 and gaming builds remain unchanged."),
-        m_v2PlanningGroup);
-    v2Note->setWordWrap(true);
-    v2Form->addRow(v2Note);
     formLayout->addRow(m_v2PlanningGroup);
     m_v2PlanningGroup->setEnabled(true);
     m_tabs->addTab(generalPage, tr("General"));

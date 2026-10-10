@@ -1,4 +1,4 @@
-// CGARM command-line builder (Stage 4: C/RES or IDE JSON .proj -> SBAP V2 APP)
+// CGARM command-line builder (Stage 6: incremental CGARM V2 builds)
 //
 // Linux host tool. No Qt, shell scripts, or GNU/Newlib libc at APP link time.
 // Compile with: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
@@ -64,6 +64,10 @@ struct Options {
     std::string optimisation = "-O2";
     bool verbose = false;
     bool dryRun = false;
+    bool linkOnly = false;
+    bool noPack = false;
+    bool rebuild = false;
+    bool clean = false;
     bool showHelp = false;
 };
 
@@ -83,6 +87,10 @@ void usage(std::ostream &out) {
         "  -D NAME, -DNAME    Extra C preprocessor definition (may repeat)\n"
         "  --verbose           Print every compiler/linker/packer command\n"
         "  --dry-run           Print planned commands without creating files\n"
+        "  --link-only         Reuse up-to-date PIC objects; fail if any are stale\n"
+        "  --rebuild           Force recompilation of all sources\n"
+        "  --clean             Remove this CGARM build cache only (keep .app and sources)\n"
+        "  --no-pack           Stop after ELF linking (for safe RAM probes)\n"
         "  -h, --help          Show this help\n\n"
         "Reads IDE JSON .proj settings and source tree (already-generated GUI resources).\n"
         "Only CGARM V2 GUI projects. V1 and Gaming remain IDE-only.\n"
@@ -139,6 +147,14 @@ Options parse(int argc, char **argv) {
         } else if (!literal && arg == "--dry-run") {
             opts.dryRun = true;
             opts.verbose = true;
+        } else if (!literal && arg == "--link-only") {
+            opts.linkOnly = true;
+        } else if (!literal && arg == "--no-pack") {
+            opts.noPack = true;
+        } else if (!literal && arg == "--rebuild") {
+            opts.rebuild = true;
+        } else if (!literal && arg == "--clean") {
+            opts.clean = true;
         } else if (!literal && (arg == "-I" || arg == "-D")) {
             const std::string value = next();
             if (value.empty()) throw Error(arg + " needs a value");
@@ -157,6 +173,9 @@ Options parse(int argc, char **argv) {
         }
     }
     if (opts.sources.empty()) throw Error("No source or .proj file specified (see --help)");
+    if (opts.linkOnly && opts.rebuild) throw Error("--link-only and --rebuild cannot be combined");
+    if (opts.clean && (opts.linkOnly || opts.rebuild || opts.noPack))
+        throw Error("--clean cannot be combined with --link-only, --rebuild or --no-pack");
     const bool hasProject = std::any_of(opts.sources.begin(), opts.sources.end(),
         [](const fs::path &s) { return s.extension() == ".proj"; });
     if (hasProject) {
@@ -665,6 +684,105 @@ void runCommand(const std::vector<std::string> &cmd, bool show) {
     }
 }
 
+
+// GCC emits Makefile-style dependency files (-MMD -MP). Parse only the first
+// rule: -MP also emits empty, phony targets for headers further down the file.
+// Escaped spaces, hash characters and backslash-newline continuations are
+// handled here. Malformed or missing .d files ALWAYS cause a rebuild.
+bool readDependencies(const fs::path &depFile, std::vector<fs::path> &out) {
+    std::ifstream in(depFile, std::ios::binary);
+    if (!in) return false;
+    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (raw.empty() || raw.size() > 16 * 1024 * 1024) return false;
+    bool inPrerequisites = false;
+    bool complete = false;
+    std::string word;
+    auto addWord = [&]() {
+        if (!word.empty()) {
+            out.push_back(absolutePath(fs::path(word)));
+            word.clear();
+        }
+    };
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        const char c = raw[i];
+        if (c == '\\' && i + 1 < raw.size()) {
+            if (raw[i + 1] == '\n') { ++i; continue; }
+            if (raw[i + 1] == '\r' && i + 2 < raw.size() && raw[i + 2] == '\n') {
+                i += 2;
+                continue;
+            }
+            // Make escapes whitespace and other special filename characters.
+            if (inPrerequisites) word += raw[++i];
+            else ++i;
+            continue;
+        }
+        if (!inPrerequisites) {
+            if (c == ':') inPrerequisites = true;
+            else if (c == '\n') return false;
+            continue;
+        }
+        if (c == '\n' || c == '\r') {
+            addWord();
+            complete = true;
+            break;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) addWord();
+        else word += c;
+    }
+    if (!complete && inPrerequisites) {
+        addWord();
+        complete = true;
+    }
+    return complete && !out.empty();
+}
+
+// The exact GCC command determines whether a compiled object can be reused.
+// A length-prefixed stamp avoids ambiguity with spaces/quotes in arguments.
+std::string compileStamp(const std::vector<std::string> &command) {
+    std::ostringstream stamp;
+    stamp << "cgarm-incremental-v1\n";
+    for (const std::string &arg : command)
+        stamp << arg.size() << ':' << arg << '\n';
+    return stamp.str();
+}
+
+bool objectIsCurrent(const fs::path &object, const fs::path &depFile,
+                     const fs::path &stampFile, const fs::path &compiler,
+                     const std::string &stamp) {
+    std::error_code ec;
+    if (!fs::is_regular_file(object, ec) || ec ||
+        !fs::is_regular_file(depFile, ec) || ec ||
+        !fs::is_regular_file(stampFile, ec) || ec) return false;
+    std::ifstream saved(stampFile, std::ios::binary);
+    if (!saved) return false;
+    const std::string old((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    if (old != stamp) return false;
+    const auto objectTime = fs::last_write_time(object, ec);
+    if (ec) return false;
+    const auto compilerTime = fs::last_write_time(compiler, ec);
+    if (ec || compilerTime >= objectTime) return false;
+    std::vector<fs::path> deps;
+    if (!readDependencies(depFile, deps)) return false;
+    for (const fs::path &dep : deps) {
+        if (!fs::is_regular_file(dep, ec) || ec) return false;
+        const auto modified = fs::last_write_time(dep, ec);
+        if (ec || modified >= objectTime) return false;
+    }
+    return true;
+}
+
+void saveStamp(const fs::path &stampFile, const std::string &stamp) {
+    const fs::path temporary = stampFile.string() + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out || !out.write(stamp.data(), static_cast<std::streamsize>(stamp.size())))
+            throw Error("Cannot save build settings: " + temporary.string());
+    }
+    std::error_code ec;
+    fs::rename(temporary, stampFile, ec);
+    if (ec) throw Error("Cannot publish build settings: " + ec.message());
+}
+
 // Verifies linker output before passing it to the native packer (which performs
 // much stronger ELF, relocation and format validation).
 void checkElf(const fs::path &file) {
@@ -676,6 +794,71 @@ void checkElf(const fs::path &file) {
         header[16] != 3 || header[17] != 0 || header[18] != 40 || header[19] != 0) {
         throw Error("LLD output is not little-endian ARM ELF32 ET_DYN: " + file.string());
     }
+}
+
+/*
+ * Clean only the dedicated intermediate directory used by this output.
+ * Never delete the .app, project inputs, GUI resources, or the SDK.
+ * Run before SDK/toolchain checks so cleaning works even offline.
+ */
+void clean(const Options &opt) {
+    const fs::path output = absolutePath(opt.output);
+    const std::string base = safeName(output.stem().string());
+    const fs::path intermediateRoot = output.parent_path() / "build" / "cgarm";
+    const fs::path buildDir = intermediateRoot / base;
+
+    if (fs::is_symlink(output.parent_path() / "build")
+        || fs::is_symlink(intermediateRoot)
+        || fs::is_symlink(buildDir))
+        throw Error("Refusing to clean through a symbolic link: " + buildDir.string());
+
+    if (!fs::exists(buildDir)) {
+        std::cout << "CGARM: no build cache to clean: " << buildDir << '\n';
+        return;
+    }
+    if (!fs::is_directory(buildDir))
+        throw Error("Build cache path is not a directory: " + buildDir.string());
+
+    // Whitelist generated artefacts. Preserve ANY unrecognised file in the
+    // cache directory (including user .c/.h/.res files placed there by mistake).
+    const std::regex objectPattern(R"(^v2_unit_[0-9]+\.(o|d|cmd|su|d\.tmp)$)");
+    const std::set<std::string> linkerOutputs = {
+        base + ".elf", base + ".map", base + ".ld"
+    };
+    std::size_t removed = 0;
+    std::size_t preserved = 0;
+    for (const auto &entry : fs::directory_iterator(buildDir)) {
+        const std::string filename = entry.path().filename().string();
+        const bool generated = std::regex_match(filename, objectPattern)
+            || linkerOutputs.count(filename) != 0;
+        if (!generated || fs::is_directory(entry.symlink_status())) {
+            ++preserved;
+            continue;
+        }
+        if (opt.dryRun) {
+            std::cout << "[dry-run] Would remove: " << entry.path() << '\n';
+        } else {
+            std::error_code ec;
+            if (!fs::remove(entry.path(), ec) || ec)
+                throw Error("Cannot remove generated build file: " + entry.path().string());
+        }
+        ++removed;
+    }
+    if (opt.dryRun) {
+        std::cout << "[dry-run] " << removed << " generated entries selected; "
+                  << preserved << " unrecognised entries retained.\n";
+        return;
+    }
+    std::error_code ec;
+    if (fs::is_empty(buildDir, ec) && !ec) {
+        fs::remove(buildDir, ec);
+        if (ec) throw Error("Cannot remove empty build cache directory: " + ec.message());
+    }
+    std::cout << "CGARM build cache cleaned (" << removed << " generated files): "
+              << buildDir << '\n';
+    if (preserved)
+        std::cout << "Note: " << preserved << " unrecognised entries were left untouched.\n";
+    std::cout << "Last generated .app kept: " << output << '\n';
 }
 
 void build(const Options &opt) {
@@ -772,29 +955,73 @@ void build(const Options &opt) {
     flags.insert(flags.end(), opt.projectCompilerFlags.begin(), opt.projectCompilerFlags.end());
     flags.insert(flags.end(), opt.extraCppFlags.begin(), opt.extraCppFlags.end());
 
+    if (opt.linkOnly) {
+        std::cout << "Link-only: validating existing PIC objects (no recompilation).\n";
+    } else {
+        std::cout << "Incremental compilation: checking sources, headers and compiler options.\n";
+    }
     std::vector<std::string> objects;
     objects.reserve(sources.size());
+    std::size_t compiled = 0;
+    std::size_t skipped = 0;
     for (std::size_t i = 0; i < sources.size(); ++i) {
         const fs::path object = buildDir / ("v2_unit_" + std::to_string(i) + ".o");
+        const fs::path dependencyFile = buildDir / ("v2_unit_" + std::to_string(i) + ".d");
+        const fs::path stampFile = buildDir / ("v2_unit_" + std::to_string(i) + ".cmd");
         objects.push_back(object.string());
         std::vector<std::string> command = {gcc.string()};
         command.insert(command.end(), flags.begin(), flags.end());
         std::string ext = sources[i].extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return std::tolower(c); });
-        if (ext == ".res") {
-            command.insert(command.end(), {"-x", "c"});
+        if (ext == ".res") command.insert(command.end(), {"-x", "c"});
+        // .d.tmp is moved to .d only after a successful compilation.
+        const fs::path tempDep = dependencyFile.string() + ".tmp";
+        command.insert(command.end(), {"-MMD", "-MP", "-MF", tempDep.string(),
+                                       "-MT", object.string(),
+                                       "-c", sources[i].string(), "-o", object.string()});
+        const std::string stamp = compileStamp(command);
+        const bool current = objectIsCurrent(object, dependencyFile, stampFile, gcc, stamp);
+        if (opt.linkOnly) {
+            if (!opt.dryRun && !current) {
+                throw Error("--link-only: PIC object is missing or stale for " +
+                            sources[i].string() + "; run an ordinary build first");
+            }
+            continue;
         }
-        command.insert(command.end(), {"-c", sources[i].string(), "-o", object.string()});
-        if (!opt.dryRun) {
-            std::cout << "Compiling [" << (i + 1) << "/" << sources.size() << "]: "
-                      << sources[i].filename() << '\n' << std::flush;
-            runCommand(command, opt.verbose);
-        } else {
+        if (current && !opt.rebuild) {
+            ++skipped;
+            if (opt.verbose) std::cout << "[SKIP] " << sources[i] << '\n';
+            continue;
+        }
+        ++compiled;
+        if (opt.dryRun) {
             std::cout << "+";
             for (const std::string &a : command) std::cout << " " << quoted(a);
             std::cout << '\n';
+            continue;
         }
+        std::cout << "Compiling [" << (i + 1) << "/" << sources.size() << "]: "
+                  << sources[i].filename() << '\n' << std::flush;
+        // Invalidate stale metadata and object BEFORE running GCC. A failed
+        // compile must never leave an old object apparently reusable.
+        std::error_code ec;
+        fs::remove(stampFile, ec);
+        fs::remove(dependencyFile, ec);
+        fs::remove(tempDep, ec);
+        fs::remove(object, ec);
+        runCommand(command, opt.verbose);
+        requireFile(object, "Compiled PIC object");
+        std::vector<fs::path> deps;
+        if (!readDependencies(tempDep, deps))
+            throw Error("GCC did not write a valid dependency file: " + tempDep.string());
+        fs::rename(tempDep, dependencyFile, ec);
+        if (ec) throw Error("Cannot publish dependency file: " + ec.message());
+        saveStamp(stampFile, stamp);
+    }
+    if (!opt.linkOnly) {
+        std::cout << "Incremental: " << compiled << " compiled, " << skipped
+                  << " unchanged (" << sources.size() << " total).\n";
     }
 
     std::vector<std::string> link = {
@@ -811,9 +1038,11 @@ void build(const Options &opt) {
         std::cout << "[dry-run] Link:\n";
         for (const std::string &a : link) std::cout << quoted(a) << ' ';
         std::cout << "\n[dry-run] Pack:\n";
-        std::cout << quoted(packer.string()) << " " << quoted(elf.string()) << " "
-                  << quoted(output.string()) << " --heap " << opt.heapKb * 1024u
-                  << " --stack " << opt.stackKb * 1024u << "\n";
+        if (!opt.noPack) {
+            std::cout << quoted(packer.string()) << " " << quoted(elf.string()) << " "
+                      << quoted(output.string()) << " --heap " << opt.heapKb * 1024u
+                      << " --stack " << opt.stackKb * 1024u << "\n";
+        }
         std::cout << "Dry run complete. No files were changed.\n";
         return;
     }
@@ -821,6 +1050,10 @@ void build(const Options &opt) {
     std::cout << "Linking ET_DYN using LLVM LLD...\n" << std::flush;
     runCommand(link, opt.verbose);
     checkElf(elf);
+    if (opt.noPack) {
+        std::cout << "\nLINK SUCCESS (probe only, .app untouched): " << elf << "\n";
+        return;
+    }
     std::cout << "Packing relocatable V2 .app...\n" << std::flush;
     runCommand({packer.string(), elf.string(), output.string(), "--heap",
                 std::to_string(opt.heapKb * 1024u), "--stack",
@@ -840,6 +1073,10 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (opts.projectMode) loadProject(opts);
+        if (opts.clean) {
+            clean(opts);
+            return 0;
+        }
         validateMemory(opts);
         build(opts);
         return 0;
