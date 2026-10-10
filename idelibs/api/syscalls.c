@@ -145,8 +145,15 @@ int applet_entry(int argc, char *argv[]) {
 #ifdef SIDBOX_APPLET_V2
     initMalloc();
 #endif
-    setbuf(stdout, NULL); // might need these
+#ifndef SIDBOX_APPLET_V2
+    // Preserve the existing legacy V1 stdio initialisation unchanged.
+    setbuf(stdout, NULL);
     setbuf(stderr, NULL);
+#else
+    // V2 stays freestanding: setbuf() would pull in Newlib's non-PIC
+    // _impure_ptr/stdio state even for a simple GUI with no printf calls.
+    // Use CoderGirl's console APIs for V2 diagnostic output.
+#endif
     return main(argc, argv);
 }
 

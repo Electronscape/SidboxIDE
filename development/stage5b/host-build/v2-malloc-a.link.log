@@ -1,0 +1,49 @@
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '_impure_ptr'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-impure.o)
+>>> referenced by malloc.c
+>>>               lib_a-malloc.o:(malloc) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '_impure_ptr'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-impure.o)
+>>> referenced by calloc.c
+>>>               lib_a-calloc.o:(calloc) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '__malloc_free_list'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-nano-mallocr.o)
+>>> referenced by nano-mallocr.c
+>>>               lib_a-nano-freer.o:(_free_r) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '_impure_ptr'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-impure.o)
+>>> referenced by realloc.c
+>>>               lib_a-realloc.o:(realloc) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against local symbol; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-nano-mallocr.o)
+>>> referenced by nano-mallocr.c
+>>>               lib_a-nano-mallocr.o:(_malloc_r) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against local symbol; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-nano-mallocr.o)
+>>> referenced by nano-mallocr.c
+>>>               lib_a-nano-mallocr.o:(_malloc_r) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '__lock___malloc_recursive_mutex'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-lock.o)
+>>> referenced by mlock.c
+>>>               lib_a-mlock.o:(__malloc_lock) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '__lock___malloc_recursive_mutex'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-lock.o)
+>>> referenced by mlock.c
+>>>               lib_a-mlock.o:(__malloc_unlock) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '_impure_ptr'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-impure.o)
+>>> referenced by errno.c
+>>>               lib_a-errno.o:(__errno) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a
+
+ld.lld: error: relocation R_ARM_ABS32 cannot be used against symbol '_impure_ptr'; recompile with -fPIC
+>>> defined in /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a(lib_a-impure.o)
+>>> referenced by malloc.c
+>>>               lib_a-malloc.o:(free) in archive /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/bin/../lib/gcc/arm-none-eabi/9.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+dp/hard/libc_nano.a

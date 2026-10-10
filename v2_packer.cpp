@@ -43,7 +43,7 @@ Bytes read(const std::filesystem::path &p) {
     require(bool(in),"ELF read error"); return v;
 }
 struct Segment { uint32_t off, addr, fileSize, memSize; };
-struct Section { uint32_t name, type, off, size, entsize; };
+struct Section { uint32_t name, type, addr, off, size, entsize; };
 std::string nameOf(const Bytes &strings, uint32_t nameOff) {
     require(nameOff<strings.size(),"Bad section name offset");
     auto first=strings.begin()+nameOff;
@@ -52,7 +52,7 @@ std::string nameOf(const Bytes &strings, uint32_t nameOff) {
     return std::string(first,end);
 }
 struct Image { uint32_t base, entryOffset, memSpan; Bytes data; std::vector<uint32_t> reloc; };
-Image parseElf(const Bytes &elf,uint32_t heap) {
+Image parseElf(const Bytes &elf,uint32_t heap,uint32_t stack) {
     bounds(elf,0,52,"ELF header");
     require(elf[0]==0x7f && elf[1]=='E' && elf[2]=='L' && elf[3]=='F' &&
             elf[4]==1 && elf[5]==1 && elf[6]==1,"Expected little-endian ELF32");
@@ -101,10 +101,29 @@ Image parseElf(const Bytes &elf,uint32_t heap) {
     std::vector<Section> sections;
     for(uint32_t i=0;i<shcount;++i) {
         uint64_t pos=uint64_t(shoff)+i*40;
-        sections.push_back({u32(elf,pos),u32(elf,pos+4),u32(elf,pos+16),u32(elf,pos+20),u32(elf,pos+36)});
+        sections.push_back({u32(elf,pos),u32(elf,pos+4),u32(elf,pos+12),u32(elf,pos+16),u32(elf,pos+20),u32(elf,pos+36)});
     }
     auto names=sections[shstr]; bounds(elf,names.off,names.size,"section name strings");
     Bytes nameBytes(elf.begin()+names.off,elf.begin()+names.off+names.size);
+    if(stack != 0u) {
+        require(stack >= 4096u && stack % 32u == 0u,
+                "V2 private PSP stack must be at least 4096 bytes, 32-byte aligned");
+        require(heap % 32u == 0u,"V2 private PSP heap must be 32-byte aligned");
+        bool foundStack = false;
+        for (auto sec: sections) {
+            const auto name = nameOf(nameBytes, sec.name);
+            if (name != ".stack") continue;
+            require(!foundStack, "Duplicate ELF .stack section");
+            foundStack = true;
+            require(sec.type == 8 && sec.size == stack,
+                    "ELF .stack must be a NOBITS reservation matching --stack");
+            require(uint64_t(sec.addr) + sec.size == maxMem,
+                    "ELF .stack must end at the PT_LOAD memory limit, just before heap");
+            require(sec.addr >= maxFile,
+                    "ELF .stack must not overlap the initialized image");
+        }
+        require(foundStack,"ELF is missing a reserved .stack section");
+    }
     for(auto s:sections) {
         const auto name=nameOf(nameBytes,s.name);
         bool dynamicRel=(name.rfind(".rel.dyn",0)==0 || name.rfind(".rela.dyn",0)==0 ||
@@ -151,8 +170,8 @@ void publish(const std::filesystem::path &target,const Bytes &raw) {
     if(ec) { std::filesystem::remove(tmp); throw Error("Unable to publish output: "+ec.message()); }
 #endif
 }
-void run(const std::filesystem::path &source,const std::filesystem::path &dest,uint32_t heap) {
-    Image image=parseElf(read(source),heap);
+void run(const std::filesystem::path &source,const std::filesystem::path &dest,uint32_t heap,uint32_t stack) {
+    Image image=parseElf(read(source),heap,stack);
     uint64_t total=aligned(uint64_t(image.memSpan)+heap,32);
     require(image.data.size()<=256u*1024u && total<=512u*1024u,"V2 loader image/RAM limit exceeded (256K/512K)");
     uint64_t relocOffset=aligned(uint64_t(64)+image.data.size(),4);
@@ -161,7 +180,7 @@ void run(const std::filesystem::path &source,const std::filesystem::path &dest,u
     Bytes raw={'S','B','A','P','V','2',0,0};
     for(uint32_t x:{2u,64u,uint32_t(finalSize),uint32_t(image.data.size()),uint32_t(total),
                     image.entryOffset,image.base,uint32_t(relocOffset),uint32_t(image.reloc.size()),
-                    32u,heap,0u,0u,crc32(image.data)}) append32(raw,x);
+                    32u,heap,stack,stack ? 1u : 0u,crc32(image.data)}) append32(raw,x);
     require(raw.size()==64,"Internal header size mismatch");
     raw.insert(raw.end(),image.data.begin(),image.data.end());
     raw.resize(size_t(relocOffset),0);
@@ -169,21 +188,33 @@ void run(const std::filesystem::path &source,const std::filesystem::path &dest,u
     require(raw.size()==finalSize,"Internal output size mismatch");
     publish(dest,raw);
     std::cout<<"V2 native: "<<dest.string()<<"; image "<<image.data.size()<<"B, memory "<<total
-             <<"B, relocations "<<image.reloc.size()<<"\n";
+             <<"B, relocations "<<image.reloc.size()<<", private PSP "<<stack<<"B\n";
 }
 }
 int main(int argc,char **argv) {
     try {
-        if(!(argc==3 || argc==5)) throw Error("Usage: sidbox-v2-packer <input.elf> <output.app> [--heap <bytes>]");
-        uint32_t heap=8192;
-        if(argc==5) {
-            require(std::string(argv[3])=="--heap","Expected --heap <bytes>");
-            const std::string argument(argv[4]);
-            require(!argument.empty() && argument.find_first_not_of("0123456789")==std::string::npos,"Invalid heap allocation");
-            unsigned long long n=std::stoull(argument);
-            require(n<=1024*1024,"Heap request exceeds supported limit"); heap=uint32_t(n);
+        if(argc < 3 || (argc % 2) != 1)
+            throw Error("Usage: sidbox-v2-packer <input.elf> <output.app> [--heap <bytes>] [--stack <bytes>]");
+        uint32_t heap=8192, stack=0;
+        bool sawHeap=false, sawStack=false;
+        for(int i=3;i<argc;i+=2) {
+            const std::string key(argv[i]);
+            const std::string arg(argv[i+1]);
+            require(!arg.empty() && arg.find_first_not_of("0123456789")==std::string::npos,
+                    "Heap/stack bytes must be unsigned decimal integers");
+            unsigned long long value=std::stoull(arg);
+            require(value <= 1024*1024,"Heap/stack request exceeds supported limit");
+            if(key=="--heap") {
+                require(!sawHeap,"Duplicate --heap flag");
+                heap=uint32_t(value); sawHeap=true;
+            } else if(key=="--stack") {
+                require(!sawStack,"Duplicate --stack flag");
+                stack=uint32_t(value); sawStack=true;
+            } else {
+                throw Error("Unknown packer option: "+key);
+            }
         }
-        run(argv[1],argv[2],heap);
+        run(argv[1],argv[2],heap,stack);
         return 0;
     } catch(const std::exception &e) { std::cerr<<"ERROR: V2 packer: "<<e.what()<<'\n'; return 1; }
 }

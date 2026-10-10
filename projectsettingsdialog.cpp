@@ -107,7 +107,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);
 
     // V2 uses a dedicated PIE linker and strict relocation packer.
-    // Its heap is bounded; the stack reserve is NOT an independent task stack.
+    // Stage 6C firmware runs opted-in V2 window/timer callbacks on private PSP.
     connect(m_appletFormatCombo, &QComboBox::currentIndexChanged, this, [this]() {
         updateDefaultLinkerLabel();
         m_v2PlanningGroup->setTitle(appletFormat() == QStringLiteral("v2")
@@ -119,19 +119,21 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     m_v2HeapSpinBox->setSuffix(tr(" KB"));
     m_v2HeapSpinBox->setSpecialValueText(tr("No heap reserved"));
     m_v2HeapSpinBox->setValue(16);
-    m_v2StackSpinBox->setRange(1, 128);
+    m_v2StackSpinBox->setRange(4, 128);
     m_v2StackSpinBox->setSingleStep(4);
     m_v2StackSpinBox->setSuffix(tr(" KB"));
     m_v2StackSpinBox->setValue(8);
     auto *v2Form = new QFormLayout(m_v2PlanningGroup);
     v2Form->addRow(tr("V2 heap allowance"), m_v2HeapSpinBox);
-    v2Form->addRow(tr("V2 stack reserve"), m_v2StackSpinBox);
+    v2Form->addRow(tr("V2 private callback stack"), m_v2StackSpinBox);
     auto *v2Note = new QLabel(
-        tr("V2 heap is reserved and bounded within the relocated applet memory. "
-           "Stack allowance reserves RAM in the image, but execution and callbacks "
-           "STILL use CoderGirl's OS call stack; this is NOT stack isolation. "
-           "V2 builds are experimental and may reject ordinary libc or compiler relocations. "
-           "V1 builds remain unchanged."), m_v2PlanningGroup);
+        tr("V2 heap is bounded within the relocated applet. "
+           "Stage 6C firmware uses the reserved PSP stack for window and timer callbacks; "
+           "initial applet_entry still executes on CoderGirl's MSP. "
+           "Requires Stage 6C-compatible firmware. "
+           "Ordinary GNU/Newlib libraries may still fail V2 relocation checks; "
+           "an unsupported build stops safely. V1 and gaming builds remain unchanged."),
+        m_v2PlanningGroup);
     v2Note->setWordWrap(true);
     v2Form->addRow(v2Note);
     formLayout->addRow(m_v2PlanningGroup);

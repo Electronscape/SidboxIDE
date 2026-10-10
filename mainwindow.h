@@ -190,6 +190,7 @@ private:
 
     enum class BuildStep {
         None,
+        V2Compiling, // GCC compiles PIC objects one by one; LLD links them afterward.
         Linking,
         Asm,
         Objcopy
@@ -214,6 +215,16 @@ private:
     QString m_pendingElfPath;
     QString m_pendingAsmPath;
     QString m_pendingAppPath;
+    // Asynchronous two-stage V2 path: bundled GCC -c -> LLVM LLD -pie.
+    // Legacy V1 and gaming still use the existing GCC link command.
+    QString m_v2CompilerPath;
+    QString m_v2LinkerPath;
+    QString m_v2BuildDirectory;
+    QStringList m_v2CompileFlags;
+    QStringList m_v2CompileSources;
+    QStringList m_v2CompiledObjects;
+    QStringList m_v2LinkArguments;
+    int m_v2CompileIndex = 0;
     QString m_projectPath;
     QString m_projectFilePath;
     QStringList m_projectFilesInProject;
@@ -238,7 +249,7 @@ private:
     int m_modSizeKb;
     int m_appSizeKb;
     int m_v2HeapKb; // bounded allocation in experimental v2 only
-    int m_v2StackKb; // reserved in v2 image; actual calls still use OS stack
+    int m_v2StackKb; // private PSP for V2 window/timer callbacks (entry remains MSP)
     int m_editorFontPointSize;
     QString m_compilerOptimization;
     QString m_extraCompilerFlags;

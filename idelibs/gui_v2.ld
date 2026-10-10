@@ -3,7 +3,7 @@
  * IDE modifies the 3 settings below on each project build.
  */
 _v2_app_limit   = 0x20000;  /* 128 KiB default; firmware V2 test loader caps at 512 KiB */
-_v2_stack_bytes = 0x2000;   /* accounted for; calls STILL use CoderGirl's stack */
+_v2_stack_bytes = 0x2000;   /* Stage 6C private PSP for GUI/timer callbacks, entry still on MSP */
 _v2_heap_bytes  = 0x4000;   /* uninitialised additional RAM; bounded _sbrk */
 
 /* Link-time virtual SDRAM base needed only for relative addresses in ELF.

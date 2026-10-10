@@ -2789,7 +2789,8 @@ MainWindow::MainWindow(QWidget *parent)
         processCompilerStderrChunk(text);
     });
     connect(m_compilerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
-        const QString toolName = m_buildStep == BuildStep::Objcopy ? tr("objcopy") : tr("compiler");
+        const QString toolName = m_buildStep == BuildStep::Objcopy ? tr("packer / objcopy") :
+            m_buildStep == BuildStep::Linking && m_currentBuildIsV2 ? tr("LLVM linker") : tr("compiler");
         appendOutputLine(tr("Could not start %1. Check that the IDE's bundled toolchain exists.").arg(toolName), OutputKind::Error);
         m_buildStep = BuildStep::None;
         finishCompileProgress();
@@ -5911,10 +5912,15 @@ void MainWindow::compileActiveFile()
                "Set the Linker script field to Default, or select V1 for your custom script."));
         return;
     }
-    if (v2Build && m_v2HeapKb == 0) {
+    if (v2Build && (m_v2HeapKb < 4 || (m_v2HeapKb * 1024) % 32 != 0)) {
         QMessageBox::warning(this, tr("V2 build"),
-            tr("GUI V2 builds currently require at least 4 KB of bounded heap "
-               "for their C runtime. Choose a non-zero V2 heap allowance."));
+            tr("GUI V2 requires at least 4 KB of heap, aligned to 32 bytes."));
+        return;
+    }
+    if (v2Build && (m_v2StackKb < 4 || m_v2StackKb > 128 ||
+                    (m_v2StackKb * 1024) % 32 != 0)) {
+        QMessageBox::warning(this, tr("V2 build"),
+            tr("Stage 6C private callback stacks must be 4–128 KB and 32-byte aligned."));
         return;
     }
     if (v2Build && m_appSizeKb > 512) {
@@ -5934,8 +5940,27 @@ void MainWindow::compileActiveFile()
     const QString selectedLinkerScript = effectiveLinkerScriptPath();
     const QString selectedCompiler = compilerPath();
     const QString selectedObjcopy = objcopyPath();
-    const QStringList apiSourceFiles = sidboxApiSourceFiles();
+    QStringList apiSourceFiles = sidboxApiSourceFiles();
     const QStringList libraryFiles = sidboxLibraryFiles();
+    if (v2Build) {
+        // V2 uses its versioned ELF header; never link the V1 startup marker.
+        apiSourceFiles.removeAll(QDir(apiDir.absolutePath()).filePath(QStringLiteral("applet.s")));
+        // CGARM: freestanding PIC-compatible libc; V1 and Gaming remain unchanged.
+        const QDir cgarmLibcDir(QDir(libsPath).filePath(QStringLiteral("tools/cgarm/libc")));
+        for (const QString &relative : {
+                 QStringLiteral("gclibc.c"),
+                 QStringLiteral("cgarm_printf.c"),
+                 QStringLiteral("cgarm_malloc.c"),
+                 QStringLiteral("cgarm_memory.c")}) {
+            const QString path = cgarmLibcDir.filePath(relative);
+            if (!QFileInfo::exists(path)) {
+                QMessageBox::warning(this, tr("CGARM build"),
+                    tr("Missing CGARM runtime source:\n%1").arg(path));
+                return;
+            }
+            apiSourceFiles.append(path);
+        }
+    }
 
     if (!QFileInfo::exists(selectedCompiler)) {
         QMessageBox::warning(this, tr("Compile"), tr("The bundled Sidbox compiler was not found:\n%1").arg(QDir::toNativeSeparators(selectedCompiler)));
@@ -5950,6 +5975,31 @@ void MainWindow::compileActiveFile()
     if (!QFileInfo::exists(selectedLinkerScript)) {
         QMessageBox::warning(this, tr("Compile"), tr("The selected linker script does not exist:\n%1").arg(QDir::toNativeSeparators(selectedLinkerScript)));
         return;
+    }
+
+    // PIE-capable LLVM LLD is required for V2. Prefer a bundled executable
+    // (tools/bin/ld.lld) so released IDEs do not depend on the host PATH.
+    // Fedora's installed ld.lld is a development fallback only.
+    QString v2LldPath;
+    if (v2Build) {
+        for (const QString &candidate : {
+                 QDir(libsPath).filePath(QStringLiteral("tools/bin/ld.lld")),
+                 QDir(libsPath).filePath(QStringLiteral("tools/ld.lld")),
+                 QStandardPaths::findExecutable(QStringLiteral("ld.lld"))}) {
+            if (!candidate.isEmpty() && QFileInfo(candidate).isExecutable()) {
+                v2LldPath = candidate;
+                break;
+            }
+        }
+        if (v2LldPath.isEmpty()) {
+            QMessageBox::warning(this, tr("V2 linker missing"),
+                tr("GUI V2 requires LLVM's ld.lld for a genuine ARM ET_DYN ELF.\n\n"
+                   "Install the LLD tool for development, or place its executable at\n"
+                   "%1\n\n"
+                   "V1 and gaming mode are unaffected.")
+                    .arg(QDir(libsPath).filePath(QStringLiteral("tools/bin/ld.lld"))));
+            return;
+        }
     }
 
     if (apiSourceFiles.isEmpty()) {
@@ -5992,7 +6042,9 @@ void MainWindow::compileActiveFile()
         arguments << QStringLiteral("-DSIDBOX_V2_HEAP_BYTES=%1").arg(m_v2HeapKb * 1024)
                   << QStringLiteral("-DSIDBOX_APPLET_V2")
                   << QStringLiteral("-fPIE") << QStringLiteral("-fPIC")
-                  << QStringLiteral("-fno-plt");
+                  << QStringLiteral("-fno-plt")
+                  << QStringLiteral("-fvisibility=hidden")
+                  << QStringLiteral("-ffreestanding") << QStringLiteral("-fno-builtin");
     }
     arguments << QStringList{
         QStringLiteral("-I"), apiDir.absolutePath(),
@@ -6024,6 +6076,15 @@ void MainWindow::compileActiveFile()
         arguments << QProcess::splitCommand(m_extraCompilerFlags);
     }
 
+    if (v2Build) {
+        arguments << QStringLiteral("-I")
+                  << QDir(libsPath).filePath(QStringLiteral("tools/cgarm/include"));
+    }
+
+    // Capture compiler-only options before project and SDK inputs or linker
+    // flags are appended. V2 compiles each source to a separate PIC object.
+    const QStringList v2CompileFlags = arguments;
+
     /*
      * .res is a Sidbox IDE resource-source extension. GCC does not infer C
      * from that suffix, so explicitly select C for that input and immediately
@@ -6047,8 +6108,9 @@ void MainWindow::compileActiveFile()
     arguments << QStringLiteral("-Wl,-Map=%1").arg(mapOutputPath);
     arguments << QStringLiteral("-Wl,--gc-sections");
     if (v2Build) {
-        arguments << QStringLiteral("-pie") << QStringLiteral("-Wl,-Bsymbolic")
-                  << QStringLiteral("-Wl,--no-undefined");
+        // V2 never uses the GCC driver's final link. Its objects will be
+        // linked explicitly by ld.lld -pie below. Never relabel ET_EXEC.
+
     } else {
         arguments << QStringLiteral("-static");
     }
@@ -6070,8 +6132,11 @@ void MainWindow::compileActiveFile()
         ? tr("Applet format: V2 (EXPERIMENTAL PIE; unsupported relocations are rejected)")
         : tr("Applet format: V1 (legacy fixed-address)"), OutputKind::Header);
     if (v2Build) {
-        appendOutputLine(tr("V2 heap: %1 KB bounded; stack: %2 KB reserved ONLY (OS stack shared)")
-            .arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Warning);
+        appendOutputLine(tr("V2 heap: %1 KB bounded; private callback PSP stack: %2 KB (Stage 6C firmware)")
+            .arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Header);
+        appendOutputLine(tr("V2 still enters on MSP; window/timer callbacks use PSP. "
+                            "Non-PIC GNU/Newlib archives may be rejected by the linker. "
+                            "Build a test copy first."), OutputKind::Warning);
     }
     appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
     appendOutputLine(tr("Build folder: %1").arg(QDir::toNativeSeparators(buildPath)), OutputKind::Path);
@@ -6146,10 +6211,69 @@ void MainWindow::compileActiveFile()
     m_pendingElfPath = outputPath;
     m_pendingAppPath = appOutputPath;
     m_pendingAsmPath = asmOutputPath;
-    m_buildStep = BuildStep::Linking;
-    setCompileProgressStage(tr("Compiling & linking..."));
     m_compilerProcess->setWorkingDirectory(buildPath);
-    m_compilerProcess->start(selectedCompiler, arguments);
+
+    if (v2Build) {
+        // Unlike bare-metal GCC's final link (which produced ET_EXEC on the
+        // tested GCC 9.3.1 toolchain), LLVM LLD explicitly produces ET_DYN.
+        // Use GCC only for compiling, preserving the bundled toolchain's
+        // system headers and C language compatibility.
+        m_v2CompilerPath = selectedCompiler;
+        m_v2LinkerPath = v2LldPath;
+        m_v2BuildDirectory = buildPath;
+        m_v2CompileFlags = v2CompileFlags;
+        m_v2CompileSources = sourceFiles;
+        m_v2CompileSources.append(apiSourceFiles);
+        m_v2CompileSources.removeDuplicates();
+        m_v2CompiledObjects.clear();
+        for (int i = 0; i < m_v2CompileSources.size(); ++i) {
+            m_v2CompiledObjects.append(QDir(buildPath).filePath(
+                QStringLiteral("v2_unit_%1.o").arg(i, 3, 10, QLatin1Char('0'))));
+        }
+        m_v2LinkArguments = {
+            QStringLiteral("-pie"),
+            QStringLiteral("-Bsymbolic"),
+            QStringLiteral("--no-undefined"),
+            QStringLiteral("--nostdlib"),
+            QStringLiteral("--gc-sections"),
+            QStringLiteral("--entry=applet_entry"),
+            QStringLiteral("-T"), selectedLinkerScript,
+            QStringLiteral("-Map=%1").arg(mapOutputPath)
+        };
+        m_v2LinkArguments.append(m_v2CompiledObjects);
+        if (!libraryFiles.isEmpty()) {
+            // Existing static archives may not be PIC! LLD will reject unsafe
+            // relocations; never quietly link GNU/Newlib's non-PIC libraries.
+            m_v2LinkArguments << QStringLiteral("--start-group");
+            m_v2LinkArguments.append(libraryFiles);
+            m_v2LinkArguments << QStringLiteral("--end-group");
+        }
+        m_v2LinkArguments << QStringLiteral("-o") << outputPath;
+        m_v2CompileIndex = 0;
+        if (m_v2CompileSources.isEmpty()) {
+            appendOutputLine(tr("V2 has no C sources to compile."), OutputKind::Error);
+            finishCompileProgress();
+            statusBar()->showMessage(tr("Compile failed"));
+            return;
+        }
+        m_buildStep = BuildStep::V2Compiling;
+        appendOutputLine(tr("V2 linker: %1 (LLVM LLD, true ET_DYN)")
+            .arg(QDir::toNativeSeparators(v2LldPath)), OutputKind::Path);
+        appendOutputLine(tr("CGARM runtime: freestanding PIC libc; GNU/Newlib libc is NOT linked. "
+                            "Unsupported dependencies will produce a linker error."), OutputKind::Warning);
+        setCompileProgressStage(tr("Compiling V2 PIC objects..."));
+        QStringList compileArgs = m_v2CompileFlags;
+        if (isResourceSource(m_v2CompileSources.first())) {
+            compileArgs << QStringLiteral("-x") << QStringLiteral("c");
+        }
+        compileArgs << QStringLiteral("-c") << m_v2CompileSources.first()
+                    << QStringLiteral("-o") << m_v2CompiledObjects.first();
+        m_compilerProcess->start(m_v2CompilerPath, compileArgs);
+    } else {
+        m_buildStep = BuildStep::Linking;
+        setCompileProgressStage(tr("Compiling & linking..."));
+        m_compilerProcess->start(selectedCompiler, arguments);
+    }
 }
 
 
@@ -6746,7 +6870,8 @@ void MainWindow::finishCompileProgress()
 
 void MainWindow::handleCompilerFinished(int exitCode)
 {
-    if (m_buildStep == BuildStep::Linking && !m_compilerStderrBuffer.isEmpty()) {
+    if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2Compiling)
+        && !m_compilerStderrBuffer.isEmpty()) {
         const QString finalLine = m_compilerStderrBuffer.toLower();
         if (finalLine.contains(QStringLiteral("applet image exceeds selected app size"))
             || (finalLine.contains(QStringLiteral("applet"))
@@ -6760,6 +6885,38 @@ void MainWindow::handleCompilerFinished(int exitCode)
             compilerOutputKindForLine(m_compilerStderrBuffer));
         processCompilerDiagnosticLine(m_compilerStderrBuffer);
         m_compilerStderrBuffer.clear();
+    }
+
+    if (m_buildStep == BuildStep::V2Compiling) {
+        if (exitCode != 0) {
+            appendOutputLine(tr("V2 PIC compilation failed for %1 (exit %2).")
+                .arg(QDir::toNativeSeparators(m_v2CompileSources.value(m_v2CompileIndex)))
+                .arg(exitCode), OutputKind::Error);
+            m_buildStep = BuildStep::None;
+            finishCompileProgress();
+            statusBar()->showMessage(tr("Compile failed"));
+            return;
+        }
+        ++m_v2CompileIndex;
+        if (m_v2CompileIndex < m_v2CompileSources.size()) {
+            QStringList compileArgs = m_v2CompileFlags;
+            if (isResourceSource(m_v2CompileSources.at(m_v2CompileIndex))) {
+                compileArgs << QStringLiteral("-x") << QStringLiteral("c");
+            }
+            compileArgs << QStringLiteral("-c")
+                        << m_v2CompileSources.at(m_v2CompileIndex)
+                        << QStringLiteral("-o")
+                        << m_v2CompiledObjects.at(m_v2CompileIndex);
+            m_compilerProcess->start(m_v2CompilerPath, compileArgs);
+            return;
+        }
+        appendOutputLine(tr("V2 PIC objects compiled: %1")
+            .arg(m_v2CompiledObjects.size()), OutputKind::Success);
+        appendOutputLine(tr("Linking with LLVM LLD in PIE mode..."), OutputKind::Header);
+        m_buildStep = BuildStep::Linking;
+        setCompileProgressStage(tr("Linking V2 PIE..."));
+        m_compilerProcess->start(m_v2LinkerPath, m_v2LinkArguments);
+        return;
     }
 
     if (m_buildStep == BuildStep::Linking) {
@@ -6793,6 +6950,51 @@ void MainWindow::handleCompilerFinished(int exitCode)
         }
 
         appendOutputLine(tr("Link finished successfully."), OutputKind::Success);
+
+        // Validate the GCC-linked ELF *before* disassembly/packing.  A linker
+        // that ignored PIE can emit ET_EXEC even when -fPIC compiled cleanly;
+        // the V2 packer correctly refuses to reinterpret that file as ET_DYN.
+        if (m_currentBuildIsV2) {
+            QFile elf(m_pendingElfPath);
+            if (!elf.open(QIODevice::ReadOnly)) {
+                appendOutputLine(tr("V2 ELF check: cannot read the linked file: %1")
+                    .arg(QDir::toNativeSeparators(m_pendingElfPath)), OutputKind::Error);
+                m_buildStep = BuildStep::None;
+                finishCompileProgress();
+                statusBar()->showMessage(tr("Compile failed"));
+                return;
+            }
+            const QByteArray header = elf.read(20);
+            if (header.size() != 20 || !header.startsWith("\x7f" "ELF") ||
+                quint8(header.at(4)) != 1 || quint8(header.at(5)) != 1) {
+                appendOutputLine(tr("V2 ELF check: expected little-endian ELF32."), OutputKind::Error);
+                m_buildStep = BuildStep::None;
+                finishCompileProgress();
+                statusBar()->showMessage(tr("Compile failed"));
+                return;
+            }
+            const quint16 elfType = quint8(header.at(16)) |
+                (quint16(quint8(header.at(17))) << 8);
+            const quint16 elfMachine = quint8(header.at(18)) |
+                (quint16(quint8(header.at(19))) << 8);
+            const QString typeName = elfType == 3 ? QStringLiteral("ET_DYN") :
+                elfType == 2 ? QStringLiteral("ET_EXEC") :
+                QStringLiteral("other");
+            appendOutputLine(tr("V2 ELF check: %1 (type %2), machine %3")
+                .arg(typeName).arg(elfType).arg(elfMachine),
+                elfType == 3 && elfMachine == 40 ? OutputKind::Success : OutputKind::Error);
+            if (elfType != 3 || elfMachine != 40) {
+                appendOutputLine(tr("V2 requires ARM ET_DYN. This build's linker produced "
+                                    "an incompatible ELF despite the PIE request. No .app "
+                                    "will be generated. The linker/toolchain configuration "
+                                    "must be corrected; do not bypass the V2 packer check."),
+                                 OutputKind::Error);
+                m_buildStep = BuildStep::None;
+                finishCompileProgress();
+                statusBar()->showMessage(tr("Compile failed"));
+                return;
+            }
+        }
 
         // Use linked symbols, not the on-disk .app size.  __stack_end__
         // includes the reserved stack; .app binary file size does not.
@@ -6917,9 +7119,13 @@ void MainWindow::handleCompilerFinished(int exitCode)
                 statusBar()->showMessage(tr("Compile failed"));
                 return;
             }
+            // Passing --stack tells the Stage 6C loader to use its private
+            // PSP bridge for window/timer callbacks.  The native packer checks
+            // the ELF .stack reservation before marking the applet.
             m_compilerProcess->start(packerPath, {
                 m_pendingElfPath, m_pendingAppPath,
-                QStringLiteral("--heap"), QString::number(m_v2HeapKb * 1024)
+                QStringLiteral("--heap"), QString::number(m_v2HeapKb * 1024),
+                QStringLiteral("--stack"), QString::number(m_v2StackKb * 1024)
             });
         } else {
             appendOutputLine(tr("Generating legacy V1 .app binary..."), OutputKind::Header);
