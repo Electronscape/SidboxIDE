@@ -57,16 +57,6 @@ typedef struct {
     void    *(*sbopendir) (char *path);
     int32_t (*sbreaddir)  (void *handle, char *name, uint32_t name_len, uint32_t *flags, uint32_t *size);
     void    (*sbclosedir) (void *handle);
-    /* CGARM_PHASE7_BEGIN: append-only ABI extension; legacy field offsets unchanged. */
-    FRESULT  (*sbstream_open) (const char *path, uint8_t mode, void **handle);
-    FRESULT  (*sbstream_read) (void *handle, void *dst, uint32_t length, uint32_t *count);
-    FRESULT  (*sbstream_write)(void *handle, const void *src, uint32_t length, uint32_t *count);
-    FRESULT  (*sbstream_seek) (void *handle, uint32_t offset);
-    FRESULT  (*sbstream_tell) (void *handle, uint32_t *position);
-    FRESULT  (*sbstream_size) (void *handle, uint32_t *length);
-    FRESULT  (*sbstream_flush)(void *handle);
-    FRESULT  (*sbstream_close)(void *handle);
-    /* CGARM_PHASE7_END */
 } API_FILEIO;
 
 
