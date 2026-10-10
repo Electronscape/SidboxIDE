@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QSet>
 #include <QHash>
+#include <QByteArray>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -30,6 +31,7 @@ class QSplitter;
 class QTimer;
 class QFileSystemWatcher;
 class QCloseEvent;
+class QLockFile;
 
 class MainWindow : public QMainWindow
 {
@@ -40,6 +42,7 @@ public:
     ~MainWindow() override;
 
     void showStartupProjectChooser();
+    void offerEditorRecovery();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -48,6 +51,8 @@ private:
 
     QHash<CodeEditor *, QSet<QString>> m_symbolTreeExpanded;
     CodeEditor *m_symbolTreeEditor = nullptr;
+    bool saveEditorRecoverySnapshots();
+    void clearEditorRecoverySession();
     void setupInterface();
     void createNewProject();
     void createNewSourceFile();
@@ -211,6 +216,13 @@ private:
     QToolBar *m_outputToolBar;
     FindReplaceDialog *m_findReplaceDialog;
     QProcess *m_compilerProcess;
+    QTimer *m_recoveryDebounceTimer = nullptr;
+    QTimer *m_recoveryHeartbeatTimer = nullptr;
+    QLockFile *m_recoveryLock = nullptr;
+    QString m_recoverySessionPath;
+    QHash<QString, QByteArray> m_recoverySavedHashes;
+    QByteArray m_recoveryManifestBytes;
+    bool m_restoringRecovery = false;
     QTimer *m_projectAnalysisTimer;
     QTimer *m_compileProgressDelayTimer;
     QFileSystemWatcher *m_fileWatcher;

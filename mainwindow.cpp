@@ -41,6 +41,9 @@
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QCryptographicHash>
+#include <QLockFile>
+#include <QUuid>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -2661,7 +2664,33 @@ public:
     {
     }
 
+    // Keep the compiler-output widget independent of project/editor logic.
+    // The owner resolves paths and performs navigation when requested.
+    void setDiagnosticHandler(std::function<bool(const QString &, bool)> handler)
+    {
+        m_diagnosticHandler = std::move(handler);
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+        connect(document(), &QTextDocument::contentsChanged, this, [this]() {
+            // A new build can replace every line, even at the same block index.
+            m_hoverBlockNumber = -1;
+        });
+    }
+
 protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_diagnosticHandler) {
+            const QString line = cursorForPosition(event->pos()).block().text();
+            if (m_diagnosticHandler(line, true)) {
+                event->accept();
+                return;
+            }
+        }
+
+        QPlainTextEdit::mouseDoubleClickEvent(event);
+    }
+
     void mousePressEvent(QMouseEvent *event) override
     {
         m_pressedInsideSelection = false;
@@ -2685,6 +2714,17 @@ protected:
         }
 
         QPlainTextEdit::mouseMoveEvent(event);
+
+        if (event->buttons() == Qt::NoButton && m_diagnosticHandler) {
+            const QTextBlock block = cursorForPosition(event->pos()).block();
+            if (block.blockNumber() != m_hoverBlockNumber) {
+                m_hoverBlockNumber = block.blockNumber();
+                m_hoverIsNavigable = m_diagnosticHandler(block.text(), false);
+            }
+            viewport()->setCursor(m_hoverIsNavigable
+                                      ? Qt::PointingHandCursor
+                                      : Qt::IBeamCursor);
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override
@@ -2695,6 +2735,9 @@ protected:
 
 private:
     bool m_pressedInsideSelection = false;
+    int m_hoverBlockNumber = -1;
+    bool m_hoverIsNavigable = false;
+    std::function<bool(const QString &, bool)> m_diagnosticHandler;
 };
 }
 
@@ -2813,6 +2856,50 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_compilerProcess, &QProcess::finished, this, &MainWindow::handleCompilerFinished);
 
+    // Crash recovery uses an app-data session directory, never a project
+    // directory. QLockFile keeps another running CoderGirl instance from
+    // mistaking this live session's snapshots for a crashed session.
+    const QString appData =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!appData.isEmpty()) {
+        const QString recoveryRoot =
+            QDir(appData).filePath(QStringLiteral("recovery"));
+        m_recoverySessionPath = QDir(recoveryRoot).filePath(
+            QStringLiteral("session-")
+            + QUuid::createUuid().toString(QUuid::WithoutBraces));
+        if (QDir().mkpath(m_recoverySessionPath)) {
+            // Snapshots may contain private source text. On Linux/Unix keep
+            // recovery directories accessible to the account owner only.
+            const QFileDevice::Permissions privateDirectory =
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                | QFileDevice::ExeOwner;
+            QFile::setPermissions(recoveryRoot, privateDirectory);
+            QFile::setPermissions(m_recoverySessionPath, privateDirectory);
+            m_recoveryLock = new QLockFile(
+                QDir(m_recoverySessionPath).filePath(QStringLiteral(".lock")));
+            m_recoveryLock->setStaleLockTime(0);
+            if (!m_recoveryLock->tryLock(0)) {
+                qWarning("CoderGirl: could not secure editor recovery directory");
+                delete m_recoveryLock;
+                m_recoveryLock = nullptr;
+            }
+        }
+    }
+
+    // A short idle debounce captures recent edits; the periodic safety pass
+    // covers missed signals. Atomic QSaveFile writes survive sudden exits.
+    m_recoveryDebounceTimer = new QTimer(this);
+    m_recoveryDebounceTimer->setSingleShot(true);
+    m_recoveryDebounceTimer->setInterval(1200);
+    connect(m_recoveryDebounceTimer, &QTimer::timeout,
+            this, [this]() { saveEditorRecoverySnapshots(); });
+
+    m_recoveryHeartbeatTimer = new QTimer(this);
+    m_recoveryHeartbeatTimer->setInterval(12000);
+    connect(m_recoveryHeartbeatTimer, &QTimer::timeout,
+            this, [this]() { saveEditorRecoverySnapshots(); });
+    m_recoveryHeartbeatTimer->start();
+
     //createNewSourceFile();
     //createNewHeaderFile();
 
@@ -2821,6 +2908,20 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // This is also reached when the operating system closes the process
+    // normally; a forced crash deliberately bypasses the destructor.
+    if (m_recoveryLock) {
+        m_recoveryLock->unlock();
+        delete m_recoveryLock;
+        m_recoveryLock = nullptr;
+    }
+    // A session without a manifest has no recoverable work. Remove only
+    // empty session directories; unexpected leftovers remain untouched.
+    if (!m_recoverySessionPath.isEmpty()
+        && !QFileInfo::exists(QDir(m_recoverySessionPath).filePath(
+            QStringLiteral("manifest.json")))) {
+        QDir().rmdir(m_recoverySessionPath);
+    }
     delete ui;
 }
 
@@ -2923,6 +3024,8 @@ bool MainWindow::closeEditorTab(int index)
 
     m_editorTabs->removeTab(index);
     widget->deleteLater();
+    // A deliberately discarded/closed tab must not come back after a crash.
+    saveEditorRecoverySnapshots();
 
     /*
      * Closing one or many source tabs can change which in-memory source wins
@@ -2983,48 +3086,43 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QStringList unsavedNames;
 
     /*
-     * Only inspect each tab's primary editor. Split views can share the same
-     * QTextDocument, so walking every CodeEditor widget would report the same
-     * modified file twice.
+     * Split panes can share documents, but a secondary pane can also hold
+     * another independently modified document. Check every unique document,
+     * so neither case loses unsaved work on a normal Close.
      */
-    for (int i = 0;
-         i < m_editorTabs->count();
-         ++i) {
-        CodeEditor *editor =
-            primaryEditorForTab(
-                m_editorTabs->widget(i));
+    QSet<QTextDocument *> checkedDocuments;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        for (CodeEditor *editor : editorsForTab(m_editorTabs->widget(i))) {
+            if (!editor || !editor->document()
+                || checkedDocuments.contains(editor->document())) {
+                continue;
+            }
+            checkedDocuments.insert(editor->document());
 
-        if (!editor) {
-            continue;
+            const bool untitledHasWork =
+                editor->filePath().isEmpty()
+                && !editor->toPlainText().isEmpty();
+
+            if (!editor->document()->isModified()
+                && !untitledHasWork) {
+                continue;
+            }
+
+            unsavedEditors.append(editor);
+            QString name = editor->filePath().isEmpty()
+                ? tabTitleForEditor(editor).remove(QLatin1Char('*'))
+                : QFileInfo(editor->filePath()).fileName();
+            if (name.isEmpty()) {
+                name = tr("Untitled source");
+            }
+            unsavedNames.append(name);
         }
-
-        const bool untitledHasWork =
-            editor->filePath().isEmpty()
-            && !editor->toPlainText().isEmpty();
-
-        if (!editor->document()->isModified()
-            && !untitledHasWork) {
-            continue;
-        }
-
-        unsavedEditors.append(editor);
-
-        QString name =
-            editor->filePath().isEmpty()
-                ? tabTitleForEditor(editor)
-                      .remove(QLatin1Char('*'))
-                : QFileInfo(editor->filePath())
-                      .fileName();
-
-        if (name.isEmpty()) {
-            name = tr("Untitled source");
-        }
-
-        unsavedNames.append(name);
     }
 
     if (unsavedEditors.isEmpty()) {
         savePaneLayout();
+        clearEditorRecoverySession();
+        if (m_recoveryHeartbeatTimer) m_recoveryHeartbeatTimer->stop();
         event->accept();
         return;
     }
@@ -3090,6 +3188,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
     if (clicked == discardButton) {
         savePaneLayout();
+        clearEditorRecoverySession();
+        if (m_recoveryHeartbeatTimer) m_recoveryHeartbeatTimer->stop();
         event->accept();
         return;
     }
@@ -3136,7 +3236,363 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 
     savePaneLayout();
+    clearEditorRecoverySession();
+    if (m_recoveryHeartbeatTimer) m_recoveryHeartbeatTimer->stop();
     event->accept();
+}
+
+
+// Store ONLY unsaved text buffers. No project source file is ever overwritten
+// by this service, even when the user later elects to restore a snapshot.
+bool MainWindow::saveEditorRecoverySnapshots()
+{
+    if (m_restoringRecovery || !m_recoveryLock || !m_editorTabs) {
+        return false;
+    }
+
+    struct Pending {
+        QString id;
+        QString filename;
+        QByteArray bytes;
+        QJsonObject metadata;
+    };
+    QList<Pending> pending;
+    QSet<QTextDocument *> seenDocuments;
+
+    for (int tab = 0; tab < m_editorTabs->count(); ++tab) {
+        // Split panes sometimes share a QTextDocument with another tab.
+        // Save each unique document exactly once.
+        for (CodeEditor *editor : editorsForTab(m_editorTabs->widget(tab))) {
+            if (!editor || !editor->document() || editor->isReadOnly()
+                || seenDocuments.contains(editor->document())) {
+                continue;
+            }
+            seenDocuments.insert(editor->document());
+            const bool hasUntitledText = editor->filePath().isEmpty()
+                                       && !editor->toPlainText().isEmpty();
+            if (!editor->document()->isModified() && !hasUntitledText) {
+                continue;
+            }
+
+            QString id = editor->property("sidboxRecoveryId").toString();
+            if (id.isEmpty()) {
+                id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                editor->setProperty("sidboxRecoveryId", id);
+            }
+            const QString filename = QStringLiteral("buffer_") + id
+                                     + QStringLiteral(".txt");
+            const QByteArray content = editor->toPlainText().toUtf8();
+            const QByteArray checksum = QCryptographicHash::hash(
+                content, QCryptographicHash::Sha256).toHex();
+            QString label = editor->filePath().isEmpty()
+                                ? m_editorTabs->tabText(tab)
+                                : QFileInfo(editor->filePath()).fileName();
+            label.remove(QLatin1Char('*'));
+            if (label.trimmed().isEmpty()) {
+                label = tr("Untitled source");
+            }
+            QJsonObject metadata;
+            metadata.insert(QStringLiteral("id"), id);
+            metadata.insert(QStringLiteral("snapshot"), filename);
+            metadata.insert(QStringLiteral("path"), editor->filePath());
+            if (!editor->filePath().isEmpty()) {
+                const QFileInfo diskFile(editor->filePath());
+                if (diskFile.exists()) {
+                    metadata.insert(QStringLiteral("diskModifiedMs"),
+                        static_cast<double>(diskFile.lastModified().toMSecsSinceEpoch()));
+                }
+            }
+            metadata.insert(QStringLiteral("label"), label.trimmed());
+            metadata.insert(QStringLiteral("cursor"),
+                            editor->textCursor().position());
+            metadata.insert(QStringLiteral("sha256"), QString::fromLatin1(checksum));
+            pending.append({id, filename, content, metadata});
+        }
+    }
+
+    if (pending.isEmpty()) {
+        // A save (or a deliberate tab close) has cleared the unsaved state.
+        // No new recovery files are necessary until there are new edits.
+        clearEditorRecoverySession();
+        return true;
+    }
+
+    if (!QDir().mkpath(m_recoverySessionPath)) {
+        return false;
+    }
+    const QDir session(m_recoverySessionPath);
+    QJsonArray items;
+    QSet<QString> referencedFiles;
+    for (const Pending &p : std::as_const(pending)) {
+        const QString file = session.filePath(p.filename);
+        referencedFiles.insert(p.filename);
+        if (m_recoverySavedHashes.value(p.id) !=
+                    p.metadata.value(QStringLiteral("sha256")).toString().toLatin1()
+            || !QFileInfo::exists(file)) {
+            QSaveFile snapshot(file);
+            if (!snapshot.open(QIODevice::WriteOnly)
+                || snapshot.write(p.bytes) != p.bytes.size()
+                || !snapshot.commit()) {
+                qWarning("CoderGirl: could not write editor recovery snapshot");
+                return false;
+            }
+            m_recoverySavedHashes.insert(p.id,
+                p.metadata.value(QStringLiteral("sha256")).toString().toLatin1());
+        }
+        items.append(p.metadata);
+    }
+
+    QJsonObject manifest;
+    manifest.insert(QStringLiteral("version"), 1);
+    manifest.insert(QStringLiteral("items"), items);
+    const QByteArray manifestBytes =
+        QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    if (manifestBytes != m_recoveryManifestBytes
+        || !QFileInfo::exists(session.filePath(QStringLiteral("manifest.json")))) {
+        QSaveFile output(session.filePath(QStringLiteral("manifest.json")));
+        if (!output.open(QIODevice::WriteOnly)
+            || output.write(manifestBytes) != manifestBytes.size()
+            || !output.commit()) {
+            qWarning("CoderGirl: could not write editor recovery manifest");
+            return false;
+        }
+        m_recoveryManifestBytes = manifestBytes;
+    }
+
+    // Only remove unreferenced snapshots AFTER the replacement manifest is
+    // committed. Interrupted writes can never make the previous one unusable.
+    for (const QString &filename : session.entryList(
+             {QStringLiteral("buffer_*.txt")}, QDir::Files)) {
+        if (!referencedFiles.contains(filename)) {
+            QFile::remove(session.filePath(filename));
+        }
+    }
+    return true;
+}
+
+void MainWindow::clearEditorRecoverySession()
+{
+    if (m_recoveryDebounceTimer) {
+        m_recoveryDebounceTimer->stop();
+    }
+    m_recoverySavedHashes.clear();
+    m_recoveryManifestBytes.clear();
+    if (!m_recoverySessionPath.isEmpty()) {
+        const QDir session(m_recoverySessionPath);
+        // Never remove an arbitrary directory: the session name was generated
+        // by this process and is under QStandardPaths::AppDataLocation.
+        for (const QString &filename : session.entryList(
+                 {QStringLiteral("buffer_*.txt"), QStringLiteral("manifest.json")},
+                 QDir::Files)) {
+            QFile::remove(session.filePath(filename));
+        }
+    }
+}
+
+void MainWindow::offerEditorRecovery()
+{
+    const QString appData =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appData.isEmpty()) {
+        return;
+    }
+    QDir root(QDir(appData).filePath(QStringLiteral("recovery")));
+    if (!root.exists()) {
+        return;
+    }
+
+    struct Recovered {
+        QString path;
+        QString label;
+        QString contents;
+        int cursor = 0;
+        qint64 diskModifiedMs = -1;
+    };
+    QList<Recovered> recovered;
+    QStringList oldSessionDirs;
+    static const QRegularExpression safeSnapshot(
+        QStringLiteral(R"(^buffer_[0-9a-fA-F-]+\.txt$)"));
+
+    // Newest sessions first. A crash could have interrupted the last write;
+    // QSaveFile ensures any published manifest/snapshot is complete.
+    for (const QString &sessionName : root.entryList(
+             {QStringLiteral("session-*")},
+             QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time)) {
+        const QString sessionPath = root.filePath(sessionName);
+        if (sessionPath == m_recoverySessionPath) {
+            continue;
+        }
+        QLockFile checkLock(QDir(sessionPath).filePath(QStringLiteral(".lock")));
+        checkLock.setStaleLockTime(0);
+        if (!checkLock.tryLock(0)) {
+            continue; // Another IDE instance is actively editing this session.
+        }
+        QFile manifestFile(QDir(sessionPath).filePath(QStringLiteral("manifest.json")));
+        if (!manifestFile.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        const QJsonDocument document =
+            QJsonDocument::fromJson(manifestFile.readAll());
+        if (!document.isObject()
+            || document.object().value(QStringLiteral("version")).toInt() != 1) {
+            continue;
+        }
+        const QJsonArray items =
+            document.object().value(QStringLiteral("items")).toArray();
+        int loadedFromSession = 0;
+        for (const QJsonValue &item : items) {
+            if (!item.isObject()) continue;
+            const QJsonObject obj = item.toObject();
+            const QString filename = obj.value(QStringLiteral("snapshot")).toString();
+            if (!safeSnapshot.match(filename).hasMatch()) continue;
+            QFile snapshot(QDir(sessionPath).filePath(filename));
+            if (!snapshot.open(QIODevice::ReadOnly)) continue;
+            const QByteArray bytes = snapshot.readAll();
+            const QByteArray checksum = QCryptographicHash::hash(
+                bytes, QCryptographicHash::Sha256).toHex();
+            if (QString::fromLatin1(checksum)
+                != obj.value(QStringLiteral("sha256")).toString()) {
+                continue;
+            }
+            recovered.append({obj.value(QStringLiteral("path")).toString(),
+                              obj.value(QStringLiteral("label")).toString(),
+                              QString::fromUtf8(bytes),
+                              obj.value(QStringLiteral("cursor")).toInt(),
+                              static_cast<qint64>(obj.value(
+                                  QStringLiteral("diskModifiedMs")).toDouble(-1))});
+            ++loadedFromSession;
+        }
+        if (loadedFromSession > 0) {
+            oldSessionDirs.append(sessionPath);
+        }
+    }
+
+    if (recovered.isEmpty()) {
+        return;
+    }
+
+    QStringList names;
+    for (int i = 0; i < qMin(8, recovered.size()); ++i) {
+        QString name = recovered.at(i).label;
+        if (name.isEmpty()) name = tr("Untitled source");
+        names << QStringLiteral("  • ") + name;
+    }
+    if (recovered.size() > 8) {
+        names << tr("  • ...and %1 more").arg(recovered.size() - 8);
+    }
+
+    QMessageBox prompt(this);
+    prompt.setIcon(QMessageBox::Question);
+    prompt.setWindowTitle(tr("Recover Unsaved Source Files"));
+    prompt.setText(tr("CoderGirl found %1 unsaved editor snapshot(s) from an earlier session.")
+                   .arg(recovered.size()));
+    prompt.setInformativeText(
+        tr("Restore them into editor tabs? Original files will NOT be overwritten.\n\n%1")
+            .arg(names.join(QLatin1Char('\n'))));
+    QPushButton *restoreButton = prompt.addButton(tr("Restore"), QMessageBox::AcceptRole);
+    QPushButton *discardButton = prompt.addButton(tr("Discard Recovery Copies"), QMessageBox::DestructiveRole);
+    QPushButton *laterButton = prompt.addButton(tr("Later"), QMessageBox::RejectRole);
+    prompt.setDefaultButton(restoreButton);
+    prompt.setEscapeButton(laterButton);
+    prompt.exec();
+
+    if (prompt.clickedButton() == laterButton || !prompt.clickedButton()) {
+        return; // Keep snapshots for the next launch.
+    }
+    if (prompt.clickedButton() == discardButton) {
+        for (const QString &sessionPath : std::as_const(oldSessionDirs)) {
+            QDir(sessionPath).removeRecursively();
+        }
+        return;
+    }
+    if (prompt.clickedButton() != restoreButton) {
+        return;
+    }
+
+    m_restoringRecovery = true;
+    int restoredCount = 0;
+    for (const Recovered &item : std::as_const(recovered)) {
+        CodeEditor *editor = nullptr;
+        const QString path = item.path;
+        // Restoring over another *unsaved* open document would destroy data.
+        // In that case (or for missing paths) create an untitled recovery tab.
+        const bool diskUnchanged = item.diskModifiedMs < 0
+            || (QFileInfo::exists(path)
+                && QFileInfo(path).lastModified().toMSecsSinceEpoch()
+                   == item.diskModifiedMs);
+        if (!path.isEmpty() && QFileInfo::exists(path) && diskUnchanged
+            && QFileInfo(path).suffix().compare(
+                   QStringLiteral("sbui"), Qt::CaseInsensitive) != 0) {
+            CodeEditor *existing = nullptr;
+            for (int i = 0; i < m_editorTabs->count(); ++i) {
+                CodeEditor *candidate = primaryEditorForTab(m_editorTabs->widget(i));
+                if (candidate && !candidate->filePath().isEmpty()
+                    && QFileInfo(candidate->filePath()).absoluteFilePath()
+                       == QFileInfo(path).absoluteFilePath()) {
+                    existing = candidate;
+                    break;
+                }
+            }
+            if (existing && !existing->document()->isModified()
+                && !existing->isReadOnly()) {
+                editor = existing;
+                m_editorTabs->setCurrentIndex(tabIndexForEditor(existing));
+            } else if (!existing) {
+                // Do not use openFile() here: that automatically adds files to
+                // the active project's tree, even when a recovery belongs to
+                // an entirely different project.
+                CodeEditor *loaded = createEditor(path);
+                if (loaded->loadFromFile(path, true)) {
+                    editor = loaded;
+                    const int index = m_editorTabs->addTab(
+                        editor, editorTabIconForFile(path),
+                        tabTitleForEditor(editor));
+                    m_editorTabs->setTabToolTip(index,
+                        QDir::toNativeSeparators(path));
+                    m_editorTabs->setCurrentIndex(index);
+                    QTimer::singleShot(20, editor, [editor]() {
+                        editor->enableSyntaxHighlighting();
+                    });
+                    watchEditorFile(editor);
+                    m_projectAnalysisTimer->start();
+                } else {
+                    loaded->deleteLater();
+                }
+            }
+        }
+        if (!editor) {
+            editor = createEditor();
+            const QString label = item.label.isEmpty() ? tr("Untitled source") : item.label;
+            editor->setProperty("sidboxRecoveryDisplayName", label);
+            const int index = m_editorTabs->addTab(
+                editor, tabTitleForEditor(editor));
+            m_editorTabs->setCurrentIndex(index);
+        }
+        editor->setPlainText(item.contents);
+        editor->document()->setModified(true);
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(qBound(0, item.cursor,
+                                 editor->document()->characterCount() - 1));
+        editor->setTextCursor(cursor);
+        editor->centerCursor();
+        editor->setFocus();
+        updateTabTitle(editor);
+        ++restoredCount;
+    }
+    m_restoringRecovery = false;
+
+    // Persist restored buffers into THIS session before deleting stale data.
+    // If disk is full, retain the old recovery copies for another attempt.
+    if (restoredCount == recovered.size() && saveEditorRecoverySnapshots()) {
+        for (const QString &sessionPath : std::as_const(oldSessionDirs)) {
+            QDir(sessionPath).removeRecursively();
+        }
+    } else {
+        QMessageBox::warning(this, tr("Editor Recovery"),
+            tr("Some recovery data could not be transferred. Older recovery copies were kept."));
+    }
+    statusBar()->showMessage(tr("Restored %1 unsaved source buffer(s)")
+                             .arg(restoredCount), 5000);
 }
 
 
@@ -4007,6 +4463,129 @@ void MainWindow::setupInterface()
     m_outputPane->viewport()->setAcceptDrops(false);
     m_outputPane->setPlaceholderText(tr("Compiler output"));
     m_outputPane->setMaximumBlockCount(1000);
+
+    // Double-click a GCC/Clang-style diagnostic to open its exact source
+    // location. Normal clicks, text selection and copying work as before.
+    // Resolve full/relative paths first; a bare filename is clickable only
+    // when it uniquely identifies a project file (e.g. NOT bitmapview.c
+    // when two generated resource folders contain files with that name).
+    static_cast<CompilerOutputPane *>(m_outputPane)->setDiagnosticHandler(
+        [this](const QString &outputLine, bool activate) -> bool {
+            static const QRegularExpression diagnosticLine(
+                QStringLiteral(
+                    R"(^\s*(.+?):([1-9]\d*)(?::([1-9]\d*))?:\s*(?:fatal error|error|warning|note):)"),
+                QRegularExpression::CaseInsensitiveOption);
+
+            const QRegularExpressionMatch match = diagnosticLine.match(outputLine);
+            if (!match.hasMatch()) {
+                return false;
+            }
+
+            QString reportedPath = match.captured(1).trimmed();
+            if (reportedPath.size() >= 2
+                && ((reportedPath.front() == QLatin1Char('"')
+                     && reportedPath.back() == QLatin1Char('"'))
+                    || (reportedPath.front() == QLatin1Char('\'')
+                        && reportedPath.back() == QLatin1Char('\'')))) {
+                reportedPath = reportedPath.mid(1, reportedPath.size() - 2);
+            }
+            reportedPath = QDir::fromNativeSeparators(reportedPath);
+
+            bool validLine = false;
+            const int lineNumber = match.captured(2).toInt(&validLine);
+            if (!validLine || lineNumber <= 0 || reportedPath.isEmpty()) {
+                return false;
+            }
+
+            const int columnNumber = match.captured(3).toInt();
+            const bool isBareName = !reportedPath.contains(QLatin1Char('/'))
+                && !QFileInfo(reportedPath).isAbsolute();
+
+            QString resolvedPath;
+            if (!isBareName) {
+                const QString normalized = normalizedDiagnosticPath(reportedPath);
+                if (QFileInfo(normalized).isFile()) {
+                    resolvedPath = normalized;
+                } else if (!QFileInfo(reportedPath).isAbsolute()) {
+                    const QString sdkPath =
+                        QDir(ideLibsPath()).filePath(reportedPath);
+                    if (QFileInfo(sdkPath).isFile()) {
+                        resolvedPath = QFileInfo(sdkPath).absoluteFilePath();
+                    }
+                }
+            } else {
+                // Never guess which of two same-named generated C files GCC
+                // intended. Require an unambiguous match from the project.
+                QStringList candidates = m_projectFilesInProject;
+                candidates.append(projectFolderSourceFiles());
+                if (m_editorTabs) {
+                    for (int tab = 0; tab < m_editorTabs->count(); ++tab) {
+                        CodeEditor *editor =
+                            primaryEditorForTab(m_editorTabs->widget(tab));
+                        if (editor && !editor->filePath().isEmpty()) {
+                            candidates.append(editor->filePath());
+                        }
+                    }
+                }
+
+                QSet<QString> matches;
+                for (const QString &candidate : std::as_const(candidates)) {
+                    const QFileInfo info(candidate);
+                    if (info.isFile() && info.fileName() == reportedPath) {
+                        matches.insert(info.absoluteFilePath());
+                    }
+                }
+                if (matches.size() == 1) {
+                    resolvedPath = *matches.cbegin();
+                } else if (matches.isEmpty()) {
+                    const QString normalized = normalizedDiagnosticPath(reportedPath);
+                    if (QFileInfo(normalized).isFile()) {
+                        resolvedPath = normalized;
+                    }
+                }
+            }
+
+            if (resolvedPath.isEmpty()) {
+                return false;
+            }
+            if (!activate) {
+                return true; // Show pointing-hand cursor on navigable lines.
+            }
+
+            const QString sdkRoot = QFileInfo(ideLibsPath()).absoluteFilePath();
+            const QString relativeToSdk =
+                QDir(sdkRoot).relativeFilePath(resolvedPath);
+            const bool isSdkFile = relativeToSdk != QStringLiteral("..")
+                && !relativeToSdk.startsWith(QStringLiteral("../"))
+                && !QDir::isAbsolutePath(relativeToSdk);
+
+            if (isSdkFile) {
+                // SDK files are references, not project sources: open them
+                // read-only and never accidentally add them to the project.
+                if (!openApiReference(resolvedPath, lineNumber - 1)) {
+                    return false;
+                }
+                CodeEditor *editor = activeEditor();
+                if (editor && columnNumber > 0) {
+                    const QTextBlock block =
+                        editor->document()->findBlockByNumber(lineNumber - 1);
+                    if (block.isValid()) {
+                        QTextCursor cursor(block);
+                        cursor.setPosition(block.position()
+                            + qMin(columnNumber - 1, block.length() - 1));
+                        editor->setTextCursor(cursor);
+                        editor->centerCursor();
+                    }
+                }
+            } else {
+                ProjectSearchResult location;
+                location.filePath = resolvedPath;
+                location.line = lineNumber - 1;
+                location.column = qMax(0, columnNumber - 1);
+                jumpToProjectSearchResult(location);
+            }
+            return true;
+        });
 
     outputLayout->addWidget(m_quickTipLabel);
     outputLayout->addWidget(m_outputToolBar);
@@ -8672,9 +9251,15 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
 
     connect(editor->document(), &QTextDocument::modificationChanged, this, [this, editor]() {
         updateTabTitle(editor);
+        if (!m_restoringRecovery && m_recoveryDebounceTimer) {
+            m_recoveryDebounceTimer->start();
+        }
     });
     connect(editor->document(), &QTextDocument::contentsChanged,
             this, [this, editor]() {
+        if (!m_restoringRecovery && m_recoveryDebounceTimer) {
+            m_recoveryDebounceTimer->start();
+        }
         /*
          * Every edit invalidates any worker result already in flight. The worker
          * is not force-killed (it is off the UI thread anyway); its stale result
@@ -9105,6 +9690,9 @@ bool MainWindow::saveEditor(CodeEditor *editor)
     }
 
     m_projectAnalysisTimer->start();
+    // A successful manual Save clears any older unsaved recovery copy now,
+    // rather than waiting for the next autosave timer tick.
+    saveEditorRecoverySnapshots();
     return true;
 }
 
@@ -11381,7 +11969,11 @@ QString MainWindow::tabTitleForEditor(CodeEditor *editor, int defaultType) const
 {
     QString title;
     if (editor->filePath().isEmpty()) {
-        if (defaultType == 1) {
+        const QString recoveredName = editor->property(
+            "sidboxRecoveryDisplayName").toString();
+        if (!recoveredName.isEmpty()) {
+            title = tr("Recovered %1").arg(recoveredName);
+        } else if (defaultType == 1) {
             title = tr("untitled.h");
         } else if (defaultType == 2) {
             title = tr("untitled.inc");

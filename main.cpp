@@ -128,6 +128,9 @@ int main(int argc, char *argv[])
     QTimer::singleShot(0, &w, [&w, appIcon]() {
         applySidboxIcon(&w, appIcon);
         w.showStartupProjectChooser();
+        // Ask about old unsaved source buffers only AFTER project selection;
+        // otherwise loading a project could close the recovered tabs.
+        w.offerEditorRecovery();
     });
     QTimer::singleShot(250, &w, [&w, appIcon]() {
         applySidboxIcon(&w, appIcon);
