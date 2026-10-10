@@ -1,0 +1,482 @@
+// CGARM command-line builder (Stage 3: standalone C/RES sources -> SBAP V2 APP)
+//
+// Linux host tool. No Qt, shell scripts, or GNU/Newlib libc at APP link time.
+// Compile with: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
+// Place the resulting binary in SidboxIDE/idelibs/tools/bin/.
+//
+// Uses the same ARM GCC, API source set, PIC settings, LLVM ld.lld link order,
+// linker template, static CGARM library and native packer as SidboxIDE V2.
+// This program does NOT alter the Qt IDE or any firmware files.
+
+#include <algorithm>
+#include <cerrno>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <regex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+struct Error : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+struct Options {
+    std::vector<fs::path> sources;
+    fs::path output;
+    fs::path sdkOverride;
+    std::vector<std::string> extraCppFlags;
+    unsigned appKb = 128;
+    unsigned heapKb = 16;
+    unsigned stackKb = 8;
+    std::string optimisation = "-O2";
+    bool verbose = false;
+    bool dryRun = false;
+    bool showHelp = false;
+};
+
+void usage(std::ostream &out) {
+    out <<
+        "CGARM command-line builder (SIDBOX relocatable V2)\n\n"
+        "Usage: cgarm-build <source.c> [more.c ...] -o <output.app> [options]\n\n"
+        "Options:\n"
+        "  -o, --output FILE    Output .app (default: first source name.app)\n"
+        "  --sdk DIR            SidboxIDE project root OR its idelibs directory\n"
+        "  --app-kb N           Applet RAM allowance in KiB (32-512, default 128)\n"
+        "  --heap-kb N          Bounded heap in KiB (>=4, default 16)\n"
+        "  --stack-kb N         Private callback PSP stack in KiB (4-128, default 8)\n"
+        "  -O0/-O1/-O2/-O3/-Os/-Ofast  GCC optimisation (default -O2)\n"
+        "  -I DIR, -IDIR       Extra C include directory (may repeat)\n"
+        "  -D NAME, -DNAME    Extra C preprocessor definition (may repeat)\n"
+        "  --verbose           Print every compiler/linker/packer command\n"
+        "  --dry-run           Print planned commands without creating files\n"
+        "  -h, --help          Show this help\n\n"
+        "Builds standalone .c and .res source files. .proj/GUI Designer support\n"
+        "will follow in a later stage. No V1 or Gaming compilation here.\n";
+}
+
+unsigned number(const std::string &s, const std::string &opt) {
+    if (s.empty() || !std::all_of(s.begin(), s.end(), [](unsigned char c) {
+            return std::isdigit(c) != 0;
+        })) {
+        throw Error(opt + " requires a positive integer (KiB)");
+    }
+    try {
+        unsigned long long value = std::stoull(s);
+        if (value > std::numeric_limits<unsigned>::max()) {
+            throw Error(opt + " is too large");
+        }
+        return static_cast<unsigned>(value);
+    } catch (const std::out_of_range &) {
+        throw Error(opt + " is too large");
+    }
+}
+
+Options parse(int argc, char **argv) {
+    Options opts;
+    bool literal = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i]);
+        auto next = [&]() -> std::string {
+            if (i + 1 >= argc) throw Error("Missing argument after " + arg);
+            return argv[++i];
+        };
+        if (!literal && arg == "--") {
+            literal = true;
+        } else if (!literal && (arg == "-h" || arg == "--help")) {
+            opts.showHelp = true;
+            return opts;
+        } else if (!literal && (arg == "-o" || arg == "--output")) {
+            opts.output = next();
+        } else if (!literal && arg == "--sdk") {
+            opts.sdkOverride = next();
+        } else if (!literal && arg == "--app-kb") {
+            opts.appKb = number(next(), arg);
+        } else if (!literal && arg == "--heap-kb") {
+            opts.heapKb = number(next(), arg);
+        } else if (!literal && arg == "--stack-kb") {
+            opts.stackKb = number(next(), arg);
+        } else if (!literal && arg == "--verbose") {
+            opts.verbose = true;
+        } else if (!literal && arg == "--dry-run") {
+            opts.dryRun = true;
+            opts.verbose = true;
+        } else if (!literal && (arg == "-I" || arg == "-D")) {
+            const std::string value = next();
+            if (value.empty()) throw Error(arg + " needs a value");
+            opts.extraCppFlags.push_back(arg + value);
+        } else if (!literal && arg.size() > 2 &&
+                   (arg.substr(0, 2) == "-I" || arg.substr(0, 2) == "-D")) {
+            opts.extraCppFlags.push_back(arg);
+        } else if (!literal && (arg == "-O0" || arg == "-O1" || arg == "-O2" ||
+                                 arg == "-O3" || arg == "-Os" || arg == "-Ofast")) {
+            opts.optimisation = arg;
+        } else if (!literal && !arg.empty() && arg.front() == '-') {
+            throw Error("Unknown option: " + arg + " (see --help)");
+        } else {
+            opts.sources.emplace_back(arg);
+        }
+    }
+    if (opts.sources.empty()) throw Error("No source files specified (see --help)");
+    if (opts.output.empty()) {
+        opts.output = opts.sources.front().stem().string() + ".app";
+    }
+    if (opts.appKb < 32 || opts.appKb > 512) {
+        throw Error("--app-kb must be between 32 and 512 (firmware V2 maximum)");
+    }
+    if (opts.heapKb < 4 || opts.heapKb > 512) {
+        throw Error("--heap-kb must be between 4 and 512");
+    }
+    if (opts.stackKb < 4 || opts.stackKb > 128) {
+        throw Error("--stack-kb must be between 4 and 128");
+    }
+    if (opts.heapKb + opts.stackKb >= opts.appKb) {
+        throw Error("Heap + private stack must leave room for applet code and data");
+    }
+    return opts;
+}
+
+fs::path absolutePath(const fs::path &path) {
+    return fs::absolute(path).lexically_normal();
+}
+
+bool sdkLooksValid(const fs::path &sdk) {
+    return fs::is_directory(sdk / "api") && fs::is_regular_file(sdk / "gui_v2.ld");
+}
+
+fs::path fromCandidate(fs::path start) {
+    if (start.empty()) return {};
+    start = absolutePath(start);
+    while (true) {
+        if (sdkLooksValid(start)) return start;
+        if (sdkLooksValid(start / "idelibs")) return start / "idelibs";
+        const fs::path parent = start.parent_path();
+        if (parent == start || parent.empty()) break;
+        start = parent;
+    }
+    return {};
+}
+
+fs::path findSdk(const Options &opt) {
+    if (!opt.sdkOverride.empty()) {
+        fs::path path = absolutePath(opt.sdkOverride);
+        if (sdkLooksValid(path)) return path;
+        if (sdkLooksValid(path / "idelibs")) return path / "idelibs";
+        throw Error("--sdk must point to SidboxIDE or idelibs (gui_v2.ld/api missing): " + path.string());
+    }
+    std::vector<fs::path> candidates;
+    std::error_code ec;
+    fs::path executable = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec) candidates.push_back(executable.parent_path());
+    candidates.push_back(fs::current_path());
+    for (const fs::path &src : opt.sources) candidates.push_back(absolutePath(src).parent_path());
+    for (const fs::path &candidate : candidates) {
+        fs::path sdk = fromCandidate(candidate);
+        if (!sdk.empty()) return sdk;
+    }
+    throw Error("Cannot locate idelibs. Install cgarm-build in idelibs/tools/bin, "
+                "or pass --sdk /path/to/SidboxIDE");
+}
+
+void requireFile(const fs::path &path, const std::string &description) {
+    if (!fs::is_regular_file(path)) {
+        throw Error(description + " missing: " + path.string());
+    }
+}
+
+void requireExecutable(const fs::path &path, const std::string &description) {
+    requireFile(path, description);
+    if (::access(path.c_str(), X_OK) != 0) {
+        throw Error(description + " is not executable: " + path.string());
+    }
+}
+
+fs::path findLld(const fs::path &sdk) {
+    for (const auto &p : {sdk / "tools/bin/ld.lld", sdk / "tools/ld.lld"}) {
+        if (fs::is_regular_file(p) && ::access(p.c_str(), X_OK) == 0) return p;
+    }
+    const char *envPath = std::getenv("PATH");
+    std::stringstream paths(envPath ? envPath : "");
+    std::string item;
+    while (std::getline(paths, item, ':')) {
+        const fs::path p = fs::path(item.empty() ? "." : item) / "ld.lld";
+        if (fs::is_regular_file(p) && ::access(p.c_str(), X_OK) == 0) return absolutePath(p);
+    }
+    throw Error("LLVM ld.lld not found (install lld or bundle in idelibs/tools/bin)");
+}
+
+std::string hexBytes(unsigned kib) {
+    std::ostringstream os;
+    os << "0x" << std::uppercase << std::hex << (static_cast<std::uint64_t>(kib) * 1024);
+    return os.str();
+}
+
+std::string generatedLinkerScript(const fs::path &source, const Options &opt) {
+    std::ifstream input(source);
+    if (!input) throw Error("Cannot open linker template: " + source.string());
+    std::ostringstream result;
+    result << "/* Generated by cgarm-build; edit the options, not this file. */\n";
+    const std::string keys[] = {"_v2_app_limit", "_v2_stack_bytes", "_v2_heap_bytes"};
+    const unsigned values[] = {opt.appKb, opt.stackKb, opt.heapKb};
+    unsigned replacements[3] = {0, 0, 0};
+    std::string line;
+    while (std::getline(input, line)) {
+        for (int i = 0; i < 3; ++i) {
+            const std::regex expression("^([[:space:]]*" + keys[i] +
+                "[[:space:]]*=[[:space:]]*)(0[xX][0-9a-fA-F]+|[0-9]+)");
+            std::smatch match;
+            if (std::regex_search(line, match, expression)) {
+                const std::string replacement = match.str(1) + hexBytes(values[i]);
+                line = replacement + line.substr(match.length());
+                ++replacements[i];
+            }
+        }
+        result << line << '\n';
+    }
+    if (!input.eof()) throw Error("Error reading linker template: " + source.string());
+    for (int i = 0; i < 3; ++i) {
+        if (replacements[i] != 1) {
+            throw Error("Linker template must assign " + keys[i] + " exactly once");
+        }
+    }
+    return result.str();
+}
+
+std::string safeName(std::string name) {
+    for (char &c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') c = '_';
+    }
+    return name.empty() ? "applet" : name;
+}
+
+std::string quoted(const std::string &value) {
+    const bool special = value.empty() || value.find_first_of(" \t\n\"'\\$;&|<>*?()[]{}!") != std::string::npos;
+    if (!special) return value;
+    std::string result = "'";
+    for (char c : value) result += (c == '\'') ? "'\\''" : std::string(1, c);
+    return result + "'";
+}
+
+void runCommand(const std::vector<std::string> &cmd, bool show) {
+    if (cmd.empty()) throw Error("Internal error: empty command");
+    if (show) {
+        std::cout << "+";
+        for (const std::string &a : cmd) std::cout << " " << quoted(a);
+        std::cout << '\n' << std::flush;
+    }
+    // All arguments passed directly; no shell expansion or eval is involved.
+    std::vector<char *> args;
+    for (const std::string &item : cmd) args.push_back(const_cast<char *>(item.c_str()));
+    args.push_back(nullptr);
+    const pid_t child = ::fork();
+    if (child < 0) throw Error("Cannot fork child process: " + std::string(std::strerror(errno)));
+    if (child == 0) {
+        ::execvp(args[0], args.data());
+        std::cerr << "Cannot run " << cmd[0] << ": " << std::strerror(errno) << '\n';
+        ::_exit(127);
+    }
+    int status = 0;
+    pid_t waited = 0;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) throw Error("waitpid failed: " + std::string(std::strerror(errno)));
+    if (WIFSIGNALED(status)) {
+        throw Error(fs::path(cmd[0]).filename().string() + " terminated by signal " +
+                    std::to_string(WTERMSIG(status)));
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        throw Error(fs::path(cmd[0]).filename().string() + " failed (exit " +
+                    std::to_string(WEXITSTATUS(status)) + ")");
+    }
+}
+
+// Verifies linker output before passing it to the native packer (which performs
+// much stronger ELF, relocation and format validation).
+void checkElf(const fs::path &file) {
+    std::ifstream in(file, std::ios::binary);
+    unsigned char header[20]{};
+    if (!in.read(reinterpret_cast<char *>(header), sizeof(header)) ||
+        header[0] != 0x7f || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+        header[4] != 1 || header[5] != 1 || header[6] != 1 ||
+        header[16] != 3 || header[17] != 0 || header[18] != 40 || header[19] != 0) {
+        throw Error("LLD output is not little-endian ARM ELF32 ET_DYN: " + file.string());
+    }
+}
+
+void build(const Options &opt) {
+    const fs::path sdk = findSdk(opt);
+    const fs::path gcc = sdk / "tools/bin/arm-none-eabi-gcc";
+    const fs::path lld = findLld(sdk);
+    const fs::path packer = sdk / "tools/sidbox-v2-packer";
+    const fs::path cgarm = sdk / "tools/cgarm/lib/libcgarm.a";
+    const fs::path api = sdk / "api";
+    const fs::path libraries = sdk / "libraries";
+    const fs::path headers = sdk / "tools/cgarm/include";
+    requireExecutable(gcc, "ARM GCC");
+    requireExecutable(lld, "LLVM ld.lld");
+    requireExecutable(packer, "V2 packer");
+    requireFile(cgarm, "libcgarm.a");
+    requireFile(sdk / "gui_v2.ld", "GUI V2 linker template");
+    if (!fs::is_directory(headers)) throw Error("CGARM headers missing: " + headers.string());
+    if (!fs::is_directory(libraries)) throw Error("SDK libraries directory missing: " + libraries.string());
+
+    std::vector<fs::path> sources;
+    sources.reserve(opt.sources.size() + 6);
+    for (const fs::path &source : opt.sources) {
+        fs::path path = absolutePath(source);
+        requireFile(path, "Source file");
+        const std::string ext = path.extension().string();
+        if (ext != ".c" && ext != ".res") {
+            throw Error("Stage 3 supports only .c and .res sources (not .proj): " + path.string());
+        }
+        if (std::find(sources.begin(), sources.end(), path) != sources.end()) {
+            throw Error("Duplicate source: " + path.string());
+        }
+        sources.push_back(path);
+    }
+    // Matches MainWindow::sidboxApiSourceFiles() for V2: no V1 applet.s.
+    for (const char *relative : {"apis.c", "syscalls.c", "crt/crt.c",
+                                 "graphics/graphics.c", "audio/audio.c", "touch/touch.c"}) {
+        fs::path path = api / relative;
+        requireFile(path, "SDK API source");
+        sources.push_back(path);
+    }
+    std::vector<fs::path> sdkArchives;
+    for (const auto &entry : fs::recursive_directory_iterator(libraries)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".a") {
+            sdkArchives.push_back(entry.path());
+        }
+    }
+    std::sort(sdkArchives.begin(), sdkArchives.end());
+
+    const fs::path output = absolutePath(opt.output);
+    const std::string base = safeName(output.stem().string());
+    const fs::path buildDir = output.parent_path() / "build" / "cgarm" / base;
+    const fs::path linkerScript = buildDir / (base + ".ld");
+    const fs::path elf = buildDir / (base + ".elf");
+    const fs::path map = buildDir / (base + ".map");
+    const std::string script = generatedLinkerScript(sdk / "gui_v2.ld", opt);
+
+    std::cout << "CGARM (Beta) CLI — relocatable ARM ELF (V2)\n"
+              << "SDK:     " << sdk << '\n'
+              << "GCC:     " << gcc << '\n'
+              << "LLD:     " << lld << '\n'
+              << "Library: " << cgarm << '\n'
+              << "APP:     " << output << '\n'
+              << "RAM:     " << opt.appKb << " KiB allowance, "
+              << opt.heapKb << " KiB heap, " << opt.stackKb << " KiB private stack\n"
+              << "Sources: " << opt.sources.size() << " applet + 6 SDK API\n"
+              << "Build:   " << buildDir << '\n';
+
+    if (!opt.dryRun) {
+        fs::create_directories(buildDir);
+        std::ofstream out(linkerScript, std::ios::binary | std::ios::trunc);
+        if (!out) throw Error("Cannot create linker script: " + linkerScript.string());
+        out << script;
+        if (!out) throw Error("Error writing linker script: " + linkerScript.string());
+    } else {
+        std::cout << "[dry-run] Would generate linker script: " << linkerScript << '\n';
+    }
+
+    std::vector<std::string> flags = {
+        "-mcpu=cortex-m7", "-mthumb", "-mfpu=fpv5-d16", "-mfloat-abi=hard",
+        "-std=gnu99", opt.optimisation, "--specs=nano.specs", "-mno-unaligned-access",
+        "-DSIDBOX_STARTUP_HEADER_IN_ASM", "-DSIDBOX_V2_HEAP_BYTES=" + std::to_string(opt.heapKb * 1024u),
+        "-DSIDBOX_APPLET_V2", "-fPIE", "-fPIC", "-fno-plt", "-fvisibility=hidden",
+        "-ffreestanding", "-fno-builtin", "-ffunction-sections", "-fdata-sections",
+        "-Wall", "-Wextra", "-I", api.string(), "-I", libraries.string(),
+        "-I", headers.string()
+    };
+    flags.insert(flags.end(), opt.extraCppFlags.begin(), opt.extraCppFlags.end());
+
+    std::vector<std::string> objects;
+    objects.reserve(sources.size());
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        const fs::path object = buildDir / ("v2_unit_" + std::to_string(i) + ".o");
+        objects.push_back(object.string());
+        std::vector<std::string> command = {gcc.string()};
+        command.insert(command.end(), flags.begin(), flags.end());
+        if (sources[i].extension() == ".res") {
+            command.insert(command.end(), {"-x", "c"});
+        }
+        command.insert(command.end(), {"-c", sources[i].string(), "-o", object.string()});
+        if (!opt.dryRun) {
+            std::cout << "Compiling [" << (i + 1) << "/" << sources.size() << "]: "
+                      << sources[i].filename() << '\n' << std::flush;
+            runCommand(command, opt.verbose);
+        } else {
+            std::cout << "+";
+            for (const std::string &a : command) std::cout << " " << quoted(a);
+            std::cout << '\n';
+        }
+    }
+
+    std::vector<std::string> link = {
+        lld.string(), "-pie", "-Bsymbolic", "--no-undefined", "--nostdlib",
+        "--gc-sections", "--entry=applet_entry", "-T", linkerScript.string(),
+        "-Map=" + map.string()
+    };
+    link.insert(link.end(), objects.begin(), objects.end());
+    link.insert(link.end(), {"--start-group", cgarm.string()});
+    for (const fs::path &archive : sdkArchives) link.push_back(archive.string());
+    link.insert(link.end(), {"--end-group", "-o", elf.string()});
+
+    if (opt.dryRun) {
+        std::cout << "[dry-run] Link:\n";
+        for (const std::string &a : link) std::cout << quoted(a) << ' ';
+        std::cout << "\n[dry-run] Pack:\n";
+        std::cout << quoted(packer.string()) << " " << quoted(elf.string()) << " "
+                  << quoted(output.string()) << " --heap " << opt.heapKb * 1024u
+                  << " --stack " << opt.stackKb * 1024u << "\n";
+        std::cout << "Dry run complete. No files were changed.\n";
+        return;
+    }
+
+    std::cout << "Linking ET_DYN using LLVM LLD...\n" << std::flush;
+    runCommand(link, opt.verbose);
+    checkElf(elf);
+    std::cout << "Packing relocatable V2 .app...\n" << std::flush;
+    runCommand({packer.string(), elf.string(), output.string(), "--heap",
+                std::to_string(opt.heapKb * 1024u), "--stack",
+                std::to_string(opt.stackKb * 1024u)}, opt.verbose);
+    requireFile(output, "Packer output");
+    std::cout << "\nSUCCESS: " << output << " (" << fs::file_size(output) << " bytes)\n";
+    std::cout << "ELF: " << elf << "\nMAP: " << map << '\n';
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+    try {
+        Options opts = parse(argc, argv);
+        if (opts.showHelp) {
+            usage(std::cout);
+            return 0;
+        }
+        build(opts);
+        return 0;
+    } catch (const Error &error) {
+        std::cerr << "cgarm-build: ERROR: " << error.what() << '\n';
+        return 1;
+    } catch (const std::exception &error) {
+        std::cerr << "cgarm-build: ERROR: " << error.what() << '\n';
+        return 1;
+    }
+}
