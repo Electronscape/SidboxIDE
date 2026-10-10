@@ -5944,38 +5944,23 @@ void MainWindow::compileActiveFile()
     const QStringList libraryFiles = sidboxLibraryFiles();
     if (v2Build) {
         // V2 uses its versioned ELF header; never link the V1 startup marker.
-        apiSourceFiles.removeAll(
-            QDir(apiDir.absolutePath()).filePath(QStringLiteral("applet.s"))
-        );
-
-        // CGARM: Automatically discover all runtime C sources.
-        // V1 and Gaming remain unchanged.
-        const QDir cgarmLibcDir(
-            QDir(libsPath).filePath(QStringLiteral("tools/cgarm/libc"))
-        );
-
-        if (!cgarmLibcDir.exists()) {
-            QMessageBox::warning(this, tr("CGARM build"),
-                tr("CGARM library directory not found:\n%1")
-                    .arg(cgarmLibcDir.absolutePath()));
-            return;
-        }
-
-        const QFileInfoList cgarmSources = cgarmLibcDir.entryInfoList(
-            QStringList{QStringLiteral("*.c")},
-            QDir::Files | QDir::Readable | QDir::NoSymLinks,
-            QDir::Name
-        );
-
-        if (cgarmSources.isEmpty()) {
-            QMessageBox::warning(this, tr("CGARM build"),
-                tr("No CGARM C source files found:\n%1")
-                    .arg(cgarmLibcDir.absolutePath()));
-            return;
-        }
-
-        for (const QFileInfo &source : cgarmSources) {
-            apiSourceFiles.append(source.absoluteFilePath());
+        apiSourceFiles.removeAll(QDir(apiDir.absolutePath()).filePath(QStringLiteral("applet.s")));
+        // CGARM: freestanding PIC-compatible libc; V1 and Gaming remain unchanged.
+        const QDir cgarmLibcDir(QDir(libsPath).filePath(QStringLiteral("tools/cgarm/libc")));
+        for (const QString &relative : {
+                 QStringLiteral("gclibc.c"),
+                 QStringLiteral("cgarm_string_extra.c"),
+                 QStringLiteral("cgarm_stdlib.c"),
+                 QStringLiteral("cgarm_printf.c"),
+                 QStringLiteral("cgarm_malloc.c"),
+                 QStringLiteral("cgarm_memory.c")}) {
+            const QString path = cgarmLibcDir.filePath(relative);
+            if (!QFileInfo::exists(path)) {
+                QMessageBox::warning(this, tr("CGARM build"),
+                    tr("Missing CGARM runtime source:\n%1").arg(path));
+                return;
+            }
+            apiSourceFiles.append(path);
         }
     }
 

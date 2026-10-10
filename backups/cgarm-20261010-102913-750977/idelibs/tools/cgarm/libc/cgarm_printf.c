@@ -2,7 +2,7 @@
  * V1 is deliberately unaffected: only compile this file for SIDBOX_APPLET_V2.
  * Supports: %% %c %s %d %i %u %o %x %X %p %b, field width, precision,
  * left/zero padding, signs, #, and hh/h/l/ll/z/t/j length modifiers.
- * Supports bounded float formatting in Phase 3; no %a/%A, %n or wide strings.
+ * Does not yet support floating-point formatting, %n or wide strings.
  * No Newlib, malloc, libgcc division helpers, shared mutable state or fixed
  * printf output limit. Output goes to the existing console writec() API.
  */
@@ -161,195 +161,6 @@ static void sb_number(SB_Print *s, uint64_t number, unsigned base,
     if (flags & SB_LEFT) sb_pad(s, ' ', padding);
 }
 
-/* Phase 3: bounded embedded floating-point formatting.
- * No libm, heap, or Newlib dependencies.  Handles f/F/e/E/g/G with
- * precision 0..9 (default 6); NaN/Inf/sign/width/flags.  The decimal
- * digit extraction is intentionally approximate beyond 15 significant
- * digits, not an IEEE correctly-rounded dtoa replacement.
- */
-#define SB_FLOAT_PRECISION_MAX 9
-#define SB_FLOAT_BUFFER 352
-
-static int sb_fsign(double x)
-{
-    union { double d; uint64_t u; } bits;
-    bits.d = x;
-    return (int)(bits.u >> 63);
-}
-
-static int sb_fspecial(double x)
-{
-    union { double d; uint64_t u; } bits;
-    bits.d = x;
-    if (((bits.u >> 52) & 0x7ffu) != 0x7ffu) return 0;
-    return (bits.u & UINT64_C(0xfffffffffffff)) ? 2 : 1;
-}
-
-/* Produces decimal digits from normalised |x|, with decimal exponent.
- * This requires only hardware double arithmetic on Cortex-M7. */
-static void sb_fnormal(double x, double *scaled, int *exponent)
-{
-    int exp = 0;
-    if (x != 0.0) {
-        while (x >= 10.0 && exp < 308) { x /= 10.0; ++exp; }
-        while (x < 1.0 && exp > -324) { x *= 10.0; --exp; }
-    }
-    *scaled = x;
-    *exponent = exp;
-}
-
-static int sb_fnext(double *scaled)
-{
-    int digit = (int)*scaled; /* scaled is in [0,10). */
-    if (digit < 0) digit = 0;
-    if (digit > 9) digit = 9;
-    *scaled = (*scaled - (double)digit) * 10.0;
-    return digit;
-}
-
-static unsigned sb_f_fixed(char *out, double x, int precision, int alt)
-{
-    double scaled;
-    int exp;
-    sb_fnormal(x, &scaled, &exp);
-    const int start = exp > 0 ? exp : 0;
-    unsigned length = 0;
-    int kept = 0;
-    for (int pos = start; pos >= -precision - 1; --pos) {
-        if (pos == -1 && (precision || alt)) out[length++] = '.';
-        int digit = 0;
-        if (x != 0.0 && pos <= exp) {
-            digit = sb_fnext(&scaled);
-            ++kept;
-            if (kept > 17) digit = 0;
-        }
-        if (pos == -precision - 1) {
-            if (digit > 5 || (digit == 5 &&
-                (scaled > 1e-12 || (length && (out[length - 1] - '0') % 2 != 0)))) {
-                int at = (int)length - 1;
-                while (at >= 0) {
-                    if (out[at] == '.') { --at; continue; }
-                    if (out[at] < '9') { ++out[at]; break; }
-                    out[at--] = '0';
-                }
-                if (at < 0) {
-                    for (int i = (int)length; i > 0; --i) out[i] = out[i - 1];
-                    out[0] = '1';
-                    ++length;
-                }
-            }
-        } else out[length++] = (char)('0' + digit);
-    }
-    return length;
-}
-
-static unsigned sb_f_exponent(char *out, double x, int precision, int alt, int upper)
-{
-    double scaled;
-    int exp;
-    sb_fnormal(x, &scaled, &exp);
-    unsigned length = 0;
-    /* A single integer digit, then precision fractional digits, then the rounding digit. */
-    for (int i = 0; i <= precision + 1; ++i) {
-        if (i == 1 && (precision || alt)) out[length++] = '.';
-        int digit = x == 0.0 ? 0 : sb_fnext(&scaled);
-        if (i == precision + 1) {
-            if (digit > 5 || (digit == 5 &&
-                (scaled > 1e-12 || (length && (out[length - 1] - '0') % 2 != 0)))) {
-                int at = (int)length - 1;
-                while (at >= 0) {
-                    if (out[at] == '.') { --at; continue; }
-                    if (out[at] < '9') { ++out[at]; break; }
-                    out[at--] = '0';
-                }
-                if (at < 0) { /* 9.999 -> 1.000e+N+1 */
-                    out[0] = '1';
-                    ++exp;
-                }
-            }
-        } else out[length++] = (char)('0' + digit);
-    }
-    out[length++] = upper ? 'E' : 'e';
-    out[length++] = exp < 0 ? '-' : '+';
-    unsigned magnitude = (unsigned)(exp < 0 ? -exp : exp);
-    if (magnitude >= 100) out[length++] = (char)('0' + magnitude / 100);
-    out[length++] = (char)('0' + (magnitude / 10) % 10);
-    out[length++] = (char)('0' + magnitude % 10);
-    return length;
-}
-
-static void sb_float(SB_Print *s, double value, char spec,
-                     unsigned flags, unsigned width, int precision)
-{
-    char buffer[SB_FLOAT_BUFFER];
-    unsigned n = 0;
-    const int negative = sb_fsign(value);
-    const char sign = negative ? '-' : (flags & SB_PLUS) ? '+' : (flags & SB_SPACE) ? ' ' : 0;
-    const int upper = spec >= 'A' && spec <= 'Z';
-    int special = sb_fspecial(value);
-    if (special) {
-        const char *str = special == 2 ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
-        while (*str) buffer[n++] = *str++;
-    } else if (precision > SB_FLOAT_PRECISION_MAX) {
-        const char *str = "<prec?>";
-        while (*str) buffer[n++] = *str++;
-    } else {
-        if (negative) value = -value;
-        if (precision < 0) precision = 6;
-        if (spec == 'g' || spec == 'G') {
-            /* General format: precision is number of significant digits. */
-            if (!precision) precision = 1;
-            double norm;
-            int exp;
-            sb_fnormal(value, &norm, &exp);
-            int scientific = exp < -4 || exp >= precision;
-            if (!scientific) {
-                int digits = precision - (exp + 1);
-                n = sb_f_fixed(buffer, value, digits, flags & SB_ALT);
-                unsigned integer_digits = 0;
-                while (integer_digits < n && buffer[integer_digits] != '.')
-                    ++integer_digits;
-                /* Rounding may increase the exponent: 99.9 with %.2g becomes 1e+02. */
-                if (exp >= 0 && integer_digits > (unsigned)precision)
-                    scientific = 1;
-            }
-            if (scientific) {
-                n = sb_f_exponent(buffer, value, precision - 1, flags & SB_ALT, upper);
-                if (!(flags & SB_ALT)) {
-                    unsigned suffix = n;
-                    while (suffix && buffer[suffix - 1] != 'e' && buffer[suffix - 1] != 'E') --suffix;
-                    if (suffix) {
-                        unsigned before = suffix - 1;
-                        while (before && buffer[before - 1] == '0') --before;
-                        if (before && buffer[before - 1] == '.') --before;
-                        for (unsigned i = suffix - 1; i < n; ++i) buffer[before + i - suffix + 1] = buffer[i];
-                        n = before + n - (suffix - 1);
-                    }
-                }
-            } else if (!(flags & SB_ALT)) {
-                int dot = -1;
-                for (unsigned j = 0; j < n; ++j)
-                    if (buffer[j] == '.') { dot = (int)j; break; }
-                if (dot >= 0) {
-                    while (n > (unsigned)dot + 1 && buffer[n - 1] == '0') --n;
-                    if (n == (unsigned)dot + 1) --n;
-                }
-            }
-        } else if (spec == 'e' || spec == 'E') {
-            n = sb_f_exponent(buffer, value, precision, flags & SB_ALT, upper);
-        } else {
-            n = sb_f_fixed(buffer, value, precision, flags & SB_ALT);
-        }
-    }
-    unsigned padding = width > n + (sign != 0) ? width - n - (sign != 0) : 0;
-    char pad = ((flags & SB_ZERO) && !(flags & SB_LEFT) && !special) ? '0' : ' ';
-    if (!(flags & SB_LEFT) && pad == ' ') sb_pad(s, pad, padding);
-    if (sign) sb_char(s, sign);
-    if (!(flags & SB_LEFT) && pad == '0') sb_pad(s, pad, padding);
-    for (unsigned i = 0; i < n; ++i) sb_char(s, buffer[i]);
-    if (flags & SB_LEFT) sb_pad(s, ' ', padding);
-}
-
 static int sb_format(SB_Print *s, const char *format, va_list *args)
 {
     if (!format) return -1;
@@ -434,11 +245,10 @@ flags_done: ;
             sb_char(s, (char)va_arg(*args, int));
             if (flags & SB_LEFT) sb_pad(s, ' ', padding);
         } else if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' ||
-                   spec == 'g' || spec == 'G') {
-            sb_float(s, va_arg(*args, double), spec, flags, width, precision);
-        } else if (spec == 'a' || spec == 'A') {
+                   spec == 'g' || spec == 'G' || spec == 'a' || spec == 'A') {
+            /* Intentionally visible until a tested PIC float formatter exists. */
             (void)va_arg(*args, double);
-            const char *message = "<hexfloat?>";
+            const char *message = "<float?>";
             while (*message) sb_char(s, *message++);
         } else {
             sb_char(s, '%'); sb_char(s, spec);
