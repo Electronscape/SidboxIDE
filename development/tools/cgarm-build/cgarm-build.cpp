@@ -1,4 +1,4 @@
-// CGARM command-line builder (Stage 3: standalone C/RES sources -> SBAP V2 APP)
+// CGARM command-line builder (Stage 4: C/RES or IDE JSON .proj -> SBAP V2 APP)
 //
 // Linux host tool. No Qt, shell scripts, or GNU/Newlib libc at APP link time.
 // Compile with: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
@@ -19,6 +19,8 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <set>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -41,6 +43,20 @@ struct Options {
     std::vector<fs::path> sources;
     fs::path output;
     fs::path sdkOverride;
+    fs::path project;
+    bool explicitOutput = false;
+    bool explicitAppKb = false;
+    bool explicitHeapKb = false;
+    bool explicitStackKb = false;
+    bool explicitOptimisation = false;
+    bool projectMode = false;
+    bool suppressWarnings = false;
+    bool wall = true;
+    bool wextra = true;
+    bool functionSections = true;
+    bool dataSections = true;
+    bool stackUsage = false;
+    std::vector<std::string> projectCompilerFlags;
     std::vector<std::string> extraCppFlags;
     unsigned appKb = 128;
     unsigned heapKb = 16;
@@ -54,21 +70,23 @@ struct Options {
 void usage(std::ostream &out) {
     out <<
         "CGARM command-line builder (SIDBOX relocatable V2)\n\n"
-        "Usage: cgarm-build <source.c> [more.c ...] -o <output.app> [options]\n\n"
+        "Usage: cgarm-build <source.c> [more.c ...] -o <output.app> [options]\n"
+        "       cgarm-build <project.proj> [options]\n\n"
         "Options:\n"
-        "  -o, --output FILE    Output .app (default: first source name.app)\n"
+        "  -o, --output FILE    Override output .app filename/location\n"
         "  --sdk DIR            SidboxIDE project root OR its idelibs directory\n"
         "  --app-kb N           Applet RAM allowance in KiB (32-512, default 128)\n"
         "  --heap-kb N          Bounded heap in KiB (>=4, default 16)\n"
         "  --stack-kb N         Private callback PSP stack in KiB (4-128, default 8)\n"
-        "  -O0/-O1/-O2/-O3/-Os/-Ofast  GCC optimisation (default -O2)\n"
+        "  -O0/-Og/-O1/-O2/-O3/-Os/-Ofast  GCC optimisation override\n"
         "  -I DIR, -IDIR       Extra C include directory (may repeat)\n"
         "  -D NAME, -DNAME    Extra C preprocessor definition (may repeat)\n"
         "  --verbose           Print every compiler/linker/packer command\n"
         "  --dry-run           Print planned commands without creating files\n"
         "  -h, --help          Show this help\n\n"
-        "Builds standalone .c and .res source files. .proj/GUI Designer support\n"
-        "will follow in a later stage. No V1 or Gaming compilation here.\n";
+        "Reads IDE JSON .proj settings and source tree (already-generated GUI resources).\n"
+        "Only CGARM V2 GUI projects. V1 and Gaming remain IDE-only.\n"
+        "No .sbui regeneration and no interactive auto-RAM resizing in this CLI.\n";
 }
 
 unsigned number(const std::string &s, const std::string &opt) {
@@ -104,14 +122,18 @@ Options parse(int argc, char **argv) {
             return opts;
         } else if (!literal && (arg == "-o" || arg == "--output")) {
             opts.output = next();
+            opts.explicitOutput = true;
         } else if (!literal && arg == "--sdk") {
             opts.sdkOverride = next();
         } else if (!literal && arg == "--app-kb") {
             opts.appKb = number(next(), arg);
+            opts.explicitAppKb = true;
         } else if (!literal && arg == "--heap-kb") {
             opts.heapKb = number(next(), arg);
+            opts.explicitHeapKb = true;
         } else if (!literal && arg == "--stack-kb") {
             opts.stackKb = number(next(), arg);
+            opts.explicitStackKb = true;
         } else if (!literal && arg == "--verbose") {
             opts.verbose = true;
         } else if (!literal && arg == "--dry-run") {
@@ -125,35 +147,371 @@ Options parse(int argc, char **argv) {
                    (arg.substr(0, 2) == "-I" || arg.substr(0, 2) == "-D")) {
             opts.extraCppFlags.push_back(arg);
         } else if (!literal && (arg == "-O0" || arg == "-O1" || arg == "-O2" ||
-                                 arg == "-O3" || arg == "-Os" || arg == "-Ofast")) {
+                                 arg == "-O3" || arg == "-Os" || arg == "-Og" || arg == "-Ofast")) {
             opts.optimisation = arg;
+            opts.explicitOptimisation = true;
         } else if (!literal && !arg.empty() && arg.front() == '-') {
             throw Error("Unknown option: " + arg + " (see --help)");
         } else {
             opts.sources.emplace_back(arg);
         }
     }
-    if (opts.sources.empty()) throw Error("No source files specified (see --help)");
-    if (opts.output.empty()) {
+    if (opts.sources.empty()) throw Error("No source or .proj file specified (see --help)");
+    const bool hasProject = std::any_of(opts.sources.begin(), opts.sources.end(),
+        [](const fs::path &s) { return s.extension() == ".proj"; });
+    if (hasProject) {
+        if (opts.sources.size() != 1 || opts.sources[0].extension() != ".proj") {
+            throw Error("Pass one .proj file by itself; it supplies its own sources");
+        }
+        opts.projectMode = true;
+        opts.project = opts.sources.front();
+    } else if (!opts.explicitOutput) {
         opts.output = opts.sources.front().stem().string() + ".app";
-    }
-    if (opts.appKb < 32 || opts.appKb > 512) {
-        throw Error("--app-kb must be between 32 and 512 (firmware V2 maximum)");
-    }
-    if (opts.heapKb < 4 || opts.heapKb > 512) {
-        throw Error("--heap-kb must be between 4 and 512");
-    }
-    if (opts.stackKb < 4 || opts.stackKb > 128) {
-        throw Error("--stack-kb must be between 4 and 128");
-    }
-    if (opts.heapKb + opts.stackKb >= opts.appKb) {
-        throw Error("Heap + private stack must leave room for applet code and data");
     }
     return opts;
 }
 
+void validateMemory(const Options &opts) {
+    if (opts.appKb < 32 || opts.appKb > 512)
+        throw Error("--app-kb / appSizeKb must be 32–512 KiB for V2");
+    if (opts.heapKb < 4 || opts.heapKb > 512)
+        throw Error("--heap-kb / v2HeapKb must be 4–512 KiB");
+    if (opts.stackKb < 4 || opts.stackKb > 128)
+        throw Error("--stack-kb / v2StackKb must be 4–128 KiB");
+    if (opts.heapKb + opts.stackKb >= opts.appKb)
+        throw Error("Heap + private stack must leave room for applet code and data");
+}
+
 fs::path absolutePath(const fs::path &path) {
     return fs::absolute(path).lexically_normal();
+}
+
+// Minimal self-contained JSON reader. .proj files are JSON written by Qt's
+// QJsonDocument; keeping the CLI dependency-free avoids shipping Qt with it.
+// Handles normal JSON escaping, nested unknown fields and UTF-16 \u escapes.
+struct Json {
+    enum class Kind { Null, Bool, Number, String, Array, Object } kind = Kind::Null;
+    bool boolean = false;
+    std::string text;
+    std::vector<Json> array;
+    std::map<std::string, Json> object;
+    const Json *get(const std::string &key) const {
+        const auto it = object.find(key);
+        return kind == Kind::Object && it != object.end() ? &it->second : nullptr;
+    }
+};
+
+class JsonReader {
+    const std::string &s;
+    std::size_t pos = 0;
+    void white() {
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+    }
+    char peek() {
+        white();
+        if (pos >= s.size()) throw Error("Unexpected end of .proj JSON");
+        return s[pos];
+    }
+    void expect(char c) {
+        if (peek() != c) throw Error(std::string("Invalid .proj JSON: expected '") + c + "'");
+        ++pos;
+    }
+    static void utf8(std::string &out, unsigned u) {
+        if (u <= 0x7f) out += static_cast<char>(u);
+        else if (u <= 0x7ff) {
+            out += static_cast<char>(0xc0 | (u >> 6));
+            out += static_cast<char>(0x80 | (u & 63));
+        } else if (u <= 0xffff) {
+            out += static_cast<char>(0xe0 | (u >> 12));
+            out += static_cast<char>(0x80 | ((u >> 6) & 63));
+            out += static_cast<char>(0x80 | (u & 63));
+        } else {
+            out += static_cast<char>(0xf0 | (u >> 18));
+            out += static_cast<char>(0x80 | ((u >> 12) & 63));
+            out += static_cast<char>(0x80 | ((u >> 6) & 63));
+            out += static_cast<char>(0x80 | (u & 63));
+        }
+    }
+    unsigned unicode() {
+        if (pos + 4 > s.size()) throw Error("Truncated JSON Unicode escape");
+        unsigned u = 0;
+        for (int i = 0; i < 4; ++i) {
+            const unsigned char c = s[pos++];
+            u <<= 4;
+            if (c >= '0' && c <= '9') u += c - '0';
+            else if (c >= 'a' && c <= 'f') u += c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') u += c - 'A' + 10;
+            else throw Error("Bad JSON Unicode escape");
+        }
+        return u;
+    }
+    std::string string() {
+        expect('"');
+        std::string out;
+        while (pos < s.size()) {
+            unsigned char c = static_cast<unsigned char>(s[pos++]);
+            if (c == '"') return out;
+            if (c < 0x20) throw Error("Control character in JSON string");
+            if (c != '\\') { out += static_cast<char>(c); continue; }
+            if (pos >= s.size()) throw Error("Truncated JSON string escape");
+            const char esc = s[pos++];
+            switch (esc) {
+                case '"': out += '"'; break;
+                case '\\': out += '\\'; break;
+                case '/': out += '/'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'n': out += '\n'; break;
+                case 'r': out += '\r'; break;
+                case 't': out += '\t'; break;
+                case 'u': {
+                    unsigned u = unicode();
+                    if (u >= 0xd800 && u <= 0xdbff) {
+                        if (pos + 2 > s.size() || s[pos] != '\\' || s[pos + 1] != 'u')
+                            throw Error("Unpaired high surrogate in JSON");
+                        pos += 2;
+                        unsigned low = unicode();
+                        if (low < 0xdc00 || low > 0xdfff) throw Error("Invalid low surrogate in JSON");
+                        u = 0x10000 + ((u - 0xd800) << 10) + (low - 0xdc00);
+                    } else if (u >= 0xdc00 && u <= 0xdfff) {
+                        throw Error("Unpaired low surrogate in JSON");
+                    }
+                    utf8(out, u);
+                    break;
+                }
+                default: throw Error("Invalid JSON string escape");
+            }
+        }
+        throw Error("Unterminated JSON string");
+    }
+    Json value(unsigned depth) {
+        if (depth > 64) throw Error(".proj JSON nesting is too deep");
+        const char c = peek();
+        Json v;
+        if (c == '{') {
+            v.kind = Json::Kind::Object;
+            ++pos;
+            if (peek() == '}') { ++pos; return v; }
+            while (true) {
+                if (peek() != '"') throw Error("Object key must be a string");
+                std::string key = string();
+                expect(':');
+                v.object[std::move(key)] = value(depth + 1);
+                const char next = peek();
+                if (next == '}') { ++pos; break; }
+                expect(',');
+            }
+        } else if (c == '[') {
+            v.kind = Json::Kind::Array;
+            ++pos;
+            if (peek() == ']') { ++pos; return v; }
+            while (true) {
+                v.array.push_back(value(depth + 1));
+                if (peek() == ']') { ++pos; break; }
+                expect(',');
+            }
+        } else if (c == '"') {
+            v.kind = Json::Kind::String;
+            v.text = string();
+        } else if (c == '-' || std::isdigit(static_cast<unsigned char>(c))) {
+            const std::size_t first = pos;
+            if (s[pos] == '-') ++pos;
+            if (pos >= s.size()) throw Error("Bad JSON number");
+            if (s[pos] == '0') ++pos;
+            else {
+                if (s[pos] < '1' || s[pos] > '9') throw Error("Bad JSON number");
+                while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+            }
+            if (pos < s.size() && s[pos] == '.') {
+                ++pos;
+                if (pos == s.size() || !std::isdigit(static_cast<unsigned char>(s[pos])))
+                    throw Error("Bad JSON fraction");
+                while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+            }
+            if (pos < s.size() && (s[pos] == 'e' || s[pos] == 'E')) {
+                ++pos;
+                if (pos < s.size() && (s[pos] == '+' || s[pos] == '-')) ++pos;
+                if (pos == s.size() || !std::isdigit(static_cast<unsigned char>(s[pos])))
+                    throw Error("Bad JSON exponent");
+                while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+            }
+            v.kind = Json::Kind::Number;
+            v.text = s.substr(first, pos - first);
+        } else {
+            const std::string literal = s.compare(pos, 4, "true") == 0 ? "true"
+                : s.compare(pos, 5, "false") == 0 ? "false" : "null";
+            if (s.compare(pos, literal.size(), literal) != 0) throw Error("Unknown JSON token");
+            pos += literal.size();
+            v.kind = literal == "null" ? Json::Kind::Null : Json::Kind::Bool;
+            v.boolean = literal == "true";
+        }
+        return v;
+    }
+public:
+    explicit JsonReader(const std::string &input) : s(input) {}
+    Json parse() {
+        Json root = value(0);
+        white();
+        if (pos != s.size()) throw Error("Trailing data after .proj JSON");
+        if (root.kind != Json::Kind::Object) throw Error(".proj JSON root must be an object");
+        return root;
+    }
+};
+
+std::string jsonString(const Json &o, const std::string &key, const std::string &def = "") {
+    const Json *v = o.get(key);
+    if (!v || v->kind == Json::Kind::Null) return def;
+    if (v->kind != Json::Kind::String) throw Error(".proj field '" + key + "' must be a string");
+    return v->text;
+}
+
+bool jsonBool(const Json &o, const std::string &key, bool def) {
+    const Json *v = o.get(key);
+    if (!v || v->kind == Json::Kind::Null) return def;
+    if (v->kind != Json::Kind::Bool) throw Error(".proj field '" + key + "' must be true/false");
+    return v->boolean;
+}
+
+unsigned jsonUnsigned(const Json &o, const std::string &key, unsigned def) {
+    const Json *v = o.get(key);
+    if (!v || v->kind == Json::Kind::Null) return def;
+    if (v->kind != Json::Kind::Number || v->text.empty() ||
+        !std::all_of(v->text.begin(), v->text.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        throw Error(".proj field '" + key + "' must be a non-negative integer");
+    }
+    return number(v->text, key);
+}
+
+// QProcess::splitCommand-like tokenisation for the IDE's extraFlags string.
+// Quoting keeps spaces together. No shell is ever run or expanded.
+std::vector<std::string> splitFlags(const std::string &flags) {
+    std::vector<std::string> words;
+    std::string current;
+    bool quoted = false;
+    bool started = false;
+    for (std::size_t i = 0; i < flags.size(); ++i) {
+        const char c = flags[i];
+        if (c == '"') { quoted = !quoted; started = true; }
+        else if (c == '\\' && i + 1 < flags.size() && flags[i + 1] == '"') {
+            current += '"'; ++i; started = true;
+        } else if (std::isspace(static_cast<unsigned char>(c)) && !quoted) {
+            if (started) { words.push_back(current); current.clear(); started = false; }
+        } else { current += c; started = true; }
+    }
+    if (quoted) throw Error("Unclosed double quote in compiler.extraFlags");
+    if (started) words.push_back(current);
+    return words;
+}
+
+bool sourceExtension(fs::path path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".res";
+}
+
+void loadProject(Options &opts) {
+    const fs::path project = absolutePath(opts.project);
+    std::ifstream in(project, std::ios::binary);
+    if (!in) throw Error("Cannot open .proj file: " + project.string());
+    const std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (contents.size() > 4 * 1024 * 1024) throw Error(".proj JSON exceeds 4 MiB");
+    const Json root = JsonReader(contents).parse();
+    const std::string kind = jsonString(root, "projectType", "gui");
+    const std::string format = jsonString(root, "appletFormat", "v1");
+    if (kind == "game") throw Error("Gaming project: cgarm-build supports CGARM V2 only (use Qt IDE)");
+    if (format != "v2") throw Error("V1 project: cgarm-build supports CGARM V2 only (use Qt IDE)");
+    if (!jsonString(root, "linkerScript").empty()) {
+        throw Error("CGARM V2 requires the default gui_v2.ld linker template; clear custom linkerScript in IDE");
+    }
+    const fs::path projectDir = project.parent_path();
+    if (!opts.explicitAppKb) opts.appKb = jsonUnsigned(root, "appSizeKb", 128);
+    if (!opts.explicitHeapKb) opts.heapKb = jsonUnsigned(root, "v2HeapKb", 16);
+    if (!opts.explicitStackKb) opts.stackKb = jsonUnsigned(root, "v2StackKb", 8);
+    const Json *compiler = root.get("compiler");
+    if (compiler && compiler->kind != Json::Kind::Object)
+        throw Error(".proj compiler must be a JSON object");
+    if (compiler) {
+        if (!opts.explicitOptimisation) opts.optimisation = jsonString(*compiler, "optimization", "-Ofast");
+        const std::set<std::string> allowed = {"-O0", "-Og", "-O1", "-O2", "-O3", "-Os", "-Ofast"};
+        if (!allowed.count(opts.optimisation)) throw Error("Unsupported compiler.optimization in .proj");
+        opts.suppressWarnings = jsonBool(*compiler, "suppressWarnings", true);
+        opts.wall = jsonBool(*compiler, "wall", false);
+        opts.wextra = jsonBool(*compiler, "wextra", false);
+        opts.functionSections = jsonBool(*compiler, "functionSections", true);
+        opts.dataSections = jsonBool(*compiler, "dataSections", true);
+        opts.stackUsage = jsonBool(*compiler, "stackUsage", true);
+        opts.projectCompilerFlags = splitFlags(jsonString(*compiler, "extraFlags"));
+        // Interpret relative -I include paths from the project's location,
+        // rather than from whichever terminal directory invoked cgarm-build.
+        for (std::size_t i = 0; i < opts.projectCompilerFlags.size(); ++i) {
+            std::string &flag = opts.projectCompilerFlags[i];
+            if (flag == "-I" && i + 1 < opts.projectCompilerFlags.size()) {
+                std::string &value = opts.projectCompilerFlags[++i];
+                if (!value.empty() && !fs::path(value).is_absolute())
+                    value = (projectDir / value).lexically_normal().string();
+            } else if (flag.size() > 2 && flag.substr(0, 2) == "-I") {
+                const fs::path value(flag.substr(2));
+                if (!value.is_absolute()) flag = "-I" + (projectDir / value).lexically_normal().string();
+            }
+        }
+    } else {
+        if (!opts.explicitOptimisation) opts.optimisation = "-Ofast";
+        opts.suppressWarnings = true;
+        opts.wall = false;
+        opts.wextra = false;
+        opts.stackUsage = true;
+    }
+    if (!opts.explicitOutput) {
+        std::string appName = jsonString(root, "outputAppName");
+        if (appName.empty()) appName = project.stem().string() + ".app";
+        // The Qt IDE limits custom output to a filename, not a path.
+        appName = fs::path(appName).filename().string();
+        if (appName.empty() || appName == "." || appName == "..")
+            throw Error("Invalid outputAppName in .proj");
+        std::string lower = appName;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (lower.size() < 4 || lower.substr(lower.size()-4) != ".app") appName += ".app";
+        opts.output = projectDir / appName;
+    }
+    std::set<fs::path> discovered;
+    const auto append = [&](const fs::path &candidate, bool explicitEntry) {
+        if (!sourceExtension(candidate)) return;
+        fs::path absolute = absolutePath(candidate);
+        if (explicitEntry && !fs::is_regular_file(absolute))
+            throw Error("Listed project source missing: " + absolute.string());
+        if (discovered.insert(absolute).second) opts.sources.push_back(absolute);
+    };
+    opts.sources.clear();
+    const Json *files = root.get("files");
+    if (files) {
+        if (files->kind != Json::Kind::Array) throw Error(".proj files must be an array");
+        for (const Json &file : files->array) {
+            if (file.kind != Json::Kind::String) throw Error(".proj files entry must be a path string");
+            if (file.text.empty()) continue;
+            const fs::path path(file.text);
+            append(path.is_absolute() ? path : projectDir / path, true);
+        }
+    }
+    // Mirror projectFolderSourceFiles(): recurse below project root, except
+    // build/, and include generated .c/.res even if absent from JSON files[].
+    for (fs::recursive_directory_iterator it(projectDir, fs::directory_options::skip_permission_denied),
+          end; it != end; ++it) {
+        const fs::path rel = it->path().lexically_relative(projectDir);
+        if (!rel.empty() && *rel.begin() == "build") {
+            if (it->is_directory()) it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file()) {
+            const std::string ext = it->path().extension().string();
+            // Qt's folder scanner sees only .c and .res automatically; explicitly
+            // listed .cc/.cpp above are supported, as in the IDE.
+            if (ext == ".c" || ext == ".res") append(it->path(), false);
+        }
+    }
+    std::sort(opts.sources.begin(), opts.sources.end());
+    if (opts.sources.empty()) throw Error("No C/.res sources found in .proj or project directory");
+    std::cout << "Project: " << project << " (CGARM V2, " << opts.sources.size() << " sources)\n";
+    std::cout << "[note] GUI Designer .sbui files are NOT regenerated here; save/generate them in the IDE first.\n";
 }
 
 bool sdkLooksValid(const fs::path &sdk) {
@@ -342,9 +700,8 @@ void build(const Options &opt) {
     for (const fs::path &source : opt.sources) {
         fs::path path = absolutePath(source);
         requireFile(path, "Source file");
-        const std::string ext = path.extension().string();
-        if (ext != ".c" && ext != ".res") {
-            throw Error("Stage 3 supports only .c and .res sources (not .proj): " + path.string());
+        if (!sourceExtension(path)) {
+            throw Error("CGARM supports .c/.cc/.cpp/.res (or a single .proj): " + path.string());
         }
         if (std::find(sources.begin(), sources.end(), path) != sources.end()) {
             throw Error("Duplicate source: " + path.string());
@@ -400,10 +757,19 @@ void build(const Options &opt) {
         "-std=gnu99", opt.optimisation, "--specs=nano.specs", "-mno-unaligned-access",
         "-DSIDBOX_STARTUP_HEADER_IN_ASM", "-DSIDBOX_V2_HEAP_BYTES=" + std::to_string(opt.heapKb * 1024u),
         "-DSIDBOX_APPLET_V2", "-fPIE", "-fPIC", "-fno-plt", "-fvisibility=hidden",
-        "-ffreestanding", "-fno-builtin", "-ffunction-sections", "-fdata-sections",
-        "-Wall", "-Wextra", "-I", api.string(), "-I", libraries.string(),
+        "-ffreestanding", "-fno-builtin",
+        "-I", api.string(), "-I", libraries.string(),
         "-I", headers.string()
     };
+    if (opt.functionSections) flags.push_back("-ffunction-sections");
+    if (opt.dataSections) flags.push_back("-fdata-sections");
+    if (opt.stackUsage) flags.push_back("-fstack-usage");
+    if (opt.suppressWarnings) flags.push_back("-w");
+    else {
+        if (opt.wall) flags.push_back("-Wall");
+        if (opt.wextra) flags.push_back("-Wextra");
+    }
+    flags.insert(flags.end(), opt.projectCompilerFlags.begin(), opt.projectCompilerFlags.end());
     flags.insert(flags.end(), opt.extraCppFlags.begin(), opt.extraCppFlags.end());
 
     std::vector<std::string> objects;
@@ -413,7 +779,10 @@ void build(const Options &opt) {
         objects.push_back(object.string());
         std::vector<std::string> command = {gcc.string()};
         command.insert(command.end(), flags.begin(), flags.end());
-        if (sources[i].extension() == ".res") {
+        std::string ext = sources[i].extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (ext == ".res") {
             command.insert(command.end(), {"-x", "c"});
         }
         command.insert(command.end(), {"-c", sources[i].string(), "-o", object.string()});
@@ -470,6 +839,8 @@ int main(int argc, char **argv) {
             usage(std::cout);
             return 0;
         }
+        if (opts.projectMode) loadProject(opts);
+        validateMemory(opts);
         build(opts);
         return 0;
     } catch (const Error &error) {

@@ -1,0 +1,2 @@
+crt.c:18:6:CRT_DrawImage	56	static
+crt.c:58:6:CRT_FrameImage	16	static

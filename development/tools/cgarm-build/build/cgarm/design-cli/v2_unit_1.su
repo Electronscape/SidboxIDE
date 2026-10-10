@@ -1,0 +1,4 @@
+mainwindow.c:77:13:SidboxDirect_On_bitmap1_Activate	0	static
+mainwindow.c:221:24:MainWindow_WindowProc	16	static
+mainwindow.c:85:13:SidboxDirect_On_bitmap1_Change	0	static
+mainwindow.c:94:6:MainWindow_Create	88	static

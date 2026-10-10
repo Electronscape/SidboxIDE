@@ -1,0 +1,39 @@
+{
+    "appSizeKb": 352,
+    "appletFormat": "v2",
+    "compiler": {
+        "dataSections": true,
+        "extraFlags": "",
+        "functionSections": true,
+        "optimization": "-Ofast",
+        "stackUsage": true,
+        "suppressWarnings": true,
+        "wall": false,
+        "wextra": false
+    },
+    "files": [
+        "main.c",
+        "main.h",
+        "mainwindow.sbui",
+        "optionswindow.sbui",
+        "windows/mainwindow.c",
+        "windows/mainwindow.sbui",
+        "windows/mainwindowres/bitmapview.c",
+        "windows/optionswindow.c",
+        "windows/optionswindow.sbui",
+        "windows/optionswindowres/bitmapview.c",
+        "windows/optionswindowres/media_sfx.c"
+    ],
+    "linkerScript": "",
+    "modSizeKb": 0,
+    "openTabs": [
+        "main.c",
+        "windows/mainwindow.sbui",
+        "windows/optionswindow.sbui"
+    ],
+    "outputAppName": "",
+    "projectType": "gui",
+    "v2HeapKb": 128,
+    "v2StackKb": 32,
+    "version": 2
+}

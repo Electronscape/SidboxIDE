@@ -1,0 +1,4 @@
+apis.c:23:9:randomi	0	static
+apis.c:28:10:urandomi	0	static
+apis.c:33:6:urandomseed	0	static
+apis.c:38:5:stringcmp	4	static
