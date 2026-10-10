@@ -74,7 +74,6 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTabBar>
-#include <QTemporaryDir>
 #include <QTextCharFormat>
 #include <QTextBlock>
 #include <QTextBrowser>
@@ -6225,7 +6224,6 @@ void MainWindow::compileActiveFile()
     }
 
     m_buildLinkSizeOverflow = false;
-    m_v2AutoResizeRetried = false;
     m_currentBuildIsV2 = v2Build;
     m_pendingElfPath = outputPath;
     m_pendingAppPath = appOutputPath;
@@ -6892,8 +6890,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
     if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2Compiling)
         && !m_compilerStderrBuffer.isEmpty()) {
         const QString finalLine = m_compilerStderrBuffer.toLower();
-        if (finalLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
-            || finalLine.contains(QStringLiteral("applet image exceeds selected app size"))
+        if (finalLine.contains(QStringLiteral("applet image exceeds selected app size"))
             || (finalLine.contains(QStringLiteral("applet"))
                 && finalLine.contains(QStringLiteral("region"))
                 && (finalLine.contains(QStringLiteral("overflowed"))
@@ -6941,154 +6938,11 @@ void MainWindow::handleCompilerFinished(int exitCode)
 
     if (m_buildStep == BuildStep::Linking) {
         if (exitCode != 0) {
-            bool resizeDialogShown = false;
-
-            // CGARM only: when the requested RAM is too small, link the ALREADY
-            // compiled PIC objects once against a temporary 512 KB limit.
-            // This provides a measured size without touching the project's .ld,
-            // .proj, .elf, .map, or the normal V1/Gaming build paths.
-            if (m_currentBuildIsV2 && m_buildLinkSizeOverflow &&
-                !m_v2AutoResizeRetried && m_linkerScriptPath.isEmpty() &&
-                m_appSizeKb < 512) {
-                appendOutputLine(tr("CGARM: measuring applet RAM requirement (512 KB temporary link)..."),
-                                 OutputKind::Header);
-                QTemporaryDir tempDir(QDir(m_v2BuildDirectory).filePath(
-                    QStringLiteral("cgarm-autosize-XXXXXX")));
-                if (tempDir.isValid()) {
-                    QFile sourceLinker(projectLinkerScriptPath());
-                    if (sourceLinker.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                        QString probeScript = QString::fromUtf8(sourceLinker.readAll());
-                        if (replaceLinkerAssignment(&probeScript,
-                                QStringLiteral("_v2_app_limit"), hexBytes(512))) {
-                            const QString scriptPath = tempDir.filePath(QStringLiteral("probe.ld"));
-                            const QString elfPath = tempDir.filePath(QStringLiteral("probe.elf"));
-                            const QString mapPath = tempDir.filePath(QStringLiteral("probe.map"));
-                            QFile scriptFile(scriptPath);
-                            if (scriptFile.open(QIODevice::WriteOnly | QIODevice::Text) &&
-                                scriptFile.write(probeScript.toUtf8()) >= 0) {
-                                scriptFile.close();
-                                QStringList probeArgs = m_v2LinkArguments;
-                                for (int i = 0; i < probeArgs.size(); ++i) {
-                                    if (probeArgs.at(i) == QStringLiteral("-T") &&
-                                        i + 1 < probeArgs.size()) {
-                                        probeArgs[i + 1] = scriptPath;
-                                        ++i;
-                                    } else if (probeArgs.at(i) == QStringLiteral("-o") &&
-                                               i + 1 < probeArgs.size()) {
-                                        probeArgs[i + 1] = elfPath;
-                                        ++i;
-                                    } else if (probeArgs.at(i).startsWith(QStringLiteral("-Map="))) {
-                                        probeArgs[i] = QStringLiteral("-Map=%1").arg(mapPath);
-                                    }
-                                }
-
-                                QProcess probeLink;
-                                probeLink.setWorkingDirectory(m_v2BuildDirectory);
-                                probeLink.start(m_v2LinkerPath, probeArgs);
-                                const bool probeOk = probeLink.waitForStarted(3000) &&
-                                    probeLink.waitForFinished(15000) &&
-                                    probeLink.exitStatus() == QProcess::NormalExit &&
-                                    probeLink.exitCode() == 0;
-                                if (probeOk) {
-                                    QString nmExecutable = compilerPath();
-                                    if (nmExecutable.endsWith(QStringLiteral("gcc"))) {
-                                        nmExecutable.chop(3);
-                                        nmExecutable += QStringLiteral("nm");
-                                    } else if (nmExecutable.endsWith(QStringLiteral("gcc.exe"))) {
-                                        nmExecutable.chop(7);
-                                        nmExecutable += QStringLiteral("nm.exe");
-                                    }
-                                    QProcess nm;
-                                    nm.start(nmExecutable, {QStringLiteral("-n"), elfPath});
-                                    if (nm.waitForStarted(3000) && nm.waitForFinished(3000) &&
-                                        nm.exitStatus() == QProcess::NormalExit && nm.exitCode() == 0) {
-                                        const QString symbols = QString::fromLocal8Bit(nm.readAllStandardOutput());
-                                        const QRegularExpression symbolPattern(
-                                            QStringLiteral(R"(^([0-9a-fA-F]+)\s+[A-Za-z]\s+(_appstart|__stack_end__)\s*$)"),
-                                            QRegularExpression::MultilineOption);
-                                        quint64 start = 0, end = 0;
-                                        bool haveStart = false, haveEnd = false;
-                                        auto matches = symbolPattern.globalMatch(symbols);
-                                        while (matches.hasNext()) {
-                                            const auto match = matches.next();
-                                            bool ok = false;
-                                            const quint64 address = match.captured(1).toULongLong(&ok, 16);
-                                            if (!ok) continue;
-                                            if (match.captured(2) == QStringLiteral("_appstart")) {
-                                                start = address;
-                                                haveStart = true;
-                                            } else {
-                                                end = address;
-                                                haveEnd = true;
-                                            }
-                                        }
-                                        if (haveStart && haveEnd && end >= start) {
-                                            const quint64 requiredBytes = end - start +
-                                                quint64(m_v2HeapKb) * 1024ULL;
-                                            const int minimumKb = int((requiredBytes + 1023ULL) / 1024ULL);
-                                            if (minimumKb > m_appSizeKb && minimumKb <= 512) {
-                                                // 10% headroom (at least 8 KiB), rounded to 16 KiB.
-                                                const int marginKb = qMax(8, (minimumKb + 9) / 10);
-                                                const int wantedKb = minimumKb + marginKb;
-                                                const int recommendedKb = qMin(512,
-                                                    ((wantedKb + 15) / 16) * 16);
-                                                resizeDialogShown = true;
-                                                QMessageBox suggestion(this);
-                                                suggestion.setIcon(QMessageBox::Question);
-                                                suggestion.setWindowTitle(tr("Resize CGARM applet?"));
-                                                suggestion.setText(tr("This applet needs at least %1 KB of RAM.")
-                                                    .arg(minimumKb));
-                                                suggestion.setInformativeText(
-                                                    tr("Current allowance: %1 KB\n"
-                                                       "Recommended allowance: %2 KB\n"
-                                                       "Reserved heap: %3 KB; private callback stack: %4 KB\n\n"
-                                                       "Update Project Settings and relink without recompiling? "
-                                                       "The firmware limit remains 512 KB.")
-                                                        .arg(m_appSizeKb).arg(recommendedKb)
-                                                        .arg(m_v2HeapKb).arg(m_v2StackKb));
-                                                QPushButton *resizeButton = suggestion.addButton(
-                                                    tr("Resize to %1 KB and relink").arg(recommendedKb),
-                                                    QMessageBox::AcceptRole);
-                                                suggestion.addButton(tr("Keep current size"), QMessageBox::RejectRole);
-                                                suggestion.exec();
-                                                if (suggestion.clickedButton() == resizeButton) {
-                                                    const int previousKb = m_appSizeKb;
-                                                    m_appSizeKb = recommendedKb;
-                                                    QString scriptError;
-                                                    if (updateProjectLinkerScript(&scriptError) &&
-                                                        saveProjectFile(m_projectFilePath)) {
-                                                        m_v2AutoResizeRetried = true;
-                                                        m_buildLinkSizeOverflow = false;
-                                                        appendOutputLine(tr("CGARM: applet allowance updated to %1 KB. Relinking existing PIC objects...")
-                                                            .arg(recommendedKb), OutputKind::Success);
-                                                        setCompileProgressStage(tr("Relinking resized CGARM applet..."));
-                                                        m_compilerProcess->start(m_v2LinkerPath, m_v2LinkArguments);
-                                                        return;
-                                                    }
-                                                    m_appSizeKb = previousKb;
-                                                    updateProjectLinkerScript(nullptr);
-                                                    saveProjectFile(m_projectFilePath);
-                                                    appendOutputLine(tr("Could not save the new applet size: %1")
-                                                        .arg(scriptError), OutputKind::Error);
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    appendOutputLine(tr("CGARM: the applet could not link even with the 512 KB limit; automatic sizing is unavailable."),
-                                                     OutputKind::Warning);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             appendOutputLine(tr("Link failed with exit code %1.").arg(exitCode), OutputKind::Error);
             m_buildStep = BuildStep::None;
             finishCompileProgress();
             statusBar()->showMessage(tr("Compile failed"));
-            if (m_buildLinkSizeOverflow && !resizeDialogShown) {
+            if (m_buildLinkSizeOverflow) {
                 QMessageBox memoryWarning(this);
                 memoryWarning.setIcon(QMessageBox::Warning);
                 memoryWarning.setWindowTitle(tr("Applet memory limit exceeded"));
@@ -12009,8 +11863,7 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
 
         const QString lowerLine = line.toLower();
         if (m_buildStep == BuildStep::Linking
-            && (lowerLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
-                || lowerLine.contains(QStringLiteral("applet image exceeds selected app size"))
+            && (lowerLine.contains(QStringLiteral("applet image exceeds selected app size"))
                 || ((lowerLine.contains(QStringLiteral("region"))
                      && lowerLine.contains(QStringLiteral("applet")))
                     && (lowerLine.contains(QStringLiteral("overflowed"))

@@ -2,7 +2,7 @@
  * V1 is deliberately unaffected: only compile this file for SIDBOX_APPLET_V2.
  * Supports: %% %c %s %d %i %u %o %x %X %p %b, field width, precision,
  * left/zero padding, signs, #, and hh/h/l/ll/z/t/j length modifiers.
- * Supports bounded decimal float output plus C99 %a/%A and %n; no wide strings.
+ * Supports bounded float formatting in Phase 3; no %a/%A, %n or wide strings.
  * No Newlib, malloc, libgcc division helpers, shared mutable state or fixed
  * printf output limit. Output goes to the existing console writec() API.
  */
@@ -350,104 +350,6 @@ static void sb_float(SB_Print *s, double value, char spec,
     if (flags & SB_LEFT) sb_pad(s, ' ', padding);
 }
 
-/* Exact C99 hexadecimal floating-point formatting for IEEE-754 double.
- * Uses the 52-bit fraction directly, so unlike decimal dtoa, its digits
- * are exact.  Precision truncation is rounded to nearest, ties-to-even.
- */
-static void sb_hex_float(SB_Print *s, double value, char spec,
-                         unsigned flags, unsigned width, int precision)
-{
-    union { double d; uint64_t u; } bits;
-    bits.d = value;
-    int negative = (int)(bits.u >> 63);
-    char sign = negative ? '-' : (flags & SB_PLUS) ? '+' : (flags & SB_SPACE) ? ' ' : 0;
-    unsigned biased = (unsigned)((bits.u >> 52) & 0x7ffu);
-    uint64_t fraction = bits.u & UINT64_C(0x000fffffffffffff);
-    int upper = (spec == 'A');
-
-    if (biased == 0x7ffu) {
-        sb_float(s, value, upper ? 'F' : 'f', flags, width, precision);
-        return;
-    }
-
-    unsigned lead = biased ? 1u : 0u;
-    int exponent = biased ? (int)biased - 1023 : fraction ? -1022 : 0;
-    int digits = precision;
-    if (digits < 0) {
-        digits = 13;
-        while (digits > 0 && ((fraction >> ((13-digits)*4)) & 15u) == 0) {
-            /* Trim from the least significant hex digit. */
-            --digits;
-        }
-    }
-    if (digits > (int)SB_MAX_FIELD) digits = (int)SB_MAX_FIELD;
-
-    uint64_t significant = fraction;
-    if (digits < 13) {
-        unsigned dropped = (unsigned)(13 - digits) * 4u;
-        uint64_t lowmask = (UINT64_C(1) << dropped) - 1u;
-        uint64_t remainder = fraction & lowmask;
-        uint64_t halfway = UINT64_C(1) << (dropped - 1u);
-        significant = fraction >> dropped;
-        if (remainder > halfway ||
-            (remainder == halfway && ((digits ? significant : lead) & 1u))) {
-            ++significant;
-        }
-        if (significant == (UINT64_C(1) << ((unsigned)digits * 4u))) {
-            significant = 0;
-            ++lead; /* 0x1.ffff... -> 0x2p+exp is a valid C99 result */
-        }
-    }
-
-    char expbuf[16];
-    unsigned en=0;
-    unsigned magnitude = exponent < 0 ? (unsigned)-exponent : (unsigned)exponent;
-    do {
-        expbuf[en++] = (char)('0' + magnitude % 10u);
-        magnitude /= 10u;
-    } while (magnitude);
-
-    /* 0x + leading digit + optional point + fraction + p + sign + exponent */
-    unsigned occupied = 2u + 1u + ((digits > 0 || (flags & SB_ALT)) ? 1u : 0u)
-                      + (unsigned)digits + 1u + 1u + en + (sign != 0);
-    unsigned pad = width > occupied ? width - occupied : 0u;
-    int zeros = (flags & SB_ZERO) && !(flags & SB_LEFT);
-    if (!(flags & SB_LEFT) && !zeros) sb_pad(s, ' ', pad);
-    if (sign) sb_char(s, sign);
-    sb_char(s, '0'); sb_char(s, upper ? 'X' : 'x');
-    if (!(flags & SB_LEFT) && zeros) sb_pad(s, '0', pad);
-    sb_char(s, (char)('0' + lead));
-    if (digits > 0 || (flags & SB_ALT)) sb_char(s, '.');
-    const char *alphabet = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    for (int i=0; i<digits; ++i) {
-        unsigned nibble = 0;
-        if (i < 13) {
-            if (digits < 13) nibble = (unsigned)((significant >> ((digits-i-1)*4)) & 15u);
-            else nibble = (unsigned)((fraction >> ((12-i)*4)) & 15u);
-        }
-        sb_char(s, alphabet[nibble]);
-    }
-    sb_char(s, upper ? 'P' : 'p');
-    sb_char(s, exponent < 0 ? '-' : '+');
-    while (en) sb_char(s, expbuf[--en]);
-    if (flags & SB_LEFT) sb_pad(s, ' ', pad);
-}
-
-static void sb_store_count(SB_Print *s, va_list *args, unsigned length)
-{
-    size_t n = s->length;
-    switch (length) {
-    case SB_HH: *va_arg(*args, signed char *) = (signed char)n; break;
-    case SB_H:  *va_arg(*args, short *) = (short)n; break;
-    case SB_L:  *va_arg(*args, long *) = (long)n; break;
-    case SB_LL: *va_arg(*args, long long *) = (long long)n; break;
-    case SB_Z:  *va_arg(*args, ptrdiff_t *) = (ptrdiff_t)n; break;
-    case SB_T:  *va_arg(*args, ptrdiff_t *) = (ptrdiff_t)n; break;
-    case SB_J:  *va_arg(*args, intmax_t *) = (intmax_t)n; break;
-    default:    *va_arg(*args, int *) = (int)n; break;
-    }
-}
-
 static int sb_format(SB_Print *s, const char *format, va_list *args)
 {
     if (!format) return -1;
@@ -535,9 +437,9 @@ flags_done: ;
                    spec == 'g' || spec == 'G') {
             sb_float(s, va_arg(*args, double), spec, flags, width, precision);
         } else if (spec == 'a' || spec == 'A') {
-            sb_hex_float(s, va_arg(*args, double), spec, flags, width, precision);
-        } else if (spec == 'n') {
-            sb_store_count(s, args, length);
+            (void)va_arg(*args, double);
+            const char *message = "<hexfloat?>";
+            while (*message) sb_char(s, *message++);
         } else {
             sb_char(s, '%'); sb_char(s, spec);
         }
