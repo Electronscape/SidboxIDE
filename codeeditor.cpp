@@ -2479,7 +2479,7 @@ bool CodeEditor::foldMarkerAtY(int y) const
             > blockNumber;
 }
 
-void CodeEditor::toggleFoldAtY(int y, bool expandChildren)
+void CodeEditor::toggleFoldAtY(int y, bool recursiveChildren)
 {
     const int preservedScrollValue =
         verticalScrollBar()
@@ -2518,19 +2518,28 @@ void CodeEditor::toggleFoldAtY(int y, bool expandChildren)
     data->folded = folding;
 
     /*
-     * Shift-clicking an already-collapsed fold opens the whole subtree.
-     * A normal click preserves the independent collapsed state of children.
-     * Shift-clicking an open fold still just collapses its outer region.
+     * Plain click toggles just this region, preserving every child's own
+     * folded state. Shift-click applies the same operation to the complete
+     * subtree: collapsing the parent also collapses every nested fold, and
+     * expanding the parent opens every nested fold.
+     *
+     * Change all fold states BEFORE applyFoldVisibility(), so a deep function
+     * needs only one visibility/layout update rather than one per child.
      */
-    if (!folding && expandChildren) {
+    if (recursiveChildren) {
         for (const QPair<int, int> &region : std::as_const(m_foldRegions)) {
-            if (region.first <= startBlock || region.second > endBlock)
+            if (region.first <= startBlock || region.second > endBlock) {
                 continue;
+            }
 
             QTextBlock child = document()->findBlockByNumber(region.first);
-            if (child.isValid()) {
-                if (auto *childData = foldDataForBlock(child, false))
-                    childData->folded = false;
+            if (!child.isValid()) {
+                continue;
+            }
+
+            FoldBlockData *childData = foldDataForBlock(child, folding);
+            if (childData) {
+                childData->folded = folding;
             }
         }
     }

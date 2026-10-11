@@ -4748,6 +4748,7 @@ void MainWindow::createNewProject()
     m_modSizeKb = 0;
     m_appSizeKb = 128;
     m_appletFormat = QStringLiteral("v1");
+    m_v2Linker = QStringLiteral("llvm");
     m_v2HeapKb = 16;
     m_v2StackKb = 8;
     m_outputAppName.clear();
@@ -6407,6 +6408,7 @@ void MainWindow::showProjectSettings()
     ProjectSettingsDialog dialog(this);
     dialog.setProjectType(m_projectType);
     dialog.setAppletFormat(m_appletFormat);
+    dialog.setV2Linker(m_v2Linker);
     dialog.setModSizeKb(m_modSizeKb);
     dialog.setAppSizeKb(m_appSizeKb);
     dialog.setV2HeapKb(m_v2HeapKb);
@@ -6432,6 +6434,8 @@ void MainWindow::showProjectSettings()
 
     m_projectType = normalizedProjectType(dialog.projectType());
     m_appletFormat = (m_projectType == GuiProjectType) ? dialog.appletFormat() : QStringLiteral("v1");
+    m_v2Linker = (m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"))
+        ? dialog.v2Linker() : QStringLiteral("llvm");
     m_modSizeKb = dialog.modSizeKb();
     m_appSizeKb = dialog.appSizeKb();
     m_v2HeapKb = dialog.v2HeapKb();
@@ -6683,11 +6687,13 @@ void MainWindow::compileActiveFile()
         return;
     }
 
-    // PIE-capable LLVM LLD is required for V2. Prefer a bundled executable
+    // PIE-capable LLVM LLD is required for V2 ONLY when LLVM is selected.
+    // CGARM is a separate opt-in linker with no implicit LLVM fallback.
+    // Prefer a bundled executable
     // (tools/bin/ld.lld) so released IDEs do not depend on the host PATH.
     // Fedora's installed ld.lld is a development fallback only.
     QString v2LldPath;
-    if (v2Build) {
+    if (v2Build && m_v2Linker != QStringLiteral("cgarm")) {
         for (const QString &candidate : {
                  QDir(libsPath).filePath(QStringLiteral("tools/bin/ld.lld")),
                  QDir(libsPath).filePath(QStringLiteral("tools/ld.lld")),
@@ -6698,12 +6704,23 @@ void MainWindow::compileActiveFile()
             }
         }
         if (v2LldPath.isEmpty()) {
-            QMessageBox::warning(this, tr("CGARM linker missing"),
-                tr("CGARM requires LLVM ld.lld for an ARM ET_DYN executable.\n\n"
+            QMessageBox::warning(this, tr("LLVM linker missing"),
+                tr("LLVM V2 mode requires ld.lld for an ARM ET_DYN executable.\n\n"
                    "Install the LLD tool for development, or place its executable at\n"
                    "%1\n\n"
                    "V1 and gaming mode are unaffected.")
                     .arg(QDir(libsPath).filePath(QStringLiteral("tools/bin/ld.lld"))));
+            return;
+        }
+    }
+
+    if (v2Build && m_v2Linker == QStringLiteral("cgarm")) {
+        const QString cgarmLinker = QDir(libsPath).filePath(QStringLiteral("tools/bin/cgarm-ld"));
+        if (!QFileInfo(cgarmLinker).isExecutable()) {
+            QMessageBox::warning(this, tr("CGARM linker missing"),
+                tr("The selected experimental linker is missing or not executable:\n%1\n\n"
+                   "The IDE will not silently use LLVM instead.")
+                    .arg(QDir::toNativeSeparators(cgarmLinker)));
             return;
         }
     }
@@ -6764,7 +6781,8 @@ void MainWindow::compileActiveFile()
                         QStringLiteral("_"));
         if (cliStem.isEmpty()) cliStem = QStringLiteral("applet");
         m_v2BuildDirectory = QDir(m_projectPath).filePath(
-            QStringLiteral("build/cgarm/") + cliStem);
+            QStringLiteral("build/cgarm/") + cliStem +
+            (m_v2Linker == QStringLiteral("cgarm") ? QStringLiteral("-cgarm") : QString()));
         m_pendingElfPath = QDir(m_v2BuildDirectory).filePath(cliStem + QStringLiteral(".elf"));
         m_pendingAsmPath = asmOutputPath;
         m_pendingAppPath = appOutputPath;
@@ -6776,14 +6794,18 @@ void MainWindow::compileActiveFile()
         clearCompilerDiagnostics();
         m_outputPane->clear();
         appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
-        appendOutputLine(tr("Applet format: CGARM (Beta) - relocatable ARM ELF (V2)"), OutputKind::Header);
+        appendOutputLine(tr("Applet format: relocatable ARM ELF (V2)"), OutputKind::Header);
         appendOutputLine(tr("Build backend: standalone cgarm-build"), OutputKind::Header);
+        appendOutputLine(tr("V2 linker: %1")
+            .arg(m_v2Linker == QStringLiteral("cgarm")
+                ? tr("CGARM (EXPERIMENTAL; NO LLVM FALLBACK)")
+                : tr("LLVM LLD (default)")), OutputKind::Header);
         appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(cli)), OutputKind::Path);
         appendOutputLine(tr("Project: %1").arg(QDir::toNativeSeparators(m_projectFilePath)), OutputKind::Path);
         appendOutputLine(tr("APP: %1").arg(QDir::toNativeSeparators(appOutputPath)), OutputKind::Path);
         appendOutputLine(tr("ELF: %1").arg(QDir::toNativeSeparators(m_pendingElfPath)), OutputKind::Path);
         appendOutputLine(tr("ASM: %1").arg(QDir::toNativeSeparators(asmOutputPath)), OutputKind::Path);
-        appendOutputLine(tr("CGARM RAM: %1 KB allowance; %2 KB heap; %3 KB private PSP stack")
+        appendOutputLine(tr("V2 RAM: %1 KB allowance; %2 KB heap; %3 KB private PSP stack")
             .arg(m_appSizeKb).arg(m_v2HeapKb).arg(m_v2StackKb), OutputKind::Header);
         if (embeddedSfxBytes > 0) {
             appendOutputLine(tr("Embedded SFX: %1 sample(s), approximately %2 RAM (before code/BSS/stack)")
@@ -6795,13 +6817,14 @@ void MainWindow::compileActiveFile()
         m_compilerStderrBuffer.clear();
         m_compilerProcess->setWorkingDirectory(m_projectPath);
         m_buildStep = BuildStep::V2CliBuilding;
-        setCompileProgressStage(tr("Building CGARM V2 via cgarm-build..."));
+        setCompileProgressStage(tr("Building V2 via cgarm-build..."));
         m_compilerProcess->start(m_v2CliPath, {
             m_projectFilePath, QStringLiteral("-o"), m_pendingAppPath,
             QStringLiteral("--sdk"), libsPath,
             QStringLiteral("--app-kb"), QString::number(m_appSizeKb),
             QStringLiteral("--heap-kb"), QString::number(m_v2HeapKb),
-            QStringLiteral("--stack-kb"), QString::number(m_v2StackKb)
+            QStringLiteral("--stack-kb"), QString::number(m_v2StackKb),
+            QStringLiteral("--linker"), m_v2Linker
         });
         return;
     }
@@ -6909,7 +6932,7 @@ void MainWindow::compileActiveFile()
     appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
     appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
     appendOutputLine(v2Build
-        ? tr("Applet format: CGARM (Beta) - relocatable ARM ELF (V2)")
+        ? tr("Applet format: relocatable ARM ELF (V2)")
         : tr("Applet format: V1 (legacy fixed-address)"), OutputKind::Header);
     if (v2Build) {
         appendOutputLine(tr("CGARM heap: %1 KB bounded; private callback PSP stack: %2 KB (Stage 6C firmware)")
@@ -7699,6 +7722,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
                 QStringLiteral("--app-kb"), QString::number(allowanceKb),
                 QStringLiteral("--heap-kb"), QString::number(m_v2HeapKb),
                 QStringLiteral("--stack-kb"), QString::number(m_v2StackKb),
+                QStringLiteral("--linker"), m_v2Linker,
                 QStringLiteral("--link-only")
             };
             // The 512 KiB probe must NOT overwrite a working .app.
@@ -9737,6 +9761,7 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
         m_modSizeKb = 0;
         m_projectType = GuiProjectType;
         m_appletFormat = QStringLiteral("v1");
+        m_v2Linker = QStringLiteral("llvm");
         m_compilerOptimization = QStringLiteral("-Ofast");
         m_compilerSuppressWarnings = true;
         m_compilerWall = false;
@@ -9787,6 +9812,9 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_appletFormat = (m_projectType == GuiProjectType &&
         root.value(QStringLiteral("appletFormat")).toString() == QStringLiteral("v2"))
         ? QStringLiteral("v2") : QStringLiteral("v1");
+    m_v2Linker = (m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2") &&
+                  root.value(QStringLiteral("v2Linker")).toString() == QStringLiteral("cgarm"))
+        ? QStringLiteral("cgarm") : QStringLiteral("llvm");
     m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
     m_appSizeKb = root.value(QStringLiteral("appSizeKb")).toInt(128);
     m_v2HeapKb = qBound(0, root.value(QStringLiteral("v2HeapKb")).toInt(16), 512);
@@ -9932,6 +9960,9 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     root.insert(QStringLiteral("projectType"), normalizedProjectType(m_projectType));
     root.insert(QStringLiteral("appletFormat"),
                 m_projectType == GameProjectType ? QStringLiteral("v1") : m_appletFormat);
+    root.insert(QStringLiteral("v2Linker"),
+                (m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"))
+                    ? m_v2Linker : QStringLiteral("llvm"));
     root.insert(QStringLiteral("files"), files);
     root.insert(QStringLiteral("openTabs"), openTabsArray);
     root.insert(QStringLiteral("linkerScript"), m_linkerScriptPath.isEmpty() ? QString() : toProjectRelativePath(m_linkerScriptPath));

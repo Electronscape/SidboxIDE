@@ -68,7 +68,7 @@ public:
     void refreshLineNumberAreaWidth();
     void lineNumberAreaPaintEvent(QPaintEvent *event);
     bool foldMarkerAtY(int y) const;
-    void toggleFoldAtY(int y, bool expandChildren = false);
+    void toggleFoldAtY(int y, bool recursiveChildren = false);
     void collapseAllFolds();
     void expandAllFolds();
     int firstVisibleSourceBlockNumber() const;

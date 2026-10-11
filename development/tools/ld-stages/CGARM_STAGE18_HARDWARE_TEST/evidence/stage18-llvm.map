@@ -1,0 +1,60 @@
+     VMA      LMA     Size Align Out     In      Symbol
+       0        0        0     1 _v2_app_limit = 0x20000
+       0        0        0     1 _v2_stack_bytes = 0x2000
+       0        0        0     1 _v2_heap_bytes = 0x4000
+       0        0        0     1 _v2_link_base = 0xD0010000
+       0        0        0     1 _appstart = ORIGIN ( APPLET )
+       0        0 d0010000     1 . = ORIGIN ( APPLET )
+d0010000 d0010000       a0     4 .text
+d0010000 d0010000        0     1         . = ALIGN ( 4 )
+d0010000 d0010000       a0     4         stage18_probe.o:(.text.applet_entry)
+d0010000 d0010000        0     1                 $t
+d0010001 d0010001       a0     1                 applet_entry
+d0010090 d0010090        0     1                 $d
+d00100a0 d00100a0       10     4 .dynsym
+d00100a0 d00100a0       10     4         <internal>:(.dynsym)
+d00100b0 d00100b0        1     1 .dynstr
+d00100b0 d00100b0        1     1         <internal>:(.dynstr)
+d00100b4 d00100b4       18     4 .gnu.hash
+d00100b4 d00100b4       18     4         <internal>:(.gnu.hash)
+d00100cc d00100cc       10     4 .hash
+d00100cc d00100cc       10     4         <internal>:(.hash)
+d00100dc d00100dc        8     4 .rel.dyn
+d00100dc d00100dc        8     4         <internal>:(.rel.dyn)
+d00100e4 d00100e4       90     4 .dynamic
+d00100e4 d00100e4       90     4         <internal>:(.dynamic)
+d0010174 d0010174        8     4 .data
+d0010174 d0010174        0     1         . = ALIGN ( 4 )
+d0010174 d0010174        4     4         stage18_probe.o:(.data.stage18_rebased_pointer)
+d0010174 d0010174        4     1                 stage18_rebased_pointer
+d0010178 d0010178        4     4         stage18_probe.o:(.data.stage18_init_word)
+d0010178 d0010178        4     1                 stage18_init_word
+d001017c d001017c       2c     4 .bss
+d001017c d001017c        4     1         . = ALIGN ( 8 )
+d0010180 d0010180        0     1         __bss_start__ = .
+d0010180 d0010180        4     4         stage18_probe.o:(.bss.stage18_zero_word)
+d0010180 d0010180        4     1                 stage18_zero_word
+d0010184 d0010184       20     4         stage18_probe.o:(.bss.stage18_zero_array)
+d0010184 d0010184       20     1                 stage18_zero_array
+d00101a4 d00101a4        4     1         . = ALIGN ( 8 )
+d00101a8 d00101a8        0     1         __bss_end__ = .
+d00101a8 d00101a8     2000     1 .stack
+d00101a8 d00101a8        0     1         . = ALIGN ( 8 )
+d00101a8 d00101a8        0     1         __stack_start__ = .
+d00101a8 d00101a8     2000     1         . = . + _v2_stack_bytes
+d00121a8 d00121a8        0     1         . = ALIGN ( 8 )
+d00121a8 d00121a8        0     1         __stack_end__ = .
+d00121a8 d00121a8        0     1 __app_end = __stack_end__
+d00121a8 d00121a8        0     1 _end = __app_end
+d00121a8 d00121a8        0     1 
+d00121a8 d00121a8        0     1 
+       0        0       db     1 .comment
+       0        0       db     1         <internal>:(.comment)
+       0        0       49     1 .ARM.attributes
+       0        0       49     1         stage18_probe.o:(.ARM.attributes)
+       0        0      150     4 .symtab
+       0        0      150     4         <internal>:(.symtab)
+       0        0       7e     1 .shstrtab
+       0        0       7e     1         <internal>:(.shstrtab)
+       0        0      108     1 .strtab
+       0        0      108     1         <internal>:(.strtab)

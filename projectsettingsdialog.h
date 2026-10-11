@@ -31,6 +31,10 @@ public:
     QString appletFormat() const;
     void setAppletFormat(const QString &format);
 
+    // Selected only for V2 GUI projects; defaults to LLVM for old projects.
+    QString v2Linker() const;
+    void setV2Linker(const QString &linker);
+
     int v2HeapKb() const;
     void setV2HeapKb(int sizeKb);
     int v2StackKb() const;
@@ -67,6 +71,7 @@ private:
     QTabWidget *m_tabs;
     QComboBox *m_projectTypeCombo;
     QComboBox *m_appletFormatCombo;
+    QComboBox *m_v2LinkerCombo;
     QComboBox *m_optimizationCombo;
     QCheckBox *m_suppressWarningsCheck;
     QCheckBox *m_wallCheck;

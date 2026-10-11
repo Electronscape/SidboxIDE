@@ -263,6 +263,7 @@ private:
     QString m_outputAppName;
     QString m_projectType;
     QString m_appletFormat = QStringLiteral("v1");
+    QString m_v2Linker = QStringLiteral("llvm"); // per project; LLVM is always the fallback default
     bool m_currentBuildIsV2 = false;
     int m_modSizeKb;
     int m_appSizeKb;

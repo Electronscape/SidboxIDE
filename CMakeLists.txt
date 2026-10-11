@@ -118,7 +118,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMENT "Staging cgarm-build in idelibs/tools/bin"
         VERBATIM
     )
-    add_dependencies(SidboxIDE cgarm-build)
+    # Real standalone experimental linker. Its diagnostics/verification tools
+    # remain development-only and are NOT shipped in the normal IDE.
+    add_executable(cgarm-ld development/tools/cgarm-ld/cgarm-ld.cpp)
+    set_target_properties(cgarm-ld PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_custom_command(TARGET cgarm-ld POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${SIDBOX_IDELIBS_TOOLS_DIR}/bin"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:cgarm-ld>"
+            "${SIDBOX_IDELIBS_TOOLS_DIR}/bin/$<TARGET_FILE_NAME:cgarm-ld>"
+        COMMENT "Staging cgarm-ld in idelibs/tools/bin"
+        VERBATIM
+    )
+    add_dependencies(SidboxIDE cgarm-build cgarm-ld)
+    install(TARGETS cgarm-ld
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs/tools/bin"
+    )
     install(TARGETS cgarm-build
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs/tools/bin"
     )

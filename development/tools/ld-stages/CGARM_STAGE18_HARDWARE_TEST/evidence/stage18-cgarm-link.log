@@ -1,0 +1,43 @@
+[object]  stage18_probe.o
+
+ELF32 ARM audit (all inputs, including archive members)
+  Input objects:  1
+  Archives:       0
+  Archive members: 0
+  Section bytes:  code=160 ro=0 data=8 bss=36 (before linking/GC)
+  Relocations:    5 total, 5 in SHF_ALLOC sections
+    R_ARM_ABS32                    1  [planned support]
+    R_ARM_REL32                    4  [planned support]
+
+Archive extraction plan (NO garbage collection yet):
+  Selected objects: 1 (0 archive members pulled)
+  ALLOC relocations: 5
+  Strong unresolved symbols: 0
+
+Stage 4: ARM relocation engine (scratch section images)
+  Scratch sections:        3 (no input files changed)
+  GOT entries initialised: 0 / 0
+  Applied relocations:     5
+    R_ARM_ABS32             1 patched
+    R_ARM_REL32             4 patched
+  Candidate R_ARM_RELATIVE locations: 1 (to be emitted)
+  Patched-image FNV64: 0x56E34EFA5CE4B712
+  Estimated virtual SDRAM used: 24880 / 65536 bytes
+  LLVM remains required for all real builds.
+
+Stage 4: experimental ELF32 ARM ET_DYN created
+  ELF output:              stage18-cgarm.elf
+  ELF file bytes:          5056
+  Entry:                   0xD0010001
+  PT_LOAD initialized:     260 bytes
+  PT_LOAD memory:          8496 bytes
+  Dynamic R_ARM_RELATIVE:  1
+  Stack reserved:          8192 bytes
+  EXPERIMENTAL: inspect with readelf + V2 packer, do NOT deploy to hardware yet.
+
+Stage 10: section provenance emitted
+  Map:                stage18-cgarm.cgmap
+  Retained sections:  5
+  Discarded sections: 0 (among selected inputs)
+
+Stage 4 completed; Experimental ELF generated; NO .app created.

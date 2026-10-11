@@ -1,12 +1,6 @@
-// CGARM command-line builder (Stage 6: incremental CGARM V2 builds)
-//
-// Linux host tool. No Qt, shell scripts, or GNU/Newlib libc at APP link time.
-// Compile with: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
-// Place the resulting binary in SidboxIDE/idelibs/tools/bin/.
-//
-// Uses the same ARM GCC, API source set, PIC settings, LLVM ld.lld link order,
-// linker template, static CGARM library and native packer as SidboxIDE V2.
-// This program does NOT alter the Qt IDE or any firmware files.
+// CGARM command-line builder (Stage 19: LLVM/CGARM selectable V2 linking)
+// Linux host tool: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
+// Keep V1 and Gaming on the original IDE compiler.
 
 #include <algorithm>
 #include <cerrno>
@@ -62,6 +56,7 @@ struct Options {
     unsigned heapKb = 16;
     unsigned stackKb = 8;
     std::string optimisation = "-O2";
+    std::string linker = "llvm";
     bool verbose = false;
     bool dryRun = false;
     bool linkOnly = false;
@@ -79,6 +74,7 @@ void usage(std::ostream &out) {
         "Options:\n"
         "  -o, --output FILE    Override output .app filename/location\n"
         "  --sdk DIR            SidboxIDE project root OR its idelibs directory\n"
+        "  --linker llvm|cgarm  Select V2 linker (default llvm; no fallback)\n"
         "  --app-kb N           Applet RAM allowance in KiB (32-512, default 128)\n"
         "  --heap-kb N          Bounded heap in KiB (>=4, default 16)\n"
         "  --stack-kb N         Private callback PSP stack in KiB (4-128, default 8)\n"
@@ -133,6 +129,10 @@ Options parse(int argc, char **argv) {
             opts.explicitOutput = true;
         } else if (!literal && arg == "--sdk") {
             opts.sdkOverride = next();
+        } else if (!literal && arg == "--linker") {
+            opts.linker = next();
+            if (opts.linker != "llvm" && opts.linker != "cgarm")
+                throw Error("--linker must be llvm or cgarm");
         } else if (!literal && arg == "--app-kb") {
             opts.appKb = number(next(), arg);
             opts.explicitAppKb = true;
@@ -684,7 +684,6 @@ void runCommand(const std::vector<std::string> &cmd, bool show) {
     }
 }
 
-
 // GCC emits Makefile-style dependency files (-MMD -MP). Parse only the first
 // rule: -MP also emits empty, phony targets for headers further down the file.
 // Escaped spaces, hash characters and backslash-newline continuations are
@@ -792,7 +791,7 @@ void checkElf(const fs::path &file) {
         header[0] != 0x7f || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
         header[4] != 1 || header[5] != 1 || header[6] != 1 ||
         header[16] != 3 || header[17] != 0 || header[18] != 40 || header[19] != 0) {
-        throw Error("LLD output is not little-endian ARM ELF32 ET_DYN: " + file.string());
+        throw Error("Linker output is not little-endian ARM ELF32 ET_DYN: " + file.string());
     }
 }
 
@@ -805,7 +804,8 @@ void clean(const Options &opt) {
     const fs::path output = absolutePath(opt.output);
     const std::string base = safeName(output.stem().string());
     const fs::path intermediateRoot = output.parent_path() / "build" / "cgarm";
-    const fs::path buildDir = intermediateRoot / base;
+    const fs::path buildDir = intermediateRoot /
+        (base + (opt.linker == "cgarm" ? "-cgarm" : ""));
 
     if (fs::is_symlink(output.parent_path() / "build")
         || fs::is_symlink(intermediateRoot)
@@ -823,7 +823,7 @@ void clean(const Options &opt) {
     // cache directory (including user .c/.h/.res files placed there by mistake).
     const std::regex objectPattern(R"(^v2_unit_[0-9]+\.(o|d|cmd|su|d\.tmp)$)");
     const std::set<std::string> linkerOutputs = {
-        base + ".elf", base + ".map", base + ".ld"
+        base + ".elf", base + ".map", base + ".cgmap", base + ".ld"
     };
     std::size_t removed = 0;
     std::size_t preserved = 0;
@@ -864,14 +864,16 @@ void clean(const Options &opt) {
 void build(const Options &opt) {
     const fs::path sdk = findSdk(opt);
     const fs::path gcc = sdk / "tools/bin/arm-none-eabi-gcc";
-    const fs::path lld = findLld(sdk);
+    const fs::path lld = opt.linker == "llvm" ? findLld(sdk) : fs::path();
+    const fs::path cgarmLd = sdk / "tools/bin/cgarm-ld";
     const fs::path packer = sdk / "tools/sidbox-v2-packer";
     const fs::path cgarm = sdk / "tools/cgarm/lib/libcgarm.a";
     const fs::path api = sdk / "api";
     const fs::path libraries = sdk / "libraries";
     const fs::path headers = sdk / "tools/cgarm/include";
     requireExecutable(gcc, "ARM GCC");
-    requireExecutable(lld, "LLVM ld.lld");
+    if (opt.linker == "llvm") requireExecutable(lld, "LLVM ld.lld");
+    else requireExecutable(cgarmLd, "CGARM linker (expected in idelibs/tools/bin)");
     requireExecutable(packer, "V2 packer");
     requireFile(cgarm, "libcgarm.a");
     requireFile(sdk / "gui_v2.ld", "GUI V2 linker template");
@@ -908,16 +910,19 @@ void build(const Options &opt) {
 
     const fs::path output = absolutePath(opt.output);
     const std::string base = safeName(output.stem().string());
-    const fs::path buildDir = output.parent_path() / "build" / "cgarm" / base;
+    const fs::path buildDir = output.parent_path() / "build" / "cgarm" /
+        (base + (opt.linker == "cgarm" ? "-cgarm" : ""));
     const fs::path linkerScript = buildDir / (base + ".ld");
     const fs::path elf = buildDir / (base + ".elf");
-    const fs::path map = buildDir / (base + ".map");
-    const std::string script = generatedLinkerScript(sdk / "gui_v2.ld", opt);
+    const fs::path map = buildDir / (base +
+        (opt.linker == "cgarm" ? ".cgmap" : ".map"));
+    const std::string script = opt.linker == "llvm"
+        ? generatedLinkerScript(sdk / "gui_v2.ld", opt) : std::string();
 
     std::cout << "CGARM (Beta) CLI — relocatable ARM ELF (V2)\n"
               << "SDK:     " << sdk << '\n'
               << "GCC:     " << gcc << '\n'
-              << "LLD:     " << lld << '\n'
+              << "Linker:  " << (opt.linker == "cgarm" ? cgarmLd : lld) << '\n'
               << "Library: " << cgarm << '\n'
               << "APP:     " << output << '\n'
               << "RAM:     " << opt.appKb << " KiB allowance, "
@@ -927,11 +932,13 @@ void build(const Options &opt) {
 
     if (!opt.dryRun) {
         fs::create_directories(buildDir);
-        std::ofstream out(linkerScript, std::ios::binary | std::ios::trunc);
-        if (!out) throw Error("Cannot create linker script: " + linkerScript.string());
-        out << script;
-        if (!out) throw Error("Error writing linker script: " + linkerScript.string());
-    } else {
+        if (opt.linker == "llvm") {
+            std::ofstream out(linkerScript, std::ios::binary | std::ios::trunc);
+            if (!out) throw Error("Cannot create linker script: " + linkerScript.string());
+            out << script;
+            if (!out) throw Error("Error writing linker script: " + linkerScript.string());
+        }
+    } else if (opt.linker == "llvm") {
         std::cout << "[dry-run] Would generate linker script: " << linkerScript << '\n';
     }
 
@@ -1024,15 +1031,25 @@ void build(const Options &opt) {
                   << " unchanged (" << sources.size() << " total).\n";
     }
 
-    std::vector<std::string> link = {
-        lld.string(), "-pie", "-Bsymbolic", "--no-undefined", "--nostdlib",
-        "--gc-sections", "--entry=applet_entry", "-T", linkerScript.string(),
-        "-Map=" + map.string()
-    };
-    link.insert(link.end(), objects.begin(), objects.end());
-    link.insert(link.end(), {"--start-group", cgarm.string()});
-    for (const fs::path &archive : sdkArchives) link.push_back(archive.string());
-    link.insert(link.end(), {"--end-group", "-o", elf.string()});
+    std::vector<std::string> link;
+    if (opt.linker == "cgarm") {
+        // cgarm-ld uses a different CLI from LLD. Absolutely no silent fallback.
+        link = {cgarmLd.string(), "--emit-elf", elf.string(), "--emit-map", map.string(),
+                "--entry", "applet_entry", "--app-kb", std::to_string(opt.appKb),
+                "--heap-kb", std::to_string(opt.heapKb),
+                "--stack-kb", std::to_string(opt.stackKb)};
+        link.insert(link.end(), objects.begin(), objects.end());
+        link.push_back(cgarm.string());
+        for (const fs::path &archive : sdkArchives) link.push_back(archive.string());
+    } else {
+        link = {lld.string(), "-pie", "-Bsymbolic", "--no-undefined", "--nostdlib",
+                "--gc-sections", "--entry=applet_entry", "-T", linkerScript.string(),
+                "-Map=" + map.string()};
+        link.insert(link.end(), objects.begin(), objects.end());
+        link.insert(link.end(), {"--start-group", cgarm.string()});
+        for (const fs::path &archive : sdkArchives) link.push_back(archive.string());
+        link.insert(link.end(), {"--end-group", "-o", elf.string()});
+    }
 
     if (opt.dryRun) {
         std::cout << "[dry-run] Link:\n";
@@ -1047,7 +1064,19 @@ void build(const Options &opt) {
         return;
     }
 
-    std::cout << "Linking ET_DYN using LLVM LLD...\n" << std::flush;
+    std::cout << "Linking ET_DYN using "
+              << (opt.linker == "cgarm" ? "CGARM (experimental, no fallback)" : "LLVM LLD")
+              << "...\n" << std::flush;
+    if (opt.linker == "cgarm") {
+        // cgarm-ld deliberately refuses to overwrite its own ELF/map outputs.
+        // These are generated files inside a dedicated CGARM-only build directory.
+        std::error_code ec;
+        if (fs::exists(elf) && !fs::remove(elf, ec))
+            throw Error("Cannot remove previous CGARM ELF: " + elf.string());
+        ec.clear();
+        if (fs::exists(map) && !fs::remove(map, ec))
+            throw Error("Cannot remove previous CGARM map: " + map.string());
+    }
     runCommand(link, opt.verbose);
     checkElf(elf);
     if (opt.noPack) {

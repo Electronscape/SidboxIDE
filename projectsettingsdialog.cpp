@@ -22,6 +22,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_tabs(new QTabWidget(this))
     , m_projectTypeCombo(new QComboBox(this))
     , m_appletFormatCombo(new QComboBox(this))
+    , m_v2LinkerCombo(new QComboBox(this))
     , m_optimizationCombo(new QComboBox(this))
     , m_suppressWarningsCheck(new QCheckBox(tr("Suppress all compiler warnings (-w)"), this))
     , m_wallCheck(new QCheckBox(tr("Common warnings (-Wall)"), this))
@@ -34,7 +35,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_appSizeSpinBox(new QSpinBox(this))
     , m_v2HeapSpinBox(new QSpinBox(this))
     , m_v2StackSpinBox(new QSpinBox(this))
-    , m_v2PlanningGroup(new QGroupBox(tr("CGARM (Beta) - memory requirements"), this))
+    , m_v2PlanningGroup(new QGroupBox(tr("V2 applet memory requirements"), this))
     , m_outputAppNameEdit(new QLineEdit(this))
     , m_linkerScriptEdit(new QLineEdit(this))
     , m_defaultLinkerLabel(new QLabel(this))
@@ -50,6 +51,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
             m_appletFormatCombo->setCurrentIndex(0); // Game is always legacy v1.
         }
         m_appletFormatCombo->setEnabled(gui);
+        m_v2LinkerCombo->setEnabled(gui && appletFormat() == QStringLiteral("v2"));
         m_v2PlanningGroup->setEnabled(gui);
     });
 
@@ -96,10 +98,16 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->setContentsMargins(12, 12, 12, 12);
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
     m_appletFormatCombo->addItem(tr("Legacy V1 - fixed SDRAM address"), QStringLiteral("v1"));
-    m_appletFormatCombo->addItem(tr("CGARM (Beta) - relocatable GUI (V2 ELF)"), QStringLiteral("v2"));
-    m_appletFormatCombo->setToolTip(tr("CGARM builds position-independent V2 executables and requires compatible SIDBOX firmware. "
+    m_appletFormatCombo->addItem(tr("Relocatable GUI (V2 applet)"), QStringLiteral("v2"));
+    m_appletFormatCombo->setToolTip(tr("V2 builds position-independent executables and require compatible SIDBOX firmware. "
                                         "Unsupported relocations or dependencies will cause a safe build failure."));
     formLayout->addRow(tr("Applet format"), m_appletFormatCombo);
+    m_v2LinkerCombo->addItem(tr("LLVM LLD (default / stable)"), QStringLiteral("llvm"));
+    m_v2LinkerCombo->addItem(tr("CGARM linker (experimental beta)"), QStringLiteral("cgarm"));
+    m_v2LinkerCombo->setToolTip(tr("Only for V2 GUI applets. LLVM remains the default. "
+                                   "CGARM errors never silently fall back to LLVM."));
+    m_v2LinkerCombo->setEnabled(false);
+    formLayout->addRow(tr("V2 linker"), m_v2LinkerCombo);
     formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
     formLayout->addRow(tr("Output .app name"), m_outputAppNameEdit);
     formLayout->addRow(tr("MOD size"), m_modSizeSpinBox);
@@ -109,9 +117,11 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     // V2 uses a dedicated PIE linker and strict relocation packer.
     connect(m_appletFormatCombo, &QComboBox::currentIndexChanged, this, [this]() {
         updateDefaultLinkerLabel();
+        m_v2LinkerCombo->setEnabled(projectType() == QStringLiteral("gui") &&
+                                    appletFormat() == QStringLiteral("v2"));
         m_v2PlanningGroup->setTitle(appletFormat() == QStringLiteral("v2")
-            ? tr("CGARM (Beta) memory requirements")
-            : tr("CGARM (Beta) memory requirements (V1 ignores these)"));
+            ? tr("V2 applet memory requirements")
+            : tr("V2 applet memory requirements (V1 ignores these)"));
     });
     m_v2HeapSpinBox->setRange(0, 512);
     m_v2HeapSpinBox->setSingleStep(4);
@@ -123,8 +133,8 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     m_v2StackSpinBox->setSuffix(tr(" KB"));
     m_v2StackSpinBox->setValue(8);
     auto *v2Form = new QFormLayout(m_v2PlanningGroup);
-    v2Form->addRow(tr("CGARM heap allowance"), m_v2HeapSpinBox);
-    v2Form->addRow(tr("CGARM private callback stack"), m_v2StackSpinBox);
+    v2Form->addRow(tr("V2 heap allowance"), m_v2HeapSpinBox);
+    v2Form->addRow(tr("V2 private callback stack"), m_v2StackSpinBox);
     formLayout->addRow(m_v2PlanningGroup);
     m_v2PlanningGroup->setEnabled(true);
     m_tabs->addTab(generalPage, tr("General"));
@@ -197,6 +207,17 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     layout->addWidget(buttons);
 
     resize(760, 560);
+}
+
+QString ProjectSettingsDialog::v2Linker() const
+{
+    return m_v2LinkerCombo->currentData().toString() == QStringLiteral("cgarm")
+        ? QStringLiteral("cgarm") : QStringLiteral("llvm");
+}
+
+void ProjectSettingsDialog::setV2Linker(const QString &linker)
+{
+    m_v2LinkerCombo->setCurrentIndex(linker == QStringLiteral("cgarm") ? 1 : 0);
 }
 
 QString ProjectSettingsDialog::projectType() const

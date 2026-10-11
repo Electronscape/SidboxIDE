@@ -1,0 +1,16 @@
+CGARM Stage 17 — host-only local test results
+=============================================
+C++17 -O2 -Wall -Wextra -Werror: COMPILED
+
+Common-symbol GOT test: PASS 2/2 exact under --strict-live
+Two COMMON allocations with alignment: PASS 3/3 exact under --strict-live
+COMMON pointer redirected to a different valid .bss address, fresh CRC + fingerprint: REJECTED as required
+One-byte empty strings with no LLVM per-input record provenance: DEFERRED as required
+--strict-live with empty strings: REJECTED as required
+Selected archive runtime/member mismatch: PASS (rejects stale/missing library)
+Live Thumb branch mismatch: PASS (rejects wrong in-range target)
+Short mergeable string regression: PASS
+
+IMPORTANT: Full GUI Stage 17 result is NOT yet known.
+There were 9 real-world deferred source relocations in Stage 16.
+Do not claim 326/326 coverage without a new verified user test.
