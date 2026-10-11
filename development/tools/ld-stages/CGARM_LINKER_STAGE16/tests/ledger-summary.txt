@@ -1,6 +1,0 @@
-PASS positive-site-ledger (accepted)
-PASS ledger-overwrite-refused (rejected)
-PASS missing-evidence-refused (rejected)
-PASS ambiguous-site-ledger (accepted)
-PASS ambiguous-strict-rejected (rejected)
-All Stage 16 ledger tests passed

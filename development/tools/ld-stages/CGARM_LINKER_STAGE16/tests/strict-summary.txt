@@ -1,5 +1,0 @@
-PASS strict-live-positive: correctly accepted
-PASS wrong-valid-got-rejected: correctly rejected
-PASS strict-live-untracked-source-rejected: correctly rejected
-PASS short-merge-positive: correctly accepted
-ALL STAGE15 GATE TESTS PASSED

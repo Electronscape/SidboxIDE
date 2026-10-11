@@ -1,4 +1,4 @@
-// CGARM command-line builder (Stage 19: LLVM/CGARM selectable V2 linking)
+// CGARM command-line builder (Stage 20: V2 linker selection and safer failure handling)
 // Linux host tool: g++ -std=c++17 -O2 -Wall -Wextra cgarm-build.cpp -o cgarm-build
 // Keep V1 and Gaming on the original IDE compiler.
 
@@ -825,11 +825,13 @@ void clean(const Options &opt) {
     const std::set<std::string> linkerOutputs = {
         base + ".elf", base + ".map", base + ".cgmap", base + ".ld"
     };
+    const std::regex pendingAppPattern("^" + base + R"(\.pending-[0-9]+\.app$)");
     std::size_t removed = 0;
     std::size_t preserved = 0;
     for (const auto &entry : fs::directory_iterator(buildDir)) {
         const std::string filename = entry.path().filename().string();
         const bool generated = std::regex_match(filename, objectPattern)
+            || std::regex_match(filename, pendingAppPattern)
             || linkerOutputs.count(filename) != 0;
         if (!generated || fs::is_directory(entry.symlink_status())) {
             ++preserved;
@@ -919,7 +921,7 @@ void build(const Options &opt) {
     const std::string script = opt.linker == "llvm"
         ? generatedLinkerScript(sdk / "gui_v2.ld", opt) : std::string();
 
-    std::cout << "CGARM (Beta) CLI — relocatable ARM ELF (V2)\n"
+    std::cout << "CGARM CLI — relocatable ARM ELF (V2)\n"
               << "SDK:     " << sdk << '\n'
               << "GCC:     " << gcc << '\n'
               << "Linker:  " << (opt.linker == "cgarm" ? cgarmLd : lld) << '\n'
@@ -1065,7 +1067,7 @@ void build(const Options &opt) {
     }
 
     std::cout << "Linking ET_DYN using "
-              << (opt.linker == "cgarm" ? "CGARM (experimental, no fallback)" : "LLVM LLD")
+              << (opt.linker == "cgarm" ? "CGARM (beta, no LLVM fallback)" : "LLVM LLD")
               << "...\n" << std::flush;
     if (opt.linker == "cgarm") {
         // cgarm-ld deliberately refuses to overwrite its own ELF/map outputs.
@@ -1077,17 +1079,44 @@ void build(const Options &opt) {
         if (fs::exists(map) && !fs::remove(map, ec))
             throw Error("Cannot remove previous CGARM map: " + map.string());
     }
-    runCommand(link, opt.verbose);
-    checkElf(elf);
+    try {
+        runCommand(link, opt.verbose);
+        checkElf(elf);
+    } catch(const std::exception &e) {
+        throw Error("V2 link failed using " + opt.linker + ": " + e.what() +
+                    ". Any existing .app has NOT been rebuilt.");
+    }
     if (opt.noPack) {
         std::cout << "\nLINK SUCCESS (probe only, .app untouched): " << elf << "\n";
         return;
     }
-    std::cout << "Packing relocatable V2 .app...\n" << std::flush;
-    runCommand({packer.string(), elf.string(), output.string(), "--heap",
-                std::to_string(opt.heapKb * 1024u), "--stack",
-                std::to_string(opt.stackKb * 1024u)}, opt.verbose);
-    requireFile(output, "Packer output");
+    // Stage 20: keep last known-good .app intact if the packer fails.
+    // Stage in buildDir, on the same filesystem as the project output,
+    // and publish only after the native packer has returned successfully.
+    if (fs::is_symlink(output))
+        throw Error("Refusing to replace an .app symlink: " + output.string());
+    if (fs::exists(output) && !fs::is_regular_file(output))
+        throw Error(".app output is not a regular file: " + output.string());
+    const fs::path pendingApp = buildDir /
+        (base + ".pending-" + std::to_string(::getpid()) + ".app");
+    if (fs::exists(pendingApp) || fs::is_symlink(pendingApp))
+        throw Error("Temporary .app output already exists: " + pendingApp.string());
+    std::cout << "Packing relocatable V2 .app (staged until validated)...\n" << std::flush;
+    try {
+        runCommand({packer.string(), elf.string(), pendingApp.string(), "--heap",
+                    std::to_string(opt.heapKb * 1024u), "--stack",
+                    std::to_string(opt.stackKb * 1024u)}, opt.verbose);
+        requireFile(pendingApp, "Packer output");
+        if (fs::file_size(pendingApp) == 0)
+            throw Error("Packer created an empty .app: " + pendingApp.string());
+        fs::rename(pendingApp, output);
+    } catch(const std::exception &e) {
+        std::error_code ec;
+        fs::remove(pendingApp, ec);
+        throw Error("V2 pack failed: " + std::string(e.what()) +
+                    ". Previous .app left untouched." +
+                    (ec ? " Temporary cleanup failed: " + ec.message() : ""));
+    }
     std::cout << "\nSUCCESS: " << output << " (" << fs::file_size(output) << " bytes)\n";
     std::cout << "ELF: " << elf << "\nMAP: " << map << '\n';
 }

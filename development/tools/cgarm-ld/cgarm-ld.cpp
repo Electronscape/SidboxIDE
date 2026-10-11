@@ -1,13 +1,13 @@
 /*
- * cgarm-ld — SIDBOX CGARM ELF linker project, Stage 10.
+ * cgarm-ld — SIDBOX native ARM ELF linker (Stage 20 beta hardening).
  *
- * This experimental build adds a minimal ELF32/ARM ET_DYN writer with
- * PT_LOAD, PT_DYNAMIC, .rel.dyn R_ARM_RELATIVE, .dynamic and .stack.
- * It is independent of LLVM, Qt, libelf and the ARM GNU toolchain.
+ * Writes ARM ELF32 ET_DYN with PT_LOAD, PT_DYNAMIC, .rel.dyn,
+ * R_ARM_RELATIVE relocations and a private .stack reservation.
+ * Native C++ implementation: no LLVM, Qt or libelf required at link time.
+ * Successfully exercised with the SIDBOX V2 packer on STM32H743 hardware.
  *
- * IMPORTANT: the ELF is a validation artifact, NOT production-ready.
- * Preserve the existing LLVM-based linker for all real SIDBOX applets.
- * Production builds must continue using LLVM ld.lld.
+ * CGARM is still beta: keep LLVM LLD selectable for regression comparison.
+ * The existing firmware and V2 packer remain the authority on app validity.
  *
  * Copyright: reserved to the project owner. No third-party code used.
  */
@@ -380,9 +380,8 @@ Plan createPlan(const std::vector<Input> &inputs) {
     return p;
 }
 
-// Stage 2 is a read-only preview. In particular, LLD may fold/merge sections,
-// choose different archive members after GC, and generate its own dynamic ELF
-// sections. Nothing below is allowed to write into a project directory.
+// Preview mode only: no output files are created or changed.
+// This estimate is separate from the final CGARM ELF layout.
 struct Settings {
     std::string entry = "applet_entry";
     uint64_t base = 0xD0010000u;
@@ -562,7 +561,7 @@ void layout(const Plan &p,const Settings &settings,const Analysis &a,bool verbos
     std::vector<uint64_t> bucketSize(buckets.size(),0);
     std::vector<LayoutItem> items;
     uint64_t bssStart=0,bssEnd=0,gotStart=0,stackStart=0,stackEnd=0;
-    std::cout<<"\nStage 2/3: reachable-section layout preview (NOT final linked ELF)\n";
+    std::cout<<"\nCGARM: reachable-section layout preview (NOT final linked ELF)\n";
     std::cout<<"  Retained sections: "<<a.live.size()<<" across "<<p.selected.size()<<" selected objects\n";
     std::cout<<"  Live relocations: "<<a.aliveRelocs<<" | GOT entries: "<<a.gotSymbols.size()
              <<" ("<<(a.gotSymbols.size()*4)<<" bytes) | BASE_PREL: "<<a.basePrelRelocs<<"\n";
@@ -592,7 +591,7 @@ void layout(const Plan &p,const Settings &settings,const Analysis &a,bool verbos
     for(const auto &kv:a.liveRelocTypes) {
         std::cout<<"  Live "<<std::left<<std::setw(24)<<typeName(kv.first)
                  <<std::right<<std::setw(6)<<kv.second
-                 <<(initialSupported(kv.first)?" [planned]":" [NOT YET SUPPORTED]")<<"\n";
+                 <<(initialSupported(kv.first)?" [handled]":" [unsupported]")<<"\n";
     }
     if(verbose) for(const auto &s:a.gotSymbols)
         std::cout<<"    GOT ENTRY "<<s<<"\n";
@@ -617,12 +616,12 @@ void layout(const Plan &p,const Settings &settings,const Analysis &a,bool verbos
         std::cout<<"  References without a definition in the selected objects: "<<a.unresolved.size()<<"\n";
         for(const auto &sym:a.unresolved) std::cout<<"    UNRESOLVED (live) "<<sym<<"\n";
     }
-    std::cout<<"  IMPORTANT: estimated addresses only. LLVM may GC/extract/merge differently and\n"
-             <<"  adds dynamic ELF tables, relocation records and program headers.\n"
-             <<"  Use --relocate for scratch patching; --emit-elf generates separate experimental ELF.\n";
+    std::cout<<"  NOTE: preview estimates only; the final CGARM ELF layout includes\n"
+             <<"  dynamic tables, relocation records and program headers.\n"
+             <<"  Use --emit-elf to generate the final ARM ET_DYN for V2 packaging.\n";
 }
 
-// Stage 10: provenance is emitted ONLY with a successful diagnostic ELF.
+// Provenance is emitted alongside a successfully written ELF.
 // The section locations are taken from the SAME RelocationLayout that wrote
 // the ELF, not a speculative second layout pass.
 uint64_t provenanceHash(const Bytes &b) {
@@ -812,8 +811,7 @@ std::pair<uint16_t,uint16_t> encodeThumbBranch(uint16_t hi,uint16_t lo,int64_t d
     lo=static_cast<uint16_t>((lo&0xd000u)|(j1<<13)|(j2<<11)|((d>>1)&0x7ffu));
     return {hi,lo};
 }
-// Stage 4: minimal ELF32/ARM ET_DYN emitter, formatted for SIDBOX's existing
-// strict V2 packer. This output must be considered EXPERIMENTAL.
+// ELF32/ARM ET_DYN emitter, formatted for the existing strict SIDBOX V2 packer.
 struct OutSection {
     std::string name;
     uint32_t type=1, flags=0, address=0, fileOff=0, size=0;
@@ -823,7 +821,7 @@ void emitProvenance10(const Plan &p,const Analysis &a,const RelocationLayout &l,
                       const std::string &elfPath,const std::string &mapPath) {
     namespace fs=std::filesystem;
     if(mapPath.empty())return;
-    if(fs::exists(mapPath))throw Error("Refusing to overwrite provenance file: "+mapPath);
+    if(fs::exists(mapPath) || fs::is_symlink(mapPath))throw Error("Refusing to overwrite provenance file: "+mapPath);
     const Bytes elf=load(elfPath);
     std::ostringstream rows;
     rows<<"CGARM_PROVENANCE_V1\n";
@@ -844,16 +842,16 @@ void emitProvenance10(const Plan &p,const Analysis &a,const RelocationLayout &l,
         }
     }
     const fs::path tmp=mapPath+".cgarm-ld-tmp";
-    if(fs::exists(tmp))throw Error("Provenance temporary output exists: "+tmp.string());
+    if(fs::exists(tmp) || fs::is_symlink(tmp))throw Error("Provenance temporary output exists: "+tmp.string());
     try {
         std::ofstream out(tmp,std::ios::binary|std::ios::trunc);
         if(!out)throw Error("Cannot create provenance file: "+tmp.string());
         out<<rows.str();out.close();
         if(!out)throw Error("Provenance write failed: "+tmp.string());
-        if(fs::exists(mapPath))throw Error("Provenance output appeared during write: "+mapPath);
+        if(fs::exists(mapPath) || fs::is_symlink(mapPath))throw Error("Provenance output appeared during write: "+mapPath);
         fs::rename(tmp,mapPath);
     }catch(...){std::error_code ec;fs::remove(tmp,ec);throw;}
-    std::cout<<"\nStage 10: section provenance emitted\n"
+    std::cout<<"\nCGARM: section provenance emitted\n"
              <<"  Map:                "<<mapPath<<"\n"
              <<"  Retained sections:  "<<retained<<"\n"
              <<"  Discarded sections: "<<discarded<<" (among selected inputs)\n";
@@ -998,7 +996,7 @@ void emitElf(const Plan &p,const Settings &cfg,
         put32(elf,q,sh.nameOff,"sh_name");put32(elf,q+4,sh.type,"sh_type");
         put32(elf,q+8,sh.flags,"sh_flags");put32(elf,q+12,sh.address,"sh_addr");
         put32(elf,q+16,sh.fileOff,"sh_offset");put32(elf,q+20,sh.size,"sh_size");
-        put32(elf,q+24,sh.link,"sh_link");put32(elf,q+28,sh.info,"sh_info");
+put32(elf,q+24,sh.link,"sh_link");put32(elf,q+28,sh.info,"sh_info");
         put32(elf,q+32,sh.align,"sh_addralign");put32(elf,q+36,sh.entsize,"sh_entsize");
     }
     // Resolve applet entry using its exact definition (including Thumb bit).
@@ -1046,20 +1044,20 @@ void emitElf(const Plan &p,const Settings &cfg,
     put32(elf,dynph+16,64,"PT_DYNAMIC filesz");put32(elf,dynph+20,64,"PT_DYNAMIC memsz");
     put32(elf,dynph+24,6,"PT_DYNAMIC flags RW");put32(elf,dynph+28,4,"PT_DYNAMIC align");
     // Refuse to overwrite files. Only publish after complete in-memory validation.
-    if(fs::exists(path)) throw Error("Output already exists: "+path);
+    if(fs::exists(path) || fs::is_symlink(path)) throw Error("Output already exists: "+path);
     const fs::path out(path);
     const fs::path tmp=path+".cgarm-ld-tmp";
-    if(fs::exists(tmp)) throw Error("Temporary ELF output already exists: "+tmp.string());
+    if(fs::exists(tmp) || fs::is_symlink(tmp)) throw Error("Temporary ELF output already exists: "+tmp.string());
     try {
         std::ofstream stream(tmp,std::ios::binary|std::ios::trunc);
         if(!stream) throw Error("Cannot open ELF destination: "+tmp.string());
         stream.write(reinterpret_cast<const char*>(elf.data()),static_cast<std::streamsize>(elf.size()));
         if(!stream) throw Error("ELF write failed");
         stream.close();if(!stream) throw Error("ELF close failed");
-        if(fs::exists(out)) throw Error("Output appeared while writing: "+out.string());
+        if(fs::exists(out) || fs::is_symlink(out)) throw Error("Output appeared while writing: "+out.string());
         fs::rename(tmp,out);
     } catch(...) {std::error_code ec;fs::remove(tmp,ec);throw;}
-    std::cout<<"\nStage 4: experimental ELF32 ARM ET_DYN created\n"
+    std::cout<<"CGARM: ELF32 ARM ET_DYN created\n"
              <<"  ELF output:              "<<path<<"\n"
              <<"  ELF file bytes:          "<<elf.size()<<"\n"
              <<"  Entry:                   "<<hex64(entry)<<"\n"
@@ -1067,7 +1065,7 @@ void emitElf(const Plan &p,const Settings &cfg,
              <<"  PT_LOAD memory:          "<<memorySpan<<" bytes\n"
              <<"  Dynamic R_ARM_RELATIVE:  "<<relativeSites.size()<<"\n"
              <<"  Stack reserved:          "<<cfg.stack<<" bytes\n"
-             <<"  EXPERIMENTAL: inspect with readelf + V2 packer, do NOT deploy to hardware yet.\n";
+             <<"  CGARM beta: ELF must pass the strict V2 packer before deployment.\n";
 }
 
 uint64_t fnvMix(uint64_t v,uint8_t b) {return (v^b)*1099511628211ULL;}
@@ -1113,7 +1111,7 @@ void relocate(const Plan &p,const Analysis &a,const Settings &cfg,bool verbose,
         for(const auto &r:n.object->relocs) {
             if(!r.alloc || r.targetIndex!=n.section || r.type==0) continue;
             const std::string where=n.object->label+":"+section.name+"+"+hex64(r.offset)+" "+typeName(r.type);
-            if(r.isRela) throw Error(where+": explicit-addend RELA is not supported in Stage 3 (REL only)");
+            if(r.isRela) throw Error(where+": explicit-addend RELA is unsupported (CGARM expects REL)");
             auto dest=l.images.find(n);
             if(dest==l.images.end()) throw Error(where+": cannot apply relocation into SHT_NOBITS section");
             Bytes &buffer=dest->second;
@@ -1169,7 +1167,7 @@ void relocate(const Plan &p,const Analysis &a,const Settings &cfg,bool verbose,
         for(unsigned i=0;i<8;++i) digest=fnvMix(digest,static_cast<uint8_t>(addr>>(i*8)));
         for(uint8_t byte:kv.second) digest=fnvMix(digest,byte);
     }
-    std::cout<<"\nStage 4: ARM relocation engine (scratch section images)\n"
+    std::cout<<"\nCGARM: ARM relocation engine (scratch section images)\n"
              <<"  Scratch sections:        "<<l.images.size()<<" (no input files changed)\n"
              <<"  GOT entries initialised: "<<gotContents.size()<<" / "<<l.gotAddress.size()<<"\n"
              <<"  Applied relocations:     "<<fixes<<"\n";
@@ -1179,12 +1177,20 @@ void relocate(const Plan &p,const Analysis &a,const Settings &cfg,bool verbose,
              <<(emitting?" (to be emitted)":" (not emitted without --emit-elf)")<<"\n"
              <<"  Patched-image FNV64: "<<hex64(digest)<<"\n"
              <<"  Estimated virtual SDRAM used: "<<(l.end-cfg.base)<<" / "<<cfg.app<<" bytes\n"
-             <<"  LLVM remains required for all real builds.\n";
+             <<"  CGARM link mode does not invoke LLVM.\n";
     if(emitting) {
         if(futureRuntimeRelocs.size()!=prelimSites.size())
             throw Error("Internal error: dynamic relocation reservation count changed");
         emitElf(p,cfg,l,gotContents,futureRuntimeRelocs,elfOutput);
-        emitProvenance10(p,a,l,elfOutput,mapOutput);
+        try {
+            emitProvenance10(p,a,l,elfOutput,mapOutput);
+        } catch(const std::exception &e) {
+            std::error_code ec;
+            std::filesystem::remove(elfOutput,ec);
+            throw Error(std::string("CGARM provenance failed: ")+e.what()+
+                (ec ? "; failed to remove generated ELF: "+ec.message()
+                    : "; incomplete ELF removed"));
+        }
     }
 }
 
@@ -1204,11 +1210,11 @@ uint64_t asKiB(const std::string &s,const std::string &flag) {
 
 void usage() {
     std::cout <<
-      "cgarm-ld — SIDBOX custom ARM linker, Stage 4 (EXPERIMENTAL ELF writer)\n\n"
+      "cgarm-ld — SIDBOX custom ARM linker (beta, Stage 20)\n\n"
       "Usage: cgarm-ld [--verbose] [--plan] [--layout] [--relocate] [--emit-elf OUTPUT.elf] [--emit-map OUTPUT.cgmap] [--strict] [settings] FILE.o ... LIB.a ...\n\n"
       "  --layout     Plan kept sections, symbol references, GOT and SDRAM addresses\n"
       "  --relocate   Apply ARM relocations to temporary in-memory section copies\n"
-      "  --emit-elf X  Write experimental ARM ET_DYN ELF at new path X (never .app)\n"
+      "  --emit-elf X  Write ARM ELF32 ET_DYN at new path X (not an .app)\n"
       "  --emit-map X  With --emit-elf, write linked section provenance to X.cgmap\n"
       "  --entry X   Entry symbol (default applet_entry)\n"
       "  --app-kb N  Applet allowance in KiB (default 128, max 512)\n"
@@ -1219,8 +1225,8 @@ void usage() {
       "  --plan       Simulate archive extraction and report unresolved symbols\n"
       "  --strict     Exit nonzero if any ALLOC relocation type is outside planning set\n"
       "  --help       Show help\n\n"
-      "IMPORTANT: --emit-elf creates only an experimental ELF, NEVER an .app.\n"
-      "Current production builds must still use LLVM ld.lld.\n";
+      "--emit-elf produces ELF only. cgarm-build invokes the V2 packer to make .app.\n"
+      "CGARM is in beta; use LLVM mode as a reference when validating new apps.\n";
 }
 
 } // namespace
@@ -1237,10 +1243,12 @@ int main(int argc,char **argv) {
             if(s=="--layout") {showLayout=true;plan=true;}
             else if(s=="--relocate") {runRelocations=true;plan=true;}
             else if(s=="--emit-elf") {
+                if(!emitOutput.empty()) throw Error("--emit-elf specified more than once");
                 if(i+1>=argc) throw Error("Missing filename for --emit-elf");
                 emitOutput=argv[++i];runRelocations=true;plan=true;strict=true;
             }
             else if(s=="--emit-map") {
+                if(!emitMap.empty()) throw Error("--emit-map specified more than once");
                 if(i+1>=argc)throw Error("Missing filename for --emit-map");
                 emitMap=argv[++i];
             }
@@ -1264,7 +1272,7 @@ int main(int argc,char **argv) {
         if(!emitMap.empty()) {
             namespace fs=std::filesystem;
             if(fs::path(emitMap).extension()!=".cgmap")throw Error("--emit-map output must end in .cgmap");
-            if(fs::exists(emitMap))throw Error("Refusing to overwrite provenance file: "+emitMap);
+            if(fs::exists(emitMap) || fs::is_symlink(emitMap))throw Error("Refusing to overwrite provenance file: "+emitMap);
             if(fs::absolute(emitMap)==fs::absolute(emitOutput))throw Error("Map output equals ELF output");
             for(const auto &in:files) if(fs::absolute(in)==fs::absolute(emitMap))
                 throw Error("Map output equals an input file");
@@ -1273,7 +1281,7 @@ int main(int argc,char **argv) {
         if(!emitOutput.empty()) {
             namespace fs=std::filesystem;
             if(fs::path(emitOutput).extension() != ".elf") throw Error("--emit-elf destination must have .elf extension");
-            if(fs::exists(emitOutput)) throw Error("Refusing to overwrite existing ELF: "+emitOutput);
+            if(fs::exists(emitOutput) || fs::is_symlink(emitOutput)) throw Error("Refusing to overwrite existing ELF: "+emitOutput);
             for(const auto &in:files) if(fs::absolute(in)==fs::absolute(emitOutput))
                 throw Error("Refusing to overwrite input file");
         }
@@ -1314,7 +1322,7 @@ int main(int argc,char **argv) {
             const bool known=initialSupported(kv.first);
             if(!known) unsupported=true;
             std::cout<<"    "<<std::left<<std::setw(26)<<typeName(kv.first)<<std::right<<std::setw(6)<<kv.second
-                     <<(known?"  [planned support]":"  [needs investigation]")<<"\n";
+                     <<(known?"  [handled]":"  [unsupported]")<<"\n";
         }
         if(plan) {
             Plan p=createPlan(inputs);
@@ -1323,13 +1331,21 @@ int main(int argc,char **argv) {
             for (const auto *o:p.selected) for(const auto &r:o->relocs) if(r.alloc) {
                 ++plannedRelocs;++plannedTypes[r.type];
             }
-            std::cout<<"\nArchive extraction plan (NO garbage collection yet):\n"
+            size_t generatedSymbols=0, otherUnresolved=0;
+            for(const auto &u:p.unresolved) {
+                if(builtin(u)) ++generatedSymbols;
+                else ++otherUnresolved;
+            }
+            std::cout<<"\nArchive extraction plan (before section garbage collection):\n"
                      <<"  Selected objects: "<<p.selected.size()<<" ("<<p.pulled<<" archive members pulled)\n"
                      <<"  ALLOC relocations: "<<plannedRelocs<<"\n"
-                     <<"  Strong unresolved symbols: "<<p.unresolved.size()<<"\n";
+                     <<"  Linker-provided symbols: "<<generatedSymbols<<" (resolved during layout)\n"
+                     <<"  Other pre-GC unresolved references: "<<otherUnresolved<<"\n";
             if(verbose) for(const auto *o:p.selected) std::cout<<"    USE "<<o->label<<"\n";
-            for(const auto &u:p.unresolved) std::cout<<"    UNRESOLVED "<<u<<"\n";
-            if(!p.unresolved.empty()) std::cout<<"  Note: initial archive plan counts references from all sections.\n";
+            for(const auto &u:p.unresolved) {
+                std::cout<<(builtin(u)?"    LINKER SYMBOL ":"    PRE-GC UNRESOLVED ")<<u<<"\n";
+            }
+            if(otherUnresolved) std::cout<<"  Note: this plan counts even discarded-section references; final link validates live references.\n";
             if(!emitOutput.empty() && unsupported)
                 throw Error("Cannot emit ELF: input contains unsupported ALLOC relocations");
             if(showLayout || runRelocations) {
@@ -1342,8 +1358,8 @@ int main(int argc,char **argv) {
             std::cerr<<"cgarm-ld: unsupported ALLOC relocation types found; see audit above\n";
             return 3;
         }
-        std::cout<<"\nStage 4 completed; "
-                 <<(emitOutput.empty()?"NO files created or modified.":"Experimental ELF generated; NO .app created.")<<"\n";
+        std::cout<<"\nCGARM completed; "
+                 <<(emitOutput.empty()?"No output files created.":"ELF generated; V2 packer must produce the .app.")<<"\n";
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "cgarm-ld: ERROR: " << e.what() << '\n';

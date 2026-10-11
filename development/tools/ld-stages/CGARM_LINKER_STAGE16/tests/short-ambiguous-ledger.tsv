@@ -1,7 +1,0 @@
-object	input_section	offset	relocation	target_symbol	status	evidence
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.data.ptr	0x00000000	R_ARM_ABS32	applet_entry	EXACT	REL32/ABS32
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.text.applet_entry	0x0000000C	R_ARM_REL32	[.rodata.str1.1]	DEFERRED	mergeable .rodata.str1.1: referenced mergeable fragment has multiple LLVM locations
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.text.applet_entry	0x00000010	R_ARM_REL32	[.data.ptr]	EXACT	REL32/ABS32
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.text.applet_entry	0x00000014	R_ARM_REL32	[.rodata.duplicate]	EXACT	REL32/ABS32
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.text.applet_entry	0x00000004	R_ARM_REL32	.LC0	DEFERRED	mergeable .rodata.str1.1: referenced mergeable fragment has multiple LLVM locations
-/mnt/data/CGARM_LINKER_STAGE13/tests/short-ambiguous.o	.text.applet_entry	0x00000008	R_ARM_REL32	.LC1	EXACT	REL32/ABS32

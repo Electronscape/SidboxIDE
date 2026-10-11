@@ -3958,7 +3958,7 @@ void MainWindow::setupInterface()
      */
     auto *compileMenu = new QMenu(this);
     QAction *cleanCgarmAction = compileMenu->addAction(
-        tr("Clean CGARM Build Cache..."));
+        tr("Clean Selected V2 Build Cache..."));
     if (auto *compileButton =
             qobject_cast<QToolButton *>(toolBar->widgetForAction(compileAction))) {
         compileButton->setMenu(compileMenu);
@@ -3966,22 +3966,30 @@ void MainWindow::setupInterface()
     }
     connect(cleanCgarmAction, &QAction::triggered, this, [this]() {
         if (m_projectFilePath.isEmpty()) {
-            QMessageBox::information(this, tr("Clean CGARM Build"),
-                                     tr("Open a CGARM project first."));
+            QMessageBox::information(this, tr("Clean V2 Build"),
+                                     tr("Open a project first."));
             return;
         }
         if (normalizedProjectType(m_projectType) != GuiProjectType
             || m_appletFormat != QStringLiteral("v2")) {
-            QMessageBox::information(this, tr("Clean CGARM Build"),
-                tr("This command applies to CGARM V2 only. "
+            QMessageBox::information(this, tr("Clean V2 Build"),
+                tr("This command applies to GUI V2 projects only. "
                    "The V1 and Gaming build systems are unchanged."));
             return;
         }
         if (m_compilerProcess->state() != QProcess::NotRunning) {
-            QMessageBox::information(this, tr("Clean CGARM Build"),
+            QMessageBox::information(this, tr("Clean V2 Build"),
                 tr("Wait for the current build to finish before cleaning."));
             return;
         }
+
+        // Match the linker selected in Project Settings > General. The
+        // standalone builder defaults to LLVM unless --linker is explicit.
+        // Keep clean behaviour consistent with the V2 F5 compile path.
+        const QString selectedLinker = m_v2Linker == QStringLiteral("cgarm")
+            ? QStringLiteral("cgarm") : QStringLiteral("llvm");
+        const QString linkerLabel = selectedLinker == QStringLiteral("cgarm")
+            ? tr("CGARM") : tr("LLVM");
 
         const QString baseName = QFileInfo(m_projectFilePath).completeBaseName();
         const QString appFileName = m_outputAppName.isEmpty()
@@ -3994,14 +4002,17 @@ void MainWindow::setupInterface()
                           QStringLiteral("_"));
         if (cacheStem.isEmpty()) cacheStem = QStringLiteral("applet");
         const QString cachePath = QDir(m_projectPath).filePath(
-            QStringLiteral("build/cgarm/") + cacheStem);
+            QStringLiteral("build/cgarm/") + cacheStem +
+            (selectedLinker == QStringLiteral("cgarm")
+                 ? QStringLiteral("-cgarm") : QString()));
 
         const auto answer = QMessageBox::question(this,
-            tr("Clean CGARM Build Cache"),
-            tr("Remove this project's generated CGARM intermediate files?\n\n%1\n\n"
+            tr("Clean V2 Build Cache"),
+            tr("Remove this project's generated %1 V2 intermediate files?\n\n%2\n\n"
                "Your source files, GUI designs, and last working .app "
-               "will be kept. The next F5 will recompile all sources.")
-                .arg(QDir::toNativeSeparators(cachePath)),
+               "will be kept. The next F5 will recompile all sources "
+               "for the selected linker.")
+                .arg(linkerLabel, QDir::toNativeSeparators(cachePath)),
             QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
         if (answer != QMessageBox::Yes) return;
 
@@ -4013,7 +4024,7 @@ void MainWindow::setupInterface()
         const QString cli = QDir(ideLibsPath()).filePath(
             QStringLiteral("tools/bin/") + cliName);
         if (!QFileInfo(cli).isFile() || !QFileInfo(cli).isExecutable()) {
-            QMessageBox::warning(this, tr("Clean CGARM Build"),
+            QMessageBox::warning(this, tr("Clean V2 Build"),
                 tr("Cannot find the CGARM builder:\n%1")
                     .arg(QDir::toNativeSeparators(cli)));
             return;
@@ -4024,9 +4035,10 @@ void MainWindow::setupInterface()
         cleaner.setProcessChannelMode(QProcess::MergedChannels);
         cleaner.start(cli, {m_projectFilePath,
                             QStringLiteral("-o"), appPath,
+                            QStringLiteral("--linker"), selectedLinker,
                             QStringLiteral("--clean")});
         if (!cleaner.waitForStarted(3000)) {
-            QMessageBox::warning(this, tr("Clean CGARM Build"),
+            QMessageBox::warning(this, tr("Clean V2 Build"),
                 tr("Could not launch cgarm-build:\n%1")
                     .arg(cleaner.errorString()));
             return;
@@ -4034,22 +4046,24 @@ void MainWindow::setupInterface()
         if (!cleaner.waitForFinished(30000)) {
             cleaner.kill();
             cleaner.waitForFinished();
-            QMessageBox::warning(this, tr("Clean CGARM Build"),
+            QMessageBox::warning(this, tr("Clean V2 Build"),
                                  tr("Cleaning timed out."));
             return;
         }
         const QString report = QString::fromLocal8Bit(cleaner.readAll());
-        appendOutputLine(tr("CGARM build cache clean:"), OutputKind::Header);
+        appendOutputLine(tr("%1 V2 build cache clean:").arg(linkerLabel), OutputKind::Header);
         appendOutputText(report, cleaner.exitStatus() == QProcess::NormalExit
                                  && cleaner.exitCode() == 0
                              ? OutputKind::Success : OutputKind::Error);
         if (cleaner.exitStatus() != QProcess::NormalExit
             || cleaner.exitCode() != 0) {
-            QMessageBox::warning(this, tr("Clean CGARM Build"),
+            QMessageBox::warning(this, tr("Clean V2 Build"),
                 tr("Cleaning failed. See the compiler output for details."));
             return;
         }
-        statusBar()->showMessage(tr("CGARM build cache cleaned; next F5 rebuilds all sources."), 8000);
+        statusBar()->showMessage(
+            tr("%1 V2 build cache cleaned; next F5 rebuilds all sources.")
+                .arg(linkerLabel), 8000);
     });
 
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
@@ -5035,6 +5049,20 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
     designer->generatedFilesChanged = [this](const QString &designPath, const QString &cPath) {
         addProjectFile(designPath);
         addProjectFile(cPath);
+        // Generated .c windows now come with a matching public .h file.
+        // Register it as a project source/header for browsing and completion,
+        // but never accidentally register a programmer-owned header or a
+        // binary-resource .c file that merely shares the same filename.
+        const QFileInfo generatedInfo(cPath);
+        if (generatedInfo.suffix().compare(QStringLiteral("c"), Qt::CaseInsensitive) == 0) {
+            const QString headerPath = generatedInfo.dir().filePath(
+                generatedInfo.completeBaseName() + QStringLiteral(".h"));
+            QFile header(headerPath);
+            if (header.open(QIODevice::ReadOnly)
+                && header.read(48).startsWith("/* SIDBOX-IDE GENERATED GUI HEADER: ")) {
+                addProjectFile(headerPath);
+            }
+        }
         refreshProjectFiles();
         statusBar()->showMessage(tr("GUI generated: %1").arg(displayPath(cPath)), 2500);
     };

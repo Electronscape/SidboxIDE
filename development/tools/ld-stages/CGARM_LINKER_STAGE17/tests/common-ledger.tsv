@@ -1,3 +1,0 @@
-object	input_section	offset	relocation	target_symbol	status	evidence
-common-got.o	.text.applet_entry	0x00000004	R_ARM_GOT_BREL	heap_size	EXACT	GOT/base
-common-got.o	.text.applet_entry	0x00000008	R_ARM_BASE_PREL	_GLOBAL_OFFSET_TABLE_	EXACT	GOT/base

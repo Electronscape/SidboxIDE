@@ -1,3 +1,0 @@
-object	input_section	offset	relocation	target_symbol	status	evidence
-/mnt/data/CGARM_LINKER_STAGE10/tests/local-got.o	.text.applet_entry	0x00000004	R_ARM_GOT_BREL	local_object	EXACT	GOT/base
-/mnt/data/CGARM_LINKER_STAGE10/tests/local-got.o	.text.applet_entry	0x00000008	R_ARM_BASE_PREL	_GLOBAL_OFFSET_TABLE_	EXACT	GOT/base

@@ -1,8 +1,0 @@
-CGARM_PROVENANCE_V1
-ELF	6BD97489574CD6BF
-OBJECT	"stage18_probe.o"	54BC32CAD226895A
-SECTION	"stage18_probe.o"	3	".text.applet_entry"	LIVE	D0010000	160	6
-SECTION	"stage18_probe.o"	5	".data.stage18_rebased_pointer"	LIVE	D00100A0	4	3
-SECTION	"stage18_probe.o"	7	".data.stage18_init_word"	LIVE	D00100A4	4	3
-SECTION	"stage18_probe.o"	8	".bss.stage18_zero_word"	LIVE	D0010108	4	3
-SECTION	"stage18_probe.o"	9	".bss.stage18_zero_array"	LIVE	D001010C	32	3

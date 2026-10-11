@@ -5377,7 +5377,27 @@ public:
                                 || linkedWindowCallStale() || generatedResourceMissing;
         if (m_modified && !saveDesign())
             return false;
-        return !regenerate || generateCFile(false);
+        if (regenerate) return generateCFile(false);
+
+        // Upgrade an existing generated .c to have a matching public header
+        // without rewriting the .c or invalidating its incremental build cache.
+        // Detached .uis sketches are never compilable and need no .h.
+        if (!m_detached) {
+            const QString entry = windowEntryForDesign(m_filePath);
+            if (entry.isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("GUI Designer"),
+                    QObject::tr("Cannot determine the generated window entry in %1. "
+                                "Regenerate its C source before creating the header.")
+                        .arg(QDir::toNativeSeparators(outputPath(false))));
+                return false;
+            }
+            bool headerChanged = false;
+            if (!writeGeneratedHeader(outputPath(false), entry, &headerChanged))
+                return false;
+            if (headerChanged && generatedFilesChanged)
+                generatedFilesChanged(m_filePath, generatedHeaderPath(outputPath(false)));
+        }
+        return true;
     }
 
 private:
@@ -9800,6 +9820,80 @@ private:
         return info.dir().absoluteFilePath(name);
     }
 
+    // A generated window has exactly one public entry point.  Keep every
+    // callback, gadget and window handle private to its .c translation unit.
+    QString generatedHeaderPath(const QString &cPath) const
+    {
+        const QFileInfo info(cPath);
+        return info.dir().filePath(info.completeBaseName() + QStringLiteral(".h"));
+    }
+
+    QByteArray generatedHeaderMarker() const
+    {
+        return (QStringLiteral("/* SIDBOX-IDE GENERATED GUI HEADER: ")
+                + QFileInfo(m_filePath).fileName() + QStringLiteral(" */\n")).toUtf8();
+    }
+
+    // Do not overwrite a user-maintained header even if its basename matches.
+    // Check before changing the .c or its generated resource files.
+    bool canWriteGeneratedHeader(const QString &cPath)
+    {
+        const QString headerPath = generatedHeaderPath(cPath);
+        if (!QFileInfo::exists(headerPath)) return true;
+        QFile existing(headerPath);
+        if (existing.open(QIODevice::ReadOnly)
+            && existing.read(generatedHeaderMarker().size()) == generatedHeaderMarker())
+            return true;
+        QMessageBox::warning(this,
+            QObject::tr("Generated header conflict"),
+            QObject::tr("%1 already exists but does not belong to this GUI design. "
+                        "It will not be overwritten. Choose another C source name "
+                        "or move the custom header first.")
+                .arg(QDir::toNativeSeparators(headerPath)));
+        return false;
+    }
+
+    bool writeGeneratedHeader(const QString &cPath, const QString &windowEntry,
+                              bool *changed = nullptr)
+    {
+        if (changed) *changed = false;
+        if (!canWriteGeneratedHeader(cPath)) return false;
+        const QString headerPath = generatedHeaderPath(cPath);
+        // Include the project-relative path in the guard so two GUI designs
+        // with the same filename in different subfolders remain independent.
+        const QString relativeHeader = QDir(designProjectRoot()).relativeFilePath(headerPath);
+        const QString guard = QStringLiteral("SIDBOX_GUI_")
+            + safeCIdentifier(relativeHeader, QStringLiteral("WINDOW_H")).toUpper()
+            + QStringLiteral("_INCLUDED");
+        const QString contents = QString::fromUtf8(generatedHeaderMarker())
+            + QStringLiteral("/* Auto-generated declarations. Edit the .sbui, not this file. */\n")
+            + QStringLiteral("#ifndef ") + guard + QStringLiteral("\n#define ")
+            + guard + QStringLiteral("\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+            + QStringLiteral("void ") + windowEntry + QStringLiteral("(void);\n\n")
+            + QStringLiteral("#ifdef __cplusplus\n}\n#endif\n\n#endif /* ")
+            + guard + QStringLiteral(" */\n");
+        const QByteArray bytes = contents.toUtf8();
+        QFile previous(headerPath);
+        if (previous.open(QIODevice::ReadOnly) && previous.readAll() == bytes)
+            return true; // Do not change timestamps when nothing has changed.
+        if (!QDir().mkpath(QFileInfo(headerPath).absolutePath())) {
+            QMessageBox::warning(this, QObject::tr("GUI Designer"),
+                QObject::tr("Cannot create header directory: %1")
+                    .arg(QDir::toNativeSeparators(QFileInfo(headerPath).absolutePath())));
+            return false;
+        }
+        QSaveFile header(headerPath);
+        if (!header.open(QIODevice::WriteOnly | QIODevice::Text)
+            || header.write(bytes) != bytes.size() || !header.commit()) {
+            QMessageBox::warning(this, QObject::tr("GUI Designer"),
+                QObject::tr("Cannot write generated header: %1")
+                    .arg(QDir::toNativeSeparators(headerPath)));
+            return false;
+        }
+        if (changed) *changed = true;
+        return true;
+    }
+
     QString appletTypeFlagExpression(
         const GuiDesignerGadget &g) const
     {
@@ -10222,6 +10316,7 @@ private:
             }
         }
         const QString cPath = outputPath(sketch);
+        if (!sketch && !canWriteGeneratedHeader(cPath)) return false;
         if (sketch && m_sketchName.isEmpty()) {
             m_sketchName = QFileInfo(cPath).fileName();
             setModified(true);
@@ -10433,8 +10528,10 @@ private:
              "   Target: SIDBOX applet API (apis.h), not firmware-private CoderGirl headers.\n"
              "   Edit USER blocks only; designer regeneration replaces generated sections. */\n\n";
 
-        s << "#include \"apis.h\"\n"
-             "#include <stddef.h>\n"
+        s << "#include \"apis.h\"\n";
+        if (!sketch)
+            s << "#include \"" << QFileInfo(cPath).completeBaseName() << ".h\"\n";
+        s << "#include <stddef.h>\n"
              "#include <stdint.h>\n"
              "#include <stdlib.h>\n";
         if (!dialogNames.isEmpty())
@@ -12071,6 +12168,11 @@ private:
             "/* Migrated to %2res/media_sfx.c. Kept for existing .proj references. */\n")
             .arg(designInfo.fileName(), designInfo.completeBaseName());
         if (!sketch && !writeResource(oldSfxPath, migratedSfxStub, false))
+            return false;
+
+        // The header must exist before the new .c starts including it.
+        // The preflight above prevents overwriting an unrelated programmer header.
+        if (!sketch && !writeGeneratedHeader(cPath, win + QStringLiteral("_Create")))
             return false;
 
         QSaveFile file(cPath);
