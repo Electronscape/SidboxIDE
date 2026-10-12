@@ -6,6 +6,9 @@
 #include <utility>
 #include <QAbstractItemView>
 #include <QCompleter>
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QFocusEvent>
 #include <QFont>
@@ -1043,7 +1046,9 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     m_completer->setWrapAround(false);
 
     connect(m_completer, qOverload<const QString &>(&QCompleter::activated), this, [this](const QString &completion) {
-        if (m_memberCompletionActive) {
+        if (m_includeCompletionActive) {
+            insertIncludeCompletion(completion);
+        } else if (m_memberCompletionActive) {
             insertMemberCompletion(completion);
         } else {
             insertFunctionCompletion(completion);
@@ -1063,6 +1068,21 @@ QString CodeEditor::filePath() const
 void CodeEditor::setFilePath(const QString &path)
 {
     m_filePath = path;
+    m_includeScanMs = 0;
+    m_includeCandidates.clear();
+}
+
+void CodeEditor::setIncludeSearchPaths(const QStringList &searchPaths)
+{
+    m_includeSearchPaths.clear();
+    for (const QString &candidate : searchPaths) {
+        if (candidate.isEmpty()) continue;
+        const QString absolute = QDir::cleanPath(QFileInfo(candidate).absoluteFilePath());
+        if (!m_includeSearchPaths.contains(absolute) && QDir(absolute).exists())
+            m_includeSearchPaths.append(absolute);
+    }
+    m_includeScanMs = 0;
+    m_includeCandidates.clear();
 }
 
 void CodeEditor::setFunctionCompletions(const QStringList &signatures)
@@ -1071,7 +1091,7 @@ void CodeEditor::setFunctionCompletions(const QStringList &signatures)
     m_functionCompletions.removeDuplicates();
     m_functionCompletions.sort(Qt::CaseInsensitive);
 
-    if (!m_memberCompletionActive) {
+    if (!m_memberCompletionActive && !m_includeCompletionActive) {
         m_completionModel->setStringList(m_functionCompletions);
     }
 }
@@ -1094,6 +1114,29 @@ void CodeEditor::setApiSyntaxNames(const QStringList &apiNames)
     }
 }
 
+void CodeEditor::setNavigationBar(QWidget *bar, int height)
+{
+    if (m_navigationBar && m_navigationBar != bar)
+        m_navigationBar->deleteLater();
+
+    m_navigationBar = bar;
+    m_navigationHeight = bar ? qMax(0, height) : 0;
+    if (bar) {
+        bar->setParent(this);
+        bar->setFixedHeight(m_navigationHeight);
+        bar->setGeometry(contentsRect().left(), contentsRect().top(),
+                         contentsRect().width(), m_navigationHeight);
+        bar->show();
+        bar->raise();
+    }
+    updateLineNumberAreaWidth(0);
+    const QRect view = viewport()->geometry();
+    m_lineNumberArea->setGeometry(contentsRect().left(), view.top(),
+                                  lineNumberAreaWidth(), view.height());
+    m_minimap->setGeometry(view.right() + 1, view.top(),
+                           CodeMinimapWidth, view.height());
+}
+
 void CodeEditor::setResourceMode(bool enabled)
 {
     if (m_resourceMode == enabled) {
@@ -1110,6 +1153,8 @@ void CodeEditor::setResourceMode(bool enabled)
         m_functionCompletions.clear();
         m_memberCompletionActive = false;
         m_memberCompletionPrefix.clear();
+        m_includeCompletionActive = false;
+        m_includePrefix.clear();
         m_completionModel->setStringList({});
         if (m_completer && m_completer->popup()) {
             m_completer->popup()->hide();
@@ -1147,7 +1192,159 @@ void CodeEditor::restoreFunctionCompletionModel()
 {
     m_memberCompletionActive = false;
     m_memberCompletionPrefix.clear();
-    m_completionModel->setStringList(m_functionCompletions);
+    if (!m_includeCompletionActive)
+        m_completionModel->setStringList(m_functionCompletions);
+}
+
+void CodeEditor::restoreIncludeCompletionModel()
+{
+    m_includeCompletionActive = false;
+    m_includePrefix.clear();
+    if (!m_memberCompletionActive)
+        m_completionModel->setStringList(m_functionCompletions);
+}
+
+/*
+ * Discover project-local .h paths (including nested windows/ directories) and
+ * SDK headers. The search is bounded so an accidentally huge project tree
+ * cannot stall typing. It is cached briefly and invalidated when the editor
+ * changes files or regains focus; ordinary keystrokes never rescan the tree.
+ */
+void CodeEditor::refreshIncludeCandidates()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_includeScanMs > 0 && now - m_includeScanMs < 2500) return;
+    m_includeScanMs = now;
+
+    QStringList roots;
+    if (!m_filePath.isEmpty())
+        roots.append(QFileInfo(m_filePath).absolutePath());
+    roots.append(m_includeSearchPaths);
+    roots.removeDuplicates();
+
+    QSet<QString> discovered;
+    constexpr int maxEntries = 3500;
+    constexpr int maxDepth = 6;
+    int entriesVisited = 0;
+    for (const QString &rootPath : roots) {
+        if (entriesVisited >= maxEntries) break;
+        const QDir root(rootPath);
+        if (!root.exists()) continue;
+
+        QStringList folders{QString()};
+        for (int head = 0; head < folders.size() && entriesVisited < maxEntries; ++head) {
+            const QString relativeDir = folders.at(head);
+            const QDir directory(root.filePath(relativeDir));
+            const QFileInfoList entries = directory.entryInfoList(
+                QDir::AllEntries | QDir::NoDotAndDotDot | QDir::NoSymLinks | QDir::Readable,
+                QDir::Name | QDir::IgnoreCase);
+            for (const QFileInfo &item : entries) {
+                if (++entriesVisited > maxEntries) break;
+                const QString rel = relativeDir.isEmpty()
+                    ? item.fileName() : relativeDir + QLatin1Char('/') + item.fileName();
+                if (item.isDir()) {
+                    const QString name = item.fileName().toLower();
+                    if (name == QStringLiteral("build") || name == QStringLiteral(".git")
+                        || name == QStringLiteral(".svn") || name == QStringLiteral("node_modules")
+                        || name == QStringLiteral("__pycache__")) continue;
+                    const int depth = rel.count(QLatin1Char('/')) + 1;
+                    if (depth > maxDepth) continue;
+                    discovered.insert(rel + QLatin1Char('/'));
+                    if (depth < maxDepth) folders.append(rel);
+                } else if (item.isFile()
+                           && item.suffix().compare(QStringLiteral("h"), Qt::CaseInsensitive) == 0) {
+                    discovered.insert(rel);
+                }
+            }
+        }
+    }
+    m_includeCandidates = discovered.values();
+    m_includeCandidates.sort(Qt::CaseInsensitive);
+}
+
+/*
+ * Only activate inside a real #include "..." or #include <...> directive.
+ * Completion entries contain the full include-relative path, rather than
+ * merely a filename, so names such as windows/mainwindow.h remain unique.
+ */
+bool CodeEditor::showIncludeCompletionAtCursor()
+{
+    if (m_resourceMode || !m_completer) return false;
+    const QTextCursor cursor = textCursor();
+    if (cursor.hasSelection()) return false;
+    const QString before = cursor.block().text().left(cursor.positionInBlock());
+    static const QRegularExpression expression(
+        QStringLiteral(R"(^\s*#\s*include\s*(["<])([^"<>]*)$)"));
+    const QRegularExpressionMatch match = expression.match(before);
+    if (!match.hasMatch()) {
+        if (m_includeCompletionActive) {
+            m_completer->popup()->hide();
+            restoreIncludeCompletionModel();
+        }
+        return false;
+    }
+
+    refreshIncludeCandidates();
+    const QString prefix = match.captured(2);
+    m_includePrefix = prefix;
+    m_includeCompletionActive = true;
+    m_memberCompletionActive = false;
+    m_memberCompletionPrefix.clear();
+    QStringList visibleCandidates = m_includeCandidates;
+    // Once inside a folder, don't offer that very same folder again.
+    if (prefix.endsWith(QLatin1Char('/')))
+        visibleCandidates.removeAll(prefix);
+    m_completionModel->setStringList(visibleCandidates);
+    m_completer->setCompletionPrefix(prefix);
+    if (m_completer->completionCount() == 0) {
+        m_completer->popup()->hide();
+        return true; // include context: don't suggest C functions instead
+    }
+    QRect rect = cursorRect();
+    rect.setWidth(qMin(640,
+        m_completer->popup()->sizeHintForColumn(0)
+        + m_completer->popup()->verticalScrollBar()->sizeHint().width() + 14));
+    m_completer->complete(rect);
+    return true;
+}
+
+void CodeEditor::insertIncludeCompletion(const QString &path)
+{
+    if (!m_includeCompletionActive || path.isEmpty()) return;
+    QTextCursor cursor = textCursor();
+    const QString before = cursor.block().text().left(cursor.positionInBlock());
+    static const QRegularExpression expression(
+        QStringLiteral(R"(^\s*#\s*include\s*(["<])([^"<>]*)$)"));
+    const QRegularExpressionMatch match = expression.match(before);
+    if (!match.hasMatch()) {
+        m_completer->popup()->hide();
+        restoreIncludeCompletionModel();
+        return;
+    }
+    const QString prefix = match.captured(2);
+    cursor.movePosition(QTextCursor::PreviousCharacter,
+                        QTextCursor::KeepAnchor, prefix.size());
+    cursor.insertText(path);
+    setTextCursor(cursor);
+    if (path.endsWith(QLatin1Char('/'))) {
+        // QCompleter can close its popup after emitting activated().  Reopen
+        // on the next event-loop turn with the newly selected folder prefix.
+        QTimer::singleShot(0, this, [this]() {
+            showIncludeCompletionAtCursor();
+        });
+        return;
+    }
+    const QChar close = match.captured(1) == QStringLiteral("<")
+        ? QLatin1Char('>') : QLatin1Char('"');
+    const QString after = cursor.block().text();
+    const int position = cursor.positionInBlock();
+    if (position >= after.size() || after.at(position) != close)
+        cursor.insertText(QString(close));
+    else
+        cursor.movePosition(QTextCursor::NextCharacter);
+    setTextCursor(cursor);
+    m_completer->popup()->hide();
+    restoreIncludeCompletionModel();
 }
 
 void CodeEditor::showMemberCompletions(const QStringList &members,
@@ -1528,6 +1725,11 @@ void CodeEditor::shareDocumentFrom(CodeEditor *sourceEditor)
     m_functionCompletions = sourceEditor->m_functionCompletions;
     m_projectTypeNames = sourceEditor->m_projectTypeNames;
     m_apiSyntaxNames = sourceEditor->m_apiSyntaxNames;
+    m_includeSearchPaths = sourceEditor->m_includeSearchPaths;
+    m_includeCandidates = sourceEditor->m_includeCandidates;
+    m_includeScanMs = sourceEditor->m_includeScanMs;
+    m_includeCompletionActive = false;
+    m_includePrefix.clear();
     m_memberCompletionActive = false;
     m_memberCompletionPrefix.clear();
     if (m_completionModel) {
@@ -2811,6 +3013,7 @@ void CodeEditor::applyFoldVisibility(
 
 void CodeEditor::focusInEvent(QFocusEvent *event)
 {
+    m_includeScanMs = 0; // pick up headers generated while another tab was active
     if (m_completer) {
         m_completer->setWidget(this);
     }
@@ -3352,7 +3555,9 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
                         .toString();
             }
 
-            if (m_memberCompletionActive) {
+            if (m_includeCompletionActive) {
+                insertIncludeCompletion(completion);
+            } else if (m_memberCompletionActive) {
                 insertMemberCompletion(completion);
             } else {
                 insertFunctionCompletion(completion);
@@ -3364,9 +3569,10 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         }
         case Qt::Key_Escape:
             m_completer->popup()->hide();
-            if (m_memberCompletionActive) {
+            if (m_includeCompletionActive)
+                restoreIncludeCompletionModel();
+            if (m_memberCompletionActive)
                 restoreFunctionCompletionModel();
-            }
             event->accept();
             return;
         default:
@@ -3544,6 +3750,10 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    if (showIncludeCompletionAtCursor()) {
+        return;
+    }
+
     if (m_completer && requestMemberCompletionAtCursor()) {
         return;
     }
@@ -3574,14 +3784,19 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
     QPlainTextEdit::resizeEvent(event);
 
     const QRect contents = contentsRect();
+    if (m_navigationBar) {
+        m_navigationBar->setGeometry(contents.left(), contents.top(),
+                                     contents.width(), m_navigationHeight);
+        m_navigationBar->raise();
+    }
+    const QRect view = viewport()->geometry();
     m_lineNumberArea->setGeometry(
-        QRect(contents.left(), contents.top(), lineNumberAreaWidth(), contents.height()));
+        QRect(contents.left(), view.top(), lineNumberAreaWidth(), view.height()));
 
     /*
      * The minimap lives in the right-hand viewport margin for every editor
      * mode, including lightweight .res resource tabs.
      */
-    const QRect view = viewport()->geometry();
     m_minimap->setGeometry(
         QRect(view.right() + 1, view.top(), CodeMinimapWidth, view.height()));
 }
@@ -3594,7 +3809,7 @@ void CodeEditor::updateLineNumberAreaWidth(int)
      */
     setViewportMargins(
         lineNumberAreaWidth(),
-        0,
+        m_navigationHeight,
         CodeMinimapWidth,
         0);
 }

@@ -2,7 +2,7 @@ Stage	Objective
 
 19 — Passed:    IDE integration and real GUI application running
 20 - DONE       Remove outdated experimental messages and review error handling
-21	            Test repeat builds, incremental compilation and clean builds
+21 - DONE       Test repeat builds, incremental compilation and clean builds
 22	            Test both LLVM and CGARM against multiple applications
 23	            Verify invalid inputs, memory overflow, relocation errors and failure recovery
 24	            Package and test the complete portable SDK

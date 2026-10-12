@@ -116,6 +116,9 @@ private:
     void refreshProjectFiles();
     void rescanProjectFiles();
     void refreshSymbolTree();
+    void refreshEventNavigator(CodeEditor *editor);
+    void refreshEventNavigatorMethods(CodeEditor *editor);
+    void syncEventNavigatorToCursor(CodeEditor *editor);
     void jumpToSymbol(QTreeWidgetItem *item, int column);
     void goToDefinition(CodeEditor *sourceEditor, const QString &symbol, int sourceLine);
     void openIncludedFile(CodeEditor *sourceEditor, const QString &includeName);
@@ -197,7 +200,7 @@ private:
         None,
         V2Compiling, // Legacy fallback; new CGARM builds use cgarm-build.
         V2CliBuilding, // Independent CGARM V2 compiler, linker and packer.
-        V2CliProbe, // Re-link same PIC objects against 512 KiB for RAM sizing.
+        V2CliProbe, // Re-link same PIC objects against maximum SDRAM V2 span for sizing.
         V2CliRelink, // Re-link and pack with the accepted new RAM allowance.
         V2CliAsm, // Generate disassembly after CLI has finished packing.
         Linking,
@@ -257,6 +260,7 @@ private:
 
     QString m_compilerStderrBuffer;
     bool m_buildLinkSizeOverflow = false;
+    qint64 m_v2CgarmRamExcessBytes = 0; // Exact linker-reported shortage; 0 if unavailable.
     bool m_v2AutoResizeRetried = false;
     QHash<QString, QList<EditorDiagnostic>> m_compilerDiagnostics;
     QString m_linkerScriptPath;

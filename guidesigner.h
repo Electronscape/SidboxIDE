@@ -27,6 +27,9 @@ public:
                        const QString &)> sourceNavigationRequested;
 
     virtual QString filePath() const = 0;
+    // Called when the project explorer moves/renames an open .sbui design.
+    // Unlike reopening the tab, this preserves its unsaved designer state.
+    virtual void setFilePath(const QString &filePath) = 0;
     virtual bool isModified() const = 0;
     virtual QString displayName() const = 0;
     virtual bool saveDesignAndGenerate() = 0;

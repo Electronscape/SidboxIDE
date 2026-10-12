@@ -21,6 +21,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSize>
 #include <QSpinBox>
 #include <QToolButton>
@@ -91,12 +92,164 @@
 #include <QStandardPaths>
 #include <QStyle>
 #include <functional>
+#include <limits>
 #include <utility>
 
 namespace {
+// At the default ELF virtual base (0xD0010000), the 6 MiB SDRAM
+// applet/music region ends 6080 KiB later at 0xD0600000.
+constexpr int V2MaxAppletKiB = 6080;
 constexpr int ProjectFileVersion = 2;
 const QString GuiProjectType = QStringLiteral("gui");
 const QString GameProjectType = QStringLiteral("game");
+
+// CGARM tells us the *exact* number of bytes by which its linked RAM layout
+// exceeds the selected allowance. LLVM's overflow diagnostics use different
+// wording and continue through the existing LLVM sizing-probe path.
+qint64 cgarmRamOverflowBytes(const QString &text)
+{
+    static const QRegularExpression overflowExpression(
+        QStringLiteral(R"(Relocation preview exceeds CGARM RAM allowance by\s+(\d+)\s+bytes)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = overflowExpression.match(text);
+    if (!match.hasMatch()) return 0;
+    bool ok = false;
+    const qint64 bytes = match.captured(1).toLongLong(&ok);
+    return ok && bytes > 0 ? bytes : 0;
+}
+
+/*
+ * Linker errors usually name a PIC object, not its original source line.
+ * cgarm-build's v2_unit_N.d file (emitted by GCC -MMD) records the actual
+ * original source, even for recursive project directories and SDK sources.
+ * Never infer a source from N: order can differ across filesystems.
+ */
+QString cgarmSourceFromDependencyFile(const QString &objectFile)
+{
+    if (!objectFile.endsWith(QStringLiteral(".o")))
+        return {};
+
+    QFile deps(objectFile.left(objectFile.size() - 2) + QStringLiteral(".d"));
+    if (!deps.open(QIODevice::ReadOnly) || deps.size() > 16 * 1024 * 1024)
+        return {};
+
+    const QByteArray bytes = deps.readAll();
+    // GCC -MT writes ".../v2_unit_N.o: ..." as the first dependency rule.
+    const qsizetype colon = bytes.indexOf(':');
+    if (colon < 0 || colon + 1 >= bytes.size())
+        return {};
+
+    QByteArray source;
+    bool started = false;
+    for (qsizetype i = colon + 1; i < bytes.size(); ++i) {
+        const char c = bytes.at(i);
+        if (c == '\\' && i + 1 < bytes.size()) {
+            if (bytes.at(i + 1) == '\n') {
+                ++i;
+                continue;
+            }
+            if (bytes.at(i + 1) == '\r' && i + 2 < bytes.size()
+                && bytes.at(i + 2) == '\n') {
+                i += 2;
+                continue;
+            }
+            source.append(bytes.at(++i)); // e.g. GCC-escaped spaces
+            started = true;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            if (started)
+                break;
+            continue;
+        }
+        source.append(c);
+        started = true;
+    }
+    if (source.isEmpty())
+        return {};
+
+    const QString path = QFile::decodeName(source);
+    const QFileInfo info(QDir::isAbsolutePath(path)
+                             ? path
+                             : QDir(QFileInfo(objectFile).absolutePath()).filePath(path));
+    return info.isFile() ? info.canonicalFilePath() : QString();
+}
+
+/*
+ * Find the *actual token* rather than matching the symbol inside comments,
+ * #include strings or a longer identifier. Keep offsets identical to the
+ * original source so we can report real line and column positions. This is a
+ * best-effort source lookup, not a claim that the linker emitted DWARF lines.
+ */
+QList<int> cgarmSymbolOccurrences(const QString &source, const QString &symbol)
+{
+    if (symbol.isEmpty())
+        return {};
+
+    static const QRegularExpression cIdentifier(QStringLiteral(R"(^[A-Za-z_][A-Za-z_0-9]*$)"));
+    if (!cIdentifier.match(symbol).hasMatch())
+        return {};
+
+    QString visible = source;
+    enum class State { Code, LineComment, BlockComment, StringLiteral, CharacterLiteral };
+    State state = State::Code;
+    const auto blank = [&visible](qsizetype i) {
+        if (visible.at(i) != QLatin1Char('\n') && visible.at(i) != QLatin1Char('\r'))
+            visible[i] = QLatin1Char(' ');
+    };
+    for (qsizetype i = 0; i < source.size(); ++i) {
+        const QChar c = source.at(i);
+        const QChar next = (i + 1 < source.size()) ? source.at(i + 1) : QChar();
+        if (state == State::Code) {
+            if (c == QLatin1Char('/') && next == QLatin1Char('/')) {
+                blank(i); blank(++i);
+                state = State::LineComment;
+            } else if (c == QLatin1Char('/') && next == QLatin1Char('*')) {
+                blank(i); blank(++i);
+                state = State::BlockComment;
+            } else if (c == QLatin1Char('"')) {
+                blank(i);
+                state = State::StringLiteral;
+            } else if (c == QLatin1Char('\'')) {
+                blank(i);
+                state = State::CharacterLiteral;
+            }
+        } else if (state == State::LineComment) {
+            if (c == QLatin1Char('\n'))
+                state = State::Code;
+            else
+                blank(i);
+        } else if (state == State::BlockComment) {
+            if (c == QLatin1Char('*') && next == QLatin1Char('/')) {
+                blank(i); blank(++i);
+                state = State::Code;
+            } else {
+                blank(i);
+            }
+        } else {
+            blank(i);
+            if (c == QLatin1Char('\\') && i + 1 < source.size()) {
+                blank(++i);
+            } else if ((state == State::StringLiteral && c == QLatin1Char('"'))
+                       || (state == State::CharacterLiteral && c == QLatin1Char('\''))) {
+                state = State::Code;
+            }
+        }
+    }
+
+    const QRegularExpression expression(
+        QStringLiteral(R"((?<![A-Za-z_0-9])%1(?![A-Za-z_0-9]))")
+            .arg(QRegularExpression::escape(symbol)));
+    QList<int> positions;
+    auto matches = expression.globalMatch(visible);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch match = matches.next();
+        positions.append(match.capturedStart());
+        if (positions.size() >= 64)
+            break; // Avoid flooding the editor for a pathological source file.
+    }
+    return positions;
+}
 
 QString normalizedAppOutputName(const QString &name)
 {
@@ -674,7 +827,15 @@ protected:
          * Do not let QTreeWidget perform a cosmetic internal move. MainWindow
          * moves the real file on disk and then rebuilds the tree instead.
          */
-        fileMoveRequested(m_draggedFilePath, targetDirectory);
+        // Defer filesystem and tree changes until Qt has finished processing
+        // this drop. A synchronous refreshProjectFiles() here would delete
+        // QTreeWidgetItems still in use by QTreeWidget::dropEvent/startDrag.
+        const QString sourcePath = m_draggedFilePath;
+        const auto moveRequest = fileMoveRequested;
+        QTimer::singleShot(0, this, [moveRequest, sourcePath, targetDirectory]() {
+            if (moveRequest)
+                moveRequest(sourcePath, targetDirectory);
+        });
         event->setDropAction(Qt::MoveAction);
         event->accept();
     }
@@ -2828,6 +2989,11 @@ MainWindow::MainWindow(QWidget *parent)
         // cgarm-build normally streams errors to stderr, but recognise a
         // linker RAM failure even if a tool emits it on stdout.
         if (m_buildStep == BuildStep::V2CliBuilding) {
+            const qint64 excess = cgarmRamOverflowBytes(text);
+            if (m_v2Linker == QStringLiteral("cgarm") && excess > 0) {
+                m_v2CgarmRamExcessBytes = excess;
+                m_buildLinkSizeOverflow = true;
+            }
             const QString lower = text.toLower();
             if (lower.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance")) ||
                 lower.contains(QStringLiteral("applet image exceeds selected app size"))) {
@@ -4176,13 +4342,21 @@ void MainWindow::setupInterface()
          * Rename / Remove currently apply to files only.
          * Folder rename/delete can be added separately later.
          */
+        QAction *renameAction = nullptr;
+        QAction *removeAction = nullptr;
         if (item && !item->data(0, Qt::UserRole + 1).toBool()) {
             menu.addSeparator();
-            menu.addAction(tr("Rename"), this, &MainWindow::renameSelectedProjectFile);
-            menu.addAction(tr("Remove"), this, &MainWindow::removeSelectedProjectFile);
+            renameAction = menu.addAction(tr("Rename"));
+            removeAction = menu.addAction(tr("Remove"));
         }
 
-        menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
+        // Destructive operations rebuild the project tree. Execute them only
+        // after QMenu::exec() returns, not from inside its QAction dispatcher.
+        QAction *chosen = menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
+        if (chosen && chosen == renameAction)
+            renameSelectedProjectFile();
+        else if (chosen && chosen == removeAction)
+            removeSelectedProjectFile();
     });
 
     // --- Center Work Area ---
@@ -4428,6 +4602,8 @@ void MainWindow::setupInterface()
             CodeEditor *editor = activeEditor();
 
             if (editor) {
+                if (editor->property("sidboxNavigatorDirty").toBool())
+                    refreshEventNavigator(editor);
                 editor->syncDeferredEditorStateNow();
                 refreshActiveEditorAnalysis();
             } else if (m_functionvarList) {
@@ -6660,10 +6836,10 @@ void MainWindow::compileActiveFile()
             tr("Stage 6C private callback stacks must be 4–128 KB and 32-byte aligned."));
         return;
     }
-    if (v2Build && m_appSizeKb > 512) {
+    if (v2Build && m_appSizeKb > V2MaxAppletKiB) {
         QMessageBox::warning(this, tr("CGARM (Beta) build"),
-            tr("The CGARM firmware loader currently supports at most 512 KB "
-               "per V2 applet. Reduce the applet allowance or build V1."));
+            tr("The default V2 link base permits at most 6080 KB "
+               "before the SDRAM/RAM-disk boundary. Reduce the allowance or build V1."));
         return;
     }
     QString linkerError;
@@ -6818,6 +6994,7 @@ void MainWindow::compileActiveFile()
         m_currentBuildIsV2 = true;
         m_v2AutoResizeRetried = false;
         m_buildLinkSizeOverflow = false;
+        m_v2CgarmRamExcessBytes = 0;
 
         clearCompilerDiagnostics();
         m_outputPane->clear();
@@ -7039,6 +7216,7 @@ void MainWindow::compileActiveFile()
 
     m_buildLinkSizeOverflow = false;
     m_v2AutoResizeRetried = false;
+    m_v2CgarmRamExcessBytes = 0;
     m_currentBuildIsV2 = v2Build;
     m_pendingElfPath = outputPath;
     m_pendingAppPath = appOutputPath;
@@ -7243,12 +7421,30 @@ void MainWindow::moveProjectFile(const QString &sourceFilePath, const QString &t
     m_projectFilesInProject.removeAll(sourcePath);
     addProjectFile(destinationPath);
 
-    /* Keep already-open editor tabs pointing at the file's new location. */
+    /*
+     * A .sbui is not a CodeEditor tab. Moving it without updating the live
+     * designer leaves m_filePath pointing at the old location; saving then
+     * recreates the old design and triggers duplicate-window diagnostics.
+     */
     for (int i = 0; i < m_editorTabs->count(); ++i) {
-        auto *editor = primaryEditorForTab(m_editorTabs->widget(i));
+        QWidget *tab = m_editorTabs->widget(i);
+        if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
+            if (QFileInfo(designer->filePath()).absoluteFilePath() == sourcePath) {
+                designer->setFilePath(destinationPath);
+                m_editorTabs->setTabToolTip(i,
+                    tr("CoderGirl visual design\n%1")
+                        .arg(QDir::toNativeSeparators(destinationPath)));
+            }
+            continue;
+        }
+
+        auto *editor = primaryEditorForTab(tab);
         if (editor
+            && !editor->filePath().isEmpty()
             && QFileInfo(editor->filePath()).absoluteFilePath() == sourcePath) {
+            unwatchEditorFile(editor);
             editor->setFilePath(destinationPath);
+            watchEditorFile(editor);
             updateTabTitle(editor);
         }
     }
@@ -7575,16 +7771,24 @@ void MainWindow::removeSelectedProjectFile()
             }
         }
         auto *editor = primaryEditorForTab(widget);
-        if (editor && QFileInfo(editor->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+        if (editor && !editor->filePath().isEmpty()
+            && QFileInfo(editor->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+            unwatchEditorFile(editor);
             m_editorTabs->removeTab(i);
             widget->deleteLater();
         }
     }
 
-    refreshProjectFiles();
+    // Remove can be triggered from a QMenu::exec() on the project tree.
+    // Rebuilding that tree synchronously destroys the selected item while
+    // QMenu/Qt may still be dispatching the originating QAction event.
+    // Finish project-bookkeeping first, then rebuild after the menu unwinds.
     if (!m_projectFilePath.isEmpty()) {
         saveProjectFile(m_projectFilePath);
     }
+    QTimer::singleShot(0, this, [this]() {
+        refreshProjectFiles();
+    });
     statusBar()->showMessage(tr("File removed"));
 }
 
@@ -7646,15 +7850,19 @@ void MainWindow::renameSelectedProjectFile()
         QWidget *tab = m_editorTabs->widget(i);
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
             if (QFileInfo(designer->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
-                m_editorTabs->removeTab(i);
-                tab->deleteLater();
-                openGuiDesigner(newPath);
+                designer->setFilePath(newPath);
+                m_editorTabs->setTabToolTip(i,
+                    tr("CoderGirl visual design\n%1")
+                        .arg(QDir::toNativeSeparators(newPath)));
                 continue;
             }
         }
         auto *editor = primaryEditorForTab(tab);
-        if (editor && QFileInfo(editor->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
+        if (editor && !editor->filePath().isEmpty()
+            && QFileInfo(editor->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
+            unwatchEditorFile(editor);
             editor->setFilePath(newPath);
+            watchEditorFile(editor);
             updateTabTitle(editor);
         }
     }
@@ -7710,6 +7918,14 @@ void MainWindow::handleCompilerFinished(int exitCode)
          m_buildStep == BuildStep::V2CliAsm)
         && !m_compilerStderrBuffer.isEmpty()) {
         const QString finalLine = m_compilerStderrBuffer.toLower();
+        if (m_buildStep == BuildStep::V2CliBuilding &&
+            m_v2Linker == QStringLiteral("cgarm")) {
+            const qint64 excess = cgarmRamOverflowBytes(m_compilerStderrBuffer);
+            if (excess > 0) {
+                m_v2CgarmRamExcessBytes = excess;
+                m_buildLinkSizeOverflow = true;
+            }
+        }
         if (finalLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
             || finalLine.contains(QStringLiteral("applet image exceeds selected app size"))
             || (finalLine.contains(QStringLiteral("applet"))
@@ -7742,7 +7958,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
             m_compilerProcess->setWorkingDirectory(m_projectPath);
             m_buildStep = probe ? BuildStep::V2CliProbe : BuildStep::V2CliRelink;
             setCompileProgressStage(probe
-                ? tr("Measuring CGARM applet RAM (512 KB probe)...")
+                ? tr("Measuring CGARM applet RAM (6080 KB probe)...")
                 : tr("Relinking resized CGARM applet..."));
             QStringList cliArgs = {
                 m_projectFilePath, QStringLiteral("-o"), m_pendingAppPath,
@@ -7753,23 +7969,100 @@ void MainWindow::handleCompilerFinished(int exitCode)
                 QStringLiteral("--linker"), m_v2Linker,
                 QStringLiteral("--link-only")
             };
-            // The 512 KiB probe must NOT overwrite a working .app.
+            // The 6080 KiB probe must NOT overwrite a working .app.
             if (probe) cliArgs << QStringLiteral("--no-pack");
             m_compilerProcess->start(m_v2CliPath, cliArgs);
         };
 
+        // Both CGARM's precise overflow diagnostic and LLVM's sizing probe
+        // use the same user-approved update + link-only retry. No .app is
+        // replaced until the V2 packer validates a successful new link.
+        const auto offerResize = [this, &failure, &runLinkOnly](int minimumKb) {
+            if (minimumKb <= m_appSizeKb || minimumKb > V2MaxAppletKiB) {
+                failure(tr("Measured minimum RAM %1 KB cannot fit a larger valid allowance (maximum 6080 KB).")
+                        .arg(minimumKb));
+                QMessageBox::warning(this, tr("Applet RAM limit exceeded"),
+                    tr("This applet needs at least %1 KB of RAM. At the default link base the available virtual SDRAM span is 6080 KB. "
+                       "Reduce the applet's memory usage or change its heap/stack requirements.")
+                        .arg(minimumKb));
+                return;
+            }
+            const int marginKb = qMax(8, (minimumKb + 9) / 10);
+            const int recommendedKb = qMin(V2MaxAppletKiB, ((minimumKb + marginKb + 15) / 16) * 16);
+            QMessageBox suggestion(this);
+            suggestion.setIcon(QMessageBox::Question);
+            suggestion.setWindowTitle(tr("Resize V2 applet?"));
+            suggestion.setText(tr("This applet needs at least %1 KB of RAM.").arg(minimumKb));
+            suggestion.setInformativeText(
+                tr("Current allowance: %1 KB\nRecommended allowance: %2 KB\n"
+                   "Reserved heap: %3 KB; private callback stack: %4 KB\n\n"
+                   "Update Project Settings and relink WITHOUT recompiling? "
+                   "At the default link base, the 6 MiB SDRAM region permits up to 6080 KB; music buffers share this RAM.")
+                    .arg(m_appSizeKb).arg(recommendedKb).arg(m_v2HeapKb).arg(m_v2StackKb));
+            QPushButton *resizeButton = suggestion.addButton(
+                tr("Resize to %1 KB and relink").arg(recommendedKb),
+                QMessageBox::AcceptRole);
+            suggestion.addButton(tr("Keep current size"), QMessageBox::RejectRole);
+            suggestion.exec();
+            if (suggestion.clickedButton() != resizeButton) {
+                failure(tr("Applet RAM resize declined; existing .app left untouched."));
+                return;
+            }
+            const int previousKb = m_appSizeKb;
+            m_appSizeKb = recommendedKb;
+            QString linkerError;
+            if (!updateProjectLinkerScript(&linkerError) ||
+                !saveProjectFile(m_projectFilePath)) {
+                m_appSizeKb = previousKb;
+                updateProjectLinkerScript(nullptr);
+                saveProjectFile(m_projectFilePath);
+                failure(tr("Could not save resized V2 project: %1").arg(linkerError));
+                return;
+            }
+            appendOutputLine(tr("V2: new allowance %1 KB; re-linking existing PIC objects...")
+                             .arg(recommendedKb), OutputKind::Success);
+            m_v2AutoResizeRetried = true;
+            runLinkOnly(recommendedKb, false);
+        };
+
+        // Our linker reports the *exact* shortage. Do not run the old
+        // LLVM-oriented 6080 KB probe: CGARM's ET_DYN has no GNU .symtab,
+        // so arm-none-eabi-nm cannot reliably measure it. Ask directly.
         if (completed == BuildStep::V2CliBuilding && exitCode != 0 &&
+            m_v2Linker == QStringLiteral("cgarm") &&
+            m_v2CgarmRamExcessBytes > 0 && !m_v2AutoResizeRetried &&
+            m_linkerScriptPath.isEmpty()) {
+            // Don't let corrupt/tool-generated enormous numbers overflow our
+            // arithmetic. Anything above the 6080 KB SDRAM-boundary maximum is rejected.
+            const qint64 availableExtra = qMax<qint64>(0, qint64(V2MaxAppletKiB - m_appSizeKb) * 1024);
+            const bool aboveLimit = m_v2CgarmRamExcessBytes > availableExtra;
+            const qint64 requiredBytes = aboveLimit ? qint64(V2MaxAppletKiB + 1) * 1024
+                : qint64(m_appSizeKb) * 1024 + m_v2CgarmRamExcessBytes;
+            const qint64 minimumKb = (requiredBytes + 1023) / 1024;
+            appendOutputLine(aboveLimit
+                ? tr("CGARM: current RAM allowance is short by %1 bytes; "
+                     "the 6080 KB SDRAM-region limit cannot accommodate this build.")
+                    .arg(m_v2CgarmRamExcessBytes)
+                : tr("CGARM: current allowance is short by %1 bytes; "
+                     "minimum required %2 KB.")
+                    .arg(m_v2CgarmRamExcessBytes).arg(minimumKb), OutputKind::Warning);
+            offerResize(int(qMin<qint64>(minimumKb, V2MaxAppletKiB + 1)));
+            return;
+        }
+
+        if (completed == BuildStep::V2CliBuilding && exitCode != 0 &&
+            m_v2Linker != QStringLiteral("cgarm") &&
             m_buildLinkSizeOverflow && !m_v2AutoResizeRetried &&
-            m_linkerScriptPath.isEmpty() && m_appSizeKb < 512) {
-            appendOutputLine(tr("CGARM: applet too large. Re-linking existing objects against 512 KB to measure RAM."),
+            m_linkerScriptPath.isEmpty() && m_appSizeKb < V2MaxAppletKiB) {
+            appendOutputLine(tr("CGARM: applet too large. Re-linking existing objects against 6080 KB to measure RAM."),
                              OutputKind::Header);
             m_v2AutoResizeRetried = true;
-            runLinkOnly(512, true);
+            runLinkOnly(V2MaxAppletKiB, true);
             return;
         }
         if (completed == BuildStep::V2CliProbe) {
             if (exitCode != 0) {
-                failure(tr("CGARM: even the 512 KB sizing probe failed. No application was published."));
+                failure(tr("CGARM: even the 6080 KB sizing probe failed. No application was published."));
                 return;
             }
             // Match the original Qt IDE's ELF RAM measurement: .stack is
@@ -7813,53 +8106,14 @@ void MainWindow::handleCompilerFinished(int exitCode)
             }
             const quint64 requiredBytes = end - begin + quint64(m_v2HeapKb) * 1024ULL;
             const int minimumKb = int((requiredBytes + 1023ULL) / 1024ULL);
-            if (minimumKb <= m_appSizeKb || minimumKb > 512) {
-                failure(tr("CGARM: measured minimum RAM %1 KB; cannot recommend a larger valid allowance.")
-                        .arg(minimumKb));
-                return;
-            }
-            const int marginKb = qMax(8, (minimumKb + 9) / 10);
-            const int recommendedKb = qMin(512, ((minimumKb + marginKb + 15) / 16) * 16);
-            QMessageBox suggestion(this);
-            suggestion.setIcon(QMessageBox::Question);
-            suggestion.setWindowTitle(tr("Resize CGARM applet?"));
-            suggestion.setText(tr("This applet needs at least %1 KB of RAM.").arg(minimumKb));
-            suggestion.setInformativeText(
-                tr("Current allowance: %1 KB\nRecommended allowance: %2 KB\n"
-                   "Reserved heap: %3 KB; private callback stack: %4 KB\n\n"
-                   "Update Project Settings and relink WITHOUT recompiling? "
-                   "The firmware limit remains 512 KB.")
-                    .arg(m_appSizeKb).arg(recommendedKb).arg(m_v2HeapKb).arg(m_v2StackKb));
-            QPushButton *resizeButton = suggestion.addButton(
-                tr("Resize to %1 KB and relink").arg(recommendedKb),
-                QMessageBox::AcceptRole);
-            suggestion.addButton(tr("Keep current size"), QMessageBox::RejectRole);
-            suggestion.exec();
-            if (suggestion.clickedButton() != resizeButton) {
-                failure(tr("CGARM applet RAM resize declined; existing .app left untouched."));
-                return;
-            }
-            const int previousKb = m_appSizeKb;
-            m_appSizeKb = recommendedKb;
-            QString linkerError;
-            if (!updateProjectLinkerScript(&linkerError) ||
-                !saveProjectFile(m_projectFilePath)) {
-                m_appSizeKb = previousKb;
-                updateProjectLinkerScript(nullptr);
-                saveProjectFile(m_projectFilePath);
-                failure(tr("Could not save resized CGARM project: %1").arg(linkerError));
-                return;
-            }
-            appendOutputLine(tr("CGARM: new allowance %1 KB; re-linking existing PIC objects...")
-                             .arg(recommendedKb), OutputKind::Success);
-            runLinkOnly(recommendedKb, false);
+            offerResize(minimumKb);
             return;
         }
         if (exitCode != 0) {
             failure(tr("cgarm-build failed (exit %1). See the compiler/linker diagnostics above.")
                     .arg(exitCode));
             if (completed == BuildStep::V2CliBuilding && m_buildLinkSizeOverflow) {
-                appendOutputLine(tr("Applet RAM limit exceeded. Review Project Settings (maximum 512 KB)."),
+                appendOutputLine(tr("Applet RAM limit exceeded. Review Project Settings (maximum 6080 KB)."),
                                  OutputKind::Warning);
             }
             return;
@@ -7987,13 +8241,13 @@ void MainWindow::handleCompilerFinished(int exitCode)
             bool resizeDialogShown = false;
 
             // CGARM only: when the requested RAM is too small, link the ALREADY
-            // compiled PIC objects once against a temporary 512 KB limit.
+            // compiled PIC objects once against a temporary 6080 KB region limit.
             // This provides a measured size without touching the project's .ld,
             // .proj, .elf, .map, or the normal V1/Gaming build paths.
             if (m_currentBuildIsV2 && m_buildLinkSizeOverflow &&
                 !m_v2AutoResizeRetried && m_linkerScriptPath.isEmpty() &&
-                m_appSizeKb < 512) {
-                appendOutputLine(tr("CGARM: measuring applet RAM requirement (512 KB temporary link)..."),
+                m_appSizeKb < V2MaxAppletKiB) {
+                appendOutputLine(tr("CGARM: measuring applet RAM requirement (6080 KB temporary link)..."),
                                  OutputKind::Header);
                 QTemporaryDir tempDir(QDir(m_v2BuildDirectory).filePath(
                     QStringLiteral("cgarm-autosize-XXXXXX")));
@@ -8002,7 +8256,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
                     if (sourceLinker.open(QIODevice::ReadOnly | QIODevice::Text)) {
                         QString probeScript = QString::fromUtf8(sourceLinker.readAll());
                         if (replaceLinkerAssignment(&probeScript,
-                                QStringLiteral("_v2_app_limit"), hexBytes(512))) {
+                                QStringLiteral("_v2_app_limit"), hexBytes(V2MaxAppletKiB))) {
                             const QString scriptPath = tempDir.filePath(QStringLiteral("probe.ld"));
                             const QString elfPath = tempDir.filePath(QStringLiteral("probe.elf"));
                             const QString mapPath = tempDir.filePath(QStringLiteral("probe.map"));
@@ -8069,16 +8323,16 @@ void MainWindow::handleCompilerFinished(int exitCode)
                                             const quint64 requiredBytes = end - start +
                                                 quint64(m_v2HeapKb) * 1024ULL;
                                             const int minimumKb = int((requiredBytes + 1023ULL) / 1024ULL);
-                                            if (minimumKb > m_appSizeKb && minimumKb <= 512) {
+                                            if (minimumKb > m_appSizeKb && minimumKb <= V2MaxAppletKiB) {
                                                 // 10% headroom (at least 8 KiB), rounded to 16 KiB.
                                                 const int marginKb = qMax(8, (minimumKb + 9) / 10);
                                                 const int wantedKb = minimumKb + marginKb;
-                                                const int recommendedKb = qMin(512,
+                                                const int recommendedKb = qMin(V2MaxAppletKiB,
                                                     ((wantedKb + 15) / 16) * 16);
                                                 resizeDialogShown = true;
                                                 QMessageBox suggestion(this);
                                                 suggestion.setIcon(QMessageBox::Question);
-                                                suggestion.setWindowTitle(tr("Resize CGARM applet?"));
+                                                suggestion.setWindowTitle(tr("Resize V2 applet?"));
                                                 suggestion.setText(tr("This applet needs at least %1 KB of RAM.")
                                                     .arg(minimumKb));
                                                 suggestion.setInformativeText(
@@ -8086,7 +8340,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
                                                        "Recommended allowance: %2 KB\n"
                                                        "Reserved heap: %3 KB; private callback stack: %4 KB\n\n"
                                                        "Update Project Settings and relink without recompiling? "
-                                                       "The firmware limit remains 512 KB.")
+                                                       "At the default link base, the 6 MiB SDRAM region permits up to 6080 KB; music buffers share this RAM.")
                                                         .arg(m_appSizeKb).arg(recommendedKb)
                                                         .arg(m_v2HeapKb).arg(m_v2StackKb));
                                                 QPushButton *resizeButton = suggestion.addButton(
@@ -8118,7 +8372,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
                                         }
                                     }
                                 } else {
-                                    appendOutputLine(tr("CGARM: the applet could not link even with the 512 KB limit; automatic sizing is unavailable."),
+                                    appendOutputLine(tr("CGARM: the applet could not link even with the 6080 KB limit; automatic sizing is unavailable."),
                                                      OutputKind::Warning);
                                 }
                             }
@@ -9249,6 +9503,16 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
 {
     auto *editor = new CodeEditor(m_editorTabs);
     editor->setFilePath(filePath);
+    // Include completion resolves relative to the current C file first, then
+    // the project root and SDK header/library directories.  Never index a
+    // whole project on every ordinary editor keystroke.
+    const QString libsRoot = ideLibsPath();
+    editor->setIncludeSearchPaths({
+        m_projectPath,
+        QDir(libsRoot).filePath(QStringLiteral("api")),
+        QDir(libsRoot).filePath(QStringLiteral("tools/cgarm/include")),
+        QDir(libsRoot).filePath(QStringLiteral("libraries"))
+    });
 
     editor->setProperty(
         "sidboxAnalysisDirty",
@@ -9294,10 +9558,90 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     editor->setCompletionFont(font);
     editor->refreshLineNumberAreaWidth();
 
+    /*
+     * VB6-style object/event navigator. The bar belongs to the CodeEditor and
+     * occupies its TOP viewport margin: visually directly beneath the tabs,
+     * without wrapping tabs or changing the existing split editor machinery.
+     */
+    if (!resourceMode) {
+        auto *bar = new QFrame(editor);
+        bar->setObjectName(QStringLiteral("sidboxEventNavigatorBar"));
+        bar->setStyleSheet(QStringLiteral(
+            "QFrame#sidboxEventNavigatorBar { background: #15233C; "
+            "border-bottom: 1px solid #2858A8; } "
+            "QComboBox { background: #192D50; color: #E5EEFF; "
+            "border: 1px solid #385B93; border-radius: 0px; "
+            "padding: 1px 5px; min-height: 19px; } "
+            "QComboBox QAbstractItemView { background: #192D50; "
+            "color: #E5EEFF; selection-background-color: #2858A8; }"));
+        auto *barLayout = new QHBoxLayout(bar);
+        barLayout->setContentsMargins(6, 2, 6, 2);
+        barLayout->setSpacing(7);
+
+        auto *objects = new QComboBox(bar);
+        objects->setObjectName(QStringLiteral("sidboxEventNavigatorObjects"));
+        objects->setToolTip(tr("Object or control: choose a window, gadget, timer or other functions"));
+        // Retro/VB6-style navigation: compact controls, not two half-width fields.
+        objects->setFixedWidth(185);
+        objects->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+        auto *events = new QComboBox(bar);
+        events->setObjectName(QStringLiteral("sidboxEventNavigatorEvents"));
+        events->setToolTip(tr("Event or function: jump to its definition in this source file"));
+        events->setFixedWidth(195);
+        events->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+        barLayout->addWidget(objects);
+        barLayout->addWidget(events);
+        barLayout->addStretch(1);
+        editor->setNavigationBar(bar, 30);
+        editor->setProperty("sidboxNavigatorDirty", true);
+
+        connect(objects, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this, editor](int) {
+            refreshEventNavigatorMethods(editor);
+        });
+        connect(events, qOverload<int>(&QComboBox::activated),
+                this, [this, editor, events](int index) {
+            if (!editor || index < 0)
+                return;
+            // A code edit may have moved definitions before the idle rescan.
+            // Never navigate to an out-of-date line in that situation.
+            const QString selectedName =
+                events->itemData(index, Qt::UserRole + 1).toString();
+            if (editor->property("sidboxNavigatorDirty").toBool()) {
+                refreshEventNavigator(editor);
+                const int freshIndex = events->findData(selectedName, Qt::UserRole + 1);
+                if (freshIndex < 0)
+                    return; // The handler was removed by the latest edit.
+                events->setCurrentIndex(freshIndex);
+            }
+            const int line = events->currentData(Qt::UserRole).toInt();
+            const QTextBlock block = editor->document()->findBlockByNumber(line);
+            if (!block.isValid())
+                return;
+            QTextCursor cursor(block);
+            editor->setTextCursor(cursor);
+            editor->centerCursor();
+            editor->setFocus();
+            syncEventNavigatorToCursor(editor);
+        });
+
+        auto *navTimer = new QTimer(editor);
+        navTimer->setObjectName(QStringLiteral("sidboxEventNavigatorTimer"));
+        navTimer->setSingleShot(true);
+        navTimer->setInterval(650);
+        connect(navTimer, &QTimer::timeout, this, [this, editor]() {
+            if (editor == activeEditor())
+                refreshEventNavigator(editor);
+        });
+    }
+
     connect(editor, &QPlainTextEdit::cursorPositionChanged,
             this, [this, editor]() {
                 if (editor == activeEditor()) {
                     updateCursorPositionStatus();
+                    syncEventNavigatorToCursor(editor);
                 }
             });
 
@@ -9509,6 +9853,11 @@ bool MainWindow::openFile(const QString &filePath)
         editorTabIconForFile(filePath),
         tabTitleForEditor(editor));
     m_editorTabs->setCurrentIndex(index);
+    editor->setProperty("sidboxNavigatorDirty", true);
+    QTimer::singleShot(0, editor, [this, editor]() {
+        if (editor == activeEditor())
+            refreshEventNavigator(editor);
+    });
 
     /*
      * Give Qt one paint opportunity before asking QSyntaxHighlighter to walk
@@ -9845,7 +10194,7 @@ bool MainWindow::loadProjectFile(const QString &filePath)
         ? QStringLiteral("cgarm") : QStringLiteral("llvm");
     m_modSizeKb = root.value(QStringLiteral("modSizeKb")).toInt(0);
     m_appSizeKb = root.value(QStringLiteral("appSizeKb")).toInt(128);
-    m_v2HeapKb = qBound(0, root.value(QStringLiteral("v2HeapKb")).toInt(16), 512);
+    m_v2HeapKb = qBound(0, root.value(QStringLiteral("v2HeapKb")).toInt(16), V2MaxAppletKiB);
     m_v2StackKb = qBound(1, root.value(QStringLiteral("v2StackKb")).toInt(8), 128);
     m_outputAppName =
         normalizedAppOutputName(
@@ -10498,6 +10847,253 @@ void MainWindow::restoreSymbolTreeExpansionState(CodeEditor *editor)
     }
 }
 
+
+/*
+ * VB6-style event navigator. These are navigation-only views of the open
+ * editor's current source text. They do not create or modify any handlers.
+ */
+void MainWindow::refreshEventNavigator(CodeEditor *editor)
+{
+    if (!editor || editor->isResourceMode())
+        return;
+
+    auto *objects = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorObjects"));
+    auto *events = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorEvents"));
+    if (!objects || !events)
+        return;
+
+    const QString previousGroup = objects->currentData().toString();
+    const QString previousFunction =
+        events->currentData(Qt::UserRole + 1).toString();
+
+    // Reuse the IDE's C comment/string sanitizer and function-definition
+    // pattern, but NOT its expensive locals/globals/type analysis. The two
+    // drop-downs should remain lightweight, even for sizeable generated C.
+    const QString source = editor->toPlainText();
+    const QString sanitized = sanitizedCSource(source);
+    static const QRegularExpression functionExpression(
+        QStringLiteral(
+            "(?:^|\\n)\\s*"
+            "((?:(?:static|inline|extern|const|volatile|unsigned|signed|long|short|struct\\s+[A-Za-z_][A-Za-z0-9_]*|enum\\s+[A-Za-z_][A-Za-z0-9_]*|union\\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\\s+|[*]+\\s*)+)"
+            "([A-Za-z_][A-Za-z0-9_]*)\\s*"
+            "\\([^;{}]*\\)\\s*\\{"),
+        QRegularExpression::MultilineOption);
+
+    QVariantList entries;
+    QSet<QString> groups;
+    auto functionIt = functionExpression.globalMatch(sanitized);
+    while (functionIt.hasNext()) {
+        const QRegularExpressionMatch match = functionIt.next();
+        const QString name = match.captured(2).trimmed();
+        if (name.isEmpty()
+            || name == QStringLiteral("__attribute__")
+            || name == QStringLiteral("__declspec"))
+            continue;
+
+        const int closingBrace = matchingBracePosition(
+            sanitized, match.capturedEnd(0) - 1);
+        if (closingBrace < 0)
+            continue;
+        const int startLine = editor->document()
+            ->findBlock(match.capturedStart(2)).blockNumber();
+        const int endLine = editor->document()
+            ->findBlock(closingBrace).blockNumber();
+
+        QString group = QStringLiteral("(Other functions)");
+        QString eventName = name;
+
+        // CoderGirl generated callbacks: On_btn1_Activate, On_timer1_Tick,
+        // On_messageBox1_Result. Split at the FINAL underscore so gadget
+        // names containing underscores remain intact.
+        if (name.startsWith(QStringLiteral("On_"))) {
+            const int separator = name.lastIndexOf(QLatin1Char('_'));
+            if (separator > 3 && separator + 1 < name.size()) {
+                group = name.mid(3, separator - 3);
+                eventName = QStringLiteral("On_") + name.mid(separator + 1);
+            }
+        } else if (name == QStringLiteral("CloseWindow")) {
+            group = QStringLiteral("window");
+            eventName = QStringLiteral("CloseWindow");
+        } else if (name.endsWith(QStringLiteral("_Create"))) {
+            group = QStringLiteral("window");
+            eventName = QStringLiteral("Create");
+        } else if (name.endsWith(QStringLiteral("_WndProc"))
+                   || name.endsWith(QStringLiteral("_WindowProc"))) {
+            group = QStringLiteral("window");
+            eventName = QStringLiteral("WindowProc");
+        }
+
+        QVariantMap item;
+        item.insert(QStringLiteral("group"), group);
+        item.insert(QStringLiteral("event"), eventName);
+        item.insert(QStringLiteral("name"), name);
+        item.insert(QStringLiteral("line"), startLine);
+        item.insert(QStringLiteral("endLine"), endLine);
+        entries.append(item);
+        groups.insert(group);
+    }
+
+    // Window event handlers are switch cases in the generated WindowProc,
+    // not always separate functions. Navigate directly to cases that ACTUALLY
+    // exist in the file; never pretend that an OnOpen/OnMinimise handler was
+    // generated if it wasn't.
+    static const QRegularExpression windowEventExpression(
+        QStringLiteral(R"(\bcase\s+(CGEVT_WIN_CLOSE_REQUEST|CGEVT_WIN_MINIMISE|CGEVT_WIN_GOTFOCUS|CGEVT_WIN_LOSTFOCUS|CGEVT_WIN_MOVED|CGEVT_WIN_RESIZED)\s*:)"));
+    auto windowIt = windowEventExpression.globalMatch(sanitized);
+    while (windowIt.hasNext()) {
+        const QRegularExpressionMatch match = windowIt.next();
+        const QString eventClass = match.captured(1);
+        QString label;
+        if (eventClass == QStringLiteral("CGEVT_WIN_CLOSE_REQUEST"))
+            label = QStringLiteral("OnClose");
+        else if (eventClass == QStringLiteral("CGEVT_WIN_MINIMISE"))
+            label = QStringLiteral("OnMinimise");
+        else if (eventClass == QStringLiteral("CGEVT_WIN_GOTFOCUS"))
+            label = QStringLiteral("OnFocus");
+        else if (eventClass == QStringLiteral("CGEVT_WIN_LOSTFOCUS"))
+            label = QStringLiteral("OnLostFocus");
+        else if (eventClass == QStringLiteral("CGEVT_WIN_MOVED"))
+            label = QStringLiteral("OnMoved");
+        else if (eventClass == QStringLiteral("CGEVT_WIN_RESIZED"))
+            label = QStringLiteral("OnResized");
+        if (label.isEmpty())
+            continue;
+        const int line = editor->document()
+            ->findBlock(match.capturedStart()).blockNumber();
+        QVariantMap item;
+        item.insert(QStringLiteral("group"), QStringLiteral("window"));
+        item.insert(QStringLiteral("event"), label);
+        item.insert(QStringLiteral("name"), QStringLiteral("window:") + label);
+        item.insert(QStringLiteral("line"), line);
+        item.insert(QStringLiteral("endLine"), line);
+        entries.append(item);
+        groups.insert(QStringLiteral("window"));
+    }
+
+    editor->setProperty("sidboxNavigatorItems", entries);
+    editor->setProperty("sidboxNavigatorDirty", false);
+
+    QStringList names = groups.values();
+    names.sort(Qt::CaseInsensitive);
+    names.removeAll(QStringLiteral("window"));
+    names.removeAll(QStringLiteral("(Other functions)"));
+
+    QStringList orderedGroups;
+    if (groups.contains(QStringLiteral("window")))
+        orderedGroups.append(QStringLiteral("window"));
+    orderedGroups.append(names);
+    if (groups.contains(QStringLiteral("(Other functions)")))
+        orderedGroups.append(QStringLiteral("(Other functions)"));
+
+    {
+        QSignalBlocker blockObjects(objects);
+        objects->clear();
+        if (orderedGroups.isEmpty()) {
+            objects->addItem(tr("(No functions)"));
+            objects->setEnabled(false);
+        } else {
+            objects->setEnabled(true);
+            for (const QString &name : orderedGroups)
+                objects->addItem(name, name);
+        }
+        int index = objects->findData(previousGroup);
+        if (index < 0)
+            index = 0;
+        objects->setCurrentIndex(index);
+    }
+
+    refreshEventNavigatorMethods(editor);
+    const int eventIndex = events->findData(previousFunction, Qt::UserRole + 1);
+    if (eventIndex >= 0) {
+        const QSignalBlocker blockEvents(events);
+        events->setCurrentIndex(eventIndex);
+    } else {
+        syncEventNavigatorToCursor(editor);
+    }
+}
+
+void MainWindow::refreshEventNavigatorMethods(CodeEditor *editor)
+{
+    if (!editor)
+        return;
+    auto *objects = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorObjects"));
+    auto *events = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorEvents"));
+    if (!objects || !events)
+        return;
+
+    const QString selectedGroup = objects->currentData().toString();
+    const QString previousFunction =
+        events->currentData(Qt::UserRole + 1).toString();
+
+    QSignalBlocker blockEvents(events);
+    events->clear();
+    const QVariantList entries =
+        editor->property("sidboxNavigatorItems").toList();
+    for (const QVariant &value : entries) {
+        const QVariantMap item = value.toMap();
+        if (item.value(QStringLiteral("group")).toString() != selectedGroup)
+            continue;
+        events->addItem(item.value(QStringLiteral("event")).toString(),
+                        item.value(QStringLiteral("line")));
+        const int row = events->count() - 1;
+        events->setItemData(row, item.value(QStringLiteral("name")),
+                            Qt::UserRole + 1);
+    }
+    events->setEnabled(events->count() > 0);
+    int index = events->findData(previousFunction, Qt::UserRole + 1);
+    if (index < 0)
+        index = 0;
+    events->setCurrentIndex(index);
+}
+
+void MainWindow::syncEventNavigatorToCursor(CodeEditor *editor)
+{
+    if (!editor || editor->isResourceMode())
+        return;
+    auto *objects = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorObjects"));
+    auto *events = editor->findChild<QComboBox *>(
+        QStringLiteral("sidboxEventNavigatorEvents"));
+    if (!objects || !events)
+        return;
+
+    const int line = editor->textCursor().blockNumber();
+    const QVariantList entries =
+        editor->property("sidboxNavigatorItems").toList();
+    QVariantMap best;
+    int shortest = std::numeric_limits<int>::max();
+    for (const QVariant &value : entries) {
+        const QVariantMap item = value.toMap();
+        const int start = item.value(QStringLiteral("line")).toInt();
+        const int end = item.value(QStringLiteral("endLine")).toInt();
+        if (line >= start && line <= end && end - start < shortest) {
+            shortest = end - start;
+            best = item;
+        }
+    }
+    if (best.isEmpty())
+        return;
+
+    const int objectIndex = objects->findData(
+        best.value(QStringLiteral("group")));
+    if (objectIndex < 0)
+        return;
+    if (objects->currentIndex() != objectIndex) {
+        const QSignalBlocker blockObjects(objects);
+        objects->setCurrentIndex(objectIndex);
+        refreshEventNavigatorMethods(editor);
+    }
+    const int eventIndex = events->findData(
+        best.value(QStringLiteral("name")), Qt::UserRole + 1);
+    if (eventIndex >= 0) {
+        const QSignalBlocker blockEvents(events);
+        events->setCurrentIndex(eventIndex);
+    }
+}
 
 void MainWindow::refreshSymbolTree()
 {
@@ -13071,6 +13667,14 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
         }
 
         const QString lowerLine = line.toLower();
+        if (m_buildStep == BuildStep::V2CliBuilding &&
+            m_v2Linker == QStringLiteral("cgarm")) {
+            const qint64 excess = cgarmRamOverflowBytes(line);
+            if (excess > 0) {
+                m_v2CgarmRamExcessBytes = excess;
+                m_buildLinkSizeOverflow = true;
+            }
+        }
         if ((m_buildStep == BuildStep::Linking || m_buildStep == BuildStep::V2CliBuilding)
             && (lowerLine.contains(QStringLiteral("v2 code + bss + reserved stack + heap exceed applet allowance"))
                 || lowerLine.contains(QStringLiteral("applet image exceeds selected app size"))
@@ -13087,6 +13691,53 @@ void MainWindow::processCompilerStderrChunk(const QString &text)
 
 void MainWindow::processCompilerDiagnosticLine(const QString &line)
 {
+    // cgarm-ld can identify the object and missing symbol, but not a source
+    // line. Resolve the object via its GCC .d file and scan only that source.
+    // The resulting normal GCC-style diagnostic drives existing red markers,
+    // tab/project badges and double-click navigation without new UI machinery.
+    if (m_v2Linker == QStringLiteral("cgarm")
+        && (m_buildStep == BuildStep::V2CliBuilding
+            || m_buildStep == BuildStep::V2CliProbe
+            || m_buildStep == BuildStep::V2CliRelink)) {
+        static const QRegularExpression undefinedSymbolExpression(
+            QStringLiteral(R"(^\s*cgarm-ld:\s*ERROR:\s*(.+?v2_unit_\d+\.o):\s*undefined symbol\s+['"]([^'"]+)['"]\s*$)"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch linkerMatch = undefinedSymbolExpression.match(line);
+        if (linkerMatch.hasMatch()) {
+            const QString objectFile = normalizedDiagnosticPath(linkerMatch.captured(1));
+            const QString symbol = linkerMatch.captured(2);
+            const QString sourcePath = cgarmSourceFromDependencyFile(objectFile);
+            if (!sourcePath.isEmpty()) {
+                QFile sourceFile(sourcePath);
+                if (sourceFile.open(QIODevice::ReadOnly)
+                    && sourceFile.size() <= 16 * 1024 * 1024) {
+                    const QString source = QString::fromUtf8(sourceFile.readAll());
+                    const QList<int> positions = cgarmSymbolOccurrences(source, symbol);
+                    for (int offset : positions) {
+                        const QString preceding = source.left(offset);
+                        const int lineNumber = preceding.count(QLatin1Char('\n')) + 1;
+                        const int lastNewline = preceding.lastIndexOf(QLatin1Char('\n'));
+                        const int columnNumber = offset - lastNewline;
+                        const QString localized = QStringLiteral("%1:%2:%3: error: undefined symbol '%4' (CGARM link)")
+                                                      .arg(sourcePath)
+                                                      .arg(lineNumber)
+                                                      .arg(columnNumber)
+                                                      .arg(symbol);
+                        appendOutputLine(localized, OutputKind::Error);
+                        processCompilerDiagnosticLine(localized);
+                    }
+                    if (positions.isEmpty()) {
+                        appendOutputLine(
+                            tr("CGARM: missing symbol '%1' originates from %2, but its source location could not be established.")
+                                .arg(symbol, QDir::toNativeSeparators(sourcePath)),
+                            OutputKind::Warning);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     static const QRegularExpression diagnosticExpression(
         QStringLiteral(R"(^(.+?):(\d+)(?::(\d+))?:\s*(fatal error|error|warning):\s*(.*)$)"),
         QRegularExpression::CaseInsensitiveOption);

@@ -43,9 +43,11 @@ public:
     QString filePath() const;
     void setFilePath(const QString &path);
     void setFunctionCompletions(const QStringList &signatures);
+    void setIncludeSearchPaths(const QStringList &searchPaths);
     void setProjectTypeNames(const QStringList &typeNames);
     void setApiSyntaxNames(const QStringList &apiNames);
     void setResourceMode(bool enabled);
+    void setNavigationBar(QWidget *bar, int height = 30);
     bool isResourceMode() const;
     void showMemberCompletions(const QStringList &members, const QString &prefix);
     void refreshMemberCompletion();
@@ -108,6 +110,10 @@ private:
     void highlightCurrentLine();
     QString textUnderCursor() const;
     void insertFunctionCompletion(const QString &signature);
+    void insertIncludeCompletion(const QString &path);
+    bool showIncludeCompletionAtCursor();
+    void refreshIncludeCandidates();
+    void restoreIncludeCompletionModel();
     void insertMemberCompletion(const QString &member);
     bool requestMemberCompletionAtCursor();
     void restoreFunctionCompletionModel();
@@ -134,6 +140,8 @@ private:
 
     QWidget *m_lineNumberArea;
     QWidget *m_minimap;
+    QWidget *m_navigationBar = nullptr;
+    int m_navigationHeight = 0;
     QString m_filePath;
     CSyntaxHighlighter *m_highlighter;
     QCompleter *m_completer;
@@ -150,6 +158,11 @@ private:
     bool m_deferredEditorStateDirty = true;
     QMetaObject::Connection m_foldDocumentChangedConnection;
     QStringList m_functionCompletions;
+    QStringList m_includeSearchPaths;
+    QStringList m_includeCandidates;
+    QString m_includePrefix;
+    qint64 m_includeScanMs = 0;
+    bool m_includeCompletionActive = false;
     QStringList m_projectTypeNames;
     QStringList m_apiSyntaxNames;
     QString m_memberCompletionPrefix;

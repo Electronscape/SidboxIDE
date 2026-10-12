@@ -544,8 +544,8 @@ int sectionBucket(const Section &s) {
     return 2;
 }
 void layout(const Plan &p,const Settings &settings,const Analysis &a,bool verbose) {
-    if(settings.app==0 || settings.app>512u*1024u || settings.app%32u!=0)
-        throw Error("CGARM allowance must be 32-byte aligned, 1..512 KiB");
+    if(settings.app==0 || settings.app>6080u*1024u || settings.app%32u!=0)
+        throw Error("CGARM allowance must be 32-byte aligned, 1..6080 KiB");
     const std::vector<std::string> bucketNames={
         ".text + .rodata", ".ARM.exidx/extab", "other read-only (orphan estimate)",
         ".got", ".data", ".init_array", ".fini_array", ".bss"
@@ -655,10 +655,11 @@ uint32_t addr32(uint64_t n,const std::string &label) {
 RelocationLayout makeRelocLayout(const Plan &p,const Analysis &a,const Settings &settings,
                                 uint64_t relCount=0, bool emit=false) {
     RelocationLayout l;
-    if(!settings.app || settings.app>512u*1024u || settings.app%32)
-        throw Error("Allowance must be 32-byte aligned, 1..512 KiB");
+    if(!settings.app || settings.app>6080u*1024u || settings.app%32)
+        throw Error("Allowance must be 32-byte aligned, 1..6080 KiB");
     uint64_t endLimit=sum(settings.base,settings.app);
-    if(endLimit>0x100000000ULL) throw Error("ARM applet address limit overflows 32 bits");
+    if(settings.base<0xD0000000ULL || endLimit>0xD0600000ULL)
+        throw Error("CGARM virtual applet layout exceeds the first 6 MiB SIDBOX SDRAM region");
     std::vector<std::vector<Node>> buckets(8);
     for(const Object *o:p.selected) for(uint32_t si=1;si<o->sections.size();++si) {
         Node n{o,si}; if(a.live.count(n)) buckets[sectionBucket(o->sections[si])].push_back(n);
@@ -871,8 +872,9 @@ void emitElf(const Plan &p,const Settings &cfg,
     const uint32_t base=addr32(cfg.base,"ELF load base");
     const uint32_t fileSpan=addr32(l.dynamicBase+l.dynamicSize-cfg.base,"ELF image span");
     const uint32_t memorySpan=addr32(l.stackEnd-cfg.base,"ELF memory span");
-    if(fileSpan>256u*1024u) throw Error("Initialized ELF image exceeds SIDBOX packer's 256 KiB limit");
-    if(memorySpan>512u*1024u) throw Error("ELF memory span exceeds V2 512 KiB limit");
+    if(uint64_t(base)+fileSpan>0xD0600000ULL ||
+       uint64_t(base)+memorySpan>0xD0600000ULL)
+        throw Error("ELF initialized image/memory exceeds the SIDBOX SDRAM applet region");
     const uint32_t imageOff=0x1000u;
     Bytes elf(imageOff+fileSpan,0);
     auto region=[&](uint64_t address,uint64_t length,const std::string &label)->size_t {
@@ -1217,7 +1219,7 @@ void usage() {
       "  --emit-elf X  Write ARM ELF32 ET_DYN at new path X (not an .app)\n"
       "  --emit-map X  With --emit-elf, write linked section provenance to X.cgmap\n"
       "  --entry X   Entry symbol (default applet_entry)\n"
-      "  --app-kb N  Applet allowance in KiB (default 128, max 512)\n"
+      "  --app-kb N  Applet allowance in KiB (default 128, max 6080 at 0xD0010000)\n"
       "  --heap-kb N Reserved heap in KiB (default 16)\n"
       "  --stack-kb N Private callback stack in KiB (default 8)\n"
       "  --base N    Virtual ELF base, decimal or 0xHEX (default 0xD0010000)\n"

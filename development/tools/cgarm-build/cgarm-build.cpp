@@ -75,7 +75,7 @@ void usage(std::ostream &out) {
         "  -o, --output FILE    Override output .app filename/location\n"
         "  --sdk DIR            SidboxIDE project root OR its idelibs directory\n"
         "  --linker llvm|cgarm  Select V2 linker (default llvm; no fallback)\n"
-        "  --app-kb N           Applet RAM allowance in KiB (32-512, default 128)\n"
+        "  --app-kb N           Applet RAM allowance in KiB (32-6080, default 128)\n"
         "  --heap-kb N          Bounded heap in KiB (>=4, default 16)\n"
         "  --stack-kb N         Private callback PSP stack in KiB (4-128, default 8)\n"
         "  -O0/-Og/-O1/-O2/-O3/-Os/-Ofast  GCC optimisation override\n"
@@ -191,10 +191,10 @@ Options parse(int argc, char **argv) {
 }
 
 void validateMemory(const Options &opts) {
-    if (opts.appKb < 32 || opts.appKb > 512)
-        throw Error("--app-kb / appSizeKb must be 32–512 KiB for V2");
-    if (opts.heapKb < 4 || opts.heapKb > 512)
-        throw Error("--heap-kb / v2HeapKb must be 4–512 KiB");
+    if (opts.appKb < 32 || opts.appKb > 6080)
+        throw Error("--app-kb / appSizeKb must be 32–6080 KiB (V2 link-base/SDRAM region)");
+    if (opts.heapKb < 4 || opts.heapKb > 6080)
+        throw Error("--heap-kb / v2HeapKb must be 4–6080 KiB");
     if (opts.stackKb < 4 || opts.stackKb > 128)
         throw Error("--stack-kb / v2StackKb must be 4–128 KiB");
     if (opts.heapKb + opts.stackKb >= opts.appKb)

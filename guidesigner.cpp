@@ -170,6 +170,7 @@ struct GuiDesignerGadget
     int timerPeriodMs = 1000;
     bool timerRepeat = true;
     bool timerAutoStart = true;
+    bool timerKeepAliveOnClose = false; // Background timer survives CloseWindow().
 
     // Designer-only Media object. The firmware sees only ordinary audio API calls.
     QString mediaMode = QStringLiteral("SFX"); // SFX or Music
@@ -5336,6 +5337,22 @@ public:
     }
 
     QString filePath() const override { return m_filePath; }
+
+    void setFilePath(const QString &filePath) override
+    {
+        const QString absolutePath = QFileInfo(filePath).absoluteFilePath();
+        if (absolutePath == m_filePath)
+            return;
+
+        // A moved design must never save back to its original location:
+        // that would recreate the old .sbui and yield a duplicate window.
+        // Keep the in-memory gadgets, undo history and unsaved edits intact.
+        m_filePath = absolutePath;
+        setProperty("sidboxGuiDesignerPath", m_filePath);
+        if (tabTitleChanged)
+            tabTitleChanged();
+    }
+
     bool isModified() const override { return m_modified; }
 
     QString displayName() const override
@@ -5379,8 +5396,9 @@ public:
             return false;
         if (regenerate) return generateCFile(false);
 
-        // Upgrade an existing generated .c to have a matching public header
-        // without rewriting the .c or invalidating its incremental build cache.
+        // Upgrade an existing generated header with USER protection, or
+        // create it if missing, without rewriting the .c or invalidating its
+        // incremental build cache.
         // Detached .uis sketches are never compilable and need no .h.
         if (!m_detached) {
             const QString entry = windowEntryForDesign(m_filePath);
@@ -5904,6 +5922,7 @@ private:
         g.timerPeriodMs = qBound(1, o.value(QStringLiteral("timerPeriodMs")).toInt(1000), 86400000);
         g.timerRepeat = o.value(QStringLiteral("timerRepeat")).toBool(true);
         g.timerAutoStart = o.value(QStringLiteral("timerAutoStart")).toBool(true);
+        g.timerKeepAliveOnClose = o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
         g.mediaMode = o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
         g.mediaFile = o.value(QStringLiteral("mediaFile")).toString();
         g.mediaEmbedSfx = o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
@@ -8563,6 +8582,8 @@ private:
                 [this, selected](bool v) { m_gadgets[selected].timerRepeat = v; });
             addCheck(QObject::tr("Start with window"), g.timerAutoStart,
                 [this, selected](bool v) { m_gadgets[selected].timerAutoStart = v; });
+            addCheck(QObject::tr("Keep running after window closes"), g.timerKeepAliveOnClose,
+                [this, selected](bool v) { m_gadgets[selected].timerKeepAliveOnClose = v; });
             addLine(QObject::tr("On tick"), g.onActivate,
                 [this, selected](const QString &v) {
                     m_gadgets[selected].onActivate = v.trimmed().isEmpty()
@@ -9518,6 +9539,7 @@ private:
             g.timerPeriodMs=qBound(1,o.value(QStringLiteral("timerPeriodMs")).toInt(1000),86400000);
             g.timerRepeat=o.value(QStringLiteral("timerRepeat")).toBool(true);
             g.timerAutoStart=o.value(QStringLiteral("timerAutoStart")).toBool(true);
+            g.timerKeepAliveOnClose=o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
             g.mediaMode=o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
             g.mediaFile=o.value(QStringLiteral("mediaFile")).toString();
             g.mediaEmbedSfx=o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
@@ -9631,6 +9653,7 @@ private:
         o.insert(QStringLiteral("timerPeriodMs"),g.timerPeriodMs);
         o.insert(QStringLiteral("timerRepeat"),g.timerRepeat);
         o.insert(QStringLiteral("timerAutoStart"),g.timerAutoStart);
+        o.insert(QStringLiteral("timerKeepAliveOnClose"),g.timerKeepAliveOnClose);
         o.insert(QStringLiteral("mediaMode"),g.mediaMode);
         o.insert(QStringLiteral("mediaFile"),g.mediaFile);
         o.insert(QStringLiteral("mediaEmbedSfx"),g.mediaEmbedSfx);
@@ -9834,21 +9857,168 @@ private:
                 + QFileInfo(m_filePath).fileName() + QStringLiteral(" */\n")).toUtf8();
     }
 
-    // Do not overwrite a user-maintained header even if its basename matches.
-    // Check before changing the .c or its generated resource files.
-    bool canWriteGeneratedHeader(const QString &cPath)
+    QString generatedHeaderGuard(const QString &cPath) const
     {
+        // Project-relative path keeps guards unique across similarly named windows.
+        const QString relativeHeader = QDir(designProjectRoot()).relativeFilePath(
+            generatedHeaderPath(cPath));
+        return QStringLiteral("SIDBOX_GUI_")
+            + safeCIdentifier(relativeHeader, QStringLiteral("WINDOW_H")).toUpper()
+            + QStringLiteral("_INCLUDED");
+    }
+
+    static QString headerUserBeginMarker()
+    {
+        return QStringLiteral("/* <SIDBOX-GUI:USER HEADER> */");
+    }
+
+    static QString headerUserEndMarker()
+    {
+        return QStringLiteral("/* </SIDBOX-GUI:USER HEADER> */");
+    }
+
+    static QString defaultHeaderUserBlock()
+    {
+        return QStringLiteral("\n/* Add custom C declarations, types or macros here. */\n");
+    }
+
+    QString generatedHeaderContents(const QString &cPath,
+                                    const QString &windowEntry,
+                                    const QString &userBlock,
+                                    bool legacy = false,
+                                    const QString &ownerOverride = QString(),
+                                    const QString &guardOverride = QString()) const
+    {
+        const QString guard = guardOverride.isEmpty()
+            ? generatedHeaderGuard(cPath) : guardOverride;
+        const QString owner = ownerOverride.isEmpty()
+            ? QString::fromUtf8(generatedHeaderMarker()) : ownerOverride;
+        // The legacy rendering is EXACTLY the Stage 21 header format.  This
+        // allows a safe one-time upgrade; a hand-edited legacy header will be
+        // rejected rather than overwritten.
+        // Identity overrides are for validating a moved/renamed generated
+        // header against its ORIGINAL identity. Normal output always uses
+        // the current .sbui name and current project-relative include guard.
+        QString contents = owner
+            + (legacy
+                ? QStringLiteral("/* Auto-generated declarations. Edit the .sbui, not this file. */\n")
+                : QStringLiteral("/* Generated declarations: edit the .sbui. Custom C declarations: edit the USER block. */\n"))
+            + QStringLiteral("#ifndef ") + guard + QStringLiteral("\n#define ")
+            + guard + QStringLiteral("\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+            + QStringLiteral("void ") + windowEntry + QStringLiteral("(void);\n\n");
+        if (!legacy) {
+            contents += headerUserBeginMarker() + userBlock
+                      + headerUserEndMarker() + QStringLiteral("\n\n");
+        }
+        contents += QStringLiteral("#ifdef __cplusplus\n}\n#endif\n\n#endif /* ")
+                    + guard + QStringLiteral(" */\n");
+        return contents;
+    }
+
+    // Return the sole designer-generated entry point from the *generated*
+    // portion of an existing header, never from the user-controlled block.
+    static QString entryFromGeneratedHeader(const QString &prefix)
+    {
+        const QRegularExpression declaration(QStringLiteral(
+            "\\bvoid\\s+([A-Za-z_][A-Za-z_0-9]*)\\s*\\(void\\)\\s*;"));
+        auto matches = declaration.globalMatch(prefix);
+        if (!matches.hasNext()) return {};
+        const QString entry = matches.next().captured(1);
+        return matches.hasNext() ? QString() : entry;
+    }
+
+    // Do not overwrite a programmer-owned header, a damaged protected block,
+    // or edits made outside a protected block.  Accept the exact old generated
+    // header from Stage 21 and upgrade it with a new protected USER section.
+    bool canWriteGeneratedHeader(const QString &cPath, QString *preservedUserBlock = nullptr)
+    {
+        if (preservedUserBlock) *preservedUserBlock = defaultHeaderUserBlock();
         const QString headerPath = generatedHeaderPath(cPath);
-        if (!QFileInfo::exists(headerPath)) return true;
+        const QFileInfo headerInfo(headerPath);
+        if (headerInfo.isSymLink()) {
+            QMessageBox::warning(this, QObject::tr("Generated header conflict"),
+                QObject::tr("Refusing to overwrite a symbolic-link header:\n%1")
+                    .arg(QDir::toNativeSeparators(headerPath)));
+            return false;
+        }
+        if (!headerInfo.exists()) return true;
+
         QFile existing(headerPath);
-        if (existing.open(QIODevice::ReadOnly)
-            && existing.read(generatedHeaderMarker().size()) == generatedHeaderMarker())
-            return true;
+        if (!existing.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, QObject::tr("Generated header error"),
+                QObject::tr("Cannot read the existing header:\n%1\n\n"
+                            "Nothing was overwritten.")
+                    .arg(QDir::toNativeSeparators(headerPath)));
+            return false;
+        }
+        const QByteArray originalBytes = existing.readAll();
+        const QString oldHeader = QString::fromUtf8(originalBytes);
+        // Reject non-UTF-8 edits instead of silently replacing characters.
+        if (oldHeader.toUtf8() != originalBytes) {
+            QMessageBox::warning(this, QObject::tr("Generated header conflict"),
+                QObject::tr("%1 is not valid UTF-8 and will not be overwritten.")
+                    .arg(QDir::toNativeSeparators(headerPath)));
+            return false;
+        }
+        const QString begin = headerUserBeginMarker();
+        const QString end = headerUserEndMarker();
+        const int beginAt = oldHeader.indexOf(begin);
+        const int endAt = oldHeader.indexOf(end);
+
+        // The original ownership line and include guard may describe the OLD
+        // path of a .sbui/.h that was moved or renamed within the project.
+        // Never use current names to validate an OLD intact generated header.
+        // Instead, render the complete expected template with the ORIGINAL
+        // identity, and compare everything outside the protected USER block.
+        // On a match, normal writing migrates to the current identity and
+        // carries over the USER block byte-for-byte (as UTF-8 text).
+        const int firstLineEnd = oldHeader.indexOf(QLatin1Char('\n'));
+        const QString originalOwner = firstLineEnd >= 0
+            ? oldHeader.left(firstLineEnd + 1) : QString();
+        const bool ownedByDesigner = originalOwner.startsWith(
+                QStringLiteral("/* SIDBOX-IDE GENERATED GUI HEADER: "))
+            && originalOwner.endsWith(QStringLiteral(".sbui */\n"));
+
+        static const QRegularExpression guardPattern(QStringLiteral(
+            R"((?m)^#ifndef (SIDBOX_GUI_[A-Z0-9_]+_INCLUDED)$)"));
+        const QRegularExpressionMatch guardMatch = guardPattern.match(oldHeader);
+        const QString originalGuard = guardMatch.hasMatch()
+            ? guardMatch.captured(1) : QString();
+
+        if (ownedByDesigner && !originalGuard.isEmpty()) {
+            if (beginAt >= 0 && endAt > beginAt
+                && oldHeader.count(begin) == 1 && oldHeader.count(end) == 1) {
+                const QString originalEntry = entryFromGeneratedHeader(oldHeader.left(beginAt));
+                const int userStart = beginAt + begin.size();
+                const QString userBody = oldHeader.mid(userStart, endAt - userStart);
+                if (!originalEntry.isEmpty()
+                    && oldHeader == generatedHeaderContents(
+                        cPath, originalEntry, userBody, false,
+                        originalOwner, originalGuard)) {
+                    if (preservedUserBlock) *preservedUserBlock = userBody;
+                    return true;
+                }
+            } else if (beginAt < 0 && endAt < 0) {
+                const QString originalEntry = entryFromGeneratedHeader(oldHeader);
+                if (!originalEntry.isEmpty()
+                    && oldHeader == generatedHeaderContents(
+                        cPath, originalEntry, QString(), true,
+                        originalOwner, originalGuard)) {
+                    // Intact legacy header: add a protected USER block.
+                    return true;
+                }
+            }
+        }
+
         QMessageBox::warning(this,
             QObject::tr("Generated header conflict"),
-            QObject::tr("%1 already exists but does not belong to this GUI design. "
-                        "It will not be overwritten. Choose another C source name "
-                        "or move the custom header first.")
+            QObject::tr("Cannot safely regenerate %1.\n\n"
+                        "The header is not recognised as an intact CoderGirl "
+                        "generated header, or its USER markers/generated "
+                        "sections were changed.\n\n"
+                        "Your file was NOT overwritten. Restore the protected "
+                        "markers and generated sections, or copy your declarations "
+                        "to a separate programmer-owned header before continuing.")
                 .arg(QDir::toNativeSeparators(headerPath)));
         return false;
     }
@@ -9857,25 +10027,14 @@ private:
                               bool *changed = nullptr)
     {
         if (changed) *changed = false;
-        if (!canWriteGeneratedHeader(cPath)) return false;
+        QString savedUserBlock;
+        if (!canWriteGeneratedHeader(cPath, &savedUserBlock)) return false;
         const QString headerPath = generatedHeaderPath(cPath);
-        // Include the project-relative path in the guard so two GUI designs
-        // with the same filename in different subfolders remain independent.
-        const QString relativeHeader = QDir(designProjectRoot()).relativeFilePath(headerPath);
-        const QString guard = QStringLiteral("SIDBOX_GUI_")
-            + safeCIdentifier(relativeHeader, QStringLiteral("WINDOW_H")).toUpper()
-            + QStringLiteral("_INCLUDED");
-        const QString contents = QString::fromUtf8(generatedHeaderMarker())
-            + QStringLiteral("/* Auto-generated declarations. Edit the .sbui, not this file. */\n")
-            + QStringLiteral("#ifndef ") + guard + QStringLiteral("\n#define ")
-            + guard + QStringLiteral("\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
-            + QStringLiteral("void ") + windowEntry + QStringLiteral("(void);\n\n")
-            + QStringLiteral("#ifdef __cplusplus\n}\n#endif\n\n#endif /* ")
-            + guard + QStringLiteral(" */\n");
-        const QByteArray bytes = contents.toUtf8();
+        const QByteArray bytes = generatedHeaderContents(
+            cPath, windowEntry, savedUserBlock).toUtf8();
         QFile previous(headerPath);
         if (previous.open(QIODevice::ReadOnly) && previous.readAll() == bytes)
-            return true; // Do not change timestamps when nothing has changed.
+            return true; // Preserve timestamps when the content has not changed.
         if (!QDir().mkpath(QFileInfo(headerPath).absolutePath())) {
             QMessageBox::warning(this, QObject::tr("GUI Designer"),
                 QObject::tr("Cannot create header directory: %1")
@@ -10421,11 +10580,39 @@ private:
             }
         }
 
+        // These sections are generated by the Designer, not callbacks.
+        // Keep them among the active USER keys so preserved custom functions
+        // and variables never get put into the orphan-callback #if 0 block.
+        if (callbackKeys.contains(QStringLiteral("GLOBAL_VARIABLES"))
+            || callbackKeys.contains(QStringLiteral("BEFORE_CLOSE"))
+            || callbackKeys.contains(QStringLiteral("custom_code"))) {
+            QMessageBox::warning(this, QObject::tr("Reserved callback name"),
+                QObject::tr("GLOBAL_VARIABLES, BEFORE_CLOSE and custom_code "
+                            "are reserved for protected generated sections. "
+                            "Rename this callback to avoid a user-block collision."));
+            return false;
+        }
+        callbackKeys << QStringLiteral("GLOBAL_VARIABLES")
+                     << QStringLiteral("BEFORE_CLOSE")
+                     << QStringLiteral("custom_code");
+
         callbackKeys.removeDuplicates();
         gadgetCallbacks.removeDuplicates();
         timerCallbacks.removeDuplicates();
         dialogCallbackNamesForGeneration.removeDuplicates();
         directGadgetCallbacks.removeDuplicates();
+        // The generated helper is file-local and is intended to be CALLED
+        // from callbacks, not declared as one. Prevent duplicate C symbols.
+        if (gadgetCallbacks.contains(QStringLiteral("CloseWindow"))
+            || timerCallbacks.contains(QStringLiteral("CloseWindow"))
+            || menuCallbacks.contains(QStringLiteral("CloseWindow"))
+            || dialogCallbackNamesForGeneration.contains(QStringLiteral("CloseWindow"))) {
+            QMessageBox::warning(this, QObject::tr("Reserved callback name"),
+                QObject::tr("CloseWindow is the generated window cleanup helper. "
+                            "Choose another callback name, then call CloseWindow() "
+                            "from its USER block."));
+            return false;
+        }
         // Different callback types have incompatible C signatures.
         for (const QString &cb : std::as_const(timerCallbacks)) {
             if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)) {
@@ -10443,6 +10630,97 @@ private:
                 return false;
             }
         }
+
+        // Preserve this entire section without indentation/whitespace
+        // normalisation: it may contain preprocessor directives, declarations,
+        // and user comments.  A damaged marker must never erase user globals.
+        const QString globalsBegin =
+            QStringLiteral("/* <SIDBOX-GUI:USER GLOBAL_VARIABLES> */");
+        const QString globalsEnd =
+            QStringLiteral("/* </SIDBOX-GUI:USER GLOBAL_VARIABLES> */");
+        const int globalsStart = oldSource.indexOf(globalsBegin);
+        const int globalsFinish = oldSource.indexOf(globalsEnd);
+        const bool brokenGlobals =
+            oldSource.count(globalsBegin) > 1
+            || oldSource.count(globalsEnd) > 1
+            || (globalsStart < 0) != (globalsFinish < 0)
+            || (globalsStart >= 0 && globalsFinish <= globalsStart)
+            || (globalsStart < 0 && oldSource.contains(
+                    QStringLiteral("SIDBOX-GUI:USER GLOBAL_VARIABLES")))
+            || (globalsFinish < 0 && oldSource.contains(
+                    QStringLiteral("/SIDBOX-GUI:USER GLOBAL_VARIABLES")));
+        if (brokenGlobals) {
+            QMessageBox::warning(this, QObject::tr("Protected variables section"),
+                QObject::tr("The custom-variable USER markers in %1 are "
+                            "missing, duplicated, or damaged.\n\n"
+                            "Generation was cancelled to protect your code. "
+                            "Please restore both markers from your backup.")
+                    .arg(QDir::toNativeSeparators(cPath)));
+            return false;
+        }
+        const QString preservedGlobals = globalsStart >= 0
+            ? oldSource.mid(globalsStart + globalsBegin.size(),
+                            globalsFinish - (globalsStart + globalsBegin.size()))
+            : QStringLiteral(
+                "\n/* Private to this .c: static int local_count = 0; */\n"
+                "/* Shared with other .c files: int shared_count = 0; */\n"
+                "/* For shared variables, add extern declarations inside the "
+                "matching .h USER HEADER block. */\n");
+
+        // A protected close hook must never be silently dropped because
+        // one of its markers was edited, copied, or removed by accident.
+        const QString beforeCloseBegin =
+            QStringLiteral("/* <SIDBOX-GUI:USER BEFORE_CLOSE> */");
+        const QString beforeCloseEnd =
+            QStringLiteral("/* </SIDBOX-GUI:USER BEFORE_CLOSE> */");
+        const int beforeCloseStart = oldSource.indexOf(beforeCloseBegin);
+        const int beforeCloseFinish = oldSource.indexOf(beforeCloseEnd);
+        if (oldSource.count(beforeCloseBegin) > 1
+            || oldSource.count(beforeCloseEnd) > 1
+            || (beforeCloseStart < 0) != (beforeCloseFinish < 0)
+            || (beforeCloseStart >= 0 && beforeCloseFinish <= beforeCloseStart)
+            || (beforeCloseStart < 0 && oldSource.contains(
+                QStringLiteral("SIDBOX-GUI:USER BEFORE_CLOSE")))
+            || (beforeCloseFinish < 0 && oldSource.contains(
+                QStringLiteral("/SIDBOX-GUI:USER BEFORE_CLOSE")))) {
+            QMessageBox::warning(this, QObject::tr("Protected window close section"),
+                QObject::tr("The BEFORE_CLOSE USER markers in %1 are "
+                            "missing, duplicated, or damaged.\n\n"
+                            "Generation was cancelled to protect your code.")
+                    .arg(QDir::toNativeSeparators(cPath)));
+            return false;
+        }
+
+        // User helper functions belong at the very end of each generated .c.
+        // Unlike callback bodies, keep this section exactly as written:
+        // indentation, preprocessor directives and blank lines matter.
+        // A partial or duplicated marker must not silently erase user code.
+        const QString customCodeBegin =
+            QStringLiteral("/* <SIDBOX-GUI:USER custom_code> */");
+        const QString customCodeEnd =
+            QStringLiteral("/* </SIDBOX-GUI:USER custom_code> */");
+        const int customCodeStart = oldSource.indexOf(customCodeBegin);
+        const int customCodeFinish = oldSource.indexOf(customCodeEnd);
+        if (oldSource.count(customCodeBegin) > 1
+            || oldSource.count(customCodeEnd) > 1
+            || (customCodeStart < 0) != (customCodeFinish < 0)
+            || (customCodeStart >= 0 && customCodeFinish <= customCodeStart)
+            || (customCodeStart < 0 && oldSource.contains(
+                    QStringLiteral("SIDBOX-GUI:USER custom_code")))
+            || (customCodeFinish < 0 && oldSource.contains(
+                    QStringLiteral("/SIDBOX-GUI:USER custom_code")))) {
+            QMessageBox::warning(this, QObject::tr("Protected custom code section"),
+                QObject::tr("The custom_code USER markers in %1 are "
+                            "missing, duplicated or damaged.\n\n"
+                            "Generation was cancelled to protect your code. "
+                            "Restore both markers from your backup.")
+                    .arg(QDir::toNativeSeparators(cPath)));
+            return false;
+        }
+        const QString preservedCustomCode = customCodeStart >= 0
+            ? oldSource.mid(customCodeStart + customCodeBegin.size(),
+                            customCodeFinish - (customCodeStart + customCodeBegin.size()))
+            : QStringLiteral("\n/* TODO: programmer callback code */\n");
 
         const QHash<QString, QString> saved =
             preservedUserBlocks(
@@ -10603,7 +10881,8 @@ private:
           << ";\n"
              "static uint8_t "
           << win
-          << "_is_open = 0u;\n";
+          << "_is_open = 0u;\n"
+             "static uint8_t " << win << "_is_closing = 0u;\n";
 
         const bool hasDialogs = !dialogNames.isEmpty();
         if (hasDialogs) {
@@ -10676,6 +10955,12 @@ private:
                 }
             }
         }
+
+        // File-scope state is accessible by every callback in this GUI
+        // translation unit.  Non-static definitions can also be shared with
+        // other .c files using an extern declaration in the generated header's
+        // protected USER HEADER section. Never define storage in a header.
+        s << "\n" << globalsBegin << preservedGlobals << globalsEnd << "\n\n";
 
         QList<GuiDesignerGadget> demoBitmaps;
         QString bitmapText;
@@ -11462,24 +11747,85 @@ private:
                 s << "\t" << safeCIdentifier(g.name, QStringLiteral("media")) << "_Play();\n";
         }
 
-        // Timers belong to the generated window, but are never GUI gadgets.
-        // Allocate AFTER the window and gadgets exist, and free BEFORE close.
+        // Timers are allocated only when their handle is invalid. With the
+        // opt-in background lifetime, reopening a window must NOT create a
+        // second timer or restart the still-running one.
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
             if (g.type != QStringLiteral("Timer")) continue;
             const QString n = safeCIdentifier(g.name, QStringLiteral("timer"));
-            s << "\t" << n << " = SBOS_CreateTimer();\n";
+            s << "\tif (" << n << " == CGTIMER_INVALID) {\n"
+              << "\t\t" << n << " = SBOS_CreateTimer();\n";
             if (g.timerAutoStart && !g.onActivate.trimmed().isEmpty()) {
-                s << "\tif (" << n << " != CGTIMER_INVALID) {\n"
-                  << "\t\tif (SBOS_TimerSet(" << n << ", "
+                s << "\t\tif (" << n << " != CGTIMER_INVALID) {\n"
+                  << "\t\t\tif (SBOS_TimerSet(" << n << ", "
                   << qBound(1, g.timerDelayMs, 86400000) << "u, "
                   << (g.timerRepeat ? qBound(1, g.timerPeriodMs, 86400000) : 0)
                   << "u, " << g.onActivate << ", NULL) != 0) {\n"
-                  << "\t\t\tSBOS_FreeTimer(" << n << ");\n"
-                  << "\t\t\t" << n << " = CGTIMER_INVALID;\n"
-                  << "\t\t}\n\t}\n";
+                  << "\t\t\t\tSBOS_FreeTimer(" << n << ");\n"
+                  << "\t\t\t\t" << n << " = CGTIMER_INVALID;\n"
+                  << "\t\t\t}\n\t\t}\n";
             }
+            s << "\t}\n";
         }
         s << "}\n\n";
+
+        /*
+         * Single, file-local close path for title-bar close requests and
+         * programmer callbacks. Call CloseWindow(), never SBOS_CloseWindow()
+         * directly, when a generated window owns timers/models/menus/media.
+         * Deliberately persistent timers are NOT cancelled here.
+         */
+        s << "static void CloseWindow(void)\n{\n"
+          << "\tif (!" << win << "_is_open || " << win << "_is_closing) return;\n";
+        if (hasDialogs)
+            s << "\tif (" << win << "_active_dialog != (CGWindow)0xFFu) return;\n";
+        s << "\t" << win << "_is_closing = 1u;\n"
+          << "\t/* <SIDBOX-GUI:USER BEFORE_CLOSE> */\n";
+        const QString beforeCloseBody = saved.value(QStringLiteral("BEFORE_CLOSE"));
+        if (beforeCloseBody.isEmpty()) {
+            s << "\t/* Shared shutdown hook. Avoid returning early from this block. */\n";
+        } else {
+            for (const QString &line : beforeCloseBody.split(QLatin1Char('\n')))
+                s << "\t" << line << "\n";
+        }
+        s << "\t/* </SIDBOX-GUI:USER BEFORE_CLOSE> */\n";
+
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("ListBox") || g.listItems.isEmpty()) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("listbox"));
+            s << "\tAPI->gui->gadgets->listbox_attach_itemlist(" << n << ", NULL);\n"
+              << "\tAPI->gui->gadgets->itemlist_deinit(&" << n << "_items);\n";
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Media")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("media"));
+            if (g.mediaMode == QStringLiteral("SFX"))
+                s << "\t" << n << "_Cleanup();\n";
+            else
+                s << "\t" << n << "_Stop();\n";
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Timer")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("timer"));
+            if (g.timerKeepAliveOnClose) {
+                s << "\t/* " << n << ": persistent background timer, retained. */\n";
+                continue;
+            }
+            s << "\tif (" << n << " != CGTIMER_INVALID) {\n"
+              << "\t\tSBOS_TimerCancel(" << n << ");\n"
+              << "\t\tSBOS_FreeTimer(" << n << ");\n"
+              << "\t\t" << n << " = CGTIMER_INVALID;\n"
+              << "\t}\n";
+        }
+        // Set the guard before closing: the OS may synchronously send more
+        // window messages during destruction. As in the old generator, menu
+        // teardown follows SBOS_CloseWindow() to preserve API ordering.
+        s << "\t" << win << "_is_open = 0u;\n"
+          << "\tSBOS_CloseWindow(" << win << ");\n";
+        if (!m_menus.isEmpty())
+            s << "\tSBOS_DestroyMenu(&" << win << "_Menu);\n";
+        s << "\t" << win << "_is_closing = 0u;\n"
+          << "}\n\n";
 
         /*
          * Generate WindowProc as a real message/event dispatcher.
@@ -11569,7 +11915,8 @@ private:
                     "WINDOW_CLOSE"));
 
         if (closeBody.isEmpty()) {
-            s << "\t\t\t/* Put close-validation/user shutdown code here. */\n";
+            s << "\t\t\t/* Legacy title-bar close validation here; "
+                 "shared cleanup belongs in BEFORE_CLOSE below. */\n";
         } else {
             for (const QString &line :
                  closeBody.split(
@@ -11582,62 +11929,7 @@ private:
 
         s << "\t\t\t/* </SIDBOX-GUI:USER WINDOW_CLOSE> */\n";
 
-        /*
-         * ListBoxes do not own ItemLists_t. Detach and free designer-created
-         * models before the Window destroys its gadgets.
-         */
-        for (const GuiDesignerGadget &g :
-             m_gadgets) {
-            if (g.type != QStringLiteral("ListBox")
-                || g.listItems.isEmpty()) {
-                continue;
-            }
-
-            const QString n =
-                safeCIdentifier(
-                    g.name,
-                    QStringLiteral("listbox"));
-
-            s << "\t\t\tAPI->gui->gadgets->listbox_attach_itemlist("
-              << n
-              << ", NULL);\n";
-            s << "\t\t\tAPI->gui->gadgets->itemlist_deinit(&"
-              << n
-              << "_items);\n";
-        }
-
-        // Stop playback and release PCM buffers BEFORE destroying this window.
-        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
-            if (g.type != QStringLiteral("Media")) continue;
-            const QString n = safeCIdentifier(g.name, QStringLiteral("media"));
-            if (g.mediaMode == QStringLiteral("SFX"))
-                s << "\t\t\t" << n << "_Cleanup();\n";
-            else
-                s << "\t\t\t" << n << "_Stop();\n";
-        }
-
-        // Cooperative timers must not fire into a window after it closes.
-        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
-            if (g.type != QStringLiteral("Timer")) continue;
-            const QString n = safeCIdentifier(g.name, QStringLiteral("timer"));
-            s << "\t\t\tif (" << n << " != CGTIMER_INVALID) {\n"
-              << "\t\t\t\tSBOS_TimerCancel(" << n << ");\n"
-              << "\t\t\t\tSBOS_FreeTimer(" << n << ");\n"
-              << "\t\t\t\t" << n << " = CGTIMER_INVALID;\n"
-              << "\t\t\t}\n";
-        }
-
-        // Mark the window closed before the firmware clears its handle.
-        // This also allows the public _Create() function to reopen it later.
-        s << "\t\t\t"
-          << win
-          << "_is_open = 0u;\n"
-             "\t\t\tSBOS_CloseWindow(win);\n";
-        if (!m_menus.isEmpty()) {
-            s << "\t\t\tSBOS_DestroyMenu(&"
-              << win
-              << "_Menu);\n";
-        }
+        s << "\t\t\tCloseWindow();\n";
         s << "\t\t\treturn CGPROC_HANDLED;\n";
 
         if (hasBitmapView) {
@@ -12069,6 +12361,15 @@ private:
 
             s << "#endif\n";
         }
+
+        // Keep this last in the generated .c file so programmers can add
+        // file-local helper function definitions without touching generated
+        // callbacks. Call cleanup helpers explicitly from BEFORE_CLOSE.
+        s << "\n/* <SIDBOX-GUI:USER custom_code> */"
+          << preservedCustomCode;
+        if (!preservedCustomCode.endsWith(QLatin1Char('\n')))
+            s << "\n";
+        s << "/* </SIDBOX-GUI:USER custom_code> */\n";
 
         // Resource sources are generated beside this .sbui in <name>res/.
         // The project's recursive .c discovery picks up both source files.

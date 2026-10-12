@@ -123,7 +123,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
             ? tr("V2 applet memory requirements")
             : tr("V2 applet memory requirements (V1 ignores these)"));
     });
-    m_v2HeapSpinBox->setRange(0, 512);
+    m_v2HeapSpinBox->setRange(0, 6080);
     m_v2HeapSpinBox->setSingleStep(4);
     m_v2HeapSpinBox->setSuffix(tr(" KB"));
     m_v2HeapSpinBox->setSpecialValueText(tr("No heap reserved"));
