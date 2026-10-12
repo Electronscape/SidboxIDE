@@ -45,6 +45,7 @@ private:
     QTextCharFormat m_singleLineCommentFormat;
     QTextCharFormat m_stringFormat;
     QTextCharFormat m_preprocessorFormat;
+    QTextCharFormat m_disabledCodeFormat;
     QTextCharFormat m_typedefFormat;
     QTextCharFormat m_customAPIFormat;
     QTextCharFormat m_stm32Format;

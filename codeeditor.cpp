@@ -3658,6 +3658,33 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    /*
+     * Smart Home: first press visits the first non-whitespace character;
+     * the next visits absolute column 0. Shift+Home extends the selection.
+     * Ctrl+Home retains Qt's standard start-of-document behaviour.
+     */
+    if (event->key() == Qt::Key_Home
+        && !(modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+        QTextCursor cursor = textCursor();
+        const QString line = cursor.block().text();
+        int firstTextColumn = 0;
+        while (firstTextColumn < line.size()
+               && line.at(firstTextColumn).isSpace()) {
+            ++firstTextColumn;
+        }
+
+        const int targetColumn =
+            cursor.positionInBlock() == firstTextColumn ? 0 : firstTextColumn;
+        cursor.setPosition(cursor.block().position() + targetColumn,
+                           (modifiers & Qt::ShiftModifier)
+                               ? QTextCursor::KeepAnchor
+                               : QTextCursor::MoveAnchor);
+        setTextCursor(cursor);
+        requestDeferredAnalysisSync();
+        event->accept();
+        return;
+    }
+
     // Enter keeps the current indentation.
     // If the caret is between {}, create the inner line and leave the closing
     // brace aligned with the line which opened the block.

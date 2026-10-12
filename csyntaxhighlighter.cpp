@@ -261,6 +261,15 @@ void CSyntaxHighlighter::rebuildRules()
     m_preprocessorFormat.setForeground(
         m_theme.syntaxPreprocessor);
 
+    // Muted code is blended with the current editor background so every theme
+    // gets a legible but clearly inactive #if 0 branch.
+    const QColor &foreground = m_theme.editorText;
+    const QColor &background = m_theme.editorBackground;
+    m_disabledCodeFormat.setForeground(QColor(
+        (foreground.red() * 35 + background.red() * 65) / 100,
+        (foreground.green() * 35 + background.green() * 65) / 100,
+        (foreground.blue() * 35 + background.blue() * 65) / 100));
+
     m_stringFormat.setForeground(m_theme.syntaxString);
 
     QTextCharFormat numberFormat;
@@ -531,8 +540,92 @@ void CSyntaxHighlighter::highlightBlock(
         return;
     }
 
-    const bool inPreprocessor =
-        previousBlockState() == 2;
+    /*
+     * Preprocessor branch tracking lives in QTextBlock::userState, rather
+     * than QTextBlockUserData (which the folding gutter already owns).
+     *
+     *   low 2 bits: existing lexer state (0=normal, 1=block-comment, 2=continued #)
+     *   next 27 bits: up to nine nested #if levels, three bits per level.
+     *
+     * Level states: 1=unknown, 2=active/taken, 3=inactive/not taken,
+     *               4=inactive/already taken.
+     * Unknown conditions stay normally coloured: this is a highlighter,
+     * not a C preprocessor able to evaluate project macros.
+     */
+    const quint32 priorState = previousBlockState() >= 0
+                                   ? quint32(previousBlockState()) : 0u;
+    const quint32 priorLexer = priorState & 3u;
+    quint32 conditionalStack = priorState >> 2;
+    const bool inPreprocessor = priorLexer == 2u;
+
+    const auto branchDisabled = [](quint32 stack) {
+        while (stack != 0u) {
+            const quint32 branch = stack & 7u;
+            if (branch == 3u || branch == 4u) return true;
+            stack >>= 3;
+        }
+        return false;
+    };
+
+    // Recognise #if 0, #if(0), #if 1, their nesting and alternate arms.
+    // Ignore lookalike directives within an ongoing block comment.
+    static const QRegularExpression conditionalDirective(
+        QStringLiteral(R"(^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$)"));
+    static const QRegularExpression literalCondition(
+        QStringLiteral(R"(^\s*\(?\s*([01])\s*\)?\s*(?://.*)?$)"));
+
+    const QRegularExpressionMatch directive = priorLexer != 1u
+        ? conditionalDirective.match(text)
+        : QRegularExpressionMatch();
+    if (directive.hasMatch()) {
+        const QString operation = directive.captured(1);
+        const QString argument = directive.captured(2);
+        const QRegularExpressionMatch value = literalCondition.match(argument);
+        const int condition = value.hasMatch() ? value.captured(1).toInt() : -1;
+        const bool inactiveParent = branchDisabled(conditionalStack >> 3);
+        const bool inactiveBefore = branchDisabled(conditionalStack);
+        const quint32 current = conditionalStack & 7u;
+
+        if (operation == QStringLiteral("if")
+            || operation == QStringLiteral("ifdef")
+            || operation == QStringLiteral("ifndef")) {
+            // 27 stack bits = 9 levels. Deeper code stays conservatively
+            // coloured; we avoid overflowing the signed block-state integer.
+            if (conditionalStack <= 0xFFFFFFu) {
+                const quint32 branch = operation != QStringLiteral("if")
+                    || condition == -1 ? 1u : (condition ? 2u : 3u);
+                conditionalStack = (conditionalStack << 3) | branch;
+            }
+        } else if (operation == QStringLiteral("elif") && current != 0u) {
+            quint32 branch = current;
+            if (current == 2u || current == 4u) branch = 4u;
+            else if (current == 3u) branch =
+                condition == 0 ? 3u : (condition == 1 ? 2u : 1u);
+            conditionalStack = (conditionalStack & ~7u) | branch;
+        } else if (operation == QStringLiteral("else") && current != 0u) {
+            const quint32 branch = current == 3u ? 2u
+                                 : (current == 2u || current == 4u) ? 4u : 1u;
+            conditionalStack = (conditionalStack & ~7u) | branch;
+        } else if (operation == QStringLiteral("endif") && current != 0u) {
+            conditionalStack >>= 3;
+        }
+        setCurrentBlockState(int(conditionalStack << 2));
+        // The controlling #if/#else/#endif line remains visibly a directive;
+        // only an outer disabled region dims directives nested inside it.
+        setFormat(0, text.length(),
+                  (inactiveParent || (inactiveBefore && operation != QStringLiteral("endif")
+                   && operation != QStringLiteral("else") && operation != QStringLiteral("elif")))
+                      ? m_disabledCodeFormat : m_preprocessorFormat);
+        return;
+    }
+
+    setCurrentBlockState(int(conditionalStack << 2));
+    if (branchDisabled(conditionalStack)) {
+        // Do not parse /* or // inside skipped code. Inactive text must never
+        // contaminate syntax state in the reactivated #else/#endif branch.
+        setFormat(0, text.length(), m_disabledCodeFormat);
+        return;
+    }
 
     const bool isPreprocessorLine =
         inPreprocessor
@@ -650,7 +743,7 @@ void CSyntaxHighlighter::highlightBlock(
         && text.trimmed()
                .endsWith(
                    QLatin1Char('\\'))) {
-        setCurrentBlockState(2);
+        setCurrentBlockState((currentBlockState() & ~3) | 2);
     }
 }
 
@@ -725,7 +818,7 @@ void CSyntaxHighlighter::applyStringsAndSingleLineComments(
 
 void CSyntaxHighlighter::applyMultiLineComments(const QString &text)
 {
-    setCurrentBlockState(0);
+    setCurrentBlockState(currentBlockState() & ~3);
 
     /*
      * Find a /* opener only when it is actually C code.
@@ -806,12 +899,12 @@ void CSyntaxHighlighter::applyMultiLineComments(const QString &text)
      * If the previous QTextBlock ended inside a block comment, this line starts
      * inside that comment regardless of any // or quote-looking characters.
      */
-    if (previousBlockState() == 1) {
+    if ((previousBlockState() & 3) == 1) {
         const QRegularExpressionMatch endMatch =
             m_commentEndExpression.match(text, 0);
 
         if (!endMatch.hasMatch()) {
-            setCurrentBlockState(1);
+            setCurrentBlockState((currentBlockState() & ~3) | 1);
             setFormat(
                 0,
                 text.length(),
@@ -836,7 +929,7 @@ void CSyntaxHighlighter::applyMultiLineComments(const QString &text)
                 startIndex + 2);
 
         if (!endMatch.hasMatch()) {
-            setCurrentBlockState(1);
+            setCurrentBlockState((currentBlockState() & ~3) | 1);
             setFormat(
                 startIndex,
                 text.length() - startIndex,

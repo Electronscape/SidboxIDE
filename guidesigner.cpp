@@ -213,7 +213,8 @@ struct GuiDesignerGadget
 
 static bool isVirtualDesignerGadget(const QString &type)
 {
-    return type == QStringLiteral("UART1") || type == QStringLiteral("Timer") || type == QStringLiteral("Media")
+    return type == QStringLiteral("UART1") || type == QStringLiteral("KBInput") || type == QStringLiteral("MSInput")
+        || type == QStringLiteral("Timer") || type == QStringLiteral("Media")
         || type == QStringLiteral("FileRequester") || type == QStringLiteral("MessageBox");
 }
 
@@ -4117,6 +4118,20 @@ private:
             return;
         }
 
+        if (g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) {
+            // Virtual input event source. Draw a compact glyph at design-time;
+            // palette thumbnails use the user's gadget_kbinput/msinput icons.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.setPen(QColor(225, 232, 244));
+            p.drawText(r.adjusted(1, 1, -1, -1), Qt::AlignCenter,
+                       g.type == QStringLiteral("KBInput") ? QStringLiteral("KB") : QStringLiteral("MS"));
+            p.restore();
+            return;
+        }
         if (g.type == QStringLiteral("UART1")) {
             // Virtual USART1 controller: TX and RX leads, no on-device gadget.
             p.save();
@@ -5368,6 +5383,8 @@ public:
             {QStringLiteral("TextBox"), QObject::tr("Single-line editable text")},
             {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")},
             {QStringLiteral("UART1"), QObject::tr("Exclusive USART1 lease: temporarily pause SIDBOX terminal, FTP and UART keyboard")},
+            {QStringLiteral("KBInput"), QObject::tr("Passive key press/release events delivered to this focused window")},
+            {QStringLiteral("MSInput"), QObject::tr("Passive mouse move/down/up events over this window; OS retains mouse control")},
             {QStringLiteral("Media"), QObject::tr("Virtual audio playback: sound effects or music; not a SIDBOX screen gadget")},
             {QStringLiteral("FileRequester"), QObject::tr("Non-modal CoderGirl file picker with select/cancel callbacks")},
             {QStringLiteral("MessageBox"), QObject::tr("Non-modal CoderGirl MessageBox or InfoBox with result callback")}
@@ -5388,7 +5405,8 @@ public:
             {QObject::tr("Virtual"), {
                 QStringLiteral("FileRequester"), QStringLiteral("Media"),
                 QStringLiteral("MessageBox"), QStringLiteral("TabGroup"),
-                QStringLiteral("Timer"), QStringLiteral("UART1")}}
+                QStringLiteral("Timer"), QStringLiteral("UART1"),
+                QStringLiteral("KBInput"), QStringLiteral("MSInput")}}
         };
         for (const auto &group : paletteGroups) {
             auto *palette = new GuiDesignerToolbox(m_toolboxTabs);
@@ -6255,6 +6273,8 @@ private:
         if (type == QStringLiteral("TabGroup")) stem = QStringLiteral("tabs");
         else if (type == QStringLiteral("Timer")) stem = QStringLiteral("timer");
         else if (type == QStringLiteral("UART1")) stem = QStringLiteral("uart1");
+        else if (type == QStringLiteral("KBInput")) stem = QStringLiteral("kbinput");
+        else if (type == QStringLiteral("MSInput")) stem = QStringLiteral("msinput");
         else if (type == QStringLiteral("Media")) stem = QStringLiteral("media");
         else if (type == QStringLiteral("FileRequester")) stem = QStringLiteral("fileRequest");
         else if (type == QStringLiteral("MessageBox")) stem = QStringLiteral("messageBox");
@@ -6516,6 +6536,12 @@ private:
             && g.onActivate == QStringLiteral("On_%1_Tick").arg(oldName)) {
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
         }
+        if (g.type == QStringLiteral("KBInput")
+            && g.onActivate == QStringLiteral("On_%1_Key").arg(oldName))
+            g.onActivate = QStringLiteral("On_%1_Key").arg(g.name);
+        if (g.type == QStringLiteral("MSInput")
+            && g.onActivate == QStringLiteral("On_%1_Mouse").arg(oldName))
+            g.onActivate = QStringLiteral("On_%1_Mouse").arg(g.name);
         if (g.type == QStringLiteral("FileRequester")) {
             if (g.onActivate == QStringLiteral("On_%1_Selected").arg(oldName))
                 g.onActivate = QStringLiteral("On_%1_Selected").arg(g.name);
@@ -7557,6 +7583,13 @@ private:
                     QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(g.onActivate), g.onActivate);
             return;
         }
+        if (g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) {
+            if (sourceNavigationRequested)
+                sourceNavigationRequested(generatedCPath(),
+                    QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(g.onActivate),
+                    QStringLiteral("%1(CGEventType event").arg(g.onActivate));
+            return;
+        }
         if (g.type == QStringLiteral("UART1")) {
             if (sourceNavigationRequested)
                 sourceNavigationRequested(generatedCPath(),
@@ -7632,6 +7665,10 @@ private:
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
         if (type == QStringLiteral("UART1"))
             g.onActivate = QStringLiteral("On_%1_Data").arg(g.name);
+        if (type == QStringLiteral("KBInput"))
+            g.onActivate = QStringLiteral("On_%1_Key").arg(g.name);
+        if (type == QStringLiteral("MSInput"))
+            g.onActivate = QStringLiteral("On_%1_Mouse").arg(g.name);
         if (type == QStringLiteral("FileRequester")) {
             g.onActivate = QStringLiteral("On_%1_Selected").arg(g.name);
             g.onChange = QStringLiteral("On_%1_Cancelled").arg(g.name);
@@ -8837,6 +8874,12 @@ private:
             if (gg.type == QStringLiteral("Timer")
                 && gg.onActivate == QStringLiteral("On_%1_Tick").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Tick").arg(gg.name);
+            if (gg.type == QStringLiteral("KBInput")
+                && gg.onActivate == QStringLiteral("On_%1_Key").arg(old))
+                gg.onActivate = QStringLiteral("On_%1_Key").arg(gg.name);
+            if (gg.type == QStringLiteral("MSInput")
+                && gg.onActivate == QStringLiteral("On_%1_Mouse").arg(old))
+                gg.onActivate = QStringLiteral("On_%1_Mouse").arg(gg.name);
             if (gg.onChange == QStringLiteral("On_%1_Change").arg(old))
                 gg.onChange = QStringLiteral("On_%1_Change").arg(gg.name);
         });
@@ -9028,6 +9071,26 @@ private:
             }
             addCheck(QObject::tr("Start with window"), g.mediaAutoStart,
                 [this, selected](bool v) { m_gadgets[selected].mediaAutoStart = v; });
+            return;
+        }
+        if (g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) {
+            const bool keyboard = g.type == QStringLiteral("KBInput");
+            auto *hint = new QLabel(keyboard
+                ? QObject::tr("Passive window keyboard listener. Receives key press/release only while this window has focus. Keys still reach normal OS gadgets; no ownership or IRQ changes.")
+                : QObject::tr("Passive window mouse listener. Receives move/press/release over this window, with screen coordinates and button flags. Menus and other OS controls still work normally."),
+                m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addLine(keyboard ? QObject::tr("On key event (event, key, mods, hid)")
+                             : QObject::tr("On mouse event (event, x, y, flags)"), g.onActivate,
+                [this, selected](const QString &v) {
+                    m_gadgets[selected].onActivate = v.trimmed().isEmpty()
+                        ? QString() : safeCIdentifier(v, QStringLiteral("OnInput"));
+                });
             return;
         }
         if (g.type == QStringLiteral("UART1")) {
@@ -10933,6 +10996,25 @@ private:
                 QObject::tr("Only one virtual UART1 controller belongs in a window."));
             return false;
         }
+        // Passive window input listeners use exactly one callback per type;
+        // their event routing is through the window proc (never an IRQ).
+        for (const QString &kind : {QStringLiteral("KBInput"), QStringLiteral("MSInput")}) {
+            int count = 0;
+            for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+                if (g.type != kind) continue;
+                ++count;
+                if (g.onActivate.trimmed().isEmpty()) {
+                    QMessageBox::warning(this, QObject::tr("Input callback required"),
+                        QObject::tr("%1 %2 requires an input callback.").arg(kind, g.name));
+                    return false;
+                }
+            }
+            if (count > 1) {
+                QMessageBox::warning(this, QObject::tr("Duplicate input listener"),
+                    QObject::tr("Only one %1 listener is needed per window.").arg(kind));
+                return false;
+            }
+        }
         // The sample data and music player are global resources on SIDBOX.
         // Within one design, a PCM channel must have a single owner.
         QSet<int> usedSfxChannels;
@@ -11073,6 +11155,7 @@ private:
         QStringList gadgetCallbacks;
         QStringList timerCallbacks;
         QStringList uart1DataCallbacks;   // Only these need the UART RX usage memo.
+        QStringList inputCallbacks;      // Virtual keyboard/mouse events (shared signature).
         QStringList dialogCallbackNamesForGeneration;
         QStringList directGadgetCallbacks;
         QStringList menuCallbacks;
@@ -11086,6 +11169,13 @@ private:
                 if (g.type == QStringLiteral("FileRequester")) {
                     callbackKeys << g.onChange;
                     dialogCallbackNamesForGeneration << g.onChange;
+                }
+                continue;
+            }
+            if (g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) {
+                if (!g.onActivate.isEmpty()) {
+                    callbackKeys << g.onActivate;
+                    inputCallbacks << g.onActivate;
                 }
                 continue;
             }
@@ -11160,6 +11250,7 @@ private:
         gadgetCallbacks.removeDuplicates();
         timerCallbacks.removeDuplicates();
         uart1DataCallbacks.removeDuplicates();
+        inputCallbacks.removeDuplicates();
         dialogCallbackNamesForGeneration.removeDuplicates();
         directGadgetCallbacks.removeDuplicates();
         // The generated helper is file-local and is intended to be CALLED
@@ -11167,7 +11258,8 @@ private:
         if (gadgetCallbacks.contains(QStringLiteral("CloseWindow"))
             || timerCallbacks.contains(QStringLiteral("CloseWindow"))
             || menuCallbacks.contains(QStringLiteral("CloseWindow"))
-            || dialogCallbackNamesForGeneration.contains(QStringLiteral("CloseWindow"))) {
+            || dialogCallbackNamesForGeneration.contains(QStringLiteral("CloseWindow"))
+            || inputCallbacks.contains(QStringLiteral("CloseWindow"))) {
             QMessageBox::warning(this, QObject::tr("Reserved callback name"),
                 QObject::tr("CloseWindow is the generated window cleanup helper. "
                             "Choose another callback name, then call CloseWindow() "
@@ -11184,6 +11276,14 @@ private:
             }
         }
         menuCallbacks.removeDuplicates();
+        for (const QString &cb : std::as_const(inputCallbacks)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)
+                || timerCallbacks.contains(cb) || dialogCallbackNamesForGeneration.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Input callback collision"),
+                    QObject::tr("Input callback %1 conflicts with a gadget, menu, timer, or dialog callback.").arg(cb));
+                return false;
+            }
+        }
         for (const QString &cb : std::as_const(dialogCallbackNamesForGeneration)) {
             if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb) || timerCallbacks.contains(cb)) {
                 QMessageBox::warning(this, QObject::tr("Dialog callback collision"),
@@ -11453,7 +11553,8 @@ private:
         for (const GuiDesignerGadget &g :
              m_gadgets) {
             if (g.type == QStringLiteral("Media") || g.type == QStringLiteral("FileRequester")
-                || g.type == QStringLiteral("MessageBox") || g.type == QStringLiteral("UART1")) continue;
+                || g.type == QStringLiteral("MessageBox") || g.type == QStringLiteral("UART1")
+                || g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) continue;
             if (g.type == QStringLiteral("Timer")) {
                 s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("timer"))
                   << " = CGTIMER_INVALID;\n";
@@ -11699,6 +11800,12 @@ private:
             }
         }
 
+        // Virtual keyboard/mouse event callbacks are invoked from WindowProc.
+        for (const QString &cb : std::as_const(inputCallbacks)) {
+            s << "static void " << cb
+              << "(CGEventType event, int32_t a, int32_t b, int32_t c);\n";
+        }
+
         // Declare timer and UART1 Data callbacks BEFORE any generated helper
         // (in particular UART1's cooperative _Poll() function) calls them.
         // GCC must not see an implicit declaration followed by static linkage.
@@ -11725,7 +11832,7 @@ private:
               << "\tif (status != SIDBOX_UART1_OK) return status;\n"
               << "\t" << n << "_poll_timer = SBOS_CreateTimer();\n"
               << "\tif (" << n << "_poll_timer == CGTIMER_INVALID ||\n"
-              << "\t    SBOS_TimerSet(" << n << "_poll_timer, "
+              << "\t\tSBOS_TimerSet(" << n << "_poll_timer, "
               << qBound(10,g.uart1PollMs,1000) << "u, " << qBound(10,g.uart1PollMs,1000)
               << "u, " << n << "_Poll, NULL) != 0) {\n"
               << "\t\tif (" << n << "_poll_timer != CGTIMER_INVALID) {\n"
@@ -11734,12 +11841,12 @@ private:
               << "\t\t(void)SBOS_UART1_Close();\n"
               << "\t\treturn SIDBOX_UART1_HARDWARE_ERROR;\n\t}\n"
               << "\treturn SIDBOX_UART1_OK;\n}\n\n"
-              << "static void " << n << "_Close(void)\n{\n"
+              << "static int32_t " << n << "_Close(void)\n{\n"
               << "\tif (" << n << "_poll_timer != CGTIMER_INVALID) {\n"
               << "\t\tSBOS_TimerCancel(" << n << "_poll_timer);\n"
               << "\t\tSBOS_FreeTimer(" << n << "_poll_timer);\n"
               << "\t\t" << n << "_poll_timer = CGTIMER_INVALID;\n\t}\n"
-              << "\t(void)SBOS_UART1_Close();\n}\n";
+              << "\treturn SBOS_UART1_Close();\n}\n";
         }
 
         // Media playback helpers are independent of the callback routing mode.
@@ -11998,7 +12105,7 @@ private:
         s << "\t/* Window background pen "
           << m_window.backPen
           << " is stored by the designer.\n"
-             "\t   The current public applet API does not export window_set_back_colour yet. */\n\n";
+             "\t\tThe current public applet API does not export window_set_back_colour yet. */\n\n";
 
         if (!m_menus.isEmpty()) {
             QStringList titles;
@@ -12731,6 +12838,27 @@ private:
                  "\t\tbreak;\n";
         }
 
+        // Passive virtual listeners observe events without swallowing them.
+        // Keyboard already comes through the OS key queue; mouse is a copied
+        // window-level notification. DEFAULT preserves normal OS behaviour.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("KBInput") || g.onActivate.isEmpty()) continue;
+            s << "\n\tcase CGMSG_KEY:\n";
+            if (hasDialogs) s << "\t\tif (" << win << "_dialog_block_owner) break;\n";
+            s << "\t\tif (m->eventClass == CGEVT_KEY_PRESSED || m->eventClass == CGEVT_KEY_RELEASED)\n"
+                 "\t\t\t" << g.onActivate << "(m->eventClass, m->a, m->b, m->c);\n"
+                 "\t\tbreak;\n";
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("MSInput") || g.onActivate.isEmpty()) continue;
+            s << "\n\tcase CGMSG_MOUSE:\n";
+            if (hasDialogs) s << "\t\tif (" << win << "_dialog_block_owner) break;\n";
+            s << "\t\tif (m->eventClass == CGEVT_MOUSE_MOVED || m->eventClass == CGEVT_MOUSE_PRESSED\n"
+                 "\t\t\t|| m->eventClass == CGEVT_MOUSE_RELEASED)\n"
+                 "\t\t\t" << g.onActivate << "(m->eventClass, m->a, m->b, m->c);\n"
+                 "\t\tbreak;\n";
+        }
+
         if (hasWindowRoutedMenu) {
             s << "\n"
                  "\tcase CGMSG_MENU:\n";
@@ -12757,7 +12885,7 @@ private:
                     s << "\t\t\tif ((cg_menu_t)m->a == "
                       << win
                       << "_Menu\n"
-                         "\t\t\t    && (cg_menuitem_t)m->b == "
+                         "\t\t\t\t&& (cg_menuitem_t)m->b == "
                       << itemName
                       << ") {\n"
                          "\t\t\t\t"
@@ -12825,6 +12953,40 @@ private:
                  "}\n\n";
         }
 
+        for (const QString &cb : std::as_const(inputCallbacks)) {
+            s << "static void " << cb
+              << "(CGEventType event, int32_t a, int32_t b, int32_t c)\n"
+                 "{\n\t(void)event; (void)a; (void)b; (void)c;\n"
+                 "\t/* <SIDBOX-GUI:USER " << cb << "> */\n";
+            const QString body = saved.value(cb);
+            if (body.isEmpty()) {
+                bool kb = false;
+                for (const GuiDesignerGadget &g : std::as_const(m_gadgets))
+                    if (g.type == QStringLiteral("KBInput") && g.onActivate == cb) kb = true;
+                if (kb) {
+                    s << "\t/* KEYBOARD INPUT EXAMPLE (uncomment to use):\n"
+                         "\tif (event == CGEVT_KEY_PRESSED)\n"
+                         "\t\tprintf(\"Key: %ld mods: %ld\\n\", (long)a, (long)b);\n"
+                         "\telse if (event == CGEVT_KEY_RELEASED)\n"
+                         "\t\tprintf(\"Released: %ld\\n\", (long)a);\n"
+                         "\t\ta=key/ASCII, b=modifiers, c=HID usage (USB key releases).\n"
+                         "\t*/\n";
+                } else {
+                    s << "\t/* MOUSE INPUT EXAMPLE (uncomment to use):\n"
+                         "\tif (event == CGEVT_MOUSE_PRESSED && (c & SBINPUT_MOUSE_LEFT))\n"
+                         "\t\tprintf(\"Left down at %ld,%ld\\n\", (long)a, (long)b);\n"
+                         "\tif (event == CGEVT_MOUSE_MOVED)\n"
+                         "\t\tprintf(\"Move: %ld,%ld\\n\", (long)a, (long)b);\n"
+                         "\t\tc includes LEFT/RIGHT and optional TOUCH source flags.\n"
+                         "\t*/\n";
+                }
+            } else {
+                for (const QString &line : body.split(QLatin1Char('\n')))
+                    s << "\t" << line << "\n";
+            }
+            s << "\t/* </SIDBOX-GUI:USER " << cb << "> */\n}\n\n";
+        }
+
         for (const QString &cb : std::as_const(timerCallbacks)) {
             s << "static void " << cb << "(void *user)\n"
                  "{\n\t(void)user;\n"
@@ -12836,18 +12998,18 @@ private:
                     // Read() consumes RX bytes, otherwise _Poll keeps firing for
                     // the same unread data. `user` is NOT an incoming byte string.
                     s << "\t/* UART1 RECEIVE EXAMPLE (uncomment to use):\n"
-                         "\t   The callback means RX data is waiting; `user` is not the data.\n"
-                         "\t   Reading consumes bytes so the callback won't repeat for them.\n"
+                         "\t\tThe callback means RX data is waiting; `user` is not the data.\n"
+                         "\t\tReading consumes bytes so the callback won't repeat for them.\n"
                          "\n"
                          "\tuint8_t data[32];\n"
                          "\tint32_t received = SBOS_UART1_Read(data, sizeof(data));\n"
                          "\n"
                          "\tif (received > 0) {\n"
-                         "\t    for (int32_t i = 0; i < received; i++) {\n"
-                         "\t        printf(\"Serial in: '%c' (0x%02X)\\n\",\n"
-                         "\t               (data[i] >= 32 && data[i] <= 126) ? data[i] : '.',\n"
-                         "\t               (unsigned int)data[i]);\n"
-                         "\t    }\n"
+                         "\t\tfor (int32_t i = 0; i < received; i++) {\n"
+                         "\t\t\tprintf(\"Serial in: '%c' (0x%02X)\\n\",\n"
+                         "\t\t\t\t(data[i] >= 32 && data[i] <= 126) ? data[i] : '.',\n"
+                         "\t\t\t\t(unsigned int)data[i]);\n"
+                         "\t\t}\n"
                          "\t}\n"
                          "\t*/\n";
                 } else {
@@ -13032,7 +13194,7 @@ private:
             assets << "/* " << g.mediaEmbeddedPcm.size() << " unsigned PCM8 samples */\n"
                    << "const uint8_t MEMALIGN32 " << symbol << "[] = {\n";
             for (qsizetype i = 0; i < g.mediaEmbeddedPcm.size(); ++i) {
-                if (i % 16 == 0) assets << "    ";
+                if (i % 16 == 0) assets << "\t";
                 assets << "0x" << QStringLiteral("%1").arg(
                     (uchar(g.mediaEmbeddedPcm.at(i)) ^ 0x80u), 2, 16, QLatin1Char('0'));
                 if (i + 1 != g.mediaEmbeddedPcm.size()) assets << ", ";

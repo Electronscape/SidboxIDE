@@ -59,6 +59,16 @@ typedef uint32_t CGEventType;
 #define CGEVT_KEY_PRESSED           0x2000u
 #define CGEVT_KEY_RELEASED          0x2001u
 
+/* Passive, window-scoped pointer events; does not consume OS input.
+ * m->a = screen x, m->b = screen y, m->c = raw MOUSE flags, m->d = 0. */
+#define CGEVT_MOUSE_MOVED           0x3000u
+#define CGEVT_MOUSE_PRESSED         0x3001u
+#define CGEVT_MOUSE_RELEASED        0x3002u
+
+#define SBINPUT_MOUSE_LEFT          (1u << 4)
+#define SBINPUT_MOUSE_RIGHT         (1u << 5)
+#define SBINPUT_MOUSE_TOUCH         (1u << 6)
+
 #define CGEVT_SYS_FILERQ_DONE       0x8000u
 #define CGEVT_SYS_FILERQ_CHANGED    0x8001u
 #define CGEVT_SYS_MSGBOX_DONE       0x8002u
