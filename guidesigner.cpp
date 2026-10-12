@@ -172,6 +172,14 @@ struct GuiDesignerGadget
     bool timerAutoStart = true;
     bool timerKeepAliveOnClose = false; // Background timer survives CloseWindow().
 
+    // Virtual exclusive UART1 lease; defaults to manual Open() for safety.
+    int uart1Baud = 9600;
+    int uart1DataBits = 8;
+    int uart1Parity = 0; // 0=None, 1=Even, 2=Odd
+    int uart1StopBits = 1;
+    int uart1PollMs = 20;
+    bool uart1AutoOpen = false;
+
     // Designer-only Media object. The firmware sees only ordinary audio API calls.
     QString mediaMode = QStringLiteral("SFX"); // SFX or Music
     QString mediaFile;
@@ -205,7 +213,7 @@ struct GuiDesignerGadget
 
 static bool isVirtualDesignerGadget(const QString &type)
 {
-    return type == QStringLiteral("Timer") || type == QStringLiteral("Media")
+    return type == QStringLiteral("UART1") || type == QStringLiteral("Timer") || type == QStringLiteral("Media")
         || type == QStringLiteral("FileRequester") || type == QStringLiteral("MessageBox");
 }
 
@@ -4109,6 +4117,23 @@ private:
             return;
         }
 
+        if (g.type == QStringLiteral("UART1")) {
+            // Virtual USART1 controller: TX and RX leads, no on-device gadget.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.setPen(QPen(QColor(226, 231, 239), 1));
+            p.drawRect(QRect(r.x()+4,r.y()+5,16,14));
+            p.drawLine(r.x()+8,r.y()+7,r.x()+8,r.y()+17);
+            p.drawLine(r.x()+12,r.y()+7,r.x()+12,r.y()+17);
+            p.drawLine(r.x()+16,r.y()+7,r.x()+16,r.y()+17);
+            p.drawText(QRect(r.x()+1,r.y()+2,22,20), Qt::AlignBottom | Qt::AlignHCenter,
+                       QStringLiteral("IO"));
+            p.restore();
+            return;
+        }
         if (g.type == QStringLiteral("Timer")) {
             // A non-visual design-time component: a crisp 24x24 stopwatch.
             // No corresponding object is drawn on the actual SIDBOX screen.
@@ -5342,6 +5367,7 @@ public:
             {QStringLiteral("TextArea"), QObject::tr("Multi-line text area")},
             {QStringLiteral("TextBox"), QObject::tr("Single-line editable text")},
             {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")},
+            {QStringLiteral("UART1"), QObject::tr("Exclusive USART1 lease: temporarily pause SIDBOX terminal, FTP and UART keyboard")},
             {QStringLiteral("Media"), QObject::tr("Virtual audio playback: sound effects or music; not a SIDBOX screen gadget")},
             {QStringLiteral("FileRequester"), QObject::tr("Non-modal CoderGirl file picker with select/cancel callbacks")},
             {QStringLiteral("MessageBox"), QObject::tr("Non-modal CoderGirl MessageBox or InfoBox with result callback")}
@@ -5362,7 +5388,7 @@ public:
             {QObject::tr("Virtual"), {
                 QStringLiteral("FileRequester"), QStringLiteral("Media"),
                 QStringLiteral("MessageBox"), QStringLiteral("TabGroup"),
-                QStringLiteral("Timer")}}
+                QStringLiteral("Timer"), QStringLiteral("UART1")}}
         };
         for (const auto &group : paletteGroups) {
             auto *palette = new GuiDesignerToolbox(m_toolboxTabs);
@@ -6228,6 +6254,7 @@ private:
         QString stem;
         if (type == QStringLiteral("TabGroup")) stem = QStringLiteral("tabs");
         else if (type == QStringLiteral("Timer")) stem = QStringLiteral("timer");
+        else if (type == QStringLiteral("UART1")) stem = QStringLiteral("uart1");
         else if (type == QStringLiteral("Media")) stem = QStringLiteral("media");
         else if (type == QStringLiteral("FileRequester")) stem = QStringLiteral("fileRequest");
         else if (type == QStringLiteral("MessageBox")) stem = QStringLiteral("messageBox");
@@ -6309,6 +6336,12 @@ private:
         g.timerRepeat = o.value(QStringLiteral("timerRepeat")).toBool(true);
         g.timerAutoStart = o.value(QStringLiteral("timerAutoStart")).toBool(true);
         g.timerKeepAliveOnClose = o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
+         g.uart1Baud = qBound(1200, o.value(QStringLiteral("uart1Baud")).toInt(9600), 1000000);
+         g.uart1DataBits = qBound(7, o.value(QStringLiteral("uart1DataBits")).toInt(8), 8);
+         g.uart1Parity = qBound(0, o.value(QStringLiteral("uart1Parity")).toInt(0), 2);
+         g.uart1StopBits = qBound(1, o.value(QStringLiteral("uart1StopBits")).toInt(1), 2);
+         g.uart1PollMs = qBound(10, o.value(QStringLiteral("uart1PollMs")).toInt(20), 1000);
+         g.uart1AutoOpen = o.value(QStringLiteral("uart1AutoOpen")).toBool(false);
         g.mediaMode = o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
         g.mediaFile = o.value(QStringLiteral("mediaFile")).toString();
         g.mediaEmbedSfx = o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
@@ -7524,6 +7557,13 @@ private:
                     QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(g.onActivate), g.onActivate);
             return;
         }
+        if (g.type == QStringLiteral("UART1")) {
+            if (sourceNavigationRequested)
+                sourceNavigationRequested(generatedCPath(),
+                    QStringLiteral("/* <SIDBOX-GUI:USER %1> */").arg(g.onActivate),
+                    QStringLiteral("%1(void *user)").arg(g.onActivate));
+            return;
+        }
         if (g.type == QStringLiteral("Media")) {
             if (sourceNavigationRequested)
                 sourceNavigationRequested(generatedCPath(),
@@ -7590,6 +7630,8 @@ private:
         }
         if (type == QStringLiteral("Timer"))
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
+        if (type == QStringLiteral("UART1"))
+            g.onActivate = QStringLiteral("On_%1_Data").arg(g.name);
         if (type == QStringLiteral("FileRequester")) {
             g.onActivate = QStringLiteral("On_%1_Selected").arg(g.name);
             g.onChange = QStringLiteral("On_%1_Cancelled").arg(g.name);
@@ -8988,6 +9030,37 @@ private:
                 [this, selected](bool v) { m_gadgets[selected].mediaAutoStart = v; });
             return;
         }
+        if (g.type == QStringLiteral("UART1")) {
+            auto *hint = new QLabel(QObject::tr(
+                "Exclusive UART1 (PA9/PA10). Borrowing it suspends the terminal, FTP, "
+                "debug output and UART keyboard until uart1_Close() or applet termination. "
+                "The default is manual open. The data callback is cooperative (not an IRQ)."),
+                m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addSpin(QObject::tr("Baud rate"), g.uart1Baud, 1200, 1000000,
+                [this, selected](int v) { m_gadgets[selected].uart1Baud = v; });
+            addSpin(QObject::tr("Data bits (7 or 8)"), g.uart1DataBits, 7, 8,
+                [this, selected](int v) { m_gadgets[selected].uart1DataBits = v; });
+            addSpin(QObject::tr("Parity: 0=None 1=Even 2=Odd"), g.uart1Parity, 0, 2,
+                [this, selected](int v) { m_gadgets[selected].uart1Parity = v; });
+            addSpin(QObject::tr("Stop bits (1 or 2)"), g.uart1StopBits, 1, 2,
+                [this, selected](int v) { m_gadgets[selected].uart1StopBits = v; });
+            addSpin(QObject::tr("Receive poll (ms)"), g.uart1PollMs, 10, 1000,
+                [this, selected](int v) { m_gadgets[selected].uart1PollMs = v; });
+            addCheck(QObject::tr("Open when window is created"), g.uart1AutoOpen,
+                [this, selected](bool v) { m_gadgets[selected].uart1AutoOpen = v; });
+            addLine(QObject::tr("On data available (void *user)"), g.onActivate,
+                [this, selected](const QString &v) {
+                    m_gadgets[selected].onActivate = v.trimmed().isEmpty()
+                        ? QString() : safeCIdentifier(v, QStringLiteral("OnUart1Data"));
+                });
+            return;
+        }
         if (g.type == QStringLiteral("Timer")) {
             auto *hint = new QLabel(QObject::tr(
                 "Virtual stopwatch: visible only in the designer. "
@@ -9965,6 +10038,12 @@ private:
             g.timerRepeat=o.value(QStringLiteral("timerRepeat")).toBool(true);
             g.timerAutoStart=o.value(QStringLiteral("timerAutoStart")).toBool(true);
             g.timerKeepAliveOnClose=o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
+         g.uart1Baud = qBound(1200, o.value(QStringLiteral("uart1Baud")).toInt(9600), 1000000);
+         g.uart1DataBits = qBound(7, o.value(QStringLiteral("uart1DataBits")).toInt(8), 8);
+         g.uart1Parity = qBound(0, o.value(QStringLiteral("uart1Parity")).toInt(0), 2);
+         g.uart1StopBits = qBound(1, o.value(QStringLiteral("uart1StopBits")).toInt(1), 2);
+         g.uart1PollMs = qBound(10, o.value(QStringLiteral("uart1PollMs")).toInt(20), 1000);
+         g.uart1AutoOpen = o.value(QStringLiteral("uart1AutoOpen")).toBool(false);
             g.mediaMode=o.value(QStringLiteral("mediaMode")).toString(QStringLiteral("SFX"));
             g.mediaFile=o.value(QStringLiteral("mediaFile")).toString();
             g.mediaEmbedSfx=o.value(QStringLiteral("mediaEmbedSfx")).toBool(false);
@@ -10079,6 +10158,12 @@ private:
         o.insert(QStringLiteral("timerRepeat"),g.timerRepeat);
         o.insert(QStringLiteral("timerAutoStart"),g.timerAutoStart);
         o.insert(QStringLiteral("timerKeepAliveOnClose"),g.timerKeepAliveOnClose);
+        o.insert(QStringLiteral("uart1Baud"),g.uart1Baud);
+        o.insert(QStringLiteral("uart1DataBits"),g.uart1DataBits);
+        o.insert(QStringLiteral("uart1Parity"),g.uart1Parity);
+        o.insert(QStringLiteral("uart1StopBits"),g.uart1StopBits);
+        o.insert(QStringLiteral("uart1PollMs"),g.uart1PollMs);
+        o.insert(QStringLiteral("uart1AutoOpen"),g.uart1AutoOpen);
         o.insert(QStringLiteral("mediaMode"),g.mediaMode);
         o.insert(QStringLiteral("mediaFile"),g.mediaFile);
         o.insert(QStringLiteral("mediaEmbedSfx"),g.mediaEmbedSfx);
@@ -10831,6 +10916,23 @@ private:
                 return false;
             }
         }
+        // UART1 is physically a single serial port; don't generate duplicate leases.
+        int uart1Components = 0;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("UART1")) {
+                ++uart1Components;
+                if (g.onActivate.isEmpty()) {
+                    QMessageBox::warning(this, QObject::tr("UART1 callback required"),
+                        QObject::tr("UART1 %1 requires an On data callback.").arg(g.name));
+                    return false;
+                }
+            }
+        }
+        if (uart1Components > 1) {
+            QMessageBox::warning(this, QObject::tr("UART1 conflict"),
+                QObject::tr("Only one virtual UART1 controller belongs in a window."));
+            return false;
+        }
         // The sample data and music player are global resources on SIDBOX.
         // Within one design, a PCM channel must have a single owner.
         QSet<int> usedSfxChannels;
@@ -10983,6 +11085,13 @@ private:
                 if (g.type == QStringLiteral("FileRequester")) {
                     callbackKeys << g.onChange;
                     dialogCallbackNamesForGeneration << g.onChange;
+                }
+                continue;
+            }
+            if (g.type == QStringLiteral("UART1")) {
+                if (!g.onActivate.isEmpty()) {
+                    callbackKeys << g.onActivate;
+                    timerCallbacks << g.onActivate;
                 }
                 continue;
             }
@@ -11341,7 +11450,7 @@ private:
         for (const GuiDesignerGadget &g :
              m_gadgets) {
             if (g.type == QStringLiteral("Media") || g.type == QStringLiteral("FileRequester")
-                || g.type == QStringLiteral("MessageBox")) continue;
+                || g.type == QStringLiteral("MessageBox") || g.type == QStringLiteral("UART1")) continue;
             if (g.type == QStringLiteral("Timer")) {
                 s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("timer"))
                   << " = CGTIMER_INVALID;\n";
@@ -11587,6 +11696,49 @@ private:
             }
         }
 
+        // Declare timer and UART1 Data callbacks BEFORE any generated helper
+        // (in particular UART1's cooperative _Poll() function) calls them.
+        // GCC must not see an implicit declaration followed by static linkage.
+        for (const QString &cb : std::as_const(timerCallbacks)) {
+            s << "static void " << cb << "(void *user);\n";
+        }
+
+        // UART1 virtual component. No interrupt ever invokes applet code:
+        // an ordinary CoderGirl cooperative timer detects queued RX bytes.
+        // Applet unload also forcibly returns UART1 to the OS in firmware.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("UART1")) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("uart1"));
+            const QString onData = g.onActivate;
+            s << "\nstatic CGTimer " << n << "_poll_timer = CGTIMER_INVALID;\n"
+              << "static void " << n << "_Poll(void *user)\n{\n"
+              << "\t(void)user;\n"
+              << "\tif (SBOS_UART1_Available() > 0) " << onData << "(NULL);\n"
+              << "}\n\n"
+              << "static int32_t " << n << "_Open(uint32_t baud)\n{\n"
+              << "\tint32_t status = SBOS_UART1_Open(baud, "
+              << qBound(7,g.uart1DataBits,8) << "u, " << qBound(0,g.uart1Parity,2)
+              << "u, " << qBound(1,g.uart1StopBits,2) << "u);\n"
+              << "\tif (status != SIDBOX_UART1_OK) return status;\n"
+              << "\t" << n << "_poll_timer = SBOS_CreateTimer();\n"
+              << "\tif (" << n << "_poll_timer == CGTIMER_INVALID ||\n"
+              << "\t    SBOS_TimerSet(" << n << "_poll_timer, "
+              << qBound(10,g.uart1PollMs,1000) << "u, " << qBound(10,g.uart1PollMs,1000)
+              << "u, " << n << "_Poll, NULL) != 0) {\n"
+              << "\t\tif (" << n << "_poll_timer != CGTIMER_INVALID) {\n"
+              << "\t\t\tSBOS_FreeTimer(" << n << "_poll_timer);\n"
+              << "\t\t\t" << n << "_poll_timer = CGTIMER_INVALID;\n\t\t}\n"
+              << "\t\t(void)SBOS_UART1_Close();\n"
+              << "\t\treturn SIDBOX_UART1_HARDWARE_ERROR;\n\t}\n"
+              << "\treturn SIDBOX_UART1_OK;\n}\n\n"
+              << "static void " << n << "_Close(void)\n{\n"
+              << "\tif (" << n << "_poll_timer != CGTIMER_INVALID) {\n"
+              << "\t\tSBOS_TimerCancel(" << n << "_poll_timer);\n"
+              << "\t\tSBOS_FreeTimer(" << n << "_poll_timer);\n"
+              << "\t\t" << n << "_poll_timer = CGTIMER_INVALID;\n\t}\n"
+              << "\t(void)SBOS_UART1_Close();\n}\n";
+        }
+
         // Media playback helpers are independent of the callback routing mode.
         // Samples belong to the generated window and are released on close.
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
@@ -11681,10 +11833,6 @@ private:
             s << "static void "
               << cb
               << "(CGGadget gadget, int32_t a, int32_t b, int32_t c, int32_t d);\n";
-        }
-
-        for (const QString &cb : std::as_const(timerCallbacks)) {
-            s << "static void " << cb << "(void *user);\n";
         }
 
         for (const QString &cb :
@@ -12191,6 +12339,13 @@ private:
               << ");\n";
         }
 
+        // UART1 is leased only by explicit programmer call unless Auto Open was chosen.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("UART1") && g.uart1AutoOpen)
+                s << "\t(void)" << safeCIdentifier(g.name, QStringLiteral("uart1"))
+                  << "_Open(" << qBound(1200,g.uart1Baud,1000000) << "u);\n";
+        }
+
         // Virtual media components optionally start after all window gadgets exist.
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
             if (g.type == QStringLiteral("Media") && g.mediaAutoStart)
@@ -12240,6 +12395,11 @@ private:
         }
         s << "\t/* </SIDBOX-GUI:USER BEFORE_CLOSE> */\n";
 
+        // Restore OS UART1 before freeing this window's other resources.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("UART1"))
+                s << "\t" << safeCIdentifier(g.name, QStringLiteral("uart1")) << "_Close();\n";
+        }
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
             if (g.type != QStringLiteral("ListBox") || g.listItems.isEmpty()) continue;
             const QString n = safeCIdentifier(g.name, QStringLiteral("listbox"));
