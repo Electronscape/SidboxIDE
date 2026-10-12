@@ -5240,6 +5240,33 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
             }
         }
         refreshProjectFiles();
+
+        /*
+         * The Designer has just committed the regenerated file. If its source
+         * is already open, refresh that editor now; waiting for an external
+         * QFileSystemWatcher event isn't reliable (and the event navigator
+         * otherwise continues to display the previous generated callbacks).
+         *
+         * Never discard unsaved programmer edits: beforeGenerate normally
+         * saved the .c file first, but keep this guard for other resources.
+         */
+        const QString generatedPath = QFileInfo(cPath).absoluteFilePath();
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            CodeEditor *editor = primaryEditorForTab(m_editorTabs->widget(i));
+            if (!editor || editor->filePath().isEmpty()
+                || QFileInfo(editor->filePath()).absoluteFilePath() != generatedPath)
+                continue;
+
+            if (editor->document()->isModified())
+                continue;
+
+            if (reloadEditorFromDisk(editor)) {
+                watchEditorFile(editor); // QSaveFile can replace the watched inode.
+                editor->setProperty("sidboxNavigatorDirty", true);
+                if (editor == activeEditor() && !editor->isResourceMode())
+                    refreshEventNavigator(editor);
+            }
+        }
         statusBar()->showMessage(tr("GUI generated: %1").arg(displayPath(cPath)), 2500);
     };
 
@@ -5273,6 +5300,8 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
                 true);
 
             editor->enableSyntaxHighlighting();
+            editor->setProperty("sidboxNavigatorDirty", true);
+            refreshEventNavigator(editor);
 
             QTextCursor target;
 
@@ -9653,6 +9682,17 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
     });
     connect(editor->document(), &QTextDocument::contentsChanged,
             this, [this, editor]() {
+        // Function lists and line numbers become stale on any document edit,
+        // including GUI regeneration or external-file reloads.
+        if (!editor->isResourceMode()) {
+            editor->setProperty("sidboxNavigatorDirty", true);
+            if (editor == activeEditor()) {
+                if (auto *navTimer = editor->findChild<QTimer *>(
+                        QStringLiteral("sidboxEventNavigatorTimer"))) {
+                    navTimer->start(); // Debounced; no full scan per keystroke.
+                }
+            }
+        }
         if (!m_restoringRecovery && m_recoveryDebounceTimer) {
             m_recoveryDebounceTimer->start();
         }

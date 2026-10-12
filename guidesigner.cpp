@@ -821,6 +821,93 @@ void drawCoderGirlBevel(
         rect.bottom());
 }
 
+// The firmware's CG glyphs are 16x16 palette-indexed images stored in
+// column-major order. Keep the preview arrows pixel-for-pixel consistent.
+static void drawCoderGirlScrollbarArrow(QPainter &p, int x, int y, int dir)
+{
+    static const quint8 up[256] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    static const quint8 down[256] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    static const quint8 left[256] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    static const quint8 right[256] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    const quint8 *glyph = dir == 0 ? up : dir == 1 ? down :
+                          dir == 2 ? left : right;
+    for (int xx = 0; xx < 16; ++xx) {
+        for (int yy = 0; yy < 16; ++yy) {
+            const quint8 pen = glyph[xx * 16 + yy];
+            if (pen != 0)
+                p.fillRect(x + xx, y + yy, 1, 1, coderGirlPen(pen));
+        }
+    }
+}
+
 void drawCoderGirlTitleButton(
     QPainter &p,
     const QRect &rect,
@@ -1356,6 +1443,10 @@ public:
 
     int selectedIndex() const { return m_selected; }
 
+    // Only the canvas selection is multi-valued; the property editor retains
+    // the current/primary gadget, and .sbui serialization remains unchanged.
+    int selectionCount() const { return m_multiSelected.size(); }
+
     void setGridSnap(int pixels)
     {
         m_gridSnap =
@@ -1443,6 +1534,9 @@ public:
 
     void setSelectedIndex(int index)
     {
+        // A normal click or a programmatic selection starts a new selection.
+        // This also invalidates group indices when deleting/reordering gadgets.
+        m_multiSelected.clear();
         m_selected = index;
         update();
         if (selectionChanged) {
@@ -1985,15 +2079,12 @@ private:
             if (paintPass == 1 && (g.type == QStringLiteral("TabGroup") || isVirtualDesignerGadget(g.type))) continue;
             if (paintPass == 2 && !isVirtualDesignerGadget(g.type)) continue;
 
-            const QRect gr =
-                g.rect.translated(
-                    origin);
-
-            drawGadget(
-                p,
-                g,
-                gr,
-                m_window->backPen);
+            const QRect gr = gadgetPreviewRect(g);
+            if (isDockedScrollbar(g)) {
+                p.save();
+                p.setClipRect(innerRect, Qt::ReplaceClip);
+            }
+            drawGadget(p, g, gr, m_window->backPen);
 
             if (!g.enabled) {
                 /*
@@ -2038,64 +2129,41 @@ private:
 
                 p.restore();
             }
+            if (isDockedScrollbar(g))
+                p.restore();
 
         }
 
         } // TabGroup backgrounds, ordinary contents, then non-visual timer icons
 
-        // Always draw selection handles last. In particular the TabGroup
-        // frame stays behind its contents, but its resize anchors must not.
-        if (m_selected >= 0 && m_selected < m_gadgets->size()
-            && visibleOnTab(m_gadgets->at(m_selected))) {
-            const GuiDesignerGadget &g = m_gadgets->at(m_selected);
-            const QRect gr = g.rect.translated(origin);
-                p.setPen(
-                    QPen(
-                        QColor(
-                            255,
-                            90,
-                            170),
-                        1,
-                        Qt::DashLine));
+        // One outline per selected gadget. Group selection deliberately has
+        // no resize handles: Shift-marquee groups MOVE as one unit, not resize.
+        // Docked scrollbars keep their original, separate hit/display rules.
+        p.setClipRect(innerRect, Qt::ReplaceClip);
+        const QColor selectionPink(255, 90, 170);
+        const bool groupSelected = m_multiSelected.size() > 1;
+        const QList<int> outlined = groupSelected
+            ? m_multiSelected : QList<int>{m_selected};
+        for (int index : outlined) {
+            if (index < 0 || index >= m_gadgets->size()
+                || !visibleOnTab(m_gadgets->at(index)))
+                continue;
 
-                p.setBrush(
-                    Qt::NoBrush);
+            const GuiDesignerGadget &g = m_gadgets->at(index);
+            const QRect gr = gadgetPreviewRect(g);
+            p.setPen(QPen(selectionPink, 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(gr.adjusted(-2, -2, 1, 1));
 
-                // Cosmetic only: QRect's right/bottom pixel is inclusive.
-                // Keep the selection border 1 logical pixel tighter on
-                // those edges; hit testing and handle positions stay intact.
-                p.drawRect(
-                    gr.adjusted(
-                        -2,
-                        -2,
-                        1,
-                        1));
-
-                const QColor anchorColour(
-                    255,
-                    90,
-                    170);
-
-                p.setPen(
-                    coderGirlPen(16));
-
-                p.setBrush(
-                    anchorColour);
-
-                if (g.type != QStringLiteral("GridSelect")
-                    && !isVirtualDesignerGadget(g.type)) {
-                    for (const QRect &handle :
-                         windowResizeHandles(gr)) {
-                        p.drawRect(handle);
-                        p.fillRect(
-                            handle.adjusted(
-                                1,
-                                1,
-                                -1,
-                                -1),
-                            anchorColour);
-                    }
+            if (!groupSelected && g.type != QStringLiteral("GridSelect")
+                && !isVirtualDesignerGadget(g.type)) {
+                p.setPen(coderGirlPen(16));
+                p.setBrush(selectionPink);
+                for (const QRect &handle : windowResizeHandles(gr)) {
+                    p.drawRect(handle);
+                    p.fillRect(handle.adjusted(1, 1, -1, -1), selectionPink);
                 }
+            }
         }
 
         p.restore();
@@ -2205,6 +2273,18 @@ protected:
 
             drawLogicalCanvas(
                 logicalPainter);
+
+            // Show the selection marquee IN logical SIDBOX pixels, so it
+            // remains crisp at all supported Designer zoom levels.
+            if (m_marqueeSelecting && !m_marqueeRect.isEmpty()) {
+                logicalPainter.save();
+                logicalPainter.setClipRect(clientViewportRect());
+                logicalPainter.fillRect(m_marqueeRect, QColor(70, 180, 255, 42));
+                logicalPainter.setPen(QPen(QColor(95, 205, 255), 1, Qt::DashLine));
+                logicalPainter.setBrush(Qt::NoBrush);
+                logicalPainter.drawRect(m_marqueeRect);
+                logicalPainter.restore();
+            }
         }
 
         QPainter screenPainter(
@@ -2488,7 +2568,7 @@ protected:
         const QRect client =
             clientViewportRect();
 
-        if (!client.contains(logical)) {
+        if (!windowInnerRect().contains(logical)) {
             QWidget::mouseDoubleClickEvent(event);
             return;
         }
@@ -2513,11 +2593,9 @@ protected:
              i >= 0;
              --i) {
             if (!visibleOnTab(m_gadgets->at(i))) continue;
-            const QRect gadgetRect =
-                m_gadgets->at(i)
-                    .rect
-                    .translated(origin)
-                    .intersected(client);
+            const GuiDesignerGadget &g = m_gadgets->at(i);
+            const QRect gadgetRect = gadgetPreviewRect(g).intersected(
+                isDockedScrollbar(g) ? windowInnerRect() : client);
 
             if (!gadgetRect.contains(logical)) {
                 continue;
@@ -2590,6 +2668,61 @@ protected:
         const QRect client =
             clientViewportRect();
 
+        // SHIFT + drag in the CLIENT area is always a new marquee, even if
+        // the starting point happens to be on top of an existing gadget.
+        // A simple selection gesture never marks the .sbui as modified.
+        if ((event->modifiers() & Qt::ShiftModifier)
+            && !(event->modifiers() & (Qt::ControlModifier
+                                      | Qt::AltModifier | Qt::MetaModifier))
+            && client.contains(logical)) {
+            m_dragging = false;
+            m_resizing = false;
+            m_windowDragging = false;
+            m_windowResizing = false;
+            m_groupDragging = false;
+            m_multiSelected.clear();
+            m_marqueeSelecting = true;
+            m_marqueeStart = logical;
+            m_marqueeRect = QRect(logical, logical);
+            m_selected = -1;
+            update();
+            event->accept();
+            return;
+        }
+
+        // Dragging any member of an existing multi-selection moves the
+        // complete set. Treat it as one undoable geometry operation.
+        if (m_multiSelected.size() > 1 && client.contains(logical)) {
+            int groupHit = -1;
+            for (int i = m_multiSelected.size() - 1; i >= 0; --i) {
+                const int index = m_multiSelected.at(i);
+                if (index >= 0 && index < m_gadgets->size()
+                    && visibleOnTab(m_gadgets->at(index))
+                    && canGroupMove(m_gadgets->at(index))
+                    && gadgetPreviewRect(m_gadgets->at(index)).contains(logical)) {
+                    groupHit = index;
+                    break;
+                }
+            }
+            if (groupHit >= 0) {
+                m_groupStartRects.clear();
+                for (int index : std::as_const(m_multiSelected)) {
+                    if (index >= 0 && index < m_gadgets->size())
+                        m_groupStartRects.insert(index, m_gadgets->at(index).rect);
+                }
+                m_groupDragAnchor = groupHit;
+                m_selected = groupHit;
+                m_pressLogical = logical;
+                m_groupDragging = true;
+                if (selectionChanged)
+                    selectionChanged(groupHit);
+                if (geometryChangeStarted)
+                    geometryChangeStarted();
+                event->accept();
+                return;
+            }
+        }
+
         /*
          * Resize anchors always win before body hit-testing.
          *
@@ -2623,6 +2756,7 @@ protected:
             }
         } else if (m_selected < m_gadgets->size()
                    && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
+                   && !isDockedScrollbar(m_gadgets->at(m_selected))
                    && !isVirtualDesignerGadget(m_gadgets->at(m_selected).type)) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
@@ -2696,7 +2830,7 @@ protected:
         }
         int hit = -1;
 
-        if (client.contains(logical)) {
+        if (windowInnerRect().contains(logical)) {
             for (int pass = 0; pass < 3 && hit < 0; ++pass) {
             for (int i = m_gadgets->size() - 1;
                  i >= 0;
@@ -2706,13 +2840,10 @@ protected:
                 if (pass == 0 && !isVirtualDesignerGadget(type)) continue;
                 if (pass == 1 && (isVirtualDesignerGadget(type) || type == QStringLiteral("TabGroup"))) continue;
                 if (pass == 2 && type != QStringLiteral("TabGroup")) continue;
-                const QRect gr =
-                    m_gadgets->at(i)
-                        .rect
-                        .translated(origin);
-
+                const GuiDesignerGadget &g = m_gadgets->at(i);
+                const QRect gr = gadgetPreviewRect(g);
                 if (gr.adjusted(-2, -2, 2, 2)
-                        .intersected(client)
+                        .intersected(isDockedScrollbar(g) ? windowInnerRect() : client)
                         .contains(logical)) {
                     hit = i;
                     break;
@@ -2729,24 +2860,21 @@ protected:
         m_windowResizeEdges = {};
 
         if (hit >= 0) {
-            const QRect gr =
-                m_gadgets->at(hit)
-                    .rect
-                    .translated(origin);
+            const GuiDesignerGadget &g = m_gadgets->at(hit);
+            const QRect gr = gadgetPreviewRect(g);
 
             m_gadgetResizeEdges =
-                isVirtualDesignerGadget(m_gadgets->at(hit).type)
+                (isVirtualDesignerGadget(g.type) || isDockedScrollbar(g))
                     ? Qt::Edges() : windowResizeEdgesAt(logical, gr);
 
             m_resizing =
                 m_gadgetResizeEdges
                 != Qt::Edges();
 
-            m_dragging =
-                !m_resizing;
+            // Firmware controls the position of docked scrollbars.
+            m_dragging = !m_resizing && !isDockedScrollbar(g);
 
-            m_pressLogical =
-                logical;
+            m_pressLogical = logical;
 
             m_startRect =
                 m_gadgets->at(hit)
@@ -2766,6 +2894,47 @@ protected:
     {
         const QPoint logical =
             toLogical(event->position());
+
+        if (m_marqueeSelecting) {
+            const QPoint bounded(
+                qBound(clientViewportRect().left(), logical.x(), clientViewportRect().right()),
+                qBound(clientViewportRect().top(), logical.y(), clientViewportRect().bottom()));
+            m_marqueeRect = QRect(m_marqueeStart, bounded).normalized();
+            update();
+            event->accept();
+            return;
+        }
+
+        if (m_groupDragging && m_gadgets && m_groupStartRects.size() > 1) {
+            const QRect client = clientViewportRect();
+            const QRect anchor = m_groupStartRects.value(m_groupDragAnchor);
+            const QPoint mouseDelta = logical - m_pressLogical;
+            QPoint delta(snapValue(anchor.x() + mouseDelta.x()) - anchor.x(),
+                         snapValue(anchor.y() + mouseDelta.y()) - anchor.y());
+
+            // Clamp the *shared* translation, not every item independently.
+            // That preserves all relative positions and ensures none leave
+            // the firmware's actual client rectangle.
+            int minDx = -200000, minDy = -200000;
+            int maxDx = 200000, maxDy = 200000;
+            for (auto it = m_groupStartRects.cbegin(); it != m_groupStartRects.cend(); ++it) {
+                const QRect r = it.value();
+                minDx = qMax(minDx, -r.left());
+                minDy = qMax(minDy, -r.top());
+                maxDx = qMin(maxDx, client.width() - r.right() - 1);
+                maxDy = qMin(maxDy, client.height() - r.bottom() - 1);
+            }
+            delta.setX(minDx <= maxDx ? qBound(minDx, delta.x(), maxDx) : 0);
+            delta.setY(minDy <= maxDy ? qBound(minDy, delta.y(), maxDy) : 0);
+
+            for (auto it = m_groupStartRects.cbegin(); it != m_groupStartRects.cend(); ++it) {
+                if (it.key() >= 0 && it.key() < m_gadgets->size())
+                    (*m_gadgets)[it.key()].rect = it.value().translated(delta);
+            }
+            update();
+            event->accept();
+            return;
+        }
 
         if (m_windowDragging
             && m_window) {
@@ -3049,6 +3218,7 @@ protected:
                    && m_gadgets
                    && m_selected < m_gadgets->size()
                    && m_gadgets->at(m_selected).type != QStringLiteral("GridSelect")
+                   && !isDockedScrollbar(m_gadgets->at(m_selected))
                    && !isVirtualDesignerGadget(m_gadgets->at(m_selected).type)) {
             const QRect selectedRect =
                 m_gadgets->at(m_selected)
@@ -3103,14 +3273,14 @@ protected:
         }
         const QPoint logical = toLogical(event->pos());
         const QRect client = clientViewportRect();
-        if (!client.contains(logical)) return;
+        if (!windowInnerRect().contains(logical)) return;
         const QPoint origin = clientOrigin();
         int hit = -1;
         // Preserve an already selected gadget (particularly a TabGroup)
         // when the pointer is inside its bounds, even if children overlap.
         if (m_selected >= 0 && m_selected < m_gadgets->size()
             && visibleOnTab(m_gadgets->at(m_selected))
-            && m_gadgets->at(m_selected).rect.translated(origin).contains(logical))
+            && gadgetPreviewRect(m_gadgets->at(m_selected)).contains(logical))
             hit = m_selected;
         if (hit < 0) {
             for (int pass = 0; pass < 2 && hit < 0; ++pass) {
@@ -3119,7 +3289,8 @@ protected:
                     if (!visibleOnTab(g) ||
                         (g.type == QStringLiteral("TabGroup")) != (pass == 1))
                         continue;
-                    if (g.rect.translated(origin).contains(logical)) {
+                    if (gadgetPreviewRect(g).contains(logical)
+                        && (isDockedScrollbar(g) || client.contains(logical))) {
                         hit = i;
                         break;
                     }
@@ -3140,6 +3311,50 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *event) override
     {
+        if (event && event->button() == Qt::LeftButton && m_marqueeSelecting) {
+            m_marqueeSelecting = false;
+            m_multiSelected.clear();
+            const QRect client = clientViewportRect();
+            const QRect selectionRect = m_marqueeRect.intersected(client);
+            if (!selectionRect.isEmpty() && m_gadgets) {
+                for (int i = 0; i < m_gadgets->size(); ++i) {
+                    const GuiDesignerGadget &g = m_gadgets->at(i);
+                    if (!visibleOnTab(g) || !canGroupMove(g))
+                        continue;
+                    const QRect visibleGadget = gadgetPreviewRect(g).intersected(client);
+                    if (visibleGadget.intersects(selectionRect))
+                        m_multiSelected.append(i);
+                }
+            }
+            m_selected = m_multiSelected.isEmpty() ? -1 : m_multiSelected.first();
+            m_marqueeRect = {};
+            if (selectionChanged)
+                selectionChanged(m_selected);
+            update();
+            event->accept();
+            return;
+        }
+
+        if (event && event->button() == Qt::LeftButton && m_groupDragging) {
+            bool changed = false;
+            if (m_gadgets) {
+                for (auto it = m_groupStartRects.cbegin(); it != m_groupStartRects.cend(); ++it) {
+                    if (it.key() >= 0 && it.key() < m_gadgets->size()
+                        && m_gadgets->at(it.key()).rect != it.value()) {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            m_groupDragging = false;
+            m_groupStartRects.clear();
+            m_groupDragAnchor = -1;
+            if (changed && geometryCommitted)
+                geometryCommitted();
+            event->accept();
+            return;
+        }
+
         if ((m_dragging
              || m_resizing
              || m_windowResizing
@@ -3491,6 +3706,49 @@ private:
         }
 
         return client;
+    }
+
+    // Firmware draw_scrollbar() anchors docked bars in WINDOW INNER,
+    // NOT in the ordinary client viewport.  The saved gadget rectangle
+    // remains untouched: only its canvas preview/hit-test position changes.
+    QRect gadgetPreviewRect(const GuiDesignerGadget &g) const
+    {
+        const QPoint origin = clientOrigin();
+        if (g.type != QStringLiteral("Scrollbar") || !m_window)
+            return g.rect.translated(origin);
+
+        const QRect inner = windowInnerRect();
+        const bool resizeReserve = designerWindowFlag(
+            m_window->flags, QStringLiteral("SBX_WF_RESIZABLE"))
+            && !designerWindowFlag(m_window->flags, QStringLiteral("SBX_WF_NOBORDER"));
+        // These are firmware win_inner_reserve_right/bottom() rules.
+        const int reserveRight = resizeReserve ? 16 : 0;
+        const int reserveBottom = resizeReserve ? 19 : 0;
+        if (g.orientation == 0 && g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_RIGHT")))
+            return QRect(inner.x() + inner.width() - 16 + 2, inner.y() + 1,
+                         16, qMax(0, inner.height() - reserveBottom));
+        if (g.orientation == 1 && g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_BOTTOM")))
+            return QRect(inner.x() - 2, inner.y() + inner.height() - 16 + 2,
+                         qMax(0, inner.width() - reserveRight), 16);
+        return g.rect.translated(origin);
+    }
+
+    bool isDockedScrollbar(const GuiDesignerGadget &g) const
+    {
+        return g.type == QStringLiteral("Scrollbar")
+            && ((g.orientation == 0 && g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_RIGHT")))
+                || (g.orientation == 1 && g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_BOTTOM"))));
+    }
+
+    bool canGroupMove(const GuiDesignerGadget &g) const
+    {
+        // Window-chrome dock objects, virtual controls and TabGroup have
+        // special firmware positioning or parent-child movement rules.
+        // Their existing individual editing behaviour is unchanged.
+        return !isVirtualDesignerGadget(g.type)
+            && !isDockedScrollbar(g)
+            && g.type != QStringLiteral("TabGroup")
+            && g.type != QStringLiteral("GridSelect");
     }
 
     int snapValue(int value) const
@@ -4002,103 +4260,137 @@ private:
             return;
         }
 
-        if (g.type
-                == QStringLiteral(
-                    "Slider")
-            || g.type
-                == QStringLiteral(
-                    "Scrollbar")) {
-            const bool scrollbar =
-                g.type == QStringLiteral("Scrollbar");
+        if (g.type == QStringLiteral("Slider")) {
+            // Mirrors Core/codergirl/gadgets/cg_gad_slider.c. Unlike a
+            // scrollbar, the slider has NO outer frame: a thin 6px track,
+            // value-fill and an 18px knob with a recessed centre.
+            const QRect content = r.adjusted(4, 4, -4, -4);
+            if (content.width() <= 0 || content.height() <= 0)
+                return;
 
-            p.fillRect(
-                r,
-                coderGirlPen(1));
+            const bool vertical = g.orientation == 0;
+            const int trackThickness = 6;
+            const QRect track = vertical
+                ? QRect(content.x() + (content.width() - trackThickness) / 2,
+                        content.y(), trackThickness, content.height())
+                : QRect(content.x(),
+                        content.y() + (content.height() - trackThickness) / 2,
+                        content.width(), trackThickness);
+            const int axisLen = vertical ? content.height() : content.width();
+            int knobLen = qMin(18, axisLen);
+            if (knobLen < 6)
+                knobLen = axisLen;
+            const int travel = qMax(0, axisLen - knobLen);
+            const int range = g.maximum - g.minimum;
+            const int offset = (range > 0 && travel > 0)
+                ? int((qint64(qBound(g.minimum, g.value, g.maximum) - g.minimum)
+                      * travel + range / 2) / range)
+                : 0;
 
-            drawCoderGirlBevel(
-                p,
-                r,
-                true);
+            p.fillRect(track, coderGirlPen(16)); // PEN_SCROLLBAR_TRACK
+            const QRect well = track.adjusted(1, 1, -1, -1);
+            if (well.width() > 0 && well.height() > 0) {
+                if (!vertical) {
+                    const int centre = content.x() + offset + knobLen / 2;
+                    p.fillRect(QRect(well.x(), well.y(),
+                                     qBound(0, centre - well.x(), well.width()),
+                                     well.height()), coderGirlPen(4));
+                } else {
+                    const int centre = content.y() + offset + knobLen / 2;
+                    const int fillHeight = qBound(0, well.y() + well.height() - centre,
+                                                   well.height());
+                    p.fillRect(QRect(well.x(), well.y() + well.height() - fillHeight,
+                                     well.width(), fillHeight), coderGirlPen(4));
+                }
+            }
+            drawCoderGirlBevel(p, track, true);
 
-            QRect track =
-                r.adjusted(3, 3, -3, -3);
+            const QRect knob = vertical
+                ? QRect(content.x(), content.y() + offset, content.width(), knobLen)
+                : QRect(content.x() + offset, content.y(), knobLen, content.height());
+            p.fillRect(knob, coderGirlPen(4));
+            drawCoderGirlBevel(p, knob, false);
+            const QRect innerKnob = knob.adjusted(4, 4, -4, -4);
+            if (innerKnob.width() > 0 && innerKnob.height() > 0)
+                drawCoderGirlBevel(p, innerKnob, true);
+            return;
+        }
 
-            p.fillRect(
-                track,
-                coderGirlPen(6));
+        if (g.type == QStringLiteral("Scrollbar")) {
+            // Mirrors Core/codergirl/gadgets/cg_gad_scrollbar.c.  The
+            // firmware uses inset=2, 16px arrow buttons and a page-size
+            // thumb (minimum 24px, step_large=10 in generated C source).
+            const bool vertical = g.orientation == 0;
+            const bool docked = g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_RIGHT"))
+                || g.flags.contains(QStringLiteral("GAD_TOOL_DOCKED_BOTTOM"));
+            const bool arrows = g.flags.contains(QStringLiteral("GAD_TOOL_SCROLLARROWS"));
+            if (r.width() <= 0 || r.height() <= 0)
+                return;
 
-            const int minimum =
-                qMin(g.minimum, g.maximum);
+            p.fillRect(r, coderGirlPen(docked ? windowBackPen : 6));
+            if (!docked)
+                drawCoderGirlBevel(p, r, false);
 
-            const int maximum =
-                qMax(g.minimum, g.maximum);
+            QRect well = r.adjusted(2, 2, -2, -2);
+            if (arrows) {
+                if (vertical)
+                    well.adjust(0, 16, 0, -16);
+                else
+                    well.adjust(16, 0, -16, 0);
+            }
+            if (well.width() <= 0 || well.height() <= 0)
+                return;
 
-            const qreal ratio =
-                qBound(
-                    0.0,
-                    (g.value - minimum)
-                        / qreal(qMax(1, maximum - minimum)),
-                    1.0);
+            p.fillRect(well, coderGirlPen(6)); // PEN_DIALOG_BG
+            drawCoderGirlBevel(p, well, true);
+            if (!docked)
+                drawCoderGirlBevel(p, well.adjusted(-2, -2, 2, 2), false);
 
-            QRect thumb;
-
-            if (g.orientation == 0) {
-                const int arrowBand =
-                    scrollbar
-                        && designerWindowFlag(
-                               g.flags,
-                               QStringLiteral("GAD_TOOL_SCROLLARROWS"))
-                        ? qMin(12, r.height() / 4)
-                        : 0;
-
-                track.adjust(0, arrowBand, 0, -arrowBand);
-
-                const int thumbSize =
-                    qMin(12, qMax(4, track.height()));
-
-                const int travel =
-                    qMax(0, track.height() - thumbSize);
-
-                thumb =
-                    QRect(
-                        track.x(),
-                        track.y() + qRound(travel * ratio),
-                        qMax(1, track.width()),
-                        thumbSize);
-            } else {
-                const int arrowBand =
-                    scrollbar
-                        && designerWindowFlag(
-                               g.flags,
-                               QStringLiteral("GAD_TOOL_SCROLLARROWS"))
-                        ? qMin(12, r.width() / 4)
-                        : 0;
-
-                track.adjust(arrowBand, 0, -arrowBand, 0);
-
-                const int thumbSize =
-                    qMin(12, qMax(4, track.width()));
-
-                const int travel =
-                    qMax(0, track.width() - thumbSize);
-
-                thumb =
-                    QRect(
-                        track.x() + qRound(travel * ratio),
-                        track.y(),
-                        thumbSize,
-                        qMax(1, track.height()));
+            if (arrows) {
+                if (vertical) {
+                    if (!docked) {
+                        drawCoderGirlBevel(p, QRect(r.x(), r.y(), r.width(), 16), false);
+                        drawCoderGirlBevel(p, QRect(r.x(), r.y() + r.height() - 16,
+                                                     r.width(), 16), false);
+                    }
+                    drawCoderGirlScrollbarArrow(p, r.x() + (r.width() - 16) / 2, r.y(), 0);
+                    drawCoderGirlScrollbarArrow(p, r.x() + (r.width() - 16) / 2,
+                                                  r.y() + r.height() - 16, 1);
+                } else {
+                    if (!docked) {
+                        drawCoderGirlBevel(p, QRect(r.x(), r.y(), 16, r.height()), false);
+                        drawCoderGirlBevel(p, QRect(r.x() + r.width() - 16, r.y(),
+                                                     16, r.height()), false);
+                    }
+                    drawCoderGirlScrollbarArrow(p, r.x(), r.y() + (r.height() - 16) / 2, 2);
+                    drawCoderGirlScrollbarArrow(p, r.x() + r.width() - 16,
+                                                  r.y() + (r.height() - 16) / 2, 3);
+                }
             }
 
-            p.fillRect(
-                thumb,
-                face);
+            const int trackLen = vertical ? well.height() : well.width();
+            const int range = g.maximum - g.minimum;
+            // scrollbar_create(..., 1, 10, flags): step_large = 10
+            const int thumbLen = range <= 0 ? trackLen :
+                qMin(trackLen, qMax(24, int((10LL * trackLen + (range + 10) / 2)
+                                              / (range + 10))));
+            const int travel = qMax(0, trackLen - thumbLen);
+            const int offset = (range > 0 && travel > 0)
+                ? int((qint64(qBound(g.minimum, g.value, g.maximum) - g.minimum)
+                      * travel + range / 2) / range)
+                : 0;
 
-            drawCoderGirlBevel(
-                p,
-                thumb,
-                false);
-
+            QRect thumb = vertical
+                ? QRect(well.x(), well.y() + offset, well.width(), thumbLen)
+                : QRect(well.x() + offset, well.y(), thumbLen, well.height());
+            thumb = thumb.adjusted(thumb.width() > 2 ? 1 : 0,
+                                   thumb.height() > 2 ? 1 : 0,
+                                   thumb.width() > 2 ? -1 : 0,
+                                   thumb.height() > 2 ? -1 : 0);
+            if (thumb.width() > 0 && thumb.height() > 0) {
+                p.fillRect(thumb, coderGirlPen(4));
+                drawCoderGirlBevel(p, thumb, false);
+            }
             return;
         }
 
@@ -4155,28 +4447,54 @@ private:
             return;
         }
 
-        if (g.type
-                == QStringLiteral(
-                    "TextBox")
-            || g.type
-                == QStringLiteral(
-                    "TextArea")) {
-            p.fillRect(
-                r,
-                coderGirlPen(1));
+        if (g.type == QStringLiteral("TextBox")) {
+            /*
+             * Mirror SIDBOX firmware Core/codergirl/gadgets/cg_gad_textbox.c
+             * draw_textbox(). The old preview used a single recessed border,
+             * an incorrect face pen and (3,2) text offset; the device draws
+             * an outer RAISED border, an inner RECESSED border at +2, and
+             * an 8x16 character viewport starting at +4,+4.
+             *
+             * A Designer preview is unfocused, so the runtime's optional
+             * focus outline and caret are deliberately not shown here.
+             */
+            p.save();
+            p.setClipRect(r, Qt::IntersectClip);
 
-            drawCoderGirlBevel(
-                p,
-                r,
-                true);
+            // SBOS_CreateTextBox sets BPen from the parent window colour.
+            p.fillRect(r, coderGirlPen(windowBackPen));
+            drawCoderGirlBevel(p, r, false);
+            if (r.width() > 4 && r.height() > 4)
+                drawCoderGirlBevel(p, r.adjusted(2, 2, -2, -2), true);
 
-            drawCoderGirlText(
-                p,
-                r.x() + 3,
-                r.y() + 2,
-                g.text,
-                text);
+            const QRect textArea = r.adjusted(4, 4, -4, -4);
+            if (textArea.width() > 0 && textArea.height() > 0) {
+                constexpr int CharWidth = 8;
+                constexpr int CharHeight = 16;
+                const int maxCols = qBound(1, textArea.width() / CharWidth, 511);
+                const int maxLines = qMax(1, textArea.height() / CharHeight);
+                const bool multiline = g.typeFlags.contains(QStringLiteral("TB_MULTILINE"));
 
+                // The hardware TextBox draws in PEN_TEXT, not g.fPen.
+                const QColor ink = coderGirlPen(16); // DEFAULT_THEME PEN_TEXT
+                const QStringList lines = g.text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+                const int visibleLines = multiline ? qMin(maxLines, static_cast<int>(lines.size())) : 1;
+                for (int line = 0; line < visibleLines; ++line) {
+                    const QByteArray chars = lines.at(line).toLatin1().left(maxCols);
+                    drawCoderGirlText(p, textArea.x(),
+                                      textArea.y() + line * CharHeight,
+                                      QString::fromLatin1(chars.constData(), chars.size()), ink);
+                }
+            }
+            p.restore();
+            return;
+        }
+
+        if (g.type == QStringLiteral("TextArea")) {
+            // TextArea is a separate firmware gadget; keep its preview as-is.
+            p.fillRect(r, coderGirlPen(1));
+            drawCoderGirlBevel(p, r, true);
+            drawCoderGirlText(p, r.x() + 3, r.y() + 2, g.text, text);
             return;
         }
 
@@ -4660,6 +4978,13 @@ private:
     int m_zoomPercent = 200;
     int m_gridSnap = 0;
     int m_selected = -1;
+    QList<int> m_multiSelected;
+    bool m_marqueeSelecting = false;
+    QPoint m_marqueeStart;
+    QRect m_marqueeRect;
+    bool m_groupDragging = false;
+    QHash<int, QRect> m_groupStartRects;
+    int m_groupDragAnchor = -1;
     bool m_dragging = false;
     bool m_resizing = false;
     bool m_windowResizing = false;
