@@ -11072,6 +11072,7 @@ private:
 
         QStringList gadgetCallbacks;
         QStringList timerCallbacks;
+        QStringList uart1DataCallbacks;   // Only these need the UART RX usage memo.
         QStringList dialogCallbackNamesForGeneration;
         QStringList directGadgetCallbacks;
         QStringList menuCallbacks;
@@ -11092,6 +11093,7 @@ private:
                 if (!g.onActivate.isEmpty()) {
                     callbackKeys << g.onActivate;
                     timerCallbacks << g.onActivate;
+                    uart1DataCallbacks << g.onActivate;
                 }
                 continue;
             }
@@ -11157,6 +11159,7 @@ private:
         callbackKeys.removeDuplicates();
         gadgetCallbacks.removeDuplicates();
         timerCallbacks.removeDuplicates();
+        uart1DataCallbacks.removeDuplicates();
         dialogCallbackNamesForGeneration.removeDuplicates();
         directGadgetCallbacks.removeDuplicates();
         // The generated helper is file-local and is intended to be CALLED
@@ -12828,8 +12831,30 @@ private:
                  "\t/* <SIDBOX-GUI:USER " << cb << "> */\n";
             const QString body = saved.value(cb);
             if (body.isEmpty()) {
-                s << "\t/* TODO: timer tick; keep callbacks cooperative and short. */\n";
+                if (uart1DataCallbacks.contains(cb)) {
+                    // In the protected USER block, ship a *commented-out* example.
+                    // Read() consumes RX bytes, otherwise _Poll keeps firing for
+                    // the same unread data. `user` is NOT an incoming byte string.
+                    s << "\t/* UART1 RECEIVE EXAMPLE (uncomment to use):\n"
+                         "\t   The callback means RX data is waiting; `user` is not the data.\n"
+                         "\t   Reading consumes bytes so the callback won't repeat for them.\n"
+                         "\n"
+                         "\tuint8_t data[32];\n"
+                         "\tint32_t received = SBOS_UART1_Read(data, sizeof(data));\n"
+                         "\n"
+                         "\tif (received > 0) {\n"
+                         "\t    for (int32_t i = 0; i < received; i++) {\n"
+                         "\t        printf(\"Serial in: '%c' (0x%02X)\\n\",\n"
+                         "\t               (data[i] >= 32 && data[i] <= 126) ? data[i] : '.',\n"
+                         "\t               (unsigned int)data[i]);\n"
+                         "\t    }\n"
+                         "\t}\n"
+                         "\t*/\n";
+                } else {
+                    s << "\t/* TODO: timer tick; keep callbacks cooperative and short. */\n";
+                }
             } else {
+                // NEVER replace handwritten protected callback content.
                 for (const QString &line : body.split(QLatin1Char('\n')))
                     s << "\t" << line << "\n";
             }
