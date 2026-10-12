@@ -1447,6 +1447,67 @@ public:
     // the current/primary gadget, and .sbui serialization remains unchanged.
     int selectionCount() const { return m_multiSelected.size(); }
 
+    QList<int> selectedGroupIndices() const { return m_multiSelected; }
+
+    // Return the single shared translation that fits every selected gadget
+    // inside the SIDBOX client area. Do not clamp gadgets individually: that
+    // would silently change the spacing between them at window boundaries.
+    QPoint boundedGroupTranslation(const QPoint &requested) const
+    {
+        if (!m_gadgets || m_multiSelected.size() < 2)
+            return QPoint();
+
+        const QSize client = clientViewportSize();
+        int minDx = -200000, minDy = -200000;
+        int maxDx = 200000, maxDy = 200000;
+        for (int index : m_multiSelected) {
+            if (index < 0 || index >= m_gadgets->size())
+                return QPoint();
+            const GuiDesignerGadget &g = m_gadgets->at(index);
+            if (!visibleOnTab(g) || !canGroupMove(g))
+                return QPoint();
+            const QRect &r = g.rect;
+            minDx = qMax(minDx, -r.left());
+            minDy = qMax(minDy, -r.top());
+            maxDx = qMin(maxDx, client.width() - r.right() - 1);
+            maxDy = qMin(maxDy, client.height() - r.bottom() - 1);
+        }
+        return QPoint(minDx <= maxDx ? qBound(minDx, requested.x(), maxDx) : 0,
+                      minDy <= maxDy ? qBound(minDy, requested.y(), maxDy) : 0);
+    }
+
+    void translateSelectedGroup(const QPoint &delta)
+    {
+        if (!m_gadgets || m_multiSelected.size() < 2 || delta.isNull())
+            return;
+        for (int index : m_multiSelected)
+            (*m_gadgets)[index].rect.translate(delta);
+        update();
+    }
+
+    // The undo history stores the selected group along with the geometry.
+    // The .sbui file format is NOT affected; this is editor-only state.
+    void restoreGroupSelection(const QList<int> &indices)
+    {
+        m_multiSelected.clear();
+        if (!m_gadgets || indices.size() < 2)
+            return;
+        for (int index : indices) {
+            if (index < 0 || index >= m_gadgets->size()
+                || m_multiSelected.contains(index))
+                continue;
+            const GuiDesignerGadget &g = m_gadgets->at(index);
+            if (visibleOnTab(g) && canGroupMove(g))
+                m_multiSelected.append(index);
+        }
+        if (m_multiSelected.size() < 2) {
+            m_multiSelected.clear();
+        } else if (!m_multiSelected.contains(m_selected)) {
+            m_selected = m_multiSelected.first();
+        }
+        update();
+    }
+
     void setGridSnap(int pixels)
     {
         m_gridSnap =
@@ -4075,7 +4136,7 @@ private:
             const int header = 24;
             const QRect bevel = r.adjusted(0, header, 0, 0);
 
-            // TabGroup is a virtual Canvas bevel plus ordinary Buttons.
+            // TabGroup is a virtual Canvas bevel plus manually managed toggle Buttons.
             // Its pen colours belong to the bevel, not to the tab buttons.
             p.fillRect(bevel, coderGirlPen(windowBackPen));
             const QColor bevelFPen = coderGirlPen(
@@ -6633,6 +6694,30 @@ private:
                 ? m_canvas->gridSnap()
                 : 1;
 
+        // Shift-marquee selects a group; arrow keys now move that entire group
+        // by the same snapped step, with one shared boundary clamp. The current
+        // primary gadget stays selected for property editing.
+        if (m_canvas->selectionCount() > 1) {
+            const QPoint delta = m_canvas->boundedGroupTranslation(
+                QPoint(dx * step, dy * step));
+            if (delta.isNull())
+                return;
+
+            // Like single-gadget nudging: holding one arrow is one Undo step.
+            if (!autoRepeat)
+                pushUndoSnapshot();
+            m_canvas->translateSelectedGroup(delta);
+            setModified(true);
+            rebuildProperties();
+            if (m_statusLabel) {
+                m_statusLabel->setText(
+                    QObject::tr("Moved %1 gadgets by %2, %3 px (%4 px grid)")
+                        .arg(m_canvas->selectionCount())
+                        .arg(delta.x()).arg(delta.y()).arg(step));
+            }
+            return;
+        }
+
         const QSize clientSize =
             m_canvas->clientViewportSize();
 
@@ -7103,6 +7188,13 @@ private:
             m_canvas
                 ? m_canvas->selectedIndex()
                 : -1);
+        // Undo-only group state. This JSON is NOT written as a .sbui design.
+        QJsonArray groupSelection;
+        if (m_canvas) {
+            for (int index : m_canvas->selectedGroupIndices())
+                groupSelection.append(index);
+        }
+        root.insert(QStringLiteral("multiSelected"), groupSelection);
         root.insert(
             QStringLiteral("modified"),
             m_modified);
@@ -7308,6 +7400,14 @@ private:
 
         m_canvas->setSelectedIndex(
             selected);
+
+        QList<int> restoredGroup;
+        for (const QJsonValue &value :
+             root.value(QStringLiteral("multiSelected")).toArray()) {
+            if (value.isDouble())
+                restoredGroup.append(value.toInt(-1));
+        }
+        m_canvas->restoreGroupSelection(restoredGroup);
 
         rebuildMenuTree();
         rebuildProperties();
@@ -10839,6 +10939,30 @@ private:
                     old.readAll());
         }
 
+        /*
+         * Build the routing plan ONCE for this generation. Every ordinary
+         * gadget is assigned to exactly one delivery mechanism:
+         *   WindowProc: CGMSG_GADGET / CGEVT_* dispatch
+         *   Direct:     API->gui->gadgets->set_callback() wrapper
+         *
+         * Per-gadget -1 inherits the window default; 0 and 1 override it.
+         * Timers, dialogs, Media, and TabGroup's private header buttons have
+         * their own event mechanisms and must not enter either collection.
+         * Keeping one plan for prototypes, registration and dispatch prevents
+         * those stages from drifting apart as the generator evolves.
+         */
+        QSet<const GuiDesignerGadget *> windowProcGadgets;
+        QSet<const GuiDesignerGadget *> directCallbackGadgets;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (isVirtualDesignerGadget(g.type)
+                || g.type == QStringLiteral("TabGroup"))
+                continue;
+            if (gadgetUsesDirectCallbacks(g))
+                directCallbackGadgets.insert(&g);
+            else
+                windowProcGadgets.insert(&g);
+        }
+
         QStringList callbackKeys;
         callbackKeys
             << QStringLiteral(
@@ -10873,7 +10997,7 @@ private:
                 callbackKeys << g.onActivate;
                 gadgetCallbacks << g.onActivate;
 
-                if (gadgetUsesDirectCallbacks(g)) {
+                if (directCallbackGadgets.contains(&g)) {
                     directGadgetCallbacks
                         << g.onActivate;
                 }
@@ -10883,7 +11007,7 @@ private:
                 callbackKeys << g.onChange;
                 gadgetCallbacks << g.onChange;
 
-                if (gadgetUsesDirectCallbacks(g)) {
+                if (directCallbackGadgets.contains(&g)) {
                     directGadgetCallbacks
                         << g.onChange;
                 }
@@ -11232,7 +11356,7 @@ private:
         }
 
         // Generated physical tab header buttons (the TabGroup itself is
-        // virtual: a bevel and these ordinary CoderGirl buttons).
+        // virtual: a bevel and manually managed toggle CoderGirl buttons).
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
             if (g.type != QStringLiteral("TabGroup")) continue;
             const QString n = safeCIdentifier(g.name, QStringLiteral("tabs"));
@@ -11835,7 +11959,7 @@ private:
                       << (g.rect.x()+page*width) << ", " << g.rect.y()
                       << ", " << cellWidth << ", 24, \""
                       << escapedCString(titles.at(page))
-                      << "\", GAD_TOOL_DEFAULT | GAD_TOOL_TOGGLE);\n";
+                      << "\", GAD_TOOL_DEFAULT | GAD_TOOL_TOGGLE | GAD_TOOL_MANUAL_TOGGLE);\n";
                     s << "\tAPI->gui->gadgets->set_group_id(" << handle << ", 0u);\n";
                     s << "\tAPI->gui->gadgets->set_callback(" << handle
                       << ", " << win << "_" << n
@@ -11970,9 +12094,10 @@ private:
                   << " is stored in the .sbui; current applet API has no exported value setter yet. */\n";
             }
 
-            if (gadgetUsesDirectCallbacks(g)
+            if (directCallbackGadgets.contains(&g)
                 && (!g.onActivate.isEmpty()
                     || !g.onChange.isEmpty())) {
+                s << "\t/* Direct callback route for " << n << ". */\n";
                 s << "\tAPI->gui->gadgets->set_callback("
                   << n
                   << ", "
@@ -12175,7 +12300,7 @@ private:
 
         for (const GuiDesignerGadget &g :
              m_gadgets) {
-            if (isVirtualDesignerGadget(g.type) || gadgetUsesDirectCallbacks(g)) {
+            if (!windowProcGadgets.contains(&g)) {
                 continue;
             }
 
@@ -12214,10 +12339,15 @@ private:
         const bool hasWindowRoutedGadget =
             !gadgetEventClasses.isEmpty();
 
+        // Don't generate an empty menu dispatcher for separator-only menus.
         const bool hasWindowRoutedMenu =
             m_window.callbackMode == 0
-            && !m_menus.isEmpty();
+            && !menuCallbacks.isEmpty();
 
+        s << "/* WindowProc always handles window lifecycle and system events.\n"
+             " * Only gadgets routed through WindowProc appear in CGMSG_GADGET;\n"
+             " * direct gadget callbacks are registered in Create() instead.\n"
+             " */\n";
         s << "static CGWindowProcRes "
           << proc
           << "(CGWindow win, const CGMessage_t *m)\n"
@@ -12353,7 +12483,7 @@ private:
 
                 for (const GuiDesignerGadget &g :
                      m_gadgets) {
-                    if (gadgetUsesDirectCallbacks(g)) {
+                    if (!windowProcGadgets.contains(&g)) {
                         continue;
                     }
 

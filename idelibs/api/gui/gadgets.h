@@ -138,6 +138,7 @@ typedef API_GUI_GADGETS API_GUI_Gadgets;
 #define GAD_TOOL_TOGGLE         (1 << 14)   // allows for toggling
 #define GAD_TOOL_LATCHDOWN      (1 << 15)   // keep pressed visual latched until owner clears it
 #define GAD_TOOL_TRANSPARENT    (1 << 16)   // transparent backgrounds
+#define GAD_TOOL_MANUAL_TOGGLE  (1 << 17)   // button togglebit is managed by the app, not the global mouse toggle latch
 
 //// BITMAP VIEW FLAGS
 #define BVF_SHOW_FRAME          (1 << 0)
