@@ -6197,12 +6197,16 @@ void MainWindow::showApiCheatSheet()
         new QPushButton(tr("Open Source"), detailPane);
     auto *copyPrototypeButton =
         new QPushButton(tr("Copy Prototype"), detailPane);
+    auto *copyExampleButton =
+        new QPushButton(tr("Copy Example"), detailPane);
 
     openSourceButton->setEnabled(false);
     copyPrototypeButton->setEnabled(false);
+    copyExampleButton->setEnabled(false);
 
     buttonRow->addWidget(openSourceButton);
     buttonRow->addWidget(copyPrototypeButton);
+    buttonRow->addWidget(copyExampleButton);
     buttonRow->addStretch(1);
 
     detailLayout->addWidget(symbolLabel);
@@ -6224,6 +6228,8 @@ void MainWindow::showApiCheatSheet()
         QString name;
         QString signature;
         QString description;
+        QString notes;
+        QString example;
         QString filePath;
         QString category;
         QString libraryArchive;
@@ -6232,6 +6238,35 @@ void MainWindow::showApiCheatSheet()
     };
 
     QList<ApiEntry> entries;
+
+    /*
+     * The SDK owns its public ABI and function declarations. Documentation is
+     * optional, maintained separately, and never changes the callable API.
+     * Missing or malformed docs simply fall back to the header comments.
+     */
+    QHash<QString, QJsonObject> cheatDocs;
+    QJsonArray cheatGuides;
+    QFile cheatDocsFile(
+        QDir(libsRoot).filePath(QStringLiteral("docs/cheatsheet.json")));
+    if (cheatDocsFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QJsonParseError parseError;
+        const QJsonDocument catalog = QJsonDocument::fromJson(
+            cheatDocsFile.readAll(), &parseError);
+        if (parseError.error == QJsonParseError::NoError
+            && catalog.isObject()) {
+            const QJsonObject root = catalog.object();
+            const QJsonObject authored = root.value(
+                QStringLiteral("entries")).toObject();
+            for (auto it = authored.constBegin();
+                 it != authored.constEnd(); ++it) {
+                if (it.value().isObject()) {
+                    cheatDocs.insert(it.key(), it.value().toObject());
+                }
+            }
+            cheatGuides = root.value(QStringLiteral("guides")).toArray();
+        }
+    }
+
     const QStringList knownNames = apiSyntaxNames();
 
     QStringList catalogFiles;
@@ -6375,8 +6410,42 @@ void MainWindow::showApiCheatSheet()
                          "Use the prototype and Open Source button to inspect how it works.");
         }
 
+        // Authored notes and examples override missing or misleading header
+        // prose without changing declaration discovery or Open Source targets.
+        const QJsonObject authored = cheatDocs.value(name);
+        const QString summary = authored.value(
+            QStringLiteral("summary")).toString().trimmed();
+        if (!summary.isEmpty()) {
+            chosen.description = summary;
+        }
+        chosen.notes = authored.value(QStringLiteral("notes")).toString();
+        chosen.example = authored.value(QStringLiteral("example")).toString();
+
         entries.append(chosen);
         addedNames.insert(name);
+    }
+
+    // First-class tutorials live alongside API symbols in the same search UI.
+    // They are not fake SDK declarations and do not claim an Open Source link.
+    for (const QJsonValue &value : cheatGuides) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject guide = value.toObject();
+        ApiEntry entry;
+        entry.name = guide.value(QStringLiteral("title")).toString().trimmed();
+        entry.category = guide.value(QStringLiteral("category")).toString().trimmed();
+        entry.description = guide.value(QStringLiteral("summary")).toString();
+        entry.notes = guide.value(QStringLiteral("notes")).toString();
+        entry.example = guide.value(QStringLiteral("example")).toString();
+        if (entry.name.isEmpty()) {
+            continue;
+        }
+        if (entry.category.isEmpty()) {
+            entry.category = QStringLiteral("Getting Started");
+        }
+        entry.signature = tr("Worked example / guide");
+        entries.append(entry);
     }
 
     std::sort(
@@ -6426,6 +6495,8 @@ void MainWindow::showApiCheatSheet()
         item->setData(0, Qt::UserRole + 5, entry.name);
         item->setData(0, Qt::UserRole + 6, entry.libraryArchive);
         item->setData(0, Qt::UserRole + 7, entry.libraryEntry);
+        item->setData(0, Qt::UserRole + 8, entry.example);
+        item->setData(0, Qt::UserRole + 9, entry.notes);
     }
 
     auto showItem = [=](QTreeWidgetItem *item) {
@@ -6439,6 +6510,10 @@ void MainWindow::showApiCheatSheet()
             item->data(0, Qt::UserRole + 2).toString();
         const QString explanation =
             item->data(0, Qt::UserRole + 3).toString();
+        const QString example =
+            item->data(0, Qt::UserRole + 8).toString();
+        const QString notes =
+            item->data(0, Qt::UserRole + 9).toString();
         const QString filePath =
             item->data(0, Qt::UserRole).toString();
         const int line =
@@ -6446,7 +6521,25 @@ void MainWindow::showApiCheatSheet()
 
         symbolLabel->setText(name);
         signatureLabel->setText(signature);
-        description->setPlainText(explanation);
+
+        // Escape every documentation field before writing rich text. This
+        // includes examples containing <, &, quotes and pointer operators.
+        QString helpHtml = QStringLiteral("<p>%1</p>").arg(
+            explanation.toHtmlEscaped().replace(
+                QLatin1Char('\n'), QStringLiteral("<br>")));
+        if (!notes.trimmed().isEmpty()) {
+            helpHtml += QStringLiteral("<h4>Notes</h4><p>%1</p>").arg(
+                notes.toHtmlEscaped().replace(
+                    QLatin1Char('\n'), QStringLiteral("<br>")));
+        }
+        if (!example.trimmed().isEmpty()) {
+            helpHtml += QStringLiteral(
+                "<h4>Example (C)</h4>"
+                "<pre style='background-color:#202630;color:#f0f3f6;"
+                "padding:8px;white-space:pre-wrap;'>%1</pre>")
+                .arg(example.toHtmlEscaped());
+        }
+        description->setHtml(helpHtml);
 
         const bool libraryEntry =
             item->data(
@@ -6470,6 +6563,8 @@ void MainWindow::showApiCheatSheet()
                         archiveText,
                         QDir(libsRoot).relativeFilePath(filePath))
                     .arg(line + 1));
+        } else if (filePath.isEmpty()) {
+            sourceLabel->setText(tr("Getting Started — example / guide"));
         } else {
             sourceLabel->setText(
                 tr("Source: %1:%2")
@@ -6478,6 +6573,8 @@ void MainWindow::showApiCheatSheet()
                     .arg(line + 1));
         }
 
+        copyExampleButton->setProperty("apiExample", example);
+        copyExampleButton->setEnabled(!example.isEmpty());
         openSourceButton->setProperty(
             "apiFilePath",
             filePath);
@@ -6551,6 +6648,16 @@ void MainWindow::showApiCheatSheet()
                 }
             });
 
+    connect(copyExampleButton, &QPushButton::clicked,
+            page,
+            [copyExampleButton]() {
+                const QString example = copyExampleButton
+                    ->property("apiExample").toString();
+                if (!example.isEmpty()) {
+                    QApplication::clipboard()->setText(example);
+                }
+            });
+
     connect(search, &QLineEdit::textChanged,
             page,
             [tree](const QString &text) {
@@ -6584,7 +6691,15 @@ void MainWindow::showApiCheatSheet()
                             + QLatin1Char(' ')
                             + item->data(
                                   0,
-                                  Qt::UserRole + 4).toString();
+                                  Qt::UserRole + 4).toString()
+                            + QLatin1Char(' ')
+                            + item->data(
+                                  0,
+                                  Qt::UserRole + 9).toString()
+                            + QLatin1Char(' ')
+                            + item->data(
+                                  0,
+                                  Qt::UserRole + 8).toString();
 
                         const bool match =
                             needle.isEmpty()

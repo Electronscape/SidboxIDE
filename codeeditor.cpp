@@ -997,6 +997,8 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     , m_completer(new QCompleter(this))
     , m_completionModel(new QStringListModel(this))
     , m_foldScanTimer(new QTimer(this))
+    , m_occurrenceDelayTimer(new QTimer(this))
+    , m_occurrenceScanTimer(new QTimer(this))
     , m_selectedArgument(-1)
 {
     const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -1030,6 +1032,22 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     connect(this, &CodeEditor::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &CodeEditor::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &CodeEditor::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
+
+    // Highlight matching identifiers when a word is selected (including via
+    // double-click or Shift+arrow). Never alter the user's actual selection.
+    // A brief debounce also avoids scanning partial drag selections.
+    m_occurrenceDelayTimer->setSingleShot(true);
+    m_occurrenceDelayTimer->setInterval(110);
+    connect(m_occurrenceDelayTimer, &QTimer::timeout,
+            this, &CodeEditor::beginOccurrenceScan);
+    m_occurrenceScanTimer->setSingleShot(true);
+    m_occurrenceScanTimer->setInterval(0);
+    connect(m_occurrenceScanTimer, &QTimer::timeout,
+            this, &CodeEditor::continueOccurrenceScan);
+    connect(this, &CodeEditor::selectionChanged, this,
+            [this]() { updateOccurrenceSelection(); });
+    connect(this, &CodeEditor::textChanged, this,
+            [this]() { updateOccurrenceSelection(true); });
     connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
         if (!m_resourceMode) {
             emit quickTipCandidateChanged(textUnderCursor());
@@ -1181,6 +1199,7 @@ void CodeEditor::setResourceMode(bool enabled)
     }
 
     setTheme(m_theme);
+    updateOccurrenceSelection();
 }
 
 bool CodeEditor::isResourceMode() const
@@ -1698,6 +1717,14 @@ void CodeEditor::shareDocumentFrom(CodeEditor *sourceEditor)
         m_highlighter = nullptr;
     }
 
+    // QTextCursor matches belong to the old document. Drop them before a
+    // split view begins sharing another editor's QTextDocument.
+    m_occurrenceDelayTimer->stop();
+    m_occurrenceScanTimer->stop();
+    m_occurrenceWord.clear();
+    m_occurrences.clear();
+    m_pendingOccurrences.clear();
+    m_occurrenceScanBlock = QTextBlock();
     QPlainTextEdit::setDocument(sourceEditor->document());
 
     /*
@@ -1739,6 +1766,7 @@ void CodeEditor::shareDocumentFrom(CodeEditor *sourceEditor)
     setReadOnly(sourceEditor->isReadOnly());
     setTheme(sourceEditor->theme());
     setDiagnostics(sourceEditor->diagnostics());
+    updateOccurrenceSelection();
 
     if (m_minimap) {
         m_minimap->update();
@@ -3870,7 +3898,104 @@ void CodeEditor::highlightCurrentLine()
     selection.cursor.clearSelection();
     selections.append(selection);
 
+    // Syntax colours remain untouched: these are paint-only overlays, not
+    // edits to the source document or to the syntax highlighter's formats.
+    QColor occurrenceColor = m_theme.selectionBackground.lighter(170);
+    occurrenceColor.setAlpha(125);
+    for (const QTextCursor &cursor : std::as_const(m_occurrences)) {
+        QTextEdit::ExtraSelection match;
+        match.cursor = cursor;
+        match.format.setBackground(occurrenceColor);
+        selections.append(match);
+    }
+
     setExtraSelections(selections);
+}
+
+void CodeEditor::updateOccurrenceSelection(bool documentChanged)
+{
+    QString selectedWord;
+    const QTextCursor cursor = textCursor();
+    if (!m_resourceMode && cursor.hasSelection()) {
+        const QString candidate = cursor.selectedText();
+        // C identifier rules, rather than substring matching: 'count' must
+        // not light up 'counter' or 'count_2'. Match is case-sensitive.
+        static const QRegularExpression identifier(
+            QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        if (candidate.size() <= 128 && identifier.match(candidate).hasMatch())
+            selectedWord = candidate;
+    }
+
+    // Do nothing during normal typing with no active word selection. The
+    // editor already has an efficient current-line paint path for that case.
+    if (selectedWord == m_occurrenceWord
+        && (!documentChanged || selectedWord.isEmpty()))
+        return;
+
+    m_occurrenceDelayTimer->stop();
+    m_occurrenceScanTimer->stop();
+    m_occurrenceWord = selectedWord;
+    m_occurrenceScanBlock = QTextBlock();
+    m_pendingOccurrences.clear();
+    m_occurrences.clear();
+    highlightCurrentLine();
+
+    if (!m_occurrenceWord.isEmpty())
+        m_occurrenceDelayTimer->start();
+}
+
+void CodeEditor::beginOccurrenceScan()
+{
+    if (m_occurrenceWord.isEmpty() || !document())
+        return;
+
+    // Explicit C-identifier boundaries. Generic \b word boundaries can
+    // differ from the editor's underscore-aware C identifier semantics.
+    m_occurrenceExpression = QRegularExpression(
+        QStringLiteral("(?<![A-Za-z0-9_])%1(?![A-Za-z0-9_])")
+            .arg(QRegularExpression::escape(m_occurrenceWord)));
+    m_occurrenceScanBlock = document()->firstBlock();
+    m_pendingOccurrences.clear();
+    m_occurrenceScanTimer->start();
+}
+
+void CodeEditor::continueOccurrenceScan()
+{
+    // Work cooperatively rather than blocking the UI on large C files.
+    // Limit pathological identifiers (e.g. 'i' in generated megabyte files)
+    // so repeatedly painting the overlays never overwhelms Qt's editor.
+    constexpr int BlocksPerPass = 240;
+    constexpr int MaximumMatches = 2048;
+    int processed = 0;
+
+    while (m_occurrenceScanBlock.isValid()
+           && processed++ < BlocksPerPass
+           && m_pendingOccurrences.size() < MaximumMatches) {
+        const QTextBlock block = m_occurrenceScanBlock;
+        m_occurrenceScanBlock = block.next();
+
+        QRegularExpressionMatchIterator it =
+            m_occurrenceExpression.globalMatch(block.text());
+        while (it.hasNext() && m_pendingOccurrences.size() < MaximumMatches) {
+            const QRegularExpressionMatch match = it.next();
+            QTextCursor matchCursor(document());
+            matchCursor.setPosition(block.position() + match.capturedStart());
+            matchCursor.setPosition(block.position() + match.capturedEnd(),
+                                    QTextCursor::KeepAnchor);
+            m_pendingOccurrences.append(matchCursor);
+        }
+    }
+
+    if (m_occurrenceScanBlock.isValid()
+        && m_pendingOccurrences.size() < MaximumMatches) {
+        m_occurrenceScanTimer->start();
+        return;
+    }
+
+    m_occurrences = std::move(m_pendingOccurrences);
+    m_pendingOccurrences.clear();
+    m_occurrenceScanBlock = QTextBlock();
+    highlightCurrentLine();
 }
 
 QString CodeEditor::textUnderCursor() const

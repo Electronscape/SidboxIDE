@@ -1,0 +1,986 @@
+{
+  "schema": 1,
+  "title": "SIDBOX CoderGirl Quick Reference and Beginner Guides",
+  "source": "SIDBOX SDK headers and firmware Core (13 Oct 2026); Stage 25 IPC SDK extensions",
+  "entries": {
+    "SBOS_CreateWindow": {
+      "summary": "Create a CoderGirl GUI window. Pass a pointer to a CGWindow handle, position, size, title, and SBX_WF_* flags. Register its event procedure with SBOS_SetWindowProc().",
+      "example": "CGWindow win = (CGWindow)0xFF;\nSBOS_CreateWindow(&win, 20, 20, 240, 160,\n                  \"My Window\", SBX_WIN_DEFAULT);",
+      "notes": "Keep the returned window handle for gadget creation and later window operations. In generated Designer applications, the window and its callback are created for you."
+    },
+    "SBOS_CloseWindow": {
+      "summary": "Close the window identified by its CGWindow handle.",
+      "example": "SBOS_CloseWindow(win);"
+    },
+    "SBOS_SetWindowProc": {
+      "summary": "Install the window event procedure for GUI gadget, window, keyboard and other CGMessage_t events.",
+      "example": "static CGWindowProcRes window_proc(CGWindow win, const CGMessage_t *m)\n{\n    if (m->eventClass == CGEVT_WIN_CLOSE_REQUEST) {\n        SBOS_CloseWindow(win);\n        return CGPROC_HANDLED;\n    }\n    return CGPROC_DEFAULT;\n}\n\nSBOS_SetWindowProc(win, window_proc);",
+      "notes": "For V2 firmware, the OS invokes the callback through the applet-private stack bridge."
+    },
+    "SBOS_WindowToFront": {
+      "summary": "Raise an existing window in the GUI Z-order.",
+      "example": "SBOS_WindowToFront(win);"
+    },
+    "SBOS_WindowToBack": {
+      "summary": "Move an existing window behind other normal windows.",
+      "example": "SBOS_WindowToBack(win);"
+    },
+    "SBOS_WindowSetFocus": {
+      "summary": "Give input focus to a window.",
+      "example": "SBOS_WindowSetFocus(win);"
+    },
+    "SBOS_WindowSetApplicationTitle": {
+      "summary": "Replace the application title shown by the window.",
+      "example": "SBOS_WindowSetApplicationTitle(win, \"Ready\");"
+    },
+    "SetApplicationTitle": {
+      "summary": "Replace the application title shown by the window.",
+      "example": "SBOS_WindowSetApplicationTitle(win, \"Ready\");"
+    },
+    "SBOS_WindowDisable": {
+      "summary": "Disable input interaction for a window.",
+      "example": "SBOS_WindowDisable(win);"
+    },
+    "SBOS_WindowEnable": {
+      "summary": "Re-enable window input interaction.",
+      "example": "SBOS_WindowEnable(win);"
+    },
+    "WindowMouseBusy": {
+      "summary": "Set or query the mouse-busy indicator for an individual window.",
+      "example": "WindowMouseBusy(win, 1);\n/* later */\nWindowMouseBusy(win, 0);"
+    },
+    "WindowMouseIsBusy": {
+      "summary": "Set or query the mouse-busy indicator for an individual window.",
+      "example": "WindowMouseBusy(win, 1);\n/* later */\nWindowMouseBusy(win, 0);"
+    },
+    "SetMouseBusy": {
+      "summary": "Switch the OS pointer into busy or normal appearance.",
+      "example": "SetMouseBusy();\n/* lengthy operation */\nSetMouseNormal();"
+    },
+    "SetMouseNormal": {
+      "summary": "Switch the OS pointer into busy or normal appearance.",
+      "example": "SetMouseBusy();\n/* lengthy operation */\nSetMouseNormal();"
+    },
+    "SBX_WIN_DEFAULT": {
+      "summary": "Standard window flag combination: visible, moveable, titled, close/minimise/maximise controls, resizable and screen-bounded.",
+      "example": "SBOS_CreateWindow(&win, 20, 20, 240, 160,\n                  \"Demo\", SBX_WIN_DEFAULT);"
+    },
+    "SBX_WF_VISIBLE": {
+      "summary": "Make a newly created window visible.",
+      "notes": "Combine SBX_WF_* flags using bitwise OR (|)."
+    },
+    "SBX_WF_CLOSE": {
+      "summary": "Show a close control in the window title bar."
+    },
+    "SBX_WF_TITLE_BAR": {
+      "summary": "Display a window title bar."
+    },
+    "SBX_WF_MOVEABLE": {
+      "summary": "Allow the user to drag a window."
+    },
+    "SBX_WF_RESIZABLE": {
+      "summary": "Allow the window to be resized."
+    },
+    "SBX_WF_SCREENBOUND": {
+      "summary": "Constrain window movement to the physical display boundaries."
+    },
+    "SBX_WF_MINIMISE": {
+      "summary": "Show/support a minimise control."
+    },
+    "SBX_WF_MAXRESTORE": {
+      "summary": "Show/support a maximise/restore control."
+    },
+    "SBX_WF_NOBORDER": {
+      "summary": "Omit the normal window border."
+    },
+    "SBX_WF_ZORDER": {
+      "summary": "Participate in normal window Z-order behaviour."
+    },
+    "CGMessage_t": {
+      "summary": "Event structure sent to the window callback. Important fields: mtype, winhnd, gadget, eventClass and event parameters a/b/c/d.",
+      "example": "if (m->mtype == CGMSG_GADGET &&\n    m->eventClass == CGEVT_GAD_ACTIVATED &&\n    m->gadget == btn) {\n    SBOS_LabelSetText(status, \"Clicked\");\n}",
+      "notes": "The message pointer is callback-scoped; do not retain it after the callback returns."
+    },
+    "CGWindowProcRes": {
+      "summary": "Return code for a window event handler. Use CGPROC_HANDLED for events you handled, CGPROC_DEFAULT for normal processing."
+    },
+    "CGPROC_DEFAULT": {
+      "summary": "Return this from a window procedure to permit normal/default event handling."
+    },
+    "CGPROC_HANDLED": {
+      "summary": "Return this when your application has handled the event."
+    },
+    "CGEVT_WIN_CLOSE_REQUEST": {
+      "summary": "User requested that a window be closed. Handle it in the window procedure; close and free timers or other owned resources as appropriate."
+    },
+    "CGEVT_GAD_ACTIVATED": {
+      "summary": "A GUI gadget has been activated (for example, a button). Compare m->gadget with your saved gadget handle."
+    },
+    "CGEVT_GAD_SLIDERVAL_CHANGED": {
+      "summary": "Slider value changed. Read the slider value with SBOS_SliderGetValue()."
+    },
+    "CGEVT_GAD_CHECKBOX_CHANGED": {
+      "summary": "Checkbox state changed. Read it with SBOS_CheckboxGetState()."
+    },
+    "CGEVT_GAD_LISTBOX_CHANGED": {
+      "summary": "ListBox selection changed."
+    },
+    "CGEVT_MENU_SELECTED": {
+      "summary": "A menu item was selected; configure and use the menu callback mechanism for item-specific actions."
+    },
+    "SBOS_CreateLabel": {
+      "summary": "Create a text label inside a window. Give it the ACTUAL text area: too-small gadget bounds can cause partial redraws to clip text.",
+      "example": "CGGadget status = SBOS_CreateLabel(win, 10, 12,\n                                   180, 16, \"Ready\",\n                                   GAD_TOOL_DEFAULT);",
+      "notes": "A 1x1 rectangle for a full-width label is not sufficient when overlapping windows trigger dirty-region repainting."
+    },
+    "SBOS_CreateButton": {
+      "summary": "Create a clickable button gadget in the specified window.",
+      "example": "CGGadget btn = SBOS_CreateButton(win, 10, 40, 86, 24,\n                                 \"Start\", GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateCheckbox": {
+      "summary": "Create a checkbox with an initial checked state.",
+      "example": "CGGadget cb = SBOS_CreateCheckbox(win, 10, 70, 128, 22,\n                                   \"Enable\", 1, GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateRadioButton": {
+      "summary": "Create a radio button with group number and initial checked state.",
+      "example": "CGGadget radio = SBOS_CreateRadioButton(win, 10, 94, 115, 22,\n                                         \"Option A\", 1, 1,\n                                         GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateSlider": {
+      "summary": "Create a slider using orientation and minimum/maximum values.",
+      "example": "CGGadget s = SBOS_CreateSlider(win, 10, 65, 140, 18,\n                                0, 0, 100, GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateScrollbar": {
+      "summary": "Create a scrollbar with orientation, value range and small/large step sizes.",
+      "example": "CGGadget sb = SBOS_CreateScrollbar(win, 10, 95, 180, 18,\n                                    0, 0, 100, 1, 10,\n                                    GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateTextBox": {
+      "summary": "Create a single-line text-editing gadget. tb_flags chooses textbox behaviour.",
+      "example": "CGGadget input = SBOS_CreateTextBox(win, 10, 36, 170, 22,\n                                     \"Hello\", 0, GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateTextArea": {
+      "summary": "Create a multi-line text area for longer editable text.",
+      "example": "CGGadget area = SBOS_CreateTextArea(win, 10, 45, 200, 90,\n                                     \"Notes\", 0, GAD_TOOL_DEFAULT);"
+    },
+    "SBOS_CreateListBox": {
+      "summary": "Create a scrollable ListBox. Fill an ItemLists_t model and attach it with SBOS_ListboxAttachItemlist().",
+      "example": "ItemLists_t items;\nSBOS_Itemlist_Init(&items);\nSBOS_Itemlist_Add(&items, \"First\", 0);\nCGGadget lb = SBOS_CreateListBox(win, 10, 36, 180, 80,\n                                 GAD_TOOL_DEFAULT);\nSBOS_ListboxAttachItemlist(lb, &items);",
+      "notes": "The ItemLists_t model is caller-owned. Keep it alive while the ListBox uses it, then deinitialise when no longer needed."
+    },
+    "SBOS_CreateProgBar": {
+      "summary": "Create a progress bar to display progress between configured minimum and maximum.",
+      "example": "CGGadget progress = SBOS_CreateProgBar(win, 10, 80, 180, 18,\n                                        GAD_TOOL_DEFAULT);\nSBOS_ProgressbarSetMinMax(progress, 0, 100);\nSBOS_ProgressbarSetValue(progress, 50);"
+    },
+    "SBOS_CreateBitmapView": {
+      "summary": "Create a rectangular bitmap-view gadget with an image size and bitmap-view flags."
+    },
+    "SBOS_CreateCanvas": {
+      "summary": "Create a canvas gadget for application-drawn graphics."
+    },
+    "SBOS_CreateGridSelect": {
+      "summary": "Create a grid selector with specified cell dimensions and counts."
+    },
+    "SBOS_DestroyGadget": {
+      "summary": "Destroy a gadget previously created within a window."
+    },
+    "SBOS_GadgetRepaint": {
+      "summary": "Request repainting of a gadget rectangle.",
+      "example": "SBOS_GadgetRepaint(status);"
+    },
+    "SBOS_GadgetSetFocus": {
+      "summary": "Move keyboard/input focus to a gadget."
+    },
+    "SBOS_GadgetSetCallBack": {
+      "summary": "Register activation and change callback function pointers for a gadget."
+    },
+    "SBOS_GadgetMove": {
+      "summary": "Move a gadget to new coordinates within its parent window."
+    },
+    "SBOS_GadgetResize": {
+      "summary": "Change a gadget bounding rectangle to the supplied width and height."
+    },
+    "SBOS_GadgetEnabled": {
+      "summary": "Enable or disable a gadget without destroying it.",
+      "example": "SBOS_GadgetEnabled(btn, 0); /* disable */\nSBOS_GadgetEnabled(btn, 1); /* enable */"
+    },
+    "SBOS_GadgetSetBPen": {
+      "summary": "Set gadget background palette pen/index."
+    },
+    "SBOS_GadgetSetFPen": {
+      "summary": "Set gadget foreground palette pen/index."
+    },
+    "SBOS_GadgetSetHPen": {
+      "summary": "Set gadget highlight palette pen/index."
+    },
+    "SBOS_GadgetSetGroupId": {
+      "summary": "Assign a group identifier to a gadget."
+    },
+    "SBOS_GadgetGetGroupId": {
+      "summary": "Read the gadget group identifier."
+    },
+    "SBOS_GadgetSetGroupVisable": {
+      "summary": "Show or hide gadgets belonging to a group in a window (SDK helper spelling uses Visable)."
+    },
+    "SBOS_LabelSetText": {
+      "summary": "Change a label string and request its normal repaint.",
+      "example": "SBOS_LabelSetText(status, \"Message received!\");"
+    },
+    "SBOS_LabelSetColour": {
+      "summary": "Change the label foreground and background palette pens.",
+      "example": "SBOS_LabelSetColour(status, 15, 0);"
+    },
+    "SBOS_ButtonSetText": {
+      "summary": "Change the button caption. The third argument is a cycle index; pass -1 when not using cycle captions.",
+      "example": "SBOS_ButtonSetText(btn, \"Stop\", -1);"
+    },
+    "SBOS_ButtonSetToggle": {
+      "summary": "Latch or clear a button visual pressed state.",
+      "example": "SBOS_ButtonSetToggle(btn, 1);\n/* later */\nSBOS_ButtonSetToggle(btn, 0);"
+    },
+    "SBOS_CheckboxSetState": {
+      "summary": "Set checkbox state (0 clear, nonzero checked)."
+    },
+    "SBOS_CheckboxGetState": {
+      "summary": "Read whether a checkbox is checked.",
+      "example": "uint8_t checked = SBOS_CheckboxGetState(cb);"
+    },
+    "SBOS_TextBoxSetText": {
+      "summary": "Replace the contents of a single-line textbox.",
+      "example": "SBOS_TextBoxSetText(input, \"New value\");"
+    },
+    "SBOS_SetTextBox": {
+      "summary": "Replace the contents of a single-line textbox.",
+      "example": "SBOS_TextBoxSetText(input, \"New value\");"
+    },
+    "SBOS_TextBoxGetText": {
+      "summary": "Get a borrowed pointer to textbox contents.",
+      "example": "const char *value = SBOS_TextBoxGetText(input);",
+      "notes": "Copy the text if you need it after the gadget is destroyed or modified."
+    },
+    "SBOS_TextBoxGetLen": {
+      "summary": "Get the current textbox length."
+    },
+    "SBOS_TextBoxSetCaret": {
+      "summary": "Change the caret position in a textbox."
+    },
+    "SBOS_TextBoxGetCaret": {
+      "summary": "Read the caret position in a textbox."
+    },
+    "SBOS_TextAreaSetText": {
+      "summary": "Replace text in a multi-line text area.",
+      "example": "SBOS_TextAreaSetText(area, \"Hello\\nWorld\");"
+    },
+    "SBOS_SetTextArea": {
+      "summary": "Replace text in a multi-line text area.",
+      "example": "SBOS_TextAreaSetText(area, \"Hello\\nWorld\");"
+    },
+    "SBOS_TextAreaInsertText": {
+      "summary": "Insert text at the text-area caret."
+    },
+    "SBOS_TextAreaGetText": {
+      "summary": "Copy text-area contents into caller storage; outCap is the available output buffer size."
+    },
+    "SBOS_TextAreaSetCaret": {
+      "summary": "Set text-area caret line and column."
+    },
+    "SBOS_TextAreaGetCaret": {
+      "summary": "Read text-area caret line and column via output pointers."
+    },
+    "SBOS_TextAreaLineCount": {
+      "summary": "Read the number of lines in a text area."
+    },
+    "SBOS_SliderSetValue": {
+      "summary": "Set the current slider value."
+    },
+    "SBOS_SliderGetValue": {
+      "summary": "Read the current slider value.",
+      "example": "uint16_t value = SBOS_SliderGetValue(s);"
+    },
+    "SBOS_ScrollbarSetValue": {
+      "summary": "Set scrollbar position."
+    },
+    "SBOS_ScrollbarGetValue": {
+      "summary": "Read scrollbar position."
+    },
+    "SBOS_ProgressbarSetMinMax": {
+      "summary": "Set progress bar minimum and maximum."
+    },
+    "SBOS_ProgressbarSetValue": {
+      "summary": "Set progress bar value."
+    },
+    "SBOS_Itemlist_Init": {
+      "summary": "Initialise an ItemLists_t model before adding items."
+    },
+    "SBOS_Itemlist_Deinit": {
+      "summary": "Release storage allocated by the ItemLists_t model.",
+      "notes": "Detach from widgets or destroy them before deinitialising a model they still use."
+    },
+    "SBOS_Itemlist_Add": {
+      "summary": "Append a text item with flags to an ItemLists_t model.",
+      "example": "SBOS_Itemlist_Add(&items, \"Entry\", 0);"
+    },
+    "SBOS_ListboxAttachItemlist": {
+      "summary": "Attach a caller-owned ItemLists_t model to the ListBox gadget."
+    },
+    "SBOS_BitmapviewSetBitmap": {
+      "summary": "Point a BitmapView at a bitmap buffer. Keep the pixel storage alive for as long as the view uses it."
+    },
+    "SBOS_BitmapviewSetImageSize": {
+      "summary": "Set the dimensions of the bitmap displayed by a BitmapView."
+    },
+    "SBOS_GridSelectSetCellText": {
+      "summary": "Set text associated with a grid selector cell."
+    },
+    "GAD_TOOL_DEFAULT": {
+      "summary": "Use default gadget drawing and behaviour flags.",
+      "example": "SBOS_CreateLabel(win, 8, 8, 120, 16, \"Ready\",\n                 GAD_TOOL_DEFAULT);"
+    },
+    "GAD_TOOL_TRANSPARENT": {
+      "summary": "Request a transparent gadget background (useful for Label)."
+    },
+    "GAD_TOOL_LATCHDOWN": {
+      "summary": "Keep a tool/button drawn in its pressed state until the applet clears it."
+    },
+    "GAD_TOOL_NOBORDER": {
+      "summary": "Remove a gadget border."
+    },
+    "GAD_TOOL_INSET": {
+      "summary": "Use inset/bevel-inverted appearance for the gadget."
+    },
+    "SBOS_CreateMenuTitle": {
+      "summary": "Create a top-level menu title, receiving a menu handle.",
+      "example": "cg_menu_t menu = SBOS_CreateMenuTitle(\"File\");"
+    },
+    "SBOS_CreateMenuItem": {
+      "summary": "Append an item to the selected menu-title index.",
+      "example": "cg_menuitem_t quit = SBOS_CreateMenuItem(&menu, 0, \"Quit\");"
+    },
+    "SBOS_AttachMenuToWindow": {
+      "summary": "Attach a menu to its owning CoderGirl window.",
+      "example": "SBOS_AttachMenuToWindow(menu, win);"
+    },
+    "SBOS_MenuCallBack": {
+      "summary": "Register the click callback and user-data pointer for a menu item."
+    },
+    "SBOS_MenuSetFlags": {
+      "summary": "Clear and set menu-item flags (for example tickable, ticked, separator)."
+    },
+    "SBOS_MenuGetFlags": {
+      "summary": "Read the current menu-item flags."
+    },
+    "SBOS_DestroyMenu": {
+      "summary": "Destroy a menu created with SBOS_CreateMenuTitle."
+    },
+    "SBOS_MenuActive": {
+      "summary": "Report whether a GUI menu popup is currently active."
+    },
+    "SBOS_MenuClose": {
+      "summary": "Close an active GUI popup menu."
+    },
+    "CG_MENUITEMF_TICKED": {
+      "summary": "Menu-item flag marking an item as checked/ticked."
+    },
+    "CG_MENUITEMF_SEPARATOR": {
+      "summary": "Menu-item flag marking a separator row."
+    },
+    "CG_MENUITEMF_TICKABLE": {
+      "summary": "Menu-item flag indicating an item can be ticked."
+    },
+    "CG_MENU_INVALID": {
+      "summary": "Invalid/null menu-handle constant."
+    },
+    "CG_MENUITEM_INVALID": {
+      "summary": "Invalid/null menu-item-handle constant."
+    },
+    "SBOS_CreateTimer": {
+      "summary": "Allocate a cooperative GUI timer. GUI windows must be initialised first.",
+      "example": "CGTimer timer = SBOS_CreateTimer();"
+    },
+    "SBOS_TimerSet": {
+      "summary": "Start a timer with initial delay, repeat period (milliseconds), callback and user pointer.",
+      "example": "static void on_tick(void *user) { (void)user; }\nCGTimer timer = SBOS_CreateTimer();\nif (timer != CGTIMER_INVALID) {\n    SBOS_TimerSet(timer, 100, 100, on_tick, NULL);\n}",
+      "notes": "Free/cancel the timer when the window closes. Do not perform blocking work in the callback."
+    },
+    "SBOS_TimerCancel": {
+      "summary": "Stop an active GUI timer without freeing its handle."
+    },
+    "SBOS_FreeTimer": {
+      "summary": "Release an allocated GUI timer handle.",
+      "example": "SBOS_TimerCancel(timer);\nSBOS_FreeTimer(timer);"
+    },
+    "CGTIMER_INVALID": {
+      "summary": "Sentinel indicating that timer allocation failed."
+    },
+    "timer1ctrl": {
+      "summary": "Control a low-level hardware timer with API_TIMER_CTRL_* bits.",
+      "example": "timer1ctrl(API_TIMER_CTRL_RESET | API_TIMER_CTRL_ENABLE);",
+      "notes": "Hardware timers are distinct from the cooperative SBOS GUI timers."
+    },
+    "timer2ctrl": {
+      "summary": "Control a low-level hardware timer with API_TIMER_CTRL_* bits.",
+      "example": "timer1ctrl(API_TIMER_CTRL_RESET | API_TIMER_CTRL_ENABLE);",
+      "notes": "Hardware timers are distinct from the cooperative SBOS GUI timers."
+    },
+    "timer1duty": {
+      "summary": "Program a hardware timer period and prescaler."
+    },
+    "timer2duty": {
+      "summary": "Program a hardware timer period and prescaler."
+    },
+    "timer1isr": {
+      "summary": "Install a hardware timer interrupt callback. Avoid GUI and blocking operations inside interrupt context."
+    },
+    "timer2isr": {
+      "summary": "Install a hardware timer interrupt callback. Avoid GUI and blocking operations inside interrupt context."
+    },
+    "timer1val": {
+      "summary": "Read the current hardware timer counter."
+    },
+    "timer2val": {
+      "summary": "Read the current hardware timer counter."
+    },
+    "API_TIMER_CTRL_ENABLE": {
+      "summary": "Start the selected hardware timer."
+    },
+    "API_TIMER_CTRL_IRQ_ENABLE": {
+      "summary": "Enable overflow IRQ dispatch for the selected hardware timer."
+    },
+    "API_TIMER_CTRL_ONESHOT": {
+      "summary": "Configure hardware timer to stop on its next overflow."
+    },
+    "API_TIMER_CTRL_RESET": {
+      "summary": "Reset hardware timer count to zero while updating control bits."
+    },
+    "SBOS_MessageBox": {
+      "summary": "Open a modal-style GUI message box owned by an existing window.",
+      "example": "SBOS_MessageBox(win, \"Notice\", \"Saved\", MSGBOXF_OK);"
+    },
+    "SBOS_MessageBoxEx": {
+      "summary": "Open a message box with CGFMsgBoxParams (including a user pointer)."
+    },
+    "SBOS_CloseMessageBox": {
+      "summary": "Close a message box by its returned window handle."
+    },
+    "SBOS_InfoBox": {
+      "summary": "Show a simple information box for a window.",
+      "example": "SBOS_InfoBox(win, \"About\", \"CoderGirl demo\");"
+    },
+    "SBOS_InfoBoxEx": {
+      "summary": "Show an information box with CGFInfoBoxParams."
+    },
+    "SBOS_CloseInfoBox": {
+      "summary": "Close an information box."
+    },
+    "SBOS_FileRequest": {
+      "summary": "Open a GUI file requester. Completion is delivered asynchronously through GUI messages.",
+      "notes": "Handle CGEVT_SYS_FILERQ_DONE in the window procedure. Use the API documentation and generated examples to check the returned path lifecycle."
+    },
+    "SBOS_FileRequestFilter": {
+      "summary": "Open a GUI file requester. Completion is delivered asynchronously through GUI messages.",
+      "notes": "Handle CGEVT_SYS_FILERQ_DONE in the window procedure. Use the API documentation and generated examples to check the returned path lifecycle."
+    },
+    "SBOS_CloseFileRequester": {
+      "summary": "Close a GUI file requester by its window handle."
+    },
+    "MSGBOXF_OK": {
+      "summary": "Message box with OK button."
+    },
+    "MSGBOXF_OKCANCEL": {
+      "summary": "Message box with OK and Cancel."
+    },
+    "MSGBOXF_YESNO": {
+      "summary": "Message box with Yes and No."
+    },
+    "sfopen": {
+      "summary": "Open a file in a selected numbered file slot. Combine SD_READ/SD_WRITE and open mode flags.",
+      "example": "FRESULT rc = sfopen(0, \"/data.txt\",\n                     SD_READ | SD_OPEN_EXISTING);\nif (rc == FR_OK) {\n    /* read here */\n    sfclose(0);\n}",
+      "notes": "The SDK uses numbered file handles (not C FILE*). Check FRESULT before using the handle."
+    },
+    "sfread": {
+      "summary": "Read up to length bytes from a previously opened numbered file.",
+      "example": "uint8_t data[64];\nuint32_t got = 0;\nFRESULT rc = sfread(0, data, sizeof(data), &got);"
+    },
+    "sfwrite": {
+      "summary": "Write bytes to a previously opened numbered file.",
+      "example": "const char msg[] = \"Hello\";\nuint32_t wrote = 0;\nFRESULT rc = sfwrite(0, msg, sizeof(msg)-1, &wrote);"
+    },
+    "sfclose": {
+      "summary": "Close a numbered SD file handle and release its resources.",
+      "example": "sfclose(0);"
+    },
+    "sflseek": {
+      "summary": "Move the file position to an absolute byte offset.",
+      "example": "sflseek(0, 0); /* rewind */"
+    },
+    "sfchdir": {
+      "summary": "Change the current directory used for relative SD paths."
+    },
+    "sfgetcwd": {
+      "summary": "Copy the current SD working directory to an output buffer."
+    },
+    "sfcopy": {
+      "summary": "Copy one SD card file to another path."
+    },
+    "sfmkdir": {
+      "summary": "Create an SD card directory."
+    },
+    "sfstat": {
+      "summary": "Query file attributes and size for a path."
+    },
+    "sfopendir": {
+      "summary": "Open an SD directory for listing. Returns an opaque directory handle."
+    },
+    "sfreaddir": {
+      "summary": "Read the next directory entry into the caller buffer."
+    },
+    "sfclosedir": {
+      "summary": "Close a previously opened SD directory listing handle."
+    },
+    "SD_READ": {
+      "summary": "File-mode flag requesting read access."
+    },
+    "SD_WRITE": {
+      "summary": "File-mode flag requesting write access."
+    },
+    "SD_CREATE_ALWAYS": {
+      "summary": "Create/truncate a file when opening."
+    },
+    "SD_OPEN_EXISTING": {
+      "summary": "Require an existing file when opening."
+    },
+    "FR_OK": {
+      "summary": "FatFs-style success return code for file operations."
+    },
+    "gfx_cls": {
+      "summary": "Clear the selected draw buffer to palette index zero.",
+      "example": "gfx_cls();"
+    },
+    "gfx_setcolour": {
+      "summary": "Set current graphics primitive draw palette index.",
+      "example": "gfx_setcolour(15);\ngfx_rectf(8, 8, 40, 20);"
+    },
+    "gfx_rectf": {
+      "summary": "Draw a filled rectangle at x/y with supplied width and height into the current draw buffer."
+    },
+    "gfx_plot": {
+      "summary": "Plot a single indexed-colour pixel at x/y in the current draw buffer."
+    },
+    "gfx_circle": {
+      "summary": "Draw a circle outline."
+    },
+    "gfx_circlef": {
+      "summary": "Draw a filled circle."
+    },
+    "gfx_drawline": {
+      "summary": "Draw a line between two positions."
+    },
+    "gfx_drawtext": {
+      "summary": "Draw a text string using current drawing settings.",
+      "example": "gfx_drawtext(16, 16, \"Hello SIDBOX\");"
+    },
+    "gfx_drawtextf": {
+      "summary": "Draw scaled text (separate X/Y size parameters)."
+    },
+    "gfx_drawtextfc": {
+      "summary": "Draw text with additional colour/step control."
+    },
+    "gfx_getdrawbuffer": {
+      "summary": "Get the graphics draw-buffer descriptor. Do not retain it after changing buffer configuration."
+    },
+    "gfx_getshowbuffer": {
+      "summary": "Get the graphics display/show-buffer descriptor."
+    },
+    "gfx_usebuffer": {
+      "summary": "Select the graphics bitmap buffer used by primitive drawing."
+    },
+    "gfx_showfbuffer": {
+      "summary": "Set the front/back display buffer descriptor."
+    },
+    "gfx_showbbuffer": {
+      "summary": "Set the front/back display buffer descriptor."
+    },
+    "gfx_dispfbuffer": {
+      "summary": "Configure paired display buffers for front/back layers."
+    },
+    "gfx_dispbbuffer": {
+      "summary": "Configure paired display buffers for front/back layers."
+    },
+    "gfx_scrollf": {
+      "summary": "Move the corresponding display layer scroll offset."
+    },
+    "gfx_scrollb": {
+      "summary": "Move the corresponding display layer scroll offset."
+    },
+    "gfx_setlcd": {
+      "summary": "Set LCD scan/output ordering and frame rate.",
+      "example": "gfx_setlcd(DEFAULT_RENDER_ORDER, FPS_60);",
+      "notes": "Use only modes and rates confirmed by your SIDBOX hardware; high rates in the SDK may be unsafe."
+    },
+    "gfx_mode": {
+      "summary": "Configure front/back display dimensions and layer-mode flags.",
+      "example": "gfx_mode(480, 320, 480, 320, DISPFLAG_SINGLELAYER);",
+      "notes": "This changes system display configuration. Normal GUI applets should generally use window gadgets instead."
+    },
+    "gfx_displaynow": {
+      "summary": "Submit the current display buffer to the LCD pipeline."
+    },
+    "gfx_lcdwait": {
+      "summary": "Wait for an outstanding display transfer to finish before reusing or modifying the affected buffer."
+    },
+    "gfx_createSprite": {
+      "summary": "Create a sprite descriptor from a pixel buffer and dimensions."
+    },
+    "gfx_submitSprite": {
+      "summary": "Submit a sprite drawing operation to the specified destination bitmap."
+    },
+    "gfx_popSprites": {
+      "summary": "Flush/complete queued sprite submissions."
+    },
+    "gfx_blit": {
+      "summary": "Blit an 8-bit indexed image into the selected buffer."
+    },
+    "gfx_blitw": {
+      "summary": "Blit an image with an explicit source stride."
+    },
+    "gfx_blitcell": {
+      "summary": "Blit one indexed frame/cell from a sprite atlas."
+    },
+    "gfx_getsprite": {
+      "summary": "Get a sprite cell pointer from a sprite sheet."
+    },
+    "gfx_drawbob": {
+      "summary": "Draw a gfxbob_t sprite with atlas index, position, scale, handles and flags."
+    },
+    "gfx_bcollide": {
+      "summary": "Check collision between two gfxbob_t sprite objects."
+    },
+    "gfx_tcollide": {
+      "summary": "Test pixel collision between two bitmap areas."
+    },
+    "gfx_usefpalette": {
+      "summary": "Set front/back layer palette pointers."
+    },
+    "gfx_usebpalette": {
+      "summary": "Set front/back layer palette pointers."
+    },
+    "gfx_palcycleon": {
+      "summary": "Enable display palette cycling."
+    },
+    "gfx_palcycleoff": {
+      "summary": "Disable display palette cycling."
+    },
+    "gfx_palcycleset": {
+      "summary": "Turn palette cycling on or off."
+    },
+    "gfx_palcyclerange": {
+      "summary": "Set first and last palette indices that cycle."
+    },
+    "gfx_palcyclerate": {
+      "summary": "Set palette cycle rate/tick interval."
+    },
+    "gfx_bitmap_t": {
+      "summary": "Bitmap descriptor containing base address, dimensions, stride and buffer size."
+    },
+    "gfxbob_t": {
+      "summary": "Blitter sprite object. Records atlas pointer/dimensions, active frame, draw position, scale and draw flags."
+    },
+    "music_play": {
+      "summary": "Start music playback from a file and selected subsong.",
+      "example": "music_play(\"/music.mod\", 0);"
+    },
+    "music_stop": {
+      "summary": "Stop the currently playing music."
+    },
+    "music_update": {
+      "summary": "Call the music playback routine periodically if the active player requires it.",
+      "example": "music_update(); /* from regular update/timer */"
+    },
+    "music_mod_from_ram_play": {
+      "summary": "Start a module from a RAM buffer and length.",
+      "notes": "Caller must ensure source buffer lifetime matches the music player requirements."
+    },
+    "sound_assign": {
+      "summary": "Assign PCM sample data to a sound channel with sample count and format."
+    },
+    "sound_play": {
+      "summary": "Start or stop sample playback on a channel."
+    },
+    "sound_stop": {
+      "summary": "Start or stop sample playback on a channel."
+    },
+    "sound_setfrequency": {
+      "summary": "Set sample playback frequency in Hz for a channel."
+    },
+    "sound_setvolume": {
+      "summary": "Set sample channel volume."
+    },
+    "sound_setpanning": {
+      "summary": "Set sample pan; SDK documents -127 (left) through +127 (right)."
+    },
+    "sound_setloop": {
+      "summary": "Set playback loop start and length for a sound channel."
+    },
+    "sound_enableloop": {
+      "summary": "Enable or disable sample loop behaviour."
+    },
+    "midi_out": {
+      "summary": "Write raw MIDI bytes to the configured MIDI output.",
+      "example": "const uint8_t note_on[3] = {0x90, 60, 100};\nmidi_out(note_on, 3);"
+    },
+    "audio_sidpoke": {
+      "summary": "Write a register value to the live SID interface."
+    },
+    "audio_livesid": {
+      "summary": "Start the live SID interface."
+    },
+    "set_audio_dma": {
+      "summary": "Configure audio DMA buffer sizing."
+    },
+    "audio_dma_buffer_view": {
+      "summary": "Inspect audio DMA left/right channel buffers, frame count and playback cursor."
+    },
+    "getTicks": {
+      "summary": "Get the system tick counter.",
+      "example": "uint32_t now = getTicks();"
+    },
+    "getjoyport": {
+      "summary": "Read packed joystick direction/fire flags.",
+      "example": "uint8_t state = getjoyport();\nif (state & BTN_FIRE) { /* action */ }"
+    },
+    "getmousepos": {
+      "summary": "Read mouse coordinates and button/state byte via output pointers.",
+      "example": "int16_t mx, my;\nuint8_t state = getmousepos(&mx, &my);"
+    },
+    "setmousepos": {
+      "summary": "Set the mouse cursor position."
+    },
+    "getmousedelta": {
+      "summary": "Read movement deltas since last mouse delta clear."
+    },
+    "clrmousedelta": {
+      "summary": "Clear accumulated mouse deltas."
+    },
+    "apiTouchInit": {
+      "summary": "Initialise the resistive touch interface."
+    },
+    "apiTouchDown": {
+      "summary": "Query whether touch is currently pressed."
+    },
+    "apiTouchGetXY": {
+      "summary": "Read calibrated touch position into output coordinates."
+    },
+    "apiTouchGetRawXY": {
+      "summary": "Read raw touch sensor position."
+    },
+    "apiTouchPressure": {
+      "summary": "Read touch pressure measurement."
+    },
+    "dbug": {
+      "summary": "Send a short debug string to the firmware debug output.",
+      "example": "dbug(\"Applet started\");"
+    },
+    "randomi": {
+      "summary": "Return a signed pseudo-random integer within approximately +/- the requested range."
+    },
+    "urandomi": {
+      "summary": "Return a nonnegative pseudo-random integer bounded by the requested range."
+    },
+    "urandomseed": {
+      "summary": "Seed the SDK pseudo-random generator."
+    },
+    "MEMALIGN32": {
+      "summary": "Align a global variable or buffer to a 32-byte address boundary.",
+      "example": "static uint8_t MEMALIGN32 pixels[480 * 320];",
+      "notes": "Avoid allocating such large buffers on the private V2 PSP stack."
+    },
+    "SBOS_UART1_Open": {
+      "summary": "Request the exclusive UART1 lease with baud rate, data bits, parity and stop bits.",
+      "example": "int32_t rc = SBOS_UART1_Open(31250, 8,\n                             SIDBOX_UART1_PARITY_NONE, 1);\nif (rc == SIDBOX_UART1_OK) { /* UART1 ready */ }",
+      "notes": "Another applet may already own UART1; check SIDBOX_UART1_BUSY."
+    },
+    "SBOS_UART1_Close": {
+      "summary": "Release this applet's UART1 lease."
+    },
+    "SBOS_UART1_Read": {
+      "summary": "Read bytes from the leased UART1 peripheral."
+    },
+    "SBOS_UART1_Write": {
+      "summary": "Write bytes through the leased UART1 peripheral."
+    },
+    "SBOS_UART1_Available": {
+      "summary": "Get the count of UART1 receive bytes available."
+    },
+    "SIDBOX_UART1_BUSY": {
+      "summary": "UART1 is already leased by another applet."
+    },
+    "API_IPC": {
+      "summary": "V2 IPC function table appended after uart1 in the root API. Functions: self(), find(path_or_unique_filename), send(), receive(), pending().",
+      "example": "uint32_t mine = API->ipc->self();",
+      "notes": "Requires firmware and SDK with Stage 25 IPC. The GUI Designer virtual Messenger component provides code-free sending and cooperative automatic reception."
+    },
+    "SIDBOX_IPC_MESSAGE": {
+      "summary": "OS-copied IPC payload: sender instance ID, application-defined type, data length and up to 64 payload bytes.",
+      "example": "SIDBOX_IPC_MESSAGE msg;\nif (API->ipc->receive(&msg) == SIDBOX_IPC_OK) {\n    /* msg.data contains msg.length bytes */\n}",
+      "notes": "Payload is raw bytes, NOT necessarily a NUL-terminated C string. Copy at most 64 bytes and add a terminator when displaying text."
+    },
+    "SIDBOX_IPC_MAX_DATA": {
+      "summary": "Maximum IPC payload size, currently 64 bytes."
+    },
+    "SIDBOX_IPC_QUEUE_DEPTH": {
+      "summary": "Maximum messages waiting in one receiving applet mailbox, currently 8."
+    },
+    "SIDBOX_IPC_OK": {
+      "summary": "IPC return code indicating successful send or receive."
+    },
+    "SIDBOX_IPC_EMPTY": {
+      "summary": "Receive found no pending message; normal for nonblocking polling."
+    },
+    "SIDBOX_IPC_BAD_ARG": {
+      "summary": "Invalid IPC argument, including a payload larger than 64 bytes."
+    },
+    "SIDBOX_IPC_NO_CONTEXT": {
+      "summary": "The caller has no valid applet execution context."
+    },
+    "SIDBOX_IPC_NO_RECIPIENT": {
+      "summary": "No live receiving applet matches the requested target/instance ID."
+    },
+    "SIDBOX_IPC_QUEUE_FULL": {
+      "summary": "Recipient already has eight pending messages; try later."
+    },
+    "SIDBOX_IPC_NO_MEMORY": {
+      "summary": "Firmware could not allocate mailbox memory."
+    },
+    "API_Root": {
+      "summary": "Root API table at the SIDBOX OS interface. V2 applets use the fixed SRAM API pointer; the SDK provides macro API.",
+      "example": "uint32_t id = API->ipc->self();",
+      "notes": "Never change member ordering. New tables must be appended to preserve older applet ABI offsets."
+    }
+  },
+  "guides": [
+    {
+      "title": "01 - Welcome to SIDBOX and CoderGirl",
+      "category": "Getting Started",
+      "summary": "CoderGirl is the computer program used to write software for SIDBOX. SIDBOX is the device that runs the finished programs. A small program running on SIDBOX is called an applet. A GUI applet has windows and controls such as buttons and labels.",
+      "notes": "A quick vocabulary guide:\n• IDE: the editor used to write, design and build programs.\n• SDK: the headers and libraries that let programs use SIDBOX features.\n• GUI: graphical user interface — windows, buttons and other controls.\n• Gadget: the name used for a GUI control.\n• Source code: C instructions written or generated for an applet.\n• Build/compile: turn source code into a runnable .app file.\n• .sbui: a GUI Designer layout file.\nStart with a small V2 GUI applet; no previous SIDBOX programming is required.",
+      "example": "/* Common files in a GUI applet project:\n   myapp.proj       project settings\n   mainwindow.sbui   editable window design\n   mainwindow.c      C code generated by Designer\n   myapp.app         finished program for SIDBOX\n*/"
+    },
+    {
+      "title": "02 - Make a first GUI applet",
+      "category": "Getting Started",
+      "summary": "Create a simple window that says Hello SIDBOX. This exercise uses GUI Designer, so there is no need to write a window procedure from scratch.",
+      "notes": "1. In CoderGirl, create a GUI project.\n2. Select the relocatable ARM ELF (V2/CGARM) applet format in project settings.\n3. Open GUI Designer for the project window.\n4. Add a Label gadget to the window. Set its visible text to Hello SIDBOX.\n5. Save the .sbui design and generate its C source using Designer.\n6. Build the project to create a .app file.\n7. Copy that .app to the SIDBOX SD card and launch it.\nIf the build reports an error, read the first compiler error rather than the last one. Subsequent errors may be consequences of the first.",
+      "example": "/* No C needs to be typed for this first exercise.\n   GUI Designer creates the window and label code.\n   The label's Text property is: Hello SIDBOX\n*/"
+    },
+    {
+      "title": "03 - Understand the Designer and generated code",
+      "category": "Getting Started",
+      "summary": "The canvas shows where gadgets will appear. Select a gadget to edit its properties. The Designer saves the layout as .sbui and generates C source when requested.",
+      "notes": "A gadget has a C variable name (such as lbl1 or btn1). Code uses that name to refer to the gadget. Designer also generates named callbacks — functions that run when an event happens.\nIMPORTANT: Add handwritten code only inside a generated USER block, because code outside those blocks can be replaced when the design is regenerated. Save the .sbui before regenerating source.",
+      "example": "/* The Designer creates the C callback function.\n   Find its USER section and put only this line inside:\n*/\nSBOS_LabelSetText(lbl1, \"Button pressed\");"
+    },
+    {
+      "title": "04 - Add a label and change its text",
+      "category": "Getting Started",
+      "summary": "A Label shows text on a window. Its C variable lets a button, timer or message callback change that text later.",
+      "notes": "1. In Designer, add a Label and give it a name such as lbl1.\n2. Set its Text property to Ready.\n3. Make the label wide enough for the words you want to display.\n4. Generate the C source.\n5. To update it from code, use the example inside an appropriate callback USER block.\nWhy size matters: a 1×1-pixel label can look correct initially but have text disappear during partial screen repainting. Use realistic width and height.",
+      "example": "/* Inside a generated callback USER block: */\nSBOS_LabelSetText(lbl1, \"Hello from SIDBOX!\");"
+    },
+    {
+      "title": "05 - Make a button do something",
+      "category": "Getting Started",
+      "summary": "A button runs its Activate callback when clicked. The easiest first button changes a label on the same window.",
+      "notes": "1. Add a Label named lbl1 and a Button named btn1 in Designer.\n2. Give the Button visible text such as Click Me.\n3. Save and generate the C source.\n4. Find the generated On_btn1_Activate callback.\n5. Put the example in that callback’s USER block.\n6. Build and run. Clicking the button should change the label.\nThe Designer manages the button-event connection; beginners do not need to write a complete window-message dispatcher.",
+      "example": "/* Inside On_btn1_Activate(...) USER block: */\nSBOS_LabelSetText(lbl1, \"You clicked it!\");"
+    },
+    {
+      "title": "06 - Learn a little C without being overwhelmed",
+      "category": "Getting Started",
+      "summary": "CoderGirl applets are written in C. A variable stores a value, a function performs work, and an if statement chooses what to do.",
+      "notes": "The example declares an integer named count. The = sign assigns a value. count++ adds one. The if statement tests a condition. Text between quotation marks is a string. A semicolon ends most statements.\nA callback is an ordinary C function that CoderGirl calls for an event. Small snippets are most useful when placed in a generated USER block; they are not whole applets.",
+      "example": "int count = 0;              /* create a number */\ncount++;                   /* increase by one */\nif (count == 1) {          /* compare with 1 */\n    dbug(\"First press\");   /* write debug output */\n}"
+    },
+    {
+      "title": "07 - Build, launch and fix the first error",
+      "category": "Getting Started",
+      "summary": "Building creates a .app file for SIDBOX. A compiler error means CoderGirl could not finish the build; it does not mean the SIDBOX hardware is broken.",
+      "notes": "1. Save the .sbui and generate the C code.\n2. Build the project in the IDE using its configured V2 CGARM backend.\n3. If the build succeeds, locate the generated .app named in the build output.\n4. Copy the .app to the SIDBOX SD card and start it on the device.\n5. If the build fails, open the reported filename and line number and fix the FIRST error, then build again.\nCommon causes: a misspelled gadget variable, a missing semicolon, code pasted outside a function, or an SDK newer/older than the firmware.",
+      "example": "/* Two typical compiler errors:\n\n   error: expected ';' before '}'\n   -> A statement may be missing a semicolon.\n\n   error: 'lbl1' undeclared\n   -> Check the gadget's actual C variable name.\n\n   Compiler errors are build-time messages,\n   not messages sent to a running applet.\n*/"
+    },
+    {
+      "title": "08 - What is an API?",
+      "category": "Getting Started",
+      "summary": "An API is a set of functions that applets call to ask SIDBOX to perform tasks, such as creating a label or sending a message. The SDK declares which functions are available.",
+      "notes": "The simplest way to start is with the SBOS_* convenience names shown in this Cheatsheet. Underneath, many call entries in the API table via the API pointer. Both reach the same SIDBOX services.\nThe API pointer is not a gadget variable. A C arrow (->) means “access a member through a pointer.”\nUse F8 to find an API, read its parameters and copy its example. Do not guess function names.",
+      "example": "/* These both change the text of an existing label. */\nSBOS_LabelSetText(lbl1, \"Ready\");\nAPI->gui->gadgets->label_set_text(lbl1, \"Ready\");"
+    },
+    {
+      "title": "09 - Run something repeatedly with a timer",
+      "category": "Getting Started",
+      "summary": "A timer requests a callback at intervals. For example, a program might refresh a clock display or check whether a new message has arrived.",
+      "notes": "For a GUI project, use the virtual Timer component in Designer where possible. It is not a visible button or label. Configure its interval and put the desired actions in its generated callback.\nTimers are cooperative: callbacks should finish quickly rather than pause the applet for a long time. A manually created timer must be cancelled and freed when no longer needed. Designer-generated components manage their own lifecycle.",
+      "example": "/* Example for a Timer callback USER block:\n   lbl1 must already exist in this window. */\nSBOS_LabelSetText(lbl1, \"Timer tick\");"
+    },
+    {
+      "title": "10 - Add a menu",
+      "category": "Getting Started",
+      "summary": "Menus organise commands such as File, About and Quit. GUI Designer has a Menu Editor for adding titles and their individual items.",
+      "notes": "1. Open the Menu Editor for the window.\n2. Add a menu title such as File.\n3. Add an item such as About.\n4. Save/generate the .sbui.\n5. Click that item in the Designer preview to navigate to its generated callback.\n6. Put the desired action in that callback’s USER block.\nMenus do not have to be drawn manually: the SIDBOX GUI renders the menu and handles item selection.",
+      "example": "/* Example action INSIDE a generated menu callback:\n   dbug outputs a message for debugging. */\ndbug(\"About menu chosen\");"
+    },
+    {
+      "title": "11 - Read a file from the SD card",
+      "category": "Getting Started",
+      "summary": "Applets can read files stored on the SIDBOX SD card. A file slot is a small number used to refer to an open file.",
+      "notes": "The example opens slot 0 for reading, attempts to read up to 64 bytes and then closes the slot. Check result codes before using the data.\ncount tells how many bytes were actually read; it may be smaller than the buffer size. Raw file data is NOT automatically a C string. The example belongs inside a function or callback and requires apis.h. File paths should match actual files on the card.",
+      "example": "uint8_t data[64];\nuint32_t count = 0;\nif (sfopen(0, \"/hello.txt\",\n           SD_READ | SD_OPEN_EXISTING) == FR_OK) {\n    if (sfread(0, data, sizeof(data), &count) == FR_OK) {\n        /* Exactly count bytes were read. */\n    }\n    sfclose(0);\n}"
+    },
+    {
+      "title": "12 - What is inter-program messaging (IPC)?",
+      "category": "Getting Started",
+      "summary": "IPC means Inter-Process Communication: one running applet sends a small message to another. A Messenger is a virtual gadget, meaning it has no visible control on the window.",
+      "notes": "A sender chooses a receiver by applet filename, such as ipc_rx.app. A message has a type (a number chosen by the programmer) and up to 64 bytes of data. Every receiver has a mailbox holding up to 8 messages.\nThe receiver must be running when the sender tries to find it. If it is closed, sending can fail; this is normal. Messages are copied by SIDBOX, so two applets do not need to share memory pointers. IPC requires the V2 SDK and matching firmware.",
+      "example": "/* Two running applets, for example:\n\n   ipc_tx.app  --sends-->  ipc_rx.app\n\n   Message type: 1\n   Message text: PING\n\n   Each applet has its own window and memory.\n*/"
+    },
+    {
+      "title": "13 - Receive messages using virtual Messenger",
+      "category": "Getting Started",
+      "summary": "GUI Designer can check for incoming messages automatically. Add a Messenger to a receiving applet, enable receiving, and use its generated On Message callback.",
+      "notes": "1. Create a V2 GUI project and add a Label called lbl1.\n2. In the virtual components area, add a Messenger called messenger1.\n3. Set Receive Enabled to Yes (the default polling interval is 25 ms).\n4. Save/generate the C code.\n5. Find On_messenger1_Message and put the example in its USER block.\n6. Build and launch this receiver before starting the sender.\nThe incoming message includes sender, type, length and data. The data is a byte array, not necessarily a zero-terminated string.",
+      "example": "/* Inside On_messenger1_Message(...) USER block:\n   message is provided by generated code. */\nif (message->length == 4u) {\n    SBOS_LabelSetText(lbl1, \"Received 4 bytes\");\n}"
+    },
+    {
+      "title": "14 - Send a message with NO handwritten IPC code",
+      "category": "Getting Started",
+      "summary": "To make a sending applet, configure a Messenger target and connect a Button to it using Designer properties. The Button will send the configured message when clicked.",
+      "notes": "1. Create a second V2 GUI project (the sender).\n2. Add a virtual Messenger named messenger1.\n3. Set Target applet filename to ipc_rx.app. Turn Receive Enabled off if this sender does not need to receive.\n4. Add a Button. Set its visible caption to Send.\n5. In the Button properties select IPC Messenger = messenger1.\n6. Set IPC message type = 1 and IPC message text = PING.\n7. Save/generate/build and run it beside the receiver.\nClick Send. The receiver from guide 13 will display “Received 4 bytes”. Do not add a second manual send in the same Button callback or it will send twice.",
+      "example": "/* Designer settings, not C to paste:\n   Messenger target : ipc_rx.app\n   Receive enabled  : No\n   Button messenger : messenger1\n   Button type      : 1\n   Button text      : PING\n\n   Designer generates the send operation.\n*/"
+    },
+    {
+      "title": "15 - Send and receive messages directly in C",
+      "category": "Getting Started",
+      "summary": "Programs can also use IPC without the Designer’s automatic send action. This is useful when message content changes while an applet runs.",
+      "notes": "This example belongs inside a function in a V2 applet with #include \"apis.h\". find() returns the current receiver instance ID, or 0 if it cannot find a unique matching applet. send() returns 0 for success; negative values indicate errors.\nThe receiving applet can process messages using the Messenger callback (guide 13) or the nonblocking API->ipc->receive() call. Never store a receiver ID permanently: closing and reopening the receiver creates a new ID.",
+      "example": "const char text[] = \"PING\";\nuint32_t recipient = API->ipc->find(\"ipc_rx.app\");\nif (recipient != 0) {\n    int32_t result = API->ipc->send(\n        recipient, 1u, text, sizeof(text) - 1u);\n    if (result == SIDBOX_IPC_OK) {\n        dbug(\"Message sent\");\n    }\n}"
+    },
+    {
+      "title": "16 - Closing an applet safely",
+      "category": "Getting Started",
+      "summary": "Closing an applet releases its windows and owned resources. A newly opened copy of the same applet is a new instance, not a continuation of the previous one.",
+      "notes": "If an applet has a Messenger mailbox, unread messages belong to the old instance and must not appear in the new one. Timers created manually should be cancelled and freed. Designer-created virtual timers and Messenger polling are managed by generated lifecycle code.\nAvoid keeping pointers to another applet’s memory, and avoid placing very large arrays inside callback functions. Use the documented applet RAM/stack limits when designing bigger programs.",
+      "example": "/* Example: when done with a manually created timer */\nif (timer != CGTIMER_INVALID) {\n    SBOS_TimerCancel(timer);\n    SBOS_FreeTimer(timer);\n    timer = CGTIMER_INVALID;\n}"
+    },
+    {
+      "title": "17 - GUI drawing versus graphics drawing",
+      "category": "Getting Started",
+      "summary": "For ordinary windowed programs, add GUI gadgets in Designer. SIDBOX repaints windows and gadgets when parts of the screen change. Graphics-mode programs use a separate drawing setup.",
+      "notes": "Windowed GUI applications should not casually replace global LCD or framebuffer settings. Draw into a suitable GUI gadget or follow its supported drawing callback pattern.\nThe example below is a graphics primitive snippet, not a complete GUI applet. It only makes sense after a graphics-mode project has configured its drawing buffer. For a first program, use Designer labels and buttons instead.",
+      "example": "/* Graphics-mode snippet (not a whole program): */\ngfx_setcolour(15);\ngfx_rectf(16, 16, 80, 32);\ngfx_drawtext(20, 20, \"Demo\");"
+    },
+    {
+      "title": "18 - Choosing V1 or V2",
+      "category": "Getting Started",
+      "summary": "CoderGirl can build older V1 applets and newer V2 applets. For a new GUI project that uses Messenger, choose V2 (relocatable ARM ELF / CGARM).",
+      "notes": "V1 is the original fixed-address applet format, mainly for existing programs. V2 uses relocatable applets and provides the modern per-applet execution environment.\nThe IPC functions documented here have been tested with V2 applets. Do not assume a V1 applet can use V2 IPC without separate compatibility support. Many standard GUI concepts apply to either format, but their build and memory models differ.",
+      "example": "/* New project needing IPC?\n   Project format: V2 / CGARM\n\n   Maintaining an existing old applet?\n   Keep its original V1 settings unless deliberately porting it.\n*/"
+    }
+  ]
+}

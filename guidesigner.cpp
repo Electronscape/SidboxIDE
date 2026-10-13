@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <QAbstractItemView>
+#include <QAbstractSpinBox>
 #include <QAction>
 #include <QByteArray>
 #include <QCheckBox>
@@ -18,6 +19,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QDrag>
+#include <QEvent>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
@@ -72,6 +74,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QSet>
 #include <QSize>
 #include <QSpinBox>
@@ -1248,6 +1251,9 @@ public:
         setDefaultDropAction(Qt::CopyAction);
     }
 
+    // The owning Designer supplies the real, zoom-matched canvas gadget image.
+    std::function<QPixmap(const QString &)> gadgetPreviewRequested;
+
 protected:
     void startDrag(Qt::DropActions) override
     {
@@ -1270,8 +1276,14 @@ protected:
             new QDrag(this);
 
         drag->setMimeData(mime);
-        drag->setPixmap(item->icon().pixmap(QSize(64, 24)));
-        drag->setHotSpot(QPoint(32, 12));
+        const QString type = item->data(Qt::UserRole).toString();
+        QPixmap preview = gadgetPreviewRequested
+            ? gadgetPreviewRequested(type) : QPixmap();
+        if (preview.isNull())
+            preview = item->icon().pixmap(QSize(64, 24));
+        drag->setPixmap(preview);
+        // Drop points already represent the centre of the new gadget.
+        drag->setHotSpot(QPoint(preview.width() / 2, preview.height() / 2));
         drag->exec(Qt::CopyAction);
     }
 };
@@ -1424,6 +1436,221 @@ private:
 };
 
 
+/*
+ * Stage 25E: Pixel-faithful, Designer-only preview of a CoderGirl menu.
+ * Mirrors cg_menu.c: 8x16 system font, 18px item rows, 8px separators,
+ * 2px dark frame, 4px interior padding, and default palette pens.
+ * This is a popup in the Qt IDE; it never executes applet C callbacks.
+ */
+class GuiDesignerMenuPreviewPopup : public QWidget
+{
+public:
+    explicit GuiDesignerMenuPreviewPopup(const GuiDesignerMenuTitle &menu,
+                                         int zoomPercent,
+                                         QWidget *parent = nullptr)
+        : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
+        , m_items(menu.items)
+        , m_zoomPercent(qMax(100, zoomPercent))
+    {
+        setAttribute(Qt::WA_DeleteOnClose);
+        setFocusPolicy(Qt::StrongFocus);
+        setMouseTracking(true);
+        setObjectName(QStringLiteral("coderGirlMenuPreviewPopup"));
+
+        m_width = qMax(64, qMax(28, coderGirlTextWidth(menu.title) + 16));
+        m_height = 12; // 2px border * 2 + 4px vertical padding * 2
+
+        for (const GuiDesignerMenuItem &item : std::as_const(m_items)) {
+            if (isSeparator(item)) {
+                m_height += 8;
+                continue;
+            }
+            m_height += 18;
+            if (item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKABLE"))
+                || item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKED"))) {
+                m_markGutter = true;
+            }
+        }
+        for (const GuiDesignerMenuItem &item : std::as_const(m_items)) {
+            if (!isSeparator(item)) {
+                // Firmware stores at most 31 characters plus NUL per item.
+                m_width = qMax(m_width,
+                    coderGirlTextWidth(item.text.left(31)) + 18
+                    + (m_markGutter ? 24 : 0));
+            }
+        }
+        setFixedSize((m_width * m_zoomPercent + 99) / 100,
+                     (m_height * m_zoomPercent + 99) / 100);
+    }
+
+    std::function<void(int)> itemActivated;
+    int logicalWidth() const { return m_width; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        // Paint the exact native pixels first so 150%/200%/400% zoom retains
+        // the blocky CoderGirl font instead of substituting a desktop font.
+        QImage image(m_width, m_height, QImage::Format_ARGB32_Premultiplied);
+        QPainter cg(&image);
+        cg.fillRect(QRect(0, 0, m_width, m_height), coderGirlPen(16)); // PEN_WIN_TITLE
+        cg.fillRect(QRect(2, 2, m_width - 4, m_height - 4), coderGirlPen(2)); // PEN_MENU_BG
+
+        int y = 6; // CG_MENU_DROPDOWN_BORDER + CG_MENU_DROPDOWN_PAD
+        for (int index = 0; index < m_items.size(); ++index) {
+            const GuiDesignerMenuItem &item = m_items.at(index);
+            if (isSeparator(item)) {
+                cg.fillRect(QRect(6, y + 3, m_width - 12, 2), coderGirlPen(16));
+                y += 8;
+                continue;
+            }
+
+            const bool disabled = item.flags.contains(QStringLiteral("CG_MENUITEMF_DISABLED"));
+            const bool hover = !disabled && index == m_hoverIndex;
+            cg.fillRect(QRect(2, y, m_width - 4, 18),
+                        coderGirlPen(hover ? 3 : 2));
+            const QColor textPen = coderGirlPen(disabled ? 6 : (hover ? 2 : 16));
+            int textX = 8;
+
+            if (m_markGutter) {
+                const int iconX = 6; // border (2) + CG_MENU_ICON_PAD_X (4)
+                const int iconY = y + 1;
+                if (item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKED"))) {
+                    drawCoderGirlText(cg, iconX + 4, iconY,
+                                      QString(QChar(0x02)), textPen);
+                } else if (item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKABLE"))) {
+                    cg.fillRect(QRect(iconX + 3, iconY + 3, 10, 10), coderGirlPen(2));
+                    cg.fillRect(QRect(iconX + 3, iconY + 3, 10, 1), textPen);
+                    cg.fillRect(QRect(iconX + 3, iconY + 12, 10, 1), textPen);
+                    cg.fillRect(QRect(iconX + 3, iconY + 3, 1, 10), textPen);
+                    cg.fillRect(QRect(iconX + 12, iconY + 3, 1, 10), textPen);
+                }
+                textX += 24; // CG_MENU_ICON_GUTTER_W
+            }
+            drawCoderGirlText(cg, textX, y + 1, item.text.left(31), textPen);
+            y += 18;
+        }
+        cg.end();
+
+        QPainter screen(this);
+        screen.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        screen.drawImage(rect(), image);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int next = indexAt(event->position().toPoint());
+        if (m_hoverIndex != next) {
+            m_hoverIndex = next;
+            update();
+        }
+        event->accept();
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hoverIndex = -1;
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            const int index = indexAt(event->position().toPoint());
+            event->accept();
+            activate(index);
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event->key() == Qt::Key_Escape) {
+            close();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            activate(m_hoverIndex);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Down || event->key() == Qt::Key_Up) {
+            const int count = m_items.size();
+            if (count) {
+                const int direction = event->key() == Qt::Key_Down ? 1 : -1;
+                int index = m_hoverIndex;
+                for (int step = 0; step < count; ++step) {
+                    index = (index + direction + count) % count;
+                    if (!isSeparator(m_items.at(index))
+                        && !m_items.at(index).flags.contains(QStringLiteral("CG_MENUITEMF_DISABLED"))) {
+                        m_hoverIndex = index;
+                        update();
+                        break;
+                    }
+                }
+            }
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
+private:
+    static bool isSeparator(const GuiDesignerMenuItem &item)
+    {
+        return item.text.trimmed() == QStringLiteral("---")
+            || item.flags.contains(QStringLiteral("CG_MENUITEMF_SEPARATOR"));
+    }
+
+    int indexAt(const QPoint &devicePos) const
+    {
+        const int x = devicePos.x() * 100 / m_zoomPercent;
+        const int ly = devicePos.y() * 100 / m_zoomPercent;
+        if (x < 2 || x >= m_width - 2)
+            return -1;
+        int y = 6;
+        for (int index = 0; index < m_items.size(); ++index) {
+            const GuiDesignerMenuItem &item = m_items.at(index);
+            const int height = isSeparator(item) ? 8 : 18;
+            if (ly >= y && ly < y + height)
+                return !isSeparator(item)
+                       && !item.flags.contains(QStringLiteral("CG_MENUITEMF_DISABLED"))
+                    ? index : -1;
+            y += height;
+        }
+        return -1;
+    }
+
+    void activate(int index)
+    {
+        if (index < 0 || index >= m_items.size())
+            return;
+        const std::function<void(int)> callback = itemActivated;
+        close(); // Qt::WA_DeleteOnClose defers deletion until after event handling.
+        if (callback)
+            callback(index);
+    }
+
+    QList<GuiDesignerMenuItem> m_items;
+    int m_zoomPercent = 100;
+    int m_width = 64;
+    int m_height = 12;
+    int m_hoverIndex = -1;
+    bool m_markGutter = false;
+};
+
 class GuiDesignerCanvas : public QWidget
 {
 public:
@@ -1540,6 +1767,30 @@ public:
     int gridSnap() const
     {
         return m_gridSnap;
+    }
+
+    // Render the SAME CoderGirl gadget artwork used on the canvas, at the
+    // current zoom. Painting at native resolution first keeps 150% sharp and
+    // ensures the drag ghost has the actual new gadget dimensions.
+    QPixmap gadgetDragPixmap(const GuiDesignerGadget &g) const
+    {
+        const QSize logicalSize = g.rect.size();
+        if (logicalSize.isEmpty())
+            return QPixmap();
+
+        QImage logical(logicalSize, QImage::Format_ARGB32_Premultiplied);
+        logical.fill(Qt::transparent);
+        {
+            QPainter painter(&logical);
+            painter.setRenderHint(QPainter::Antialiasing, false);
+            drawGadget(painter, g, QRect(QPoint(0, 0), logicalSize),
+                       m_window->backPen);
+        }
+        const QSize zoomed((logicalSize.width() * m_zoomPercent) / 100,
+                           (logicalSize.height() * m_zoomPercent) / 100);
+        return QPixmap::fromImage(logical.scaled(zoomed,
+                                  Qt::IgnoreAspectRatio,
+                                  Qt::FastTransformation));
     }
 
     QSize clientViewportSize() const
@@ -1733,14 +1984,12 @@ private:
                     2),
                 coderGirlPen(16));
 
-            int x = 0;
+            int x = 3;
 
             for (const GuiDesignerMenuTitle &menu :
                  std::as_const(*m_menus)) {
-                const int width =
-                    coderGirlTextWidth(
-                        menu.title)
-                    + 16;
+                const int width = qMax(28,
+                    coderGirlTextWidth(menu.title) + 16);
 
                 drawCoderGirlText(
                     p,
@@ -1749,7 +1998,7 @@ private:
                     menu.title,
                     coderGirlPen(16));
 
-                x += width;
+                x += width + 2;
             }
         }
 
@@ -2713,34 +2962,31 @@ protected:
         if (m_menus && !m_menus->isEmpty()
             && logical.y() >= 0 && logical.y() < 21
             && logical.x() >= 0 && logical.x() < 480) {
-            int menuX = 0;
+            int menuX = 3; // firmware layout_titles() starts at x=3
             for (int menuIndex = 0; menuIndex < m_menus->size(); ++menuIndex) {
                 const GuiDesignerMenuTitle &title = m_menus->at(menuIndex);
-                const int titleWidth = coderGirlTextWidth(title.title) + 16;
+                const int titleWidth = qMax(28, coderGirlTextWidth(title.title) + 16);
                 if (logical.x() >= menuX && logical.x() < menuX + titleWidth) {
-                    QMenu dropdown(this);
-                    for (int itemIndex = 0; itemIndex < title.items.size(); ++itemIndex) {
-                        const GuiDesignerMenuItem &item = title.items.at(itemIndex);
-                        if (item.text.trimmed() == QStringLiteral("---")
-                            || item.flags.contains(QStringLiteral("CG_MENUITEMF_SEPARATOR"))) {
-                            dropdown.addSeparator();
-                            continue;
-                        }
-                        QAction *action = dropdown.addAction(item.text);
-                        action->setCheckable(item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKABLE")));
-                        action->setChecked(item.flags.contains(QStringLiteral("CG_MENUITEMF_TICKED")));
-                        connect(action, &QAction::triggered, this,
-                                [this, menuIndex, itemIndex]() {
+                    if (!title.items.isEmpty()) {
+                        // Designer-only popup. Clicking an item still opens
+                        // its generated USER callback; it does not execute it.
+                        auto *popup = new GuiDesignerMenuPreviewPopup(title,
+                                                                     m_zoomPercent, this);
+                        popup->itemActivated = [this, menuIndex](int itemIndex) {
                             if (menuItemActivated)
                                 menuItemActivated(menuIndex, itemIndex);
-                        });
+                        };
+                        // Keep the dropdown inside the 480px firmware display.
+                        const int x = qMax(0, qMin(menuX, 480 - popup->logicalWidth()));
+                        popup->move(mapToGlobal(QPoint(x * m_zoomPercent / 100,
+                                                       20 * m_zoomPercent / 100)));
+                        popup->show();
+                        popup->setFocus(Qt::PopupFocusReason);
                     }
-                    dropdown.exec(mapToGlobal(QPoint((menuX + 1) * m_zoomPercent / 100,
-                                                        21 * m_zoomPercent / 100)));
                     event->accept();
                     return;
                 }
-                menuX += titleWidth;
+                menuX += titleWidth + 2;
             }
         }
 
@@ -4038,6 +4284,13 @@ private:
             return coderGirlPen(4);
         }
 
+        // The intended CNV_BEVEL default background pen is pen 2.
+        // TabGroup is backed by a CNV_BEVEL Canvas in generated C code.
+        if (type == QStringLiteral("Canvas")
+            || type == QStringLiteral("TabGroup")) {
+            return coderGirlPen(2);
+        }
+
         return coderGirlPen(
             windowBackPen);
     }
@@ -4210,10 +4463,14 @@ private:
             const QColor bevelFPen = coderGirlPen(
                 g.fPen >= 0 ? g.fPen : defaultFPenForType(QStringLiteral("Canvas")));
             const QColor bevelBPen = coderGirlPen(
-                g.bPen >= 0 ? g.bPen : windowBackPen);
+                g.bPen >= 0 ? g.bPen : 2);
             const bool inset = g.flags.contains(QStringLiteral("GAD_TOOL_INSET"));
-            const QColor topLeft = inset ? bevelBPen : bevelFPen;
-            const QColor bottomRight = inset ? bevelFPen : bevelBPen;
+            // With default FPen=16 (dark) and BPen=2 (light), inset must
+            // shade the top/left dark and bottom/right light. An outset
+            // bevel uses the opposite order. Keep this aligned with the
+            // firmware's CNV_BEVEL renderer once its pen order is corrected.
+            const QColor topLeft = inset ? bevelFPen : bevelBPen;
+            const QColor bottomRight = inset ? bevelBPen : bevelFPen;
             if (bevel.width() > 1 && bevel.height() > 1) {
                 p.setPen(topLeft);
                 p.drawLine(bevel.left(), bevel.top(), bevel.right(), bevel.top());
@@ -4780,7 +5037,7 @@ private:
                 coderGirlPen(
                     g.bPen >= 0
                         ? g.bPen
-                        : windowBackPen);
+                        : 2); // default bevel BPen (Canvas)
 
             if (mode == QStringLiteral("CNV_LINE")) {
                 p.setPen(fpen);
@@ -4805,10 +5062,10 @@ private:
                         QStringLiteral("GAD_TOOL_INSET"));
 
                 const QColor topLeft =
-                    inset ? bpen : fpen;
+                    inset ? fpen : bpen;
 
                 const QColor bottomRight =
-                    inset ? fpen : bpen;
+                    inset ? bpen : fpen;
 
                 p.setPen(topLeft);
                 p.drawLine(
@@ -5105,7 +5362,7 @@ private:
     QList<GuiDesignerGadget> *m_gadgets = nullptr;
     QList<GuiDesignerMenuTitle> *m_menus = nullptr;
     int m_zoomPercent = 200;
-    int m_gridSnap = 0;
+    int m_gridSnap = 4; // Brand-new designs default to 4-pixel grid snapping.
     int m_selected = -1;
     QList<int> m_multiSelected;
     bool m_marqueeSelecting = false;
@@ -5122,6 +5379,125 @@ private:
     Qt::Edges m_gadgetResizeEdges;
     QPoint m_pressLogical;
     QRect m_startRect;
+};
+
+// Designer-only property layout: labels sit above inputs, with two compact
+// columns for short fields and full-width rows for longer controls.
+// This replaces the old side-by-side QFormLayout without changing any property
+// bindings, gadget logic, callbacks, or generated applet code.
+class GuiDesignerPropertyGrid final : public QGridLayout
+{
+public:
+    explicit GuiDesignerPropertyGrid(QWidget *host)
+        : QGridLayout(host), m_host(host)
+    {
+        setColumnStretch(0, 1);
+        setColumnStretch(1, 1);
+        setHorizontalSpacing(8);
+        setVerticalSpacing(7);
+        setAlignment(Qt::AlignTop);
+    }
+
+    void clearRows()
+    {
+        // Every cell contains a QWidget (not a bare child layout), so deleting
+        // it also deletes its label and editor without leaving old connections.
+        while (QLayoutItem *item = takeAt(0)) {
+            delete item->widget();
+            delete item;
+        }
+        m_row = 0;
+        m_col = 0;
+    }
+
+    void addRow(const QString &title, QWidget *control)
+    {
+        if (!control) return;
+
+        const bool compact = !title.isEmpty()
+            && title.size() <= 16
+            && (qobject_cast<QAbstractSpinBox *>(control)
+                || qobject_cast<QCheckBox *>(control));
+
+        // Avoid the minimum-size hints of long line edits and combo boxes
+        // making QScrollArea acquire an unwanted horizontal scrollbar.
+        if (qobject_cast<QLineEdit *>(control)
+            || qobject_cast<QComboBox *>(control)) {
+            control->setMinimumWidth(0);
+            control->setSizePolicy(QSizePolicy::Ignored,
+                                   control->sizePolicy().verticalPolicy());
+        }
+
+        auto *cell = new QWidget(m_host);
+        cell->setMinimumWidth(0);
+        auto *stack = new QVBoxLayout(cell);
+        stack->setContentsMargins(0, 0, 0, 0);
+        stack->setSpacing(3);
+        if (!title.isEmpty()) {
+            auto *label = new QLabel(title, cell);
+            label->setTextFormat(Qt::PlainText);
+            label->setWordWrap(true);
+            label->setMinimumWidth(0);
+            label->setToolTip(title);
+            stack->addWidget(label);
+        }
+        stack->addWidget(control);
+        addCell(cell, compact);
+    }
+
+    void addRow(const QString &title, QLayout *controls)
+    {
+        if (!controls) return;
+        auto *holder = new QWidget(m_host);
+        holder->setMinimumWidth(0);
+        auto *inner = new QVBoxLayout(holder);
+        inner->setContentsMargins(0, 0, 0, 0);
+        inner->addLayout(controls);
+        addRow(title, holder);
+    }
+
+    void addRow(QWidget *widget)
+    {
+        if (!widget) return;
+        if (auto *label = qobject_cast<QLabel *>(widget)) {
+            label->setWordWrap(true);
+            label->setMinimumWidth(0);
+        }
+        widget->setMinimumWidth(0);
+        addCell(widget, false);
+    }
+
+    void addRow(QLayout *layout)
+    {
+        if (!layout) return;
+        auto *holder = new QWidget(m_host);
+        auto *inner = new QVBoxLayout(holder);
+        inner->setContentsMargins(0, 0, 0, 0);
+        inner->addLayout(layout);
+        addRow(holder);
+    }
+
+private:
+    void addCell(QWidget *widget, bool compact)
+    {
+        // A wide property finishes any half-filled row before spanning both
+        // columns, so long fields never squeeze short coordinate controls.
+        if (!compact && m_col != 0) {
+            ++m_row;
+            m_col = 0;
+        }
+        QGridLayout::addWidget(widget, m_row, m_col, 1, compact ? 1 : 2);
+        if (compact && m_col == 0) {
+            m_col = 1;
+        } else {
+            ++m_row;
+            m_col = 0;
+        }
+    }
+
+    QWidget *m_host = nullptr;
+    int m_row = 0;
+    int m_col = 0;
 };
 
 class SidboxGuiDesignerImpl final : public SidboxGuiDesigner
@@ -5343,6 +5719,10 @@ public:
             QObject::tr("16 px"),
             16);
 
+        // Match the 4px default on new canvases. Loading an existing .sbui
+        // overrides this with its own saved designerGridSnap setting.
+        m_snapCombo->setCurrentIndex(m_snapCombo->findData(4));
+
         top->addWidget(
             m_snapCombo);
 
@@ -5523,14 +5903,24 @@ public:
         m_canvas = new GuiDesignerCanvas(&m_window, &m_gadgets, &m_menus, canvasScroll);
         canvasScroll->setWidget(m_canvas);
 
+        // The palette is created before the canvas. Connect its drag previews
+        // now that the canvas exists so they can follow the current zoom.
+        for (int i = 0; i < m_toolboxTabs->count(); ++i) {
+            // Every palette tab here is constructed as a GuiDesignerToolbox.
+            auto *palette = static_cast<GuiDesignerToolbox *>(m_toolboxTabs->widget(i));
+            palette->gadgetPreviewRequested = [this](const QString &type) {
+                return m_canvas->gadgetDragPixmap(makeDefaultGadget(type));
+            };
+        }
+
         // Properties -----------------------------------------------------------
         auto *rightScroll = new QScrollArea(splitter);
         rightScroll->setWidgetResizable(true);
         rightScroll->setMinimumWidth(285);
         m_propertyHost = new QWidget(rightScroll);
-        m_propertyLayout = new QFormLayout(m_propertyHost);
+        m_propertyLayout = new GuiDesignerPropertyGrid(m_propertyHost);
         m_propertyLayout->setContentsMargins(8, 8, 8, 8);
-        m_propertyLayout->setSpacing(6);
+        m_propertyLayout->setSpacing(7);
         rightScroll->setWidget(m_propertyHost);
 
         splitter->addWidget(left);
@@ -7676,10 +8066,10 @@ private:
         }
     }
 
-    void addGadget(const QString &type, const QPoint &dropPosition = QPoint(-1, -1))
+    // Single source of truth for a gadget's initial dimensions and appearance.
+    // Calling this for a drag preview does not add it to the design or undo log.
+    GuiDesignerGadget makeDefaultGadget(const QString &type) const
     {
-        pushUndoSnapshot();
-
         GuiDesignerGadget g;
         g.type = type;
         g.name = uniqueGadgetName(type);
@@ -7798,6 +8188,15 @@ private:
             };
         }
 
+        return g;
+    }
+
+    void addGadget(const QString &type, const QPoint &dropPosition = QPoint(-1, -1))
+    {
+        pushUndoSnapshot();
+
+        GuiDesignerGadget g = makeDefaultGadget(type);
+
         if (dropPosition.x() >= 0
             && dropPosition.y() >= 0) {
             QPoint topLeft(
@@ -7873,9 +8272,7 @@ private:
     void clearPropertyRows()
     {
         m_textPropertyEdit.clear();
-        while (m_propertyLayout->rowCount() > 0) {
-            m_propertyLayout->removeRow(0);
-        }
+        m_propertyLayout->clearRows();
     }
 
     QSpinBox *addSpin(const QString &label, int value, int min, int max,
@@ -13642,7 +14039,7 @@ private:
     QTreeWidget *m_menuTree = nullptr;
     GuiDesignerCanvas *m_canvas = nullptr;
     QWidget *m_propertyHost = nullptr;
-    QFormLayout *m_propertyLayout = nullptr;
+    GuiDesignerPropertyGrid *m_propertyLayout = nullptr;
     QLabel *m_statusLabel = nullptr;
     QAction *m_undoAction = nullptr;
     QComboBox *m_snapCombo = nullptr;

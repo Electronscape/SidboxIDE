@@ -5,6 +5,8 @@
 #include <QList>
 #include <QMetaObject>
 #include <QPair>
+#include <QRegularExpression>
+#include <QTextCursor>
 #include <QString>
 #include <QStringList>
 #include <QTextBlock>
@@ -108,6 +110,9 @@ private:
     void updateLineNumberAreaWidth(int newBlockCount);
     void updateLineNumberArea(const QRect &rect, int dy);
     void highlightCurrentLine();
+    void updateOccurrenceSelection(bool documentChanged = false);
+    void beginOccurrenceScan();
+    void continueOccurrenceScan();
     QString textUnderCursor() const;
     void insertFunctionCompletion(const QString &signature);
     void insertIncludeCompletion(const QString &path);
@@ -148,6 +153,15 @@ private:
     QStringListModel *m_completionModel;
     QList<QPair<int, int>> m_foldRegions;
     QTimer *m_foldScanTimer = nullptr;
+    // Selection-based whole-identifier occurrence highlights. Scans are
+    // deferred and batched so huge source files stay responsive.
+    QTimer *m_occurrenceDelayTimer = nullptr;
+    QTimer *m_occurrenceScanTimer = nullptr;
+    QString m_occurrenceWord;
+    QRegularExpression m_occurrenceExpression;
+    QTextBlock m_occurrenceScanBlock;
+    QList<QTextCursor> m_occurrences;
+    QList<QTextCursor> m_pendingOccurrences;
     QTextBlock m_foldScanBlock;
     QList<QPair<int, int>> m_pendingFoldRegions;
     QList<QPair<int, int>> m_pendingFoldStack;
