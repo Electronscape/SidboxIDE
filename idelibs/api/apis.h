@@ -279,6 +279,7 @@ typedef struct {
 
 #include "sys/sys.h"
 #include "sys/uart1.h"
+#include "sys/ipc.h"
 
 #define alignmem4 	__attribute__((aligned(4)))
 #define align32 	__attribute__((aligned(32)))
@@ -296,6 +297,7 @@ typedef struct __attribute__((aligned(4))) {
 	const API_IRQ_BANK	*irq;		// interrupt call backs
 	const API_MEDIA     *media;     // image/media helpers
 	const API_SYS_UART1 *uart1; // exclusive applet UART1 lease (append only)
+    const API_IPC *ipc;       // Stage 25 applet mailboxes (append only)
 	
 } API_Root;
 

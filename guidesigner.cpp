@@ -172,6 +172,16 @@ struct GuiDesignerGadget
     bool timerAutoStart = true;
     bool timerKeepAliveOnClose = false; // Background timer survives CloseWindow().
 
+    // Virtual Messenger: send and/or cooperative receive.  All incoming messages
+    // remain in the applet-owned OS mailbox; sending never runs foreign code.
+    bool ipcReceive = true;
+    int ipcPollMs = 25; // 10..1000ms; drains at most eight messages each tick.
+    QString ipcTargetApp; // Target applet filename, e.g. ipc_rx.app; resolved per send.
+    // Ordinary Button can send text through a selected virtual Messenger.
+    QString ipcSendTarget;
+    int ipcSendType = 1;
+    QString ipcSendText = QStringLiteral("Hello from SIDBOX!");
+
     // Virtual exclusive UART1 lease; defaults to manual Open() for safety.
     int uart1Baud = 9600;
     int uart1DataBits = 8;
@@ -213,7 +223,7 @@ struct GuiDesignerGadget
 
 static bool isVirtualDesignerGadget(const QString &type)
 {
-    return type == QStringLiteral("UART1") || type == QStringLiteral("KBInput") || type == QStringLiteral("MSInput")
+    return type == QStringLiteral("Messenger") || type == QStringLiteral("UART1") || type == QStringLiteral("KBInput") || type == QStringLiteral("MSInput")
         || type == QStringLiteral("Timer") || type == QStringLiteral("Media")
         || type == QStringLiteral("FileRequester") || type == QStringLiteral("MessageBox");
 }
@@ -4132,6 +4142,24 @@ private:
             p.restore();
             return;
         }
+        if (g.type == QStringLiteral("Messenger")) {
+            // Virtual Messenger: two mail envelopes, no physical SIDBOX gadget.
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.fillRect(r, QColor(16, 24, 38));
+            p.setPen(QPen(QColor(90, 164, 238), 1));
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.setPen(QPen(QColor(226, 231, 239), 1));
+            const int x = r.x(), y = r.y();
+            p.drawRect(QRect(x + 3, y + 5, 13, 10));
+            p.drawLine(x + 3, y + 5, x + 9, y + 10);
+            p.drawLine(x + 9, y + 10, x + 16, y + 5);
+            p.drawRect(QRect(x + 8, y + 11, 13, 9));
+            p.drawLine(x + 8, y + 11, x + 14, y + 16);
+            p.drawLine(x + 14, y + 16, x + 21, y + 11);
+            p.restore();
+            return;
+        }
         if (g.type == QStringLiteral("UART1")) {
             // Virtual USART1 controller: TX and RX leads, no on-device gadget.
             p.save();
@@ -5382,6 +5410,7 @@ public:
             {QStringLiteral("TextArea"), QObject::tr("Multi-line text area")},
             {QStringLiteral("TextBox"), QObject::tr("Single-line editable text")},
             {QStringLiteral("Timer"), QObject::tr("Virtual cooperative timer: callback without a visible gadget")},
+            {QStringLiteral("Messenger"), QObject::tr("Virtual V2 IPC mailbox: receive applet messages through a cooperative callback")},
             {QStringLiteral("UART1"), QObject::tr("Exclusive USART1 lease: temporarily pause SIDBOX terminal, FTP and UART keyboard")},
             {QStringLiteral("KBInput"), QObject::tr("Passive key press/release events delivered to this focused window")},
             {QStringLiteral("MSInput"), QObject::tr("Passive mouse move/down/up events over this window; OS retains mouse control")},
@@ -5404,7 +5433,7 @@ public:
                 QStringLiteral("Label"), QStringLiteral("ProgressBar")}},
             {QObject::tr("Virtual"), {
                 QStringLiteral("FileRequester"), QStringLiteral("Media"),
-                QStringLiteral("MessageBox"), QStringLiteral("TabGroup"),
+                QStringLiteral("MessageBox"), QStringLiteral("Messenger"), QStringLiteral("TabGroup"),
                 QStringLiteral("Timer"), QStringLiteral("UART1"),
                 QStringLiteral("KBInput"), QStringLiteral("MSInput")}}
         };
@@ -6272,6 +6301,7 @@ private:
         QString stem;
         if (type == QStringLiteral("TabGroup")) stem = QStringLiteral("tabs");
         else if (type == QStringLiteral("Timer")) stem = QStringLiteral("timer");
+        else if (type == QStringLiteral("Messenger")) stem = QStringLiteral("messenger");
         else if (type == QStringLiteral("UART1")) stem = QStringLiteral("uart1");
         else if (type == QStringLiteral("KBInput")) stem = QStringLiteral("kbinput");
         else if (type == QStringLiteral("MSInput")) stem = QStringLiteral("msinput");
@@ -6356,6 +6386,12 @@ private:
         g.timerRepeat = o.value(QStringLiteral("timerRepeat")).toBool(true);
         g.timerAutoStart = o.value(QStringLiteral("timerAutoStart")).toBool(true);
         g.timerKeepAliveOnClose = o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
+        g.ipcReceive = o.value(QStringLiteral("ipcReceive")).toBool(true);
+        g.ipcPollMs = qBound(10, o.value(QStringLiteral("ipcPollMs")).toInt(25), 1000);
+        g.ipcTargetApp = o.value(QStringLiteral("ipcTargetApp")).toString();
+        g.ipcSendTarget = o.value(QStringLiteral("ipcSendTarget")).toString();
+        g.ipcSendType = qBound(0, o.value(QStringLiteral("ipcSendType")).toInt(1), 65535);
+        g.ipcSendText = o.value(QStringLiteral("ipcSendText")).toString(QStringLiteral("Hello from SIDBOX!"));
          g.uart1Baud = qBound(1200, o.value(QStringLiteral("uart1Baud")).toInt(9600), 1000000);
          g.uart1DataBits = qBound(7, o.value(QStringLiteral("uart1DataBits")).toInt(8), 8);
          g.uart1Parity = qBound(0, o.value(QStringLiteral("uart1Parity")).toInt(0), 2);
@@ -6531,6 +6567,10 @@ private:
             g.onActivate =
                 QStringLiteral("On_%1_Activate")
                     .arg(g.name);
+        }
+        if (g.type == QStringLiteral("Messenger")
+            && g.onActivate == QStringLiteral("On_%1_Message").arg(oldName)) {
+            g.onActivate = QStringLiteral("On_%1_Message").arg(g.name);
         }
         if (g.type == QStringLiteral("Timer")
             && g.onActivate == QStringLiteral("On_%1_Tick").arg(oldName)) {
@@ -7663,6 +7703,8 @@ private:
         }
         if (type == QStringLiteral("Timer"))
             g.onActivate = QStringLiteral("On_%1_Tick").arg(g.name);
+        if (type == QStringLiteral("Messenger"))
+            g.onActivate = QStringLiteral("On_%1_Message").arg(g.name);
         if (type == QStringLiteral("UART1"))
             g.onActivate = QStringLiteral("On_%1_Data").arg(g.name);
         if (type == QStringLiteral("KBInput"))
@@ -8871,6 +8913,9 @@ private:
             if (gg.type == QStringLiteral("MessageBox")
                 && gg.onActivate == QStringLiteral("On_%1_Result").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Result").arg(gg.name);
+            if (gg.type == QStringLiteral("Messenger")
+                && gg.onActivate == QStringLiteral("On_%1_Message").arg(old))
+                gg.onActivate = QStringLiteral("On_%1_Message").arg(gg.name);
             if (gg.type == QStringLiteral("Timer")
                 && gg.onActivate == QStringLiteral("On_%1_Tick").arg(old))
                 gg.onActivate = QStringLiteral("On_%1_Tick").arg(gg.name);
@@ -9124,6 +9169,39 @@ private:
                 });
             return;
         }
+        if (g.type == QStringLiteral("Messenger")) {
+            auto *hint = new QLabel(QObject::tr(
+                "Virtual V2 IPC: receive messages and/or send to an applet. "
+                "Set Target applet to a unique filename (for example ipc_rx.app). "
+                "On a Button choose this Messenger as its IPC target; the button "
+                "will send its configured text automatically. Receiver uses "
+                "a cooperative timer; no foreign callback stack."), m_propertyHost);
+            hint->setWordWrap(true);
+            m_propertyLayout->addRow(hint);
+            addSpin(QObject::tr("Icon X"), g.rect.x(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveLeft(v); });
+            addSpin(QObject::tr("Icon Y"), g.rect.y(), 0, 2000,
+                [this, selected](int v) { m_gadgets[selected].rect.moveTop(v); });
+            addLine(QObject::tr("Target applet filename (to send)"), g.ipcTargetApp,
+                [this, selected](const QString &v) {
+                    m_gadgets[selected].ipcTargetApp = v.trimmed();
+                });
+            addCheck(QObject::tr("Enable receiving"), g.ipcReceive,
+                [this, selected](bool v) {
+                    m_gadgets[selected].ipcReceive = v;
+                    QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+                });
+            if (g.ipcReceive) {
+                addSpin(QObject::tr("Receive poll (ms)"), g.ipcPollMs, 10, 1000,
+                    [this, selected](int v) { m_gadgets[selected].ipcPollMs = v; });
+                addLine(QObject::tr("On message (const SIDBOX_IPC_MESSAGE *message)"), g.onActivate,
+                    [this, selected](const QString &v) {
+                        m_gadgets[selected].onActivate = v.trimmed().isEmpty()
+                            ? QString() : safeCIdentifier(v, QStringLiteral("OnMessengerMessage"));
+                    });
+            }
+            return;
+        }
         if (g.type == QStringLiteral("Timer")) {
             auto *hint = new QLabel(QObject::tr(
                 "Virtual stopwatch: visible only in the designer. "
@@ -9321,6 +9399,32 @@ private:
                 addStringChoice(QObject::tr("Media action"),
                     {QStringLiteral("Play"), QStringLiteral("Stop")}, g.mediaAction,
                     [this, selected](const QString &v) { m_gadgets[selected].mediaAction = v; });
+            }
+            auto *ipcTarget = new QComboBox(m_propertyHost);
+            ipcTarget->addItem(QObject::tr("None — no IPC action"), QString());
+            for (const GuiDesignerGadget &candidate : std::as_const(m_gadgets)) {
+                if (candidate.type == QStringLiteral("Messenger"))
+                    ipcTarget->addItem(candidate.name, candidate.name);
+            }
+            ipcTarget->setCurrentIndex(qMax(0, ipcTarget->findData(g.ipcSendTarget)));
+            m_propertyLayout->addRow(QObject::tr("IPC Messenger"), ipcTarget);
+            connect(ipcTarget, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, selected, ipcTarget](int) {
+                const QString next = ipcTarget->currentData().toString();
+                if (selected >= m_gadgets.size() || m_gadgets[selected].ipcSendTarget == next) return;
+                pushUndoSnapshot();
+                GuiDesignerGadget &button = m_gadgets[selected];
+                button.ipcSendTarget = next;
+                if (!next.isEmpty() && button.onActivate.isEmpty())
+                    button.onActivate = QStringLiteral("On_%1_Activate").arg(button.name);
+                setModified(true);
+                QTimer::singleShot(0, this, [this]() { rebuildProperties(); });
+            });
+            if (!g.ipcSendTarget.isEmpty()) {
+                addSpin(QObject::tr("IPC message type"), g.ipcSendType, 0, 65535,
+                    [this, selected](int v) { m_gadgets[selected].ipcSendType = v; });
+                addLine(QObject::tr("IPC message text (max 64 UTF-8 bytes)"), g.ipcSendText,
+                    [this, selected](const QString &v) { m_gadgets[selected].ipcSendText = v; });
             }
             auto *target = new QComboBox(m_propertyHost);
             target->addItem(QObject::tr("None — ordinary callback"), QString());
@@ -10101,6 +10205,12 @@ private:
             g.timerRepeat=o.value(QStringLiteral("timerRepeat")).toBool(true);
             g.timerAutoStart=o.value(QStringLiteral("timerAutoStart")).toBool(true);
             g.timerKeepAliveOnClose=o.value(QStringLiteral("timerKeepAliveOnClose")).toBool(false);
+            g.ipcReceive=o.value(QStringLiteral("ipcReceive")).toBool(true);
+            g.ipcPollMs=qBound(10,o.value(QStringLiteral("ipcPollMs")).toInt(25),1000);
+            g.ipcTargetApp=o.value(QStringLiteral("ipcTargetApp")).toString();
+            g.ipcSendTarget=o.value(QStringLiteral("ipcSendTarget")).toString();
+            g.ipcSendType=qBound(0,o.value(QStringLiteral("ipcSendType")).toInt(1),65535);
+            g.ipcSendText=o.value(QStringLiteral("ipcSendText")).toString(QStringLiteral("Hello from SIDBOX!"));
          g.uart1Baud = qBound(1200, o.value(QStringLiteral("uart1Baud")).toInt(9600), 1000000);
          g.uart1DataBits = qBound(7, o.value(QStringLiteral("uart1DataBits")).toInt(8), 8);
          g.uart1Parity = qBound(0, o.value(QStringLiteral("uart1Parity")).toInt(0), 2);
@@ -10221,6 +10331,12 @@ private:
         o.insert(QStringLiteral("timerRepeat"),g.timerRepeat);
         o.insert(QStringLiteral("timerAutoStart"),g.timerAutoStart);
         o.insert(QStringLiteral("timerKeepAliveOnClose"),g.timerKeepAliveOnClose);
+        o.insert(QStringLiteral("ipcReceive"),g.ipcReceive);
+        o.insert(QStringLiteral("ipcPollMs"),g.ipcPollMs);
+        o.insert(QStringLiteral("ipcTargetApp"),g.ipcTargetApp);
+        o.insert(QStringLiteral("ipcSendTarget"),g.ipcSendTarget);
+        o.insert(QStringLiteral("ipcSendType"),g.ipcSendType);
+        o.insert(QStringLiteral("ipcSendText"),g.ipcSendText);
         o.insert(QStringLiteral("uart1Baud"),g.uart1Baud);
         o.insert(QStringLiteral("uart1DataBits"),g.uart1DataBits);
         o.insert(QStringLiteral("uart1Parity"),g.uart1Parity);
@@ -10979,6 +11095,45 @@ private:
                 return false;
             }
         }
+        // IPC is one OS-owned mailbox per applet; multiple Messenger timers in
+        // the same window would race each other while consuming messages.
+        int messengerCount = 0;
+        QHash<QString, QString> ipcMessengerTargets;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Messenger")) continue;
+            ipcMessengerTargets.insert(g.name, g.ipcTargetApp.trimmed());
+            if (!g.ipcReceive) continue;
+            ++messengerCount;
+            if (g.onActivate.trimmed().isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Messenger callback required"),
+                    QObject::tr("Receiver Messenger %1 needs an On message callback.").arg(g.name));
+                return false;
+            }
+        }
+        if (messengerCount > 1) {
+            QMessageBox::warning(this, QObject::tr("Multiple Messenger receivers"),
+                QObject::tr("Use one receiving Messenger per design. IPC has one mailbox per applet."));
+            return false;
+        }
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Button") || g.ipcSendTarget.isEmpty()) continue;
+            if (!ipcMessengerTargets.contains(g.ipcSendTarget)
+                || ipcMessengerTargets.value(g.ipcSendTarget).isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Missing IPC target"),
+                    QObject::tr("Button %1 needs a Messenger with a Target applet filename.").arg(g.name));
+                return false;
+            }
+            if (g.onActivate.isEmpty()) {
+                QMessageBox::warning(this, QObject::tr("Missing IPC button callback"),
+                    QObject::tr("Button %1 needs an activation callback to send IPC.").arg(g.name));
+                return false;
+            }
+            if (g.ipcSendText.toUtf8().size() > 64) {
+                QMessageBox::warning(this, QObject::tr("IPC text too long"),
+                    QObject::tr("Button %1 message exceeds 64 UTF-8 bytes.").arg(g.name));
+                return false;
+            }
+        }
         // UART1 is physically a single serial port; don't generate duplicate leases.
         int uart1Components = 0;
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
@@ -11154,6 +11309,7 @@ private:
 
         QStringList gadgetCallbacks;
         QStringList timerCallbacks;
+        QStringList messengerCallbacks;
         QStringList uart1DataCallbacks;   // Only these need the UART RX usage memo.
         QStringList inputCallbacks;      // Virtual keyboard/mouse events (shared signature).
         QStringList dialogCallbackNamesForGeneration;
@@ -11184,6 +11340,13 @@ private:
                     callbackKeys << g.onActivate;
                     timerCallbacks << g.onActivate;
                     uart1DataCallbacks << g.onActivate;
+                }
+                continue;
+            }
+            if (g.type == QStringLiteral("Messenger")) {
+                if (g.ipcReceive && !g.onActivate.isEmpty()) {
+                    callbackKeys << g.onActivate;
+                    messengerCallbacks << g.onActivate;
                 }
                 continue;
             }
@@ -11249,6 +11412,7 @@ private:
         callbackKeys.removeDuplicates();
         gadgetCallbacks.removeDuplicates();
         timerCallbacks.removeDuplicates();
+        messengerCallbacks.removeDuplicates();
         uart1DataCallbacks.removeDuplicates();
         inputCallbacks.removeDuplicates();
         dialogCallbackNamesForGeneration.removeDuplicates();
@@ -11257,6 +11421,7 @@ private:
         // from callbacks, not declared as one. Prevent duplicate C symbols.
         if (gadgetCallbacks.contains(QStringLiteral("CloseWindow"))
             || timerCallbacks.contains(QStringLiteral("CloseWindow"))
+            || messengerCallbacks.contains(QStringLiteral("CloseWindow"))
             || menuCallbacks.contains(QStringLiteral("CloseWindow"))
             || dialogCallbackNamesForGeneration.contains(QStringLiteral("CloseWindow"))
             || inputCallbacks.contains(QStringLiteral("CloseWindow"))) {
@@ -11268,7 +11433,7 @@ private:
         }
         // Different callback types have incompatible C signatures.
         for (const QString &cb : std::as_const(timerCallbacks)) {
-            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb) || messengerCallbacks.contains(cb)) {
                 QMessageBox::warning(this, QObject::tr("Timer callback collision"),
                     QObject::tr("Timer callback %1 is also used by a gadget or menu. "
                                 "Give it a unique name.").arg(cb));
@@ -11278,16 +11443,26 @@ private:
         menuCallbacks.removeDuplicates();
         for (const QString &cb : std::as_const(inputCallbacks)) {
             if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)
-                || timerCallbacks.contains(cb) || dialogCallbackNamesForGeneration.contains(cb)) {
+                || timerCallbacks.contains(cb) || messengerCallbacks.contains(cb) || dialogCallbackNamesForGeneration.contains(cb)) {
                 QMessageBox::warning(this, QObject::tr("Input callback collision"),
                     QObject::tr("Input callback %1 conflicts with a gadget, menu, timer, or dialog callback.").arg(cb));
                 return false;
             }
         }
         for (const QString &cb : std::as_const(dialogCallbackNamesForGeneration)) {
-            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb) || timerCallbacks.contains(cb)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb) || timerCallbacks.contains(cb) || messengerCallbacks.contains(cb)) {
                 QMessageBox::warning(this, QObject::tr("Dialog callback collision"),
                     QObject::tr("Dialog callback %1 also belongs to another gadget/menu/timer.").arg(cb));
+                return false;
+            }
+        }
+
+        for (const QString &cb : std::as_const(messengerCallbacks)) {
+            if (gadgetCallbacks.contains(cb) || menuCallbacks.contains(cb)
+                || timerCallbacks.contains(cb) || inputCallbacks.contains(cb)
+                || dialogCallbackNamesForGeneration.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Messenger callback collision"),
+                    QObject::tr("Messenger callback %1 conflicts with another callback type.").arg(cb));
                 return false;
             }
         }
@@ -11435,13 +11610,31 @@ private:
             mediaLinkedActions.insert(cb, call);
         }
 
+        QHash<QString, QString> ipcLinkedActions;
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Button") || g.ipcSendTarget.isEmpty()) continue;
+            const QString cb = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
+            const QString name = safeCIdentifier(g.ipcSendTarget, QStringLiteral("messenger"));
+            const QString call = QStringLiteral("(void)%1_SendText(%2u, \"%3\");")
+                .arg(name).arg(qBound(0, g.ipcSendType, 65535))
+                .arg(escapedCString(g.ipcSendText));
+            if ((ipcLinkedActions.contains(cb) && ipcLinkedActions.value(cb) != call)
+                || linkedCallbacks.contains(cb) || mediaLinkedActions.contains(cb)) {
+                QMessageBox::warning(this, QObject::tr("Conflicting IPC button actions"),
+                    QObject::tr("Button callback %1 has incompatible built-in actions. Use a separate callback name.").arg(cb));
+                return false;
+            }
+            ipcLinkedActions.insert(cb, call);
+        }
+
         QHash<QString, QString> dialogLinkedActions;
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
             if (g.type != QStringLiteral("Button") || g.dialogTarget.isEmpty()) continue;
             const QString cb = safeCIdentifier(g.onActivate, QStringLiteral("OnActivate"));
             const QString call = safeCIdentifier(g.dialogTarget, QStringLiteral("dialog")) + QStringLiteral("_Show();");
             if ((dialogLinkedActions.contains(cb) && dialogLinkedActions.value(cb) != call)
-                || mediaLinkedActions.contains(cb) || linkedCallbacks.contains(cb)) {
+                || mediaLinkedActions.contains(cb) || ipcLinkedActions.contains(cb)
+                || linkedCallbacks.contains(cb)) {
                 QMessageBox::warning(this, QObject::tr("Shared callback conflict"),
                     QObject::tr("Button callback %1 has conflicting built-in actions. Give the buttons separate callbacks.").arg(cb));
                 return false;
@@ -11472,7 +11665,8 @@ private:
             s << "#include \"" << QFileInfo(cPath).completeBaseName() << ".h\"\n";
         s << "#include <stddef.h>\n"
              "#include <stdint.h>\n"
-             "#include <stdlib.h>\n";
+             "#include <stdlib.h>\n"
+             "#include <string.h>\n";
         if (!dialogNames.isEmpty())
             s << "#include <stdio.h>\n"; // printf() in generated dialog demos.
         s << "\n";
@@ -11554,6 +11748,7 @@ private:
              m_gadgets) {
             if (g.type == QStringLiteral("Media") || g.type == QStringLiteral("FileRequester")
                 || g.type == QStringLiteral("MessageBox") || g.type == QStringLiteral("UART1")
+                || g.type == QStringLiteral("Messenger")
                 || g.type == QStringLiteral("KBInput") || g.type == QStringLiteral("MSInput")) continue;
             if (g.type == QStringLiteral("Timer")) {
                 s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("timer"))
@@ -11566,6 +11761,13 @@ private:
                      QStringLiteral(
                          "gadget"))
               << ";\n";
+        }
+
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type == QStringLiteral("Messenger") && g.ipcReceive) {
+                s << "static CGTimer " << safeCIdentifier(g.name, QStringLiteral("messenger"))
+                  << "_poll_timer = CGTIMER_INVALID;\n";
+            }
         }
 
         // Generated physical tab header buttons (the TabGroup itself is
@@ -11811,6 +12013,46 @@ private:
         // GCC must not see an implicit declaration followed by static linkage.
         for (const QString &cb : std::as_const(timerCallbacks)) {
             s << "static void " << cb << "(void *user);\n";
+        }
+
+        for (const QString &cb : std::as_const(messengerCallbacks)) {
+            s << "static void " << cb << "(const SIDBOX_IPC_MESSAGE *message);\n";
+        }
+
+        // Send-side helpers resolve the target on EACH send; this handles
+        // receiver shutdown/relaunch without caching stale instance IDs.
+        // These are file-local functions: Button actions or USER callbacks
+        // can call them without any changes to the firmware or IPC API table.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Messenger") || g.ipcTargetApp.trimmed().isEmpty()) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("messenger"));
+            s << "\nstatic int32_t __attribute__((unused)) " << n << "_Send(uint32_t type, const void *data, uint32_t length)\n{\n"
+              << "\tif (length > SIDBOX_IPC_MAX_DATA || (length && !data)) return SIDBOX_IPC_BAD_ARG;\n"
+              << "\tif (!API->ipc) return SIDBOX_IPC_NO_CONTEXT;\n"
+              << "\tuint32_t target = API->ipc->find(\"" << escapedCString(g.ipcTargetApp.trimmed()) << "\");\n"
+              << "\tif (!target) return SIDBOX_IPC_NO_RECIPIENT;\n"
+              << "\treturn API->ipc->send(target, type, data, length);\n}\n\n"
+              << "static int32_t __attribute__((unused)) " << n << "_SendText(uint32_t type, const char *text)\n{\n"
+              << "\tif (!text) return SIDBOX_IPC_BAD_ARG;\n"
+              << "\tsize_t length = strlen(text);\n"
+              << "\tif (length > SIDBOX_IPC_MAX_DATA) return SIDBOX_IPC_BAD_ARG;\n"
+              << "\treturn " << n << "_Send(type, text, (uint32_t)length);\n}\n";
+        }
+
+        // Messenger: a cooperative poll invokes only this applet's callback.
+        // The kernel copies IPC payloads; no cross-applet callback or GUI queue.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Messenger") || !g.ipcReceive) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("messenger"));
+            s << "\nstatic void " << n << "_Poll(void *user)\n{\n"
+              << "\t(void)user;\n"
+              << "\tif (!" << win << "_is_open || " << win << "_is_closing || !API->ipc) return;\n"
+              << "\tfor (uint32_t i = 0u; i < SIDBOX_IPC_QUEUE_DEPTH; ++i) {\n"
+              << "\t\tSIDBOX_IPC_MESSAGE message;\n"
+              << "\t\tif (API->ipc->receive(&message) != SIDBOX_IPC_OK) break;\n"
+              << "\t\t" << g.onActivate << "(&message);\n"
+              << "\t\tif (!" << win << "_is_open || " << win << "_is_closing) break;\n"
+              << "\t}\n}\n";
         }
 
         // UART1 virtual component. No interrupt ever invokes applet code:
@@ -12462,6 +12704,22 @@ private:
                 s << "\t" << safeCIdentifier(g.name, QStringLiteral("media")) << "_Play();\n";
         }
 
+        // Messenger starts after the window is open; the callback runs on the
+        // normal V2 cooperative timer PSP, never on another applet's stack.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Messenger") || !g.ipcReceive) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("messenger"));
+            const int pollMs = qBound(10, g.ipcPollMs, 1000);
+            s << "\tif (" << n << "_poll_timer == CGTIMER_INVALID && API->ipc) {\n"
+              << "\t\t" << n << "_poll_timer = SBOS_CreateTimer();\n"
+              << "\t\tif (" << n << "_poll_timer != CGTIMER_INVALID &&\n"
+              << "\t\t\tSBOS_TimerSet(" << n << "_poll_timer, " << pollMs << "u, "
+              << pollMs << "u, " << n << "_Poll, NULL) != 0) {\n"
+              << "\t\t\tSBOS_FreeTimer(" << n << "_poll_timer);\n"
+              << "\t\t\t" << n << "_poll_timer = CGTIMER_INVALID;\n"
+              << "\t\t}\n\t}\n";
+        }
+
         // Timers are allocated only when their handle is invalid. With the
         // opt-in background lifetime, reopening a window must NOT create a
         // second timer or restart the still-running one.
@@ -12504,6 +12762,16 @@ private:
                 s << "\t" << line << "\n";
         }
         s << "\t/* </SIDBOX-GUI:USER BEFORE_CLOSE> */\n";
+
+        // Cancel IPC polling before any window resources disappear.
+        for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
+            if (g.type != QStringLiteral("Messenger") || !g.ipcReceive) continue;
+            const QString n = safeCIdentifier(g.name, QStringLiteral("messenger"));
+            s << "\tif (" << n << "_poll_timer != CGTIMER_INVALID) {\n"
+              << "\t\tSBOS_TimerCancel(" << n << "_poll_timer);\n"
+              << "\t\tSBOS_FreeTimer(" << n << "_poll_timer);\n"
+              << "\t\t" << n << "_poll_timer = CGTIMER_INVALID;\n\t}\n";
+        }
 
         // Restore OS UART1 before freeing this window's other resources.
         for (const GuiDesignerGadget &g : std::as_const(m_gadgets)) {
@@ -12928,6 +13196,9 @@ private:
             if (dialogLinkedActions.contains(cb)) {
                 s << "\t" << dialogLinkedActions.value(cb) << "\n";
             }
+            if (ipcLinkedActions.contains(cb)) {
+                s << "\t" << ipcLinkedActions.value(cb) << "\n";
+            }
             s << "\t/* <SIDBOX-GUI:USER "
               << cb
               << "> */\n";
@@ -13017,6 +13288,26 @@ private:
                 }
             } else {
                 // NEVER replace handwritten protected callback content.
+                for (const QString &line : body.split(QLatin1Char('\n')))
+                    s << "\t" << line << "\n";
+            }
+            s << "\t/* </SIDBOX-GUI:USER " << cb << "> */\n}\n\n";
+        }
+
+        // Messenger callbacks are applet-owned, automatically invoked by the
+        // cooperative receiver poll. Their message pointer is valid only here.
+        for (const QString &cb : std::as_const(messengerCallbacks)) {
+            s << "static void " << cb << "(const SIDBOX_IPC_MESSAGE *message)\n{\n"
+              << "\t(void)message;\n"
+              << "\t/* <SIDBOX-GUI:USER " << cb << "> */\n";
+            const QString body = saved.value(cb);
+            if (body.isEmpty()) {
+                s << "\t/* Received: message->sender, message->type, "
+                     "message->length, message->data[0..length-1].\n"
+                     "\t * Reply example (uncomment):\n"
+                     "\t * (void)API->ipc->send(message->sender, 2u, message->data, message->length);\n"
+                     "\t * Do not save the message pointer beyond this callback. */\n";
+            } else {
                 for (const QString &line : body.split(QLatin1Char('\n')))
                     s << "\t" << line << "\n";
             }
