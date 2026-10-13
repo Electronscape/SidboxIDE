@@ -18,6 +18,7 @@
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/audio/audio.h \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/graphics/sb3dapi.h \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/sys/sys.h \
+ /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/sys/uart1.h \
  /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/gui/os.h
 
 /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/tools/cgarm/include/stdio.h:
@@ -55,5 +56,7 @@
 /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/graphics/sb3dapi.h:
 
 /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/sys/sys.h:
+
+/mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/sys/uart1.h:
 
 /mnt/LinuxDatas/work/SidboxIDE/SidboxIDE/idelibs/api/gui/os.h:
