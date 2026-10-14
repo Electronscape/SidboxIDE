@@ -57,6 +57,9 @@ public:
     void setTheme(const IDETheme &theme);
     const IDETheme &theme() const;
 
+    // Existing case-sensitive whole-word selections, reused by the minimap
+    // without an additional scan over the document.
+    const QList<QTextCursor> &selectedWordOccurrences() const;
     const QList<EditorDiagnostic> &diagnostics() const;
     void setDiagnostics(const QList<EditorDiagnostic> &diagnostics);
     void clearDiagnostics();
@@ -115,6 +118,8 @@ private:
     void showCompletionPopup(const QRect &caretRect);
     void showDelayedCompletion();
     void dismissCompletionForNavigation();
+    void navigateCompletion(int direction);
+    void acceptCurrentCompletion();
     void beginOccurrenceScan();
     void continueOccurrenceScan();
     QString textUnderCursor() const;

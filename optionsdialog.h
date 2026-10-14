@@ -6,6 +6,7 @@
 #include <QDialog>
 #include <QHash>
 
+class QComboBox;
 class QFormLayout;
 class QPushButton;
 class QSpinBox;
@@ -23,6 +24,7 @@ public:
 
     IDETheme theme() const;
     void setTheme(const IDETheme &theme);
+    void setThemeDirectory(const QString &directory);
 
 private:
     QWidget *createColorPage(
@@ -38,10 +40,14 @@ private:
     void resetDefaults();
     void saveThemeToFile();
     void loadThemeFromFile();
+    bool applyThemeFile(const QString &filePath, bool preset);
+    void refreshThemePresets();
 
     QSpinBox *m_fontSizeSpinBox;
+    QComboBox *m_themePresetCombo = nullptr;
     QTabWidget *m_tabs;
     IDETheme m_theme;
+    QString m_themeDirectory;
     QHash<QString, QPushButton *> m_colorButtons;
 };
 

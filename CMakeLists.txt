@@ -86,6 +86,16 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/nagelgirl.png
     )
 
+# Optional user-provided Home artwork. The IDE still configures and builds
+# before icons/toolbar_home.png is drawn; reconfigure CMake after adding it.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons/toolbar_home.png")
+    qt_add_resources(SidboxIDE "home_toolbar_icon"
+        PREFIX "/icons"
+        BASE icons
+        FILES icons/toolbar_home.png
+    )
+endif()
+
 set(CMAKE_AUTORCC ON)
 
 target_link_libraries(SidboxIDE

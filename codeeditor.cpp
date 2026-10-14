@@ -348,6 +348,41 @@ protected:
         painter.setPen(m_editor->theme().minimapViewportBorder);
         painter.drawRect(viewportRect);
 
+        // Selection matches: theme-coloured dots close to the right edge,
+        // just left of diagnostic ticks. Reuse the editor's batched whole-word
+        // scan; never search all the source text during a minimap repaint.
+        // Multiple matches on the same source row share one dot.
+        if (!m_editor->selectedWordOccurrences().isEmpty()) {
+            QSet<int> markedVisibleLines;
+            const int dotSize = 4;
+            const int dotX = width() - 12;
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(m_editor->theme().accent);
+            for (const QTextCursor &match : m_editor->selectedWordOccurrences()) {
+                const int sourceLine = match.blockNumber();
+                // The cached visible lines are sorted by source-line number.
+                // Find the closest preceding visible row in O(log N): when
+                // code is folded, matches appear on that fold's header.
+                // Avoid walking thousands of hidden QTextBlocks per match.
+                int low = 0;
+                int high = lines.size();
+                while (low < high) {
+                    const int mid = low + (high - low) / 2;
+                    if (lines.at(mid).sourceLine <= sourceLine)
+                        low = mid + 1;
+                    else
+                        high = mid;
+                }
+                if (low <= 0) continue;
+                const int visibleLine = low - 1;
+                if (markedVisibleLines.contains(visibleLine)) continue;
+                markedVisibleLines.insert(visibleLine);
+                const int y = qBound(0, 1 + qRound(visibleLine * yScale) - dotSize / 2,
+                                     qMax(0, height() - dotSize));
+                painter.drawEllipse(dotX, y, dotSize, dotSize);
+            }
+        }
+
         // Compiler diagnostics: thin ticks on the far-right edge.
         // Warnings are painted first so an error wins when both share a line.
         const int markerWidth = 5;
@@ -1321,12 +1356,14 @@ void CodeEditor::refreshIncludeCandidates()
                     ? item.fileName() : relativeDir + QLatin1Char('/') + item.fileName();
                 if (item.isDir()) {
                     const QString name = item.fileName().toLower();
-                    if (name == QStringLiteral("build") || name == QStringLiteral(".git")
+                    if (name == QStringLiteral("build") || name == QStringLiteral("buildv1")
+                        || name == QStringLiteral(".history") || name == QStringLiteral(".git")
                         || name == QStringLiteral(".svn") || name == QStringLiteral("node_modules")
                         || name == QStringLiteral("__pycache__")) continue;
                     const int depth = rel.count(QLatin1Char('/')) + 1;
                     if (depth > maxDepth) continue;
-                    discovered.insert(rel + QLatin1Char('/'));
+                    // Traverse folders for headers, but never offer folders as
+                    // selectable #include completions. Only actual .h paths.
                     if (depth < maxDepth) folders.append(rel);
                 } else if (item.isFile()
                            && item.suffix().compare(QStringLiteral("h"), Qt::CaseInsensitive) == 0) {
@@ -1367,11 +1404,9 @@ bool CodeEditor::showIncludeCompletionAtCursor()
     m_includeCompletionActive = true;
     m_memberCompletionActive = false;
     m_memberCompletionPrefix.clear();
-    QStringList visibleCandidates = m_includeCandidates;
-    // Once inside a folder, don't offer that very same folder again.
-    if (prefix.endsWith(QLatin1Char('/')))
-        visibleCandidates.removeAll(prefix);
-    m_completionModel->setStringList(visibleCandidates);
+    // Entries are full relative paths to .h files only. Qt filters on
+    // the complete prefix, including subdirectories (e.g. windows/wi).
+    m_completionModel->setStringList(m_includeCandidates);
     m_completer->setCompletionPrefix(prefix);
     if (m_completer->completionCount() == 0) {
         m_completer->popup()->hide();
@@ -1387,7 +1422,8 @@ bool CodeEditor::showIncludeCompletionAtCursor()
 
 void CodeEditor::insertIncludeCompletion(const QString &path)
 {
-    if (!m_includeCompletionActive || path.isEmpty()) return;
+    if (!m_includeCompletionActive || !path.endsWith(QStringLiteral(".h"), Qt::CaseInsensitive))
+        return;
     QTextCursor cursor = textCursor();
     const QString before = cursor.block().text().left(cursor.positionInBlock());
     static const QRegularExpression expression(
@@ -1403,14 +1439,6 @@ void CodeEditor::insertIncludeCompletion(const QString &path)
                         QTextCursor::KeepAnchor, prefix.size());
     cursor.insertText(path);
     setTextCursor(cursor);
-    if (path.endsWith(QLatin1Char('/'))) {
-        // QCompleter can close its popup after emitting activated().  Reopen
-        // on the next event-loop turn with the newly selected folder prefix.
-        QTimer::singleShot(0, this, [this]() {
-            showIncludeCompletionAtCursor();
-        });
-        return;
-    }
     const QChar close = match.captured(1) == QStringLiteral("<")
         ? QLatin1Char('>') : QLatin1Char('"');
     const QString after = cursor.block().text();
@@ -3621,46 +3649,31 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    // If the completion popup is open, Tab/Enter accept the current completion first.
+    // Key events usually go to the popup itself, but some window managers
+    // leave focus on the editor. Both routes use the same acceptance logic.
     if (m_completer && m_completer->popup()->isVisible()) {
         switch (event->key()) {
+        case Qt::Key_Up:
+        case Qt::Key_Down:
+            // Some Qt/window-manager combinations deliver these to the
+            // editor instead of the popup. Navigate suggestions explicitly.
+            if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                navigateCompletion(event->key() == Qt::Key_Down ? +1 : -1);
+                event->accept();
+                return;
+            }
+            break;
         case Qt::Key_Tab:
         case Qt::Key_Return:
-        case Qt::Key_Enter: {
-            QString completion = m_completer->currentCompletion();
-
-            /*
-             * When the user moves through the popup with Up/Down, QCompleter's
-             * currentCompletion() can still point at the first proxy-model item.
-             * The popup selection is the authoritative keyboard choice.
-             */
-            if (m_completer->popup()->currentIndex().isValid()) {
-                completion =
-                    m_completer->popup()->currentIndex()
-                        .data(Qt::DisplayRole)
-                        .toString();
+        case Qt::Key_Enter:
+            if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                acceptCurrentCompletion();
+                event->accept();
+                return;
             }
-
-            if (m_includeCompletionActive) {
-                insertIncludeCompletion(completion);
-            } else if (m_memberCompletionActive) {
-                insertMemberCompletion(completion);
-            } else {
-                insertFunctionCompletion(completion);
-                m_completer->popup()->hide();
-            }
-
-            m_completionDelayTimer->stop();
-            event->accept();
-            return;
-        }
+            break;
         case Qt::Key_Escape:
-            m_completionDelayTimer->stop();
-            m_completer->popup()->hide();
-            if (m_includeCompletionActive)
-                restoreIncludeCompletionModel();
-            if (m_memberCompletionActive)
-                restoreFunctionCompletionModel();
+            dismissCompletionForNavigation();
             event->accept();
             return;
         default:
@@ -3893,34 +3906,89 @@ void CodeEditor::dismissCompletionForNavigation()
         restoreFunctionCompletionModel();
 }
 
+void CodeEditor::navigateCompletion(int direction)
+{
+    if (!m_completer || !m_completer->popup() || !m_completer->popup()->isVisible())
+        return;
+    auto *popup = m_completer->popup();
+    const int count = popup->model() ? popup->model()->rowCount() : 0;
+    if (count <= 0) return;
+    const QModelIndex active = popup->currentIndex();
+    const int current = active.isValid() ? active.row() : -1;
+    const int next = current < 0
+        ? (direction >= 0 ? 0 : count - 1)
+        : qBound(0, current + (direction >= 0 ? 1 : -1), count - 1);
+    const QModelIndex index = popup->model()->index(next, 0);
+    popup->setCurrentIndex(index);
+    popup->scrollTo(index);
+}
+
+void CodeEditor::acceptCurrentCompletion()
+{
+    if (!m_completer || !m_completer->popup()->isVisible()) return;
+    auto *popup = m_completer->popup();
+    QModelIndex chosen = popup->currentIndex();
+    if (!chosen.isValid() && popup->model()->rowCount() > 0)
+        chosen = popup->model()->index(0, 0);
+    if (!chosen.isValid()) return;
+
+    // The selected popup row, not QCompleter::currentCompletion(), is the
+    // source of truth after navigating the suggestion list with the keyboard.
+    const QString completion = chosen.data(Qt::DisplayRole).toString();
+    if (completion.isEmpty()) return;
+    m_completionDelayTimer->stop();
+    if (m_includeCompletionActive)
+        insertIncludeCompletion(completion);
+    else if (m_memberCompletionActive)
+        insertMemberCompletion(completion);
+    else
+        insertFunctionCompletion(completion);
+    popup->hide();
+}
+
 bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
 {
     if (m_completer && m_completer->popup() &&
         m_completer->popup()->isVisible() &&
         event->type() == QEvent::KeyPress) {
-        const auto *key = static_cast<QKeyEvent *>(event);
-        switch (key->key()) {
-        case Qt::Key_Left: case Qt::Key_Right:
-        case Qt::Key_Up: case Qt::Key_Down:
-        case Qt::Key_Home: case Qt::Key_End:
-        case Qt::Key_PageUp: case Qt::Key_PageDown: {
-            const bool fromPopup = watched == m_completer->popup() ||
-                watched == m_completer->popup()->viewport();
-            if (watched == this || fromPopup) {
+        const bool fromPopup = watched == m_completer->popup() ||
+                               watched == m_completer->popup()->viewport();
+        if (watched == this || fromPopup) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            const bool plainKey = !(key->modifiers() &
+                (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+            if (plainKey && (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down)) {
+                // Only an *already visible* popup captures Up/Down. Holding
+                // arrows in the ordinary editor never opens suggestions.
+                navigateCompletion(key->key() == Qt::Key_Down ? +1 : -1);
+                return true;
+            }
+            if (plainKey && (key->key() == Qt::Key_Return ||
+                             key->key() == Qt::Key_Enter || key->key() == Qt::Key_Tab)) {
+                acceptCurrentCompletion();
+                return true;
+            }
+            if (key->key() == Qt::Key_Escape) {
+                dismissCompletionForNavigation();
+                return true;
+            }
+            switch (key->key()) {
+            case Qt::Key_Left: case Qt::Key_Right:
+            case Qt::Key_Home: case Qt::Key_End:
+            case Qt::Key_PageUp: case Qt::Key_PageDown:
+                // Horizontal/document navigation cancels the popup. When the
+                // popup has keyboard focus, relay the navigation to the editor.
                 dismissCompletionForNavigation();
                 if (fromPopup) {
-                    // The popup may hold keyboard focus. Forward this real
-                    // navigation key once to the text editor instead.
                     QKeyEvent forwarded(key->type(), key->key(),
                                          key->modifiers(), key->text(),
                                          key->isAutoRepeat(), key->count());
                     QCoreApplication::sendEvent(this, &forwarded);
                     return true;
                 }
+                break;
+            default: break;
             }
-            break;
-        }
-        default: break;
         }
     }
     return QPlainTextEdit::eventFilter(watched, event);
@@ -4037,6 +4105,11 @@ void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
     }
 }
 
+const QList<QTextCursor> &CodeEditor::selectedWordOccurrences() const
+{
+    return m_occurrences;
+}
+
 void CodeEditor::highlightCurrentLine()
 {
     QList<QTextEdit::ExtraSelection> selections;
@@ -4094,6 +4167,7 @@ void CodeEditor::updateOccurrenceSelection(bool documentChanged)
     m_pendingOccurrences.clear();
     m_occurrences.clear();
     highlightCurrentLine();
+    if (m_minimap) m_minimap->update();
 
     if (!m_occurrenceWord.isEmpty())
         m_occurrenceDelayTimer->start();
@@ -4151,6 +4225,7 @@ void CodeEditor::continueOccurrenceScan()
     m_pendingOccurrences.clear();
     m_occurrenceScanBlock = QTextBlock();
     highlightCurrentLine();
+    if (m_minimap) m_minimap->update();
 }
 
 QString CodeEditor::textUnderCursor() const

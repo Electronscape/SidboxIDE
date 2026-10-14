@@ -9,6 +9,7 @@
 #include "ui_mainwindow.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QSet>
 #include <QAction>
 #include <QApplication>
@@ -19,6 +20,7 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QHeaderView>
 #include <QGroupBox>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -3465,6 +3467,78 @@ QStringList functionSignaturesFromSanitizedFast(
 }
 
 
+/*
+ * Discover C function definitions only at file scope.
+ *
+ * A permissive declaration regex can interpret e.g. "else if (...) {"
+ * as a function returning "else" and named "if".  This scan tracks the
+ * brace nesting of sanitized C source, and rejects any candidate appearing
+ * inside another function, struct or initializer.  Reuse it for BOTH the
+ * Functions & Variables tree and the editor's event navigation drop-down.
+ *
+ * Each character is examined at most once for brace depth.  The regex
+ * match list is small (one entry per real top-level function) even when a
+ * generated source file contains thousands of conditional statements.
+ */
+QList<QRegularExpressionMatch> fileScopeCFunctionDefinitions(
+    const QString &sanitized)
+{
+    static const QRegularExpression functionExpression(
+        QStringLiteral(
+            "(?:^|\\n)\\s*"
+            "((?:(?:static|inline|extern|const|volatile|unsigned|signed|long|short|struct\\s+[A-Za-z_][A-Za-z0-9_]*|enum\\s+[A-Za-z_][A-Za-z0-9_]*|union\\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\\s+|[*]+\\s*)+)"
+            "([A-Za-z_][A-Za-z0-9_]*)\\s*"
+            "\\(([^;{}]*)\\)\\s*\\{"),
+        QRegularExpression::MultilineOption);
+
+    static const QSet<QString> nonFunctionNames = {
+        QStringLiteral("if"),
+        QStringLiteral("else"),
+        QStringLiteral("for"),
+        QStringLiteral("while"),
+        QStringLiteral("do"),
+        QStringLiteral("switch"),
+        QStringLiteral("case"),
+        QStringLiteral("default"),
+        QStringLiteral("catch"),
+        QStringLiteral("return"),
+        QStringLiteral("sizeof"),
+        QStringLiteral("_Alignof"),
+        QStringLiteral("alignof"),
+        QStringLiteral("__attribute__"),
+        QStringLiteral("__declspec")
+    };
+
+    QList<QRegularExpressionMatch> result;
+    auto it = functionExpression.globalMatch(sanitized);
+    int scanPosition = 0;
+    int braceDepth = 0;
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const int candidateStart = match.capturedStart(0);
+        for (; scanPosition < candidateStart; ++scanPosition) {
+            const QChar ch = sanitized.at(scanPosition);
+            if (ch == QLatin1Char('{')) {
+                ++braceDepth;
+            } else if (ch == QLatin1Char('}')) {
+                braceDepth = qMax(0, braceDepth - 1);
+            }
+        }
+
+        const QString name = match.captured(2);
+        if (braceDepth != 0 || nonFunctionNames.contains(name)) {
+            continue;
+        }
+
+        const int openingBrace = match.capturedEnd(0) - 1;
+        if (openingBrace < 0 || matchingBracePosition(sanitized, openingBrace) < 0) {
+            continue;
+        }
+        result.append(match);
+    }
+    return result;
+}
+
 SourceSymbolTable parseSourceSymbolsFromSanitized(
     const QString &source,
     const QString &sanitized,
@@ -3503,19 +3577,11 @@ SourceSymbolTable parseSourceSymbolsFromSanitized(
         progress(58);
     }
 
-    static const QRegularExpression functionExpression(
-        QStringLiteral(
-            "(?:^|\\n)\\s*"
-            "((?:(?:static|inline|extern|const|volatile|unsigned|signed|long|short|struct\\s+[A-Za-z_][A-Za-z0-9_]*|enum\\s+[A-Za-z_][A-Za-z0-9_]*|union\\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\\s+|[*]+\\s*)+)"
-            "([A-Za-z_][A-Za-z0-9_]*)\\s*"
-            "\\(([^;{}]*)\\)\\s*\\{"),
-        QRegularExpression::MultilineOption);
-
-    QRegularExpressionMatchIterator iterator = functionExpression.globalMatch(sanitized);
+    const QList<QRegularExpressionMatch> definitions =
+        fileScopeCFunctionDefinitions(sanitized);
     int lastFunctionProgress = 58;
 
-    while (iterator.hasNext()) {
-        const QRegularExpressionMatch match = iterator.next();
+    for (const QRegularExpressionMatch &match : definitions) {
 
         if (progress
             && !sanitized.isEmpty()) {
@@ -4712,52 +4778,334 @@ void MainWindow::offerEditorRecovery()
 
 void MainWindow::showStartupProjectChooser()
 {
-    /*
-     * Do this after the main window has been shown. Starting with an empty IDE
-     * is much less confusing than creating untitled editor tabs and then asking
-     * the programmer what they actually wanted to do.
-     */
-    QMessageBox chooser(this);
-    chooser.setWindowTitle(tr("Sidbox IDE"));
-    chooser.setIcon(QMessageBox::Question);
-    chooser.setText(tr("What would you like to do?"));
-    chooser.setInformativeText(
-        tr("Create a new Sidbox project or load an existing .proj file."));
+    // Preserve the startup entry point used by main.cpp, but show a non-modal
+    // Home tab instead of blocking the editor with a QMessageBox.
+    showHomePage();
+}
 
-    QPushButton *newProjectButton =
-        chooser.addButton(
-            tr("Create New Project"),
-            QMessageBox::AcceptRole);
+QStringList MainWindow::recentProjectPaths() const
+{
+    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    const QStringList stored = settings.value(
+        QStringLiteral("projects/recentPaths")).toStringList();
+    QStringList paths;
+    for (const QString &path : stored) {
+        if (path.trimmed().isEmpty())
+            continue;
+        const QString absolute = QFileInfo(path).absoluteFilePath();
+        if (!paths.contains(absolute))
+            paths.append(absolute);
+        if (paths.size() >= 20)
+            break;
+    }
+    return paths;
+}
 
-    QPushButton *loadProjectButton =
-        chooser.addButton(
-            tr("Load Existing Project"),
-            QMessageBox::ActionRole);
-
-    QPushButton *emptyButton =
-        chooser.addButton(
-            tr("Start Empty"),
-            QMessageBox::RejectRole);
-
-    chooser.setDefaultButton(loadProjectButton);
-    chooser.exec();
-
-    QAbstractButton *clicked = chooser.clickedButton();
-
-    if (clicked == newProjectButton) {
-        createNewProject();
+void MainWindow::rememberRecentProject(const QString &projectFile)
+{
+    if (projectFile.isEmpty())
         return;
+    const QString absolute = QFileInfo(projectFile).absoluteFilePath();
+    QStringList paths = recentProjectPaths();
+    paths.removeAll(absolute);
+    paths.prepend(absolute);
+    paths = paths.mid(0, 20);
+    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    settings.setValue(QStringLiteral("projects/recentPaths"), paths);
+    refreshRecentProjectsHome();
+}
+
+void MainWindow::forgetRecentProject(const QString &projectFile)
+{
+    QStringList paths = recentProjectPaths();
+    paths.removeAll(QFileInfo(projectFile).absoluteFilePath());
+    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    settings.setValue(QStringLiteral("projects/recentPaths"), paths);
+    // No filesystem operations: removing a recent entry never deletes files.
+    refreshRecentProjectsHome();
+}
+
+void MainWindow::refreshRecentProjectsHome()
+{
+    // Find only the live Home tab. A previous Home tab may still be awaiting
+    // deleteLater() after a project switch.
+    QTreeWidget *list = nullptr;
+    QWidget *homePage = nullptr;
+    for (int i = 0; m_editorTabs && i < m_editorTabs->count(); ++i) {
+        QWidget *tab = m_editorTabs->widget(i);
+        if (tab->objectName() == QStringLiteral("sidboxHomeTab")) {
+            list = tab->findChild<QTreeWidget *>(
+                QStringLiteral("sidboxHomeRecentProjects"));
+            homePage = tab;
+            break;
+        }
+    }
+    if (!list)
+        return;
+    list->clear();
+    const QStringList paths = recentProjectPaths();
+    for (const QString &path : paths) {
+        const QFileInfo info(path);
+        const bool available = info.isFile();
+        auto *item = new QTreeWidgetItem(list);
+        item->setIcon(0, QIcon(QStringLiteral(":/icons/open_project.png")));
+        item->setText(0, info.completeBaseName());
+        // Give the folder its own wide column; the exact .proj path is kept
+        // separately in UserRole so opening a row never depends on this text.
+        item->setText(1, QDir::toNativeSeparators(info.absolutePath()));
+        item->setData(0, Qt::UserRole, path);
+        item->setToolTip(0, available
+            ? tr("Double-click to open %1").arg(path)
+            : tr("Missing project: %1\nRemove it from the recent list if you wish.")
+                  .arg(path));
+        item->setToolTip(1, tr("Project directory: %1\nProject file: %2")
+                               .arg(QDir::toNativeSeparators(info.absolutePath()),
+                                    QDir::toNativeSeparators(path)));
+        item->setSizeHint(0, QSize(160, 36));
+        if (!available) {
+            item->setText(0, tr("%1 (missing)").arg(info.completeBaseName()));
+            item->setForeground(0, m_theme.mutedText);
+            item->setForeground(1, m_theme.mutedText);
+        }
+        auto *remove = new QPushButton(tr("Remove"), list);
+        remove->setObjectName(QStringLiteral("sidboxHomeRemoveRecent"));
+        remove->setToolTip(tr("Remove from Recent — project files stay on disk"));
+        remove->setFixedHeight(27);
+        connect(remove, &QPushButton::clicked, this,
+                [this, path]() { forgetRecentProject(path); });
+        list->setItemWidget(item, 2, remove);
+    }
+    if (auto *hint = homePage->findChild<QLabel *>(
+            QStringLiteral("sidboxHomeEmptyRecent")))
+        hint->setVisible(paths.isEmpty());
+}
+
+bool MainWindow::confirmProjectSwitch()
+{
+    bool unsaved = false;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        QWidget *tab = m_editorTabs->widget(i);
+        if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
+            if (designer->isModified()) { unsaved = true; break; }
+        }
+        if (CodeEditor *editor = primaryEditorForTab(tab)) {
+            if (editor->document()->isModified()) { unsaved = true; break; }
+        }
+    }
+    if (!unsaved)
+        return true;
+    QMessageBox prompt(this);
+    prompt.setIcon(QMessageBox::Warning);
+    prompt.setWindowTitle(tr("Open Project"));
+    prompt.setText(tr("You have unsaved changes in the current project."));
+    prompt.setInformativeText(tr("Save them before switching projects?"));
+    QPushButton *save = prompt.addButton(tr("Save"), QMessageBox::AcceptRole);
+    QPushButton *discard = prompt.addButton(tr("Discard Changes"), QMessageBox::DestructiveRole);
+    prompt.addButton(QMessageBox::Cancel);
+    prompt.setDefaultButton(save);
+    prompt.exec();
+    if (prompt.clickedButton() == discard)
+        return true;
+    if (prompt.clickedButton() == save)
+        return saveProject();
+    return false;
+}
+
+bool MainWindow::openProjectAtPath(const QString &projectFile)
+{
+    const QFileInfo info(projectFile);
+    if (!info.isFile()) {
+        QMessageBox::warning(this, tr("Open Project"),
+            tr("This project file is missing or unavailable:\n%1\n\n"
+               "The recent entry can be removed without deleting anything.")
+                .arg(QDir::toNativeSeparators(projectFile)));
+        return false;
+    }
+    const QString path = info.absoluteFilePath();
+    if (!m_projectFilePath.isEmpty()
+        && QFileInfo(m_projectFilePath).absoluteFilePath() == path) {
+        AutoSelectMainC();
+        if (m_editorTabs->currentWidget()->objectName()
+                == QStringLiteral("sidboxHomeTab")) {
+            for (int i = 0; i < m_editorTabs->count(); ++i) {
+                if (m_editorTabs->widget(i)->objectName()
+                        != QStringLiteral("sidboxHomeTab")) {
+                    m_editorTabs->setCurrentIndex(i);
+                    break;
+                }
+            }
+        }
+        statusBar()->showMessage(tr("Project is already open: %1")
+                                     .arg(info.fileName()), 3000);
+        rememberRecentProject(path);
+        return true;
+    }
+    if (!confirmProjectSwitch())
+        return false;
+    if (!loadProjectFile(path))
+        return false;
+    AutoSelectMainC();
+    statusBar()->showMessage(tr("Project opened: %1")
+                             .arg(QDir::toNativeSeparators(path)), 4000);
+    return true;
+}
+
+void MainWindow::showHomePage()
+{
+    if (!m_editorTabs)
+        return;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (m_editorTabs->widget(i)->objectName()
+                == QStringLiteral("sidboxHomeTab")) {
+            m_editorTabs->setCurrentIndex(i);
+            refreshRecentProjectsHome();
+            return;
+        }
     }
 
-    if (clicked == loadProjectButton) {
-        openProject();
-        return;
-    }
+    auto *scroll = new QScrollArea(m_editorTabs);
+    scroll->setObjectName(QStringLiteral("sidboxHomeTab"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *page = new QWidget(scroll);
+    page->setObjectName(QStringLiteral("sidboxHomePage"));
+    auto *outer = new QVBoxLayout(page);
+    // Home fills the central editor tab: keep only a comfortable page gutter.
+    outer->setContentsMargins(20, 24, 20, 20);
+    outer->setSpacing(14);
 
-    Q_UNUSED(emptyButton);
-    statusBar()->showMessage(
-        tr("Ready — create or open a project when you are ready"),
-        4000);
+    auto *content = new QWidget(page);
+    content->setObjectName(QStringLiteral("sidboxHomeContent"));
+    // No maximum-width constraint: let project paths use the available tab.
+    content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(14);
+
+    auto *title = new QLabel(tr("Welcome to CoderGirl"), content);
+    title->setObjectName(QStringLiteral("sidboxHomeTitle"));
+    layout->addWidget(title);
+    auto *subtitle = new QLabel(
+        tr("SIDBOX development — start something new, or pick up where you left off."),
+        content);
+    subtitle->setObjectName(QStringLiteral("sidboxHomeSubtitle"));
+    subtitle->setWordWrap(true);
+    layout->addWidget(subtitle);
+    layout->addSpacing(12);
+
+    auto *actions = new QHBoxLayout();
+    actions->setSpacing(12);
+    auto *openButton = new QPushButton(
+        QIcon(QStringLiteral(":/icons/open_project.png")), tr("Open Project..."), content);
+    openButton->setObjectName(QStringLiteral("sidboxHomeOpenProject"));
+    openButton->setMinimumHeight(46);
+    auto *newButton = new QPushButton(
+        QIcon(QStringLiteral(":/icons/new_project.png")), tr("New Project..."), content);
+    newButton->setMinimumHeight(46);
+    actions->addWidget(openButton);
+    actions->addWidget(newButton);
+    actions->addStretch();
+    layout->addLayout(actions);
+    connect(openButton, &QPushButton::clicked, this, &MainWindow::openProject);
+    connect(newButton, &QPushButton::clicked, this, &MainWindow::createNewProject);
+
+    layout->addSpacing(12);
+    auto *heading = new QLabel(tr("Recent Projects"), content);
+    heading->setObjectName(QStringLiteral("sidboxHomeRecentHeading"));
+    layout->addWidget(heading);
+    auto *instruction = new QLabel(
+        tr("Double-click to open. Remove only forgets the shortcut; it never deletes the project."),
+        content);
+    instruction->setObjectName(QStringLiteral("sidboxHomeInstruction"));
+    instruction->setWordWrap(true);
+    layout->addWidget(instruction);
+
+    auto *recent = new QTreeWidget(content);
+    recent->setObjectName(QStringLiteral("sidboxHomeRecentProjects"));
+    recent->setColumnCount(3);
+    recent->setHeaderLabels({tr("Project"), tr("Project directory"), QString()});
+    recent->setRootIsDecorated(false);
+    recent->setUniformRowHeights(false);
+    recent->setAlternatingRowColors(true);
+    recent->setSelectionMode(QAbstractItemView::SingleSelection);
+    recent->setMinimumHeight(190);
+    recent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // Middle-elide extremely long directories, keeping the useful beginning
+    // and folder name visible. Hovering shows the complete path.
+    recent->setTextElideMode(Qt::ElideMiddle);
+    recent->header()->setStretchLastSection(false);
+    recent->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    recent->header()->resizeSection(0, 210);
+    recent->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    recent->header()->setSectionResizeMode(2, QHeaderView::Fixed);
+    recent->header()->resizeSection(2, 104);
+    layout->addWidget(recent, 1);
+    connect(recent, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (item) openProjectAtPath(item->data(0, Qt::UserRole).toString());
+            });
+    // A separate button also supports keyboard-only navigation without
+    // activating a row twice on platforms that emit both item signals.
+    auto *openSelected = new QPushButton(tr("Open Selected Project"), content);
+    openSelected->setMinimumHeight(32);
+    auto *selectionRow = new QHBoxLayout();
+    selectionRow->addWidget(openSelected);
+    selectionRow->addStretch();
+    layout->addLayout(selectionRow);
+    connect(openSelected, &QPushButton::clicked, this, [this, recent]() {
+        if (QTreeWidgetItem *item = recent->currentItem())
+            openProjectAtPath(item->data(0, Qt::UserRole).toString());
+    });
+    auto *empty = new QLabel(
+        tr("No recent projects yet. Open or create a project to see it here."), content);
+    empty->setObjectName(QStringLiteral("sidboxHomeEmptyRecent"));
+    empty->setWordWrap(true);
+    layout->addWidget(empty);
+    // Do NOT centre with an alignment flag: it prevents horizontal expansion.
+    outer->addWidget(content, 1);
+    scroll->setWidget(page);
+    QIcon homeTabIcon(QStringLiteral(":/icons/toolbar_home.png"));
+    if (homeTabIcon.isNull())
+        homeTabIcon = QIcon(QStringLiteral(":/icons/icon.png"));
+    const int index = m_editorTabs->addTab(scroll, homeTabIcon, tr("Home"));
+    m_editorTabs->setCurrentIndex(index);
+    refreshRecentProjectsHome();
+    updateHomePageTheme();
+}
+
+void MainWindow::updateHomePageTheme()
+{
+    QWidget *home = nullptr;
+    for (int i = 0; m_editorTabs && i < m_editorTabs->count(); ++i) {
+        QWidget *tab = m_editorTabs->widget(i);
+        if (tab->objectName() == QStringLiteral("sidboxHomeTab")) {
+            home = tab->findChild<QWidget *>(QStringLiteral("sidboxHomePage"));
+            break;
+        }
+    }
+    if (!home)
+        return;
+    const auto colour = [](const QColor &c) { return ideThemeColorName(c); };
+    home->setStyleSheet(QStringLiteral(
+        "QWidget#sidboxHomePage, QWidget#sidboxHomeContent { background:%1; }"
+        "QLabel#sidboxHomeTitle { color:%2; font-size:27px; font-weight:700; }"
+        "QLabel#sidboxHomeRecentHeading { color:%2; font-size:18px; font-weight:600; }"
+        "QLabel#sidboxHomeSubtitle, QLabel#sidboxHomeInstruction, "
+        "QLabel#sidboxHomeEmptyRecent { color:%3; font-size:12px; }"
+        "QPushButton#sidboxHomeOpenProject { border:2px solid %4; "
+        "background:%5; color:%2; font-weight:600; padding:9px 18px; }"
+        "QPushButton#sidboxHomeOpenProject:hover { background:%6; }"
+        "QTreeWidget#sidboxHomeRecentProjects { background:%7; "
+        "border:1px solid %8; alternate-background-color:%9; }"
+        "QTreeWidget#sidboxHomeRecentProjects::item:selected { background:%4; color:%2; }"
+        "QTreeWidget#sidboxHomeRecentProjects::item:hover { background:%6; }"
+        "QPushButton#sidboxHomeRemoveRecent { padding:2px 6px; }"
+    ).arg(colour(m_theme.windowBackground), colour(m_theme.brightText),
+          colour(m_theme.mutedText), colour(m_theme.accent),
+          colour(m_theme.panelBackground), colour(m_theme.hover),
+          colour(m_theme.inputBackground), colour(m_theme.treeBorder),
+          colour(m_theme.alternateBackground)));
 }
 
 
@@ -5127,9 +5475,13 @@ private:
             }
             m_binaryRows->addWidget(rowWidget);
         }
-        // The original single BIN readout has become up to four short rows.
-        // Only grow the fixed-height sidebar panel when those extra rows exist.
-        setFixedHeight(367 + (rowCount - 1) * 24);
+        // Let the layout calculate the calculator's actual height. A fixed
+        // pixel estimate clipped the last keypad row on some styles/themes.
+        // Qt includes the current font, control sizes, spacing and the number
+        // of binary rows (8/16/32/64-bit) in its size hint automatically.
+        // QSizePolicy::Fixed keeps that space reserved below the project tree.
+        layout()->invalidate();
+        updateGeometry();
     }
 
     void recalculate()
@@ -5592,6 +5944,10 @@ void MainWindow::setupInterface()
         QProgressBar::chunk {
             background-color: #2858A8;
             border-radius: 0px;
+            margin: 0px;
+        }
+
+        QProgressBar#compileProgress::chunk {
             width: 18px;
             margin: 1px;
         }
@@ -5695,6 +6051,13 @@ void MainWindow::setupInterface()
     toolBar->addSeparator();
     //newAction->setMenu(newMenu);
 
+    // Prefer the user's Home toolbar artwork; keep the old icon as fallback
+    // when the optional image has not yet been embedded in the resources.
+    QIcon homeToolbarIcon(QStringLiteral(":/icons/toolbar_home.png"));
+    if (homeToolbarIcon.isNull())
+        homeToolbarIcon = QIcon(QStringLiteral(":/icons/icon.png"));
+    QAction *homeAction = toolBar->addAction(homeToolbarIcon, tr("Home"));
+    homeAction->setToolTip(tr("Show the Home page and recent projects"));
     QAction *openProjectAction = toolBar->addAction(QIcon(":/icons/open_project.png"), tr("Open Project..."));
     QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
     toolBar->addSeparator();
@@ -5743,6 +6106,7 @@ void MainWindow::setupInterface()
     connect(newAction, &QAction::triggered, this, &MainWindow::createNewProject);
     //connect(newSourceAction, &QAction::triggered, this, &MainWindow::createNewSourceFile);
     //connect(newHeaderAction, &QAction::triggered, this, &MainWindow::createNewHeaderFile);
+    connect(homeAction, &QAction::triggered, this, &MainWindow::showHomePage);
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
@@ -7184,11 +7548,7 @@ void MainWindow::openProject()
         return;
     }
 
-    if (loadProjectFile(projectFilePath)) {
-        statusBar()->showMessage(tr("Project opened: %1").arg(QDir::toNativeSeparators(m_projectFilePath)));
-    }
-
-    AutoSelectMainC();
+    openProjectAtPath(projectFilePath);
 }
 
 bool MainWindow::saveProject()
@@ -7271,6 +7631,7 @@ void MainWindow::showOptions()
      */
     {
         OptionsDialog dialog(this);
+        dialog.setThemeDirectory(QDir(ideLibsPath()).filePath(QStringLiteral("themes")));
         dialog.setEditorFontPointSize(m_editorFontPointSize);
         dialog.setTheme(m_theme);
 
@@ -7506,16 +7867,24 @@ private:
 };
 
 /*
- * Real black contour around Qt's *rendered* text.  Unlike a simple drop
- * shadow, this covers every direction, including the glyphs in wrapped labels.
- * Using a QGraphicsEffect keeps QLabel's native selectable text intact.
+ * Theme-aware contour around Qt's rendered text. A light theme needs a light
+ * halo behind its dark labels; dark themes need the reverse. The effect keeps
+ * QLabel's native selection and word wrapping intact.
  */
 class NagelAboutTextOutline final : public QGraphicsEffect
 {
 public:
-    explicit NagelAboutTextOutline(QObject *parent = nullptr)
-        : QGraphicsEffect(parent)
+    explicit NagelAboutTextOutline(const QColor &colour, QObject *parent = nullptr)
+        : QGraphicsEffect(parent), m_outline(colour)
     {
+    }
+
+    void setOutlineColour(const QColor &colour)
+    {
+        if (m_outline == colour)
+            return;
+        m_outline = colour;
+        update();
     }
 
 protected:
@@ -7538,8 +7907,8 @@ protected:
             return;
         }
 
-        // Use the label's alpha as a stencil.  A solid black mask lets us
-        // draw a crisp contour while retaining the original anti-aliasing.
+        // Use the label's alpha as a stencil. The themed halo follows the
+        // glyphs, preserving anti-aliasing and transparent image backgrounds.
         QPixmap silhouette(source.size());
         silhouette.setDevicePixelRatio(source.devicePixelRatio());
         silhouette.fill(Qt::transparent);
@@ -7547,7 +7916,7 @@ protected:
             QPainter maskPainter(&silhouette);
             maskPainter.drawPixmap(QPoint(0, 0), source);
             maskPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-            maskPainter.fillRect(silhouette.rect(), Qt::black);
+            maskPainter.fillRect(silhouette.rect(), m_outline);
         }
 
         painter->save();
@@ -7562,16 +7931,66 @@ protected:
         painter->drawPixmap(origin, source);
         painter->restore();
     }
+
+private:
+    QColor m_outline;
 };
 
-void outlineAboutText(QLabel *label)
+// WCAG-style relative luminance lets us choose a readable outline even when
+// a custom .sidtheme specifies foreground/background colours unusually close.
+double aboutRelativeLuminance(const QColor &colour)
+{
+    const auto linear = [](double channel) {
+        return channel <= 0.04045 ? channel / 12.92
+                                : std::pow((channel + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * linear(colour.redF())
+         + 0.7152 * linear(colour.greenF())
+         + 0.0722 * linear(colour.blueF());
+}
+
+double aboutColourContrast(const QColor &first, const QColor &second)
+{
+    const double a = aboutRelativeLuminance(first);
+    const double b = aboutRelativeLuminance(second);
+    return (qMax(a, b) + 0.05) / (qMin(a, b) + 0.05);
+}
+
+QColor aboutOutlineColour(const IDETheme &theme)
+{
+    // The About page uses the normal themed background behind the portrait.
+    // Normally that colour already contrasts very well with the label text.
+    const QColor text = theme.brightText;
+    const QColor background = theme.windowBackground;
+    if (aboutColourContrast(text, background) >= 4.5)
+        return background;
+
+    // Respect unusual custom themes: if their background and text are nearly
+    // identical, choose whichever extreme provides the strongest separation.
+    const QColor dark = Qt::black;
+    const QColor light = Qt::white;
+    return aboutColourContrast(text, dark) >= aboutColourContrast(text, light)
+               ? dark : light;
+}
+
+void outlineAboutText(QLabel *label, const IDETheme &theme)
 {
     if (!label)
         return;
 
+    label->setProperty("sidboxAboutOutlined", true);
     label->setAutoFillBackground(false);
-    label->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
-    label->setGraphicsEffect(new NagelAboutTextOutline(label));
+    // Match the label colour used by MainWindow::applyTheme(), but keep the
+    // background transparent so the feathered portrait shows through.
+    label->setStyleSheet(QStringLiteral(
+        "background: transparent; border: none; color: %1;")
+        .arg(ideThemeColorName(theme.brightText)));
+
+    const QColor outline = aboutOutlineColour(theme);
+    if (auto *effect = dynamic_cast<NagelAboutTextOutline *>(label->graphicsEffect()))
+        effect->setOutlineColour(outline);
+    else
+        label->setGraphicsEffect(new NagelAboutTextOutline(outline, label));
 }
 
 } // namespace
@@ -7711,12 +8130,12 @@ void MainWindow::showAboutIde()
     noteFont.setItalic(true);
     note->setFont(noteFont);
 
-    // Give all About text a readable black contour so it can cross the image
-    // without an opaque label background or losing mouse text selection.
+    // Give all About text a theme-contrasting contour so it can cross the image
+    // without opaque backgrounds or losing mouse text selection.
     for (QLabel *label : {title, subtitle, purpose, aboutHeading, aboutText,
                            featuresHeading, features, creditsHeading, credits,
                            note}) {
-        outlineAboutText(label);
+        outlineAboutText(label, m_theme);
     }
 
     outerLayout->addLayout(headerLayout);
@@ -12127,7 +12546,8 @@ bool MainWindow::saveEditor(CodeEditor *editor)
 
 bool MainWindow::saveModifiedWorkBeforeNewProject()
 {
-    bool hasUnsavedWork = m_projectFilePath.isEmpty() && m_editorTabs->count() > 0;
+    // A Home tab isn't an unsaved source file.
+    bool hasUnsavedWork = false;
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         QWidget *tab = m_editorTabs->widget(i);
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
@@ -12137,7 +12557,8 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
             }
         }
         auto *editor = primaryEditorForTab(tab);
-        if (editor && editor->document()->isModified()) {
+        if (editor && (editor->document()->isModified()
+                       || (m_projectFilePath.isEmpty() && editor->filePath().isEmpty()))) {
             hasUnsavedWork = true;
             break;
         }
@@ -12328,6 +12749,7 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     refreshSymbolTree();
 
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
+    rememberRecentProject(m_projectFilePath);
     return true;
 }
 
@@ -12409,6 +12831,7 @@ bool MainWindow::saveProjectFile(const QString &filePath)
         m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
         m_appSizeKb, m_v2StackKb, m_v2HeapKb);
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
+    rememberRecentProject(m_projectFilePath);
     return true;
 }
 
@@ -12910,19 +13333,11 @@ void MainWindow::refreshEventNavigator(CodeEditor *editor)
     // drop-downs should remain lightweight, even for sizeable generated C.
     const QString source = editor->toPlainText();
     const QString sanitized = sanitizedCSource(source);
-    static const QRegularExpression functionExpression(
-        QStringLiteral(
-            "(?:^|\\n)\\s*"
-            "((?:(?:static|inline|extern|const|volatile|unsigned|signed|long|short|struct\\s+[A-Za-z_][A-Za-z0-9_]*|enum\\s+[A-Za-z_][A-Za-z0-9_]*|union\\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\\s+|[*]+\\s*)+)"
-            "([A-Za-z_][A-Za-z0-9_]*)\\s*"
-            "\\([^;{}]*\\)\\s*\\{"),
-        QRegularExpression::MultilineOption);
-
+    const QList<QRegularExpressionMatch> definitions =
+        fileScopeCFunctionDefinitions(sanitized);
     QVariantList entries;
     QSet<QString> groups;
-    auto functionIt = functionExpression.globalMatch(sanitized);
-    while (functionIt.hasNext()) {
-        const QRegularExpressionMatch match = functionIt.next();
+    for (const QRegularExpressionMatch &match : definitions) {
         const QString name = match.captured(2).trimmed();
         if (name.isEmpty()
             || name == QStringLiteral("__attribute__")
@@ -15513,8 +15928,8 @@ void MainWindow::applyTheme()
         "QStatusBar { background-color:%1; color:%10; border-top:1px solid %6; }"
         "QProgressBar { background-color:%7; color:%3; border:1px solid %6; "
         " border-radius:0px; text-align:center; }"
-        "QProgressBar::chunk { background-color:%5; border-radius:0px; "
-        " width:18px; margin:1px; }"
+        "QProgressBar::chunk { background-color:%5; border-radius:0px; margin:0px; }"
+        "QProgressBar#compileProgress::chunk { width:18px; margin:1px; }"
         "QSplitter::handle { background-color:%4; }"
         "QSplitter::handle:hover { background-color:%5; }"
 
@@ -15559,7 +15974,7 @@ void MainWindow::applyTheme()
             "QProgressBar { background-color:%1; color:%2; border:1px solid %3; "
             "border-radius:0px; text-align:center; } "
             "QProgressBar::chunk { background-color:%4; border-radius:0px; "
-            "margin:1px; }")
+            "margin:0px; }")
             .arg(C(m_theme.inputBackground), C(m_theme.brightText),
                  C(m_theme.border), C(m_theme.accent));
         for (QProgressBar *bar : memoryPanel->findChildren<QProgressBar *>())
@@ -15611,6 +16026,23 @@ void MainWindow::applyTheme()
                  C(m_theme.brightText),
                  C(m_theme.hover),
                  C(m_theme.outputError)));
+    }
+
+    updateHomePageTheme();
+
+    // Theme changes must also update an About tab that is already open.
+    // The labels carry locally transparent styles, so reapply their new text
+    // colour and the matching contrasting outline after the global QSS update.
+    if (m_editorTabs) {
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            QWidget *tab = m_editorTabs->widget(i);
+            if (!tab || !tab->property("sidboxAboutIde").toBool())
+                continue;
+            for (QLabel *label : tab->findChildren<QLabel *>()) {
+                if (label->property("sidboxAboutOutlined").toBool())
+                    outlineAboutText(label, m_theme);
+            }
+        }
     }
 
     if (m_quickTipLabel) {

@@ -1,3 +1,25 @@
+
+cosmetic, the calculator appears to be either 1 or 2 pixels too low, its choppin off the bottom buttons ;)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+bug in the functions & types pane
+the functions are listing if statements still
+
+
+
+
 F1 should have a "quick tip" a status bar at the bottom, just above the output window
 that if for example "SBOS_CreateWindow" it shows "SBOSCreateWindow(*winid, x, y, w, h, title, flags)"
 this needs to work for all the api's so would need something that would read the api folder and catalog them
@@ -35,6 +57,26 @@ Features needed:
 
 
 
+
+
+1: the memory monitor progress bar should be a solid rect, not sections
+
+2: when typing in the include the intellisense opens up possible .h but it also includes blank folders, eg windows/ This list should only list .h
+  eg. windows/window.h, gadgets/gadgets.h, stdio.h, but not gadgets/ windows/
+
+3: a bug in the auto complete pop, while it does popup, it does miss the up and down arrow keys and enter key,
+  this should work but never imediately popup if im navigating the document with the caret
+
+4: highting a word, highlights other same words like it should but can we also have it showing up in the minimap too?
+  like a dot near the right edge of the mini map, that way i can see quickly where the other selected words are
+
+
+
+
+- on startup, might be nicer to have a "home page" a list of recent projects
+  Open a project at the top then a list of recent projects (that can be removed but not deleted from the disk)
+  this is done: BUT
+  adjustment: should take full use of the width of the middle window, that way we can see the path of the directory too
 
 
 

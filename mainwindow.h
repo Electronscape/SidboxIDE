@@ -54,6 +54,14 @@ private:
     bool saveEditorRecoverySnapshots();
     void clearEditorRecoverySession();
     void setupInterface();
+    void showHomePage();
+    void updateHomePageTheme();
+    void refreshRecentProjectsHome();
+    QStringList recentProjectPaths() const;
+    void rememberRecentProject(const QString &projectFile);
+    void forgetRecentProject(const QString &projectFile);
+    bool confirmProjectSwitch();
+    bool openProjectAtPath(const QString &projectFile);
     void createNewProject();
     void createNewSourceFile();
     void createNewHeaderFile();
