@@ -4,6 +4,8 @@ project(SidboxIDE LANGUAGES CXX)
 include(GNUInstallDirs)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
+# Optional native WAV preview: no Qt Multimedia dependency when absent.
+find_package(Qt6 6.5 QUIET COMPONENTS Multimedia)
 
 qt_standard_project_setup()
 
@@ -26,6 +28,10 @@ qt_add_executable(SidboxIDE
     guidesigner.h
     gamedesigner.cpp
     gamedesigner.h
+    gameaudio.cpp
+    gameaudio.h
+    gamepalette.cpp
+    gamepalette.h
     ppbcodec.cpp
     ppbcodec.h
     mainwindow.ui
@@ -110,6 +116,11 @@ target_link_libraries(SidboxIDE
         Qt::Widgets
         ZLIB::ZLIB
 )
+
+if(TARGET Qt6::Multimedia)
+    target_link_libraries(SidboxIDE PRIVATE Qt6::Multimedia)
+    target_compile_definitions(SidboxIDE PRIVATE SIDBOX_HAS_QT_MULTIMEDIA=1)
+endif()
 
 # Native host-side converter: ELF32 ARM PIE -> CoderGirl SBAPV2.
 # Keep its SOURCE beside mainwindow.cpp, but stage its BINARY beside the

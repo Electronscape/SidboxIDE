@@ -67,6 +67,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QMimeData>
+#include <QUrl>
 #include <QPlainTextEdit>
 #include <QPixmap>
 #include <QGraphicsEffect>
@@ -1780,6 +1781,18 @@ public:
     std::function<void(const QString &, const QString &)> fileMoveRequested;
 
 protected:
+    QMimeData *mimeData(const QList<QTreeWidgetItem *> &items) const override
+    {
+        QMimeData *data = QTreeWidget::mimeData(items);
+        QList<QUrl> urls;
+        for (QTreeWidgetItem *item : items) {
+            if (!item || item->data(0, Qt::UserRole + 1).toBool()) continue;
+            const QString path = item->data(0, Qt::UserRole).toString();
+            if (QFileInfo(path).isFile()) urls.append(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+        }
+        if (!urls.isEmpty()) data->setUrls(urls);
+        return data;
+    }
     void startDrag(Qt::DropActions supportedActions) override
     {
         Q_UNUSED(supportedActions);
@@ -1798,7 +1811,7 @@ protected:
         }
 
         m_draggedFilePath = QFileInfo(filePath).absoluteFilePath();
-        QTreeWidget::startDrag(Qt::MoveAction);
+        QTreeWidget::startDrag(Qt::CopyAction | Qt::MoveAction);
         m_draggedFilePath.clear();
     }
 
@@ -5659,6 +5672,7 @@ quint32 armElfU32(const QByteArray &b, qsizetype i)
 struct SidboxElfRam {
     bool valid = false;
     quint64 spanBytes = 0;
+    quint64 startAddress = 0;
 };
 
 SidboxElfRam readSidboxElfRam(const QString &path)
@@ -5696,7 +5710,7 @@ SidboxElfRam readSidboxElfRam(const QString &path)
     if (lowest == std::numeric_limits<quint64>::max() ||
         highest < lowest || highest - lowest > 32ULL * 1024 * 1024)
         return {};
-    return {true, highest - lowest};
+    return {true, highest - lowest, lowest};
 }
 
 struct SidboxStackFrame {
@@ -5759,6 +5773,7 @@ QWidget *makeAppletMemoryPanel(QWidget *parent)
     header->setContentsMargins(0, 0, 0, 0);
     header->setSpacing(5);
     auto *heading = new QLabel(QObject::tr("Applet Memory"), panel);
+    heading->setObjectName(QStringLiteral("sidboxMemoryHeading"));
     heading->setStyleSheet(QStringLiteral("font-weight: bold;"));
     header->addWidget(heading);
 
@@ -5812,26 +5827,30 @@ void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
                              bool buildSucceeded = false,
                              const QString &elfFile = QString(),
                              const QString &appFile = QString(),
-                             const QString &buildDir = QString())
+                             const QString &buildDir = QString(),
+                             bool v1Game = false)
 {
     if (!root) return;
     auto *status = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryStatus"));
     auto *details = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryDetails"));
     if (!status || !details) return;
+    if (auto *heading = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryHeading")))
+        heading->setText(v2 ? QObject::tr("Applet Memory") : QObject::tr("V1 Game / App Memory"));
 
     const quint64 allowance = quint64(qMax(appKiB, 1)) * 1024;
-    const auto setRow = [root, allowance](const QString &key, const QString &title,
+    quint64 visualAllowance = allowance;
+    const auto setRow = [root, &visualAllowance](const QString &key, const QString &title,
                                            quint64 bytes, bool known) {
         auto *label = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_") + key);
         auto *bar = root->findChild<QProgressBar *>(QStringLiteral("sidboxMemoryBar_") + key);
         if (!label || !bar) return;
         // The brief row label is fixed; full context and percentages live
         // in the tooltips, so the monitor stays compact even with long values.
-        bar->setValue(known ? int(qMin<quint64>(1000, (bytes * 1000) / allowance)) : 0);
+        bar->setValue(known ? int(qMin<quint64>(1000, (bytes * 1000) / visualAllowance)) : 0);
         bar->setFormat(known ? sidboxMemSize(bytes) : QStringLiteral("—"));
         bar->setToolTip(known ? QStringLiteral("%1: %2 / %3 (%4% of allowance)")
-                       .arg(title, sidboxMemSize(bytes), sidboxMemSize(allowance))
-                       .arg(qulonglong((bytes * 100) / allowance))
+                       .arg(title, sidboxMemSize(bytes), sidboxMemSize(visualAllowance))
+                       .arg(qulonglong((bytes * 100) / visualAllowance))
                          : QObject::tr("Build to determine this value."));
     };
     setRow(QStringLiteral("total"), QObject::tr("Total RAM reserved"), 0, false);
@@ -5844,11 +5863,39 @@ void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
         stackLabel->setToolTip(QObject::tr("Private stack reservation; not measured usage."));
     if (!v2) {
         status->setText(QObject::tr("V1 · %1").arg(sidboxMemSize(allowance)));
-        status->setToolTip(QObject::tr("V1 / Gaming: configured %1. RAM layout is not available.")
-                               .arg(sidboxMemSize(allowance)));
-        if (buildSucceeded && QFileInfo(appFile).isFile())
-            details->setText(QObject::tr("APP: %1 (disk only)")
-                             .arg(sidboxMemSize(QFileInfo(appFile).size())));
+        status->setToolTip(QObject::tr("V1 / Gaming: configured memory allowance, not measured live RAM usage."));
+        if (!buildSucceeded) {
+            details->setText(QObject::tr("Build to measure linked image."));
+            return;
+        }
+        const auto elf = readSidboxElfRam(elfFile);
+        if (elf.valid) {
+            // A V1 game uses the SDRAM from its link start up to the RAM disk.
+            // App-size KB only bounds desktop GUI images, NOT V1 games.
+            if (v1Game && elf.startAddress >= 0xD0000000ULL &&
+                elf.startAddress < 0xD05E0000ULL)
+                visualAllowance = 0xD05E0000ULL - elf.startAddress;
+            // V1 ELF PT_LOAD covers linked image and NOLOAD BSS/stack. This is
+            // an ESTIMATE of reserved RAM, not peak heap/stack or framebuffer RAM.
+            setRow(QStringLiteral("image"), QObject::tr("V1 linked image incl. BSS/stack"),
+                   elf.spanBytes, true);
+            setRow(QStringLiteral("total"), QObject::tr("V1 linked reservation (minimum)"),
+                   elf.spanBytes, true);
+            status->setText(QObject::tr("V1 · %1").arg(sidboxMemSize(visualAllowance)));
+            if (elf.spanBytes > visualAllowance)
+                status->setText(QObject::tr("OVER · %1").arg(sidboxMemSize(visualAllowance)));
+        }
+        QStringList notes;
+        notes << (elf.valid ? QObject::tr("ELF RAM: %1").arg(sidboxMemSize(elf.spanBytes))
+                            : QObject::tr("ELF RAM unavailable"));
+        if (QFileInfo(appFile).isFile())
+            notes << QObject::tr("APP file: %1").arg(sidboxMemSize(QFileInfo(appFile).size()));
+        notes << QObject::tr("V1 heap/stack peak unknown");
+        details->setText(notes.join(QStringLiteral("  ·  ")));
+        details->setToolTip(QObject::tr("V1 ELF is a linked memory span, not measured RAM use. "
+            "Game allowance is estimated from the default 0xD05E0000 RAM-disk boundary; "
+            "custom linker layouts can differ. Music buffers, framebuffers, allocator "
+            "allocations and run-time heap can use additional RAM."));
         return;
     }
     status->setText(QObject::tr("V2 · %1").arg(sidboxMemSize(allowance)));
@@ -9211,6 +9258,40 @@ void MainWindow::showProjectSettings()
     dialog.setAppletFormat(m_appletFormat);
     dialog.setV2Linker(m_v2Linker);
     dialog.setModSizeKb(m_modSizeKb);
+    // Only inspect file sizes when Project Settings is opened, never during
+    // F5, Save Project, tab restore or source intelligence indexing.
+    if (!m_projectPath.isEmpty()) {
+        qint64 largest = 0;
+        QString largestName;
+        int modules = 0;
+        int visited = 0;
+        QStringList directories{m_projectPath};
+        while (!directories.isEmpty() && visited < 50000) {
+            QDir dir(directories.takeLast());
+            for (const QFileInfo &entry : dir.entryInfoList(
+                     QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+                     QDir::Name)) {
+                if (++visited > 50000) break;
+                if (entry.isDir()) {
+                    if (!isExcludedProjectDirectoryName(entry.fileName()))
+                        directories.append(entry.absoluteFilePath());
+                    continue;
+                }
+                const QString suffix = entry.suffix().toLower();
+                if (!QStringList{QStringLiteral("mod"), QStringLiteral("med"),
+                      QStringLiteral("s3m"), QStringLiteral("xm"),
+                      QStringLiteral("tfmx")}.contains(suffix)) continue;
+                ++modules;
+                if (entry.size() > largest) {
+                    largest = entry.size();
+                    largestName = QDir(m_projectPath).relativeFilePath(entry.absoluteFilePath());
+                }
+            }
+        }
+        if (largest > 0)
+            dialog.setSuggestedModSizeKb(int(qMin<qint64>(1024 * 1024,
+                ((largest + 4095) / 4096) * 4)), largestName, modules);
+    }
     dialog.setAppSizeKb(m_appSizeKb);
     dialog.setV2HeapKb(m_v2HeapKb);
     dialog.setV2StackKb(m_v2StackKb);
@@ -11257,7 +11338,8 @@ void MainWindow::handleCompilerFinished(int exitCode)
         updateAppletMemoryPanel(this, m_currentBuildIsV2,
             m_appSizeKb, m_v2StackKb, m_v2HeapKb, true,
             m_pendingElfPath, m_pendingAppPath,
-            QFileInfo(m_pendingElfPath).absolutePath());
+            QFileInfo(m_pendingElfPath).absolutePath(),
+            m_projectType == GameProjectType);
         m_buildStep = BuildStep::None;
         finishCompileProgress();
         statusBar()->showMessage(tr("Compile successful"));
@@ -12991,6 +13073,17 @@ bool MainWindow::loadProjectFile(const QString &filePath)
      */
     refreshFunctionCompletions();
     refreshSymbolTree();
+    // Display existing build measurements on reopening, without compiling.
+    const bool v2Project = m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2");
+    const QString stem = QFileInfo(m_projectFilePath).completeBaseName();
+    const QString existingElf = QDir(m_projectPath).filePath(
+        QStringLiteral("%1/%2.elf").arg(v2Project ? QStringLiteral("build") : QStringLiteral("buildv1"), stem));
+    const QString appName = m_outputAppName.isEmpty() ? stem + QStringLiteral(".app") : m_outputAppName;
+    const QString existingApp = QDir(m_projectPath).filePath(appName);
+    updateAppletMemoryPanel(this, v2Project, m_appSizeKb, m_v2StackKb, m_v2HeapKb,
+        QFileInfo(existingElf).isFile() && QFileInfo(existingApp).isFile(),
+        existingElf, existingApp, QFileInfo(existingElf).absolutePath(),
+        m_projectType == GameProjectType);
 
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     rememberRecentProject(m_projectFilePath);
@@ -13078,9 +13171,16 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     // Do NOT rebuild the entire C function/type catalogue on each Save Project.
     // File edits are already analyzed by the editor's debounced worker; a
     // deliberate Rescan or project load explicitly refreshes the catalogue.
-    updateAppletMemoryPanel(this,
-        m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
-        m_appSizeKb, m_v2StackKb, m_v2HeapKb);
+    const bool v2Project = m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2");
+    const QString stem = QFileInfo(m_projectFilePath).completeBaseName();
+    const QString existingElf = QDir(m_projectPath).filePath(
+        QStringLiteral("%1/%2.elf").arg(v2Project ? QStringLiteral("build") : QStringLiteral("buildv1"), stem));
+    const QString appName = m_outputAppName.isEmpty() ? stem + QStringLiteral(".app") : m_outputAppName;
+    const QString existingApp = QDir(m_projectPath).filePath(appName);
+    updateAppletMemoryPanel(this, v2Project, m_appSizeKb, m_v2StackKb, m_v2HeapKb,
+        QFileInfo(existingElf).isFile() && QFileInfo(existingApp).isFile(),
+        existingElf, existingApp, QFileInfo(existingElf).absolutePath(),
+        m_projectType == GameProjectType);
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     rememberRecentProject(m_projectFilePath);
     return true;

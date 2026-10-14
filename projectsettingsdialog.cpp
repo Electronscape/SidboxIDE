@@ -32,6 +32,8 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_stackUsageCheck(new QCheckBox(tr("Generate stack usage files (-fstack-usage)"), this))
     , m_extraCompilerFlagsEdit(new QLineEdit(this))
     , m_modSizeSpinBox(new QSpinBox(this))
+    , m_modSuggestionLabel(new QLabel(this))
+    , m_modUseSuggestedButton(new QPushButton(tr("Use recommendation"), this))
     , m_appSizeSpinBox(new QSpinBox(this))
     , m_v2HeapSpinBox(new QSpinBox(this))
     , m_v2StackSpinBox(new QSpinBox(this))
@@ -110,7 +112,17 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     formLayout->addRow(tr("V2 linker"), m_v2LinkerCombo);
     formLayout->addRow(tr("Applet size:"), m_appSizeSpinBox);
     formLayout->addRow(tr("Output .app name"), m_outputAppNameEdit);
-    formLayout->addRow(tr("MOD size"), m_modSizeSpinBox);
+    auto *modLayout = new QVBoxLayout;
+    auto *modRow = new QHBoxLayout;
+    modRow->addWidget(m_modSizeSpinBox);
+    modRow->addWidget(m_modUseSuggestedButton);
+    modLayout->addLayout(modRow);
+    m_modSuggestionLabel->setWordWrap(true);
+    // Keep the long recommendation across BOTH form columns instead of
+    // squeezing/wrapping it into the narrow input column.
+    formLayout->addRow(tr("MOD size"), modLayout);
+    formLayout->addRow(m_modSuggestionLabel);
+    m_modUseSuggestedButton->setEnabled(false);
     formLayout->addRow(tr("Linker script"), linkerLayout);
     formLayout->addRow(tr("Default linker"), m_defaultLinkerLabel);
 
@@ -231,6 +243,23 @@ void ProjectSettingsDialog::setProjectType(const QString &projectType)
         ? QStringLiteral("game")
         : QStringLiteral("gui"));
     m_projectTypeCombo->setCurrentIndex(index < 0 ? 0 : index);
+}
+
+void ProjectSettingsDialog::setSuggestedModSizeKb(int sizeKb, const QString &largestFile, int fileCount)
+{
+    const bool available = sizeKb > 0 && fileCount > 0;
+    m_modUseSuggestedButton->setEnabled(available);
+    if (!available) {
+        m_modSuggestionLabel->setText(tr("No tracker music files detected in project folders."));
+        return;
+    }
+    m_modSuggestionLabel->setText(tr("Largest of %1 music file(s): %2. Recommend %3 KiB (rounded up). "
+        "Use only if your V1 linker needs a module-loading reservation.")
+        .arg(fileCount).arg(largestFile).arg(sizeKb));
+    m_modUseSuggestedButton->disconnect();
+    connect(m_modUseSuggestedButton, &QPushButton::clicked, this, [this, sizeKb]() {
+        m_modSizeSpinBox->setValue(sizeKb);
+    });
 }
 
 int ProjectSettingsDialog::modSizeKb() const

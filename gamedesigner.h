@@ -7,7 +7,10 @@
 #include <QString>
 #include <QHash>
 #include <QDateTime>
+#include <QPoint>
 #include <QStringList>
+#include "gameaudio.h"
+#include "gamepalette.h"
 #include <functional>
 
 class QGraphicsScene;
@@ -17,6 +20,7 @@ class QGraphicsRectItem;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QSpinBox;
+class QFormLayout;
 class QLineEdit;
 class QCheckBox;
 class QComboBox;
@@ -46,10 +50,13 @@ public:
 
 protected:
     void changeEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     struct Resource {
         QString name;
+        QString id;   // stable identifier for active palette selection
+        QString plane = QStringLiteral("foreground");
         QString kind;
         QString path;
         int x = 0;
@@ -58,6 +65,8 @@ private:
         int cellWidth = 0;  // 0 = whole image (old Stage 52 files stay compatible)
         int cellHeight = 0;
         int frame = 0;
+        bool locked = false;
+        SidboxAudioSettings audio; // Stage 54: persisted only for sound/music
     };
 
     void buildUi();
@@ -68,9 +77,24 @@ private:
     void refreshFrame();
     void refreshProperties();
     void selectResource(int index);
-    void addResource(const QString &kind);
+    void addResource(const QString &kind, const QString &plane = QStringLiteral("foreground"));
+    void suggestFirstBackgroundPalette(const Resource &background);
     void addPlaceholder();
+    void importDroppedFiles(const QStringList &paths, const QString &targetKind,
+                            const QString &targetPlane);
     void deleteSelectedResource();
+    void copySelectedSprite();
+    void pasteCopiedSprite();
+    void undoResourceEdit();
+    void redoResourceEdit();
+    void rememberResourceEdit();
+    void restoreResourceSnapshot(const QVector<Resource> &snapshot);
+    void suggestSpriteCells(Resource &resource);
+    QString resourcePlane(const Resource &resource) const;
+    QVector<QRgb> activePalette(const QString &plane) const;
+    void refreshPaletteSelectors();
+    void refreshPlanePreview();
+    void buildSharedPalette();
     void pickResourceFile();
     void importPngAsPpb();
     void exportSelectedC();
@@ -95,6 +119,7 @@ private:
     QGraphicsRectItem *m_cameraFrame = nullptr;
     QGraphicsRectItem *m_worldFrame = nullptr;
     QTreeWidget *m_resourceTree = nullptr;
+    QFormLayout *m_propertiesForm = nullptr;
     QSpinBox *m_worldWidth = nullptr;
     QSpinBox *m_worldHeight = nullptr;
     QSpinBox *m_cameraX = nullptr;
@@ -105,13 +130,38 @@ private:
     QSpinBox *m_propCellWidth = nullptr;
     QSpinBox *m_propCellHeight = nullptr;
     QSpinBox *m_propFrame = nullptr;
+    QCheckBox *m_propLocked = nullptr;
+    QComboBox *m_propPlane = nullptr;
+    QComboBox *m_planeMode = nullptr;
+    QCheckBox *m_showLabels = nullptr;
+    QCheckBox *m_forcePalette = nullptr;
+    QComboBox *m_frontPalette = nullptr;
+    QComboBox *m_backPalette = nullptr;
+    QPushButton *m_buildPaletteButton = nullptr;
+    QString m_activeForegroundPalette;
+    QString m_activeBackgroundPalette;
+    QCheckBox *m_snap = nullptr;
+    QComboBox *m_snapStep = nullptr;
+    // Resource-only undo history: never snapshots bitmap data or actual files.
+    QVector<QVector<Resource>> m_undoResources;
+    QVector<QVector<Resource>> m_redoResources;
+    Resource m_copiedSprite;
+    bool m_hasCopiedSprite = false;
+    int m_dragResourceIndex = -1;
+    QPoint m_dragResourceStart;
+    QVector<Resource> m_dragBefore;
+    bool m_spaceHeld = false;
+    bool m_panningCamera = false;
+    QPoint m_panLastPos;
     QLabel *m_imageInfo = nullptr;
     QLabel *m_palettePreview = nullptr;
+    SidboxGameAudioPanel *m_audioPanel = nullptr;
     QLineEdit *m_propName = nullptr;
     QLabel *m_propFile = nullptr;
     QComboBox *m_zoom = nullptr;
     QCheckBox *m_grid = nullptr;
     QPushButton *m_deleteButton = nullptr;
+    QPushButton *m_exportCButton = nullptr;
     QVector<QGraphicsItem *> m_sceneItems;
     struct CachedImage {
         QImage image;
@@ -119,10 +169,16 @@ private:
         qint64 diskSize = -1;
         qint64 memoryBytes = 0;
     };
+    struct CachedPalette {
+        QVector<QRgb> colours;
+        QDateTime modified;
+        qint64 diskSize = -1;
+    };
+    mutable QHash<QString, CachedPalette> m_paletteCache;
     mutable QHash<QString, CachedImage> m_imageCache;
     mutable QStringList m_imageCacheOrder;
     mutable qint64 m_imageCacheBytes = 0;
-    QPushButton *m_importPpbButton = nullptr;
+    bool m_pngConversionRunning = false;
 };
 
 #endif // SIDBOX_GAMEDESIGNER_H

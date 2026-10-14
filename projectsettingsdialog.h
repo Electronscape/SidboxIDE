@@ -8,6 +8,7 @@ class QCheckBox;
 class QGroupBox;
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QLineEdit;
 class QSpinBox;
 class QTabWidget;
@@ -24,6 +25,7 @@ public:
 
     int modSizeKb() const;
     void setModSizeKb(int sizeKb);
+    void setSuggestedModSizeKb(int sizeKb, const QString &largestFile, int fileCount);
     int appSizeKb() const;
     void setAppSizeKb(int sizeKb);
 
@@ -81,6 +83,8 @@ private:
     QCheckBox *m_stackUsageCheck;
     QLineEdit *m_extraCompilerFlagsEdit;
     QSpinBox *m_modSizeSpinBox;
+    QLabel *m_modSuggestionLabel;
+    QPushButton *m_modUseSuggestedButton;
     QSpinBox *m_appSizeSpinBox;
     QSpinBox *m_v2HeapSpinBox;
     QSpinBox *m_v2StackSpinBox;

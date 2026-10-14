@@ -1,4 +1,182 @@
 
+might be a bug, but right clicking on an asset the palettes/foreground/main.pal (from the disc)
+all the ppb assets vanish (like all the palette data vanished?) to get it back i had to unselect "use selected cluts for preview"
+main.pal already contains the right colours in the same locations anyway, so not sure whats causing them to send all the ppb indexs to 0 (transpancey)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+The palette info, am thinkin more like the assets, already contain their colour indexes, an when building a shared palette, the ppbs should NOT change their indexs. If we saved out the assets it might change. THIS needs to be tested on the hardware i wont know yet whats happening here until tested
+
+The Left panel is now too cluttered :(
+I think we're goin to have to rely on draggin an droppin from the Files in projects INTO the game Resources (or right click menu to add the relevent asset)
+better to remove the buttons + sprie/atlas, empty sprite.....
+Keep the Build Shared CLUT + PPBs
+Just the Build PPBs, should never really have their indices changed.
+The annoyin part is the palette exceeds 256, we should try maybe re-evaluation method an try an get the colours to match as close if two colours are similar they just average it'll not be perfect, but the graphics designer would normally have this info at hand anyway. The IDE is just a HELPER
+
+the palette builder in dual mode SHOULD generate two palettes, one for the background assets, an one for the foreground.
+
+I realised just how crazy the Palette request was tho!! Paradox Much!?? lol sorry Hun.
+
+could u try to improve the above tho?
+Can remove the tag at the bottom of the left panel sayin PNG -> PPB crates a seperate index file...
+
+
+might be worth creatin the palette background if there is non already in the background palettes from the first asset in the backgrounds tree?
+god did that even make sense!??
+
+
+
+
+
+
+
+
+
+
+
+
+Audio is a bit strange when playing at a lower value: BUT steve already explained this, so not going to bang him over the head with my dildo xD
+
+Copied assets, say asset_copy, but might be nice to have something like asset_copy[0]...[1] as automatically assume its going to be an array. this could be handy for multiple badguys or players, or textfonts ;)
+
+auto atlas detection isnt fancy but it doesnt need to be, Steve gets a pass on this one ;) <3
+
+an option to hide asset tags on the game view (can get cluttered real fast)
+
+
+
+HAVE a crack at this one now?
+
+I know Steve left this out before, but might be He might be sweet to me and do this one too??
+
+Since the palettes are absolute.
+the option to force the palette to be set (for both background/foreground) and make the ppb's in their form respect the colour index.
+EVEN if they look wrong.
+WE COULD have the option to "build palette from items on screen" this WOULD save a shit ton of work on setting up a palette for games later
+
+so in the palettes, would need something to destinguish background palette, and forground. maybe in the palettes tree
+Palettes
+  |-foreground (this is always there as its a requirement for the graphics)
+      |maingame.pal
+      |tunnelmode.pal
+  |-background
+      |space.pal
+      |tunnelback.pal
+
+WE DO need to establish the game mode if the game is dual plane field or just a single front plane game
+This distinction is found in the Sturdust example code, an apis
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+audio preview WORKS!! modplayer!
+wav play back is not respectin the playback HZ though, But it is workin!
+
+snap - workin
+lock pos - working
+music play - working
+
+Project Settings:
+V1 mod size (use recommended) is good! the text under is wraped in a small box though
+should span the window? an wrap
+
+memory mapper (v1 game / app memory) - YEY (working, give Steve the offer to see body parts ;))
+
+ctrl+c, ctrl+v should be able to copy the asset selected (sprites, i think is the only safe options)
+usin an atlassed sprite, try an predict the cells, if unsure set the cell sizes to the max value of the atlas at least
+
+space + left click hold move - WORKING!
+delete key - works!!
+
+ctrl+z undo!!
+ctrl+y (or shift+ctrl+z) redo
+
+default snap to 4px
+
+not sure what Locate Camera is for?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+stuff to look into:
+game designer,
+music cataloging. take the maximum mod size, an recommend that in the project settings under modsize!
+key usages -
+ delete: delete something from the game designer
+ holding SPACE and CLICK hold pans the camera position
+
+default audio freq to 22050hz
+
+maybe: drag and drop assets from the files in project to the game resources, while leavin the + sprite/atlas,empty sprite, background.....
+warn if the asset does not match the intended resources, so if someone drags a mod file into sprites, it warns, but wont prohibit
+
+figure out why the media wont preview wav files in QT6 (while still not quite important, its a nice to have)
+possibly getting mod music, xm, s3m files to preview too?
+
+a default zoom of 100%
+a snap feature like we have in gui (great for backgroun assets)
+a LOCK feature, so example lock the background asset in place, PREVENTS accidently moving it around! xD (yupp already pissed me off that one xD)
+
+applet memory is not updated, so it always stays blank right now, this needs a bit of a fix (friendly touch to Steve he'll like that I hope)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 cosmetic, the calculator appears to be either 1 or 2 pixels too low, its choppin off the bottom buttons ;)
 
 
