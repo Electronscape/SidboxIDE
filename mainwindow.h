@@ -82,6 +82,8 @@ private:
     void createResourceFileInDirectory(const QString &directoryPath);
     void createGuiDesigner();
     bool openGuiDesigner(const QString &filePath);
+    void createGameDesigner();
+    bool openGameDesigner(const QString &filePath);
     bool saveGuiDesignerTab(QWidget *widget);
     void createProjectFolderInDirectory(const QString &directoryPath);
     QString projectContextDirectory(QTreeWidgetItem *item) const;

@@ -24,6 +24,10 @@ qt_add_executable(SidboxIDE
     mainwindow.h
     guidesigner.cpp
     guidesigner.h
+    gamedesigner.cpp
+    gamedesigner.h
+    ppbcodec.cpp
+    ppbcodec.h
     mainwindow.ui
     findreplacedialog.cpp
     findreplacedialog.h
@@ -61,6 +65,7 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/ide_icon_32x32.png
         icons/toolbar_cheatsheet.png
         icons/toolbar_guidesigner.png
+        icons/toolbar_gamedesigner.png
         icons/tree_file_res.png
         icons/gadget_button.png
         icons/gadget_checkbox.png

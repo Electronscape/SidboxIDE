@@ -3,6 +3,7 @@
 
 #include "codeeditor.h"
 #include "guidesigner.h"
+#include "gamedesigner.h"
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
@@ -1245,9 +1246,20 @@ bool isProjectExplorerSuffix(const QString &suffix)
 {
     const QString lower = suffix.toLower();
     return lower == QStringLiteral("c") || lower == QStringLiteral("h")
+        || lower == QStringLiteral("cc") || lower == QStringLiteral("cpp")
+        || lower == QStringLiteral("hpp")
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
         || lower == QStringLiteral("md") || lower == QStringLiteral("res")
-        || lower == QStringLiteral("sbui") || lower == QStringLiteral("uis");
+        || lower == QStringLiteral("sbui") || lower == QStringLiteral("sbgm")
+        || lower == QStringLiteral("uis")
+        || lower == QStringLiteral("ppb") || lower == QStringLiteral("pal")
+        || lower == QStringLiteral("act") || lower == QStringLiteral("png")
+        || lower == QStringLiteral("bmp") || lower == QStringLiteral("jpg")
+        || lower == QStringLiteral("jpeg") || lower == QStringLiteral("gif")
+        || lower == QStringLiteral("wav") || lower == QStringLiteral("mod")
+        || lower == QStringLiteral("s3m") || lower == QStringLiteral("xm")
+        || lower == QStringLiteral("med") || lower == QStringLiteral("tfmx")
+        || lower == QStringLiteral("sid") || lower == QStringLiteral("sba");
 }
 
 QIcon editorTabIconForFile(const QString &filePath,
@@ -1296,6 +1308,10 @@ QIcon editorTabIconForFile(const QString &filePath,
 
     if (suffix == QStringLiteral("sbui")) {
         return QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
+    }
+
+    if (suffix == QStringLiteral("sbgm")) {
+        return QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png"));
     }
 
     if (suffix == QStringLiteral("md")) {
@@ -1388,12 +1404,50 @@ bool canContainFunctionSignatures(const QString &filePath)
 
 bool canContainFunctionSignatures(const QString &filePath)
 {
+    // CRITICAL: Never feed arbitrary project resources to the C symbol parser.
+    // .ppb/.mod/.med/.wav/.png can be megabytes of binary data; parsing them
+    // as UTF-8 on the UI thread froze project open/save (Stage 53B).
     const QString suffix = QFileInfo(filePath).suffix().toLower();
-    if (suffix == QStringLiteral("res")
-        || suffix == QStringLiteral("sbui")) {
-        return false;
+    return suffix == QStringLiteral("c")
+        || suffix == QStringLiteral("h")
+        || suffix == QStringLiteral("inc")
+        || suffix == QStringLiteral("cc")
+        || suffix == QStringLiteral("cpp")
+        || suffix == QStringLiteral("hpp");
+}
+
+bool canSearchProjectText(const QString &filePath)
+{
+    if (canContainFunctionSignatures(filePath)) return true;
+    const QString suffix = QFileInfo(filePath).suffix().toLower();
+    // Searchable text resources, not binary images/audio or serialized designs.
+    return suffix == QStringLiteral("txt")
+        || suffix == QStringLiteral("md")
+        || suffix == QStringLiteral("uis");
+}
+
+bool isExcludedProjectDirectoryName(const QString &name)
+{
+    // Prune traversal at the directory itself, not AFTER iterating its files.
+    // In particular, .history/ and buildv1/ can contain thousands of files.
+    return name == QStringLiteral("build")
+        || name == QStringLiteral("buildv1")
+        || name == QStringLiteral(".history")
+        || name == QStringLiteral(".git")
+        || name == QStringLiteral(".svn")
+        || name == QStringLiteral(".hg")
+        || name == QStringLiteral("CMakeFiles");
+}
+
+bool isExcludedProjectRelativePath(const QString &relativePath)
+{
+    const QStringList components = QDir::fromNativeSeparators(relativePath)
+        .split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    // Last component is the file name; only directories are excluded.
+    for (int i = 0; i + 1 < components.size(); ++i) {
+        if (isExcludedProjectDirectoryName(components.at(i))) return true;
     }
-    return !suffix.isEmpty();
+    return false;
 }
 
 QString normalizedProjectType(const QString &projectType)
@@ -4138,6 +4192,25 @@ bool MainWindow::closeEditorTab(int index)
         return true;
     }
 
+    if (auto *game = dynamic_cast<SidboxGameDesigner *>(widget)) {
+        if (game->isModified()) {
+            QMessageBox box(this);
+            box.setWindowTitle(tr("Unsaved Game Design"));
+            box.setText(tr("Save changes to %1 before closing?").arg(game->displayName()));
+            QPushButton *saveButton = box.addButton(QMessageBox::Save);
+            QPushButton *discardButton = box.addButton(QMessageBox::Discard);
+            box.addButton(QMessageBox::Cancel);
+            box.setDefaultButton(saveButton);
+            box.exec();
+            if (box.clickedButton() == saveButton) {
+                if (!game->saveDesign()) return false;
+            } else if (box.clickedButton() != discardButton) return false;
+        }
+        m_editorTabs->removeTab(index);
+        widget->deleteLater();
+        return true;
+    }
+
     CodeEditor *editor =
         primaryEditorForTab(widget);
 
@@ -4260,6 +4333,25 @@ void MainWindow::closeEvent(QCloseEvent *event)
             event->ignore();
             return;
         }
+    }
+
+    QList<SidboxGameDesigner *> unsavedGames;
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i)))
+            if (game->isModified()) unsavedGames.append(game);
+    }
+    if (!unsavedGames.isEmpty()) {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("Unsaved Game Designs"));
+        box.setText(tr("There are %1 unsaved game design(s).").arg(unsavedGames.size()));
+        QPushButton *save = box.addButton(QMessageBox::Save);
+        QPushButton *discard = box.addButton(QMessageBox::Discard);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(save);
+        box.exec();
+        if (box.clickedButton() == save) {
+            for (auto *game : unsavedGames) if (!game->saveDesign()) { event->ignore(); return; }
+        } else if (box.clickedButton() != discard) { event->ignore(); return; }
     }
 
     QList<CodeEditor *> unsavedEditors;
@@ -4887,6 +4979,9 @@ bool MainWindow::confirmProjectSwitch()
         QWidget *tab = m_editorTabs->widget(i);
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
             if (designer->isModified()) { unsaved = true; break; }
+        }
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (game->isModified()) { unsaved = true; break; }
         }
         if (CodeEditor *editor = primaryEditorForTab(tab)) {
             if (editor->document()->isModified()) { unsaved = true; break; }
@@ -6064,6 +6159,8 @@ void MainWindow::setupInterface()
     QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
     QAction *guiDesignerAction = toolBar->addAction(QIcon(":/icons/toolbar_guidesigner.png"), tr("GUI Designer"));
     guiDesignerAction->setToolTip(tr("Create a visual CoderGirl 480x320 GUI design"));
+    QAction *gameDesignerAction = toolBar->addAction(QIcon(":/icons/toolbar_gamedesigner.png"), tr("Game Designer"));
+    gameDesignerAction->setToolTip(tr("Create a V1 game world, camera layout, and resource references"));
     QAction *optionsAction = toolBar->addAction(QIcon(":/icons/options.png"), tr("Options"));
 
 
@@ -6111,6 +6208,7 @@ void MainWindow::setupInterface()
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(guiDesignerAction, &QAction::triggered, this, &MainWindow::createGuiDesigner);
+    connect(gameDesignerAction, &QAction::triggered, this, &MainWindow::createGameDesigner);
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(aboutIdeAction, &QAction::triggered, this, &MainWindow::showAboutIde);
     connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
@@ -6754,9 +6852,12 @@ void MainWindow::setupInterface()
                 refreshActiveEditorAnalysis();
             } else if (m_functionvarList) {
                 m_functionvarList->clear();
-                if (dynamic_cast<SidboxGuiDesigner *>(m_editorTabs->currentWidget())) {
+                if (dynamic_cast<SidboxGuiDesigner *>(m_editorTabs->currentWidget())
+                    || dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget())) {
                     auto *item = new QTreeWidgetItem(m_functionvarList);
-                    item->setText(0, tr("GUI Designer — visual CoderGirl layout"));
+                    item->setText(0, dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget())
+                        ? tr("Game Designer — V1 game world and resources")
+                        : tr("GUI Designer — visual CoderGirl layout"));
                     item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
                 }
             }
@@ -7006,7 +7107,8 @@ void MainWindow::setupInterface()
     connect(m_editorTabs, &QTabWidget::currentChanged, this,
             [this, mainSplitter, rightPane](int) {
         const bool designing = dynamic_cast<SidboxGuiDesigner *>(
-            m_editorTabs->currentWidget()) != nullptr;
+            m_editorTabs->currentWidget()) != nullptr
+            || dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget()) != nullptr;
         const int left = mainSplitter->property("projectTreeWidth").toInt();
         const int right = mainSplitter->property("editorRightWidth").toInt();
         mainSplitter->setProperty("switchingTabs", true);
@@ -7170,7 +7272,7 @@ void MainWindow::createNewProject()
     const QString dateStr = now.toString(QStringLiteral("MMM dd yyyy"));
     const QString timeStr = now.toString(QStringLiteral("hh:mm:ss"));
 
-    const QByteArray mainCContents =
+    QByteArray mainCContents =
         QString(
             "/*\n"
             "   Created file: %1 %2\n"
@@ -7186,6 +7288,19 @@ void MainWindow::createNewProject()
             "}\n")
             .arg(timeStr, dateStr)
             .toUtf8();
+
+    // Stage 52: Gaming is V1, and its starter must have the actual graphics
+    // setup/game loop. Never overwrite a game project with GUI Hello World.
+    if (m_projectType == GameProjectType) {
+        QFile templateFile(QDir(ideLibsPath()).filePath(QStringLiteral("templates/games/main.c")));
+        if (!templateFile.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("New Game Project"),
+                tr("Cannot read the bundled V1 gaming starter:\n%1\n\n"
+                   "No project files were overwritten.").arg(templateFile.fileName()));
+            return;
+        }
+        mainCContents = templateFile.readAll();
+    }
 
     const QByteArray mainHContents =
         QString(
@@ -7330,6 +7445,77 @@ void MainWindow::createNewHeaderFile(){
     statusBar()->showMessage(tr("New H header file created"));
 }
 
+
+void MainWindow::createGameDesigner()
+{
+    if (m_projectPath.isEmpty() || m_projectFilePath.isEmpty()) {
+        QMessageBox::information(this, tr("Game Designer"),
+            tr("Create or open a V1 Game project first."));
+        return;
+    }
+    if (normalizedProjectType(m_projectType) != GameProjectType) {
+        QMessageBox::information(this, tr("Game Designer"),
+            tr("Game Designer is available for V1 Game projects.\n"
+               "GUI and CGARM V2 projects still use GUI Designer."));
+        return;
+    }
+    bool accepted = false;
+    QString name = QInputDialog::getText(this, tr("New Game Design"), tr("Design name:"),
+                                         QLineEdit::Normal, QStringLiteral("gameworld"),
+                                         &accepted).trimmed();
+    if (!accepted || name.isEmpty()) return;
+    // A design name is one filename in the project root, never a path.
+    if (name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\'))
+        || name == QStringLiteral(".") || name == QStringLiteral("..")) {
+        QMessageBox::warning(this, tr("Game Designer"), tr("Enter a filename without slashes."));
+        return;
+    }
+    name = QFileInfo(name).completeBaseName();
+    if (name.isEmpty()) return;
+    const QString path = QDir(m_projectPath).filePath(name + QStringLiteral(".sbgm"));
+    if (QFileInfo::exists(path)) {
+        QMessageBox::information(this, tr("Game Designer"),
+            tr("That design already exists. Open it from the project tree instead."));
+        return;
+    }
+    if (openGameDesigner(path)) {
+        auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
+        if (game && game->saveDesign()) {
+            addProjectFile(path);
+            refreshProjectFiles();
+            saveProjectFile(m_projectFilePath);
+        }
+    }
+}
+
+bool MainWindow::openGameDesigner(const QString &filePath)
+{
+    const QString absolute = QFileInfo(filePath).absoluteFilePath();
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
+            if (QFileInfo(game->filePath()).absoluteFilePath() == absolute) {
+                m_editorTabs->setCurrentIndex(i);
+                return true;
+            }
+        }
+    }
+    auto *game = new SidboxGameDesigner(absolute, m_editorTabs);
+    if (!game->isValid()) { delete game; return false; }
+    int index = m_editorTabs->addTab(game,
+        QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png")), game->displayName());
+    m_editorTabs->setTabToolTip(index, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(absolute)));
+    game->tabTitleChanged = [this, game]() {
+        const int i = m_editorTabs->indexOf(game);
+        if (i >= 0) m_editorTabs->setTabText(i, game->displayName());
+    };
+    // New PNG/PPB/audio assets need only a file-tree refresh. A full Rescan
+    // reparses all C functions and is unnecessary for binary resource imports.
+    game->assetFilesChanged = [this]() { refreshProjectFiles(); };
+    addProjectFile(absolute);
+    m_editorTabs->setCurrentIndex(index);
+    game->setFocus();
+    return true;
+}
 
 void MainWindow::createGuiDesigner()
 {
@@ -7553,6 +7739,12 @@ void MainWindow::openProject()
 
 bool MainWindow::saveProject()
 {
+    // Save any pending V1 Game Designer documents before project metadata.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
+            if (game->isModified() && !game->saveDesign()) return false;
+        }
+    }
     bool allSaved = true;
 
     /*
@@ -7611,8 +7803,12 @@ bool MainWindow::saveProject()
         }
     }
 
+    // Source/editor saves already add new files and refresh the tree when needed.
+    // Saving unchanged .proj metadata must not rescan the whole directory.
+    const QStringList projectFilesBeforeSave = m_projectFilesInProject;
     if (saveProjectFile(projectFilePath)) {
-        refreshProjectFiles();
+        if (m_projectFilesInProject != projectFilesBeforeSave)
+            refreshProjectFiles();
         statusBar()->showMessage(tr("Project saved: %1").arg(QDir::toNativeSeparators(m_projectFilePath)));
         return true;
     }
@@ -9123,6 +9319,14 @@ void MainWindow::compileActiveFile()
         }
     }
 
+    // .sbgm is an editor-side resource design; persist it before F5, but it
+    // does not emit .c files or alter the existing V1/V2 compile pipelines.
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
+            if (game->isModified() && !game->saveDesign()) return;
+        }
+    }
+
     if (m_compilerProcess->state() != QProcess::NotRunning) {
         QMessageBox::information(this, tr("Compile"), tr("A compile is already running."));
         return;
@@ -9837,6 +10041,13 @@ void MainWindow::moveProjectFile(const QString &sourceFilePath, const QString &t
      */
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         QWidget *tab = m_editorTabs->widget(i);
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (QFileInfo(game->filePath()).absoluteFilePath() == sourcePath) {
+                game->setFilePath(destinationPath);
+                m_editorTabs->setTabToolTip(i, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(destinationPath)));
+            }
+            continue;
+        }
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
             if (QFileInfo(designer->filePath()).absoluteFilePath() == sourcePath) {
                 designer->setFilePath(destinationPath);
@@ -10172,6 +10383,11 @@ void MainWindow::removeSelectedProjectFile()
     m_projectFilesInProject.removeAll(QFileInfo(filePath).absoluteFilePath());
     for (int i = m_editorTabs->count() - 1; i >= 0; --i) {
         QWidget *widget = m_editorTabs->widget(i);
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(widget)) {
+            if (QFileInfo(game->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+                m_editorTabs->removeTab(i); widget->deleteLater(); continue;
+            }
+        }
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(widget)) {
             if (QFileInfo(designer->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
                 m_editorTabs->removeTab(i);
@@ -10238,7 +10454,7 @@ void MainWindow::renameSelectedProjectFile()
 
     const QString newPath = QFileInfo(oldInfo.dir().filePath(newName)).absoluteFilePath();
     if (!isProjectExplorerFile(newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui, .uis"));
+        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui, .sbgm, .uis"));
         return;
     }
 
@@ -10257,6 +10473,13 @@ void MainWindow::renameSelectedProjectFile()
 
     for (int i = m_editorTabs->count() - 1; i >= 0; --i) {
         QWidget *tab = m_editorTabs->widget(i);
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (QFileInfo(game->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
+                game->setFilePath(newPath);
+                m_editorTabs->setTabToolTip(i, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(newPath)));
+            }
+            continue;
+        }
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
             if (QFileInfo(designer->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
                 designer->setFilePath(newPath);
@@ -12198,6 +12421,24 @@ bool MainWindow::openFile(const QString &filePath)
     if (QFileInfo(filePath).suffix().compare(QStringLiteral("sbui"), Qt::CaseInsensitive) == 0) {
         return openGuiDesigner(filePath);
     }
+    if (QFileInfo(filePath).suffix().compare(QStringLiteral("sbgm"), Qt::CaseInsensitive) == 0) {
+        return openGameDesigner(filePath);
+    }
+
+    // Do not accidentally interpret binary SIDBOX game assets as UTF-8 C source.
+    const QString assetSuffix = QFileInfo(filePath).suffix().toLower();
+    if (QStringList{QStringLiteral("ppb"), QStringLiteral("pal"), QStringLiteral("act"),
+                    QStringLiteral("png"), QStringLiteral("bmp"), QStringLiteral("jpg"),
+                    QStringLiteral("jpeg"), QStringLiteral("gif"), QStringLiteral("wav"),
+                    QStringLiteral("mod"), QStringLiteral("s3m"), QStringLiteral("xm"),
+                    QStringLiteral("med"), QStringLiteral("tfmx"),
+                    QStringLiteral("sid"), QStringLiteral("sba")}.contains(assetSuffix)) {
+        QMessageBox::information(this, tr("Game Asset"),
+            tr("%1 is a game resource, not source code.\n\n"
+               "Open your .sbgm Game Designer to preview PPB/PNG assets and manage resources.")
+               .arg(QFileInfo(filePath).fileName()));
+        return false;
+    }
 
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         //auto *editor = qobject_cast(m_editorTabs->widget(i));
@@ -12556,6 +12797,9 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
                 break;
             }
         }
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (game->isModified()) { hasUnsavedWork = true; break; }
+        }
         auto *editor = primaryEditorForTab(tab);
         if (editor && (editor->document()->isModified()
                        || (m_projectFilePath.isEmpty() && editor->filePath().isEmpty()))) {
@@ -12775,6 +13019,11 @@ bool MainWindow::saveProjectFile(const QString &filePath)
             }
             continue;
         }
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (!game->filePath().isEmpty())
+                openTabsArray.append(toProjectRelativePath(game->filePath()));
+            continue;
+        }
         auto *editor = primaryEditorForTab(tab);
         if (editor && !editor->filePath().isEmpty()) {
             openTabsArray.append(toProjectRelativePath(editor->filePath()));
@@ -12826,7 +13075,9 @@ bool MainWindow::saveProjectFile(const QString &filePath)
         }
     }
 
-    refreshFunctionCompletions();
+    // Do NOT rebuild the entire C function/type catalogue on each Save Project.
+    // File edits are already analyzed by the editor's debounced worker; a
+    // deliberate Rescan or project load explicitly refreshes the catalogue.
     updateAppletMemoryPanel(this,
         m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
         m_appSizeKb, m_v2StackKb, m_v2HeapKb);
@@ -12983,30 +13234,23 @@ void MainWindow::refreshProjectFiles()
     };
 
     /*
-     * Add actual project directories first so empty folders are visible too.
-     * The generated build folder stays hidden from the project explorer.
+     * Show empty folders as well as populated ones, but DON'T descend into
+     * build directories or history. A recursive QDirIterator visits those
+     * directories even if we ignore their results after the fact.
      */
     if (!m_projectPath.isEmpty() && QFileInfo(m_projectPath).isDir()) {
-        QDirIterator directoryIterator(
-            m_projectPath,
-            QDir::Dirs | QDir::NoDotAndDotDot,
-            QDirIterator::Subdirectories);
-
-        while (directoryIterator.hasNext()) {
-            const QString absoluteFolderPath =
-                QFileInfo(directoryIterator.next()).absoluteFilePath();
-            const QString relativeFolderPath =
-                QDir(m_projectPath).relativeFilePath(absoluteFolderPath);
-
-            if (relativeFolderPath == QStringLiteral("build")
-                || relativeFolderPath.startsWith(QStringLiteral("build/"))
-                || relativeFolderPath == QStringLiteral("buildv1")
-                || relativeFolderPath.startsWith(QStringLiteral("buildv1/"))) {
-                continue;
+        std::function<void(const QDir &)> addVisibleFolders;
+        addVisibleFolders = [&](const QDir &parent) {
+            const QFileInfoList subdirs = parent.entryInfoList(
+                QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+                QDir::Name | QDir::IgnoreCase);
+            for (const QFileInfo &subdir : subdirs) {
+                if (isExcludedProjectDirectoryName(subdir.fileName())) continue;
+                ensureFolderItem(QDir(m_projectPath).relativeFilePath(subdir.absoluteFilePath()));
+                addVisibleFolders(QDir(subdir.absoluteFilePath()));
             }
-
-            ensureFolderItem(relativeFolderPath);
-        }
+        };
+        addVisibleFolders(QDir(m_projectPath));
     }
 
     QStringList files = m_projectFilesInProject;
@@ -13034,10 +13278,8 @@ void MainWindow::refreshProjectFiles()
         } else {
             relativePath = fileInfo.fileName();
         }
-        // Even an old .proj manifest must not display generated build files.
-        if (relativePath.startsWith(QStringLiteral("buildv1/"))
-            || relativePath.startsWith(QStringLiteral("build/"))
-            || relativePath.startsWith(QStringLiteral(".history/")))
+        // Never display old .proj manifest entries from generated folders.
+        if (isExcludedProjectRelativePath(relativePath))
             continue;
 
         relativePath = QDir::cleanPath(relativePath);
@@ -13045,9 +13287,10 @@ void MainWindow::refreshProjectFiles()
         QIcon fileIcon;
         const QString suffix = fileInfo.suffix().toLower();
 
-        if (suffix == QStringLiteral("c")) {
+        if (suffix == QStringLiteral("c") || suffix == QStringLiteral("cc")
+            || suffix == QStringLiteral("cpp")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
-        } else if (suffix == QStringLiteral("h")) {
+        } else if (suffix == QStringLiteral("h") || suffix == QStringLiteral("hpp")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_h.png"));
         } else if (suffix == QStringLiteral("inc")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
@@ -13059,8 +13302,20 @@ void MainWindow::refreshProjectFiles()
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
         } else if (suffix == QStringLiteral("sbui")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
+        } else if (suffix == QStringLiteral("sbgm")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png"));
         } else if (suffix == QStringLiteral("md")) {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_md.png"));
+        } else if (suffix == QStringLiteral("ppb") || suffix == QStringLiteral("png")
+                   || suffix == QStringLiteral("bmp") || suffix == QStringLiteral("jpg")
+                   || suffix == QStringLiteral("jpeg") || suffix == QStringLiteral("gif")
+                   || suffix == QStringLiteral("pal") || suffix == QStringLiteral("act")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_res.png"));
+        } else if (suffix == QStringLiteral("wav") || suffix == QStringLiteral("mod")
+                   || suffix == QStringLiteral("s3m") || suffix == QStringLiteral("xm")
+                   || suffix == QStringLiteral("med") || suffix == QStringLiteral("tfmx")
+                   || suffix == QStringLiteral("sid") || suffix == QStringLiteral("sba")) {
+            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
         } else {
             fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
         }
@@ -15120,30 +15375,42 @@ QString MainWindow::projectFileDisplayText(const QString &filePath) const
 QStringList MainWindow::projectFolderSourceFiles() const
 {
     QStringList files;
-    if (m_projectPath.isEmpty() || !QFileInfo::exists(m_projectPath)) {
+    if (m_projectPath.isEmpty() || !QFileInfo(m_projectPath).isDir()) {
         return files;
     }
 
+    // File discovery is separate from C parsing: all these resources should
+    // appear in the explorer, but only C-family text goes to IntelliSense.
     const QStringList filters = {
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
+        QStringLiteral("*.cc"), QStringLiteral("*.cpp"), QStringLiteral("*.hpp"),
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
-        QStringLiteral("*.sbui"), QStringLiteral("*.uis")
+        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.uis"),
+        QStringLiteral("*.ppb"), QStringLiteral("*.pal"), QStringLiteral("*.act"),
+        QStringLiteral("*.png"), QStringLiteral("*.bmp"), QStringLiteral("*.jpg"),
+        QStringLiteral("*.jpeg"), QStringLiteral("*.gif"),
+        QStringLiteral("*.wav"), QStringLiteral("*.mod"), QStringLiteral("*.s3m"),
+        QStringLiteral("*.xm"), QStringLiteral("*.med"), QStringLiteral("*.tfmx"),
+        QStringLiteral("*.sid"), QStringLiteral("*.sba")
     };
 
-    QDirIterator iterator(m_projectPath, filters, QDir::Files, QDirIterator::Subdirectories);
-    while (iterator.hasNext()) {
-        const QString filePath = QFileInfo(iterator.next()).absoluteFilePath();
-        const QString relativePath = QDir(m_projectPath).relativeFilePath(filePath);
-        if (relativePath.startsWith(QStringLiteral("build/"))
-            || relativePath == QStringLiteral("build")
-            || relativePath.startsWith(QStringLiteral("buildv1/"))
-            || relativePath == QStringLiteral("buildv1")
-            || relativePath.startsWith(QStringLiteral(".history/"))
-            || relativePath == QStringLiteral(".history")) {
-            continue;
+    std::function<void(const QDir &)> visit;
+    visit = [&](const QDir &directory) {
+        const QFileInfoList entries = directory.entryInfoList(
+            filters, QDir::Files | QDir::NoDotAndDotDot,
+            QDir::Name | QDir::IgnoreCase);
+        for (const QFileInfo &file : entries)
+            files.append(file.absoluteFilePath());
+
+        const QFileInfoList subdirs = directory.entryInfoList(
+            QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+            QDir::Name | QDir::IgnoreCase);
+        for (const QFileInfo &subdir : subdirs) {
+            if (!isExcludedProjectDirectoryName(subdir.fileName()))
+                visit(QDir(subdir.absoluteFilePath()));
         }
-        files.append(filePath);
-    }
+    };
+    visit(QDir(m_projectPath));
 
     files.removeDuplicates();
     files.sort(Qt::CaseInsensitive);
@@ -15160,6 +15427,10 @@ QStringList MainWindow::collectOpenProjectFiles() const
     QStringList files;
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         QWidget *tab = m_editorTabs->widget(i);
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
+            if (!game->filePath().isEmpty()) files.append(QFileInfo(game->filePath()).absoluteFilePath());
+            continue;
+        }
         if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
             const QString designPath = QFileInfo(designer->filePath()).absoluteFilePath();
             if (!designPath.isEmpty() && !files.contains(designPath)) files.append(designPath);
@@ -15385,6 +15656,13 @@ QList<ProjectSearchResult> MainWindow::findInProject(
     for (const QString &rawPath : std::as_const(candidates)) {
         const QString filePath =
             QFileInfo(rawPath).absoluteFilePath();
+
+        // Project searches and Replace must never interpret .mod/.med/.ppb
+        // (or any other binary resource) as mutable UTF-8 text.
+        if (!canSearchProjectText(filePath)) continue;
+        if (!m_projectPath.isEmpty()
+            && isExcludedProjectRelativePath(QDir(m_projectPath).relativeFilePath(filePath)))
+            continue;
 
         QString text;
 
