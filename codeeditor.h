@@ -94,6 +94,7 @@ signals:
 protected:
     void focusInEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
@@ -111,6 +112,9 @@ private:
     void updateLineNumberArea(const QRect &rect, int dy);
     void highlightCurrentLine();
     void updateOccurrenceSelection(bool documentChanged = false);
+    void showCompletionPopup(const QRect &caretRect);
+    void showDelayedCompletion();
+    void dismissCompletionForNavigation();
     void beginOccurrenceScan();
     void continueOccurrenceScan();
     QString textUnderCursor() const;
@@ -157,6 +161,7 @@ private:
     // deferred and batched so huge source files stay responsive.
     QTimer *m_occurrenceDelayTimer = nullptr;
     QTimer *m_occurrenceScanTimer = nullptr;
+    QTimer *m_completionDelayTimer = nullptr;
     QString m_occurrenceWord;
     QRegularExpression m_occurrenceExpression;
     QTextBlock m_occurrenceScanBlock;

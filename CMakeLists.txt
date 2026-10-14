@@ -7,6 +7,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
 
 qt_standard_project_setup()
 
+find_package(ZLIB REQUIRED)
 
 qt_add_executable(SidboxIDE
     WIN32 MACOSX_BUNDLE
@@ -82,6 +83,7 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/gadget_msinput.png
         icons/gadget_kbinput.png
         icons/gadget_uart1.png
+        icons/nagelgirl.png
     )
 
 set(CMAKE_AUTORCC ON)
@@ -91,6 +93,7 @@ target_link_libraries(SidboxIDE
         Qt::Core
         Qt::Gui
         Qt::Widgets
+        ZLIB::ZLIB
 )
 
 # Native host-side converter: ELF32 ARM PIE -> CoderGirl SBAPV2.

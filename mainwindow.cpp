@@ -30,6 +30,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -54,6 +57,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QLineEdit>
+#include <QLayoutItem>
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
@@ -62,6 +66,7 @@
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPixmap>
+#include <QGraphicsEffect>
 #include <QPainter>
 #include <QPushButton>
 #include <QPoint>
@@ -89,17 +94,956 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QVariant>
+#include <QVector>
+#include <QTextEdit>
 #include <QStandardPaths>
 #include <QStyle>
 #include <functional>
+#include <memory>
 #include <limits>
 #include <utility>
+#include <zlib.h> // RFC 1952 gzip history snapshots
 
 namespace {
 // At the default ELF virtual base (0xD0010000), the 6 MiB SDRAM
 // applet/music region ends 6080 KiB later at 0xD0600000.
 constexpr int V2MaxAppletKiB = 6080;
 constexpr int ProjectFileVersion = 2;
+
+/*
+ * Stage 35: On-save source history, stored with the project.
+ *
+ *   .history/src/main.c.20261013-234501-123.his
+ *
+ * Historical versions are not C source files, and are not added to the project.
+ * A revision is captured BEFORE a changed file is overwritten. This is
+ * intentionally different from the IDE's unsaved crash-recovery snapshots.
+ */
+constexpr int MaxFileHistoryRevisions = 40;
+constexpr int FileHistoryRetentionDays = 30;
+// Compressed snapshots are independent gzip revisions, NOT delta chains.
+// Existing Stage 35 plaintext and Stage 37 Qt-compressed .his stay readable;
+// incompressible revisions remain plain .his.
+constexpr qsizetype MaxCompressedHistorySourceBytes = 128 * 1024 * 1024;
+const QByteArray HistoryCompressionHeader = QByteArrayLiteral("CGHISTORY-ZLIB-v1\n");
+
+bool isHistoryTextFile(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    return suffix == QStringLiteral("c") || suffix == QStringLiteral("h")
+        || suffix == QStringLiteral("cc") || suffix == QStringLiteral("cpp")
+        || suffix == QStringLiteral("hpp") || suffix == QStringLiteral("inc")
+        || suffix == QStringLiteral("res") || suffix == QStringLiteral("txt")
+        || suffix == QStringLiteral("md");
+}
+
+QString historyFolderForFile(const QString &projectRoot, const QString &filePath)
+{
+    if (projectRoot.isEmpty() || filePath.isEmpty() || !isHistoryTextFile(filePath))
+        return {};
+
+    // Canonical paths exclude symlinks that lead outside the project.
+    const QString root = QFileInfo(projectRoot).canonicalFilePath();
+    const QString target = QFileInfo(filePath).canonicalFilePath();
+    if (root.isEmpty() || target.isEmpty()
+        || !target.startsWith(root + QDir::separator()))
+        return {};
+
+    const QString relative = QDir(root).relativeFilePath(target);
+    if (relative.startsWith(QStringLiteral(".history/"))
+        || relative.startsWith(QStringLiteral("build/"))
+        || relative.startsWith(QStringLiteral("buildv1/")))
+        return {};
+
+    const QString relativeDir = QFileInfo(relative).path();
+    return QDir(root).filePath(
+        relativeDir == QStringLiteral(".")
+            ? QStringLiteral(".history")
+            : QStringLiteral(".history/") + relativeDir);
+}
+
+// Stage 39: both legacy .his and independently recoverable .his.gz snapshots.
+// Keep the timestamp parser shared by listing, pruning and the diff browser.
+QString historyRevisionStamp(const QString &name, const QString &filename)
+{
+    const QString prefix = filename + QLatin1Char('.');
+    if (!name.startsWith(prefix)) return {};
+    int extensionSize = 0;
+    if (name.endsWith(QStringLiteral(".his.gz"))) extensionSize = 7;
+    else if (name.endsWith(QStringLiteral(".his"))) extensionSize = 4;
+    else return {};
+    const QString stamp = name.mid(prefix.size(), name.size()
+                                  - prefix.size() - extensionSize);
+    return QDateTime::fromString(stamp, QStringLiteral("yyyyMMdd-HHmmss-zzz"))
+               .isValid() ? stamp : QString();
+}
+
+// Native gzip (RFC 1952), readable by gzip, 7-Zip and Ark. zlib's gzip
+// wrapper provides CRC32 and ISIZE checksums. No external gzip command needed.
+bool compressHistoryGzip(const QByteArray &source, QByteArray *result)
+{
+    if (!result || source.size() > MaxCompressedHistorySourceBytes) return false;
+    z_stream stream{};
+    if (deflateInit2(&stream, 6, Z_DEFLATED, MAX_WBITS + 16,
+                     MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY) != Z_OK)
+        return false;
+    const uLong bound = deflateBound(&stream, static_cast<uLong>(source.size()));
+    if (bound > static_cast<uLong>(std::numeric_limits<int>::max())) {
+        deflateEnd(&stream);
+        return false;
+    }
+    QByteArray packed(static_cast<qsizetype>(bound), '\0');
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(source.constData()));
+    stream.avail_in = static_cast<uInt>(source.size());
+    stream.next_out = reinterpret_cast<Bytef *>(packed.data());
+    stream.avail_out = static_cast<uInt>(packed.size());
+    const int rc = deflate(&stream, Z_FINISH);
+    const bool ok = rc == Z_STREAM_END;
+    if (ok) packed.resize(static_cast<qsizetype>(stream.total_out));
+    deflateEnd(&stream);
+    if (ok) *result = std::move(packed);
+    return ok;
+}
+
+bool uncompressHistoryGzip(const QByteArray &packed, QByteArray *result,
+                           QString *error)
+{
+    if (!result || packed.size() > MaxCompressedHistorySourceBytes + 1024 * 1024) {
+        if (error) *error = QObject::tr("Compressed revision exceeds size limit.");
+        return false;
+    }
+    z_stream stream{};
+    if (inflateInit2(&stream, MAX_WBITS + 16) != Z_OK) {
+        if (error) *error = QObject::tr("Cannot initialise gzip decoder.");
+        return false;
+    }
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(packed.constData()));
+    stream.avail_in = static_cast<uInt>(packed.size());
+    QByteArray decoded;
+    char chunk[65536];
+    int status = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef *>(chunk);
+        stream.avail_out = sizeof(chunk);
+        status = inflate(&stream, Z_NO_FLUSH);
+        if (status != Z_OK && status != Z_STREAM_END) break;
+        const qsizetype count = sizeof(chunk) - stream.avail_out;
+        if (count > MaxCompressedHistorySourceBytes - decoded.size()) {
+            status = Z_MEM_ERROR;
+            break;
+        }
+        decoded.append(chunk, count);
+    } while (status != Z_STREAM_END);
+    const bool ok = status == Z_STREAM_END && stream.avail_in == 0;
+    inflateEnd(&stream);
+    if (!ok) {
+        if (error) *error = QObject::tr("Invalid, truncated or oversized gzip revision.");
+        return false;
+    }
+    *result = std::move(decoded);
+    return true;
+}
+
+QStringList historyRevisions(const QString &directory, const QString &filename)
+{
+    QStringList revisions;
+    QDir folder(directory);
+    if (!folder.exists()) return revisions;
+
+    // Both gzip and older .his files share the same sortable timestamp.
+    for (const QString &name : folder.entryList(QDir::Files | QDir::NoSymLinks,
+                                                 QDir::Name)) {
+        if (!historyRevisionStamp(name, filename).isEmpty())
+            revisions.append(folder.filePath(name));
+    }
+    revisions.sort();
+    return revisions;
+}
+
+// A rolling 30-day window and 40-version hard ceiling. Expiry is evaluated
+// when history is opened AND on each new save (not only at IDE startup).
+void pruneFileHistory(const QString &directory, const QString &filename)
+{
+    const QStringList revisions = historyRevisions(directory, filename);
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-FileHistoryRetentionDays);
+    QStringList retained;
+    for (const QString &path : revisions) {
+        const QString name = QFileInfo(path).fileName();
+        const QDateTime time = QDateTime::fromString(
+            historyRevisionStamp(name, filename), QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+        if (time.isValid() && time < cutoff)
+            QFile::remove(path);
+        else
+            retained.append(path);
+    }
+    for (int i = 0; i < retained.size() - MaxFileHistoryRevisions; ++i)
+        QFile::remove(retained.at(i));
+}
+
+// The on-disk extension stays .his. The magic header distinguishes compressed
+// revisions from Stage 35/36 plaintext revisions, preserving compatibility.
+// Each snapshot is self-contained so damage/loss of one never breaks the others.
+bool readFileHistorySnapshot(const QString &path, QString *text, QString *error)
+{
+    QFile snapshot(path);
+    if (!snapshot.open(QIODevice::ReadOnly)) {
+        if (error) *error = snapshot.errorString();
+        return false;
+    }
+    QByteArray raw = snapshot.readAll();
+    if (snapshot.error() != QFileDevice::NoError) {
+        if (error) *error = QObject::tr("Cannot read revision completely.");
+        return false;
+    }
+    if (path.endsWith(QStringLiteral(".his.gz"))) {
+        QByteArray unpacked;
+        if (!uncompressHistoryGzip(raw, &unpacked, error)) return false;
+        raw = std::move(unpacked);
+    } else if (raw.startsWith(HistoryCompressionHeader)) {
+        const QByteArray payload = raw.mid(HistoryCompressionHeader.size());
+        if (payload.size() < 6) {
+            if (error) *error = QObject::tr("Truncated compressed revision.");
+            return false;
+        }
+        // qCompress begins with a 32-bit big-endian original length. Check it
+        // before allowing a damaged snapshot to allocate arbitrary memory.
+        quint32 size = 0;
+        for (int i = 0; i < 4; ++i)
+            size = (size << 8) | static_cast<quint8>(payload.at(i));
+        if (size > static_cast<quint32>(MaxCompressedHistorySourceBytes)) {
+            if (error) *error = QObject::tr("Revision exceeds safe decompression limit.");
+            return false;
+        }
+        raw = qUncompress(payload);
+        if (raw.size() != static_cast<qsizetype>(size)) {
+            if (error) *error = QObject::tr("Compressed revision is damaged.");
+            return false;
+        }
+    }
+    if (text) *text = QString::fromUtf8(raw);
+    return true;
+}
+
+bool backupFileBeforeSave(const QString &projectRoot, const QString &filePath,
+                          const QString &editorText, QString *error)
+{
+    const QString directory = historyFolderForFile(projectRoot, filePath);
+    if (directory.isEmpty()) return true; // Not a project source file.
+
+    QFile current(filePath);
+    if (!current.open(QIODevice::ReadOnly)) {
+        if (error) *error = QObject::tr("Cannot read the original file: %1")
+                           .arg(current.errorString());
+        return false;
+    }
+    const QByteArray original = current.readAll();
+    if (current.error() != QFileDevice::NoError) {
+        if (error) *error = QObject::tr("Cannot read the original file completely.");
+        return false;
+    }
+    current.close();
+
+    // Pressing Save on an unchanged file must not create fake revisions.
+    if (QString::fromUtf8(original) == editorText) return true;
+
+    if (!QDir().mkpath(directory)) {
+        if (error) *error = QObject::tr("Cannot create history directory: %1")
+                           .arg(QDir::toNativeSeparators(directory));
+        return false;
+    }
+
+    // Project backups contain source code: keep permissions user-only.
+    const QString historyRoot = QDir(QFileInfo(projectRoot).canonicalFilePath())
+                                    .filePath(QStringLiteral(".history"));
+    const QFileDevice::Permissions privateDir =
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+    QFile::setPermissions(historyRoot, privateDir);
+    QFile::setPermissions(directory, privateDir);
+
+    const QString baseName = QFileInfo(filePath).fileName();
+    const QString stamp = QDateTime::currentDateTime()
+                              .toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    QString destination = QDir(directory).filePath(
+        baseName + QLatin1Char('.') + stamp + QStringLiteral(".his.gz"));
+    // The same file may be saved twice within a millisecond. Never overwrite
+    // a previous revision: wait until the clock produces a free timestamp.
+    int suffix = 0;
+    while (QFileInfo::exists(destination)
+           || QFileInfo::exists(destination.left(destination.size() - 3))) {
+        ++suffix;
+        const QDateTime future = QDateTime::fromString(
+             stamp, QStringLiteral("yyyyMMdd-HHmmss-zzz")).addMSecs(suffix);
+        destination = QDir(directory).filePath(
+            baseName + QLatin1Char('.')
+            + future.toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"))
+            + QStringLiteral(".his.gz"));
+    }
+
+    // Standard gzip when smaller; otherwise store the raw source as .his.
+    QByteArray stored = original;
+    QByteArray packed;
+    const bool compress = compressHistoryGzip(original, &packed)
+                       && packed.size() < original.size();
+    if (compress) stored = std::move(packed);
+    else destination.chop(3); // .his.gz -> .his (plain text)
+
+    QSaveFile copy(destination);
+    if (!copy.open(QIODevice::WriteOnly)) {
+        if (error) *error = QObject::tr("Cannot create snapshot: %1")
+                           .arg(copy.errorString());
+        return false;
+    }
+    if (copy.write(stored) != stored.size() || !copy.commit()) {
+        if (error) *error = QObject::tr("Cannot finish writing history snapshot: %1")
+                           .arg(copy.errorString());
+        copy.cancelWriting();
+        return false;
+    }
+    QFile::setPermissions(destination,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+
+    // Prune only AFTER the new independent revision is safely written.
+    pruneFileHistory(directory, baseName);
+    return true;
+}
+
+// Shell single-quote a generated absolute path or filename without allowing
+// project names with apostrophes, $, spaces etc. to become shell commands.
+QString shellQuoted(QString input)
+{
+    input.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QLatin1Char('\'') + input + QLatin1Char('\'');
+}
+
+bool writeStandaloneLinuxBuildFiles(const QString &projectFile,
+                                    const QString &sdkDirectory,
+                                    const QString &appFileName,
+                                    int appKb, int heapKb, int stackKb,
+                                    const QString &linker, QString *error)
+{
+    const QFileInfo projectInfo(projectFile);
+    const QString projectDir = projectInfo.absolutePath();
+    const QString buildScriptPath = QDir(projectDir).filePath(QStringLiteral("build.sh"));
+    const QString makefilePath = QDir(projectDir).filePath(QStringLiteral("Makefile"));
+    const QString projectName = projectInfo.fileName();
+    if (projectName.isEmpty()) {
+        if (error) *error = QObject::tr("No saved project file.");
+        return false;
+    }
+
+    // The project file is beside build.sh. SDK path is the IDE's currently
+    // resolved idelibs location; SIDBOX_SDK may override it after a move.
+    QString sh;
+    sh += QStringLiteral("#!/usr/bin/env bash\n");
+    sh += QStringLiteral("# Generated by CoderGirl - Standalone V2 build\n");
+    sh += QStringLiteral("# Regenerate from the IDE if project settings change.\n");
+    sh += QStringLiteral("set -euo pipefail\n");
+    sh += QStringLiteral("PROJECT_DIR=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
+    sh += QStringLiteral("SDK_DEFAULT=") + shellQuoted(sdkDirectory) + QLatin1Char('\n');
+    sh += QStringLiteral("SDK=\"${SIDBOX_SDK:-$SDK_DEFAULT}\"\n");
+    sh += QStringLiteral("BUILDER=\"$SDK/tools/bin/cgarm-build\"\n");
+    sh += QStringLiteral("if [[ ! -x \"$BUILDER\" ]]; then\n");
+    sh += QStringLiteral("  printf 'Cannot execute cgarm-build: %s\\nSet SIDBOX_SDK to the idelibs directory.\\n' \"$BUILDER\" >&2\n");
+    sh += QStringLiteral("  exit 1\nfi\n");
+    sh += QStringLiteral("cd -- \"$PROJECT_DIR\"\n");
+    sh += QStringLiteral("exec \"$BUILDER\" \"$PROJECT_DIR\"/")
+          + shellQuoted(projectName) + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  -o \"$PROJECT_DIR\"/") + shellQuoted(appFileName)
+          + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  --sdk \"$SDK\" \\\n");
+    sh += QStringLiteral("  --app-kb ") + QString::number(appKb) + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  --heap-kb ") + QString::number(heapKb) + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  --stack-kb ") + QString::number(stackKb) + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  --linker ") + shellQuoted(linker) + QStringLiteral(" \\\n");
+    sh += QStringLiteral("  \"$@\"\n");
+
+    const QString makefile = QStringLiteral(
+        "# Generated by CoderGirl - V2 applet\n"
+        "# This Makefile delegates to the same cgarm-build backend as the IDE.\n"
+        ".PHONY: all clean rebuild\n"
+        "all:\n"
+        "\t@bash ./build.sh\n"
+        "clean:\n"
+        "\t@bash ./build.sh --clean\n"
+        "rebuild:\n"
+        "\t@bash ./build.sh --rebuild\n");
+
+    // Each output is committed atomically with QSaveFile, so a failed write
+    // cannot leave a truncated build script or Makefile.
+    QSaveFile script(buildScriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Text)
+        || script.write(sh.toUtf8()) != sh.toUtf8().size() || !script.commit()) {
+        if (error) *error = QObject::tr("Could not write build.sh: %1").arg(script.errorString());
+        return false;
+    }
+    if (!QFile::setPermissions(buildScriptPath,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner
+            | QFileDevice::ReadGroup | QFileDevice::ExeGroup
+            | QFileDevice::ReadOther | QFileDevice::ExeOther)) {
+        if (error) *error = QObject::tr("Could not mark build.sh executable.");
+        return false;
+    }
+    QSaveFile mk(makefilePath);
+    if (!mk.open(QIODevice::WriteOnly | QIODevice::Text)
+        || mk.write(makefile.toUtf8()) != makefile.toUtf8().size() || !mk.commit()) {
+        if (error) *error = QObject::tr("Could not write Makefile: %1").arg(mk.errorString());
+        return false;
+    }
+    return true;
+}
+
+// Stage 40: V1 GUI/Gaming standalone export mirrors the IDE's original GCC
+// build instead of routing legacy fixed-address applets through CGARM V2.
+// The linker script has already been written from gui.ld/gaming.ld (or chosen
+// explicitly by the user) when the IDE saves its .proj.
+struct StandaloneV1Options {
+    QString projectFile;
+    QString sdkDirectory;
+    QString linkerScript;
+    QString outputAppName;
+    QStringList sources;
+    QString optimisation;
+    QString extraFlags;
+    bool suppressWarnings = false;
+    bool wall = false;
+    bool wextra = false;
+    bool functionSections = false;
+    bool dataSections = false;
+    bool stackUsage = false;
+    bool gaming = false;
+};
+
+bool writeStandaloneV1LinuxBuildFiles(const StandaloneV1Options &opts,
+                                      QString *error)
+{
+    const QFileInfo info(opts.projectFile);
+    const QString root = info.absolutePath();
+    const QDir projectDir(root);
+    if (opts.sources.isEmpty()) {
+        if (error) *error = QObject::tr("No V1 sources were found for standalone export.");
+        return false;
+    }
+    if (!QFileInfo(opts.linkerScript).isFile()) {
+        if (error) *error = QObject::tr("V1 linker script missing: %1").arg(opts.linkerScript);
+        return false;
+    }
+
+    // Keep paths inside the project relative to the script, so moving the
+    // project directory doesn't invalidate its C files and generated .ld.
+    const auto projectShellPath = [&](const QString &absolute) -> QString {
+        const QString relative = projectDir.relativeFilePath(QFileInfo(absolute).absoluteFilePath());
+        return QStringLiteral("\"$PROJECT_DIR\"/") + shellQuoted(relative);
+    };
+
+    QString sh = QStringLiteral(
+        "#!/usr/bin/env bash\n"
+        "# Generated by CoderGirl - V1 fixed-address GUI/Gaming applet\n"
+        "# Regenerate from the IDE when source files or build settings change.\n"
+        "set -euo pipefail\n"
+        "PROJECT_DIR=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"\n"
+        "SDK_DEFAULT=");
+    sh += shellQuoted(opts.sdkDirectory) + QLatin1Char('\n');
+    sh += QStringLiteral(
+        "SDK=\"${SIDBOX_SDK:-$SDK_DEFAULT}\"\n"
+        "TOOLS=\"$SDK/tools/bin\"\n"
+        "GCC=\"$TOOLS/arm-none-eabi-gcc\"\n"
+        "OBJDUMP=\"$TOOLS/arm-none-eabi-objdump\"\n"
+        "OBJCOPY=\"$TOOLS/arm-none-eabi-objcopy\"\n"
+        "for exe in \"$GCC\" \"$OBJDUMP\" \"$OBJCOPY\"; do\n"
+        "  if [[ ! -x \"$exe\" ]]; then\n"
+        "    printf 'Missing executable: %s\\nOverride the SDK with SIDBOX_SDK=/path/to/idelibs\\n' \"$exe\" >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        "cd -- \"$PROJECT_DIR\"\n"
+        "BUILD=\"$PROJECT_DIR/buildv1\"\n"
+        "STEM=");
+    sh += shellQuoted(info.completeBaseName()) + QLatin1Char('\n');
+    sh += QStringLiteral("ELF=\"$BUILD/$STEM.elf\"\n"
+                         "MAP=\"$BUILD/$STEM.map\"\n"
+                         "ASM=\"$BUILD/$STEM.asm\"\n"
+                         "APP=\"$PROJECT_DIR\"/");
+    sh += shellQuoted(opts.outputAppName) + QLatin1Char('\n');
+    sh += QStringLiteral("LINKER=") + projectShellPath(opts.linkerScript) + QLatin1Char('\n');
+    sh += QStringLiteral(
+        "case \"${1:-}\" in\n"
+        "  --clean) rm -rf -- \"$BUILD\"; rm -f -- \"$APP\"; exit 0 ;;\n"
+        "  --rebuild) rm -rf -- \"$BUILD\"; rm -f -- \"$APP\"; shift ;;\n"
+        "  '') ;;\n"
+        "  *) echo 'Usage: ./build.sh [--clean|--rebuild]' >&2; exit 2 ;;\n"
+        "esac\n"
+        "if [[ ! -f \"$LINKER\" ]]; then\n"
+        "  printf 'Missing linker script: %s\\nRe-export from CoderGirl to generate its .ld file.\\n' \"$LINKER\" >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "mkdir -p -- \"$BUILD\"\n"
+        "# Compile from buildv1 so implicit GCC sidecars (for example .su)\n"
+        "# never spill into the project root. All input/output paths are absolute.\n"
+        "cd -- \"$BUILD\"\n"
+        "SOURCES=(\n");
+    for (const QString &source : opts.sources)
+        sh += QStringLiteral("  ") + projectShellPath(source) + QLatin1Char('\n');
+    sh += QStringLiteral(")\n"
+        "# The IDE only compiles existing SDK API modules. Mirror that set.\n"
+        "for api in applet.s apis.c syscalls.c crt/crt.c graphics/graphics.c audio/audio.c touch/touch.c; do\n"
+        "  if [[ -f \"$SDK/api/$api\" ]]; then SOURCES+=(\"$SDK/api/$api\"); fi\n"
+        "done\n"
+        "LIBRARIES=()\n"
+        "if [[ -d \"$SDK/libraries\" ]]; then\n"
+        "  while IFS= read -r -d '' lib; do LIBRARIES+=(\"$lib\"); done < <(find \"$SDK/libraries\" -type f -name '*.a' -print0 | sort -z)\n"
+        "fi\n"
+        "FLAGS=(-mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard\n"
+        "  -std=gnu99 ");
+    sh += shellQuoted(opts.optimisation) + QStringLiteral(
+        " --specs=nano.specs -mno-unaligned-access\n"
+        "  -DSIDBOX_STARTUP_HEADER_IN_ASM -I \"$SDK/api\" -I \"$SDK/libraries\")\n");
+    if (opts.functionSections) sh += QStringLiteral("FLAGS+=(-ffunction-sections)\n");
+    if (opts.dataSections) sh += QStringLiteral("FLAGS+=(-fdata-sections)\n");
+    if (opts.stackUsage) sh += QStringLiteral("FLAGS+=(-fstack-usage)\n");
+    if (opts.suppressWarnings) sh += QStringLiteral("FLAGS+=(-w)\n");
+    else {
+        if (opts.wall) sh += QStringLiteral("FLAGS+=(-Wall)\n");
+        if (opts.wextra) sh += QStringLiteral("FLAGS+=(-Wextra)\n");
+    }
+    const QStringList extra = QProcess::splitCommand(opts.extraFlags);
+    if (!extra.isEmpty()) {
+        sh += QStringLiteral("FLAGS+=(");
+        for (const QString &flag : extra) sh += QLatin1Char(' ') + shellQuoted(flag);
+        sh += QStringLiteral(" )\n");
+    }
+    sh += QStringLiteral(
+        "for source in \"${SOURCES[@]}\"; do\n"
+        "  if [[ ! -f \"$source\" ]]; then printf 'Missing input: %s\\n' \"$source\" >&2; exit 1; fi\n"
+        "done\n"
+        "# .res is a resource C file; GCC cannot infer the language from .res.\n"
+        "INPUTS=()\n"
+        "for source in \"${SOURCES[@]}\"; do\n"
+        "  case \"$source\" in\n"
+        "    *.res) INPUTS+=(-x c \"$source\" -x none) ;;\n"
+        "    *) INPUTS+=(\"$source\") ;;\n"
+        "  esac\n"
+        "done\n"
+        "echo 'Building CoderGirl legacy V1 applet using SDK GCC...'\n"
+        "\"$GCC\" \"${FLAGS[@]}\" \"${INPUTS[@]}\" \"${LIBRARIES[@]}\" \\\n"
+        "  -T \"$LINKER\" -Wl,-Map=\"$MAP\" -Wl,--gc-sections -static --specs=nosys.specs \\\n"
+        "  -Wl,--start-group -lc -lm -Wl,--end-group -o \"$ELF\"\n"
+        "\"$OBJDUMP\" -d -S \"$ELF\" > \"$ASM\"\n"
+        "\"$OBJCOPY\" -O binary \"$ELF\" \"$APP\"\n"
+        "printf 'Built %s\\n' \"$APP\"\n");
+
+    const QString makefile = QStringLiteral(
+        "# Generated by CoderGirl - legacy V1 %1 applet\n"
+        "# build.sh contains the exact saved IDE GCC and linker settings.\n"
+        ".PHONY: all clean rebuild\n"
+        "all:\n\t@bash ./build.sh\n"
+        "clean:\n\t@bash ./build.sh --clean\n"
+        "rebuild:\n\t@bash ./build.sh --rebuild\n")
+        .arg(opts.gaming ? QStringLiteral("Gaming") : QStringLiteral("GUI"));
+
+    // Match Stage 39's atomic writes and executable permissions.
+    const QString buildScriptPath = projectDir.filePath(QStringLiteral("build.sh"));
+    const QString makefilePath = projectDir.filePath(QStringLiteral("Makefile"));
+    QSaveFile script(buildScriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Text)
+        || script.write(sh.toUtf8()) != sh.toUtf8().size() || !script.commit()) {
+        if (error) *error = QObject::tr("Could not write V1 build.sh: %1").arg(script.errorString());
+        return false;
+    }
+    if (!QFile::setPermissions(buildScriptPath,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner
+            | QFileDevice::ReadGroup | QFileDevice::ExeGroup
+            | QFileDevice::ReadOther | QFileDevice::ExeOther)) {
+        if (error) *error = QObject::tr("Could not mark V1 build.sh executable.");
+        return false;
+    }
+    QSaveFile mk(makefilePath);
+    if (!mk.open(QIODevice::WriteOnly | QIODevice::Text)
+        || mk.write(makefile.toUtf8()) != makefile.toUtf8().size() || !mk.commit()) {
+        if (error) *error = QObject::tr("Could not write V1 Makefile: %1").arg(mk.errorString());
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Stage 36: A bounded, line-based Myers diff for CoderGirl's local history.
+ * The limit keeps a completely rewritten large file from running an expensive
+ * quadratic edit-distance trace on the GUI thread. Ordinary edits receive
+ * exact alignment, including inserted/deleted blank rows.
+ */
+enum class HistoryDiffOp : quint8 { Same, Remove, Add };
+struct HistoryDiffLine {
+    QString text;
+    int number = 0;    // 1-based source line; 0 is an alignment spacer.
+    bool changed = false;
+};
+struct HistoryDiffResult {
+    QVector<HistoryDiffLine> current;
+    QVector<HistoryDiffLine> previous;
+    QVector<int> hunkRows; // aligned zero-based row for each change block.
+    bool simplified = false;
+};
+
+HistoryDiffResult makeHistoryDiff(const QString &newText, const QString &oldText)
+{
+    HistoryDiffResult result;
+    const QStringList a = newText.split(QLatin1Char('\n'));
+    const QStringList b = oldText.split(QLatin1Char('\n'));
+
+    // Bound initial work when someone compares a very large generated file.
+    if (a.size() > 30000 || b.size() > 30000) {
+        result.simplified = true;
+        // Preserve side-by-side reading but don't allocate a quadratic diff.
+        for (int i = 0; i < a.size(); ++i)
+            result.current.append({a.at(i), i + 1, false});
+        for (int i = 0; i < b.size(); ++i)
+            result.previous.append({b.at(i), i + 1, false});
+        return result;
+    }
+
+    int prefix = 0;
+    while (prefix < a.size() && prefix < b.size() && a.at(prefix) == b.at(prefix))
+        ++prefix;
+    int suffix = 0;
+    while (suffix < a.size() - prefix && suffix < b.size() - prefix
+           && a.at(a.size() - suffix - 1) == b.at(b.size() - suffix - 1))
+        ++suffix;
+
+    const int n = a.size() - prefix - suffix;
+    const int m = b.size() - prefix - suffix;
+    QVector<HistoryDiffOp> operations;
+    operations.reserve(a.size() + b.size());
+    for (int i = 0; i < prefix; ++i)
+        operations.append(HistoryDiffOp::Same);
+
+    if (n && m) {
+        // Bounded shortest edit script. A normal change of a few lines is
+        // extremely cheap even when the source files themselves are large.
+        constexpr int MaxEditDistance = 1200;
+        const int limit = qMin(n + m, MaxEditDistance);
+        const int offset = limit + 1;
+        QVector<int> frontier(2 * limit + 3, -1);
+        QVector<QVector<int>> trace;
+        trace.reserve(limit + 1);
+        frontier[offset + 1] = 0;
+        int solvedAt = -1;
+        for (int d = 0; d <= limit && solvedAt < 0; ++d) {
+            for (int k = -d; k <= d; k += 2) {
+                const bool add = (k == -d)
+                    || (k != d && frontier[offset + k - 1] < frontier[offset + k + 1]);
+                int x = add ? frontier[offset + k + 1]
+                            : frontier[offset + k - 1] + 1;
+                int y = x - k;
+                while (x < n && y < m && a.at(prefix + x) == b.at(prefix + y)) {
+                    ++x;
+                    ++y;
+                }
+                frontier[offset + k] = x;
+                if (x >= n && y >= m) {
+                    solvedAt = d;
+                    break;
+                }
+            }
+            trace.append(frontier);
+        }
+
+        if (solvedAt >= 0) {
+            QVector<HistoryDiffOp> reverseMiddle;
+            int x = n;
+            int y = m;
+            for (int d = solvedAt; d > 0; --d) {
+                const QVector<int> &prev = trace.at(d - 1);
+                const int k = x - y;
+                const bool add = (k == -d)
+                    || (k != d && prev.at(offset + k - 1) < prev.at(offset + k + 1));
+                const int prevK = add ? k + 1 : k - 1;
+                const int px = prev.at(offset + prevK);
+                const int py = px - prevK;
+                while (x > px && y > py) {
+                    reverseMiddle.append(HistoryDiffOp::Same);
+                    --x;
+                    --y;
+                }
+                reverseMiddle.append(add ? HistoryDiffOp::Add : HistoryDiffOp::Remove);
+                if (add) --y;
+                else --x;
+            }
+            while (x > 0 && y > 0) {
+                reverseMiddle.append(HistoryDiffOp::Same);
+                --x;
+                --y;
+            }
+            std::reverse(reverseMiddle.begin(), reverseMiddle.end());
+            operations += reverseMiddle;
+        } else {
+            // Extreme rewrite: show the divergent middle as a single hunk,
+            // retaining the equal beginning/end instead of freezing the IDE.
+            result.simplified = true;
+            for (int i = 0; i < n; ++i) operations.append(HistoryDiffOp::Remove);
+            for (int i = 0; i < m; ++i) operations.append(HistoryDiffOp::Add);
+        }
+    } else {
+        for (int i = 0; i < n; ++i) operations.append(HistoryDiffOp::Remove);
+        for (int i = 0; i < m; ++i) operations.append(HistoryDiffOp::Add);
+    }
+    for (int i = 0; i < suffix; ++i)
+        operations.append(HistoryDiffOp::Same);
+
+    // Align changed groups row by row. Empty rows keep the panes vertically
+    // synchronised even when one revision has extra lines.
+    int ai = 0, bi = 0;
+    for (int p = 0; p < operations.size();) {
+        if (operations.at(p) == HistoryDiffOp::Same) {
+            result.current.append({a.at(ai), ai + 1, false});
+            result.previous.append({b.at(bi), bi + 1, false});
+            ++ai; ++bi; ++p;
+            continue;
+        }
+        result.hunkRows.append(result.current.size());
+        QVector<int> removed, added;
+        while (p < operations.size() && operations.at(p) != HistoryDiffOp::Same) {
+            if (operations.at(p) == HistoryDiffOp::Remove) removed.append(ai++);
+            else added.append(bi++);
+            ++p;
+        }
+        const int count = qMax(removed.size(), added.size());
+        for (int i = 0; i < count; ++i) {
+            result.current.append(i < removed.size()
+                ? HistoryDiffLine{a.at(removed.at(i)), removed.at(i) + 1, true}
+                : HistoryDiffLine{});
+            result.previous.append(i < added.size()
+                ? HistoryDiffLine{b.at(added.at(i)), added.at(i) + 1, true}
+                : HistoryDiffLine{});
+        }
+    }
+    return result;
+}
+
+QString historyDiffText(const QVector<HistoryDiffLine> &rows)
+{
+    QString out;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (i) out += QLatin1Char('\n');
+        const HistoryDiffLine &line = rows.at(i);
+        out += (line.number > 0 ? QString::number(line.number) : QString())
+                   .rightJustified(6, QLatin1Char(' '));
+        out += QStringLiteral("  |  ");
+        out += line.text;
+    }
+    return out;
+}
+
+void showHistoryDiff(QPlainTextEdit *pane, const QVector<HistoryDiffLine> &rows,
+                     const QColor &colour)
+{
+    pane->setPlainText(historyDiffText(rows));
+    QList<QTextEdit::ExtraSelection> highlights;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (!rows.at(i).changed) continue;
+        QTextEdit::ExtraSelection selection;
+        selection.cursor = QTextCursor(pane->document()->findBlockByNumber(i));
+        selection.format.setBackground(colour);
+        selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+        highlights.append(selection);
+    }
+    pane->setExtraSelections(highlights);
+    pane->moveCursor(QTextCursor::Start);
+}
+
+bool chooseFileHistoryRevision(QWidget *parent, const QString &projectRoot,
+                               const QString &sourcePath, const QString &currentText,
+                               bool hasUnsavedEdits, QString *restoredText)
+{
+    if (!restoredText) return false;
+    const QString folder = historyFolderForFile(projectRoot, sourcePath);
+    if (folder.isEmpty()) {
+        QMessageBox::information(parent, QObject::tr("File History"),
+            QObject::tr("History is available for source files inside this project."));
+        return false;
+    }
+    const QString filename = QFileInfo(sourcePath).fileName();
+    pruneFileHistory(folder, filename);
+    QStringList revisions = historyRevisions(folder, filename);
+    if (revisions.isEmpty()) {
+        QMessageBox::information(parent, QObject::tr("File History"),
+            QObject::tr("No saved revisions for %1 yet.\n\n"
+                        "A revision is stored whenever you save changes over an existing source file.")
+                        .arg(filename));
+        return false;
+    }
+    std::reverse(revisions.begin(), revisions.end());
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("File History — %1").arg(filename));
+    dialog.resize(1240, 670);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *hint = new QLabel(QObject::tr(
+        "Compare the current file against a saved revision. "
+        "Restoring loads the old version into the editor as an unsaved change."), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *outerSplit = new QSplitter(Qt::Horizontal, &dialog);
+    auto *versions = new QWidget(outerSplit);
+    auto *versionLayout = new QVBoxLayout(versions);
+    versionLayout->setContentsMargins(0, 0, 0, 0);
+    versionLayout->addWidget(new QLabel(QObject::tr("Saved versions (newest first)"), versions));
+    auto *list = new QListWidget(versions);
+    list->setMinimumWidth(190);
+    versionLayout->addWidget(list);
+
+    auto *diffSplit = new QSplitter(Qt::Horizontal, outerSplit);
+    auto makePane = [diffSplit](const QString &name) {
+        auto *container = new QWidget(diffSplit);
+        auto *column = new QVBoxLayout(container);
+        column->setContentsMargins(1, 0, 1, 0);
+        column->setSpacing(3);
+        column->addWidget(new QLabel(name, container));
+        auto *editor = new QPlainTextEdit(container);
+        editor->setReadOnly(true);
+        editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        editor->setCenterOnScroll(false);
+        column->addWidget(editor, 1);
+        return editor;
+    };
+    auto *currentPane = makePane(hasUnsavedEdits
+        ? QObject::tr("CURRENT — unsaved editor text") : QObject::tr("CURRENT — on disk"));
+    auto *historyPane = makePane(QObject::tr("HISTORY — selected revision"));
+    outerSplit->setChildrenCollapsible(false);
+    diffSplit->setChildrenCollapsible(false);
+    outerSplit->setSizes({235, 980});
+    diffSplit->setSizes({480, 480});
+    layout->addWidget(outerSplit, 1);
+
+    // Both panes have identical numbers of display lines after alignment.
+    // Do not block signals on the target scrollbar: QPlainTextEdit relies on
+    // those valueChanged notifications to move its *text viewport*. Blocking
+    // them moves the thumb but leaves the document visually in place.
+    // Instead, stop only our own mirror callback from bouncing back.
+    auto syncingHistoryScroll = std::make_shared<bool>(false);
+    QObject::connect(currentPane->verticalScrollBar(), &QScrollBar::valueChanged,
+                     historyPane, [historyPane, syncingHistoryScroll](int value) {
+        if (*syncingHistoryScroll) return;
+        *syncingHistoryScroll = true;
+        historyPane->verticalScrollBar()->setValue(value);
+        *syncingHistoryScroll = false;
+    });
+    QObject::connect(historyPane->verticalScrollBar(), &QScrollBar::valueChanged,
+                     currentPane, [currentPane, syncingHistoryScroll](int value) {
+        if (*syncingHistoryScroll) return;
+        *syncingHistoryScroll = true;
+        currentPane->verticalScrollBar()->setValue(value);
+        *syncingHistoryScroll = false;
+    });
+
+    auto *navigation = new QHBoxLayout;
+    auto *info = new QLabel(&dialog);
+    navigation->addWidget(info, 1);
+    auto *prev = new QPushButton(QObject::tr("Previous change"), &dialog);
+    auto *next = new QPushButton(QObject::tr("Next change"), &dialog);
+    navigation->addWidget(prev);
+    navigation->addWidget(next);
+    layout->addLayout(navigation);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    auto *restore = buttons->addButton(QObject::tr("Restore to Editor"),
+                                       QDialogButtonBox::AcceptRole);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(restore, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    const QColor base = dialog.palette().color(QPalette::Base);
+    const auto mix = [&base](const QColor &accent) {
+        return QColor((base.red() * 6 + accent.red() * 4) / 10,
+                      (base.green() * 6 + accent.green() * 4) / 10,
+                      (base.blue() * 6 + accent.blue() * 4) / 10);
+    };
+    const QColor removedColour = mix(QColor(202, 74, 75));
+    const QColor addedColour = mix(QColor(55, 161, 104));
+    QVector<int> changeRows;
+    auto jump = [currentPane, historyPane](int line) {
+        if (line < 0) return;
+        // Position the cursor at the hunk, then align both views.
+        const QTextBlock block = currentPane->document()->findBlockByNumber(line);
+        if (!block.isValid()) return;
+        QTextCursor cursor(block);
+        currentPane->setTextCursor(cursor);
+        currentPane->centerCursor();
+        historyPane->verticalScrollBar()->setValue(
+            currentPane->verticalScrollBar()->value());
+    };
+    QObject::connect(next, &QPushButton::clicked, &dialog,
+        [&changeRows, currentPane, jump]() {
+            const int current = currentPane->textCursor().blockNumber();
+            for (int row : std::as_const(changeRows)) {
+                if (row > current) { jump(row); return; }
+            }
+            if (!changeRows.isEmpty()) jump(changeRows.first());
+        });
+    QObject::connect(prev, &QPushButton::clicked, &dialog,
+        [&changeRows, currentPane, jump]() {
+            const int current = currentPane->textCursor().blockNumber();
+            for (int i = changeRows.size() - 1; i >= 0; --i) {
+                if (changeRows.at(i) < current) { jump(changeRows.at(i)); return; }
+            }
+            if (!changeRows.isEmpty()) jump(changeRows.last());
+        });
+
+    QString selectedContent;
+    bool readable = false;
+    for (const QString &revision : std::as_const(revisions)) {
+        const QString storedName = QFileInfo(revision).fileName();
+        const QString stamp = historyRevisionStamp(storedName, filename);
+        const QDateTime date = QDateTime::fromString(
+            stamp, QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+        auto *item = new QListWidgetItem(date.isValid()
+            ? date.toString(QStringLiteral("dd MMM yyyy  HH:mm:ss.zzz")) : stamp, list);
+        item->setToolTip(QDir::toNativeSeparators(revision));
+    }
+    QObject::connect(list, &QListWidget::currentRowChanged, &dialog,
+        [&](int row) {
+            selectedContent.clear();
+            readable = false;
+            changeRows.clear();
+            restore->setEnabled(false);
+            if (row < 0 || row >= revisions.size()) return;
+            QString readError;
+            if (!readFileHistorySnapshot(revisions.at(row), &selectedContent, &readError)) {
+                info->setText(QObject::tr("Unable to read this revision: %1")
+                                  .arg(readError));
+                currentPane->clear();
+                historyPane->clear();
+                prev->setEnabled(false);
+                next->setEnabled(false);
+                return;
+            }
+            readable = true;
+            restore->setEnabled(true);
+            const HistoryDiffResult diff = makeHistoryDiff(currentText, selectedContent);
+            showHistoryDiff(currentPane, diff.current, removedColour);
+            showHistoryDiff(historyPane, diff.previous, addedColour);
+            changeRows = diff.hunkRows;
+            prev->setEnabled(!changeRows.isEmpty());
+            next->setEnabled(!changeRows.isEmpty());
+            if (!changeRows.isEmpty()) jump(changeRows.first());
+            if (diff.simplified) {
+                info->setText(QObject::tr("Large change/file: simplified comparison (no exact alignment)."));
+            } else if (changeRows.isEmpty()) {
+                info->setText(QObject::tr("No differences from the current file."));
+            } else {
+                info->setText(QObject::tr("%1 change block(s). Red: current only. Green: history only.")
+                    .arg(changeRows.size()));
+            }
+        });
+    list->setCurrentRow(0);
+
+    if (dialog.exec() != QDialog::Accepted || !readable)
+        return false;
+    *restoredText = selectedContent;
+    return true;
+}
+
 const QString GuiProjectType = QStringLiteral("gui");
 const QString GameProjectType = QStringLiteral("game");
 
@@ -3218,6 +4162,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
                           splitter->property("projectTreeWidth").toInt());
         settings.setValue(QStringLiteral("layout/editorRightWidth"),
                           splitter->property("editorRightWidth").toInt());
+        if (auto *outputSplit = findChild<QSplitter *>(
+                QStringLiteral("sidboxOutputMemorySplitter")))
+            settings.setValue(QStringLiteral("layout/outputMemorySplitter"),
+                              outputSplit->saveState());
     };
 
     QList<SidboxGuiDesigner *> unsavedDesigners;
@@ -3822,6 +4770,697 @@ void MainWindow::AutoSelectMainC(){
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// SIDBOX programmer calculator — a self-contained sidebar utility.
+// Numeric expressions use unsigned, fixed-width arithmetic (wrap on overflow).
+// The signed row is a two's-complement *view* of the same bits.
+// ---------------------------------------------------------------------------
+namespace {
+class SidboxCalcParser
+{
+public:
+    SidboxCalcParser(const QString &expression, int bits)
+        : m_expression(expression), m_bits(bits),
+          m_mask(bits == 64 ? ~quint64(0) : ((quint64(1) << bits) - 1)) {}
+
+    bool evaluate(quint64 &result, QString &error)
+    {
+        m_pos = 0;
+        m_error.clear();
+        const quint64 value = bitOr();
+        skipSpaces();
+        if (m_error.isEmpty() && m_pos != m_expression.size())
+            m_error = QStringLiteral("Unexpected character at position %1").arg(m_pos + 1);
+        error = m_error;
+        if (!error.isEmpty()) return false;
+        result = value & m_mask;
+        return true;
+    }
+
+private:
+    void skipSpaces()
+    {
+        while (m_pos < m_expression.size() && m_expression.at(m_pos).isSpace()) ++m_pos;
+    }
+
+    bool take(const char *symbol)
+    {
+        skipSpaces();
+        const QString token = QString::fromLatin1(symbol);
+        if (m_expression.mid(m_pos, token.size()) != token) return false;
+        m_pos += token.size();
+        return true;
+    }
+
+    quint64 bitOr()
+    {
+        quint64 lhs = bitXor();
+        while (m_error.isEmpty() && take("|")) lhs = (lhs | bitXor()) & m_mask;
+        return lhs;
+    }
+
+    quint64 bitXor()
+    {
+        quint64 lhs = bitAnd();
+        while (m_error.isEmpty() && take("^")) lhs = (lhs ^ bitAnd()) & m_mask;
+        return lhs;
+    }
+
+    quint64 bitAnd()
+    {
+        quint64 lhs = shifts();
+        while (m_error.isEmpty() && take("&")) lhs = (lhs & shifts()) & m_mask;
+        return lhs;
+    }
+
+    quint64 shifts()
+    {
+        quint64 lhs = addSubtract();
+        while (m_error.isEmpty()) {
+            if (take("<<")) {
+                const quint64 amount = addSubtract();
+                if (amount >= quint64(m_bits)) lhs = 0;
+                else lhs = (lhs << unsigned(amount)) & m_mask;
+            } else if (take(">>")) {
+                const quint64 amount = addSubtract();
+                if (amount >= quint64(m_bits)) lhs = 0;
+                else lhs = (lhs >> unsigned(amount)) & m_mask;
+            } else break;
+        }
+        return lhs;
+    }
+
+    quint64 addSubtract()
+    {
+        quint64 lhs = multiplyDivide();
+        while (m_error.isEmpty()) {
+            if (take("+")) lhs = (lhs + multiplyDivide()) & m_mask;
+            else if (take("-")) lhs = (lhs - multiplyDivide()) & m_mask;
+            else break;
+        }
+        return lhs;
+    }
+
+    quint64 multiplyDivide()
+    {
+        quint64 lhs = unary();
+        while (m_error.isEmpty()) {
+            if (take("*")) lhs = (lhs * unary()) & m_mask;
+            else if (take("/")) {
+                const quint64 rhs = unary();
+                if (!rhs) { m_error = QStringLiteral("Division by zero"); return 0; }
+                lhs = lhs / rhs;
+            } else if (take("%")) {
+                const quint64 rhs = unary();
+                if (!rhs) { m_error = QStringLiteral("Division by zero"); return 0; }
+                lhs = lhs % rhs;
+            } else break;
+        }
+        return lhs & m_mask;
+    }
+
+    quint64 unary()
+    {
+        if (take("~")) return (~unary()) & m_mask;
+        if (take("+")) return unary();
+        if (take("-")) return (quint64(0) - unary()) & m_mask;
+        return primary();
+    }
+
+    quint64 primary()
+    {
+        if (!m_error.isEmpty()) return 0;
+        if (take("(")) {
+            const quint64 value = bitOr();
+            if (!take(")") && m_error.isEmpty()) m_error = QStringLiteral("Missing closing parenthesis");
+            return value;
+        }
+        skipSpaces();
+        int base = 10;
+        if (m_expression.mid(m_pos, 2).compare(QStringLiteral("0x"), Qt::CaseInsensitive) == 0) {
+            base = 16; m_pos += 2;
+        } else if (m_expression.mid(m_pos, 2).compare(QStringLiteral("0b"), Qt::CaseInsensitive) == 0) {
+            base = 2; m_pos += 2;
+        }
+        const int start = m_pos;
+        quint64 result = 0;
+        for (; m_pos < m_expression.size(); ++m_pos) {
+            const QChar ch = m_expression.at(m_pos);
+            int digit = -1;
+            if (ch >= QLatin1Char('0') && ch <= QLatin1Char('9')) digit = ch.unicode() - '0';
+            else if (ch >= QLatin1Char('A') && ch <= QLatin1Char('F')) digit = ch.unicode() - 'A' + 10;
+            else if (ch >= QLatin1Char('a') && ch <= QLatin1Char('f')) digit = ch.unicode() - 'a' + 10;
+            if (digit < 0 || digit >= base) break;
+            if (result > (std::numeric_limits<quint64>::max() - quint64(digit)) / quint64(base)) {
+                m_error = QStringLiteral("Number exceeds 64 bits");
+                return 0;
+            }
+            result = result * quint64(base) + quint64(digit);
+        }
+        if (start == m_pos) m_error = QStringLiteral("Expected a number");
+        return result & m_mask;
+    }
+
+    QString m_expression;
+    int m_bits = 32;
+    quint64 m_mask = 0xFFFFFFFFULL;
+    int m_pos = 0;
+    QString m_error;
+};
+
+class SidboxProgrammerCalculator : public QWidget
+{
+public:
+    explicit SidboxProgrammerCalculator(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("sidboxProgrammerCalculator"));
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 2, 0, 0);
+        layout->setSpacing(3);
+
+        auto *heading = new QHBoxLayout();
+        heading->setContentsMargins(0, 0, 0, 0);
+        auto *title = new QLabel(tr("Programmer Calculator"), this);
+        heading->addWidget(title, 1);
+        m_width = new QComboBox(this);
+        m_width->setToolTip(tr("Fixed-width arithmetic. Results wrap to the selected bit width."));
+        for (int bits : {8, 16, 32, 64}) m_width->addItem(tr("%1-bit").arg(bits), bits);
+        m_width->setCurrentIndex(2);
+        m_width->setMaximumWidth(92);
+        heading->addWidget(m_width);
+        layout->addLayout(heading);
+
+        m_expression = new QLineEdit(this);
+        m_expression->setObjectName(QStringLiteral("programmerCalculatorExpression"));
+        m_expression->setPlaceholderText(tr("0xD0000000 + (1 << 8)"));
+        m_expression->setToolTip(tr("Enter an expression. Hex: 0x..., binary: 0b...; supports + - * / % & | ^ ~ << >> and parentheses."));
+        layout->addWidget(m_expression);
+
+        auto *readouts = new QGridLayout();
+        readouts->setContentsMargins(0, 0, 0, 0);
+        readouts->setHorizontalSpacing(4);
+        readouts->setVerticalSpacing(2);
+        const QString labels[] = {tr("HEX"), tr("UDEC"), tr("SDEC")};
+        for (int index = 0; index < 3; ++index) {
+            auto *caption = new QLabel(labels[index], this);
+            readouts->addWidget(caption, index, 0);
+            m_display[index] = new QLineEdit(this);
+            m_display[index]->setObjectName(QStringLiteral("programmerCalculatorValue%1").arg(index));
+            m_display[index]->setReadOnly(true);
+            m_display[index]->setFrame(true);
+            m_display[index]->setAlignment(Qt::AlignRight);
+            m_display[index]->setMinimumWidth(0);
+            m_display[index]->setToolTip(tr("Select and copy this value with Ctrl+C"));
+            m_display[index]->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            readouts->addWidget(m_display[index], index, 1);
+        }
+        readouts->setColumnStretch(1, 1);
+        layout->addLayout(readouts);
+
+        // Each row covers up to 16 bits, from most significant on the left to
+        // least significant on the right. The LOWEST 16-bit chunk comes first:
+        // row 0 = bits 0-15, row 1 = bits 16-31, etc.
+        auto *binaryHeading = new QHBoxLayout();
+        binaryHeading->setContentsMargins(0, 0, 0, 0);
+        auto *binaryTitle = new QLabel(tr("BIN  (click bits to toggle)"), this);
+        binaryTitle->setToolTip(tr("Each click toggles a bit and converts the current result to an editable hex literal."));
+        binaryHeading->addWidget(binaryTitle, 1);
+        m_copyBinary = new QToolButton(this);
+        m_copyBinary->setText(tr("COPY BIN"));
+        m_copyBinary->setFocusPolicy(Qt::NoFocus);
+        m_copyBinary->setToolTip(tr("Copy all binary bits, most significant first, without spaces."));
+        binaryHeading->addWidget(m_copyBinary);
+        layout->addLayout(binaryHeading);
+        m_binaryArea = new QWidget(this);
+        m_binaryArea->setObjectName(QStringLiteral("programmerCalculatorBinaryBits"));
+        m_binaryRows = new QVBoxLayout(m_binaryArea);
+        m_binaryRows->setContentsMargins(0, 0, 0, 0);
+        m_binaryRows->setSpacing(3);
+        layout->addWidget(m_binaryArea);
+
+        m_message = new QLabel(tr("Decimal input, 0x hex, 0b binary"), this);
+        m_message->setObjectName(QStringLiteral("programmerCalculatorMessage"));
+        m_message->setMinimumHeight(15);
+        layout->addWidget(m_message);
+
+        const QString rows[][5] = {
+            {"7", "8", "9", "/", "<<"},
+            {"4", "5", "6", "*", ">>"},
+            {"1", "2", "3", "-", "&"},
+            {"0", "A", "B", "+", "|"},
+            {"C", "D", "E", "F", "^"},
+            {"0x", "0b", "(", ")", "%"},
+            {"~", "DEL", "CLR", "=", "COPY"}
+        };
+        auto *keypad = new QGridLayout();
+        keypad->setContentsMargins(0, 0, 0, 0);
+        keypad->setHorizontalSpacing(2);
+        keypad->setVerticalSpacing(2);
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                const QString buttonText = rows[row][col];
+                auto *button = new QPushButton(buttonText, this);
+                button->setFixedHeight(23);
+                button->setMinimumWidth(0);
+                button->setFocusPolicy(Qt::NoFocus); // Keep typing in the expression field.
+                if (buttonText == QStringLiteral("COPY"))
+                    button->setToolTip(tr("Copy the hexadecimal result"));
+                if (buttonText == QStringLiteral("A") || buttonText == QStringLiteral("B")
+                    || buttonText == QStringLiteral("C") || buttonText == QStringLiteral("D")
+                    || buttonText == QStringLiteral("E") || buttonText == QStringLiteral("F"))
+                    button->setToolTip(tr("Use 0x before hexadecimal digits"));
+                keypad->addWidget(button, row, col);
+                connect(button, &QPushButton::clicked, this, [this, buttonText]() {
+                    if (buttonText == QStringLiteral("CLR")) m_expression->clear();
+                    else if (buttonText == QStringLiteral("DEL")) m_expression->backspace();
+                    else if (buttonText == QStringLiteral("COPY")) {
+                        if (m_valid) QApplication::clipboard()->setText(m_display[0]->text());
+                    } else if (buttonText == QStringLiteral("=")) {
+                        if (m_valid) m_expression->setText(m_display[0]->text());
+                    } else m_expression->insert(buttonText);
+                    m_expression->setFocus();
+                });
+            }
+        }
+        for (int col = 0; col < 5; ++col) keypad->setColumnStretch(col, 1);
+        layout->addLayout(keypad);
+        layout->addStretch(0);
+
+        rebuildBitRows(m_width->currentData().toInt());
+        connect(m_copyBinary, &QToolButton::clicked, this, [this]() {
+            if (!m_valid) return;
+            const int bits = m_width->currentData().toInt();
+            QApplication::clipboard()->setText(
+                QString::number(m_currentValue, 2).rightJustified(bits, QLatin1Char('0')));
+        });
+        connect(m_expression, &QLineEdit::textChanged, this, [this](const QString &) { recalculate(); });
+        connect(m_width, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+            rebuildBitRows(m_width->currentData().toInt());
+            recalculate();
+        });
+        connect(m_expression, &QLineEdit::returnPressed, this, [this]() {
+            if (m_valid) m_expression->setText(m_display[0]->text());
+        });
+        m_expression->setText(QStringLiteral("0"));
+    }
+
+private:
+    void rebuildBitRows(int bits)
+    {
+        // Rebuild only when the width changes, NOT when the value changes.
+        // That keeps mouse clicks stable and avoids creating 64 widgets per keypress.
+        for (auto *&button : m_bitButtons) button = nullptr;
+        while (QLayoutItem *item = m_binaryRows->takeAt(0)) {
+            delete item->widget();
+            delete item;
+        }
+
+        const int rowCount = (bits + 15) / 16;
+        for (int row = 0; row < rowCount; ++row) {
+            const int low = row * 16;
+            const int high = qMin(low + 15, bits - 1);
+            auto *rowWidget = new QWidget(m_binaryArea);
+            auto *line = new QHBoxLayout(rowWidget);
+            line->setContentsMargins(0, 0, 0, 0);
+            line->setSpacing(1);
+            auto *range = new QLabel(QStringLiteral("%1-%2").arg(low).arg(high), rowWidget);
+            range->setFixedWidth(39);
+            range->setToolTip(tr("Bit positions %1 to %2; bit %1 is the least significant in this row.").arg(low).arg(high));
+            line->addWidget(range);
+
+            for (int bit = high; bit >= low; --bit) {
+                if (bit != high && ((bit + 1) % 4) == 0) line->addSpacing(4);
+                auto *button = new QToolButton(rowWidget);
+                button->setObjectName(QStringLiteral("programmerCalculatorBit%1").arg(bit));
+                button->setText(QStringLiteral("0"));
+                button->setCheckable(true);
+                button->setFixedHeight(18);
+                button->setMinimumWidth(8);
+                button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+                button->setFocusPolicy(Qt::NoFocus);
+                QFont bitFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+                bitFont.setPointSize(8);
+                button->setFont(bitFont);
+                button->setStyleSheet(QStringLiteral(
+                    "QToolButton { padding: 0px; border: 1px solid palette(mid); }"
+                    "QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); font-weight: bold; }"));
+                button->setToolTip(tr("Toggle bit %1 (0x%2); result becomes a hexadecimal value.")
+                                   .arg(bit).arg(QString::number(quint64(1) << bit, 16).toUpper()));
+                line->addWidget(button, 1);
+                m_bitButtons[bit] = button;
+                connect(button, &QToolButton::clicked, this, [this, bit]() {
+                    if (!m_valid) return;
+                    const int width = m_width->currentData().toInt();
+                    const quint64 mask = width == 64 ? ~quint64(0) : ((quint64(1) << width) - 1);
+                    const quint64 newValue = (m_currentValue ^ (quint64(1) << bit)) & mask;
+                    const QString hex = QStringLiteral("0x") +
+                        QString::number(newValue, 16).toUpper().rightJustified(width / 4, QLatin1Char('0'));
+                    // The expression may have been complex; toggling a bit intentionally
+                    // commits the evaluated value as an editable hex literal.
+                    m_expression->setText(hex);
+                    m_expression->setFocus();
+                });
+            }
+            m_binaryRows->addWidget(rowWidget);
+        }
+        // The original single BIN readout has become up to four short rows.
+        // Only grow the fixed-height sidebar panel when those extra rows exist.
+        setFixedHeight(367 + (rowCount - 1) * 24);
+    }
+
+    void recalculate()
+    {
+        const int bits = m_width->currentData().toInt();
+        QString error;
+        quint64 value = 0;
+        const QString expression = m_expression->text().trimmed();
+        const bool empty = expression.isEmpty();
+        SidboxCalcParser parser(empty ? QStringLiteral("0") : expression, bits);
+        m_valid = parser.evaluate(value, error);
+        m_copyBinary->setEnabled(m_valid);
+        if (!m_valid) {
+            for (auto *display : m_display) display->clear();
+            for (auto *button : m_bitButtons) {
+                if (button) {
+                    button->setEnabled(false);
+                    button->setChecked(false);
+                    button->setText(QStringLiteral("?"));
+                }
+            }
+            m_message->setText(error);
+            m_message->setToolTip(error);
+            return;
+        }
+        m_currentValue = value;
+        const int hexDigits = bits / 4;
+        m_display[0]->setText(QStringLiteral("0x") +
+            QString::number(value, 16).toUpper().rightJustified(hexDigits, QLatin1Char('0')));
+        m_display[1]->setText(QString::number(value));
+        const quint64 signBit = quint64(1) << (bits - 1);
+        const quint64 mask = bits == 64 ? ~quint64(0) : ((quint64(1) << bits) - 1);
+        const QString signedValue = (value & signBit)
+            ? QStringLiteral("-") + QString::number((~value + 1) & mask)
+            : QString::number(value);
+        m_display[2]->setText(signedValue);
+        for (int bit = 0; bit < bits; ++bit) {
+            auto *button = m_bitButtons[bit];
+            if (!button) continue;
+            const bool set = (value & (quint64(1) << bit)) != 0;
+            button->setEnabled(true);
+            button->setChecked(set); // clicked(), not toggled(), drives edits.
+            button->setText(set ? QStringLiteral("1") : QStringLiteral("0"));
+        }
+        for (auto *display : m_display) display->setCursorPosition(0);
+        m_message->setText(tr("Unsigned %1-bit • wraps on overflow").arg(bits));
+        m_message->setToolTip(tr("Division and right-shifts use unsigned arithmetic; SDEC shows the two's-complement value."));
+    }
+
+    QLineEdit *m_expression = nullptr;
+    QComboBox *m_width = nullptr;
+    QLineEdit *m_display[3] = {nullptr, nullptr, nullptr};
+    QWidget *m_binaryArea = nullptr;
+    QVBoxLayout *m_binaryRows = nullptr;
+    QToolButton *m_bitButtons[64] = {};
+    QToolButton *m_copyBinary = nullptr;
+    QLabel *m_message = nullptr;
+    quint64 m_currentValue = 0;
+    bool m_valid = false;
+};
+} // namespace
+
+
+// Stage 32: read the memory span actually reserved by the ARM ELF's PT_LOAD
+// segments. No external `size` tool is required, so LLVM and CGARM V2 builds
+// can use the same dashboard (including CGARM ELFs without a symbol table).
+namespace {
+quint16 armElfU16(const QByteArray &b, qsizetype i)
+{
+    const auto *p = reinterpret_cast<const unsigned char *>(b.constData());
+    return quint16(p[i]) | (quint16(p[i + 1]) << 8);
+}
+quint32 armElfU32(const QByteArray &b, qsizetype i)
+{
+    const auto *p = reinterpret_cast<const unsigned char *>(b.constData());
+    return quint32(p[i]) | (quint32(p[i + 1]) << 8) |
+           (quint32(p[i + 2]) << 16) | (quint32(p[i + 3]) << 24);
+}
+
+struct SidboxElfRam {
+    bool valid = false;
+    quint64 spanBytes = 0;
+};
+
+SidboxElfRam readSidboxElfRam(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    const QByteArray header = file.read(52);
+    if (header.size() != 52 || header.at(0) != '\x7f' ||
+        header.mid(1, 3) != QByteArray("ELF") ||
+        quint8(header.at(4)) != 1 || // 32-bit ELF
+        quint8(header.at(5)) != 1 || // little endian
+        armElfU16(header, 18) != 40) // EM_ARM
+        return {};
+
+    const quint32 phOffset = armElfU32(header, 28);
+    const quint16 entrySize = armElfU16(header, 42);
+    const quint16 count = armElfU16(header, 44);
+    if (entrySize < 32 || entrySize > 256 || count == 0 || count > 128 ||
+        quint64(phOffset) + quint64(entrySize) * count > quint64(file.size()))
+        return {};
+
+    quint64 lowest = std::numeric_limits<quint64>::max();
+    quint64 highest = 0;
+    for (quint16 i = 0; i < count; ++i) {
+        if (!file.seek(qint64(phOffset) + qint64(i) * entrySize)) return {};
+        const QByteArray ph = file.read(32);
+        if (ph.size() != 32) return {};
+        if (armElfU32(ph, 0) != 1) continue; // PT_LOAD
+        const quint64 address = armElfU32(ph, 8);
+        const quint64 memorySize = armElfU32(ph, 20);
+        if (memorySize == 0) continue;
+        lowest = qMin(lowest, address);
+        highest = qMax(highest, address + memorySize);
+    }
+    if (lowest == std::numeric_limits<quint64>::max() ||
+        highest < lowest || highest - lowest > 32ULL * 1024 * 1024)
+        return {};
+    return {true, highest - lowest};
+}
+
+struct SidboxStackFrame {
+    quint64 bytes = 0;
+    QString function;
+    QString qualifier;
+};
+
+SidboxStackFrame largestSidboxStackFrame(const QString &buildDir)
+{
+    SidboxStackFrame best;
+    if (buildDir.isEmpty() || !QDir(buildDir).exists()) return best;
+    // gcc -fstack-usage creates one .su per translation unit. This is the
+    // biggest SINGLE function frame, not an estimated peak call-chain stack.
+    QDirIterator iter(buildDir, {QStringLiteral("*.su")}, QDir::Files,
+                      QDirIterator::Subdirectories);
+    int filesSeen = 0;
+    while (iter.hasNext() && filesSeen++ < 350) {
+        QFile report(iter.next());
+        if (report.size() <= 0 || report.size() > 2 * 1024 * 1024 ||
+            !report.open(QIODevice::ReadOnly)) continue;
+        const QByteArray data = report.readAll();
+        for (const QByteArray &line : data.split('\n')) {
+            const QList<QByteArray> fields = line.split('\t');
+            if (fields.size() < 3) continue;
+            bool ok = false;
+            const quint64 bytes = fields.at(1).toULongLong(&ok);
+            if (!ok || bytes < best.bytes) continue;
+            best.bytes = bytes;
+            best.function = QString::fromUtf8(fields.at(0).trimmed()).section(':', -1);
+            best.qualifier = QString::fromUtf8(fields.at(2).trimmed());
+        }
+    }
+    return best;
+}
+
+QString sidboxMemSize(quint64 bytes)
+{
+    if (bytes < 1024) return QStringLiteral("%1 B").arg(bytes);
+    return QStringLiteral("%1 KiB").arg(QString::number(double(bytes) / 1024.0, 'f', 1));
+}
+
+QWidget *makeAppletMemoryPanel(QWidget *parent)
+{
+    auto *panel = new QWidget(parent);
+    panel->setObjectName(QStringLiteral("sidboxAppletMemoryPanel"));
+    panel->setMinimumWidth(225);
+    panel->setMaximumWidth(340);
+    panel->setToolTip(QObject::tr(
+        "These bars show build-time RAM reservations, not measured peak use. "
+        "The ELF RAM footprint includes the reserved private stack; the "
+        "bounded heap is additional. Actual peak usage requires hardware "
+        "instrumentation."));
+
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(7, 3, 7, 3);
+    layout->setSpacing(2);
+
+    auto *header = new QHBoxLayout();
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(5);
+    auto *heading = new QLabel(QObject::tr("Applet Memory"), panel);
+    heading->setStyleSheet(QStringLiteral("font-weight: bold;"));
+    header->addWidget(heading);
+
+    auto *status = new QLabel(QObject::tr("Build to measure"), panel);
+    status->setObjectName(QStringLiteral("sidboxMemoryStatus"));
+    status->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    status->setWordWrap(false);
+    header->addWidget(status, 1);
+    layout->addLayout(header);
+
+    const auto addRow = [panel, layout](const QString &key, const QString &shortLabel,
+                                         const QString &description) {
+        auto *row = new QHBoxLayout();
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(5);
+        auto *name = new QLabel(shortLabel, panel);
+        name->setObjectName(QStringLiteral("sidboxMemoryLabel_") + key);
+        name->setFixedWidth(43);
+        name->setToolTip(description);
+        row->addWidget(name);
+        auto *bar = new QProgressBar(panel);
+        bar->setObjectName(QStringLiteral("sidboxMemoryBar_") + key);
+        bar->setRange(0, 1000);
+        bar->setValue(0);
+        bar->setFormat(QStringLiteral("—"));
+        bar->setFixedHeight(18);
+        bar->setTextVisible(true);
+        row->addWidget(bar, 1);
+        layout->addLayout(row);
+    };
+    addRow(QStringLiteral("total"), QObject::tr("Total"),
+           QObject::tr("Total linked image RAM plus bounded heap reservation."));
+    addRow(QStringLiteral("image"), QObject::tr("ELF"),
+           QObject::tr("RAM covered by the linked ELF, including private stack."));
+    addRow(QStringLiteral("stack"), QObject::tr("Stack"),
+           QObject::tr("Private stack reservation; not measured maximum usage."));
+    addRow(QStringLiteral("heap"), QObject::tr("Heap"),
+           QObject::tr("Bounded heap reservation; not currently allocated heap."));
+
+    auto *details = new QLabel(panel);
+    details->setObjectName(QStringLiteral("sidboxMemoryDetails"));
+    details->setWordWrap(true);
+    details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(details);
+    layout->addStretch(1);
+    return panel;
+}
+
+void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
+                             int stackKiB, int heapKiB,
+                             bool buildSucceeded = false,
+                             const QString &elfFile = QString(),
+                             const QString &appFile = QString(),
+                             const QString &buildDir = QString())
+{
+    if (!root) return;
+    auto *status = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryStatus"));
+    auto *details = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryDetails"));
+    if (!status || !details) return;
+
+    const quint64 allowance = quint64(qMax(appKiB, 1)) * 1024;
+    const auto setRow = [root, allowance](const QString &key, const QString &title,
+                                           quint64 bytes, bool known) {
+        auto *label = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_") + key);
+        auto *bar = root->findChild<QProgressBar *>(QStringLiteral("sidboxMemoryBar_") + key);
+        if (!label || !bar) return;
+        // The brief row label is fixed; full context and percentages live
+        // in the tooltips, so the monitor stays compact even with long values.
+        bar->setValue(known ? int(qMin<quint64>(1000, (bytes * 1000) / allowance)) : 0);
+        bar->setFormat(known ? sidboxMemSize(bytes) : QStringLiteral("—"));
+        bar->setToolTip(known ? QStringLiteral("%1: %2 / %3 (%4% of allowance)")
+                       .arg(title, sidboxMemSize(bytes), sidboxMemSize(allowance))
+                       .arg(qulonglong((bytes * 100) / allowance))
+                         : QObject::tr("Build to determine this value."));
+    };
+    setRow(QStringLiteral("total"), QObject::tr("Total RAM reserved"), 0, false);
+    setRow(QStringLiteral("image"), QObject::tr("Linked ELF RAM"), 0, false);
+    setRow(QStringLiteral("stack"), QObject::tr("Private stack reserved"), 0, false);
+    setRow(QStringLiteral("heap"), QObject::tr("Heap reserved"), 0, false);
+    details->clear();
+    details->setToolTip(QString());
+    if (auto *stackLabel = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_stack")))
+        stackLabel->setToolTip(QObject::tr("Private stack reservation; not measured usage."));
+    if (!v2) {
+        status->setText(QObject::tr("V1 · %1").arg(sidboxMemSize(allowance)));
+        status->setToolTip(QObject::tr("V1 / Gaming: configured %1. RAM layout is not available.")
+                               .arg(sidboxMemSize(allowance)));
+        if (buildSucceeded && QFileInfo(appFile).isFile())
+            details->setText(QObject::tr("APP: %1 (disk only)")
+                             .arg(sidboxMemSize(QFileInfo(appFile).size())));
+        return;
+    }
+    status->setText(QObject::tr("V2 · %1").arg(sidboxMemSize(allowance)));
+    status->setToolTip(QObject::tr("V2 RAM allowance: %1")
+                           .arg(sidboxMemSize(allowance)));
+    setRow(QStringLiteral("stack"), QObject::tr("Private stack reserved"),
+           quint64(qMax(0, stackKiB)) * 1024, true);
+    setRow(QStringLiteral("heap"), QObject::tr("Heap reserved"),
+           quint64(qMax(0, heapKiB)) * 1024, true);
+    if (!buildSucceeded) {
+        details->setText(QObject::tr("Build to measure ELF RAM."));
+        return;
+    }
+    const auto elf = readSidboxElfRam(elfFile);
+    if (!elf.valid) {
+        details->setText(QObject::tr("ELF RAM unavailable."));
+        details->setToolTip(QObject::tr("No readable 32-bit ARM ELF layout; RAM total unknown."));
+        return;
+    }
+    // V2 .stack is a NOLOAD section *inside* the linked ELF image;
+    // heap is reserved AFTER the linked ELF. Don't double count stack.
+    const quint64 heap = quint64(qMax(0, heapKiB)) * 1024;
+    const quint64 reserved = elf.spanBytes + heap;
+    setRow(QStringLiteral("image"), QObject::tr("Linked ELF RAM (incl. stack)"),
+           elf.spanBytes, true);
+    setRow(QStringLiteral("total"), QObject::tr("Total RAM reserved"),
+           reserved, true);
+    if (reserved > allowance) {
+        status->setText(QObject::tr("OVER · %1").arg(sidboxMemSize(allowance)));
+        status->setToolTip(QObject::tr("V2 RAM allowance exceeded: %1 / %2")
+                               .arg(sidboxMemSize(reserved), sidboxMemSize(allowance)));
+    }
+    QStringList notes;
+    notes << QObject::tr("Free: %1")
+                 .arg(sidboxMemSize(reserved < allowance ? allowance - reserved : 0));
+    if (QFileInfo(appFile).isFile())
+        notes << QObject::tr("APP: %1")
+                     .arg(sidboxMemSize(QFileInfo(appFile).size()));
+    const SidboxStackFrame frame = largestSidboxStackFrame(buildDir);
+    QString frameNote;
+    if (frame.bytes) {
+        frameNote = QObject::tr("Largest GCC function frame: %1 (%2)%3")
+                        .arg(sidboxMemSize(frame.bytes), frame.function,
+                             frame.qualifier.contains(QStringLiteral("dynamic"), Qt::CaseInsensitive)
+                                 ? QObject::tr(" [dynamic]") : QString());
+        notes << QObject::tr("Frame: %1").arg(sidboxMemSize(frame.bytes));
+    }
+    details->setText(notes.join(QStringLiteral("  ·  ")));
+    details->setToolTip(frameNote.isEmpty() ? notes.join(QLatin1Char('\n'))
+                                             : notes.join(QLatin1Char('\n'))
+                                                   + QLatin1Char('\n') + frameNote);
+    if (auto *stackLabel = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_stack"))) {
+        stackLabel->setToolTip(frameNote.isEmpty()
+                                   ? QObject::tr("Private stack reservation; not measured usage.")
+                                   : frameNote + QObject::tr(" — single function only, not maximum call-chain usage."));
+    }
+}
+} // namespace
+
 void MainWindow::setupInterface()
 {
     setWindowTitle(tr("Sidbox IDE"));
@@ -4125,11 +5764,78 @@ void MainWindow::setupInterface()
     auto *compileMenu = new QMenu(this);
     QAction *cleanCgarmAction = compileMenu->addAction(
         tr("Clean Selected V2 Build Cache..."));
+    QAction *exportLinuxBuildAction = compileMenu->addAction(
+        tr("Export Linux Makefile + build.sh..."));
     if (auto *compileButton =
             qobject_cast<QToolButton *>(toolBar->widgetForAction(compileAction))) {
         compileButton->setMenu(compileMenu);
         compileButton->setPopupMode(QToolButton::MenuButtonPopup);
     }
+    connect(exportLinuxBuildAction, &QAction::triggered, this, [this]() {
+#ifndef Q_OS_LINUX
+        QMessageBox::information(this, tr("Export Linux Build"),
+            tr("Generate this Linux build script from the Linux IDE build."));
+        return;
+#endif
+        if (m_projectFilePath.isEmpty()) {
+            QMessageBox::information(this, tr("Export Linux Build"),
+                tr("Save or open a project first."));
+            return;
+        }
+        const bool isV2 = normalizedProjectType(m_projectType) == GuiProjectType
+            && m_appletFormat == QStringLiteral("v2");
+        if (!saveProject()) return;
+        const QString projectDir = QFileInfo(m_projectFilePath).absolutePath();
+        const QString makefile = QDir(projectDir).filePath(QStringLiteral("Makefile"));
+        const QString script = QDir(projectDir).filePath(QStringLiteral("build.sh"));
+        if ((QFileInfo::exists(makefile) || QFileInfo::exists(script))
+            && QMessageBox::question(this, tr("Export Linux Build"),
+                  tr("Replace existing Makefile/build.sh in this project?\n"
+                     "This may overwrite build files you've edited yourself."),
+                  QMessageBox::Yes | QMessageBox::Cancel,
+                  QMessageBox::Cancel) != QMessageBox::Yes)
+            return;
+        const QString outputName = m_outputAppName.isEmpty()
+            ? QFileInfo(m_projectFilePath).completeBaseName() + QStringLiteral(".app")
+            : normalizedAppOutputName(m_outputAppName);
+        QString error;
+        bool exported = false;
+        if (isV2) {
+            exported = writeStandaloneLinuxBuildFiles(
+                m_projectFilePath, ideLibsPath(), outputName,
+                m_appSizeKb, m_v2HeapKb, m_v2StackKb, m_v2Linker, &error);
+        } else {
+            StandaloneV1Options options;
+            options.projectFile = m_projectFilePath;
+            options.sdkDirectory = ideLibsPath();
+            options.linkerScript = effectiveLinkerScriptPath();
+            options.outputAppName = outputName;
+            options.sources = projectFilesForCompile();
+            options.optimisation = m_compilerOptimization;
+            options.extraFlags = m_extraCompilerFlags;
+            options.suppressWarnings = m_compilerSuppressWarnings;
+            options.wall = m_compilerWall;
+            options.wextra = m_compilerWextra;
+            options.functionSections = m_compilerFunctionSections;
+            options.dataSections = m_compilerDataSections;
+            options.stackUsage = m_compilerStackUsage;
+            options.gaming = normalizedProjectType(m_projectType) == GameProjectType;
+            exported = writeStandaloneV1LinuxBuildFiles(options, &error);
+        }
+        if (!exported) {
+            QMessageBox::warning(this, tr("Export Linux Build"), error);
+            return;
+        }
+        statusBar()->showMessage(tr("Exported %1 Makefile and build.sh")
+                                 .arg(isV2 ? QStringLiteral("V2") : QStringLiteral("V1")), 5000);
+        QMessageBox::information(this, tr("Export Linux Build"),
+            tr("Created %2 Makefile and build.sh in:\n%1\n\n"
+               "Run: ./build.sh\nOr: make\n\n"
+               "Regenerate if the toolchain moves or project settings change. "
+               "You can also override the SDK with SIDBOX_SDK=/path/to/idelibs.")
+               .arg(QDir::toNativeSeparators(projectDir),
+                    isV2 ? QStringLiteral("V2") : QStringLiteral("V1")));
+    });
     connect(cleanCgarmAction, &QAction::triggered, this, [this]() {
         if (m_projectFilePath.isEmpty()) {
             QMessageBox::information(this, tr("Clean V2 Build"),
@@ -4301,6 +6007,10 @@ void MainWindow::setupInterface()
     projectLayout->addLayout(projectButtonLayout);
     projectLayout->addWidget(m_projectFiles, 1);
 
+    // A fixed-height programmer calculator beneath the file tree.
+    // Never borrows space from the centre editor or the right-hand symbol tree.
+    projectLayout->addWidget(new SidboxProgrammerCalculator(projectPane));
+
     connect(m_projectFiles, &QTreeWidget::itemDoubleClicked, this, &MainWindow::openProjectFile);
     connect(m_projectFiles, &QTreeWidget::itemActivated, this, &MainWindow::openProjectFile);
     //connect(addFileButton, &QPushButton::clicked, this, &MainWindow::addExistingProjectFile);
@@ -4344,8 +6054,13 @@ void MainWindow::setupInterface()
          */
         QAction *renameAction = nullptr;
         QAction *removeAction = nullptr;
+        QAction *historyAction = nullptr;
+        QString historyTarget;
         if (item && !item->data(0, Qt::UserRole + 1).toBool()) {
+            historyTarget = item->data(0, Qt::UserRole).toString();
             menu.addSeparator();
+            if (isHistoryTextFile(historyTarget))
+                historyAction = menu.addAction(tr("File History..."));
             renameAction = menu.addAction(tr("Rename"));
             removeAction = menu.addAction(tr("Remove"));
         }
@@ -4357,6 +6072,73 @@ void MainWindow::setupInterface()
             renameSelectedProjectFile();
         else if (chosen && chosen == removeAction)
             removeSelectedProjectFile();
+        else if (chosen && chosen == historyAction) {
+            // Compare against the live editor buffer when this file is open;
+            // otherwise use its last saved bytes from disk.
+            QString currentContent;
+            bool hasUnsavedEdits = false;
+            bool foundOpenEditor = false;
+            const QString absoluteHistoryPath = QFileInfo(historyTarget).absoluteFilePath();
+            for (int tab = 0; tab < m_editorTabs->count(); ++tab) {
+                auto *candidate = primaryEditorForTab(m_editorTabs->widget(tab));
+                if (candidate && QFileInfo(candidate->filePath()).absoluteFilePath()
+                                 == absoluteHistoryPath) {
+                    currentContent = candidate->toPlainText();
+                    hasUnsavedEdits = candidate->document()->isModified();
+                    foundOpenEditor = true;
+                    break;
+                }
+            }
+            if (!foundOpenEditor) {
+                QFile currentFile(historyTarget);
+                if (!currentFile.open(QIODevice::ReadOnly)) {
+                    QMessageBox::warning(this, tr("File History"),
+                        tr("Cannot read current file: %1").arg(currentFile.errorString()));
+                    return;
+                }
+                const QByteArray raw = currentFile.readAll();
+                if (currentFile.error() != QFileDevice::NoError) {
+                    QMessageBox::warning(this, tr("File History"),
+                                         tr("Cannot read the current file completely."));
+                    return;
+                }
+                currentContent = QString::fromUtf8(raw);
+            }
+            QString restored;
+            if (!chooseFileHistoryRevision(this, m_projectPath, historyTarget,
+                                           currentContent, hasUnsavedEdits, &restored))
+                return;
+
+            if (!openFile(historyTarget)) return;
+            CodeEditor *editor = activeEditor();
+            if (!editor || QFileInfo(editor->filePath()).absoluteFilePath()
+                               != QFileInfo(historyTarget).absoluteFilePath())
+                return;
+
+            if (editor->document()->isModified()
+                && QMessageBox::question(this, tr("Restore File History"),
+                    tr("This editor contains unsaved changes. Replace its contents "
+                       "with the chosen revision?\n\n"
+                       "The current file on disk will NOT be overwritten until you Save."),
+                    QMessageBox::Yes | QMessageBox::Cancel,
+                    QMessageBox::Cancel) != QMessageBox::Yes)
+                return;
+
+            if (editor->toPlainText() == restored) {
+                statusBar()->showMessage(tr("This revision already matches the editor."), 4000);
+                return;
+            }
+            // One undoable document edit. The disk file is left alone until Save.
+            QTextCursor cursor = editor->textCursor();
+            cursor.beginEditBlock();
+            cursor.select(QTextCursor::Document);
+            cursor.insertText(restored);
+            cursor.endEditBlock();
+            editor->document()->setModified(true);
+            updateTabTitle(editor);
+            editor->setFocus();
+            statusBar()->showMessage(tr("Older version loaded into editor. Save to keep it."), 7000);
+        }
     });
 
     // --- Center Work Area ---
@@ -4779,7 +6561,40 @@ void MainWindow::setupInterface()
 
     outputLayout->addWidget(m_quickTipLabel);
     outputLayout->addWidget(m_outputToolBar);
-    outputLayout->addWidget(m_outputPane, 1);
+    auto *outputSplit = new QSplitter(Qt::Horizontal, outputPanel);
+    outputSplit->setObjectName(QStringLiteral("sidboxOutputMemorySplitter"));
+    outputSplit->setChildrenCollapsible(false);
+    outputSplit->addWidget(m_outputPane);
+    // Scrolling keeps all bars readable even if the compiler output is short.
+    auto *memoryDock = new QScrollArea(outputSplit);
+    memoryDock->setObjectName(QStringLiteral("sidboxMemoryDock"));
+    memoryDock->setFrameShape(QFrame::NoFrame);
+    memoryDock->setWidgetResizable(true);
+    memoryDock->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    memoryDock->setMinimumWidth(240);
+    memoryDock->setMaximumWidth(350);
+    memoryDock->setWidget(makeAppletMemoryPanel(memoryDock));
+    outputSplit->addWidget(memoryDock);
+    outputSplit->setStretchFactor(0, 5);
+    outputSplit->setStretchFactor(1, 0);
+    outputSplit->setSizes({800, 255});
+    // Persist the actual log/memory split (not a hard-coded pixel offset).
+    // Debounce saving while the user drags the handle; also save on close.
+    auto *outputSplitSaveTimer = new QTimer(outputSplit);
+    outputSplitSaveTimer->setSingleShot(true);
+    outputSplitSaveTimer->setInterval(250);
+    connect(outputSplit, &QSplitter::splitterMoved,
+            outputSplitSaveTimer, [outputSplitSaveTimer](int, int) {
+        outputSplitSaveTimer->start();
+    });
+    connect(outputSplitSaveTimer, &QTimer::timeout,
+            outputSplit, [outputSplit]() {
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("layout/outputMemorySplitter"),
+                          outputSplit->saveState());
+    });
+    outputLayout->addWidget(outputSplit, 1);
+    updateAppletMemoryPanel(this, false, m_appSizeKb, m_v2StackKb, m_v2HeapKb);
 
     workAreaSplitter->addWidget(m_editorTabs);
     workAreaSplitter->addWidget(outputPanel);
@@ -4873,6 +6688,18 @@ void MainWindow::setupInterface()
 
     setCentralWidget(mainSplitter);
     applyTheme();
+    // Restoring before the maximised window has been laid out can produce
+    // incorrect splitter proportions, so wait until its first event loop pass.
+    QTimer::singleShot(0, outputSplit, [outputSplit, outputSplitSaveTimer]() {
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        const QByteArray state = settings.value(
+            QStringLiteral("layout/outputMemorySplitter")).toByteArray();
+        if (!state.isEmpty()) {
+            QSignalBlocker blocker(outputSplit);
+            outputSplitSaveTimer->stop();
+            outputSplit->restoreState(state);
+        }
+    });
 
     m_compileProgressBar = new QProgressBar(statusBar());
     m_compileProgressBar->setObjectName(QStringLiteral("compileProgress"));
@@ -4956,6 +6783,7 @@ void MainWindow::createNewProject()
     m_projectFilePath = QFileInfo(projectFilePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
+    updateAppletMemoryPanel(this, false, m_appSizeKb, m_v2StackKb, m_v2HeapKb);
 
     if (!QDir().mkpath(m_projectPath)) {
         QMessageBox::warning(
@@ -5634,6 +7462,121 @@ void MainWindow::showFindReplaceForCurrentWord()
 
 
 
+namespace {
+
+/*
+ * The About page is a normal scrollable editor tab.  Draw the owner's
+ * transparent portrait behind the existing selectable QLabel text rather
+ * than placing an opaque picture widget into the layout.
+ *
+ * The PNG is optional: a fresh checkout still runs without the artwork.
+ * Add icons/nagelgirl.png and reconfigure CMake to embed it later.
+ */
+class NagelAboutPage final : public QWidget
+{
+public:
+    explicit NagelAboutPage(QWidget *parent = nullptr)
+        : QWidget(parent),
+          m_portrait(QStringLiteral(":/icons/nagelgirl.png"))
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QWidget::paintEvent(event);
+        if (m_portrait.isNull())
+            return;
+
+        // Keep the graphic in the upper-right corner, preserving aspect ratio
+        // and the feathered alpha supplied by the original PNG.
+        const QSize imageBounds(qMax(1, qMin(540, width() * 45 / 100)),
+                                qMax(1, qMin(760, height() * 90 / 100)));
+        const QPixmap scaled = m_portrait.scaled(imageBounds,
+                                                Qt::KeepAspectRatio,
+                                                Qt::SmoothTransformation);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawPixmap(width() - scaled.width(), 0, scaled);
+    }
+
+private:
+    const QPixmap m_portrait;
+};
+
+/*
+ * Real black contour around Qt's *rendered* text.  Unlike a simple drop
+ * shadow, this covers every direction, including the glyphs in wrapped labels.
+ * Using a QGraphicsEffect keeps QLabel's native selectable text intact.
+ */
+class NagelAboutTextOutline final : public QGraphicsEffect
+{
+public:
+    explicit NagelAboutTextOutline(QObject *parent = nullptr)
+        : QGraphicsEffect(parent)
+    {
+    }
+
+protected:
+    QRectF boundingRectFor(const QRectF &rect) const override
+    {
+        // Room for the two-pixel contour at every edge.
+        return rect.adjusted(-2.0, -2.0, 2.0, 2.0);
+    }
+
+    void draw(QPainter *painter) override
+    {
+        if (!painter)
+            return;
+
+        QPoint origin;
+        const QPixmap source = sourcePixmap(Qt::LogicalCoordinates, &origin,
+                                              QGraphicsEffect::PadToEffectiveBoundingRect);
+        if (source.isNull()) {
+            drawSource(painter);
+            return;
+        }
+
+        // Use the label's alpha as a stencil.  A solid black mask lets us
+        // draw a crisp contour while retaining the original anti-aliasing.
+        QPixmap silhouette(source.size());
+        silhouette.setDevicePixelRatio(source.devicePixelRatio());
+        silhouette.fill(Qt::transparent);
+        {
+            QPainter maskPainter(&silhouette);
+            maskPainter.drawPixmap(QPoint(0, 0), source);
+            maskPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            maskPainter.fillRect(silhouette.rect(), Qt::black);
+        }
+
+        painter->save();
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                const int radius2 = dx * dx + dy * dy;
+                if (radius2 == 0 || radius2 > 5)
+                    continue;
+                painter->drawPixmap(origin + QPoint(dx, dy), silhouette);
+            }
+        }
+        painter->drawPixmap(origin, source);
+        painter->restore();
+    }
+};
+
+void outlineAboutText(QLabel *label)
+{
+    if (!label)
+        return;
+
+    label->setAutoFillBackground(false);
+    label->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
+    label->setGraphicsEffect(new NagelAboutTextOutline(label));
+}
+
+} // namespace
+
+
 void MainWindow::showAboutIde()
 {
     if (!m_editorTabs) {
@@ -5649,7 +7592,7 @@ void MainWindow::showAboutIde()
         }
     }
 
-    auto *page = new QWidget;
+    auto *page = new NagelAboutPage;
     page->setProperty("sidboxAboutIde", true);
 
     auto *outerLayout = new QVBoxLayout(page);
@@ -5682,12 +7625,14 @@ void MainWindow::showAboutIde()
         logoLabel->setText(tr("SIDBOX IDE"));
     }
 
-    auto *titleArea = new QWidget(page);
-    auto *titleLayout = new QVBoxLayout(titleArea);
+    // Lay out the header text directly, without an intermediate QWidget.
+    // Global IDE styles can give a child QWidget an opaque theme background,
+    // which would otherwise cover the right-hand portrait with a rectangle.
+    auto *titleLayout = new QVBoxLayout;
     titleLayout->setContentsMargins(0, 0, 0, 0);
     titleLayout->setSpacing(5);
 
-    auto *title = new QLabel(tr("Sidbox IDE"), titleArea);
+    auto *title = new QLabel(tr("Sidbox IDE"), page);
     QFont titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 8);
     titleFont.setBold(true);
@@ -5695,7 +7640,7 @@ void MainWindow::showAboutIde()
 
     auto *subtitle = new QLabel(
         tr("A dedicated C development environment for the Sidbox platform."),
-        titleArea);
+        page);
     subtitle->setWordWrap(true);
 
     auto *purpose = new QLabel(
@@ -5704,7 +7649,7 @@ void MainWindow::showAboutIde()
            "compiler toolchain, API navigation, diagnostics, source browsing, "
            "minimap, project symbols and searchable API Cheat Sheet together "
            "in one focused development environment."),
-        titleArea);
+        page);
     purpose->setWordWrap(true);
 
     titleLayout->addWidget(title);
@@ -5714,7 +7659,7 @@ void MainWindow::showAboutIde()
     titleLayout->addStretch(1);
 
     headerLayout->addWidget(logoLabel, 0, Qt::AlignTop);
-    headerLayout->addWidget(titleArea, 1);
+    headerLayout->addLayout(titleLayout, 1);
 
     auto *aboutHeading = new QLabel(tr("About the IDE"), page);
     QFont headingFont = aboutHeading->font();
@@ -5765,6 +7710,14 @@ void MainWindow::showAboutIde()
     QFont noteFont = note->font();
     noteFont.setItalic(true);
     note->setFont(noteFont);
+
+    // Give all About text a readable black contour so it can cross the image
+    // without an opaque label background or losing mouse text selection.
+    for (QLabel *label : {title, subtitle, purpose, aboutHeading, aboutText,
+                           featuresHeading, features, creditsHeading, credits,
+                           note}) {
+        outlineAboutText(label);
+    }
 
     outerLayout->addLayout(headerLayout);
     outerLayout->addSpacing(6);
@@ -6197,16 +8150,12 @@ void MainWindow::showApiCheatSheet()
         new QPushButton(tr("Open Source"), detailPane);
     auto *copyPrototypeButton =
         new QPushButton(tr("Copy Prototype"), detailPane);
-    auto *copyExampleButton =
-        new QPushButton(tr("Copy Example"), detailPane);
 
     openSourceButton->setEnabled(false);
     copyPrototypeButton->setEnabled(false);
-    copyExampleButton->setEnabled(false);
 
     buttonRow->addWidget(openSourceButton);
     buttonRow->addWidget(copyPrototypeButton);
-    buttonRow->addWidget(copyExampleButton);
     buttonRow->addStretch(1);
 
     detailLayout->addWidget(symbolLabel);
@@ -6228,8 +8177,6 @@ void MainWindow::showApiCheatSheet()
         QString name;
         QString signature;
         QString description;
-        QString notes;
-        QString example;
         QString filePath;
         QString category;
         QString libraryArchive;
@@ -6238,35 +8185,6 @@ void MainWindow::showApiCheatSheet()
     };
 
     QList<ApiEntry> entries;
-
-    /*
-     * The SDK owns its public ABI and function declarations. Documentation is
-     * optional, maintained separately, and never changes the callable API.
-     * Missing or malformed docs simply fall back to the header comments.
-     */
-    QHash<QString, QJsonObject> cheatDocs;
-    QJsonArray cheatGuides;
-    QFile cheatDocsFile(
-        QDir(libsRoot).filePath(QStringLiteral("docs/cheatsheet.json")));
-    if (cheatDocsFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QJsonParseError parseError;
-        const QJsonDocument catalog = QJsonDocument::fromJson(
-            cheatDocsFile.readAll(), &parseError);
-        if (parseError.error == QJsonParseError::NoError
-            && catalog.isObject()) {
-            const QJsonObject root = catalog.object();
-            const QJsonObject authored = root.value(
-                QStringLiteral("entries")).toObject();
-            for (auto it = authored.constBegin();
-                 it != authored.constEnd(); ++it) {
-                if (it.value().isObject()) {
-                    cheatDocs.insert(it.key(), it.value().toObject());
-                }
-            }
-            cheatGuides = root.value(QStringLiteral("guides")).toArray();
-        }
-    }
-
     const QStringList knownNames = apiSyntaxNames();
 
     QStringList catalogFiles;
@@ -6410,42 +8328,8 @@ void MainWindow::showApiCheatSheet()
                          "Use the prototype and Open Source button to inspect how it works.");
         }
 
-        // Authored notes and examples override missing or misleading header
-        // prose without changing declaration discovery or Open Source targets.
-        const QJsonObject authored = cheatDocs.value(name);
-        const QString summary = authored.value(
-            QStringLiteral("summary")).toString().trimmed();
-        if (!summary.isEmpty()) {
-            chosen.description = summary;
-        }
-        chosen.notes = authored.value(QStringLiteral("notes")).toString();
-        chosen.example = authored.value(QStringLiteral("example")).toString();
-
         entries.append(chosen);
         addedNames.insert(name);
-    }
-
-    // First-class tutorials live alongside API symbols in the same search UI.
-    // They are not fake SDK declarations and do not claim an Open Source link.
-    for (const QJsonValue &value : cheatGuides) {
-        if (!value.isObject()) {
-            continue;
-        }
-        const QJsonObject guide = value.toObject();
-        ApiEntry entry;
-        entry.name = guide.value(QStringLiteral("title")).toString().trimmed();
-        entry.category = guide.value(QStringLiteral("category")).toString().trimmed();
-        entry.description = guide.value(QStringLiteral("summary")).toString();
-        entry.notes = guide.value(QStringLiteral("notes")).toString();
-        entry.example = guide.value(QStringLiteral("example")).toString();
-        if (entry.name.isEmpty()) {
-            continue;
-        }
-        if (entry.category.isEmpty()) {
-            entry.category = QStringLiteral("Getting Started");
-        }
-        entry.signature = tr("Worked example / guide");
-        entries.append(entry);
     }
 
     std::sort(
@@ -6495,8 +8379,6 @@ void MainWindow::showApiCheatSheet()
         item->setData(0, Qt::UserRole + 5, entry.name);
         item->setData(0, Qt::UserRole + 6, entry.libraryArchive);
         item->setData(0, Qt::UserRole + 7, entry.libraryEntry);
-        item->setData(0, Qt::UserRole + 8, entry.example);
-        item->setData(0, Qt::UserRole + 9, entry.notes);
     }
 
     auto showItem = [=](QTreeWidgetItem *item) {
@@ -6510,10 +8392,6 @@ void MainWindow::showApiCheatSheet()
             item->data(0, Qt::UserRole + 2).toString();
         const QString explanation =
             item->data(0, Qt::UserRole + 3).toString();
-        const QString example =
-            item->data(0, Qt::UserRole + 8).toString();
-        const QString notes =
-            item->data(0, Qt::UserRole + 9).toString();
         const QString filePath =
             item->data(0, Qt::UserRole).toString();
         const int line =
@@ -6521,25 +8399,7 @@ void MainWindow::showApiCheatSheet()
 
         symbolLabel->setText(name);
         signatureLabel->setText(signature);
-
-        // Escape every documentation field before writing rich text. This
-        // includes examples containing <, &, quotes and pointer operators.
-        QString helpHtml = QStringLiteral("<p>%1</p>").arg(
-            explanation.toHtmlEscaped().replace(
-                QLatin1Char('\n'), QStringLiteral("<br>")));
-        if (!notes.trimmed().isEmpty()) {
-            helpHtml += QStringLiteral("<h4>Notes</h4><p>%1</p>").arg(
-                notes.toHtmlEscaped().replace(
-                    QLatin1Char('\n'), QStringLiteral("<br>")));
-        }
-        if (!example.trimmed().isEmpty()) {
-            helpHtml += QStringLiteral(
-                "<h4>Example (C)</h4>"
-                "<pre style='background-color:#202630;color:#f0f3f6;"
-                "padding:8px;white-space:pre-wrap;'>%1</pre>")
-                .arg(example.toHtmlEscaped());
-        }
-        description->setHtml(helpHtml);
+        description->setPlainText(explanation);
 
         const bool libraryEntry =
             item->data(
@@ -6563,8 +8423,6 @@ void MainWindow::showApiCheatSheet()
                         archiveText,
                         QDir(libsRoot).relativeFilePath(filePath))
                     .arg(line + 1));
-        } else if (filePath.isEmpty()) {
-            sourceLabel->setText(tr("Getting Started — example / guide"));
         } else {
             sourceLabel->setText(
                 tr("Source: %1:%2")
@@ -6573,8 +8431,6 @@ void MainWindow::showApiCheatSheet()
                     .arg(line + 1));
         }
 
-        copyExampleButton->setProperty("apiExample", example);
-        copyExampleButton->setEnabled(!example.isEmpty());
         openSourceButton->setProperty(
             "apiFilePath",
             filePath);
@@ -6648,16 +8504,6 @@ void MainWindow::showApiCheatSheet()
                 }
             });
 
-    connect(copyExampleButton, &QPushButton::clicked,
-            page,
-            [copyExampleButton]() {
-                const QString example = copyExampleButton
-                    ->property("apiExample").toString();
-                if (!example.isEmpty()) {
-                    QApplication::clipboard()->setText(example);
-                }
-            });
-
     connect(search, &QLineEdit::textChanged,
             page,
             [tree](const QString &text) {
@@ -6691,15 +8537,7 @@ void MainWindow::showApiCheatSheet()
                             + QLatin1Char(' ')
                             + item->data(
                                   0,
-                                  Qt::UserRole + 4).toString()
-                            + QLatin1Char(' ')
-                            + item->data(
-                                  0,
-                                  Qt::UserRole + 9).toString()
-                            + QLatin1Char(' ')
-                            + item->data(
-                                  0,
-                                  Qt::UserRole + 8).toString();
+                                  Qt::UserRole + 4).toString();
 
                         const bool match =
                             needle.isEmpty()
@@ -6805,6 +8643,9 @@ void MainWindow::showProjectSettings()
         saveProjectFile(m_projectFilePath);
     }
 
+    updateAppletMemoryPanel(this,
+        m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
+        m_appSizeKb, m_v2StackKb, m_v2HeapKb);
     statusBar()->showMessage(tr("Project settings saved"));
 }
 
@@ -7086,8 +8927,10 @@ void MainWindow::compileActiveFile()
             ? outputBaseName + QStringLiteral(".app")
             : normalizedAppOutputName(m_outputAppName);
 
-    const QString buildPath =
-        QDir(m_projectPath).filePath(QStringLiteral("build"));
+    // Keep V1 intermediate files separate from CGARM's existing build/ tree.
+    // The final .app stays in the project root for both formats.
+    const QString buildPath = QDir(m_projectPath).filePath(
+        v2Build ? QStringLiteral("build") : QStringLiteral("buildv1"));
     if (!QDir().mkpath(buildPath)) {
         QMessageBox::warning(this, tr("Compile"), tr("Could not create build folder:\n%1").arg(QDir::toNativeSeparators(buildPath)));
         return;
@@ -7142,6 +8985,7 @@ void MainWindow::compileActiveFile()
 
         clearCompilerDiagnostics();
         m_outputPane->clear();
+        updateAppletMemoryPanel(this, true, m_appSizeKb, m_v2StackKb, m_v2HeapKb);
         appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
         appendOutputLine(tr("Applet format: relocatable ARM ELF (V2)"), OutputKind::Header);
         appendOutputLine(tr("Build backend: standalone cgarm-build"), OutputKind::Header);
@@ -7277,6 +9121,8 @@ void MainWindow::compileActiveFile()
 
     clearCompilerDiagnostics();
     m_outputPane->clear();
+    updateAppletMemoryPanel(this, m_currentBuildIsV2,
+                            m_appSizeKb, m_v2StackKb, m_v2HeapKb);
     appendOutputLine(tr("Compiler: %1").arg(QDir::toNativeSeparators(selectedCompiler)), OutputKind::Path);
     appendOutputLine(tr("Objcopy: %1").arg(QDir::toNativeSeparators(selectedObjcopy)), OutputKind::Path);
     appendOutputLine(tr("Project type: %1").arg(projectTypeLabel(m_projectType)), OutputKind::Header);
@@ -8342,6 +10188,8 @@ void MainWindow::handleCompilerFinished(int exitCode)
                              OutputKind::Success);
         }
         appendOutputLine(tr("Compile finished successfully."), OutputKind::Success);
+        updateAppletMemoryPanel(this, true, m_appSizeKb, m_v2StackKb,
+            m_v2HeapKb, true, m_pendingElfPath, m_pendingAppPath, m_v2BuildDirectory);
         m_buildStep = BuildStep::None;
         finishCompileProgress();
         statusBar()->showMessage(tr("Compile successful"));
@@ -8764,6 +10612,10 @@ void MainWindow::handleCompilerFinished(int exitCode)
 
 
         appendOutputLine(tr("Compile finished successfully."), OutputKind::Success);
+        updateAppletMemoryPanel(this, m_currentBuildIsV2,
+            m_appSizeKb, m_v2StackKb, m_v2HeapKb, true,
+            m_pendingElfPath, m_pendingAppPath,
+            QFileInfo(m_pendingElfPath).absolutePath());
         m_buildStep = BuildStep::None;
         finishCompileProgress();
         statusBar()->showMessage(tr("Compile successful"));
@@ -10214,10 +12066,30 @@ bool MainWindow::saveEditor(CodeEditor *editor)
             watchEditorFile(editor);
             return false;
         }
-    } else if (!editor->save()) {
-        QMessageBox::warning(this, tr("Save File"), tr("Could not save %1.").arg(QDir::toNativeSeparators(editor->filePath())));
-        watchEditorFile(editor);
-        return false;
+    } else {
+        // Keep the OLD on-disk source before CodeEditor overwrites it.
+        // Unchanged saves, non-project files and non-source files are skipped.
+        QString historyError;
+        if (!backupFileBeforeSave(m_projectPath, editor->filePath(),
+                                  editor->toPlainText(), &historyError)) {
+            const auto decision = QMessageBox::warning(
+                this, tr("File History Backup Failed"),
+                tr("Could not preserve the previous version of %1.\n%2\n\n"
+                   "Continue saving WITHOUT a history backup?")
+                    .arg(QFileInfo(editor->filePath()).fileName(), historyError),
+                QMessageBox::Save | QMessageBox::Cancel,
+                QMessageBox::Cancel);
+            if (decision != QMessageBox::Save) {
+                watchEditorFile(editor);
+                return false;
+            }
+        }
+        if (!editor->save()) {
+            QMessageBox::warning(this, tr("Save File"),
+                tr("Could not save %1.").arg(QDir::toNativeSeparators(editor->filePath())));
+            watchEditorFile(editor);
+            return false;
+        }
     }
 
     watchEditorFile(editor);
@@ -10533,6 +12405,9 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     }
 
     refreshFunctionCompletions();
+    updateAppletMemoryPanel(this,
+        m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
+        m_appSizeKb, m_v2StackKb, m_v2HeapKb);
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     return true;
 }
@@ -10585,8 +12460,8 @@ void MainWindow::rescanProjectFiles()
      *
      *   .c  .h  .inc  .res  .txt  .md
      *
-     * It scans subdirectories recursively and skips the generated build/
-     * directory.  Linker scripts (.ld) stay out of the file tree because they
+     * It scans subdirectories recursively and skips generated build/ and
+     * buildv1/ directories.  Linker scripts (.ld) stay out of the file tree because they
      * are managed separately in Project Settings.
      */
     const QStringList discoveredFiles =
@@ -10701,7 +12576,9 @@ void MainWindow::refreshProjectFiles()
                 QDir(m_projectPath).relativeFilePath(absoluteFolderPath);
 
             if (relativeFolderPath == QStringLiteral("build")
-                || relativeFolderPath.startsWith(QStringLiteral("build/"))) {
+                || relativeFolderPath.startsWith(QStringLiteral("build/"))
+                || relativeFolderPath == QStringLiteral("buildv1")
+                || relativeFolderPath.startsWith(QStringLiteral("buildv1/"))) {
                 continue;
             }
 
@@ -10734,6 +12611,11 @@ void MainWindow::refreshProjectFiles()
         } else {
             relativePath = fileInfo.fileName();
         }
+        // Even an old .proj manifest must not display generated build files.
+        if (relativePath.startsWith(QStringLiteral("buildv1/"))
+            || relativePath.startsWith(QStringLiteral("build/"))
+            || relativePath.startsWith(QStringLiteral(".history/")))
+            continue;
 
         relativePath = QDir::cleanPath(relativePath);
 
@@ -12837,7 +14719,12 @@ QStringList MainWindow::projectFolderSourceFiles() const
     while (iterator.hasNext()) {
         const QString filePath = QFileInfo(iterator.next()).absoluteFilePath();
         const QString relativePath = QDir(m_projectPath).relativeFilePath(filePath);
-        if (relativePath.startsWith(QStringLiteral("build/")) || relativePath == QStringLiteral("build")) {
+        if (relativePath.startsWith(QStringLiteral("build/"))
+            || relativePath == QStringLiteral("build")
+            || relativePath.startsWith(QStringLiteral("buildv1/"))
+            || relativePath == QStringLiteral("buildv1")
+            || relativePath.startsWith(QStringLiteral(".history/"))
+            || relativePath == QStringLiteral(".history")) {
             continue;
         }
         files.append(filePath);
@@ -12882,6 +14769,14 @@ QStringList MainWindow::projectFilesForCompile() const
     candidates.removeDuplicates();
 
     for (const QString &filePath : std::as_const(candidates)) {
+        // Never compile a history file, even if it was accidentally listed
+        // explicitly in an older hand-edited project manifest.
+        const QString relativePath = m_projectPath.isEmpty()
+            ? QString() : QDir(m_projectPath).relativeFilePath(filePath);
+        if (relativePath.startsWith(QStringLiteral(".history/"))
+            || relativePath.startsWith(QStringLiteral("build/"))
+            || relativePath.startsWith(QStringLiteral("buildv1/")))
+            continue;
         if (isCompilableSource(filePath)) {
             files.append(filePath);
         }
@@ -13655,6 +15550,25 @@ void MainWindow::applyTheme()
         .arg(C(m_theme.scrollHandleHover))     // 13
         .arg(C(m_theme.tooltipBackground))     // 14
         .arg(C(m_theme.tooltipText)));         // 15
+
+    // The memory bars get the active IDE theme (including user colour edits).
+    // These use a continuous fill, without the global build-progress stripes.
+    if (auto *memoryPanel = findChild<QWidget *>(
+            QStringLiteral("sidboxAppletMemoryPanel"))) {
+        const QString barStyle = QStringLiteral(
+            "QProgressBar { background-color:%1; color:%2; border:1px solid %3; "
+            "border-radius:0px; text-align:center; } "
+            "QProgressBar::chunk { background-color:%4; border-radius:0px; "
+            "margin:1px; }")
+            .arg(C(m_theme.inputBackground), C(m_theme.brightText),
+                 C(m_theme.border), C(m_theme.accent));
+        for (QProgressBar *bar : memoryPanel->findChildren<QProgressBar *>())
+            bar->setStyleSheet(barStyle);
+        if (auto *details = memoryPanel->findChild<QLabel *>(
+                QStringLiteral("sidboxMemoryDetails")))
+            details->setStyleSheet(QStringLiteral("color:%1; font-size:10px;")
+                                   .arg(C(m_theme.mutedText)));
+    }
 
     if (m_projectFiles) {
         m_projectFiles->setStyleSheet(QStringLiteral(

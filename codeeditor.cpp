@@ -6,6 +6,9 @@
 #include <utility>
 #include <QAbstractItemView>
 #include <QCompleter>
+#include <QCoreApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -936,6 +939,41 @@ class LineNumberArea : public QWidget
         QLabel *m_diagnosticPopup;
     };
 
+    /*
+     * QTextCursor::WordUnderCursor follows Qt's natural-language word rules,
+     * not C identifier rules.  In particular, underscores and the caret at
+     * the end of a partially typed identifier can leave an incomplete (or
+     * empty) selection when accepting a completion.
+     *
+     * Select the *whole* identifier on either side of the cursor, including
+     * any suffix after the caret.  If no identifier touches the caret, keep
+     * the cursor unchanged so a member completion after '.' or '->' inserts
+     * at that position.
+     */
+    QTextCursor selectCIdentifierAtCursor(QTextCursor cursor)
+    {
+        const QTextBlock block = cursor.block();
+        const QString line = block.text();
+        const int position = qBound(0, cursor.positionInBlock(), line.size());
+
+        const auto isIdentifierChar = [](QChar ch) {
+            return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+        };
+
+        int start = position;
+        int end = position;
+        while (start > 0 && isIdentifierChar(line.at(start - 1)))
+            --start;
+        while (end < line.size() && isIdentifierChar(line.at(end)))
+            ++end;
+
+        if (start < end) {
+            cursor.setPosition(block.position() + start);
+            cursor.setPosition(block.position() + end, QTextCursor::KeepAnchor);
+        }
+        return cursor;
+    }
+
     QString functionNameFromSignature(const QString &signature)
     {
         const int parenIndex = signature.indexOf(QLatin1Char('('));
@@ -999,6 +1037,7 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     , m_foldScanTimer(new QTimer(this))
     , m_occurrenceDelayTimer(new QTimer(this))
     , m_occurrenceScanTimer(new QTimer(this))
+    , m_completionDelayTimer(new QTimer(this))
     , m_selectedArgument(-1)
 {
     const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -1048,6 +1087,17 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
             [this]() { updateOccurrenceSelection(); });
     connect(this, &CodeEditor::textChanged, this,
             [this]() { updateOccurrenceSelection(true); });
+    // Autocomplete is an idle-time typing aid, not a cursor-navigation action.
+    // Text changes also cover Backspace, paste and auto-paired punctuation;
+    // arrow keys do not emit textChanged and never schedule a popup.
+    m_completionDelayTimer->setSingleShot(true);
+    m_completionDelayTimer->setInterval(120);
+    connect(m_completionDelayTimer, &QTimer::timeout,
+            this, &CodeEditor::showDelayedCompletion);
+    connect(this, &CodeEditor::textChanged, this, [this]() {
+        if (!m_resourceMode && hasFocus() && !textCursor().hasSelection())
+            m_completionDelayTimer->start();
+    });
     connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
         if (!m_resourceMode) {
             emit quickTipCandidateChanged(textUnderCursor());
@@ -1062,6 +1112,12 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     m_completer->setCompletionMode(QCompleter::PopupCompletion);
     m_completer->popup()->setFont(fixedFont);
     m_completer->setWrapAround(false);
+    // QCompleter installs its own event filter on the editor. Install ours
+    // afterwards, so caret navigation can dismiss the popup BEFORE the
+    // completer intercepts arrow-key events.
+    installEventFilter(this);
+    m_completer->popup()->installEventFilter(this);
+    m_completer->popup()->viewport()->installEventFilter(this);
 
     connect(m_completer, qOverload<const QString &>(&QCompleter::activated), this, [this](const QString &completion) {
         if (m_includeCompletionActive) {
@@ -1071,6 +1127,7 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
         } else {
             insertFunctionCompletion(completion);
         }
+        m_completionDelayTimer->stop();
     });
 
     setTheme(m_theme);
@@ -1168,6 +1225,7 @@ void CodeEditor::setResourceMode(bool enabled)
     }
 
     if (m_resourceMode) {
+        m_completionDelayTimer->stop();
         m_functionCompletions.clear();
         m_memberCompletionActive = false;
         m_memberCompletionPrefix.clear();
@@ -1323,7 +1381,7 @@ bool CodeEditor::showIncludeCompletionAtCursor()
     rect.setWidth(qMin(640,
         m_completer->popup()->sizeHintForColumn(0)
         + m_completer->popup()->verticalScrollBar()->sizeHint().width() + 14));
-    m_completer->complete(rect);
+    showCompletionPopup(rect);
     return true;
 }
 
@@ -1395,7 +1453,7 @@ void CodeEditor::showMemberCompletions(const QStringList &members,
         m_completer->popup()->sizeHintForColumn(0)
         + m_completer->popup()->verticalScrollBar()->sizeHint().width());
 
-    m_completer->complete(completionRect);
+    showCompletionPopup(completionRect);
 }
 
 
@@ -3592,10 +3650,12 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
                 m_completer->popup()->hide();
             }
 
+            m_completionDelayTimer->stop();
             event->accept();
             return;
         }
         case Qt::Key_Escape:
+            m_completionDelayTimer->stop();
             m_completer->popup()->hide();
             if (m_includeCompletionActive)
                 restoreIncludeCompletionModel();
@@ -3798,40 +3858,135 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         break;
     }
 
+    // Never open completion as a side effect of moving the caret. This is
+    // particularly important with held/repeating arrow keys.
+    switch (event->key()) {
+    case Qt::Key_Left: case Qt::Key_Right:
+    case Qt::Key_Up: case Qt::Key_Down:
+    case Qt::Key_Home: case Qt::Key_End:
+    case Qt::Key_PageUp: case Qt::Key_PageDown:
+        dismissCompletionForNavigation();
+        return;
+    default:
+        break;
+    }
+
     if (m_resourceMode) {
-        if (m_completer && m_completer->popup()) {
-            m_completer->popup()->hide();
+        dismissCompletionForNavigation();
+        return;
+    }
+
+    // textChanged already scheduled the completion after 120 ms of quiet.
+    // No immediate popup here (including inside #include and object.member).
+
+}
+
+void CodeEditor::dismissCompletionForNavigation()
+{
+    if (m_completionDelayTimer)
+        m_completionDelayTimer->stop();
+    if (m_completer && m_completer->popup())
+        m_completer->popup()->hide();
+    if (m_includeCompletionActive)
+        restoreIncludeCompletionModel();
+    if (m_memberCompletionActive)
+        restoreFunctionCompletionModel();
+}
+
+bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_completer && m_completer->popup() &&
+        m_completer->popup()->isVisible() &&
+        event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        switch (key->key()) {
+        case Qt::Key_Left: case Qt::Key_Right:
+        case Qt::Key_Up: case Qt::Key_Down:
+        case Qt::Key_Home: case Qt::Key_End:
+        case Qt::Key_PageUp: case Qt::Key_PageDown: {
+            const bool fromPopup = watched == m_completer->popup() ||
+                watched == m_completer->popup()->viewport();
+            if (watched == this || fromPopup) {
+                dismissCompletionForNavigation();
+                if (fromPopup) {
+                    // The popup may hold keyboard focus. Forward this real
+                    // navigation key once to the text editor instead.
+                    QKeyEvent forwarded(key->type(), key->key(),
+                                         key->modifiers(), key->text(),
+                                         key->isAutoRepeat(), key->count());
+                    QCoreApplication::sendEvent(this, &forwarded);
+                    return true;
+                }
+            }
+            break;
         }
-        return;
-    }
-
-    if (showIncludeCompletionAtCursor()) {
-        return;
-    }
-
-    if (m_completer && requestMemberCompletionAtCursor()) {
-        return;
-    }
-
-    const QString completionPrefix = textUnderCursor();
-    if (!m_completer || completionPrefix.length() < 2 || event->text().isEmpty()) {
-        if (m_completer) {
-            m_completer->popup()->hide();
+        default: break;
         }
+    }
+    return QPlainTextEdit::eventFilter(watched, event);
+}
+
+// Keep IntelliSense outside the line being edited. Qt's default QCompleter
+// placement can straddle the caret row when the IDE uses nested split views.
+// Reposition AFTER complete() has calculated the popup's actual dimensions.
+void CodeEditor::showCompletionPopup(const QRect &caretRect)
+{
+    if (!m_completer || !m_completer->popup()) return;
+    m_completer->complete(caretRect);
+    auto *popup = m_completer->popup();
+    if (!popup->isVisible()) return;
+
+    const QPoint caretTop = viewport()->mapToGlobal(caretRect.topLeft());
+    QScreen *screen = QGuiApplication::screenAt(caretTop);
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    if (!screen) return;
+
+    const QRect available = screen->availableGeometry();
+    const int gap = 3;
+    const int belowY = caretTop.y() + caretRect.height() + gap;
+    const int aboveBottom = caretTop.y() - gap;
+    const int freeBelow = qMax(0, available.bottom() - belowY + 1);
+    const int freeAbove = qMax(0, aboveBottom - available.top());
+    const bool putBelow = (popup->height() <= freeBelow)
+        || (freeBelow >= freeAbove);
+    const int verticalSpace = putBelow ? freeBelow : freeAbove;
+    if (verticalSpace <= 0) return;
+
+    // In the unusual case where the list is taller than either side, shrink
+    // it rather than ever drawing over the actual line under the caret.
+    const int width = qMin(popup->width(), available.width());
+    const int height = qMin(popup->height(), verticalSpace);
+    const int x = qBound(available.left(), caretTop.x(),
+                         available.right() - width + 1);
+    const int y = putBelow ? belowY : aboveBottom - height;
+    popup->setGeometry(x, y, width, height);
+}
+
+void CodeEditor::showDelayedCompletion()
+{
+    if (m_resourceMode || !m_completer || !hasFocus() ||
+        textCursor().hasSelection())
+        return;
+
+    if (showIncludeCompletionAtCursor())
+        return;
+    if (requestMemberCompletionAtCursor())
+        return;
+
+    const QString prefix = textUnderCursor();
+    if (prefix.size() < 2) {
+        m_completer->popup()->hide();
         return;
     }
-
-    m_completer->setCompletionPrefix(completionPrefix);
+    m_completer->setCompletionPrefix(prefix);
     if (m_completer->completionCount() == 0) {
         m_completer->popup()->hide();
         return;
     }
-
-    QRect completionRect = cursorRect();
-    completionRect.setWidth(
-        m_completer->popup()->sizeHintForColumn(0)
-        + m_completer->popup()->verticalScrollBar()->sizeHint().width());
-    m_completer->complete(completionRect);
+    QRect rect = cursorRect();
+    rect.setWidth(m_completer->popup()->sizeHintForColumn(0) +
+                  m_completer->popup()->verticalScrollBar()->sizeHint().width());
+    showCompletionPopup(rect);
 }
 
 void CodeEditor::resizeEvent(QResizeEvent *event)
@@ -4094,15 +4249,7 @@ void CodeEditor::insertMemberCompletion(const QString &member)
         return;
     }
 
-    QTextCursor cursor = textCursor();
-
-    if (!m_memberCompletionPrefix.isEmpty()) {
-        cursor.movePosition(
-            QTextCursor::PreviousCharacter,
-            QTextCursor::KeepAnchor,
-            m_memberCompletionPrefix.length());
-    }
-
+    QTextCursor cursor = selectCIdentifierAtCursor(textCursor());
     cursor.insertText(member);
     setTextCursor(cursor);
 
@@ -4116,8 +4263,7 @@ void CodeEditor::insertFunctionCompletion(const QString &signature)
         return;
     }
 
-    QTextCursor cursor = textCursor();
-    cursor.select(QTextCursor::WordUnderCursor);
+    QTextCursor cursor = selectCIdentifierAtCursor(textCursor());
 
     const QString name = functionNameFromSignature(signature);
     if (!signature.contains(QLatin1Char('('))) {
