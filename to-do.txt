@@ -1,7 +1,27 @@
+When generating the Asset code, it asks "how should codergirl store graphics..." its a box with OK an Cancel.
+shouldnt this be a "Yes, No, Cancel"?
+maybe have the message say something like
+"How should CoderGirl store graphics?"
+"Audio and music remain disk resources in this first version"
+"Yes = From Disk"
+"no = embedded.c"
+Cancel = just exits and doesnae generate code
+
+
+
+
+The right pane is TOO wide tho. maybe reduce its minimum by 50px?
+
+
+
+
+
+
 
 might be a bug, but right clicking on an asset the palettes/foreground/main.pal (from the disc)
 all the ppb assets vanish (like all the palette data vanished?) to get it back i had to unselect "use selected cluts for preview"
 main.pal already contains the right colours in the same locations anyway, so not sure whats causing them to send all the ppb indexs to 0 (transpancey)
+
 
 
 

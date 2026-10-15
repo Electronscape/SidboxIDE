@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdlib.h>
 #include "graphics.h"
 #include "apis.h"
 
@@ -6,21 +7,25 @@
 // sidbox's graphics system uses some of the header parts, but if you just want the raw pixel colour index, skip the first header and palette data
 
 void LoadPPB(char *filename, uint8_t *img){
-    // [0] configbits
-    // [1..2] width  (big-endian)
-    // [3..4] height (big-endian)
-    // [5..8] payload length (big-endian)
-    // [9..15] reserved = 0
-    // colour palette info
-    // [16 + 1024]  // 1024 bytes of palette info
-    // [1040 ... n] // the 8bit pixel data
-    ppb_t head;
-    uint8_t res;
-    uint32_t readi;
-    sfopen(0, filename, SD_READ);
-    if(res == F_OK){
-        sfread(0, &head, sizeof(head), &readi);
-        sfread(0, img, head.length_be, &readi);
+    /* PPB: 16-byte header (BE dimensions/length), 1024-byte palette,
+       then indexed pixel bytes. Keep temporary buffers off the small stack. */
+    uint8_t hdr[16];
+    uint32_t got = 0;
+    if (!filename || !img) return;
+    if (sfopen(0, filename, SD_READ) != F_OK) return;
+
+    if (sfread(0, hdr, sizeof(hdr), &got) == F_OK && got == sizeof(hdr)) {
+        const uint32_t width = ((uint32_t)hdr[1] << 8) | hdr[2];
+        const uint32_t height = ((uint32_t)hdr[3] << 8) | hdr[4];
+        const uint32_t length = ((uint32_t)hdr[5] << 24) | ((uint32_t)hdr[6] << 16)
+                              | ((uint32_t)hdr[7] << 8) | hdr[8];
+        /* Caller must allocate width * height bytes BEFORE this call.
+           This legacy void API cannot know the caller's buffer capacity. */
+        if (width && height && length == width * height &&
+            sflseek(0, 1040u) == F_OK) {
+            got = 0;
+            (void)sfread(0, img, length, &got);
+        }
     }
     sfclose(0);
 }

@@ -17,6 +17,7 @@ class QGraphicsScene;
 class QGraphicsView;
 class QGraphicsItem;
 class QGraphicsRectItem;
+class QGraphicsPathItem;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QSpinBox;
@@ -66,10 +67,26 @@ private:
         int cellHeight = 0;
         int frame = 0;
         bool locked = false;
+        // Background rendering is independent of its foreground/sprite CLUT.
+        // "sprite" keeps legacy gfx_drawbob; "direct_ready" is already
+        // column-major; "direct_convert" transposes ordinary row-major PPB.
+        QString backgroundMode = QStringLiteral("sprite");
         SidboxAudioSettings audio; // Stage 54: persisted only for sound/music
     };
 
     void buildUi();
+    QString helperTemplatesRoot() const;
+    void addCodeHelper(const QString &category, const QString &base);
+    void showSplineMenu(const QPoint &viewPos);
+    void rebuildSplineOverlay();
+    void updateSplineCurve();
+    bool exportSplinePaths(bool showMessage);
+    struct SplinePath {
+        QString name;
+        QVector<QPoint> points;
+        int durationFrames = 100;
+        bool loop = true;
+    };
     bool loadDesign();
     void setDirty(bool dirty = true);
     void refreshResources();
@@ -95,9 +112,11 @@ private:
     void refreshPaletteSelectors();
     void refreshPlanePreview();
     void buildSharedPalette();
+    void openPaletteEditor(int resourceIndex = -1);
     void pickResourceFile();
     void importPngAsPpb();
     void exportSelectedC();
+    void generateGameCode();
     void updateSelectedPixmap();
     QImage resourcePreview(const Resource &resource, QString *details = nullptr) const;
     QImage cachedImage(const QString &path, QString *error = nullptr) const;
@@ -118,8 +137,14 @@ private:
     QGraphicsView *m_view = nullptr;
     QGraphicsRectItem *m_cameraFrame = nullptr;
     QGraphicsRectItem *m_worldFrame = nullptr;
+    QGraphicsPathItem *m_splineCurveItem = nullptr;
+    QVector<QGraphicsItem *> m_splineHandleItems;
+    QVector<SplinePath> m_splinePaths;
+    int m_activeSpline = -1;
     QTreeWidget *m_resourceTree = nullptr;
     QFormLayout *m_propertiesForm = nullptr;
+    QWidget *m_positionFields = nullptr;
+    QPushButton *m_editPaletteButton = nullptr;
     QSpinBox *m_worldWidth = nullptr;
     QSpinBox *m_worldHeight = nullptr;
     QSpinBox *m_cameraX = nullptr;
@@ -132,6 +157,7 @@ private:
     QSpinBox *m_propFrame = nullptr;
     QCheckBox *m_propLocked = nullptr;
     QComboBox *m_propPlane = nullptr;
+    QComboBox *m_propBackgroundMode = nullptr;
     QComboBox *m_planeMode = nullptr;
     QCheckBox *m_showLabels = nullptr;
     QCheckBox *m_forcePalette = nullptr;

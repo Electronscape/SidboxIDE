@@ -32,6 +32,10 @@ qt_add_executable(SidboxIDE
     gameaudio.h
     gamepalette.cpp
     gamepalette.h
+    gamepaletteeditor.cpp
+    gamepaletteeditor.h
+    gamecodegen.cpp
+    gamecodegen.h
     ppbcodec.cpp
     ppbcodec.h
     mainwindow.ui
@@ -176,6 +180,12 @@ add_dependencies(SidboxIDE sidbox-v2-packer)
 # Installed layouts keep the same app-relative idelibs/tools lookup.
 install(TARGETS sidbox-v2-packer
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs/tools"
+)
+
+# Keep optional V1 helper templates alongside the installed IDE executable.
+# They are discovered at runtime; no helper C source is baked into Qt.
+install(DIRECTORY idelibs/codehelpers
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/idelibs"
 )
 
 install(FILES icons/icon.png

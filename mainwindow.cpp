@@ -6652,7 +6652,16 @@ void MainWindow::setupInterface()
 
     // --- Center Work Area ---
     auto *workAreaSplitter = new QSplitter(Qt::Vertical, mainSplitter);
+    // The centre must absorb splitter width changes, rather than imposing
+    // the widest editor tab's preferred size on the main window.
+    workAreaSplitter->setMinimumWidth(0);
+    workAreaSplitter->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     m_editorTabs = new QTabWidget(workAreaSplitter);
+    // Tab pages retain their size hints even when hidden. Game/GUI Designer
+    // controls must not enlarge the *top-level maximised window* when we
+    // switch back to source code and restore the right-hand sidebar.
+    m_editorTabs->setMinimumWidth(0);
+    m_editorTabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     m_editorTabs->setDocumentMode(true);
     m_editorTabs->setTabsClosable(true);
     m_editorTabs->setMovable(true);

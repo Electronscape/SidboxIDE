@@ -1,9 +1,12 @@
 #include "gamedesigner.h"
 #include "ppbcodec.h"
 #include "gamepalette.h"
+#include "gamepaletteeditor.h"
+#include "gamecodegen.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QPaintEvent>
 #include <QDir>
 #include <QEvent>
 #include <QDragEnterEvent>
@@ -11,6 +14,7 @@
 #include <QDropEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QContextMenuEvent>
 #include <QMimeData>
 #include <QUrl>
 #include <QAbstractItemView>
@@ -23,6 +27,12 @@
 #include <QApplication>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsRectItem>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
+#include <QPainterPath>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
@@ -36,6 +46,7 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QMenu>
 #include <QAction>
@@ -52,6 +63,7 @@
 #include <QSaveFile>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSizePolicy>
 #include <QListView>
 #include <QStringList>
 #include <QSignalBlocker>
@@ -70,6 +82,27 @@ namespace {
 constexpr int LCD_WIDTH = 480;
 constexpr int LCD_HEIGHT = 320;
 constexpr int MAX_WORLD = 16384; // Editor guard only; NOT a firmware/world-size claim.
+
+// Flat, theme-aware dropdown with a visible chevron. Drawing the arrow in
+// foreground avoids losing it to platform-specific Qt style-sheet rendering.
+class GameComboBox final : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QComboBox::paintEvent(event);
+        QPainter p(this);
+        QPen pen(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled, QPalette::Text));
+        pen.setWidth(2);
+        p.setPen(pen);
+        const int cx = width() - 12;
+        const int cy = height() / 2;
+        p.drawLine(cx - 4, cy - 2, cx, cy + 2);
+        p.drawLine(cx, cy + 2, cx + 4, cy - 2);
+    }
+};
 
 class GameScene final : public QGraphicsScene
 {
@@ -120,6 +153,32 @@ protected:
     }
 };
 
+
+// The editor control points are separate from sprites. They affect only the
+// saved path geometry; a game sprite moves when run_spline() is called in C.
+class SplineHandle final : public QGraphicsEllipseItem
+{
+public:
+    std::function<void(const QPointF &)> moved;
+    std::function<QPointF(const QPointF &)> bounded;
+    explicit SplineHandle() : QGraphicsEllipseItem(-6, -6, 12, 12)
+    {
+        setFlags(ItemIsMovable | ItemSendsGeometryChanges);
+        setZValue(11000);
+        setPen(QPen(QColor(35, 32, 52), 2));
+        setBrush(QColor(115, 245, 231));
+        setCursor(Qt::SizeAllCursor);
+    }
+protected:
+    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override
+    {
+        if (change == ItemPositionChange && bounded && scene())
+            return bounded(value.toPointF());
+        const QVariant result = QGraphicsEllipseItem::itemChange(change, value);
+        if (change == ItemPositionHasChanged && moved) moved(pos());
+        return result;
+    }
+};
 
 // Accept URL drags from the project explorer (and the OS file manager) without
 // moving or copying files. Group roots determine the target asset category.
@@ -206,6 +265,31 @@ QPixmap paletteSwatches(const QVector<QRgb> &table)
     return QPixmap::fromImage(image);
 }
 
+// Editor-only forced-CLUT colour preview. SIDBOX may use the ARGB alpha
+// byte for DMA2D blending, but some imported .pal files leave alpha = 0 for
+// many *nonzero* colour indices. Passing those bytes straight to QImage would
+// make sprites vanish instead of showing the selected indexed RGB colours.
+// Keep index 0 transparent on the foreground plane; show all remaining colour
+// indices as opaque for this COLOUR preview. The actual .pal and PPB bytes are
+// never changed. Properties warn when hardware alpha may differ.
+QVector<QRgb> colourPreviewBank(const QVector<QRgb> &bank, bool foreground)
+{
+    QVector<QRgb> display = bank;
+    for (int i = 0; i < display.size(); ++i) {
+        const QRgb colour = display.at(i);
+        display[i] = qRgba(qRed(colour), qGreen(colour), qBlue(colour),
+                           foreground && i == 0 ? 0 : 255);
+    }
+    return display;
+}
+
+bool extraPaletteTransparency(const QVector<QRgb> &bank, bool foreground)
+{
+    for (int i = foreground ? 1 : 0; i < bank.size(); ++i)
+        if (qAlpha(bank.at(i)) != 255) return true;
+    return false;
+}
+
 QPixmap missingImage(const QString &kind)
 {
     QPixmap result(64, 64);
@@ -265,6 +349,541 @@ void SidboxGameDesigner::setDirty(bool value)
     if (tabTitleChanged) tabTitleChanged();
 }
 
+void SidboxGameDesigner::openPaletteEditor(int resourceIndex)
+{
+    QString palettePath;
+    QString plane = QStringLiteral("foreground");
+    if (resourceIndex >= 0 && resourceIndex < m_resources.size()
+        && m_resources.at(resourceIndex).kind == QStringLiteral("palette")) {
+        const Resource &resource = m_resources.at(resourceIndex);
+        plane = resource.plane;
+        palettePath = resolvedPath(resource.path);
+    }
+    SidboxGamePaletteEditor dialog(this);
+    dialog.setBank(plane == QStringLiteral("background"));
+    if (!palettePath.isEmpty() && QFileInfo(palettePath).suffix().compare(
+        QStringLiteral("pal"), Qt::CaseInsensitive) == 0) {
+        dialog.loadFromFile(palettePath);
+    }
+    dialog.exec();
+    const QString saved = dialog.savedPath();
+    if (saved.isEmpty()) return;
+    m_paletteCache.clear();
+    refreshPlanePreview();
+    if (assetFilesChanged) assetFilesChanged();
+    // Editing an existing .pal changes that resource in place. Do not add a duplicate.
+    if (!palettePath.isEmpty() && QDir::cleanPath(QFileInfo(saved).absoluteFilePath())
+        == QDir::cleanPath(QFileInfo(palettePath).absoluteFilePath())) {
+        refreshProperties();
+        return;
+    }
+    if (QMessageBox::question(this, tr("Add Palette Resource"),
+        tr("Add the newly saved palette to Game Resources as a %1 palette?\n%2")
+            .arg(dialog.currentBankIsBackground() ? tr("Background") : tr("Foreground"), saved),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes) return;
+    Resource r;
+    r.name = QFileInfo(saved).completeBaseName();
+    r.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    r.kind = QStringLiteral("palette");
+    r.plane = dialog.currentBankIsBackground() ? QStringLiteral("background")
+                                               : QStringLiteral("foreground");
+    r.path = storedPath(saved);
+    rememberResourceEdit();
+    m_resources.append(r);
+    refreshResources();
+    selectResource(m_resources.size() - 1);
+    setDirty();
+    if (assetFilesChanged) assetFilesChanged();
+}
+
+QString SidboxGameDesigner::helperTemplatesRoot() const
+{
+    // Look alongside the executable first, just like the IDE SDK lookup.
+    const QDir app(QCoreApplication::applicationDirPath());
+    QStringList candidates;
+    if (qEnvironmentVariableIsSet("SIDBOX_SDK"))
+        candidates << qEnvironmentVariable("SIDBOX_SDK");
+    candidates << app.filePath(QStringLiteral("idelibs"))
+               << app.filePath(QStringLiteral("../idelibs"))
+               << app.filePath(QStringLiteral("../../idelibs"))
+               << app.filePath(QStringLiteral("../SidboxIDE/idelibs"))
+               << QDir::current().filePath(QStringLiteral("idelibs"))
+               << QDir::current().filePath(QStringLiteral("SidboxIDE/idelibs"));
+    for (const QString &candidate : candidates) {
+        const QString path = QDir(candidate).filePath(QStringLiteral("codehelpers"));
+        if (QFileInfo(path).isDir()) return QFileInfo(path).absoluteFilePath();
+    }
+    return QString();
+}
+
+void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &base)
+{
+    if ((category != QStringLiteral("game") && category != QStringLiteral("gui"))
+        || base.isEmpty() || base.contains(QLatin1Char('/')) || base.contains(QLatin1Char('\\'))
+        || base == QStringLiteral(".") || base == QStringLiteral("..")) return;
+    const QDir templateFolder(QDir(helperTemplatesRoot()).filePath(category));
+    const QString sourceH = templateFolder.filePath(base + QStringLiteral(".h"));
+    const QString sourceC = templateFolder.filePath(base + QStringLiteral(".c"));
+    QFile hTemplate(sourceH), cTemplate(sourceC);
+    if (!hTemplate.open(QIODevice::ReadOnly) || !cTemplate.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Add Helper Code"),
+            tr("Cannot read helper template files:\n%1\n%2").arg(sourceH, sourceC));
+        return;
+    }
+    QByteArray header = hTemplate.readAll(), source = cTemplate.readAll();
+    // Installed game helper names retain the existing game-prefix convention.
+    const QString installedBase = category + base;
+    source.replace((QStringLiteral("\"%1.h\"").arg(base)).toUtf8(),
+                   (QStringLiteral("\"%1.h\"").arg(installedBase)).toUtf8());
+    const QString folder = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
+    const QString hPath = QDir(folder).filePath(installedBase + QStringLiteral(".h"));
+    const QString cPath = QDir(folder).filePath(installedBase + QStringLiteral(".c"));
+    if (QFileInfo::exists(hPath) || QFileInfo::exists(cPath)) {
+        if (QMessageBox::warning(this, tr("Replace Helper Code?"),
+            tr("This game's helper code already exists. Replace it with the template?\n"
+               "Your changes to these two files would be lost.\n\n%1\n%2")
+                .arg(hPath, cPath), QMessageBox::Yes | QMessageBox::Cancel,
+                QMessageBox::Cancel) != QMessageBox::Yes) return;
+    }
+    if (!QDir().mkpath(folder)) {
+        QMessageBox::warning(this, tr("Add Helper Code"), tr("Cannot create directory:\n%1").arg(folder));
+        return;
+    }
+    QSaveFile hFile(hPath), cFile(cPath);
+    if (!hFile.open(QIODevice::WriteOnly) || !cFile.open(QIODevice::WriteOnly)
+        || hFile.write(header) != header.size() || cFile.write(source) != source.size()) {
+        hFile.cancelWriting(); cFile.cancelWriting();
+        QMessageBox::warning(this, tr("Add Helper Code"),
+            tr("Cannot write files in:\n%1").arg(folder));
+        return;
+    }
+    // Two atomic single-file saves (a power cut between commits could still
+    // leave mismatched files, but ordinary write failures do not truncate them).
+    if (!hFile.commit() || !cFile.commit()) {
+        QMessageBox::warning(this, tr("Add Helper Code"),
+            tr("Could not save all helper files in:\n%1").arg(folder));
+        return;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    QString message = tr("Added gamehelpers/%1.h and %1.c.\n\n"
+                          "Include \"gamehelpers/%1.h\" in your main.c.\n"
+                          "Gameassets generation will not overwrite this code.").arg(installedBase);
+    if (category == QStringLiteral("game") && base == QStringLiteral("spline"))
+        message += tr("\n\nRight-click the world canvas to create or edit a spline path, "
+                      "then choose Export Spline Paths to C.");
+    QMessageBox::information(this, tr("Helper Code Added"), message);
+}
+
+void SidboxGameDesigner::updateSplineCurve()
+{
+    if (!m_splineCurveItem) return;
+    QPainterPath curve;
+    if (m_activeSpline < 0 || m_activeSpline >= m_splinePaths.size()) {
+        m_splineCurveItem->setPath(curve);
+        return;
+    }
+    const SplinePath &spline = m_splinePaths.at(m_activeSpline);
+    const int n = spline.points.size();
+    if (n < 2) { m_splineCurveItem->setPath(curve); return; }
+    curve.moveTo(spline.points.at(0));
+    const int segments = spline.loop ? n : n - 1;
+    // Preview uses the same Catmull-Rom curve that the V1 helper follows.
+    for (int i = 0; i < segments; ++i) {
+        const QPointF p0 = spline.points.at(i == 0 ? (spline.loop ? n - 1 : 0) : i - 1);
+        const QPointF p1 = spline.points.at(i);
+        const QPointF p2 = spline.points.at((i + 1) % n);
+        const QPointF p3 = spline.points.at(i + 2 < n ? i + 2 :
+            (spline.loop ? (i + 2) % n : n - 1));
+        curve.cubicTo(p1 + (p2 - p0) / 6.0, p2 - (p3 - p1) / 6.0, p2);
+    }
+    m_splineCurveItem->setPath(curve);
+}
+
+void SidboxGameDesigner::rebuildSplineOverlay()
+{
+    if (!m_scene) return;
+    for (QGraphicsItem *item : m_splineHandleItems) {
+        m_scene->removeItem(item);
+        delete item;
+    }
+    m_splineHandleItems.clear();
+    if (m_splineCurveItem) {
+        m_scene->removeItem(m_splineCurveItem);
+        delete m_splineCurveItem;
+    }
+    m_splineCurveItem = new QGraphicsPathItem;
+    m_splineCurveItem->setZValue(10050);
+    m_splineCurveItem->setPen(QPen(QColor(105, 245, 225), 2.5));
+    m_splineCurveItem->setBrush(Qt::NoBrush);
+    m_splineCurveItem->setAcceptedMouseButtons(Qt::NoButton);
+    m_scene->addItem(m_splineCurveItem);
+    updateSplineCurve();
+    if (m_activeSpline < 0 || m_activeSpline >= m_splinePaths.size()) return;
+    const auto &path = m_splinePaths.at(m_activeSpline);
+    for (int i = 0; i < path.points.size(); ++i) {
+        auto *node = new SplineHandle;
+        node->setData(1, m_activeSpline);
+        node->setData(2, i);
+        node->bounded = [this](const QPointF &p) {
+            const int step = m_snap->isChecked()
+                ? m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt() : 0;
+            const qreal x = step > 0 ? qRound(p.x() / step) * step : qRound(p.x());
+            const qreal y = step > 0 ? qRound(p.y() / step) * step : qRound(p.y());
+            return QPointF(qBound(0.0, x, (qreal)m_worldWidth->value()),
+                           qBound(0.0, y, (qreal)m_worldHeight->value()));
+        };
+        node->setPos(path.points.at(i));
+        node->moved = [this, i](const QPointF &point) {
+            if (m_loading || m_activeSpline < 0 || m_activeSpline >= m_splinePaths.size()) return;
+            auto &points = m_splinePaths[m_activeSpline].points;
+            if (i >= points.size()) return;
+            const QPoint newPoint(qRound(point.x()), qRound(point.y()));
+            if (points.at(i) == newPoint) return;
+            points[i] = newPoint;
+            updateSplineCurve();
+            setDirty();
+        };
+        node->setToolTip(tr("Spline point %1 - drag to move; right-click to insert or delete points")
+                         .arg(i + 1));
+        m_scene->addItem(node);
+        auto *label = new QGraphicsSimpleTextItem(QString::number(i + 1), node);
+        label->setBrush(QColor(255, 238, 125));
+        label->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+        label->setPos(9, -13);
+        label->setAcceptedMouseButtons(Qt::NoButton);
+        m_splineHandleItems.append(node);
+    }
+}
+
+void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
+{
+    const QPointF worldPos = m_view->mapToScene(viewPos);
+    const QPoint point(qBound(0, qRound(worldPos.x()), m_worldWidth->value()),
+                       qBound(0, qRound(worldPos.y()), m_worldHeight->value()));
+    int clickedNode = -1;
+    for (QGraphicsItem *item = m_view->itemAt(viewPos); item; item = item->parentItem()) {
+        if (item->data(1).isValid() && item->data(2).isValid()) {
+            clickedNode = item->data(2).toInt();
+            break;
+        }
+    }
+    QMenu menu(this);
+    QAction *create = menu.addAction(tr("Create Spline Path Here..."));
+    QMenu *selectMenu = menu.addMenu(tr("Select Spline Path"));
+    for (int i = 0; i < m_splinePaths.size(); ++i) {
+        QAction *action = selectMenu->addAction(m_splinePaths.at(i).name);
+        action->setCheckable(true);
+        action->setChecked(i == m_activeSpline);
+        action->setData(i);
+    }
+    selectMenu->setEnabled(!m_splinePaths.isEmpty());
+    menu.addSeparator();
+    QAction *insert = menu.addAction(tr("Insert Point Here"));
+    QAction *removePoint = menu.addAction(tr("Delete This Point"));
+    QAction *settings = menu.addAction(tr("Spline Name / Time / Loop..."));
+    QAction *removePath = menu.addAction(tr("Delete Spline Path..."));
+    const bool hasPath = m_activeSpline >= 0 && m_activeSpline < m_splinePaths.size();
+    insert->setEnabled(hasPath && m_splinePaths.at(m_activeSpline).points.size() < 128);
+    removePoint->setEnabled(hasPath && clickedNode >= 0
+        && m_splinePaths.at(m_activeSpline).points.size() > 2);
+    settings->setEnabled(hasPath);
+    removePath->setEnabled(hasPath);
+    menu.addSeparator();
+    QAction *exportCode = menu.addAction(tr("Export Spline Paths to C..."));
+    exportCode->setEnabled(!m_splinePaths.isEmpty());
+    menu.addAction(tr("Spline Help: drag numbered dots; loop joins last to first"))->setEnabled(false);
+    QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(viewPos));
+    if (!chosen) return;
+    if (chosen == create) {
+        if (m_splinePaths.size() >= 128) {
+            QMessageBox::warning(this, tr("Spline Editor"), tr("A maximum of 128 paths is supported."));
+            return;
+        }
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, tr("New Spline Path"),
+            tr("Path name:"), QLineEdit::Normal,
+            QStringLiteral("flight_%1").arg(m_splinePaths.size() + 1), &ok).trimmed();
+        if (!ok || name.isEmpty()) return;
+        SplinePath path;
+        path.name = name;
+        // Four starter nodes near the click; all can be moved or removed.
+        for (const QPoint &offset : {QPoint(0, 0), QPoint(60, -40),
+                                    QPoint(120, 35), QPoint(180, 0)}) {
+            path.points.append(QPoint(qBound(0, point.x() + offset.x(), m_worldWidth->value()),
+                                      qBound(0, point.y() + offset.y(), m_worldHeight->value())));
+        }
+        m_splinePaths.append(path);
+        m_activeSpline = m_splinePaths.size() - 1;
+        rebuildSplineOverlay();
+        setDirty();
+    } else if (chosen == insert) {
+        SplinePath &path = m_splinePaths[m_activeSpline];
+        const int n = path.points.size();
+        const int segments = path.loop ? n : n - 1;
+        qreal best = 1e30;
+        int at = n;
+        for (int i = 0; i < segments; ++i) {
+            const QPointF a = path.points.at(i);
+            const QPointF b = path.points.at((i + 1) % n);
+            const QPointF ab = b - a;
+            const qreal len = QPointF::dotProduct(ab, ab);
+            const qreal t = len > 0 ? qBound(0.0,
+                QPointF::dotProduct(QPointF(point) - a, ab) / len, 1.0) : 0.0;
+            const QPointF d = QPointF(point) - (a + ab * t);
+            const qreal distance = QPointF::dotProduct(d, d);
+            if (distance < best) { best = distance; at = i + 1; }
+        }
+        path.points.insert(at, point);
+        rebuildSplineOverlay();
+        setDirty();
+    } else if (chosen == removePoint) {
+        m_splinePaths[m_activeSpline].points.removeAt(clickedNode);
+        rebuildSplineOverlay();
+        setDirty();
+    } else if (chosen == settings) {
+        SplinePath &path = m_splinePaths[m_activeSpline];
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Spline Path Settings"));
+        QVBoxLayout vertical(&dialog);
+        QFormLayout fields;
+        QLineEdit name(path.name, &dialog);
+        QSpinBox frames(&dialog);
+        frames.setRange(1, 65535);
+        frames.setValue(path.durationFrames);
+        frames.setSuffix(tr(" frames"));
+        QCheckBox loop(tr("Loop smoothly from last point to first"), &dialog);
+        loop.setChecked(path.loop);
+        fields.addRow(tr("Name"), &name);
+        fields.addRow(tr("Journey time"), &frames);
+        fields.addRow(QString(), &loop);
+        vertical.addLayout(&fields);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                             Qt::Horizontal, &dialog);
+        vertical.addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted || name.text().trimmed().isEmpty()) return;
+        path.name = name.text().trimmed();
+        path.durationFrames = frames.value();
+        path.loop = loop.isChecked();
+        rebuildSplineOverlay();
+        setDirty();
+    } else if (chosen == removePath) {
+        if (QMessageBox::question(this, tr("Delete Spline Path?"),
+            tr("Remove the path '%1' from this design?\n"
+               "Exported C files will update the next time you save.")
+                .arg(m_splinePaths.at(m_activeSpline).name),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) return;
+        m_splinePaths.removeAt(m_activeSpline);
+        m_activeSpline = m_splinePaths.isEmpty() ? -1 : qMin(m_activeSpline, m_splinePaths.size() - 1);
+        rebuildSplineOverlay();
+        setDirty();
+    } else if (chosen == exportCode) {
+        exportSplinePaths(true);
+    } else if (chosen->parent() == selectMenu) {
+        const int index = chosen->data().toInt();
+        if (index >= 0 && index < m_splinePaths.size()) {
+            m_activeSpline = index;
+            rebuildSplineOverlay();
+            setDirty();
+        }
+    }
+}
+
+bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
+{
+    // A manual export offers to include the movement implementation as well
+    // as the point data. Saving an already-exported design does not ask again.
+    bool copyHelper = false;
+    if (showMessage) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this, tr("Export Spline Paths"),
+            tr("Do you want gamespline.c and gamespline.h copied into your game?\n"
+               "Without these helper files, your spline cannot move sprites.\n\n"
+               "Yes: Copy any missing helper files and export the spline paths.\n"
+               "No: Export the spline paths without copying helpers.\n"
+               "Cancel: Do not export anything.\n\n"
+               "Existing helper files will not be overwritten."),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Yes);
+        if (answer == QMessageBox::Cancel || answer == QMessageBox::NoButton)
+            return false;
+        copyHelper = (answer == QMessageBox::Yes);
+    }
+
+    const QString folder = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gamehelpers"));
+    const QString helperHeaderPath = QDir(folder).filePath(QStringLiteral("gamespline.h"));
+    const QString helperSourcePath = QDir(folder).filePath(QStringLiteral("gamespline.c"));
+    const bool needHelperHeader = copyHelper && !QFileInfo::exists(helperHeaderPath);
+    const bool needHelperSource = copyHelper && !QFileInfo::exists(helperSourcePath);
+    QByteArray helperHeader, helperSource;
+
+    // Read the SDK templates before touching the project's output files.
+    if (needHelperHeader || needHelperSource) {
+        const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+        if (needHelperHeader) {
+            const QString path = templates.filePath(QStringLiteral("spline.h"));
+            QFile input(path);
+            if (!input.open(QIODevice::ReadOnly)) {
+                QMessageBox::warning(this, tr("Export Spline Paths"),
+                    tr("Cannot read helper template:\n%1").arg(path));
+                return false;
+            }
+            helperHeader = input.readAll();
+        }
+        if (needHelperSource) {
+            const QString path = templates.filePath(QStringLiteral("spline.c"));
+            QFile input(path);
+            if (!input.open(QIODevice::ReadOnly)) {
+                QMessageBox::warning(this, tr("Export Spline Paths"),
+                    tr("Cannot read helper template:\n%1").arg(path));
+                return false;
+            }
+            helperSource = input.readAll();
+            // Match the installed helper name, just like Add Helper Code.
+            helperSource.replace("\"spline.h\"", "\"gamespline.h\"");
+        }
+    }
+
+    if (!QDir().mkpath(folder)) {
+        QMessageBox::warning(this, tr("Export Spline Paths"),
+            tr("Cannot create folder:\n%1").arg(folder));
+        return false;
+    }
+    QByteArray header = "/* GENERATED by CoderGirl Game Designer. Edit paths in the canvas. */\n"
+        "#ifndef CODERGIRL_V1_SPLINEPATHS_H\n#define CODERGIRL_V1_SPLINEPATHS_H\n"
+        "#include \"gamespline.h\"\n\n";
+    QByteArray source = "/* GENERATED by CoderGirl Game Designer. Do not edit this file. */\n"
+        "#include \"splinepaths.h\"\n\n";
+    QSet<QString> identifiers;
+    QString firstName;
+    for (int i = 0; i < m_splinePaths.size(); ++i) {
+        const SplinePath &path = m_splinePaths.at(i);
+        if (path.points.size() < 2) continue;
+        QString name = path.name.toLower();
+        name.replace(QRegularExpression(QStringLiteral("[^a-z0-9_]")), QStringLiteral("_"));
+        if (name.isEmpty() || name.at(0).isDigit()) name.prepend(QLatin1Char('_'));
+        QString identifier = QStringLiteral("spline_") + name;
+        const QString unsuffixed = identifier;
+        int suffix = 2;
+        while (identifiers.contains(identifier))
+            identifier = unsuffixed + QStringLiteral("_%1").arg(suffix++);
+        identifiers.insert(identifier);
+        if (firstName.isEmpty()) firstName = identifier;
+        header += QStringLiteral("extern const game_spline_point_t %1_path[%2];\n"
+                                 "extern const uint16_t %1_count;\n"
+                                 "extern const uint16_t %1_frames;\n"
+                                 "extern const uint8_t %1_loop;\n\n")
+                          .arg(identifier).arg(path.points.size()).toUtf8();
+        source += QStringLiteral("const game_spline_point_t %1_path[%2] = {\n")
+                          .arg(identifier).arg(path.points.size()).toUtf8();
+        for (const QPoint &point : path.points)
+            source += QStringLiteral("    {%1, %2},\n").arg(point.x()).arg(point.y()).toUtf8();
+        source += QStringLiteral("};\nconst uint16_t %1_count = %2;\n"
+                                 "const uint16_t %1_frames = %3;\n"
+                                 "const uint8_t %1_loop = %4;\n\n")
+                        .arg(identifier).arg(path.points.size())
+                        .arg(path.durationFrames).arg(path.loop ? 1 : 0).toUtf8();
+    }
+    header += "#endif\n";
+
+    // This example is in the generated C file, where a new programmer can
+    // find it after exporting. Use the actual first spline's C identifier.
+    source += "/*\n"
+              " * HOW TO USE YOUR SPLINE (example code for main.c)\n"
+              " *\n"
+              " * 1. Your game needs gamespline.c and gamespline.h in gamehelpers/.\n"
+              " *    Those files move the sprite; this file stores the path points.\n"
+              " *\n"
+              " * 2. Add these includes at the top of main.c:\n"
+              " *\n"
+              " *      #include \"gamehelpers/gamespline.h\"\n"
+              " *      #include \"gamehelpers/splinepaths.h\"\n"
+              " *\n"
+              " * 3. Add this variable outside main() to remember the movement:\n"
+              " *\n"
+              " *      static game_spline_t flight = {0};\n"
+              " *\n";
+    if (!firstName.isEmpty()) {
+        source += QStringLiteral(
+              " * 4. After you have set up your gfxbob_t sprite (called enemy here),\n"
+              " *    but BEFORE the game loop, start moving along this path:\n"
+              " *\n"
+              " *      start_spline(&flight, &enemy,\n"
+              " *                   %1_path,\n"
+              " *                   %1_count,\n"
+              " *                   %1_frames,\n"
+              " *                   %1_loop);\n"
+              " *\n").arg(firstName).toUtf8();
+    } else {
+        source += " * 4. Create a spline with at least two points in Game Designer,\n"
+                  " *    then export it again to get a start_spline() example.\n"
+                  " *\n";
+    }
+    source += " * 5. Inside your game loop, once per screen refresh (VBlank),\n"
+              " *    BEFORE you draw the sprite, run one frame of movement:\n"
+              " *\n"
+              " *      run_spline(&flight, 1);\n"
+              " *\n"
+              " *    Then draw the sprite using your normal game drawing code.\n"
+              " *\n"
+              " * 'enemy' is an example name for YOUR already-created gfxbob_t sprite.\n"
+              " * 50 frames take one second if your game runs at 50 FPS.\n"
+              " * A path with loop = 1 goes around continuously; loop = 0 stops.\n"
+              " * To stop early, call stop_spline(&flight).\n"
+              " * Edit points in Game Designer, not here: this file is regenerated.\n"
+              " */\n";
+
+    // Install only missing helper files. Never replace custom game code.
+    // Copy helpers first, so an incomplete helper copy never produces new
+    // splinepaths files which look ready to compile.
+    if (needHelperHeader) {
+        QSaveFile output(helperHeaderPath);
+        if (!output.open(QIODevice::WriteOnly)
+            || output.write(helperHeader) != helperHeader.size()
+            || !output.commit()) {
+            output.cancelWriting();
+            QMessageBox::warning(this, tr("Export Spline Paths"),
+                tr("Could not copy gamespline.h into:\n%1").arg(folder));
+            return false;
+        }
+    }
+    if (needHelperSource) {
+        QSaveFile output(helperSourcePath);
+        if (!output.open(QIODevice::WriteOnly)
+            || output.write(helperSource) != helperSource.size()
+            || !output.commit()) {
+            output.cancelWriting();
+            QMessageBox::warning(this, tr("Export Spline Paths"),
+                tr("Could not copy gamespline.c into:\n%1").arg(folder));
+            return false;
+        }
+    }
+
+    const QString hp = QDir(folder).filePath(QStringLiteral("splinepaths.h"));
+    const QString cp = QDir(folder).filePath(QStringLiteral("splinepaths.c"));
+    QSaveFile hFile(hp), cFile(cp);
+    if (!hFile.open(QIODevice::WriteOnly) || !cFile.open(QIODevice::WriteOnly)
+        || hFile.write(header) != header.size() || cFile.write(source) != source.size()) {
+        hFile.cancelWriting(); cFile.cancelWriting();
+        QMessageBox::warning(this, tr("Export Spline Paths"),
+            tr("Cannot write splinepaths.c/.h in:\n%1").arg(folder));
+        return false;
+    }
+    if (!hFile.commit() || !cFile.commit()) {
+        QMessageBox::warning(this, tr("Export Spline Paths"),
+            tr("Could not finish writing splinepaths.c/.h in:\n%1").arg(folder));
+        return false;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    if (showMessage)
+        QMessageBox::information(this, tr("Spline Paths Exported"),
+            tr("Please review splinepaths.c on how to use this spline."));
+    return true;
+}
+
 void SidboxGameDesigner::buildUi()
 {
     auto *layout = new QVBoxLayout(this);
@@ -272,10 +891,14 @@ void SidboxGameDesigner::buildUi()
     layout->setSpacing(5);
     // Flat rectangular controls, but inherit colours from the active IDE theme.
     setStyleSheet(QStringLiteral(
-        "QPushButton, QToolButton, QComboBox, QLineEdit, QSpinBox, "
-        "QTreeWidget, QGraphicsView, QFrame, QMenu, QAbstractItemView { border-radius: 0px; } "
-        "QComboBox::drop-down { border-radius: 0px; } "
-        "QComboBox QAbstractItemView { border-radius: 0px; }"));
+        "QPushButton, QToolButton, QLineEdit, QSpinBox, "
+        "QTreeWidget, QGraphicsView, QFrame, QMenu, QAbstractItemView { border-radius:0px; } "
+        "QComboBox { border:1px solid palette(mid); border-radius:0px; "
+        "background:palette(base); color:palette(text); padding:3px 24px 3px 5px; } "
+        "QComboBox::drop-down { width:20px; border-left:1px solid palette(mid); "
+        "border-radius:0px; } "
+        "QComboBox::down-arrow { image:none; width:0px; height:0px; } "
+        "QComboBox QAbstractItemView { border:1px solid palette(mid); border-radius:0px; }"));
 
     auto *top = new QHBoxLayout;
     auto *caption = new QLabel(tr("Game Designer  |  V1 Gaming"), this);
@@ -285,12 +908,12 @@ void SidboxGameDesigner::buildUi()
     top->addWidget(caption);
     top->addSpacing(12);
     top->addWidget(new QLabel(tr("Planes:"), this));
-    m_planeMode = new QComboBox(this);
+    m_planeMode = new GameComboBox(this);
     m_planeMode->addItem(tr("Foreground only"), QStringLiteral("single"));
     m_planeMode->addItem(tr("Foreground + Background"), QStringLiteral("dual"));
     m_planeMode->setToolTip(tr("Controls the SIDBOX graphics model, not the 480×320 viewport."));
     top->addWidget(m_planeMode);
-    top->addStretch();
+    top->addSpacing(12);
     top->addWidget(new QLabel(tr("World:"), this));
     m_worldWidth = new QSpinBox(this);
     m_worldHeight = new QSpinBox(this);
@@ -305,35 +928,50 @@ void SidboxGameDesigner::buildUi()
     top->addWidget(m_worldWidth);
     top->addWidget(new QLabel(QStringLiteral("×"), this));
     top->addWidget(m_worldHeight);
-    top->addSpacing(12);
-    top->addWidget(new QLabel(tr("Camera:"), this));
+    top->addStretch(1);
+    layout->addLayout(top);
+
+    // Keep the long action buttons off the world-controls row. Previously
+    // this single unbreakable row became a huge minimum width for QTabWidget;
+    // Qt could then grow the maximised IDE when the source-code pane reopened.
+    auto *topActions = new QHBoxLayout;
+    topActions->setSpacing(6);
+    topActions->addWidget(new QLabel(tr("Camera:"), this));
     m_cameraX = new QSpinBox(this);
     m_cameraY = new QSpinBox(this);
     for (auto *spin : {m_cameraX, m_cameraY}) {
         spin->setRange(0, MAX_WORLD);
         spin->setMaximumWidth(78);
     }
-    top->addWidget(m_cameraX);
-    top->addWidget(new QLabel(QStringLiteral(","), this));
-    top->addWidget(m_cameraY);
+    topActions->addWidget(m_cameraX);
+    topActions->addWidget(new QLabel(QStringLiteral(","), this));
+    topActions->addWidget(m_cameraY);
     auto *focusCamera = new QPushButton(tr("Centre View on LCD"), this);
     focusCamera->setToolTip(tr("Centre the editor view on the yellow LCD frame. The game camera X/Y do not change."));
-    top->addWidget(focusCamera);
+    topActions->addWidget(focusCamera);
+    topActions->addStretch(1);
+    auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
+    generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
+    topActions->addWidget(generate);
     auto *save = new QPushButton(tr("Save Design"), this);
-    top->addSpacing(12);
-    top->addWidget(save);
-    layout->addLayout(top);
+    topActions->addWidget(save);
+    layout->addLayout(topActions);
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
     layout->addWidget(splitter, 1);
 
     auto *resourcesPanel = new QWidget(splitter);
+    // Keep the left resource pane narrow without letting combo contents or
+    // long checkbox text enlarge the whole IDE's minimum width.
+    resourcesPanel->setMinimumWidth(125);
     auto *resourcesLayout = new QVBoxLayout(resourcesPanel);
     resourcesLayout->setContentsMargins(4, 4, 4, 4);
     resourcesLayout->addWidget(new QLabel(tr("GAME RESOURCES"), resourcesPanel));
     auto *resourceTree = new GameResourceTree(resourcesPanel);
     m_resourceTree = resourceTree;
+    resourceTree->setMinimumWidth(0);
+    resourceTree->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     resourceTree->installEventFilter(this);
     resourceTree->viewport()->installEventFilter(this);
     resourceTree->setDragDropMode(QAbstractItemView::DropOnly);
@@ -346,8 +984,14 @@ void SidboxGameDesigner::buildUi()
     m_resourceTree->setHeaderHidden(true);
     m_resourceTree->setSelectionMode(QAbstractItemView::SingleSelection);
     resourcesLayout->addWidget(m_resourceTree, 1);
-    resourcesLayout->addWidget(new QLabel(tr("Preview foreground CLUT"), resourcesPanel));
-    m_frontPalette = new QComboBox(resourcesPanel);
+    auto *frontClutLabel = new QLabel(tr("Preview foreground CLUT"), resourcesPanel);
+    frontClutLabel->setWordWrap(true);
+    resourcesLayout->addWidget(frontClutLabel);
+    m_frontPalette = new GameComboBox(resourcesPanel);
+    m_frontPalette->setMinimumWidth(0);
+    m_frontPalette->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_frontPalette->setMinimumContentsLength(9);
+    m_frontPalette->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_frontPalette->setToolTip(tr("Choose the foreground .pal / indexed PPB used by Forced Preview. "
                                   "Pixel indices in the source images are never changed."));
     auto *frontChoices = new QListView(m_frontPalette);
@@ -355,8 +999,14 @@ void SidboxGameDesigner::buildUi()
     frontChoices->setStyleSheet(QStringLiteral("QListView { border-radius: 0px; }"));
     m_frontPalette->setView(frontChoices);
     resourcesLayout->addWidget(m_frontPalette);
-    resourcesLayout->addWidget(new QLabel(tr("Preview background CLUT"), resourcesPanel));
-    m_backPalette = new QComboBox(resourcesPanel);
+    auto *backClutLabel = new QLabel(tr("Preview background CLUT"), resourcesPanel);
+    backClutLabel->setWordWrap(true);
+    resourcesLayout->addWidget(backClutLabel);
+    m_backPalette = new GameComboBox(resourcesPanel);
+    m_backPalette->setMinimumWidth(0);
+    m_backPalette->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_backPalette->setMinimumContentsLength(9);
+    m_backPalette->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_backPalette->setToolTip(tr("Choose the background .pal / indexed PPB used by Forced Preview. "
                                  "This is independent of the foreground CLUT."));
     auto *backChoices = new QListView(m_backPalette);
@@ -364,8 +1014,10 @@ void SidboxGameDesigner::buildUi()
     backChoices->setStyleSheet(QStringLiteral("QListView { border-radius: 0px; }"));
     m_backPalette->setView(backChoices);
     resourcesLayout->addWidget(m_backPalette);
-    m_forcePalette = new QCheckBox(tr("Use selected CLUTs for preview (keep indices)"), resourcesPanel);
-    m_forcePalette->setToolTip(tr("Indexed PPBs keep their original pixel bytes. Only the preview CLUT changes."));
+    m_forcePalette = new QCheckBox(tr("Force preview CLUTs"), resourcesPanel);
+    m_forcePalette->setToolTip(tr("Indexed PPBs keep their original pixel bytes. This RGB colour preview "
+                                  "shows nonzero foreground indices opaque (index 0 stays transparent). "
+                                  "Original CLUT alpha is unchanged and may affect real SIDBOX blending."));
     resourcesLayout->addWidget(m_forcePalette);
     m_buildPaletteButton = new QPushButton(tr("Build Shared CLUT..."), resourcesPanel);
     m_buildPaletteButton->setToolTip(tr("Generates palette files only in gamepalettes/. "
@@ -395,8 +1047,32 @@ void SidboxGameDesigner::buildUi()
         QAction *convertPng = menu.addAction(tr("Convert PNG → PPB..."));
         QAction *buildClut = menu.addAction(tr("Build Shared CLUT..."));
         QAction *useAsPreview = nullptr;
+        QAction *editPalette = menu.addAction(tr("Palette Editor (Import / Export)..."));
+        QMenu *helpers = menu.addMenu(tr("Add Helper Code..."));
+        const QString templateRoot = helperTemplatesRoot();
+        for (const QString &folderName : {QStringLiteral("game"), QStringLiteral("gui")}) {
+            QMenu *group = helpers->addMenu(folderName == QStringLiteral("game") ? tr("Game") : tr("GUI"));
+            const QDir folder(templateRoot.isEmpty() ? QStringLiteral("__unavailable_codehelpers__")
+                                                      : QDir(templateRoot).filePath(folderName));
+            int count = 0;
+            for (const QString &header : folder.entryList({QStringLiteral("*.h")}, QDir::Files, QDir::Name)) {
+                const QString base = QFileInfo(header).completeBaseName();
+                if (!QFileInfo::exists(folder.filePath(base + QStringLiteral(".c")))) continue;
+                QString label = base;
+                if (!label.isEmpty()) label[0] = label.at(0).toUpper();
+                if (base == QStringLiteral("tween")) label = tr("Sprite Tween (frame-timed movement)");
+                if (base == QStringLiteral("spline")) label = tr("Sprite Spline (smooth path movement)");
+                QAction *action = group->addAction(label + QStringLiteral("..."));
+                action->setData(QStringLiteral("codehelper:%1/%2").arg(folderName, base));
+                ++count;
+            }
+            if (!count) group->addAction(tr("No templates found"))->setEnabled(false);
+        }
+        helpers->setToolTip(templateRoot.isEmpty() ? tr("Could not find idelibs/codehelpers") : templateRoot);
+        QAction *editThisPalette = nullptr;
         if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("palette")) {
             menu.addSeparator();
+            editThisPalette = menu.addAction(tr("Edit This Palette..."));
             const QString chosenPlane = m_resources.at(resourceIndex).plane;
             useAsPreview = menu.addAction(chosenPlane == QStringLiteral("background")
                 ? tr("Use as Background Preview CLUT")
@@ -425,6 +1101,12 @@ void SidboxGameDesigner::buildUi()
         else if (chosen == addMusic) addResource(QStringLiteral("music"));
         else if (chosen == convertPng) importPngAsPpb();
         else if (chosen == buildClut) buildSharedPalette();
+        else if (chosen == editPalette) openPaletteEditor(-1);
+        else if (chosen->data().toString().startsWith(QStringLiteral("codehelper:"))) {
+            const QString ref = chosen->data().toString().mid(11);
+            addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
+        }
+        else if (editThisPalette && chosen == editThisPalette) openPaletteEditor(resourceIndex);
         else if (useAsPreview && chosen == useAsPreview) {
             const Resource &resource = m_resources.at(resourceIndex);
             if (resource.plane == QStringLiteral("background"))
@@ -457,13 +1139,13 @@ void SidboxGameDesigner::buildUi()
     m_snap->setChecked(true); // New designs default to 4-pixel snapping.
     m_snap->setToolTip(tr("Snap moved sprites/backgrounds to the selected world grid."));
     previewControls->addWidget(m_snap);
-    m_snapStep = new QComboBox(previewPanel);
+    m_snapStep = new GameComboBox(previewPanel);
     m_snapStep->addItems({QStringLiteral("4 px"),QStringLiteral("8 px"),
         QStringLiteral("16 px"),QStringLiteral("32 px"),QStringLiteral("64 px")});
     m_snapStep->setCurrentText(QStringLiteral("4 px"));
     previewControls->addWidget(m_snapStep);
     previewControls->addWidget(new QLabel(tr("Zoom:"), previewPanel));
-    m_zoom = new QComboBox(previewPanel);
+    m_zoom = new GameComboBox(previewPanel);
     m_zoom->addItems({QStringLiteral("25%"), QStringLiteral("50%"),
                       QStringLiteral("75%"), QStringLiteral("100%"), QStringLiteral("200%")});
     m_zoom->setCurrentText(QStringLiteral("100%"));
@@ -472,6 +1154,7 @@ void SidboxGameDesigner::buildUi()
     m_scene = new GameScene(this);
     m_view = new QGraphicsView(m_scene, previewPanel);
     m_view->setDragMode(QGraphicsView::RubberBandDrag);
+    m_view->setToolTip(tr("Right-click to create or edit spline paths. Drag their numbered nodes to shape movement."));
     m_view->setFocusPolicy(Qt::StrongFocus);
     m_view->installEventFilter(this);
     m_view->viewport()->installEventFilter(this);
@@ -479,7 +1162,7 @@ void SidboxGameDesigner::buildUi()
     m_view->setRenderHint(QPainter::SmoothPixmapTransform, false);
     m_view->setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     previewLayout->addWidget(m_view, 1);
-    auto *instruction = new QLabel(tr("Drag sprites to position. SPACE + left-drag moves the camera; Delete removes a reference. Ctrl+C/V duplicates sprites; Ctrl+Z/Y undo/redo resource edits. Snap and Lock protect layouts."), previewPanel);
+    auto *instruction = new QLabel(tr("Drag sprites to position. SPACE + left-drag moves the camera; Delete removes a reference. Ctrl+C/V duplicates sprites; Ctrl+Z/Y undo/redo resource edits. Right-click to draw spline paths and edit their numbered points."), previewPanel);
     instruction->setWordWrap(true);
     previewLayout->addWidget(instruction);
 
@@ -488,6 +1171,8 @@ void SidboxGameDesigner::buildUi()
     auto *propertiesScroll = new QScrollArea(splitter);
     propertiesScroll->setWidgetResizable(true);
     propertiesScroll->setFrameShape(QFrame::NoFrame);
+    // Return the right-hand properties pane to its pre-55B minimum.
+    // The requested 50px reduction belongs to Game Resources on the LEFT.
     propertiesScroll->setMinimumWidth(225);
     auto *propertiesPanel = new QWidget(propertiesScroll);
     auto *propertiesLayout = new QVBoxLayout(propertiesPanel);
@@ -495,6 +1180,11 @@ void SidboxGameDesigner::buildUi()
     propertiesLayout->addWidget(new QLabel(tr("RESOURCE PROPERTIES"), propertiesPanel));
     auto *form = new QFormLayout;
     m_propertiesForm = form;
+    // Match GUI Designer: every label sits ABOVE its control.
+    // WrapAllRows also prevents long labels forcing the IDE to widen.
+    form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setVerticalSpacing(5);
     m_propName = new QLineEdit(propertiesPanel);
     m_propFile = new QLabel(propertiesPanel);
     m_propFile->setWordWrap(true);
@@ -514,16 +1204,41 @@ void SidboxGameDesigner::buildUi()
     m_propFrame = new QSpinBox(propertiesPanel);
     m_propFrame->setRange(0, 0);
     m_propLocked = new QCheckBox(tr("Lock position (no dragging)"), propertiesPanel);
-    m_propPlane = new QComboBox(propertiesPanel);
+    m_propPlane = new GameComboBox(propertiesPanel);
     m_propPlane->addItem(tr("Foreground"), QStringLiteral("foreground"));
     m_propPlane->addItem(tr("Background"), QStringLiteral("background"));
+    m_propBackgroundMode = new GameComboBox(propertiesPanel);
+    m_propBackgroundMode->addItem(tr("Sprite / blit (legacy)"), QStringLiteral("sprite"));
+    m_propBackgroundMode->addItem(tr("Direct — prepared PPB"), QStringLiteral("direct_ready"));
+    m_propBackgroundMode->addItem(tr("Direct — convert PPB"), QStringLiteral("direct_convert"));
+    m_propBackgroundMode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_propBackgroundMode->setMinimumContentsLength(12);
+    m_propBackgroundMode->setMinimumWidth(0);
+    m_propBackgroundMode->setToolTip(tr("Direct buffer uses gfx_showbbuffer(). Column-major PPBs are already\n"
+        "prepared for SIDBOX's x*height+y layout. Ordinary row-major PPBs need a\n"
+        "transposition at runtime. This mode requires Dual-plane graphics."));
     m_imageInfo = new QLabel(propertiesPanel);
     m_imageInfo->setWordWrap(true);
     form->addRow(tr("Name"), m_propName);
     form->addRow(tr("Plane / palette bank"), m_propPlane);
+    form->addRow(tr("Background rendering"), m_propBackgroundMode);
     form->addRow(tr("File"), m_propFile);
-    form->addRow(tr("X"), m_propX);
-    form->addRow(tr("Y"), m_propY);
+    // X and Y are one property row with labels above each spinbox.
+    m_positionFields = new QWidget(propertiesPanel);
+    auto *positionRow = new QHBoxLayout(m_positionFields);
+    positionRow->setContentsMargins(0, 0, 0, 0);
+    positionRow->setSpacing(6);
+    auto addCoordinate = [propertiesPanel, positionRow](const QString &name, QSpinBox *spin) {
+        auto *column = new QVBoxLayout;
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(2);
+        column->addWidget(new QLabel(name, propertiesPanel));
+        column->addWidget(spin);
+        positionRow->addLayout(column, 1);
+    };
+    addCoordinate(tr("X"), m_propX);
+    addCoordinate(tr("Y"), m_propY);
+    form->addRow(m_positionFields);
     form->addRow(tr("Scale"), m_propScale);
     form->addRow(tr("Cell width"), m_propCellWidth);
     form->addRow(tr("Cell height"), m_propCellHeight);
@@ -536,6 +1251,13 @@ void SidboxGameDesigner::buildUi()
     m_palettePreview->setToolTip(tr("Indexed colour palette: 16 × 16 entries, index 0 top-left"));
     m_palettePreview->hide();
     propertiesLayout->addWidget(m_palettePreview, 0, Qt::AlignLeft);
+    m_editPaletteButton = new QPushButton(tr("Edit / Export Palette..."), propertiesPanel);
+    m_editPaletteButton->setToolTip(tr("Open the selected .pal in the two-bank palette editor. "
+        "Save As creates a new file; original sprites remain unchanged."));
+    propertiesLayout->addWidget(m_editPaletteButton);
+    connect(m_editPaletteButton, &QPushButton::clicked, this, [this]() {
+        openPaletteEditor(selectedIndex());
+    });
     m_audioPanel = new SidboxGameAudioPanel(propertiesPanel);
     propertiesLayout->addWidget(m_audioPanel);
     m_audioPanel->settingsChanged = [this](const SidboxAudioSettings &settings) {
@@ -566,20 +1288,35 @@ void SidboxGameDesigner::buildUi()
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setStretchFactor(2, 0);
-    splitter->setSizes({195, 670, 265});
-    // Save the splitter's geometry as a user preference (not in the game file).
-    // One shared layout across Game Designer tabs; restore AFTER layouts run.
+    splitter->setSizes({145, 760, 225});
+    // V2 remembers the NEW narrower left pane. On first run, migrate the old
+    // saved layout by borrowing 50px from the left; keep the right-hand pane
+    // at its original minimum. Do not modify the parent IDE splitter.
     QTimer::singleShot(0, splitter, [splitter]() {
         QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-        const QByteArray saved = settings.value(QStringLiteral("GameDesigner/mainSplitterState")).toByteArray();
-        if (!saved.isEmpty()) splitter->restoreState(saved);
+        const QByteArray saved = settings.value(QStringLiteral("GameDesigner/mainSplitterStateV2")).toByteArray();
+        if (!saved.isEmpty() && splitter->restoreState(saved)) return;
+        const QByteArray previous = settings.value(QStringLiteral("GameDesigner/mainSplitterState")).toByteArray();
+        if (!previous.isEmpty() && splitter->restoreState(previous)) {
+            const QList<int> sizes = splitter->sizes();
+            if (sizes.size() == 3) {
+                const int total = sizes[0] + sizes[1] + sizes[2];
+                const int left = qMax(125, sizes[0] - 50);
+                const int right = qMax(225, sizes[2]);
+                splitter->setSizes({left, qMax(200, total - left - right), right});
+            }
+        } else {
+            splitter->setSizes({145, 760, 225});
+        }
+        settings.setValue(QStringLiteral("GameDesigner/mainSplitterStateV2"), splitter->saveState());
     });
     connect(splitter, &QSplitter::splitterMoved, this, [splitter](int, int) {
         QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-        settings.setValue(QStringLiteral("GameDesigner/mainSplitterState"), splitter->saveState());
+        settings.setValue(QStringLiteral("GameDesigner/mainSplitterStateV2"), splitter->saveState());
     });
 
     connect(save, &QPushButton::clicked, this, [this]() { saveDesign(); });
+    connect(generate, &QPushButton::clicked, this, [this]() { generateGameCode(); });
     connect(m_showLabels, &QCheckBox::toggled, this, [this](bool visible) {
         for (auto *item : m_sceneItems)
             if (item)
@@ -621,6 +1358,17 @@ void SidboxGameDesigner::buildUi()
     });
     connect(exportC, &QPushButton::clicked, this, [this]() { exportSelectedC(); });
     connect(m_deleteButton, &QPushButton::clicked, this, [this]() { deleteSelectedResource(); });
+    connect(m_propBackgroundMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (m_loading) return;
+        const int index = selectedIndex();
+        if (index < 0 || m_resources.at(index).kind != QStringLiteral("background")) return;
+        const QString mode = m_propBackgroundMode->currentData().toString();
+        if (m_resources.at(index).backgroundMode == mode) return;
+        rememberResourceEdit();
+        m_resources[index].backgroundMode = mode;
+        updateSelectedPixmap();
+        setDirty();
+    });
     connect(m_propLocked, &QCheckBox::toggled, this, [this](bool locked) {
         const int index = selectedIndex();
         if (index < 0 || m_loading || !visualKind(m_resources[index].kind)) return;
@@ -944,23 +1692,48 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
     QString error;
     const QImage source = cachedImage(resolvedPath(r.path), &error);
     if (source.isNull()) { if (details) *details = error; return {}; }
-    const int cw = r.cellWidth > 0 ? qMin(r.cellWidth, source.width()) : source.width();
-    const int ch = r.cellHeight > 0 ? qMin(r.cellHeight, source.height()) : source.height();
-    const int cols = qMax(1, source.width() / cw);
-    const int rows = qMax(1, source.height() / ch);
+    // Editor PREVIEW ONLY for pre-oriented background data: mirror X, then
+    // rotate 90 degrees anticlockwise (transpose the displayed pixel matrix).
+    // The Stage 55B stride-based reinterpretation kept the old width/height,
+    // interleaving rows and making the image look broken in the designer.
+    // A geometric transformation swaps the preview dimensions and leaves the
+    // PPB bytes, palette indices, and generated V1 framebuffer code untouched.
+    // The direct_convert mode already starts from an upright source and must
+    // NOT receive this display transform.
+    QImage visible = source;
+    if (r.kind == QStringLiteral("background") && r.backgroundMode == QStringLiteral("direct_ready")
+        && source.format() == QImage::Format_Indexed8) {
+        QImage upright(source.height(), source.width(), QImage::Format_Indexed8);
+        if (!upright.isNull()) {
+            upright.setColorTable(source.colorTable());
+            for (int y = 0; y < source.height(); ++y) {
+                const uchar *input = source.constScanLine(y);
+                for (int x = 0; x < source.width(); ++x)
+                    upright.scanLine(x)[y] = input[x];
+            }
+            visible = upright;
+        }
+    }
+    const int cw = r.cellWidth > 0 ? qMin(r.cellWidth, visible.width()) : visible.width();
+    const int ch = r.cellHeight > 0 ? qMin(r.cellHeight, visible.height()) : visible.height();
+    const int cols = qMax(1, visible.width() / cw);
+    const int rows = qMax(1, visible.height() / ch);
     const int frames = cols * rows;
     const int frame = qBound(0, r.frame, frames - 1);
     if (details) {
         *details = tr("%1 × %2 pixels  |  %3 frame(s)  |  %4 bytes indexed")
-                       .arg(source.width()).arg(source.height()).arg(frames)
+                       .arg(visible.width()).arg(visible.height()).arg(frames)
                        .arg(qint64(source.width()) * source.height());
     }
-    QImage frameImage = source.copy((frame % cols) * cw, (frame / cols) * ch, cw, ch);
+    QImage frameImage = visible.copy((frame % cols) * cw, (frame / cols) * ch, cw, ch);
     // FORCE = replace lookup table ONLY. Absolutely no pixel-index remapping.
     if (m_forcePalette && m_forcePalette->isChecked()
         && frameImage.format() == QImage::Format_Indexed8) {
-        const QVector<QRgb> bank = activePalette(resourcePlane(r));
-        if (bank.size() == 256) frameImage.setColorTable(bank);
+        const QString plane = resourcePlane(r);
+        const QVector<QRgb> bank = activePalette(plane);
+        if (bank.size() == 256)
+            frameImage.setColorTable(colourPreviewBank(bank,
+                plane == QStringLiteral("foreground")));
     }
     return frameImage;
 }
@@ -968,6 +1741,8 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
 void SidboxGameDesigner::rebuildScene()
 {
     m_loading = true;
+    m_splineHandleItems.clear();
+    m_splineCurveItem = nullptr;
     m_scene->clear();
     m_sceneItems.clear();
     m_sceneItems.resize(m_resources.size());
@@ -1017,6 +1792,7 @@ void SidboxGameDesigner::rebuildScene()
     lcdLabel->setPos(3, 3);
     lcdLabel->setAcceptedMouseButtons(Qt::NoButton);
     refreshFrame();
+    rebuildSplineOverlay();
     m_loading = false;
 }
 
@@ -1081,9 +1857,13 @@ void SidboxGameDesigner::refreshProperties()
         field->setVisible(visualSelection);
         if (QWidget *label = m_propertiesForm->labelForField(field)) label->setVisible(visualSelection);
     }
+    m_positionFields->setVisible(visualSelection);
     m_exportCButton->setVisible(visualSelection);
     m_propPlane->setVisible(enabled && (visualSelection || m_resources.at(index).kind == QStringLiteral("palette")));
     if (QWidget *label = m_propertiesForm->labelForField(m_propPlane)) label->setVisible(m_propPlane->isVisible());
+    m_propBackgroundMode->setVisible(enabled && m_resources.at(index).kind == QStringLiteral("background"));
+    if (QWidget *label = m_propertiesForm->labelForField(m_propBackgroundMode))
+        label->setVisible(m_propBackgroundMode->isVisible());
     m_propLocked->setVisible(visualSelection);
     if (QWidget *label = m_propertiesForm->labelForField(m_propLocked))
         label->setVisible(visualSelection);
@@ -1094,9 +1874,10 @@ void SidboxGameDesigner::refreshProperties()
         widget->setEnabled(enabled);
     QSignalBlocker block1(m_propName), block2(m_propX), block3(m_propY), block4(m_propScale);
     QSignalBlocker block5(m_propCellWidth), block6(m_propCellHeight), block7(m_propFrame);
-    QSignalBlocker block8(m_propLocked), block9(m_propPlane);
+    QSignalBlocker block8(m_propLocked), block9(m_propPlane), block10(m_propBackgroundMode);
     if (!enabled) {
         m_propName->clear(); m_propFile->clear(); m_imageInfo->clear(); m_palettePreview->hide();
+        m_editPaletteButton->hide();
         m_audioPanel->clearAudio();
         m_exportCButton->setEnabled(false);
         m_propX->setValue(0); m_propY->setValue(0); m_propScale->setValue(100);
@@ -1110,6 +1891,7 @@ void SidboxGameDesigner::refreshProperties()
         m_audioPanel->showAudio(r.kind, resolvedPath(r.path), r.audio);
     else m_audioPanel->clearAudio();
     m_palettePreview->hide();
+    m_editPaletteButton->setVisible(r.kind == QStringLiteral("palette"));
     if (r.kind == QStringLiteral("palette")) {
         QString error;
         const QVector<QRgb> bank = SidboxGamePalette::readPalette(
@@ -1123,6 +1905,8 @@ void SidboxGameDesigner::refreshProperties()
     }
     m_propName->setText(r.name);
     m_propPlane->setCurrentIndex(r.plane == QStringLiteral("background") ? 1 : 0);
+    const int backgroundModeIndex = m_propBackgroundMode->findData(r.backgroundMode);
+    m_propBackgroundMode->setCurrentIndex(backgroundModeIndex >= 0 ? backgroundModeIndex : 0);
     m_propPlane->setEnabled(m_planeMode->currentIndex() == 1 || r.kind == QStringLiteral("palette"));
     m_propLocked->setChecked(r.locked);
     m_propLocked->setEnabled(visualSelection);
@@ -1162,12 +1946,17 @@ void SidboxGameDesigner::refreshProperties()
     const int frames = qMax(1, image.width() / cw) * qMax(1, image.height() / ch);
     m_propFrame->setRange(0, frames - 1);
     m_propFrame->setValue(qMin(r.frame, frames - 1));
+    QString paletteNote;
+    if (!shownPalette.isEmpty()) {
+        const QString plane = resourcePlane(r);
+        paletteNote = tr("  |  Forced %1 CLUT (indices unchanged)").arg(plane);
+        if (extraPaletteTransparency(shownPalette, plane == QStringLiteral("foreground")))
+            paletteNote += tr("  |  WARNING: CLUT alpha differs from colour preview; check on SIDBOX");
+    } else if (m_forcePalette->isChecked() && image.format() != QImage::Format_Indexed8) {
+        paletteNote = tr("  |  Convert to PPB to use indexed palettes");
+    }
     m_imageInfo->setText(tr("Atlas: %1 × %2  |  %3 frames  |  Index 0 = foreground transparency%4")
-        .arg(image.width()).arg(image.height()).arg(frames)
-        .arg(!shownPalette.isEmpty() ? tr("  |  Forced %1 CLUT (indices unchanged)")
-                .arg(resourcePlane(r))
-            : (m_forcePalette->isChecked() && image.format() != QImage::Format_Indexed8
-                ? tr("  |  Convert to PPB to use indexed palettes") : QString())));
+        .arg(image.width()).arg(image.height()).arg(frames).arg(paletteNote));
 }
 
 // A bounded, lightweight history of RESOURCE METADATA, not images or files.
@@ -1551,6 +2340,79 @@ void SidboxGameDesigner::exportSelectedC()
           .arg(cInfo.fileName(), QFileInfo(hPath).fileName()));
 }
 
+void SidboxGameDesigner::generateGameCode()
+{
+    if (m_filePath.isEmpty() || !saveDesign()) return;
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, tr("Generate V1 Game Code"),
+        tr("How should CoderGirl store graphics?\n\n"
+           "Audio and music remain disk resources in this first version.\n\n"
+           "Yes = Load graphics from disk (PPB)\n"
+           "No = Embed graphics in gameassets.c\n"
+           "Cancel = Do not generate code"),
+        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+        QMessageBox::Yes);
+    if (choice == QMessageBox::Cancel) return;
+
+    const QString output = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gameassets"));
+    const QString cPath = QDir(output).filePath(QStringLiteral("gameassets.c"));
+    const QString hPath = QDir(output).filePath(QStringLiteral("gameassets.h"));
+    if (QFileInfo::exists(cPath) || QFileInfo::exists(hPath)) {
+        if (QMessageBox::warning(this, tr("Regenerate V1 Game Code"),
+            tr("The generated gameassets.c/.h files already exist.\n\n"
+               "Regenerating will replace those two files, including any manual edits "
+               "made to them. Your main.c and other project files will NOT change.\n\n"
+               "Continue?"), QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) return;
+    }
+
+    SidboxGameCodeGen::Request request;
+    request.designDirectory = QFileInfo(m_filePath).absolutePath();
+    request.outputDirectory = output;
+    request.dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
+    request.embedPixels = choice == QMessageBox::No;
+    for (const Resource &r : m_resources) {
+        SidboxGameCodeGen::Asset a;
+        a.name = r.name; a.kind = r.kind; a.plane = r.plane;
+        a.backgroundMode = r.backgroundMode;
+        if (!r.path.isEmpty()) a.absolutePath = resolvedPath(r.path);
+        a.x = r.x; a.y = r.y; a.scale = r.scale;
+        a.cellWidth = r.cellWidth; a.cellHeight = r.cellHeight; a.frame = r.frame;
+        a.channel = r.audio.channel; a.frequency = r.audio.frequency;
+        a.volume = r.audio.volume; a.pan = r.audio.pan;
+        a.loop = r.audio.loop; a.loopStart = r.audio.loopStart;
+        a.loopLength = r.audio.loopLength; a.subsong = r.audio.subsong;
+        request.assets.append(a);
+        if (r.kind == QStringLiteral("palette")) {
+            if (r.id == m_activeForegroundPalette) request.foregroundPalette = a.absolutePath;
+            if (r.id == m_activeBackgroundPalette) request.backgroundPalette = a.absolutePath;
+        }
+    }
+    const auto result = SidboxGameCodeGen::generate(request);
+    if (!result.ok) {
+        QMessageBox::warning(this, tr("V1 Game Code Generation"), result.error);
+        return;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    QString message = tr("Generated gameassets/gameassets.c and gameassets.h.\n\n"
+                         "Include \"gameassets/gameassets.h\" from main.c.\n"
+                         "Call gameassets_init() after initMalloc() and gfx_mode(), then drawworld() inside "
+                         "your render loop.\n\n"
+                         "The generated code owns NO display buffers or game logic. "
+                         "In dual-plane mode, background sprite drawing is separate. "
+                         "For a direct background buffer, call gameassets_show_background() "
+                         "after gameassets_init().");
+    if (result.embeddedBytes)
+        message += tr("\n\nEmbedded graphics: %1 KiB (uncompressed).")
+            .arg((result.embeddedBytes + 1023) / 1024);
+    if (!result.warnings.isEmpty())
+        message += QStringLiteral("\n\n") + tr("Warnings:")
+            + QStringLiteral("\n• ") + result.warnings.join(QStringLiteral("\n• "));
+    QMessageBox::information(this, tr("V1 Game Code Generated"), message);
+}
+
 bool SidboxGameDesigner::loadDesign()
 {
     QFile file(m_filePath);
@@ -1620,6 +2482,11 @@ bool SidboxGameDesigner::loadDesign()
         r.cellHeight = qBound(0, a.value(QStringLiteral("cellHeight")).toInt(0), 16384);
         r.frame = qBound(0, a.value(QStringLiteral("frame")).toInt(0), 65535);
         r.locked = a.value(QStringLiteral("locked")).toBool(false);
+        r.backgroundMode = a.value(QStringLiteral("backgroundMode")).toString(QStringLiteral("sprite"));
+        if (r.kind != QStringLiteral("background") ||
+            !QStringList{QStringLiteral("sprite"), QStringLiteral("direct_ready"),
+                         QStringLiteral("direct_convert")}.contains(r.backgroundMode))
+            r.backgroundMode = QStringLiteral("sprite");
         // Optional Stage 54 fields: old Stage 52/53 documents load unchanged.
         const QJsonObject audio = a.value(QStringLiteral("audio")).toObject();
         r.audio.channel = qBound(0, audio.value(QStringLiteral("channel")).toInt(0), 7);
@@ -1647,6 +2514,25 @@ bool SidboxGameDesigner::loadDesign()
         }
     }
     const bool seededBackgroundPalette = m_resources.size() != originalResourceCount;
+    m_splinePaths.clear();
+    for (const QJsonValue &entry : obj.value(QStringLiteral("splinePaths")).toArray()) {
+        if (!entry.isObject() || m_splinePaths.size() >= 128) continue;
+        const QJsonObject value = entry.toObject();
+        SplinePath path;
+        path.name = value.value(QStringLiteral("name")).toString(QStringLiteral("path"));
+        path.durationFrames = qBound(1, value.value(QStringLiteral("frames")).toInt(100), 65535);
+        path.loop = value.value(QStringLiteral("loop")).toBool(true);
+        for (const QJsonValue &pointValue : value.value(QStringLiteral("points")).toArray()) {
+            if (!pointValue.isArray() || path.points.size() >= 128) continue;
+            const QJsonArray coordinates = pointValue.toArray();
+            if (coordinates.size() != 2) continue;
+            path.points.append(QPoint(qBound(-32768, coordinates.at(0).toInt(), 32767),
+                                      qBound(-32768, coordinates.at(1).toInt(), 32767)));
+        }
+        if (path.points.size() >= 2) m_splinePaths.append(path);
+    }
+    m_activeSpline = qBound(-1, obj.value(QStringLiteral("activeSpline")).toInt(-1),
+                            m_splinePaths.size() - 1);
     m_loading = false;
     m_undoResources.clear();
     m_redoResources.clear();
@@ -1690,6 +2576,8 @@ bool SidboxGameDesigner::saveDesign()
         a.insert(QStringLiteral("cellHeight"), r.cellHeight);
         a.insert(QStringLiteral("frame"), r.frame);
         a.insert(QStringLiteral("locked"), r.locked);
+        if (r.kind == QStringLiteral("background"))
+            a.insert(QStringLiteral("backgroundMode"), r.backgroundMode);
         if (r.kind == QStringLiteral("sound") || r.kind == QStringLiteral("music")) {
             QJsonObject audio;
             audio.insert(QStringLiteral("channel"), r.audio.channel);
@@ -1705,6 +2593,20 @@ bool SidboxGameDesigner::saveDesign()
         assets.append(a);
     }
     obj.insert(QStringLiteral("resources"), assets);
+    QJsonArray pathList;
+    for (const SplinePath &path : m_splinePaths) {
+        QJsonObject data;
+        data.insert(QStringLiteral("name"), path.name);
+        data.insert(QStringLiteral("frames"), path.durationFrames);
+        data.insert(QStringLiteral("loop"), path.loop);
+        QJsonArray coords;
+        for (const QPoint &point : path.points)
+            coords.append(QJsonArray{point.x(), point.y()});
+        data.insert(QStringLiteral("points"), coords);
+        pathList.append(data);
+    }
+    obj.insert(QStringLiteral("splinePaths"), pathList);
+    obj.insert(QStringLiteral("activeSpline"), m_activeSpline);
     QSaveFile output(m_filePath);
     const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Indented);
     if (!output.open(QIODevice::WriteOnly)
@@ -1713,6 +2615,11 @@ bool SidboxGameDesigner::saveDesign()
         QMessageBox::warning(this, tr("Game Designer"), tr("Unable to save design:\n%1").arg(m_filePath));
         return false;
     }
+    // Once exported, path C data tracks saved edits to any control point.
+    // Nothing is created for older projects until Export is chosen.
+    const QString pathHeader = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gamehelpers/splinepaths.h"));
+    if (QFileInfo::exists(pathHeader) && !exportSplinePaths(false)) return false;
     setDirty(false);
     return true;
 }
@@ -1980,6 +2887,12 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
         }
     }
     if (m_view && watched == m_view->viewport()) {
+        if (event->type() == QEvent::ContextMenu) {
+            // Handle before QGraphicsView forwards the context menu to the
+            // scene, so right-click works on both empty canvas and sprites.
+            showSplineMenu(static_cast<QContextMenuEvent *>(event)->pos());
+            return true;
+        }
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouse = static_cast<QMouseEvent *>(event);
             m_dragResourceIndex = -1;
