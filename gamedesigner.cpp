@@ -468,9 +468,13 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
     QString message = tr("Added gamehelpers/%1.h and %1.c.\n\n"
                           "Include \"gamehelpers/%1.h\" in your main.c.\n"
                           "Gameassets generation will not overwrite this code.").arg(installedBase);
-    if (category == QStringLiteral("game") && base == QStringLiteral("spline"))
-        message += tr("\n\nRight-click the world canvas to create or edit a spline path, "
-                      "then choose Export Spline Paths to C.");
+    // Every helper can supply its own beginner instructions, without hardcoding
+    // helper names or recompiling the IDE. The .ini file is optional.
+    QSettings helperInfo(templateFolder.filePath(base + QStringLiteral(".ini")),
+                         QSettings::IniFormat);
+    const QString afterInstall = helperInfo.value(QStringLiteral("Helper/after_install"))
+                                     .toString().trimmed();
+    if (!afterInstall.isEmpty()) message += QStringLiteral("\n\n") + afterInstall;
     QMessageBox::information(this, tr("Helper Code Added"), message);
 }
 
@@ -1058,11 +1062,25 @@ void SidboxGameDesigner::buildUi()
             for (const QString &header : folder.entryList({QStringLiteral("*.h")}, QDir::Files, QDir::Name)) {
                 const QString base = QFileInfo(header).completeBaseName();
                 if (!QFileInfo::exists(folder.filePath(base + QStringLiteral(".c")))) continue;
-                QString label = base;
-                if (!label.isEmpty()) label[0] = label.at(0).toUpper();
-                if (base == QStringLiteral("tween")) label = tr("Sprite Tween (frame-timed movement)");
-                if (base == QStringLiteral("spline")) label = tr("Sprite Spline (smooth path movement)");
+                // Discover new helpers on every right-click. Optional <name>.ini
+                // gives the menu a friendly title and tooltip for beginners.
+                QSettings helperInfo(folder.filePath(base + QStringLiteral(".ini")),
+                                     QSettings::IniFormat);
+                QString label = helperInfo.value(QStringLiteral("Helper/name"))
+                                    .toString().trimmed();
+                if (label.isEmpty()) {
+                    label = base;
+                    label.replace(QLatin1Char('_'), QLatin1Char(' '));
+                    label.replace(QLatin1Char('-'), QLatin1Char(' '));
+                    if (!label.isEmpty()) label[0] = label.at(0).toUpper();
+                }
                 QAction *action = group->addAction(label + QStringLiteral("..."));
+                const QString description = helperInfo.value(QStringLiteral("Helper/description"))
+                                                .toString().trimmed();
+                if (!description.isEmpty()) {
+                    action->setToolTip(description);
+                    action->setStatusTip(description);
+                }
                 action->setData(QStringLiteral("codehelper:%1/%2").arg(folderName, base));
                 ++count;
             }
