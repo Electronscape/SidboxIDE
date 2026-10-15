@@ -14,6 +14,9 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QJsonValue>
+#include <QJsonArray>
+#include <QTimer>
+#include <QRegion>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -56,6 +59,17 @@ QJsonObject SidboxTilemap::toJson() const
     result.insert(QStringLiteral("atlasPath"), atlasPath);
     result.insert(QStringLiteral("graphicsZ"), QString::fromLatin1(qCompress(graphics, 9).toBase64()));
     result.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(collisions, 9).toBase64()));
+    QJsonArray animated;
+    for (const SidboxTileAnimation &a : animations) {
+        QJsonObject item;
+        item.insert(QStringLiteral("graphicId"), a.graphicId);
+        item.insert(QStringLiteral("frames"), a.frames);
+        item.insert(QStringLiteral("frameTicks"), a.frameTicks);
+        item.insert(QStringLiteral("loop"), a.loop);
+        item.insert(QStringLiteral("bounce"), a.bounce);
+        animated.append(item);
+    }
+    result.insert(QStringLiteral("animations"), animated);
     return result;
 }
 
@@ -83,10 +97,53 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     const QByteArray g = qUncompress(compressedG);
     const QByteArray c = qUncompress(compressedC);
     if (g.size() != w * h || c.size() != w * h) return false;
+    QVector<SidboxTileAnimation> decoded;
+    const QJsonValue animationValue = object.value(QStringLiteral("animations"));
+    if (!animationValue.isUndefined() && !animationValue.isArray()) return false;
+    const QJsonArray list = animationValue.toArray();
+    if (list.size() > 255) return false;
+    bool seen[256] = {};
+    for (const QJsonValue &value : list) {
+        if (!value.isObject()) return false;
+        const QJsonObject entry = value.toObject();
+        SidboxTileAnimation a;
+        a.graphicId = entry.value(QStringLiteral("graphicId")).toInt(0);
+        a.frames = entry.value(QStringLiteral("frames")).toInt(0);
+        a.frameTicks = entry.value(QStringLiteral("frameTicks")).toInt(0);
+        a.loop = entry.value(QStringLiteral("loop")).toBool(true);
+        a.bounce = entry.value(QStringLiteral("bounce")).toBool(false);
+        if (a.graphicId < 1 || a.graphicId > 255 || a.frames < 1 ||
+            a.frames > 16 || a.graphicId + a.frames - 1 > 255 ||
+            a.frameTicks < 1 || a.frameTicks > 255 || seen[a.graphicId]) return false;
+        seen[a.graphicId] = true;
+        decoded.append(a);
+    }
     width = w; height = h; tileSize = tile;
     atlasPath = object.value(QStringLiteral("atlasPath")).toString();
     graphics = g; collisions = c;
+    animations = decoded;
     return true;
+}
+
+// Same playback maths as the V1 helper (50 VBlanks per second).
+static int tileAnimationFrame(const SidboxTileAnimation &a, qint64 ticks)
+{
+    if (a.frames < 2 || a.frameTicks < 1) return 0;
+    const qint64 step = ticks / a.frameTicks;
+    if (a.bounce) {
+        const qint64 last = a.frames - 1;
+        const qint64 cycle = last * 2;
+        const qint64 pos = a.loop ? step % cycle : qMin(step, cycle);
+        return int(pos <= last ? pos : cycle - pos);
+    }
+    return int(a.loop ? step % a.frames : qMin(step, qint64(a.frames - 1)));
+}
+
+static const SidboxTileAnimation *findTileAnimation(const SidboxTilemap &map, int id)
+{
+    for (const SidboxTileAnimation &a : map.animations)
+        if (a.graphicId == id) return &a;
+    return nullptr;
 }
 
 // Same flat, visible-chevron treatment as the main Game Designer controls.
@@ -127,6 +184,28 @@ public:
     QPoint lastPan;
     int wheelRemainderX = 0;
     int wheelRemainderY = 0;
+    qint64 animationTicks = 0;
+    void refreshAnimated(qint64 ticks)
+    {
+        if (!map || map->animations.isEmpty()) return;
+        if (ticks == animationTicks) return;
+        animationTicks = ticks;
+        const int px = map->tileSize * zoom;
+        const int scrollX = horizontalScrollBar()->value();
+        const int scrollY = verticalScrollBar()->value();
+        const int x0 = qMax(0, scrollX / px);
+        const int y0 = qMax(0, scrollY / px);
+        const int x1 = qMin(map->width, (scrollX + viewport()->width()) / px + 1);
+        const int y1 = qMin(map->height, (scrollY + viewport()->height()) / px + 1);
+        QRegion dirty;
+        for (int y = y0; y < y1; ++y)
+            for (int x = x0; x < x1; ++x) {
+                const int id = quint8(map->graphics.at(y*map->width+x));
+                if (findTileAnimation(*map, id))
+                    dirty += QRect(x*px-scrollX, y*px-scrollY, px, px);
+            }
+        if (!dirty.isEmpty()) viewport()->update(dirty);
+    }
 
     explicit Canvas(QWidget *parent = nullptr) : QAbstractScrollArea(parent)
     {
@@ -195,8 +274,12 @@ protected:
             const QRect dest(x * px - scrollX, y * px - scrollY, px, px);
             const int i = y * map->width + x;
             const int tile = quint8(map->graphics.at(i));
-            if (tile && cols > 0 && tile <= cols * rows) {
-                const int n = tile - 1;
+            int frameTile = tile;
+            if (const SidboxTileAnimation *anim = findTileAnimation(*map, tile))
+                if (tile + anim->frames - 1 <= cols*rows)
+                    frameTile += tileAnimationFrame(*anim, animationTicks);
+            if (frameTile && cols > 0 && frameTile <= cols * rows) {
+                const int n = frameTile - 1;
                 painter.drawImage(dest, *atlas, QRect((n % cols) * map->tileSize,
                     (n / cols) * map->tileSize, map->tileSize, map->tileSize));
             } else if (tile) {
@@ -384,6 +467,50 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_atlasPicker->installEventFilter(this);
     tilePickerArea->setWidget(m_atlasPicker);
     layout->addWidget(tilePickerArea);
+
+    // Animation definitions are separate from both tile maps. Selecting an
+    // atlas tile edits ONE shared animation, never the pixels or collision.
+    auto *animationRow = new QHBoxLayout;
+    m_animationPreview = new QLabel(this);
+    m_animationPreview->setFixedSize(72, 72);
+    m_animationPreview->setAlignment(Qt::AlignCenter);
+    m_animationPreview->setToolTip(tr("Live preview of the selected tile, at 50 game frames/sec."));
+    animationRow->addWidget(m_animationPreview);
+    auto *animationFields = new QVBoxLayout;
+    auto *animationValues = new QHBoxLayout;
+    m_animFrames = new QSpinBox(this);
+    m_animFrames->setRange(1, 16);
+    m_animFrames->setValue(4);
+    m_animFrames->setToolTip(tr("Number of consecutive atlas cells to play, starting from the selected tile."));
+    m_animDelay = new QSpinBox(this);
+    m_animDelay->setRange(1, 255);
+    m_animDelay->setValue(5);
+    m_animDelay->setToolTip(tr("How many VBlanks to hold each frame (50 VBlanks is about one second at 50 FPS)."));
+    animationValues->addWidget(new QLabel(tr("Frames:"), this));
+    animationValues->addWidget(m_animFrames);
+    animationValues->addWidget(new QLabel(tr("VBlanks per frame:"), this));
+    animationValues->addWidget(m_animDelay);
+    m_animLoop = new QCheckBox(tr("Loop"), this);
+    m_animLoop->setChecked(true);
+    m_animBounce = new QCheckBox(tr("Ping-pong"), this);
+    animationValues->addWidget(m_animLoop);
+    animationValues->addWidget(m_animBounce);
+    auto *setAnimation = new QPushButton(tr("Set Animation"), this);
+    m_removeAnimation = new QPushButton(tr("Remove Animation"), this);
+    setAnimation->setToolTip(tr("Save animation properties for the selected atlas tile."));
+    m_removeAnimation->setToolTip(tr("Turn the selected tile back into an ordinary static graphic."));
+    animationFields->addLayout(animationValues);
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->addWidget(setAnimation);
+    buttonRow->addWidget(m_removeAnimation);
+    buttonRow->addStretch();
+    animationFields->addLayout(buttonRow);
+    m_animationStatus = new QLabel(this);
+    m_animationStatus->setWordWrap(true);
+    animationFields->addWidget(m_animationStatus);
+    animationRow->addLayout(animationFields, 1);
+    layout->addLayout(animationRow);
+
     m_canvas = new Canvas(this);
     m_canvas->map = &m_map;
     m_canvas->atlas = &m_atlas;
@@ -407,7 +534,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(tileSize, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, tileSize](int) {
             m_map.tileSize = tileSize->currentData().toInt();
-            m_canvas->adjust(); updateAtlasPicker();
+            m_canvas->adjust(); updateAtlasPicker(); updateAnimationControls();
         });
     connect(atlasChoice, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, atlasChoice](int) { setAtlas(atlasChoice->currentData().toString()); });
@@ -422,8 +549,29 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         });
     connect(zoom, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, zoom](int) { m_canvas->zoom = zoom->currentData().toInt(); m_canvas->adjust(); });
+    connect(setAnimation, &QPushButton::clicked, this,
+        [this]() { saveSelectedAnimation(); });
+    connect(m_removeAnimation, &QPushButton::clicked, this,
+        [this]() { removeSelectedAnimation(); });
+    connect(m_animFrames, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this](int) { updateAnimationPreview(); });
+    connect(m_animDelay, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this](int) { updateAnimationPreview(); });
+    connect(m_animLoop, &QCheckBox::toggled, this,
+        [this](bool) { updateAnimationPreview(); });
+    connect(m_animBounce, &QCheckBox::toggled, this,
+        [this](bool) { updateAnimationPreview(); });
     setAtlas(atlasChoice->currentData().toString());
     m_canvas->adjust();
+    m_animationClock.start();
+    m_animationTimer = new QTimer(this);
+    m_animationTimer->setInterval(40); // sample at 25fps, timing remains 50Hz
+    connect(m_animationTimer, &QTimer::timeout, this, [this]() {
+        if (!isVisible()) return;
+        m_canvas->refreshAnimated(m_animationClock.elapsed() / 20);
+        updateAnimationPreview();
+    });
+    m_animationTimer->start();
 }
 
 void SidboxTilemapEditor::setAtlas(const QString &absolutePath)
@@ -439,6 +587,7 @@ void SidboxTilemapEditor::setAtlas(const QString &absolutePath)
     }
     if (m_canvas) m_canvas->graphicBrush = 1;
     updateAtlasPicker();
+    updateAnimationControls();
     if (m_canvas) m_canvas->viewport()->update();
 }
 
@@ -475,6 +624,99 @@ void SidboxTilemapEditor::updateAtlasPicker()
     }
 }
 
+void SidboxTilemapEditor::updateAnimationControls()
+{
+    if (!m_animFrames || !m_canvas) return;
+    const int id = m_canvas->graphicBrush;
+    const int cols = m_atlas.isNull() ? 0 : m_atlas.width()/m_map.tileSize;
+    const int rows = m_atlas.isNull() ? 0 : m_atlas.height()/m_map.tileSize;
+    const int count = qMin(255, cols*rows);
+    const bool valid = id > 0 && id <= count;
+    const SidboxTileAnimation *anim = findTileAnimation(m_map, id);
+    m_animFrames->setMaximum(qMax(1, qMin(16, count - id + 1)));
+    m_animFrames->setValue(anim ? anim->frames : qMin(4, m_animFrames->maximum()));
+    m_animDelay->setValue(anim ? anim->frameTicks : 5);
+    m_animLoop->setChecked(anim ? anim->loop : true);
+    m_animBounce->setChecked(anim ? anim->bounce : false);
+    m_removeAnimation->setEnabled(anim != nullptr);
+    if (m_animationStatus) {
+        m_animationStatus->setText(!valid ?
+            tr("Choose a tile from the atlas to define its animation.") :
+            anim ? tr("Tile %1: animated (%2 frames). Changes apply to every cell painted with ID %1.")
+                  .arg(id).arg(anim->frames) :
+            tr("Tile %1: static. Choose settings and press Set Animation. Frames must be consecutive in the atlas.").arg(id));
+    }
+    updateAnimationPreview();
+}
+
+void SidboxTilemapEditor::updateAnimationPreview()
+{
+    if (!m_animationPreview || !m_canvas || m_atlas.isNull()) return;
+    const int id = m_canvas->graphicBrush;
+    const int cols = m_atlas.width()/m_map.tileSize;
+    const int rows = m_atlas.height()/m_map.tileSize;
+    if (!cols || id < 1 || id > qMin(255, cols*rows)) {
+        m_animationPreview->clear();
+        return;
+    }
+    SidboxTileAnimation current;
+    if (const SidboxTileAnimation *saved = findTileAnimation(m_map, id)) current = *saved;
+    else {
+        current.graphicId = id;
+        current.frames = 1;
+    }
+    // Show the SAVED animation, not unsaved edits in the property widgets.
+    const int frameId = id + tileAnimationFrame(current,
+        m_animationClock.isValid() ? m_animationClock.elapsed()/20 : 0);
+    const QRect source(((frameId-1)%cols)*m_map.tileSize,
+                       ((frameId-1)/cols)*m_map.tileSize,
+                       m_map.tileSize, m_map.tileSize);
+    m_animationPreview->setPixmap(QPixmap::fromImage(m_atlas.copy(source)).scaled(
+        64, 64, Qt::KeepAspectRatio, Qt::FastTransformation));
+}
+
+void SidboxTilemapEditor::saveSelectedAnimation()
+{
+    if (!m_canvas || m_atlas.isNull()) return;
+    const int id = m_canvas->graphicBrush;
+    const int cols = m_atlas.width()/m_map.tileSize;
+    const int rows = m_atlas.height()/m_map.tileSize;
+    if (!cols || id < 1 || id > qMin(255, cols*rows)) {
+        QMessageBox::warning(this, tr("Tile Animation"), tr("Select a valid atlas tile first."));
+        return;
+    }
+    SidboxTileAnimation a;
+    a.graphicId = id;
+    a.frames = m_animFrames->value();
+    a.frameTicks = m_animDelay->value();
+    a.loop = m_animLoop->isChecked();
+    a.bounce = m_animBounce->isChecked();
+    if (a.graphicId+a.frames-1 > qMin(255, cols*rows)) {
+        QMessageBox::warning(this, tr("Tile Animation"),
+            tr("The selected frame range goes past the end of the atlas."));
+        return;
+    }
+    bool updated = false;
+    for (SidboxTileAnimation &entry : m_map.animations)
+        if (entry.graphicId == id) { entry = a; updated = true; break; }
+    if (!updated) m_map.animations.append(a);
+    updateAnimationControls();
+    m_canvas->viewport()->update();
+}
+
+void SidboxTilemapEditor::removeSelectedAnimation()
+{
+    if (!m_canvas) return;
+    const int id = m_canvas->graphicBrush;
+    for (int i = 0; i < m_map.animations.size(); ++i)
+        if (m_map.animations.at(i).graphicId == id) {
+            m_map.animations.removeAt(i);
+            break;
+        }
+    updateAnimationControls();
+    m_canvas->viewport()->update();
+}
+
 void SidboxTilemapEditor::done(int result)
 {
     // Save for Apply and Cancel alike: window state is a user preference,
@@ -500,6 +742,7 @@ bool SidboxTilemapEditor::eventFilter(QObject *target, QEvent *event)
                     m_canvas->graphicBrush = id;
                     m_graphicMode->setCurrentIndex(2);
                     updateAtlasPicker();
+                    updateAnimationControls();
                 }
             }
             return true;
@@ -541,6 +784,18 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
                 packedTiles.append(reinterpret_cast<const char *>(image.constScanLine(oy+y) + ox), map.tileSize);
         }
     }
+    bool seenAnimated[256] = {};
+    for (const SidboxTileAnimation &a : map.animations) {
+        if (a.graphicId < 1 || a.graphicId > 255 || a.frames < 1 || a.frames > 16 ||
+            a.frameTicks < 1 || a.frameTicks > 255 || seenAnimated[a.graphicId] ||
+            a.graphicId + a.frames - 1 > int(tileCount)) {
+            if (error) *error = QStringLiteral(
+                "Animated tile %1 uses frames outside the available atlas (or has invalid settings).")
+                .arg(a.graphicId);
+            return false;
+        }
+        seenAnimated[a.graphicId] = true;
+    }
     const QString folder = QDir(designDirectory).filePath(QStringLiteral("gamelevels"));
     if (!QDir().mkpath(folder)) {
         if (error) *error = QStringLiteral("Cannot create gamelevels directory.");
@@ -552,6 +807,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         "extern const uint8_t game_level1_graphics[];\n"
         "extern const uint8_t game_level1_collisions[];\n"
         "extern const uint8_t game_level1_atlas[];\n"
+        "extern const game_tile_animation_t game_level1_animations[];\n"
         "extern const game_tilemap_t game_level1;\n"
         "#endif\n";
     QByteArray source = "#include \"level1.h\"\n\n";
@@ -569,55 +825,67 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     writeBytes(map.graphics, "game_level1_graphics");
     writeBytes(map.collisions, "game_level1_collisions");
     writeBytes(packedTiles.isEmpty() ? QByteArray(1, char(0)) : packedTiles, "game_level1_atlas");
+    source += "const game_tile_animation_t game_level1_animations[] = {\n";
+    if (map.animations.isEmpty()) source += "    {0, 0, 0, 0} // No animations yet\n";
+    else {
+        for (const SidboxTileAnimation &a : map.animations) {
+            const int flags = (a.loop ? 1 : 0) | (a.bounce ? 2 : 0);
+            source += QByteArray("    {") + QByteArray::number(a.graphicId) + ", " +
+                QByteArray::number(a.frames) + ", " + QByteArray::number(a.frameTicks) +
+                ", " + QByteArray::number(flags) + "},\n";
+        }
+    }
+    source += "};\n\n";
     source += "const game_tilemap_t game_level1 = {\n";
     source += "    game_level1_graphics, game_level1_collisions, game_level1_atlas,\n";
     source += QByteArray("    ") + QByteArray::number(map.width) + ", " + QByteArray::number(map.height)
-        + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + "\n};\n\n";
+        + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
+        + (map.animations.isEmpty() ? QByteArray("    0, 0") :
+            QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
+        + "\n};\n\n";
     source +=
         "/*\n"
-        " * BEGINNER EXAMPLE — READ THIS FIRST\n"
+        " * ANIMATED TILES — BEGINNER INSTRUCTIONS\n"
         " *\n"
-        " * Add these to main.c:\n"
-        " *   #include \"gamehelpers/gametilemap.h\"\n"
-        " *   #include \"gamelevels/level1.h\"\n"
-        " *   static game_tilemap_ring_t scrolling = {0};\n"
-        " *   static game_tile_player_t player_physics = {0};\n"
-        " *   static int32_t camera_x = 0;\n"
+        " * Tile IDs still use one byte per cell. If tile 40 has four\n"
+        " * frames, it displays atlas tiles 40, 41, 42, 43 in sequence.\n"
+        " * Every tile painted with ID 40 shares the same animation.\n"
+        " * Collision types never change when the tile animates.\n"
         " *\n"
-        " * In main.c, BEFORE gameassets_init():\n"
-        " *   gfx_mode(960, 320, 480, 320,\n"
-        " *       DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);\n"
-        " * After gameassets_init():\n"
-        " *   gameassets_show_background(); // 480x320 static backdrop\n"
-        " *   gfx_scrollb(0, 0);\n"
-        " *   if (!game_tilemap_ring_init(&scrolling, &game_level1,\n"
-        " *           gfx_getfbuffer1(), gfx_getfbuffer2())) {\n"
-        " *       // Foreground buffers must be 960x320; stop if it fails.\n"
-        " *   }\n"
-        " *   gfx_showfbuffer(gfx_getfbuffer1());\n"
-        " *   game_tile_player_start(&player_physics, &game_level1, &player);\n"
+        " * After setting up your game, call once: \n"
+        " *   game_tilemap_animation_reset();\n"
+        " * Once per VBlank, BEFORE drawing either front buffer: \n"
+        " *   game_tilemap_animation_tick(1);\n"
+        " * Then call game_tilemap_blit_view() as you already do.\n"
+        " * Call animation_tick only ONCE per frame, not once per buffer.\n"
+        " * Existing projects require the UPDATED gametilemap.c and .h\n"
+        " * from the IDE codehelpers template for animation support.\n"
+        " */\n\n";
+    source +=
+        "/*\n"
+        " * BEGINNER EXAMPLE — DRAWING THE LEVEL (480x320 foreground)\n"
         " *\n"
-        " * Once per VBlank, BEFORE gfx_displaynow():\n"
-        " *   int32_t old_x = player_physics.x100 / 100;\n"
-        " *   int32_t old_y = player_physics.y100 / 100;\n"
-        " *   game_tile_player_run(&player_physics, getjoyport(), 1);\n"
-        " *   camera_x = player_physics.x100 / 100 - 240;\n"
-        " *   game_tilemap_ring_update(&scrolling, camera_x, 0);\n"
-        " *   gfx_scrollf(game_tilemap_scroll_x(&scrolling), 0);\n"
-        " *   game_tilemap_ring_restore_rect(&scrolling, old_x, old_y,\n"
-        " *       player.width, player.height);\n"
-        " *   game_tile_player_ring_screen(&player_physics, &scrolling);\n"
-        " *   gfx_usebuffer(gfx_getfbuffer1());\n"
+        " * After your gfx_mode() / gameassets_init() setup:\n"
+        " *   gameassets_show_background(); // Static backdrop\n"
+        " *   game_tilemap_animation_reset();\n"
+        " *   game_tile_player_start(&physics, &game_level1, &player);\n"
+        " *\n"
+        " * In your VBlank-synchronised game loop, ONCE per frame:\n"
+        " *   game_tilemap_animation_tick(1);\n"
+        " *   game_tile_player_run(&physics, getjoyport(), 1);\n"
+        " *\n"
+        " * For whichever foreground page is currently the drawing page:\n"
+        " *   gfx_usebuffer(front[draw_index]);\n"
+        " *   game_tilemap_blit_view(&game_level1, camera_x, camera_y, 480, 320);\n"
+        " *   game_tile_player_screen(&physics, camera_x, camera_y);\n"
         " *   gfx_drawbob(&player);\n"
+        " *   // Flip your foreground pages with your existing working code.\n"
         " *\n"
-        " * Keep gfx_cls() OUT of this loop. It erases the foreground tiles.\n"
-        " * FOREGROUND palette index 0 MUST be transparent, so the separate\n"
-        " * BACKGROUND image shows through empty tiles. This example uses\n"
-        " * front buffer 1 for sprite drawing; do not flip it unmodified.\n"
-        " * Horizontal-only scrolling in this first 960x320 prototype.\n"
-        " * Both 480px halves mirror each other, so gfx_scrollf() only\n"
-        " * gets offsets from 0 to 479, avoiding a hardware wrap seam.\n"
-        " * SIDBOX hardware verification is still required.\n"
+        " * Tick the animation once per VBlank, NOT once for each buffer!\n"
+        " * An animation applies to all cells painted with that graphic ID.\n"
+        " * The collision map and player physics remain unchanged.\n"
+        " * FOREGROUND palette colour 0 must be transparent, so empty\n"
+        " * map cells show the separate BACKGROUND image beneath them.\n"
         " */\n";
     const auto atomic = [error](const QString &path, const QByteArray &bytes) {
         QSaveFile f(path);

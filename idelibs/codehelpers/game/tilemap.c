@@ -35,6 +35,53 @@ static int32_t floor_tile(int32_t n, int32_t divisor)
  */
 static const uint8_t empty_tile[32u * 32u] __attribute__((aligned(32))) = {0};
 
+/* Single frame clock shared by all tile instances and both front pages.
+ * Every level uses its own small animation table, not per-tile timers.
+ */
+static uint32_t tile_animation_clock = 0;
+
+void game_tilemap_animation_reset(void)
+{
+    tile_animation_clock = 0;
+}
+
+void game_tilemap_animation_tick(uint16_t frames)
+{
+    tile_animation_clock += frames;
+}
+
+/* Frame index at a given time, including play-once and ping-pong. */
+static uint8_t animation_frame(const game_tile_animation_t *a, uint32_t ticks)
+{
+    const uint32_t n = a->frames;
+    const uint32_t step = ticks / a->frame_ticks;
+    if (n < 2u) return 0;
+    if (a->flags & GAME_TILE_ANIM_BOUNCE) {
+        const uint32_t last = n - 1u;
+        const uint32_t cycle = 2u * last;
+        const uint32_t pos = (a->flags & GAME_TILE_ANIM_LOOP)
+            ? step % cycle : (step < cycle ? step : cycle);
+        return (uint8_t)(pos <= last ? pos : cycle - pos);
+    }
+    return (uint8_t)((a->flags & GAME_TILE_ANIM_LOOP)
+        ? step % n : (step < n ? step : n - 1u));
+}
+
+static void animation_frames_for_map(const game_tilemap_t *m, uint8_t out[256])
+{
+    for (unsigned i = 0; i < 256u; ++i) out[i] = (uint8_t)i;
+    if (!m->animations) return;
+    for (uint16_t i = 0; i < m->animation_count; ++i) {
+        const game_tile_animation_t *a = m->animations + i;
+        const uint32_t end = (uint32_t)a->graphic_id + (uint32_t)a->frames - 1u;
+        if (!a->graphic_id || !a->frame_ticks || !a->frames || a->frames > 16u ||
+            a->graphic_id > m->atlas_count || end > m->atlas_count || end > 255u)
+            continue;
+        out[a->graphic_id] = (uint8_t)(a->graphic_id + animation_frame(a, tile_animation_clock));
+    }
+}
+
+
 void game_tilemap_blit_view(const game_tilemap_t *m,
                             int32_t camera_x, int32_t camera_y,
                             uint16_t view_width, uint16_t view_height)
@@ -56,6 +103,9 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
     const int32_t last_x = (camera_x + view_width - 1) / size;
     const int32_t last_y = (camera_y + view_height - 1) / size;
     const uint32_t tile_pixels = (uint32_t)size * (uint32_t)size;
+    /* Keep the 256-byte lookup out of the tiny V1 application stack. */
+    static uint8_t display_frames[256];
+    animation_frames_for_map(m, display_frames);
 
     for (int32_t ty = first_y; ty <= last_y; ++ty) {
         for (int32_t tx = first_x; tx <= last_x; ++tx) {
@@ -64,8 +114,10 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
                 id = m->graphics[(uint32_t)ty * m->width + (uint32_t)tx];
 
             const uint8_t *source = empty_tile;
-            if (id && m->atlas && id <= m->atlas_count)
-                source = m->atlas + ((uint32_t)id - 1u) * tile_pixels;
+            if (id && m->atlas && id <= m->atlas_count) {
+                const uint8_t frame_id = display_frames[id];
+                source = m->atlas + ((uint32_t)frame_id - 1u) * tile_pixels;
+            }
 
             gfx_blit((uint8_t *)source,
                      (int16_t)(tx * size - camera_x),
@@ -294,8 +346,10 @@ void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cam
  *   gameassets_init();
  *   gameassets_show_background();
  *   game_tile_player_start(&physics, &game_level1, &player);
+ *   game_tilemap_animation_reset();
  *
  * Once per VBlank, draw to one of the two FRONT buffers:
+ *   game_tilemap_animation_tick(1); // Once per VBlank, NOT per buffer
  *   game_tile_player_run(&physics, getjoyport(), 1);
  *   gfx_usebuffer(front[draw_index]);
  *   game_tilemap_blit_view(&game_level1, camera_x, 0, 480, 320);

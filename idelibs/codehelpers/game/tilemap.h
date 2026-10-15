@@ -17,6 +17,20 @@
 #define GAME_TILE_HAZARD      5u
 #define GAME_TILE_DOOR        6u
 
+#define GAME_TILE_ANIM_LOOP    1u
+#define GAME_TILE_ANIM_BOUNCE  2u
+
+/* Graphic tile ID is 1-based. The following N atlas frames are played
+ * together everywhere that graphic ID is painted. No per-cell state.
+ * Counts 1..16, frame_ticks 1..255 VBlanks, flags are LOOP and BOUNCE.
+ */
+typedef struct {
+    uint8_t graphic_id;
+    uint8_t frames;
+    uint8_t frame_ticks;
+    uint8_t flags;
+} game_tile_animation_t;
+
 typedef struct {
     const uint8_t *graphics;
     const uint8_t *collision;
@@ -25,11 +39,19 @@ typedef struct {
     uint16_t height;      /* Map height, in tiles. */
     uint16_t tile_size;   /* 8, 16 or 32 pixels per tile. */
     uint16_t atlas_count; /* Graphic IDs 1 through atlas_count. */
+    const game_tile_animation_t *animations; /* NULL means no animation. */
+    uint16_t animation_count;
 } game_tilemap_t;
 
 /* Stage 1.3 hardware diagnostic: redraw just the visible viewport with
  * gfx_blit(), using whichever foreground buffer gfx_usebuffer() selected.
  * This is NOT the optimised 960x320 ring yet. */
+/* Call once per VBlank in the main loop, BEFORE drawing either front buffer.
+ * Both buffers then use the same animation frame. Call reset on level start.
+ */
+void game_tilemap_animation_reset(void);
+void game_tilemap_animation_tick(uint16_t frames);
+
 void game_tilemap_blit_view(const game_tilemap_t *map,
                             int32_t camera_x, int32_t camera_y,
                             uint16_t view_width, uint16_t view_height);
