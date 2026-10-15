@@ -363,7 +363,8 @@ void SidboxGameDesigner::openPaletteEditor(int resourceIndex)
     dialog.setBank(plane == QStringLiteral("background"));
     if (!palettePath.isEmpty() && QFileInfo(palettePath).suffix().compare(
         QStringLiteral("pal"), Qt::CaseInsensitive) == 0) {
-        dialog.loadFromFile(palettePath);
+        // Respect Cancel (and failed imports) rather than opening an empty editor.
+        if (!dialog.loadFromFile(palettePath)) return;
     }
     dialog.exec();
     const QString saved = dialog.savedPath();
@@ -559,6 +560,86 @@ void SidboxGameDesigner::rebuildSplineOverlay()
     }
 }
 
+void SidboxGameDesigner::openTilemapEditor()
+{
+    QVector<QPair<QString, QString>> atlases;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
+        const QString path = resolvedPath(r.path);
+        if (QFileInfo(path).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0)
+            continue;
+        atlases.append({r.name, path});
+    }
+    const QString directory = QFileInfo(m_filePath).absolutePath();
+    SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
+    if (editor.exec() != QDialog::Accepted) return;
+    m_tilemap = editor.result();
+    m_tilemapEnabled = true;
+    // Tilemap dimensions belong to the freely pannable tilemap editor.
+    // Do NOT change the Game Designer world or physical viewport here.
+    // Example: a 100 x 20 map with 16px tiles is 1600 x 320 WORLD pixels,
+    // independently of the 960 x 320 physical foreground buffer.
+    setDirty();
+}
+
+bool SidboxGameDesigner::exportTilemap(bool showMessage)
+{
+    if (!m_tilemapEnabled) return false;
+    const QString directory = QFileInfo(m_filePath).absolutePath();
+    // Do not overwrite user-edited helper C files. Only add missing files.
+    bool includeHelper = false;
+    if (showMessage) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(this,
+            tr("Export Tilemap"),
+            tr("Would you like CoderGirl to include gametilemap.c/.h?\n"
+               "This helper draws the map and moves the platformer character.\n\n"
+               "Yes: Copy missing helper files and export the map.\n"
+               "No: Export the map data only.\n"
+               "Cancel: Do nothing."),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Yes);
+        if (answer == QMessageBox::Cancel) return false;
+        includeHelper = answer == QMessageBox::Yes;
+    }
+    if (includeHelper) {
+        const QDir sourceDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+        const QString destination = QDir(directory).filePath(QStringLiteral("gamehelpers"));
+        if (!QDir().mkpath(destination)) {
+            QMessageBox::warning(this, tr("Tilemap Export"), tr("Cannot create gamehelpers folder."));
+            return false;
+        }
+        for (const QString &ext : {QStringLiteral("h"), QStringLiteral("c")}) {
+            const QString path = QDir(destination).filePath(QStringLiteral("gametilemap.") + ext);
+            if (QFileInfo::exists(path)) continue;
+            QFile templateFile(sourceDir.filePath(QStringLiteral("tilemap.") + ext));
+            if (!templateFile.open(QIODevice::ReadOnly)) {
+                QMessageBox::warning(this, tr("Tilemap Export"),
+                    tr("Missing code helper template: %1").arg(templateFile.fileName()));
+                return false;
+            }
+            QByteArray code = templateFile.readAll();
+            if (ext == QStringLiteral("c")) code.replace("\"tilemap.h\"", "\"gametilemap.h\"");
+            QSaveFile file(path);
+            if (!file.open(QIODevice::WriteOnly) || file.write(code) != code.size() || !file.commit()) {
+                QMessageBox::warning(this, tr("Tilemap Export"), tr("Could not write %1").arg(path));
+                return false;
+            }
+        }
+    }
+    QString error;
+    if (!sidboxExportTilemap(m_tilemap, directory, &error)) {
+        QMessageBox::warning(this, tr("Tilemap Export"), error);
+        return false;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    if (showMessage)
+        QMessageBox::information(this, tr("Tilemap Exported"),
+            tr("Map exported to gamelevels/level1.c and level1.h.\n"
+               "Read the beginner example at the bottom of level1.c.\n\n"
+               "The ring-buffer wrap must still be checked on real SIDBOX hardware."));
+    return true;
+}
+
 void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
 {
     const QPointF worldPos = m_view->mapToScene(viewPos);
@@ -593,11 +674,17 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
     settings->setEnabled(hasPath);
     removePath->setEnabled(hasPath);
     menu.addSeparator();
+    QAction *editTiles = menu.addAction(tr("Tilemap Editor (Graphics + Collisions)..."));
+    QAction *exportTiles = menu.addAction(tr("Export Tilemap to C..."));
+    exportTiles->setEnabled(m_tilemapEnabled);
+    menu.addSeparator();
     QAction *exportCode = menu.addAction(tr("Export Spline Paths to C..."));
     exportCode->setEnabled(!m_splinePaths.isEmpty());
     menu.addAction(tr("Spline Help: drag numbered dots; loop joins last to first"))->setEnabled(false);
     QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(viewPos));
     if (!chosen) return;
+    if (chosen == editTiles) { openTilemapEditor(); return; }
+    if (chosen == exportTiles) { exportTilemap(true); return; }
     if (chosen == create) {
         if (m_splinePaths.size() >= 128) {
             QMessageBox::warning(this, tr("Spline Editor"), tr("A maximum of 128 paths is supported."));
@@ -927,6 +1014,9 @@ void SidboxGameDesigner::buildUi()
         spin->setMaximumWidth(90);
     }
     m_worldHeight->setMinimum(LCD_HEIGHT);
+    m_worldWidth->setToolTip(tr("Virtual level size in pixels. 100 tiles x 16 px = 1600 px.\n"
+                                "This is NOT the physical 960x320 foreground ring buffer."));
+    m_worldHeight->setToolTip(m_worldWidth->toolTip());
     m_worldWidth->setValue(960);
     m_worldHeight->setValue(640);
     top->addWidget(m_worldWidth);
@@ -1052,6 +1142,9 @@ void SidboxGameDesigner::buildUi()
         QAction *buildClut = menu.addAction(tr("Build Shared CLUT..."));
         QAction *useAsPreview = nullptr;
         QAction *editPalette = menu.addAction(tr("Palette Editor (Import / Export)..."));
+        QAction *editTiles = menu.addAction(tr("Tilemap Editor (Graphics + Collisions)..."));
+        QAction *exportTiles = menu.addAction(tr("Export Tilemap to C..."));
+        exportTiles->setEnabled(m_tilemapEnabled);
         QMenu *helpers = menu.addMenu(tr("Add Helper Code..."));
         const QString templateRoot = helperTemplatesRoot();
         for (const QString &folderName : {QStringLiteral("game"), QStringLiteral("gui")}) {
@@ -1120,6 +1213,8 @@ void SidboxGameDesigner::buildUi()
         else if (chosen == convertPng) importPngAsPpb();
         else if (chosen == buildClut) buildSharedPalette();
         else if (chosen == editPalette) openPaletteEditor(-1);
+        else if (chosen == editTiles) openTilemapEditor();
+        else if (chosen == exportTiles) exportTilemap(true);
         else if (chosen->data().toString().startsWith(QStringLiteral("codehelper:"))) {
             const QString ref = chosen->data().toString().mid(11);
             addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
@@ -2532,6 +2627,17 @@ bool SidboxGameDesigner::loadDesign()
         }
     }
     const bool seededBackgroundPalette = m_resources.size() != originalResourceCount;
+    m_tilemapEnabled = false;
+    m_tilemap = SidboxTilemap();
+    if (obj.contains(QStringLiteral("tilemap"))) {
+        if (!m_tilemap.fromJson(obj.value(QStringLiteral("tilemap")).toObject())) {
+            m_loading = false;
+            QMessageBox::warning(this, tr("Tilemap Editor"),
+                tr("The saved tilemap data is damaged or exceeds the size limits. No tilemap changes were applied."));
+            return false;
+        }
+        m_tilemapEnabled = true;
+    }
     m_splinePaths.clear();
     for (const QJsonValue &entry : obj.value(QStringLiteral("splinePaths")).toArray()) {
         if (!entry.isObject() || m_splinePaths.size() >= 128) continue;
@@ -2625,6 +2731,7 @@ bool SidboxGameDesigner::saveDesign()
     }
     obj.insert(QStringLiteral("splinePaths"), pathList);
     obj.insert(QStringLiteral("activeSpline"), m_activeSpline);
+    if (m_tilemapEnabled) obj.insert(QStringLiteral("tilemap"), m_tilemap.toJson());
     QSaveFile output(m_filePath);
     const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Indented);
     if (!output.open(QIODevice::WriteOnly)
@@ -2638,6 +2745,9 @@ bool SidboxGameDesigner::saveDesign()
     const QString pathHeader = QDir(QFileInfo(m_filePath).absolutePath())
         .filePath(QStringLiteral("gamehelpers/splinepaths.h"));
     if (QFileInfo::exists(pathHeader) && !exportSplinePaths(false)) return false;
+    const QString tileHeader = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gamelevels/level1.h"));
+    if (m_tilemapEnabled && QFileInfo::exists(tileHeader) && !exportTilemap(false)) return false;
     setDirty(false);
     return true;
 }

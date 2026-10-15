@@ -28,6 +28,8 @@ qt_add_executable(SidboxIDE
     guidesigner.h
     gamedesigner.cpp
     gamedesigner.h
+    gametilemap.cpp
+    gametilemap.h
     gameaudio.cpp
     gameaudio.h
     gamepalette.cpp

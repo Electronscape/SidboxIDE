@@ -364,3 +364,7 @@ All rights reserved
 Custom tools for building software on SIDBOX.
 
 </div>
+
+## New (experimental): Advanced Tilemap Editor
+
+See `TILEMAP-START-HERE.md` for the visual two-layer map editor and the new foreground 960x320 mirrored horizontal ring. The background remains static at 480x320. Hardware validation remains pending.

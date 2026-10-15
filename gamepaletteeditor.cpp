@@ -176,19 +176,53 @@ bool SidboxGamePaletteEditor::loadFromFile(const QString &path)
         QMessageBox::warning(this, tr("Import Palette"), error);
         return false;
     }
+    // Older .pal files sometimes have a zero alpha byte for ordinary foreground
+    // colours. Keep the file's alpha untouched unless the user explicitly asks
+    // us to repair these entries: alpha 0 may also be intentional.
+    QVector<QRgb> foreground = twoBanks ? first
+        : (importedToBackground ? m_front : first);
+    int missingForegroundAlpha = 0;
+    if (twoBanks || !importedToBackground) {
+        for (int i = 1; i < foreground.size(); ++i) {
+            if (qAlpha(foreground.at(i)) == 0) ++missingForegroundAlpha;
+        }
+    }
+    bool repairedForeground = false;
+    if (missingForegroundAlpha > 0) {
+        const auto answer = QMessageBox::question(
+            this, tr("Foreground Palette Transparency"),
+            tr("%1 foreground palette colour(s), other than index 0, have zero alpha "
+               "and will appear transparent on SIDBOX.\n\n"
+               "Make these colours opaque (alpha FF)?\n\n"
+               "Yes: Fix zero-alpha entries only (other alpha values are preserved).\n"
+               "No: Keep the palette exactly as it was.\n"
+               "Cancel: Do not import this palette.")
+                .arg(missingForegroundAlpha),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Yes);
+        if (answer == QMessageBox::Cancel) return false;
+        if (answer == QMessageBox::Yes) {
+            for (int i = 1; i < foreground.size(); ++i) {
+                if (qAlpha(foreground.at(i)) == 0)
+                    foreground[i] |= 0xFF000000u;
+            }
+            repairedForeground = true;
+        }
+    }
     if (twoBanks) {
-        m_front = first;
+        m_front = foreground;
         m_back = second;
     } else {
-        currentBank() = first; // A one-bank .pal imports into the selected plane only.
+        currentBank() = importedToBackground ? first : foreground;
+        // A one-bank .pal imports into the selected plane only.
     }
     // Background CLUTs never use transparency, even at index 0.
-    bool correctedAlpha = false;
+    bool correctedBackgroundAlpha = false;
     for (QRgb &colour : m_back) {
         const QRgb opaque = colour | 0xFF000000u;
-        if (opaque != colour) { colour = opaque; correctedAlpha = true; }
+        if (opaque != colour) { colour = opaque; correctedBackgroundAlpha = true; }
     }
-    m_modified = correctedAlpha;
+    m_modified = repairedForeground || correctedBackgroundAlpha;
     m_sourceIsSingleBank = !twoBanks;
     m_sourceBankIsBackground = importedToBackground;
     m_sourcePath = QFileInfo(path).absoluteFilePath();
@@ -201,7 +235,8 @@ bool SidboxGamePaletteEditor::loadFromFile(const QString &path)
         : tr("Loaded one bank into %1; the other bank was preserved.")
             .arg(currentBankIsBackground() ? tr("Background") : tr("Foreground"))
             + tr(" Save keeps the single-bank format; Save As creates both banks."))
-        + (correctedAlpha ? tr(" Background colours were made opaque; click Save to keep this change.") : QString()));
+        + (repairedForeground ? tr(" Zero-alpha foreground colours were made opaque; click Save to keep this change.") : QString())
+        + (correctedBackgroundAlpha ? tr(" Background colours were made opaque; click Save to keep this change.") : QString()));
     refreshGrid();
     return true;
 }

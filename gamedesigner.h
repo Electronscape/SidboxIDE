@@ -11,6 +11,7 @@
 #include <QStringList>
 #include "gameaudio.h"
 #include "gamepalette.h"
+#include "gametilemap.h"
 #include <functional>
 
 class QGraphicsScene;
@@ -81,6 +82,8 @@ private:
     void rebuildSplineOverlay();
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
+    void openTilemapEditor();
+    bool exportTilemap(bool showMessage);
     struct SplinePath {
         QString name;
         QVector<QPoint> points;
@@ -141,6 +144,8 @@ private:
     QVector<QGraphicsItem *> m_splineHandleItems;
     QVector<SplinePath> m_splinePaths;
     int m_activeSpline = -1;
+    SidboxTilemap m_tilemap;
+    bool m_tilemapEnabled = false;
     QTreeWidget *m_resourceTree = nullptr;
     QFormLayout *m_propertiesForm = nullptr;
     QWidget *m_positionFields = nullptr;
