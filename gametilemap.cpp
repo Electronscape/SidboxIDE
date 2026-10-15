@@ -977,41 +977,6 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         + (map.animations.isEmpty() ? QByteArray("    0, 0") :
             QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
         + "\n};\n\n";
-    source +=
-        "/*\n"
-        "ANIMATED TILES — COPYABLE BEGINNER EXAMPLE\n"
-        "\n"
-        "Graphic IDs are 16-bit. Collision types remain 8-bit.\n"
-        "Every cell painted with an animated graphic ID uses the same animation.\n"
-        "There are no per-cell timers or additional graphics buffers.\n"
-        "\n"
-        "Include at the top of main.c:\n"
-        "\n"
-        "#include \"gamelevels/level1.h\"\n"
-        "\n"
-        "After graphics and sprite initialisation, BEFORE the game loop:\n"
-        "\n"
-        "game_tilemap_animation_reset();\n"
-        "game_tile_player_start(&physics, &game_level1, &player);\n"
-        "\n"
-        "Within the VBlank-synchronised game loop, ONCE per frame:\n"
-        "\n"
-        "game_tilemap_animation_tick(1);\n"
-        "game_tile_player_run(&physics, getjoyport(), 1);\n"
-        "\n"
-        "After selecting the foreground buffer you are drawing into:\n"
-        "\n"
-        "gfx_usebuffer(front[draw_index]);\n"
-        "game_tilemap_blit_view(&game_level1, camera_x, camera_y, 480, 320);\n"
-        "game_tile_player_screen(&physics, camera_x, camera_y);\n"
-        "gfx_drawbob(&player);\n"
-        "\n"
-        "Continue using your existing working front-buffer flip code.\n"
-        "Do NOT call game_tilemap_animation_tick() once per display buffer.\n"
-        "Foreground palette index 0 must be transparent for the background to show.\n"
-        "The variables physics, player, front, draw_index, camera_x and camera_y\n"
-        "must already be defined in your game (see your working main.c).\n"
-        "*/\n";
     const auto atomic = [error](const QString &path, const QByteArray &bytes) {
         QSaveFile f(path);
         if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size() || !f.commit()) {

@@ -9,6 +9,8 @@ void start_tween(game_tween_t *tween, gfxbob_t *sprite,
     if (!sprite) return;
     tween->from_x = sprite->drawx;
     tween->from_y = sprite->drawy;
+    tween->offset_x = 0;
+    tween->offset_y = 0;
     tween->to_x = x;
     tween->to_y = y;
     tween->duration_frames = duration_frames;
@@ -36,14 +38,34 @@ void run_tween(game_tween_t *tween, uint16_t frame_step)
     }
     tween->elapsed_frames = (uint16_t)frame;
     // 64-bit intermediates avoid overflow when interpolating 16-bit positions.
-    tween->sprite->drawx = (int16_t)(tween->from_x +
-        ((int64_t)tween->to_x - tween->from_x) * frame / duration);
-    tween->sprite->drawy = (int16_t)(tween->from_y +
-        ((int64_t)tween->to_y - tween->from_y) * frame / duration);
+    const int64_t x = (int64_t)tween->from_x + tween->offset_x
+        + ((int64_t)tween->to_x - tween->from_x) * frame / duration;
+    const int64_t y = (int64_t)tween->from_y + tween->offset_y
+        + ((int64_t)tween->to_y - tween->from_y) * frame / duration;
+    tween->sprite->drawx = (int16_t)(x < -32768 ? -32768 : x > 32767 ? 32767 : x);
+    tween->sprite->drawy = (int16_t)(y < -32768 ? -32768 : y > 32767 ? 32767 : y);
     if (!tween->loop && frame == duration) tween->active = 0;
 }
 
 void stop_tween(game_tween_t *tween)
 {
     if (tween) tween->active = 0;
+}
+
+void set_tween_pos(game_tween_t *tween, int16_t x, int16_t y)
+{
+    if (!tween || !tween->sprite) return;
+    // The start point is the anchor; repositioning never restarts the timer.
+    const int32_t new_offset_x = (int32_t)x - tween->from_x;
+    const int32_t new_offset_y = (int32_t)y - tween->from_y;
+    const int64_t new_x = (int64_t)tween->sprite->drawx
+                        + (new_offset_x - tween->offset_x);
+    const int64_t new_y = (int64_t)tween->sprite->drawy
+                        + (new_offset_y - tween->offset_y);
+    tween->offset_x = new_offset_x;
+    tween->offset_y = new_offset_y;
+    tween->sprite->drawx = (int16_t)(new_x < -32768 ? -32768
+                                    : new_x > 32767 ? 32767 : new_x);
+    tween->sprite->drawy = (int16_t)(new_y < -32768 ? -32768
+                                    : new_y > 32767 ? 32767 : new_y);
 }

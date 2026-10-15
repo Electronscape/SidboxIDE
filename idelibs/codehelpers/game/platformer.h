@@ -4,7 +4,7 @@
  * to an existing gfxbob_t sprite. No new graphics, malloc or firmware needed.
  *
  * HOW TO START:
- * Open gamehelpers/gameplatformer.c and scroll to the beginner example.
+ * Open gamehelpers/gameplatformer.txt in the IDE Project Tree.
  * At 50 FPS, call run_platformer(..., getjoyport(), 1) once per game frame.
  * Your existing game loop still draws the sprites and waits for VBlank.
  *

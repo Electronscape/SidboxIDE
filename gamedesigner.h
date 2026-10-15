@@ -87,6 +87,7 @@ private:
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
     void openTilemapEditor();
+    void rebuildTilemapOverlay();
     bool exportTilemap(bool showMessage, bool includeMissingHelper = false);
     struct SplinePath {
         QString name;
@@ -145,6 +146,7 @@ private:
     QGraphicsView *m_view = nullptr;
     QGraphicsRectItem *m_cameraFrame = nullptr;
     QGraphicsRectItem *m_worldFrame = nullptr;
+    QGraphicsItem *m_tilemapOverlayItem = nullptr;
     QGraphicsPathItem *m_splineCurveItem = nullptr;
     QVector<QGraphicsItem *> m_splineHandleItems;
     QVector<SplinePath> m_splinePaths;
@@ -170,6 +172,7 @@ private:
     QComboBox *m_propBackgroundMode = nullptr;
     QComboBox *m_planeMode = nullptr;
     QCheckBox *m_showLabels = nullptr;
+    QCheckBox *m_showTilemap = nullptr;
     QCheckBox *m_forcePalette = nullptr;
     QComboBox *m_frontPalette = nullptr;
     QComboBox *m_backPalette = nullptr;

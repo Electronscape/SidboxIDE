@@ -1,0 +1,84 @@
+CODERGIRL V1 — SPRITE SPLINE
+===========================
+
+Draw a smooth curve using Game Designer -> right-click canvas -> Create Spline.
+Add, drag or delete nodes; set duration and loop. Then right-click the canvas
+and choose Export Spline Paths to C. This creates splinepaths.c / .h.
+
+1. Include these files at the top of main.c:
+
+#include "gamehelpers/gamespline.h"
+#include "gamehelpers/splinepaths.h"
+
+2. Keep movement state alive:
+
+static game_spline_t flight = {0};
+
+3. AFTER gameassets_init(), BEFORE the main game loop:
+
+start_spline(&flight, &enemy,
+             spline_flight_path,
+             spline_flight_count,
+             spline_flight_frames,
+             spline_flight_loop);
+
+Replace spline_flight with your exported path identifier from splinepaths.h.
+'enemy' is an example name for an existing gfxbob_t sprite.
+
+4. INSIDE the game loop, once per VBlank, before drawing the sprite:
+
+run_spline(&flight, 1);
+
+REPOSITIONING THE ENTIRE SPLINE
+-------------------------------
+Once you've called start_spline(), relocate the ENTIRE path with:
+
+set_spline_pos(&flight, 120, 50);
+
+The FIRST control point moves to (120,50). All other points shift by exactly
+the same amount without changing the curve or restarting its animation timer.
+The original splinepaths.c data is never altered, so several enemies can
+share the same path with separate game_spline_t objects:
+
+static game_spline_t enemy_a = {0};
+static game_spline_t enemy_b = {0};
+
+start_spline(&enemy_a, &first_enemy, spline_flight_path,
+             spline_flight_count, 100, 1);
+start_spline(&enemy_b, &second_enemy, spline_flight_path,
+             spline_flight_count, 100, 1);
+set_spline_pos(&enemy_a, 20, 40);
+set_spline_pos(&enemy_b, 250, 90);
+
+Inside each game frame:
+
+run_spline(&enemy_a, 1);
+run_spline(&enemy_b, 1);
+
+CAMERA SCROLLING: ATTACH A SPLINE TO THE GAME WORLD
+---------------------------------------------------
+The exported control points ALREADY use world coordinates. No need to look up
+or subtract the first control point yourself! In your game loop, after finding
+camera_x and camera_y and before drawing the sprite:
+
+offset_spline(&flight, -camera_x, -camera_y);
+run_spline(&flight, 1);
+gfx_drawbob(&enemy);
+
+The two arguments are the TOTAL drawing offset from world coordinates, NOT
+how much to move compared with last frame. Repeating the same call never
+makes the sprite drift. As camera_x grows, your sprite moves left on screen.
+
+You may also choose a different WORLD spawn position while scrolling:
+
+set_spline_pos(&flight, 500, 100);            // New first world point
+offset_spline(&flight, -camera_x, -camera_y); // Camera offset each frame
+
+The original points remain unchanged. Each game_spline_t holds its own
+world placement and drawing offset, so different enemies can share a path.
+
+stop_spline(&flight); // Freeze at the current position
+
+The spline updates sprite position only. You can combine it with the
+Sprite Animation helper (which changes sprite.index), but NOT with tween or
+platformer movement of the same sprite at the same time.

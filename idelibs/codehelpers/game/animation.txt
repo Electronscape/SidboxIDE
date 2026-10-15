@@ -1,0 +1,35 @@
+CODERGIRL V1 — SPRITE ANIMATION
+==============================
+
+This helper changes gfxbob_t.index to select pictures from the sprite's
+atlas. The V1 sprite index range is 0..255 (independent of the 16-bit TILEMAP
+graphics IDs). Run after gameassets_init() and once per VBlank.
+
+1. Include in main.c:
+
+#include "gamehelpers/gameanimation.h"
+
+2. Add a persistent animation state:
+
+static game_animation_t walk = {0};
+
+3. Start after initialising the gameassets:
+
+start_animation(&walk, &player, 0, 6, 5, GAME_ANIM_LOOP);
+
+This plays six images, starting at atlas frame 0, five VBlanks each.
+
+4. Run once per VBlank BEFORE gfx_drawbob(&player):
+
+run_animation(&walk, 1);
+
+Other modes:
+
+GAME_ANIM_ONCE      // Play once and hold the last picture
+GAME_ANIM_LOOP      // Repeat from the start
+GAME_ANIM_PINGPONG  // Forward then backwards continuously
+
+stop_animation(&walk); // Freeze on the currently displayed atlas picture
+
+Sprite Animation combines with Tween or Spline because it modifies only
+sprite.index, not sprite position.

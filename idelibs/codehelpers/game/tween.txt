@@ -1,0 +1,43 @@
+CODERGIRL V1 — SPRITE TWEEN
+==========================
+
+Move an existing sprite smoothly between two positions. All times are game
+frames: at 50 FPS, 50 frames = 1 second. No heap allocation or firmware changes.
+
+1. Include this at the top of main.c:
+
+#include "gamehelpers/gametween.h"
+
+2. Keep a tween object alive for as long as the sprite moves:
+
+static game_tween_t movement = {0};
+
+3. AFTER gameassets_init(), BEFORE your game loop:
+
+start_tween(&movement, &player, 300, 160, 50, 0);
+
+4. INSIDE the game loop, once per VBlank, BEFORE drawing the sprite:
+
+run_tween(&movement, 1);
+
+Here 'player' is an example name for your own gfxbob_t. The first position
+is taken from player.drawx / player.drawy. Loop=0 stops at the destination;
+loop=1 continuously repeats the journey.
+
+REPOSITIONING A TWEEN WITHOUT RESTARTING IT
+-------------------------------------------
+After start_tween(), you can relocate the WHOLE route:
+
+set_tween_pos(&movement, 80, 120);
+
+That changes the route's start to (80,120), shifts its destination by the
+same amount, and keeps elapsed time unchanged. For example, an original route
+from (10,10) to (110,10) becomes (80,120) to (180,120).
+
+Call set_tween_pos() again whenever you want to move the whole route. It
+works during playback and after the tween finishes.
+
+stop_tween(&movement); // Freeze at the current position
+
+Do NOT also run spline/platformer movement on this same sprite at the same
+time: both helpers would try to set sprite.drawx / sprite.drawy.

@@ -11,6 +11,10 @@ void start_spline(game_spline_t *path, gfxbob_t *sprite,
     path->point_count = point_count;
     path->duration_frames = duration_frames;
     path->elapsed_frames = 0;
+    path->offset_x = 0;
+    path->offset_y = 0;
+    path->view_x = 0;
+    path->view_y = 0;
     path->loop = loop ? 1 : 0;
     if (!sprite || !points || point_count < 2) return;
     sprite->drawx = points[0].x;
@@ -37,8 +41,10 @@ void run_spline(game_spline_t *path, uint16_t frame_step)
                                       : (next < duration ? next : duration);
     path->elapsed_frames = (uint16_t)frame;
     if (!path->loop && frame == duration) {
-        path->sprite->drawx = path->points[path->point_count - 1].x;
-        path->sprite->drawy = path->points[path->point_count - 1].y;
+        const int64_t final_x = (int64_t)path->points[path->point_count - 1].x + path->offset_x + path->view_x;
+        const int64_t final_y = (int64_t)path->points[path->point_count - 1].y + path->offset_y + path->view_y;
+        path->sprite->drawx = (int16_t)(final_x < -32768 ? -32768 : final_x > 32767 ? 32767 : final_x);
+        path->sprite->drawy = (int16_t)(final_y < -32768 ? -32768 : final_y > 32767 ? 32767 : final_y);
         path->active = 0;
         return;
     }
@@ -67,8 +73,10 @@ void run_spline(game_spline_t *path, uint16_t frame_step)
         const int64_t value = (2 * p1 * 4096 + (-p0 + p2) * t
             + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
             + (-p0 + 3 * p1 - 3 * p2 + p3) * t3) / (2 * 4096);
-        const int16_t pos = (int16_t)(value < -32768 ? -32768
-                                   : value > 32767 ? 32767 : value);
+        const int64_t translated = value + (axis ? path->offset_y : path->offset_x)
+                                         + (axis ? path->view_y : path->view_x);
+        const int16_t pos = (int16_t)(translated < -32768 ? -32768
+                                   : translated > 32767 ? 32767 : translated);
         if (axis) path->sprite->drawy = pos;
         else path->sprite->drawx = pos;
     }
@@ -77,4 +85,41 @@ void run_spline(game_spline_t *path, uint16_t frame_step)
 void stop_spline(game_spline_t *path)
 {
     if (path) path->active = 0;
+}
+
+void set_spline_pos(game_spline_t *path, int16_t x, int16_t y)
+{
+    if (!path || !path->sprite || !path->points || path->point_count < 2) return;
+    // Never modify the exported path points: other sprites may share them.
+    const int32_t new_offset_x = (int32_t)x - path->points[0].x;
+    const int32_t new_offset_y = (int32_t)y - path->points[0].y;
+    const int64_t new_x = (int64_t)path->sprite->drawx
+                        + (new_offset_x - path->offset_x);
+    const int64_t new_y = (int64_t)path->sprite->drawy
+                        + (new_offset_y - path->offset_y);
+    path->offset_x = new_offset_x;
+    path->offset_y = new_offset_y;
+    path->sprite->drawx = (int16_t)(new_x < -32768 ? -32768
+                                   : new_x > 32767 ? 32767 : new_x);
+    path->sprite->drawy = (int16_t)(new_y < -32768 ? -32768
+                                   : new_y > 32767 ? 32767 : new_y);
+}
+
+/* Give this spline an ABSOLUTE drawing offset relative to its world path.
+   The previous drawing offset is REPLACED, not accumulated, making this safe
+   to call every frame with (-camera_x, -camera_y). set_spline_pos() can still
+   choose a different world start position independently of the camera.
+   Exported control points and animation progress are never modified. */
+void offset_spline(game_spline_t *path, int32_t x, int32_t y)
+{
+    if (!path || !path->sprite || !path->points || path->point_count < 2) return;
+
+    const int64_t new_x = (int64_t)path->sprite->drawx + ((int64_t)x - path->view_x);
+    const int64_t new_y = (int64_t)path->sprite->drawy + ((int64_t)y - path->view_y);
+    path->view_x = x;
+    path->view_y = y;
+    path->sprite->drawx = (int16_t)(new_x < -32768 ? -32768
+                                   : new_x > 32767 ? 32767 : new_x);
+    path->sprite->drawy = (int16_t)(new_y < -32768 ? -32768
+                                   : new_y > 32767 ? 32767 : new_y);
 }

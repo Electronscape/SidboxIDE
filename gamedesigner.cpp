@@ -35,6 +35,7 @@
 #include <QDialogButtonBox>
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
+#include <QStyleOptionGraphicsItem>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
 #include <QHBoxLayout>
@@ -126,6 +127,67 @@ protected:
         for (int y = firstY; y <= rect.bottom(); y += spacing)
             painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
     }
+};
+
+// Visual-only tilemap overlay for the main world canvas. Painting happens in
+// world coordinates, and Qt handles zooming/panning with the rest of the scene.
+// Draw only the exposed tiles: even a 256x256 map needs no giant preview image.
+class GameTilemapOverlay final : public QGraphicsItem
+{
+public:
+    GameTilemapOverlay(const SidboxTilemap *map, const QImage &atlas)
+        : m_map(map), m_atlas(atlas)
+    {
+        setZValue(2); // Above background references, below movable sprites.
+        setAcceptedMouseButtons(Qt::NoButton);
+        setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
+    }
+
+    QRectF boundingRect() const override
+    {
+        if (!m_map) return {};
+        return QRectF(0, 0, qreal(m_map->width) * m_map->tileSize,
+                      qreal(m_map->height) * m_map->tileSize);
+    }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
+               QWidget *) override
+    {
+        if (!m_map || m_atlas.isNull() || !option) return;
+        const int tileSize = m_map->tileSize;
+        if (tileSize <= 0 || m_map->graphics.size() < m_map->width * m_map->height * 2)
+            return;
+        const int cols = m_atlas.width() / tileSize;
+        const int rows = m_atlas.height() / tileSize;
+        if (cols <= 0 || rows <= 0) return;
+
+        const QRectF visible = option->exposedRect.intersected(boundingRect());
+        if (visible.isEmpty()) return;
+        const int firstX = qBound(0, qFloor(visible.left() / tileSize), m_map->width);
+        const int firstY = qBound(0, qFloor(visible.top() / tileSize), m_map->height);
+        const int lastX = qBound(0, qCeil(visible.right() / tileSize), m_map->width);
+        const int lastY = qBound(0, qCeil(visible.bottom() / tileSize), m_map->height);
+        const int atlasTiles = cols * rows;
+        painter->setRenderHint(QPainter::SmoothPixmapTransform, false);
+        for (int y = firstY; y < lastY; ++y) {
+            for (int x = firstX; x < lastX; ++x) {
+                const int offset = (y * m_map->width + x) * 2;
+                const auto *bytes = reinterpret_cast<const uchar *>(m_map->graphics.constData());
+                const int id = int(bytes[offset]) | (int(bytes[offset + 1]) << 8);
+                // Tile 0 is empty. Animated tiles show their first atlas frame
+                // here; only the V1 runtime advances them with VBlank.
+                if (id <= 0 || id > atlasTiles) continue;
+                const int n = id - 1;
+                painter->drawImage(QRectF(x * tileSize, y * tileSize, tileSize, tileSize),
+                    m_atlas, QRectF((n % cols) * tileSize, (n / cols) * tileSize,
+                                    tileSize, tileSize));
+            }
+        }
+    }
+
+private:
+    const SidboxTilemap *m_map = nullptr;
+    QImage m_atlas;
 };
 
 // QGraphicsPixmapItem can be dragged in the scene. Notify the document after
@@ -483,42 +545,95 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
     const QString folder = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
     const QString hPath = QDir(folder).filePath(installedBase + QStringLiteral(".h"));
     const QString cPath = QDir(folder).filePath(installedBase + QStringLiteral(".c"));
-    if (QFileInfo::exists(hPath) || QFileInfo::exists(cPath)) {
-        if (QMessageBox::warning(this, tr("Replace Helper Code?"),
-            tr("This game's helper code already exists. Replace it with the template?\n"
-               "Your changes to these two files would be lost.\n\n%1\n%2")
-                .arg(hPath, cPath), QMessageBox::Yes | QMessageBox::Cancel,
-                QMessageBox::Cancel) != QMessageBox::Yes) return;
+    const bool headerExists = QFileInfo::exists(hPath);
+    const bool sourceExists = QFileInfo::exists(cPath);
+    bool keepExistingCode = false;
+    if (headerExists || sourceExists) {
+        const auto answer = QMessageBox::question(this, tr("Helper Already Installed"),
+            tr("This game's helper files already exist:\n%1\n%2\n\n"
+               "Yes: Replace the C and H files with the current templates.\n"
+               "No: Keep existing code and add any missing beginner guide "
+               "(or missing C/H files).\n"
+               "Cancel: Do nothing.")
+                .arg(hPath, cPath),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::No);
+        if (answer == QMessageBox::Cancel || answer == QMessageBox::NoButton) return;
+        keepExistingCode = (answer == QMessageBox::No);
     }
     if (!QDir().mkpath(folder)) {
         QMessageBox::warning(this, tr("Add Helper Code"), tr("Cannot create directory:\n%1").arg(folder));
         return;
     }
-    QSaveFile hFile(hPath), cFile(cPath);
-    if (!hFile.open(QIODevice::WriteOnly) || !cFile.open(QIODevice::WriteOnly)
-        || hFile.write(header) != header.size() || cFile.write(source) != source.size()) {
-        hFile.cancelWriting(); cFile.cancelWriting();
-        QMessageBox::warning(this, tr("Add Helper Code"),
-            tr("Cannot write files in:\n%1").arg(folder));
-        return;
+    const bool writeHeader = !keepExistingCode || !headerExists;
+    const bool writeSource = !keepExistingCode || !sourceExists;
+    if (writeHeader) {
+        QSaveFile file(hPath);
+        if (!file.open(QIODevice::WriteOnly)
+            || file.write(header) != header.size() || !file.commit()) {
+            file.cancelWriting();
+            QMessageBox::warning(this, tr("Add Helper Code"),
+                tr("Cannot save helper header:\n%1").arg(hPath));
+            return;
+        }
     }
-    // Two atomic single-file saves (a power cut between commits could still
-    // leave mismatched files, but ordinary write failures do not truncate them).
-    if (!hFile.commit() || !cFile.commit()) {
-        QMessageBox::warning(this, tr("Add Helper Code"),
-            tr("Could not save all helper files in:\n%1").arg(folder));
-        return;
+    if (writeSource) {
+        QSaveFile file(cPath);
+        if (!file.open(QIODevice::WriteOnly)
+            || file.write(source) != source.size() || !file.commit()) {
+            file.cancelWriting();
+            QMessageBox::warning(this, tr("Add Helper Code"),
+                tr("Cannot save helper source:\n%1").arg(cPath));
+            return;
+        }
+    }
+    // A helper can optionally carry a plain-text beginner guide. The Project
+    // Tree already displays *.txt and opens them in the source editor.
+    // Never overwrite a guide that the programmer has personalised.
+    bool addedGuide = false;
+    bool keptGuide = false;
+    const QString guideSource = templateFolder.filePath(base + QStringLiteral(".txt"));
+    const QString guidePath = QDir(folder).filePath(installedBase + QStringLiteral(".txt"));
+    if (QFileInfo(guideSource).isFile()) {
+        if (QFileInfo::exists(guidePath)) {
+            keptGuide = true;
+        } else {
+            QFile guideTemplate(guideSource);
+            if (!guideTemplate.open(QIODevice::ReadOnly)) {
+                QMessageBox::warning(this, tr("Add Helper Code"),
+                    tr("Helper installed, but cannot read guide:\n%1").arg(guideSource));
+            } else {
+                const QByteArray guide = guideTemplate.readAll();
+                QSaveFile guideFile(guidePath);
+                if (!guideFile.open(QIODevice::WriteOnly)
+                    || guideFile.write(guide) != guide.size()
+                    || !guideFile.commit()) {
+                    guideFile.cancelWriting();
+                    QMessageBox::warning(this, tr("Add Helper Code"),
+                        tr("Helper installed, but cannot save guide:\n%1").arg(guidePath));
+                } else {
+                    addedGuide = true;
+                }
+            }
+        }
     }
     if (assetFilesChanged) assetFilesChanged();
-    QString message = tr("Added gamehelpers/%1.h and %1.c.\n\n"
-                          "Include \"gamehelpers/%1.h\" in your main.c.\n"
-                          "Gameassets generation will not overwrite this code.").arg(installedBase);
+    QString message = keepExistingCode
+        ? tr("Existing helper code preserved.\n"
+             "Any missing C/H files and beginner guide were installed.")
+        : tr("Installed gamehelpers/%1.h and %1.c.\n\n"
+             "Include \"gamehelpers/%1.h\" in your main.c.\n"
+             "Gameassets generation will not overwrite this code.").arg(installedBase);
     // Every helper can supply its own beginner instructions, without hardcoding
     // helper names or recompiling the IDE. The .ini file is optional.
     QSettings helperInfo(templateFolder.filePath(base + QStringLiteral(".ini")),
                          QSettings::IniFormat);
     const QString afterInstall = helperInfo.value(QStringLiteral("Helper/after_install"))
                                      .toString().trimmed();
+    if (addedGuide) message += tr("\n\nBeginner guide: gamehelpers/%1.txt (double-click in Project Tree).")
+                                  .arg(installedBase);
+    else if (keptGuide) message += tr("\n\nYour existing guide gamehelpers/%1.txt was preserved.")
+                                      .arg(installedBase);
     if (!afterInstall.isEmpty()) message += QStringLiteral("\n\n") + afterInstall;
     QMessageBox::information(this, tr("Helper Code Added"), message);
 }
@@ -604,6 +719,41 @@ void SidboxGameDesigner::rebuildSplineOverlay()
     }
 }
 
+void SidboxGameDesigner::rebuildTilemapOverlay()
+{
+    if (!m_scene) return;
+    if (m_tilemapOverlayItem) {
+        delete m_tilemapOverlayItem;
+        m_tilemapOverlayItem = nullptr;
+    }
+    if (m_showTilemap) {
+        m_showTilemap->setEnabled(m_tilemapEnabled);
+        if (!m_tilemapEnabled || !m_showTilemap->isChecked()) return;
+    } else return;
+
+    if (m_tilemap.atlasPath.isEmpty()) return;
+    const QString atlasPath = QDir(QFileInfo(m_filePath).absolutePath())
+                                  .absoluteFilePath(m_tilemap.atlasPath);
+    SidboxPpb::Picture picture;
+    if (!SidboxPpb::read(atlasPath, &picture)) return;
+    QImage atlas = picture.indexed;
+    if (m_forcePalette && m_forcePalette->isChecked()) {
+        const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
+        if (palette.size() == 256)
+            atlas.setColorTable(colourPreviewBank(palette, true));
+    }
+    // Foreground palette index 0 is transparent on SIDBOX. Do this only
+    // for the preview; the PPB file and palette assets are never modified.
+    QVector<QRgb> displayPalette = atlas.colorTable();
+    if (!displayPalette.isEmpty()) {
+        const QRgb zero = displayPalette.at(0);
+        displayPalette[0] = qRgba(qRed(zero), qGreen(zero), qBlue(zero), 0);
+        atlas.setColorTable(displayPalette);
+    }
+    m_tilemapOverlayItem = new GameTilemapOverlay(&m_tilemap, atlas);
+    m_scene->addItem(m_tilemapOverlayItem);
+}
+
 void SidboxGameDesigner::openTilemapEditor()
 {
     QVector<QPair<QString, QString>> atlases;
@@ -620,6 +770,8 @@ void SidboxGameDesigner::openTilemapEditor()
     if (editor.exec() != QDialog::Accepted) return;
     m_tilemap = editor.result();
     m_tilemapEnabled = true;
+    rebuildTilemapOverlay();
+    refreshFrame();
     // Tilemap dimensions belong to the freely pannable tilemap editor.
     // Do NOT change the Game Designer world or physical viewport here.
     // Example: a 100 x 20 map with 16px tiles is 1600 x 320 WORLD pixels,
@@ -699,6 +851,22 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
                 return false;
             }
         }
+        // Exporting helpers should also make their copyable instructions available.
+        const QString guidePath = QDir(destination).filePath(QStringLiteral("gametilemap.txt"));
+        if (!QFileInfo::exists(guidePath)) {
+            QFile input(sourceDir.filePath(QStringLiteral("tilemap.txt")));
+            if (input.exists() && input.open(QIODevice::ReadOnly)) {
+                const QByteArray guide = input.readAll();
+                QSaveFile output(guidePath);
+                if (!output.open(QIODevice::WriteOnly)
+                    || output.write(guide) != guide.size()
+                    || !output.commit()) {
+                    output.cancelWriting();
+                    QMessageBox::warning(this, tr("Tilemap Export"),
+                        tr("Cannot save beginner guide:\n%1").arg(guidePath));
+                }
+            }
+        }
     }
     QString error;
     if (!sidboxExportTilemap(m_tilemap, directory, &error)) {
@@ -709,8 +877,8 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
     if (showMessage)
         QMessageBox::information(this, tr("Tilemap Exported"),
             tr("Map exported to gamelevels/level1.c and level1.h.\n"
-               "Read the beginner example at the bottom of level1.c.\n\n"
-               "The ring-buffer wrap must still be checked on real SIDBOX hardware."));
+               "Copyable instructions: gamehelpers/gametilemap.txt.\n"
+               "The foreground blitter redraws the visible tilemap every frame."));
     return true;
 }
 
@@ -923,7 +1091,6 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
     QByteArray source = "/* GENERATED by CoderGirl Game Designer. Do not edit this file. */\n"
         "#include \"splinepaths.h\"\n\n";
     QSet<QString> identifiers;
-    QString firstName;
     for (int i = 0; i < m_splinePaths.size(); ++i) {
         const SplinePath &path = m_splinePaths.at(i);
         if (path.points.size() < 2) continue;
@@ -936,7 +1103,6 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
         while (identifiers.contains(identifier))
             identifier = unsuffixed + QStringLiteral("_%1").arg(suffix++);
         identifiers.insert(identifier);
-        if (firstName.isEmpty()) firstName = identifier;
         header += QStringLiteral("extern const game_spline_point_t %1_path[%2];\n"
                                  "extern const uint16_t %1_count;\n"
                                  "extern const uint16_t %1_frames;\n"
@@ -953,53 +1119,6 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
                         .arg(path.durationFrames).arg(path.loop ? 1 : 0).toUtf8();
     }
     header += "#endif\n";
-
-    // This example is in the generated C file, where a new programmer can
-    // find it after exporting. Use the actual first spline's C identifier.
-    source += "/*\n"
-              " * HOW TO USE YOUR SPLINE (example code for main.c)\n"
-              " *\n"
-              " * 1. Your game needs gamespline.c and gamespline.h in gamehelpers/.\n"
-              " *    Those files move the sprite; this file stores the path points.\n"
-              " *\n"
-              " * 2. Add these includes at the top of main.c:\n"
-              " *\n"
-              " *      #include \"gamehelpers/gamespline.h\"\n"
-              " *      #include \"gamehelpers/splinepaths.h\"\n"
-              " *\n"
-              " * 3. Add this variable outside main() to remember the movement:\n"
-              " *\n"
-              " *      static game_spline_t flight = {0};\n"
-              " *\n";
-    if (!firstName.isEmpty()) {
-        source += QStringLiteral(
-              " * 4. After you have set up your gfxbob_t sprite (called enemy here),\n"
-              " *    but BEFORE the game loop, start moving along this path:\n"
-              " *\n"
-              " *      start_spline(&flight, &enemy,\n"
-              " *                   %1_path,\n"
-              " *                   %1_count,\n"
-              " *                   %1_frames,\n"
-              " *                   %1_loop);\n"
-              " *\n").arg(firstName).toUtf8();
-    } else {
-        source += " * 4. Create a spline with at least two points in Game Designer,\n"
-                  " *    then export it again to get a start_spline() example.\n"
-                  " *\n";
-    }
-    source += " * 5. Inside your game loop, once per screen refresh (VBlank),\n"
-              " *    BEFORE you draw the sprite, run one frame of movement:\n"
-              " *\n"
-              " *      run_spline(&flight, 1);\n"
-              " *\n"
-              " *    Then draw the sprite using your normal game drawing code.\n"
-              " *\n"
-              " * 'enemy' is an example name for YOUR already-created gfxbob_t sprite.\n"
-              " * 50 frames take one second if your game runs at 50 FPS.\n"
-              " * A path with loop = 1 goes around continuously; loop = 0 stops.\n"
-              " * To stop early, call stop_spline(&flight).\n"
-              " * Edit points in Game Designer, not here: this file is regenerated.\n"
-              " */\n";
 
     // Install only missing helper files. Never replace custom game code.
     // Copy helpers first, so an incomplete helper copy never produces new
@@ -1024,6 +1143,25 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
             QMessageBox::warning(this, tr("Export Spline Paths"),
                 tr("Could not copy gamespline.c into:\n%1").arg(folder));
             return false;
+        }
+    }
+
+    if (copyHelper || (QFileInfo::exists(helperHeaderPath)
+                       && QFileInfo::exists(helperSourcePath))) {
+        const QString guidePath = QDir(folder).filePath(QStringLiteral("gamespline.txt"));
+        if (!QFileInfo::exists(guidePath)) {
+            QFile input(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game/spline.txt")));
+            if (input.exists() && input.open(QIODevice::ReadOnly)) {
+                const QByteArray guide = input.readAll();
+                QSaveFile output(guidePath);
+                if (!output.open(QIODevice::WriteOnly)
+                    || output.write(guide) != guide.size()
+                    || !output.commit()) {
+                    output.cancelWriting();
+                    QMessageBox::warning(this, tr("Export Spline Paths"),
+                        tr("Could not save optional beginner guide:\n%1").arg(guidePath));
+                }
+            }
         }
     }
 
@@ -1304,11 +1442,20 @@ void SidboxGameDesigner::buildUi()
     auto *previewLayout = new QVBoxLayout(previewPanel);
     previewLayout->setContentsMargins(0, 4, 0, 0);
     auto *previewControls = new QHBoxLayout;
-    previewControls->addWidget(new QLabel(tr("WORLD CANVAS  |  dashed frame = LCD viewport"), previewPanel));
+    auto *worldCanvasTitle = new QLabel(tr("WORLD CANVAS"), previewPanel);
+    worldCanvasTitle->setToolTip(tr("The dashed frame shows the LCD viewport."));
+    previewControls->addWidget(worldCanvasTitle);
     previewControls->addStretch();
     m_showLabels = new QCheckBox(tr("Asset tags"), previewPanel);
     m_showLabels->setChecked(true);
     previewControls->addWidget(m_showLabels);
+    m_showTilemap = new QCheckBox(tr("Show Tilemap"), previewPanel);
+    m_showTilemap->setToolTip(tr("Show the attached tilemap artwork in world coordinates. "
+                                 "The preview follows world zoom and panning; "
+                                 "it does not change the exported game."));
+    m_showTilemap->setChecked(false);
+    m_showTilemap->setEnabled(false);
+    previewControls->addWidget(m_showTilemap);
     m_grid = new QCheckBox(tr("Grid 32"), previewPanel);
     m_grid->setChecked(true);
     previewControls->addWidget(m_grid);
@@ -1570,6 +1717,11 @@ void SidboxGameDesigner::buildUi()
     });
     connect(m_cameraY, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
         refreshFrame(); setDirty();
+    });
+    connect(m_showTilemap, &QCheckBox::toggled, this, [this](bool) {
+        rebuildTilemapOverlay();
+        refreshFrame();
+        setDirty();
     });
     connect(m_grid, &QCheckBox::toggled, this, [this](bool checked) {
         static_cast<GameScene *>(m_scene)->drawGrid = checked;
@@ -1921,6 +2073,7 @@ void SidboxGameDesigner::rebuildScene()
     m_splineHandleItems.clear();
     m_splineCurveItem = nullptr;
     m_scene->clear();
+    m_tilemapOverlayItem = nullptr;
     m_sceneItems.clear();
     m_sceneItems.resize(m_resources.size());
     m_worldFrame = nullptr;
@@ -1959,6 +2112,7 @@ void SidboxGameDesigner::rebuildScene()
         title->setAcceptedMouseButtons(Qt::NoButton);
         m_sceneItems[i] = item;
     }
+    rebuildTilemapOverlay();
     m_cameraFrame = m_scene->addRect(QRectF(0, 0, LCD_WIDTH, LCD_HEIGHT),
                  QPen(QColor(255, 207, 75), 2, Qt::DashLine));
     m_cameraFrame->setZValue(10001);
@@ -1980,7 +2134,12 @@ void SidboxGameDesigner::refreshFrame()
     const int height = m_worldHeight->value();
     m_cameraX->setMaximum(qMax(0, width - LCD_WIDTH));
     m_cameraY->setMaximum(qMax(0, height - LCD_HEIGHT));
-    m_scene->setSceneRect(0, 0, width, height);
+    // Previewing a larger tilemap extends the scrollable canvas, not the
+    // configured game world or its independent LCD camera limits.
+    const bool showMap = m_tilemapEnabled && m_showTilemap && m_showTilemap->isChecked();
+    const int canvasWidth = showMap ? qMax(width, m_tilemap.width * m_tilemap.tileSize) : width;
+    const int canvasHeight = showMap ? qMax(height, m_tilemap.height * m_tilemap.tileSize) : height;
+    m_scene->setSceneRect(0, 0, canvasWidth, canvasHeight);
     if (m_worldFrame) m_worldFrame->setRect(0, 0, width - 1, height - 1);
     if (m_cameraFrame) m_cameraFrame->setPos(m_cameraX->value(), m_cameraY->value());
 }
@@ -2627,7 +2786,8 @@ bool SidboxGameDesigner::loadDesign()
                                              zoom > 0 ? qBound(25, zoom, 200) / 100.0 : 1.);
     }
     {
-        QSignalBlocker b1(m_planeMode), b2(m_showLabels), b3(m_forcePalette);
+        QSignalBlocker b1(m_planeMode), b2(m_showLabels), b3(m_forcePalette), b4(m_showTilemap);
+        m_showTilemap->setChecked(obj.value(QStringLiteral("showTilemapOverlay")).toBool(false));
         m_planeMode->setCurrentIndex(obj.value(QStringLiteral("planeMode")).toString() == QStringLiteral("dual") ? 1 : 0);
         m_showLabels->setChecked(obj.value(QStringLiteral("showAssetLabels")).toBool(true));
         m_forcePalette->setChecked(obj.value(QStringLiteral("forcePalette")).toBool(false));
@@ -2745,6 +2905,7 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("snapStep"), m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt());
     obj.insert(QStringLiteral("zoomPercent"), m_zoom->currentText().chopped(1).toInt());
     obj.insert(QStringLiteral("showAssetLabels"), m_showLabels->isChecked());
+    obj.insert(QStringLiteral("showTilemapOverlay"), m_showTilemap->isChecked());
     obj.insert(QStringLiteral("planeMode"), m_planeMode->currentData().toString());
     obj.insert(QStringLiteral("forcePalette"), m_forcePalette->isChecked());
     obj.insert(QStringLiteral("activeForegroundPalette"), m_activeForegroundPalette);

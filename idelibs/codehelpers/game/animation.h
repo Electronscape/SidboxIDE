@@ -10,7 +10,7 @@
  * consecutive pictures to use (maximum atlas index: 255).
  * "frames_per_image" controls speed: at 50 FPS, 5 = 10 pictures/second.
  *
- * See the beginner example at the BOTTOM of gameanimation.c.
+ * For copyable examples, open gamehelpers/gameanimation.txt.
  */
 #ifndef CODERGIRL_V1_GAMEANIMATION_H
 #define CODERGIRL_V1_GAMEANIMATION_H

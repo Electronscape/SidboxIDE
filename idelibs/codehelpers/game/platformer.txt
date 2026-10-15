@@ -1,0 +1,40 @@
+CODERGIRL V1 — PLATFORMER STARTER
+================================
+
+Basic platformer movement using invisible solid or one-way rectangles.
+Draw the corresponding bricks/platforms in your game artwork separately.
+The sprite should use TOP-LEFT origin and 100% scale.
+
+1. Include at the top of main.c:
+
+#include "gamehelpers/gameplatformer.h"
+
+2. Place these variables outside main():
+
+static game_platformer_t physics = {0};
+static const game_platform_t level[] = {
+    {0, 280, 480, 40, GAME_PLATFORM_SOLID},
+    {80, 220, 100, 12, GAME_PLATFORM_ONEWAY},
+    {250, 175, 100, 12, GAME_PLATFORM_ONEWAY}
+};
+
+3. After gameassets_init():
+
+start_platformer(&physics, &player, level, sizeof(level) / sizeof(level[0]));
+
+4. Inside the game loop, once per VBlank:
+
+run_platformer(&physics, getjoyport(), 1);
+
+5. Draw the sprite with your existing renderer:
+
+gfx_drawbob(&player);
+
+Change player to the name of YOUR sprite. Left/Right walk; Up/Fire jump.
+
+Respawn or move the player to a new position:
+
+reset_platformer(&physics, 40, 100);
+
+For larger tilemap levels with slopes, use the Advanced Tilemap + Platformer
+helper instead of running two separate platformer systems on one sprite.

@@ -26,6 +26,7 @@ typedef struct {
     gfxbob_t *sprite;       /* sprite that moves; not allocated or owned here */
     int16_t from_x, from_y; /* where the sprite was when started */
     int16_t to_x, to_y;     /* destination */
+    int32_t offset_x, offset_y; /* Move the entire route without changing its shape. */
     uint16_t duration_frames;
     uint16_t elapsed_frames;
     uint8_t loop;
@@ -37,6 +38,9 @@ void start_tween(game_tween_t *tween, gfxbob_t *sprite,
                  int16_t x, int16_t y, uint16_t duration_frames, uint8_t loop);
 /* Advance by frame_step game frames; usually 1 per VBlank. */
 void run_tween(game_tween_t *tween, uint16_t frame_step);
+/* Move the whole route so its START point becomes (x,y).
+   Safe to call while playing: timing and progress are preserved. */
+void set_tween_pos(game_tween_t *tween, int16_t x, int16_t y);
 /* Stop moving but leave sprite at its current position. */
 void stop_tween(game_tween_t *tween);
 

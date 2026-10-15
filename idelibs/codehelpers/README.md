@@ -23,7 +23,7 @@ For a friendlier name, tooltip and message after copying, optionally add
 [Helper]
 name=Sprite Bounce
 description=Move a sprite up and down over time.
-after_install=Open gamehelpers/gamebounce.c for the usage example.
+after_install=Open gamehelpers/gamebounce.txt for copyable instructions.
 ```
 
 `name`, `description` and `after_install` are optional. The `.ini` file stays in the IDE's
@@ -48,8 +48,7 @@ are generated: edit paths in the canvas, not in splinepaths.c.
 
 Sprite Animation works with an already-initialised `gfxbob_t`. It changes
 only the atlas `index`, so the same sprite can move using tween or spline.
-See the commented beginner example at the bottom of `gameanimation.c` after
-installing the helper into a game project. Playback is VBlank/frame-counted:
+See `gamehelpers/gameanimation.txt` after installing the helper into a game project. Playback is VBlank/frame-counted:
 loop, play once, and ping-pong are supported. No firmware changes are needed.
 
 Platformer Starter is a beginner-friendly V1 game helper. Install it from
@@ -58,8 +57,7 @@ Platformer Starter is a beginner-friendly V1 game helper. Install it from
 left/right walking, jump on UP or FIRE, gravity, solid rectangular collisions,
 one-way jump-through ledges and player respawn. The rectangle collision areas
 are specified in your game's C code; they are not drawn automatically or
-editable on the Game Designer canvas yet. To get started, read the commented
-beginner example at the bottom of `gameplatformer.c`. This template works
+editable on the Game Designer canvas yet. To get started, open `gamehelpers/gameplatformer.txt` in the Project Tree. This template works
 with an existing TOP-LEFT, 100%-scale `gfxbob_t` from `gameassets_init()`.
 It can combine with Sprite Animation, but don't run Tween/Spline on the same
 sprite simultaneously since both systems would set its position.
@@ -76,3 +74,21 @@ The Stage 1 helper stored in an existing game's `gamehelpers/gametilemap.c/.h`
 **must be replaced manually**; exporting never overwrites user-edited helper
 files. See `TILEMAP-START-HERE.md` for setup, code, sprite restoring and
 hardware checkpoints. Horizontal only; actual SIDBOX hardware testing pending.
+
+## Optional copy-and-paste beginner guides
+
+Each helper can also include a matching `.txt` template beside its `.c`, `.h`
+and optional `.ini`. For example, `game/spline.txt` is copied into the game's
+`gamehelpers/gamespline.txt` when the helper is installed. All `.txt` guides
+appear automatically in the IDE Project Tree and open when double-clicked.
+
+An existing edited guide is **never overwritten**, even when you choose to
+replace the helper's C source files. No extra Qt viewer is needed. Manually
+exporting a spline/tilemap with helper installation also copies its guide if
+missing. New helper templates can include a guide without recompiling the IDE.
+
+Existing game projects: choose **Game Resources → Add Helper Code** again.
+When the helper already exists, choose **No** to preserve its C/H files and
+install any missing `.txt` beginner guide. Choosing **Yes** replaces C/H code;
+existing guide edits are still preserved. The guides contain the examples,
+so helper C templates and exported map/path data no longer duplicate them.

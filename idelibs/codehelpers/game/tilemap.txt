@@ -1,0 +1,54 @@
+CODERGIRL V1 — ADVANCED TILEMAP + PLATFORMER
+============================================
+
+The editor stores two separate maps: 16-bit graphics IDs and 8-bit collision
+IDs. Atlas animations are shared by graphics ID; no per-tile timers are needed.
+
+1. Draw the level in the Game Designer Tilemap Editor and choose Export
+   Tilemap. This writes gamelevels/level1.c and gamelevels/level1.h.
+
+2. Include these files at the top of main.c:
+
+#include "gamehelpers/gametilemap.h"
+#include "gamelevels/level1.h"
+
+3. Keep player physics and two FRONT buffer pointers outside main():
+
+static game_tile_player_t physics = {0};
+static gfx_bitmap_t *front[2] = {0};
+static uint8_t draw_index = 0;
+
+4. Once, after video setup and gameassets_init():
+
+front[0] = gfx_getfbuffer1();
+front[1] = gfx_getfbuffer2();
+gameassets_show_background();
+game_tile_player_start(&physics, &game_level1, &player);
+game_tilemap_animation_reset();
+
+5. Inside the game loop, after gfx_lcdwait(), use your actual camera_x and
+   camera_y (clamped to the map boundaries):
+
+game_tilemap_animation_tick(1);  // Once per VBlank, not once per buffer
+game_tile_player_run(&physics, getjoyport(), 1);
+gfx_usebuffer(front[draw_index]);
+gfx_setcolour(0);
+gfx_rectf(0, 0, 480, 320);  // Erase this foreground page to transparent
+game_tilemap_blit_view(&game_level1, camera_x, camera_y, 480, 320);
+game_tile_player_screen(&physics, camera_x, camera_y);
+gfx_drawbob(&player);
+gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
+gfx_displaynow();
+draw_index ^= 1u;
+
+Use the actual sprite variable from gameassets.h instead of 'player'.
+The transparent foreground colour is palette index 0; this lets the separate
+background show through. Use the working full-viewport blitter baseline
+before trying further scrolling optimisations.
+
+The animation functions make animated atlas tiles advance automatically.
+No per-tile sprite objects are necessary. Frame timing is in VBlanks.
+
+For collision, the level's exported graphics and collision maps stay separate.
+The helper supports floors, walls, slopes, one-way tiles, hazards and doors.
+The game decides what to do with hazards and doors.
