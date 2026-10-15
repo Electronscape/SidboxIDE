@@ -4,7 +4,7 @@
 #include "apis.h"
 #include <stdint.h>
 
-/* One byte per tile in EACH independent map. Graphics IDs: 0=blank,
+/* Two bytes per graphics tile, one byte per collision tile. Graphics IDs: 0=blank,
  * 1=first atlas tile, 2=second, etc. Collision IDs describe behaviour.
  * Tile pixels are indexed 8-bit, stored in normal row-major tile order.
  * SIDBOX's gfx_blit() handles the framebuffer layout.
@@ -25,14 +25,14 @@
  * Counts 1..16, frame_ticks 1..255 VBlanks, flags are LOOP and BOUNCE.
  */
 typedef struct {
-    uint8_t graphic_id;
+    uint16_t graphic_id;
     uint8_t frames;
     uint8_t frame_ticks;
     uint8_t flags;
 } game_tile_animation_t;
 
 typedef struct {
-    const uint8_t *graphics;
+    const uint16_t *graphics;
     const uint8_t *collision;
     const uint8_t *atlas;
     uint16_t width;       /* Map width, in tiles. */

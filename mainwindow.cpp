@@ -7556,6 +7556,7 @@ bool MainWindow::openGameDesigner(const QString &filePath)
         }
     }
     auto *game = new SidboxGameDesigner(absolute, m_editorTabs);
+    game->setTheme(m_theme);
     if (!game->isValid()) { delete game; return false; }
     int index = m_editorTabs->addTab(game,
         QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png")), game->displayName());
@@ -9409,11 +9410,26 @@ void MainWindow::compileActiveFile()
         }
     }
 
-    // .sbgm is an editor-side resource design; persist it before F5, but it
-    // does not emit .c files or alter the existing V1/V2 compile pipelines.
+    // Save V1 game designs before F5. Once a tilemap has been exported,
+    // saveDesign refreshes its C level automatically. On a new project the
+    // first export may be missing, so ask rather than compile stale data.
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
             if (game->isModified() && !game->saveDesign()) return;
+            if (game->tilemapBuildFilesMissing()) {
+                const auto answer = QMessageBox::question(this,
+                    tr("Compile: Tilemap Files Missing"),
+                    tr("The tilemap in %1 is missing exported C files or the tilemap helper.\n\n"
+                       "Yes: Export level1.c/.h and install any missing helper files "
+                       "without replacing existing helper code.\n"
+                       "No: Compile without exporting.\n"
+                       "Cancel: Stop compiling.")
+                        .arg(QFileInfo(game->filePath()).fileName()),
+                    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+                    QMessageBox::Yes);
+                if (answer == QMessageBox::Cancel) return;
+                if (answer == QMessageBox::Yes && !game->exportTilemapForCompile()) return;
+            }
         }
     }
 
@@ -16457,6 +16473,9 @@ void MainWindow::applyTheme()
                 editorsForTab(m_editorTabs->widget(i));
             for (CodeEditor *editor : editors) {
                 editor->setTheme(m_theme);
+            }
+            if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
+                game->setTheme(m_theme);
             }
         }
     }

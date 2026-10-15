@@ -12,6 +12,7 @@
 #include "gameaudio.h"
 #include "gamepalette.h"
 #include "gametilemap.h"
+#include "idetheme.h"
 #include <functional>
 
 class QGraphicsScene;
@@ -49,6 +50,9 @@ public:
     bool isModified() const;
     bool isValid() const;
     bool saveDesign();
+    bool tilemapBuildFilesMissing() const;
+    bool exportTilemapForCompile();
+    void setTheme(const IDETheme &theme);
 
 protected:
     void changeEvent(QEvent *event) override;
@@ -83,7 +87,7 @@ private:
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
     void openTilemapEditor();
-    bool exportTilemap(bool showMessage);
+    bool exportTilemap(bool showMessage, bool includeMissingHelper = false);
     struct SplinePath {
         QString name;
         QVector<QPoint> points;
@@ -130,6 +134,7 @@ private:
     QString resolvedPath(const QString &storedPath) const;
     QString storedPath(const QString &absolutePath) const;
 
+    IDETheme m_theme = defaultIDETheme();
     QString m_filePath;
     QVector<Resource> m_resources;
     bool m_dirty = false;

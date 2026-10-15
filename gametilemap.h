@@ -10,6 +10,7 @@
 #include <QPair>
 #include <QtGlobal>
 #include <QElapsedTimer>
+#include "idetheme.h"
 
 // One shared definition for every map cell that uses the same graphic ID.
 // Atlas frames are consecutive, starting at graphicId (1-based).
@@ -21,14 +22,14 @@ struct SidboxTileAnimation {
     bool bounce = false;
 };
 
-// The map is entirely editor-side. The V1 game receives two compact byte
-// arrays (art and collision) and a separate reusable C renderer.
+// Editor graphics IDs use uint16_t (little-endian packed storage).
+// The collision map remains uint8_t, and the V1 renderer stays independent.
 struct SidboxTilemap {
     int width = 100;
     int height = 100;
     int tileSize = 16;
     QString atlasPath; // relative to the .sbgm document
-    QByteArray graphics = QByteArray(10000, char(0));
+    QByteArray graphics = QByteArray(20000, char(0)); // 2 bytes per cell (LE uint16_t)
     QByteArray collisions = QByteArray(10000, char(0));
     QVector<SidboxTileAnimation> animations;
 
@@ -44,6 +45,7 @@ class QSpinBox;
 class QCheckBox;
 class QPushButton;
 class QTimer;
+class QSplitter;
 
 class SidboxTilemapEditor final : public QDialog
 {
@@ -54,6 +56,7 @@ public:
                         const QString &designDirectory,
                         QWidget *parent = nullptr);
     SidboxTilemap result() const { return m_map; }
+    void setTheme(const IDETheme &theme);
 protected:
     bool eventFilter(QObject *target, QEvent *event) override;
     void done(int result) override;
@@ -63,6 +66,7 @@ private:
     QImage m_atlas;
     QString m_designDirectory;
     Canvas *m_canvas = nullptr;
+    QSplitter *m_splitter = nullptr;
     QLabel *m_atlasPicker = nullptr;
     QLabel *m_animationPreview = nullptr;
     QLabel *m_animationStatus = nullptr;

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "splashscreenwidget.h"
 
 #include <QApplication>
 #include <QMainWindow>
@@ -124,16 +125,27 @@ int main(int argc, char *argv[])
 
     printf("Start Sidbox\r\n"); //fflush(stdout);
 
-    w.show();
-    QTimer::singleShot(0, &w, [&w, appIcon]() {
+    auto *splash = new SplashScreenWidget(w.currentTheme());
+    applySidboxIcon(splash, appIcon);
+
+    QObject::connect(splash, &SplashScreenWidget::splashFinished, &w, [&w, appIcon]() {
         applySidboxIcon(&w, appIcon);
-        w.showStartupProjectChooser();
-        // Ask about old unsaved source buffers only AFTER project selection;
-        // otherwise loading a project could close the recovered tabs.
-        w.offerEditorRecovery();
+        w.show();
+        w.raise();
+        w.activateWindow();
+        QTimer::singleShot(0, &w, [&w, appIcon]() {
+            applySidboxIcon(&w, appIcon);
+            w.showStartupProjectChooser();
+            // Ask about old unsaved source buffers only AFTER project selection;
+            // otherwise loading a project could close the recovered tabs.
+            w.offerEditorRecovery();
+        });
+        QTimer::singleShot(250, &w, [&w, appIcon]() {
+            applySidboxIcon(&w, appIcon);
+        });
     });
-    QTimer::singleShot(250, &w, [&w, appIcon]() {
-        applySidboxIcon(&w, appIcon);
-    });
+
+    splash->start();
+
     return a.exec();
 }

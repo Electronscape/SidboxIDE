@@ -43,6 +43,8 @@ qt_add_executable(SidboxIDE
     mainwindow.ui
     findreplacedialog.cpp
     findreplacedialog.h
+    splashscreenwidget.cpp
+    splashscreenwidget.h
 )
 
 qt_add_resources(SidboxIDE "app_icons"

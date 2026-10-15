@@ -320,6 +320,50 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
 }
 
 SidboxGameDesigner::~SidboxGameDesigner() = default;
+void SidboxGameDesigner::setTheme(const IDETheme &theme)
+{
+    m_theme = theme;
+    const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
+    setStyleSheet(QStringLiteral(
+        "QPushButton, QToolButton, QLineEdit, QSpinBox, QTreeWidget, "
+        "QGraphicsView, QFrame, QMenu, QAbstractItemView { border-radius:0px; } "
+        "QComboBox { border:1px solid %1; border-radius:0px; "
+        "background-color:%2; color:%3; padding:3px 24px 3px 5px; } "
+        "QComboBox::drop-down { width:20px; border-left:1px solid %1; "
+        "border-radius:0px; background-color:%2; } "
+        "QComboBox::down-arrow { image:none; width:0px; height:0px; } "
+        "QComboBox QAbstractItemView { border:1px solid %1; border-radius:0px; "
+        "background-color:%4; color:%3; selection-background-color:%5; "
+        "selection-color:%6; outline:0px; } "
+        "QComboBox QAbstractItemView::item:selected { background:%5; color:%6; } ")
+        .arg(C(theme.border), C(theme.inputBackground), C(theme.text),
+             C(theme.menuBackground), C(theme.accent), C(theme.brightText)));
+
+    // QComboBox popups can be separate windows on some Qt styles. Colour their
+    // view explicitly so neither the desktop theme nor a default palette wins.
+    for (QComboBox *combo : findChildren<QComboBox *>()) {
+        QPalette colours = combo->palette();
+        colours.setColor(QPalette::Base, theme.inputBackground);
+        colours.setColor(QPalette::Text, theme.text);
+        colours.setColor(QPalette::Button, theme.inputBackground);
+        colours.setColor(QPalette::ButtonText, theme.text);
+        colours.setColor(QPalette::Highlight, theme.accent);
+        colours.setColor(QPalette::HighlightedText, theme.brightText);
+        combo->setPalette(colours);
+        if (auto *popup = combo->view()) {
+            popup->setPalette(colours);
+            popup->setStyleSheet(QStringLiteral(
+                "QAbstractItemView { background:%1; color:%2; border:1px solid %3; "
+                "border-radius:0px; selection-background-color:%4; selection-color:%5; "
+                "outline:0px; } "
+                "QAbstractItemView::item:selected { background:%4; color:%5; }")
+                .arg(C(theme.menuBackground), C(theme.text), C(theme.border),
+                     C(theme.accent), C(theme.brightText)));
+        }
+    }
+    refreshColours();
+}
+
 QString SidboxGameDesigner::filePath() const { return m_filePath; }
 void SidboxGameDesigner::setFilePath(const QString &path)
 {
@@ -572,6 +616,7 @@ void SidboxGameDesigner::openTilemapEditor()
     }
     const QString directory = QFileInfo(m_filePath).absolutePath();
     SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
+    editor.setTheme(m_theme);
     if (editor.exec() != QDialog::Accepted) return;
     m_tilemap = editor.result();
     m_tilemapEnabled = true;
@@ -580,14 +625,43 @@ void SidboxGameDesigner::openTilemapEditor()
     // Example: a 100 x 20 map with 16px tiles is 1600 x 320 WORLD pixels,
     // independently of the 960 x 320 physical foreground buffer.
     setDirty();
+
+    const auto answer = QMessageBox::question(this, tr("Apply Tilemap"),
+        tr("Apply these tilemap changes and export the C level files now?\n\n"
+           "Yes: Save the game design, export gamelevels/level1.c/.h, "
+           "and add any missing tilemap helper files.\n"
+           "No: Apply to the design only. You can export later."),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer == QMessageBox::Yes) {
+        // saveDesign already refreshes C exports that exist. For the first
+        // export (or missing helper) we must explicitly create the files.
+        const bool needsExport = tilemapBuildFilesMissing();
+        if (!saveDesign()) return;
+        if (needsExport && !exportTilemap(false, true)) return;
+    }
 }
 
-bool SidboxGameDesigner::exportTilemap(bool showMessage)
+bool SidboxGameDesigner::tilemapBuildFilesMissing() const
+{
+    if (!m_tilemapEnabled) return false;
+    const QDir dir(QFileInfo(m_filePath).absolutePath());
+    return !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/level1.c")))
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/level1.h")))
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.c")))
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.h")));
+}
+
+bool SidboxGameDesigner::exportTilemapForCompile()
+{
+    return exportTilemap(false, true);
+}
+
+bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelper)
 {
     if (!m_tilemapEnabled) return false;
     const QString directory = QFileInfo(m_filePath).absolutePath();
     // Do not overwrite user-edited helper C files. Only add missing files.
-    bool includeHelper = false;
+    bool includeHelper = includeMissingHelper;
     if (showMessage) {
         const QMessageBox::StandardButton answer = QMessageBox::question(this,
             tr("Export Tilemap"),
@@ -980,16 +1054,6 @@ void SidboxGameDesigner::buildUi()
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(3, 3, 3, 3);
     layout->setSpacing(5);
-    // Flat rectangular controls, but inherit colours from the active IDE theme.
-    setStyleSheet(QStringLiteral(
-        "QPushButton, QToolButton, QLineEdit, QSpinBox, "
-        "QTreeWidget, QGraphicsView, QFrame, QMenu, QAbstractItemView { border-radius:0px; } "
-        "QComboBox { border:1px solid palette(mid); border-radius:0px; "
-        "background:palette(base); color:palette(text); padding:3px 24px 3px 5px; } "
-        "QComboBox::drop-down { width:20px; border-left:1px solid palette(mid); "
-        "border-radius:0px; } "
-        "QComboBox::down-arrow { image:none; width:0px; height:0px; } "
-        "QComboBox QAbstractItemView { border:1px solid palette(mid); border-radius:0px; }"));
 
     auto *top = new QHBoxLayout;
     auto *caption = new QLabel(tr("Game Designer  |  V1 Gaming"), this);

@@ -43,6 +43,7 @@ public:
 
     void showStartupProjectChooser();
     void offerEditorRecovery();
+    const IDETheme &currentTheme() const { return m_theme; }
 
 protected:
     void closeEvent(QCloseEvent *event) override;

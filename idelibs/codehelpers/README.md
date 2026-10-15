@@ -66,7 +66,7 @@ sprite simultaneously since both systems would set its position.
 
 ## Advanced Tilemap + Platformer — Stage 1.1 foreground ring
 
-Two maps remain separate: 1 graphics ID byte + 1 collision type byte per tile.
+Two maps remain separate: 16-bit graphic IDs (2 bytes) + 8-bit collision IDs (1 byte) per tile. Existing old .sbgm maps are upgraded on load.
 For horizontal scrolling, the **foreground** now uses two mirrored halves of
 480x320 in a 960x320 buffer. The background is a separate static 480x320
 backdrop. The world can be 1600 pixels or larger, without allocating a

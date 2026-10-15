@@ -67,20 +67,23 @@ static uint8_t animation_frame(const game_tile_animation_t *a, uint32_t ticks)
         ? step % n : (step < n ? step : n - 1u));
 }
 
-static void animation_frames_for_map(const game_tilemap_t *m, uint8_t out[256])
+/* Animation lookup is only over the defined animated tiles, not all 65536
+ * possible IDs. That avoids allocating a huge mostly-empty lookup table.
+ * All instances of one graphic ID share the same animation clock.
+ */
+static uint16_t animation_graphic_for_map(const game_tilemap_t *m, uint16_t id)
 {
-    for (unsigned i = 0; i < 256u; ++i) out[i] = (uint8_t)i;
-    if (!m->animations) return;
+    if (!m->animations) return id;
     for (uint16_t i = 0; i < m->animation_count; ++i) {
         const game_tile_animation_t *a = m->animations + i;
-        const uint32_t end = (uint32_t)a->graphic_id + (uint32_t)a->frames - 1u;
-        if (!a->graphic_id || !a->frame_ticks || !a->frames || a->frames > 16u ||
-            a->graphic_id > m->atlas_count || end > m->atlas_count || end > 255u)
-            continue;
-        out[a->graphic_id] = (uint8_t)(a->graphic_id + animation_frame(a, tile_animation_clock));
+        if (a->graphic_id != id) continue;
+        const uint32_t end = (uint32_t)id + (uint32_t)a->frames - 1u;
+        if (!id || !a->frame_ticks || !a->frames || a->frames > 16u ||
+            end > m->atlas_count) return id;
+        return (uint16_t)(id + animation_frame(a, tile_animation_clock));
     }
+    return id;
 }
-
 
 void game_tilemap_blit_view(const game_tilemap_t *m,
                             int32_t camera_x, int32_t camera_y,
@@ -103,19 +106,16 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
     const int32_t last_x = (camera_x + view_width - 1) / size;
     const int32_t last_y = (camera_y + view_height - 1) / size;
     const uint32_t tile_pixels = (uint32_t)size * (uint32_t)size;
-    /* Keep the 256-byte lookup out of the tiny V1 application stack. */
-    static uint8_t display_frames[256];
-    animation_frames_for_map(m, display_frames);
 
     for (int32_t ty = first_y; ty <= last_y; ++ty) {
         for (int32_t tx = first_x; tx <= last_x; ++tx) {
-            uint8_t id = 0;
+            uint16_t id = 0;
             if (tx >= 0 && ty >= 0 && tx < m->width && ty < m->height)
                 id = m->graphics[(uint32_t)ty * m->width + (uint32_t)tx];
 
             const uint8_t *source = empty_tile;
             if (id && m->atlas && id <= m->atlas_count) {
-                const uint8_t frame_id = display_frames[id];
+                const uint16_t frame_id = animation_graphic_for_map(m, id);
                 source = m->atlas + ((uint32_t)frame_id - 1u) * tile_pixels;
             }
 
@@ -137,6 +137,39 @@ static uint8_t touches_solid(const game_tilemap_t *m, int32_t x, int32_t y,
     for (int32_t ty = firstY; ty <= lastY; ++ty)
         for (int32_t tx = firstX; tx <= lastX; ++tx)
             if (game_tile_at(m, tx, ty) == GAME_TILE_SOLID) return 1;
+    return 0;
+}
+
+/* Slopes have a solid triangular interior, not just a landing edge.
+ * Prevent sideways entry into that interior while falling or jumping.
+ * Sample the highest slope point covered by the full player hitbox.
+ * This is only used for HORIZONTAL motion; vertical landing is handled
+ * separately by tile_floor(), allowing the player to land on a ramp.
+ */
+static uint8_t touches_slope_body(const game_tilemap_t *m, int32_t x, int32_t y,
+                                  int32_t width, int32_t height)
+{
+    const int32_t s = m->tile_size;
+    const int32_t firstX = floor_tile(x, s);
+    const int32_t lastX = floor_tile(x + width - 1, s);
+    const int32_t firstY = floor_tile(y, s);
+    const int32_t lastY = floor_tile(y + height - 1, s);
+    const int32_t feet = y + height;
+    for (int32_t ty = firstY; ty <= lastY; ++ty) {
+        for (int32_t tx = firstX; tx <= lastX; ++tx) {
+            const uint8_t type = game_tile_at(m, tx, ty);
+            if (type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN)
+                continue;
+            const int32_t tileLeft = tx * s;
+            const int32_t left = x > tileLeft ? x : tileLeft;
+            const int32_t right = x + width - 1 < tileLeft + s - 1
+                ? x + width - 1 : tileLeft + s - 1;
+            const int32_t surface = ty * s +
+                (type == GAME_TILE_SLOPE_UP ? s - 1 - (right - tileLeft)
+                                            : left - tileLeft);
+            if (feet > surface) return 1;
+        }
+    }
     return 0;
 }
 
@@ -278,7 +311,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 if (surface != 0x7FFFFFFF)
                     nextPlayerY = surface - h;
             }
-            if (touches_solid(m, nextX, nextPlayerY, w, h)) break;
+            if (touches_solid(m, nextX, nextPlayerY, w, h) ||
+                touches_slope_body(m, nextX, nextPlayerY, w, h)) break;
             x = nextX;
             y = nextPlayerY;
             if (surface != 0x7FFFFFFF) followedFloor = 1;
@@ -338,29 +372,39 @@ void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cam
 }
 
 /*
- * BEGINNER EXAMPLE — FIRST HARDWARE BLIT TEST
- *
- * Initialise video in main.c:
- *   gfx_mode(480, 320, 480, 320,
- *       DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);
- *   gameassets_init();
- *   gameassets_show_background();
- *   game_tile_player_start(&physics, &game_level1, &player);
- *   game_tilemap_animation_reset();
- *
- * Once per VBlank, draw to one of the two FRONT buffers:
- *   game_tilemap_animation_tick(1); // Once per VBlank, NOT per buffer
- *   game_tile_player_run(&physics, getjoyport(), 1);
- *   gfx_usebuffer(front[draw_index]);
- *   game_tilemap_blit_view(&game_level1, camera_x, 0, 480, 320);
- *   game_tile_player_screen(&physics, camera_x, 0);
- *   gfx_drawbob(&player);
- *   gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
- *   gfx_displaynow();
- *   draw_index ^= 1u;
- *
- * This is a full-viewport blit baseline, NOT the optimised scrolling
- * ring. It uses no direct pixel writes and no gfx_cls(). We will update
- * only changed tile strips once foreground rendering is verified.
- * Foreground palette index 0 must be transparent for the backdrop to show.
- */
+  BEGINNER EXAMPLE — FIRST HARDWARE BLIT TEST
+
+  Initialise video in main.c:
+    gfx_mode(480, 320, 480, 320,
+        DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);
+    gameassets_init();
+    gameassets_show_background();
+    game_tile_player_start(&physics, &game_level1, &player);
+    game_tilemap_animation_reset();
+
+  Once per VBlank, draw to one of the two FRONT buffers:
+    game_tilemap_animation_tick(1); // Once per VBlank, NOT per buffer
+    game_tile_player_run(&physics, getjoyport(), 1);
+    gfx_usebuffer(front[draw_index]);
+    game_tilemap_blit_view(&game_level1, camera_x, camera_y, 480, 320);
+    game_tile_player_screen(&physics, camera_x, camera_y);
+    gfx_drawbob(&player);
+    gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
+    gfx_displaynow();
+    draw_index ^= 1u;
+
+  This is a full-viewport blit baseline, NOT the optimised scrolling
+  ring. It uses no direct pixel writes and no gfx_cls(). The tilemap
+  is drawn again each frame into the selected foreground buffer.
+  Foreground palette index 0 must be transparent for the backdrop to show.
+
+  These are example statements, not an entire main.c: physics, player,
+  front, draw_index, camera_x and camera_y must already be defined.
+  Include "gamelevels/level1.h" after exporting the tilemap.
+  Graphic IDs are uint16_t; collision types remain uint8_t.
+
+  Animated tiles are set up in the Tilemap Editor. Every map cell with
+  the same animated graphic ID shares its animation. Call
+  game_tilemap_animation_reset() once during setup and call
+  game_tilemap_animation_tick(1) once per VBlank, not per buffer.
+*/
