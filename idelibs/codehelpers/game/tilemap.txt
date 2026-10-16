@@ -6,6 +6,9 @@ IDs. Atlas animations are shared by graphics ID; no per-tile timers are needed.
 
 1. Draw the level in the Game Designer Tilemap Editor and choose Export
    Tilemap. This writes gamelevels/level1.c and gamelevels/level1.h.
+   Atlas pixels are NOT embedded in the C level: the PPB is read from SD
+   ONCE at startup into RAM in its original PPB row-major layout.
+   gfx_drawbob() draws each visible tile using an atlas cell index.
 
 2. Include these files at the top of main.c:
 
@@ -19,6 +22,17 @@ static gfx_bitmap_t *front[2] = {0};
 static uint8_t draw_index = 0;
 
 4. Once, after video setup and gameassets_init():
+
+/* The SAME atlas PPB selected in the tilemap editor must be on the SD card.
+   Always copy the latest version, including newly drawn animation frames.
+   The generated wrapper validates dimensions, pixel count AND a content
+   checksum. It catches stale SD artwork even when its size is unchanged. If loading
+   fails, STOP the game rather than using blank/uninitialised graphics.
+   Call after initMalloc() and before the first tilemap draw. */
+if (!game_level1_load_atlas()) {
+    dbug("ERROR: tile atlas missing, wrong size or could not be loaded\r\n");
+    return 1;
+}
 
 front[0] = gfx_getfbuffer1();
 front[1] = gfx_getfbuffer2();
@@ -46,9 +60,23 @@ The transparent foreground colour is palette index 0; this lets the separate
 background show through. Use the working full-viewport blitter baseline
 before trying further scrolling optimisations.
 
+The renderer clears each tile area before drawing its BOB, so transparent
+pixels and empty graphic ID 0 reveal the background correctly. The BOB
+index is 0-based; the map graphic ID is 1-based. Large atlases are safe
+because each visible tile selects its atlas row and 8-bit column separately.
+
 The animation functions make animated atlas tiles advance automatically.
 No per-tile sprite objects are necessary. Frame timing is in VBlanks.
 
 For collision, the level's exported graphics and collision maps stay separate.
 The helper supports floors, walls, slopes, one-way tiles, hazards and doors.
 The game decides what to do with hazards and doors.
+
+When leaving a level, call game_level1_unload_atlas() to free tile pixels.
+Never call it every frame. If you change the atlas PPB on SD, restart/reload
+that level so the RAM copy updates. Map/collision/animation data stays compiled.
+
+IMPORTANT: After updating CoderGirl to use SD atlases, update existing
+project gamehelpers/gametilemap.c AND gametilemap.h to the new template
+(before building), because the generated level calls the new loader API.
+Do not overwrite programmer-edited files without saving a backup first.

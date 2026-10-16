@@ -68,6 +68,7 @@
 #include <QListView>
 #include <QStringList>
 #include <QSignalBlocker>
+#include <QTextStream>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QToolButton>
@@ -424,6 +425,7 @@ void SidboxGameDesigner::setTheme(const IDETheme &theme)
         }
     }
     refreshColours();
+    refreshObjectHitbox();
 }
 
 QString SidboxGameDesigner::filePath() const { return m_filePath; }
@@ -868,6 +870,29 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
             }
         }
     }
+    // Existing project helpers are never replaced silently. Prevent a
+    // confusing linker failure if they predate the SD-atlas loader API.
+    if (!m_tilemap.atlasPath.isEmpty()) {
+        const QString helperC = QDir(directory).filePath(QStringLiteral("gamehelpers/gametilemap.c"));
+        const QString helperH = QDir(directory).filePath(QStringLiteral("gamehelpers/gametilemap.h"));
+        QFile cFile(helperC), hFile(helperH);
+        if (QFileInfo::exists(helperC) && QFileInfo::exists(helperH)) {
+            const bool readable = cFile.open(QIODevice::ReadOnly) && hFile.open(QIODevice::ReadOnly);
+            const bool current = readable
+                && cFile.readAll().contains("GAME_TILEMAP_BOB_SD_ATLAS_V1")
+                && hFile.readAll().contains("GAME_TILEMAP_BOB_SD_ATLAS_V1");
+            if (!current) {
+                QMessageBox::warning(this, tr("Tilemap Helper Update Required"),
+                    tr("This project still has an older gametilemap.c/.h.\n\n"
+                       "The new level uses an SD-loaded atlas and needs the updated "
+                       "gfx_drawbob() tile atlas helper.\n\n"
+                       "Back up any edited helpers, replace both files with the new "
+                       "CoderGirl tilemap helper, then export again.\n"
+                       "Your existing helper files have NOT been overwritten."));
+                return false;
+            }
+        }
+    }
     QString error;
     if (!sidboxExportTilemap(m_tilemap, directory, &error)) {
         QMessageBox::warning(this, tr("Tilemap Export"), error);
@@ -877,8 +902,9 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
     if (showMessage)
         QMessageBox::information(this, tr("Tilemap Exported"),
             tr("Map exported to gamelevels/level1.c and level1.h.\n"
-               "Copyable instructions: gamehelpers/gametilemap.txt.\n"
-               "The foreground blitter redraws the visible tilemap every frame."));
+               "Atlas artwork will load from its PPB on the SD card at level startup.\n"
+               "Call game_level1_load_atlas() once after initMalloc().\n"
+               "Copyable instructions: gamehelpers/gametilemap.txt."));
     return true;
 }
 
@@ -939,6 +965,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
         if (!ok || name.isEmpty()) return;
         SplinePath path;
         path.name = name;
+        path.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         // Four starter nodes near the click; all can be moved or removed.
         for (const QPoint &offset : {QPoint(0, 0), QPoint(60, -40),
                                     QPoint(120, 35), QPoint(180, 0)}) {
@@ -1391,6 +1418,12 @@ void SidboxGameDesigner::buildUi()
                 ? tr("Use as Background Preview CLUT")
                 : tr("Use as Foreground Preview CLUT"));
         }
+        QAction *configureObject = nullptr;
+        if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")) {
+            menu.addSeparator();
+            configureObject = menu.addAction(tr("Configure Game Object..."));
+            configureObject->setToolTip(tr("Choose collectable, moving lift, conveyor or spring, plus animation and spline."));
+        }
         QAction *remove = nullptr;
         if (hasResource) {
             menu.addSeparator();
@@ -1421,6 +1454,7 @@ void SidboxGameDesigner::buildUi()
             const QString ref = chosen->data().toString().mid(11);
             addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
         }
+        else if (configureObject && chosen == configureObject) configureGameObject(resourceIndex);
         else if (editThisPalette && chosen == editThisPalette) openPaletteEditor(resourceIndex);
         else if (useAsPreview && chosen == useAsPreview) {
             const Resource &resource = m_resources.at(resourceIndex);
@@ -1740,7 +1774,10 @@ void SidboxGameDesigner::buildUi()
     connect(m_resourceTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
         if (m_syncSelection) return;
         QTreeWidgetItem *item = m_resourceTree->currentItem();
-        if (!item || !item->data(0, Qt::UserRole).isValid()) return;
+        if (!item || !item->data(0, Qt::UserRole).isValid()) {
+            refreshObjectHitbox();
+            return;
+        }
         const int index = item->data(0, Qt::UserRole).toInt();
         if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index)) {
             m_syncSelection = true;
@@ -1749,6 +1786,7 @@ void SidboxGameDesigner::buildUi()
             m_syncSelection = false;
         }
         refreshProperties();
+        refreshObjectHitbox();
     });
     connect(m_scene, &QGraphicsScene::selectionChanged, this, [this]() {
         if (m_syncSelection) return;
@@ -1834,6 +1872,7 @@ void SidboxGameDesigner::selectResource(int index)
         m_sceneItems.at(index)->setSelected(true);
     m_syncSelection = false;
     refreshProperties();
+    refreshObjectHitbox();
 }
 
 QString SidboxGameDesigner::resourcePlane(const Resource &resource) const
@@ -1940,6 +1979,10 @@ void SidboxGameDesigner::refreshResources()
                 isActiveClut ? tr("%1  [preview]").arg(r.name) : r.name});
             child->setData(0, Qt::UserRole, index);
             child->setToolTip(0, r.path);
+            if (kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
+                child->setText(0, QStringLiteral("%1  [%2]").arg(r.name, r.objectType));
+                child->setToolTip(0, tr("Game object: %1\n%2").arg(r.objectType, r.path));
+            }
             child->setData(0, Qt::UserRole + 1, kind);
             child->setData(0, Qt::UserRole + 2, r.plane);
         }
@@ -2072,6 +2115,7 @@ void SidboxGameDesigner::rebuildScene()
     m_loading = true;
     m_splineHandleItems.clear();
     m_splineCurveItem = nullptr;
+    m_objectHitbox = nullptr;
     m_scene->clear();
     m_tilemapOverlayItem = nullptr;
     m_sceneItems.clear();
@@ -2125,6 +2169,7 @@ void SidboxGameDesigner::rebuildScene()
     refreshFrame();
     rebuildSplineOverlay();
     m_loading = false;
+    refreshObjectHitbox();
 }
 
 void SidboxGameDesigner::refreshFrame()
@@ -2153,7 +2198,7 @@ void SidboxGameDesigner::syncFromSceneItem(QGraphicsItem *item)
     m_resources[index].x = qRound(item->pos().x());
     m_resources[index].y = qRound(item->pos().y());
     setDirty();
-    if (selectedIndex() == index) refreshProperties();
+    if (selectedIndex() == index) { refreshProperties(); refreshObjectHitbox(); }
 }
 
 void SidboxGameDesigner::updateSelectedItem()
@@ -2167,6 +2212,7 @@ void SidboxGameDesigner::updateSelectedItem()
     item->setPos(r.x, r.y);
     item->setScale(r.scale / 100.0);
     m_loading = false;
+    refreshObjectHitbox();
 }
 
 void SidboxGameDesigner::updateSelectedPixmap()
@@ -2676,6 +2722,1048 @@ void SidboxGameDesigner::exportSelectedC()
           .arg(cInfo.fileName(), QFileInfo(hPath).fileName()));
 }
 
+
+// Game object editing deliberately lives alongside the existing sprite tree.
+// The sprite remains the authoritative WORLD placement and bitmap reference.
+void SidboxGameDesigner::configureGameObject(int index)
+{
+    if (index < 0 || index >= m_resources.size() ||
+        m_resources.at(index).kind != QStringLiteral("sprite")) return;
+    const Resource &old = m_resources.at(index);
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Game Object Properties - %1").arg(old.name));
+    dialog.resize(430, 480);
+    // No new rounded widgets, even when the desktop theme uses rounded popups.
+    dialog.setStyleSheet(styleSheet() + QStringLiteral(
+        "QDialog, QGroupBox, QSpinBox, QComboBox, QPushButton, QLineEdit { border-radius:0px; }"));
+    QVBoxLayout layout(&dialog);
+    auto *hint = new QLabel(tr("World coordinates come from this sprite's canvas position. "
+                            "Behaviour belongs to this sprite instance, not its PPB file."), &dialog);
+    hint->setWordWrap(true);
+    layout.addWidget(hint);
+    auto *form = new QFormLayout;
+    auto *type = new GameComboBox(&dialog);
+    type->addItem(tr("Ordinary sprite / Decoration"), QStringLiteral("decoration"));
+    type->addItem(tr("Collectable"), QStringLiteral("collectable"));
+    type->addItem(tr("Moving platform / Lift"), QStringLiteral("lift"));
+    type->addItem(tr("Conveyor"), QStringLiteral("conveyor"));
+    type->addItem(tr("Spring / Bouncer"), QStringLiteral("spring"));
+    type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
+    form->addRow(tr("Behaviour"), type);
+    auto *pickup = new GameComboBox(&dialog);
+    pickup->addItem(tr("Coin"), 1);
+    pickup->addItem(tr("Health"), 2);
+    pickup->addItem(tr("Key"), 3);
+    pickup->addItem(tr("Gem"), 4);
+    pickup->setCurrentIndex(qMax(0, pickup->findData(old.pickupKind)));
+    form->addRow(tr("Pickup type"), pickup);
+    auto spin = [&dialog](int lo, int hi, int val) {
+        auto *s = new QSpinBox(&dialog);
+        s->setRange(lo, hi); s->setValue(val); return s;
+    };
+    auto *value = spin(0, 65535, old.objectValue);
+    form->addRow(tr("Pickup value"), value);
+    auto *hitW = spin(1, 1024, old.hitWidth);
+    auto *hitH = spin(1, 1024, old.hitHeight);
+    form->addRow(tr("Collision width"), hitW);
+    form->addRow(tr("Collision height"), hitH);
+    auto *conveyor = spin(-100, 100, old.conveyorSpeed);
+    form->addRow(tr("Conveyor px/frame"), conveyor);
+    auto *spring = spin(1, 100, old.springStrength);
+    form->addRow(tr("Spring launch strength"), spring);
+    auto *spline = new GameComboBox(&dialog);
+    spline->addItem(tr("None (stationary)"), QString());
+    for (const SplinePath &path : m_splinePaths)
+        spline->addItem(path.name, path.id);
+    spline->setCurrentIndex(qMax(0, spline->findData(old.objectSplineId)));
+    form->addRow(tr("Movement spline"), spline);
+    auto *animated = new QCheckBox(tr("Animate sprite frames"), &dialog);
+    animated->setChecked(old.objectAnimated);
+    form->addRow(QString(), animated);
+    auto *first = spin(0, 255, old.animFirst);
+    auto *count = spin(1, 256, old.animCount);
+    auto *ticks = spin(1, 65535, old.animTicks);
+    form->addRow(tr("First frame"), first);
+    form->addRow(tr("Number of frames"), count);
+    form->addRow(tr("Frames per picture"), ticks);
+    auto *mode = new GameComboBox(&dialog);
+    mode->addItem(tr("Loop"), QStringLiteral("loop"));
+    mode->addItem(tr("Ping-pong"), QStringLiteral("pingpong"));
+    mode->addItem(tr("Once"), QStringLiteral("once"));
+    mode->setCurrentIndex(qMax(0, mode->findData(old.animMode)));
+    form->addRow(tr("Animation mode"), mode);
+    layout.addLayout(form);
+    auto enableFields = [=]() {
+        const QString behaviour = type->currentData().toString();
+        const bool isObject = behaviour != QStringLiteral("decoration");
+        pickup->setEnabled(behaviour == QStringLiteral("collectable"));
+        value->setEnabled(behaviour == QStringLiteral("collectable"));
+        hitW->setEnabled(isObject); hitH->setEnabled(isObject);
+        conveyor->setEnabled(behaviour == QStringLiteral("conveyor"));
+        spring->setEnabled(behaviour == QStringLiteral("spring"));
+        spline->setEnabled(isObject);
+        animated->setEnabled(isObject);
+        for (QWidget *w : {static_cast<QWidget *>(first), static_cast<QWidget *>(count),
+                           static_cast<QWidget *>(ticks), static_cast<QWidget *>(mode)})
+            w->setEnabled(isObject && animated->isChecked());
+    };
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
+    connect(animated, &QCheckBox::toggled, &dialog,
+            [enableFields](bool) { enableFields(); });
+    enableFields();
+    // A late-created dialog is not part of setTheme()'s existing-combo pass.
+    // Colour its popup views explicitly to match Stage 2.5 theme rules.
+    const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
+    for (QComboBox *combo : dialog.findChildren<QComboBox *>()) {
+        QPalette colours = combo->palette();
+        colours.setColor(QPalette::Base, m_theme.inputBackground);
+        colours.setColor(QPalette::Text, m_theme.text);
+        colours.setColor(QPalette::Button, m_theme.inputBackground);
+        colours.setColor(QPalette::ButtonText, m_theme.text);
+        colours.setColor(QPalette::Highlight, m_theme.accent);
+        colours.setColor(QPalette::HighlightedText, m_theme.brightText);
+        combo->setPalette(colours);
+        if (auto *popup = combo->view()) {
+            popup->setPalette(colours);
+            popup->setStyleSheet(QStringLiteral(
+                "QAbstractItemView { background:%1; color:%2; border:1px solid %3; "
+                "border-radius:0px; selection-background-color:%4; selection-color:%5; "
+                "outline:0px; } QAbstractItemView::item:selected { background:%4; color:%5; }")
+                .arg(C(m_theme.menuBackground), C(m_theme.text), C(m_theme.border),
+                     C(m_theme.accent), C(m_theme.brightText)));
+        }
+    }
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         Qt::Horizontal, &dialog);
+    layout.addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString newType = type->currentData().toString();
+    if (newType != QStringLiteral("decoration") &&
+        (old.path.isEmpty() || old.scale != 100 ||
+         QFileInfo(resolvedPath(old.path)).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive))) {
+        QMessageBox::warning(this, tr("Game Object"),
+            tr("Game objects require a PPB sprite at 100%% scale. "
+               "Please assign a PPB and set the sprite scale to 100 first."));
+        return;
+    }
+    rememberResourceEdit();
+    Resource &r = m_resources[index];
+    r.objectType = newType;
+    r.pickupKind = pickup->currentData().toInt();
+    r.objectValue = value->value();
+    r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
+    r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
+    r.objectSplineId = spline->currentData().toString();
+    r.objectAnimated = animated->isChecked();
+    r.animFirst = first->value(); r.animCount = count->value();
+    r.animTicks = ticks->value(); r.animMode = mode->currentData().toString();
+    refreshResources();
+    selectResource(index);
+    setDirty();
+}
+
+void SidboxGameDesigner::refreshObjectHitbox()
+{
+    if (!m_scene || m_loading) return;
+    if (m_objectHitbox) {
+        m_scene->removeItem(m_objectHitbox);
+        delete m_objectHitbox;
+        m_objectHitbox = nullptr;
+    }
+    const int index = selectedIndex();
+    if (index < 0 || index >= m_resources.size()) return;
+    const Resource &r = m_resources.at(index);
+    if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) return;
+    QPen pen(m_theme.accent, 1.5, Qt::DashLine);
+    m_objectHitbox = m_scene->addRect(r.x, r.y, r.hitWidth, r.hitHeight,
+                                     pen, Qt::NoBrush);
+    m_objectHitbox->setZValue(9900);
+    m_objectHitbox->setAcceptedMouseButtons(Qt::NoButton);
+}
+
+// Matches splinepaths' exported identifier de-duplication EXACTLY.
+QString SidboxGameDesigner::splineSymbol(int target) const
+{
+    QSet<QString> used;
+    for (int i = 0; i < m_splinePaths.size(); ++i) {
+        const SplinePath &path = m_splinePaths.at(i);
+        if (path.points.size() < 2) continue;
+        QString n = path.name.toLower();
+        n.replace(QRegularExpression(QStringLiteral("[^a-z0-9_]")), QStringLiteral("_"));
+        if (n.isEmpty() || n.at(0).isDigit()) n.prepend(QLatin1Char('_'));
+        QString sym = QStringLiteral("spline_") + n;
+        const QString base = sym;
+        int suffix = 2;
+        while (used.contains(sym)) sym = base + QStringLiteral("_%1").arg(suffix++);
+        used.insert(sym);
+        if (i == target) return sym;
+    }
+    return QString();
+}
+
+QString SidboxGameDesigner::spriteSymbol(const Resource &r) const
+{
+    static const QRegularExpression arrayName(
+        QStringLiteral("^([A-Za-z_][A-Za-z_0-9]*)\\[([0-9]+)\\]$"));
+    const auto match = arrayName.match(r.name.trimmed());
+    QString base = match.hasMatch() ? match.captured(1) : r.name.trimmed();
+    if (base.isEmpty()) base = QFileInfo(resolvedPath(r.path)).completeBaseName();
+    const QString symbol = SidboxPpb::identifier(base).toLower();
+    return match.hasMatch() ? QStringLiteral("%1[%2]").arg(symbol, match.captured(2)) : symbol;
+}
+
+// Only offer to copy missing C/H/TXT templates; never overwrite modified helpers.
+bool SidboxGameDesigner::installMissingWorldHelpers(QString *error)
+{
+    bool pickups = false, worlds = false, animations = false, splines = false;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        pickups |= r.objectType == QStringLiteral("collectable");
+        worlds |= r.objectType != QStringLiteral("collectable");
+        animations |= r.objectAnimated;
+        splines |= !r.objectSplineId.isEmpty();
+    }
+    QStringList names;
+    if (pickups) names << QStringLiteral("collectables");
+    if (worlds) names << QStringLiteral("worldobjects");
+    // Both new helpers include these headers whether attached or not.
+    if (pickups || worlds) { names << QStringLiteral("animation") << QStringLiteral("spline"); }
+    Q_UNUSED(animations)
+    Q_UNUSED(splines)
+    if (names.isEmpty()) return true;
+    const QString dest = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
+    const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+    struct Copy { QString from, to; QByteArray data; };
+    QVector<Copy> pending;
+    for (const QString &name : names) {
+        const QString base = QStringLiteral("game") + name;
+        for (const QString &ext : {QStringLiteral(".h"), QStringLiteral(".c"), QStringLiteral(".txt")}) {
+            const QString to = QDir(dest).filePath(base + ext);
+            if (QFileInfo::exists(to)) continue;
+            const QString from = templates.filePath(name + ext);
+            QFile file(from);
+            if (!file.open(QIODevice::ReadOnly)) {
+                if (error) *error = tr("Missing helper template: %1").arg(from);
+                return false;
+            }
+            QByteArray data = file.readAll();
+            if (ext == QStringLiteral(".c")) {
+                data.replace((QStringLiteral("\"%1.h\"").arg(name)).toUtf8(),
+                             (QStringLiteral("\"%1.h\"").arg(base)).toUtf8());
+            }
+            pending.append({from, to, data});
+        }
+    }
+    if (pending.isEmpty()) return true;
+    QStringList files;
+    for (const Copy &c : pending) files << QDir(dest).relativeFilePath(c.to);
+    if (QMessageBox::question(this, tr("Install Missing Game Helpers?"),
+        tr("These helpers are needed for your configured game objects:\n\n%1\n\n"
+           "Install the missing files? Existing source and guides will NOT be overwritten.")
+           .arg(files.join(QStringLiteral("\n"))),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Yes) != QMessageBox::Yes) {
+        if (error) *error = tr("Missing helper installation was cancelled.");
+        return false;
+    }
+    if (!QDir().mkpath(dest)) { if (error) *error = tr("Cannot create %1").arg(dest); return false; }
+    for (const Copy &c : pending) {
+        // Another process could have created the file after our first check.
+        if (QFileInfo::exists(c.to)) continue;
+        QSaveFile file(c.to);
+        if (!file.open(QIODevice::WriteOnly) || file.write(c.data) != c.data.size() || !file.commit()) {
+            file.cancelWriting();
+            if (error) *error = tr("Cannot install missing helper %1").arg(c.to);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SidboxGameDesigner::exportWorldItems(QString *error)
+{
+    QVector<const Resource *> pickups, platforms;
+    QVector<int> pickupPaths, platformPaths;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        if (r.scale != 100 || r.path.isEmpty() ||
+            QFileInfo(resolvedPath(r.path)).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive)) {
+            if (error) *error = tr("Game object '%1' must use a PPB sprite at 100%% scale.").arg(r.name);
+            return false;
+        }
+        if (r.objectAnimated) {
+            const QImage bitmap = cachedImage(resolvedPath(r.path));
+            const int cw = r.cellWidth > 0 ? r.cellWidth : bitmap.width();
+            const int ch = r.cellHeight > 0 ? r.cellHeight : bitmap.height();
+            const int available = !bitmap.isNull() && cw > 0 && ch > 0
+                ? (bitmap.width() / cw) * (bitmap.height() / ch) : 0;
+            if (!available || r.animFirst + r.animCount > 256 ||
+                r.animFirst + r.animCount > available) {
+                if (error) *error = tr("Animation for '%1' exceeds the available PPB atlas frames (%2). "
+                                      "Check Start Frame and Frame Count.").arg(r.name).arg(available);
+                return false;
+            }
+        }
+        int attached = -1;
+        if (!r.objectSplineId.isEmpty()) {
+            for (int i = 0; i < m_splinePaths.size(); ++i)
+                if (m_splinePaths.at(i).id == r.objectSplineId) { attached = i; break; }
+            if (attached < 0 || m_splinePaths.at(attached).points.size() < 2) {
+                if (error) *error = tr("Spline attached to '%1' no longer exists. Reassign it in Game Object Properties.").arg(r.name);
+                return false;
+            }
+        }
+        if (r.objectType == QStringLiteral("collectable")) {
+            pickups.append(&r); pickupPaths.append(attached);
+        } else {
+            platforms.append(&r); platformPaths.append(attached);
+        }
+    }
+    if (pickups.isEmpty() && platforms.isEmpty()) {
+        // If objects were removed, replace our PREVIOUSLY GENERATED files with
+        // harmless stubs so stale references never break a subsequent build.
+        const QDir oldFolder(QDir(QFileInfo(m_filePath).absolutePath())
+            .filePath(QStringLiteral("gamehelpers")));
+        const QString generatedH = oldFolder.filePath(QStringLiteral("gameworlditems.h"));
+        if (!QFileInfo::exists(generatedH)) return true;
+        QFile original(generatedH);
+        if (!original.open(QIODevice::ReadOnly) ||
+            !original.read(128).contains("GENERATED by CoderGirl")) {
+            if (error) *error = tr("Existing gameworlditems.h isn't recognised as a generated file. "
+                                  "Please inspect it before regenerating.");
+            return false;
+        }
+        struct Stub { QString file, data; };
+        for (const Stub &stub : {
+            Stub{QStringLiteral("gameworlditems.h"), QStringLiteral(
+                "/* GENERATED by CoderGirl. All world objects removed. */\n"
+                "#ifndef CODERGIRL_V1_GAMEWORLDITEMS_H\n#define CODERGIRL_V1_GAMEWORLDITEMS_H\n"
+                "#include <stdint.h>\nuint8_t gameworlditems_init(void);\n"
+                "void gameworlditems_update(uint16_t frames);\n"
+                "void gameworlditems_draw(int32_t cx, int32_t cy);\n#endif\n")},
+            Stub{QStringLiteral("gameworlditems.c"), QStringLiteral(
+                "/* GENERATED by CoderGirl. No managed world objects. */\n"
+                "#include \"gameworlditems.h\"\n"
+                "uint8_t gameworlditems_init(void) { return 1; }\n"
+                "void gameworlditems_update(uint16_t frames) { (void)frames; }\n"
+                "void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }\n")},
+            Stub{QStringLiteral("gameworlditems.txt"), QStringLiteral(
+                "No world objects are configured in this design.\n"
+                "Right-click a sprite in Game Resources to configure one.\n")}
+        }) {
+            QSaveFile f(oldFolder.filePath(stub.file));
+            const QByteArray data = stub.data.toUtf8();
+            if (!f.open(QIODevice::WriteOnly) || f.write(data) != data.size() || !f.commit()) {
+                f.cancelWriting();
+                if (error) *error = tr("Cannot update %1").arg(stub.file);
+                return false;
+            }
+        }
+        return true;
+    }
+    const int np = pickups.size(), nw = platforms.size();
+    QString h, c, guide;
+    QTextStream H(&h), C(&c), G(&guide);
+    H << "/* GENERATED by CoderGirl. Regeneration overwrites this file. */\n"
+         "#ifndef CODERGIRL_V1_GAMEWORLDITEMS_H\n#define CODERGIRL_V1_GAMEWORLDITEMS_H\n"
+         "#include <stdint.h>\n";
+    if (np) H << "#include \"gamecollectables.h\"\n";
+    if (nw) H << "#include \"gameworldobjects.h\"\n";
+    H << "\n#define GAMEWORLDITEMS_PICKUP_COUNT " << np << "u\n"
+      << "#define GAMEWORLDITEMS_PLATFORM_COUNT " << nw << "u\n"
+         "uint8_t gameworlditems_init(void);\n"
+         "void gameworlditems_update(uint16_t frames);\n"
+         "void gameworlditems_draw(int32_t camera_x, int32_t camera_y);\n";
+    if (np) H << "uint16_t gameworlditems_check(int32_t player_x, int32_t player_y,\n"
+             "    uint16_t player_w, uint16_t player_h, game_pickup_callback_t callback, void *user);\n";
+    if (nw) H << "void gameworlditems_before(game_world_player_t *player);\n"
+             "void gameworlditems_after(game_world_player_t *player);\n";
+    H << "#endif\n";
+    C << "/* GENERATED by CoderGirl. Regeneration overwrites this file. */\n"
+         "#include \"gameworlditems.h\"\n"
+         "#include \"../gameassets/gameassets.h\"\n";
+    bool anyPath = false;
+    for (int p : pickupPaths) if (p >= 0) anyPath = true;
+    for (int p : platformPaths) if (p >= 0) anyPath = true;
+    if (anyPath) C << "#include \"splinepaths.h\"\n";
+    C << "\n";
+    if (np) C << "static game_collectable_t pickups[" << np << "];\n";
+    if (nw) C << "static game_world_object_t platforms[" << nw << "];\n";
+    for (int i = 0; i < np; ++i) {
+        if (pickupPaths.at(i) >= 0) C << "static game_spline_t pickup_path_" << i << " = {0};\n";
+        if (pickups.at(i)->objectAnimated) C << "static game_animation_t pickup_anim_" << i << " = {0};\n";
+    }
+    for (int i = 0; i < nw; ++i) {
+        if (platformPaths.at(i) >= 0) C << "static game_spline_t platform_path_" << i << " = {0};\n";
+        if (platforms.at(i)->objectAnimated) C << "static game_animation_t platform_anim_" << i << " = {0};\n";
+    }
+    C << "\nuint8_t gameworlditems_init(void)\n{\n";
+    auto animMode = [](const QString &s) -> QString {
+        return s == QStringLiteral("pingpong") ? QStringLiteral("GAME_ANIM_PINGPONG") :
+               s == QStringLiteral("once") ? QStringLiteral("GAME_ANIM_ONCE") :
+               QStringLiteral("GAME_ANIM_LOOP");
+    };
+    for (int i = 0; i < np + nw; ++i) {
+        const bool collect = i < np;
+        const int ix = collect ? i : i - np;
+        const Resource &r = *(collect ? pickups.at(ix) : platforms.at(ix));
+        const int path = collect ? pickupPaths.at(ix) : platformPaths.at(ix);
+        const QString bob = spriteSymbol(r);
+        const QString sprite = QStringLiteral("&") + bob;
+        const QString target = QStringLiteral("&") + (collect ? QStringLiteral("pickups") : QStringLiteral("platforms")) +
+                               QStringLiteral("[%1]").arg(ix);
+        C << "    /* " << (collect ? "Collectable" : "World Object") << " " << ix << ": "
+          << QString(r.name).replace(QLatin1Char('\n'), QLatin1Char(' '))
+               .replace(QStringLiteral("*/"), QStringLiteral("* /")) << " */\n";
+        if (collect) {
+            const QString pickConst = QStringList{QString(), QStringLiteral("GAME_PICKUP_COIN"),
+                QStringLiteral("GAME_PICKUP_HEALTH"), QStringLiteral("GAME_PICKUP_KEY"),
+                QStringLiteral("GAME_PICKUP_GEM")}.at(qBound(1,r.pickupKind,4));
+            C << "    if (!game_collectable_start(" << target << ", " << sprite << ", "
+              << pickConst << ", " << r.objectValue << ")) return 0;\n"
+              << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
+              << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n";
+        } else {
+            const QString kind = r.objectType == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
+                r.objectType == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
+                QStringLiteral("GAME_OBJECT_SPRING");
+            C << "    if (!game_world_object_start(" << target << ", " << kind << ", "
+              << sprite << ", " << r.x << ", " << r.y << ", "
+              << r.hitWidth << ", " << r.hitHeight << ")) return 0;\n";
+            if (r.objectType == QStringLiteral("conveyor"))
+                C << "    platforms[" << ix << "].conveyor_speed = " << r.conveyorSpeed << ";\n";
+            if (r.objectType == QStringLiteral("spring"))
+                C << "    platforms[" << ix << "].spring_strength = " << r.springStrength << ";\n";
+        }
+        if (path >= 0) {
+            const QString sym = splineSymbol(path);
+            const QString var = QStringLiteral("%1_path_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
+            C << "    start_spline(&" << var << ", " << sprite << ", "
+              << sym << "_path, " << sym << "_count, " << sym << "_frames, " << sym << "_loop);\n"
+              << "    set_spline_pos(&" << var << ", " << r.x << ", " << r.y << ");\n"
+              << "    " << (collect ? "pickups" : "platforms") << "[" << ix << "].spline = &" << var << ";\n";
+        }
+        if (r.objectAnimated) {
+            const QString var = QStringLiteral("%1_anim_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
+            C << "    if (!start_animation(&" << var << ", " << sprite << ", "
+              << r.animFirst << ", " << r.animCount << ", " << r.animTicks << ", "
+              << animMode(r.animMode) << ")) return 0;\n"
+              << "    " << (collect ? "pickups" : "platforms") << "[" << ix << "].animation = &" << var << ";\n";
+        }
+    }
+    C << "    return 1;\n}\n\n"
+         "void gameworlditems_update(uint16_t frames)\n{\n";
+    if (nw) C << "    game_world_objects_update(platforms, " << nw << ", frames);\n";
+    if (np) C << "    game_collectables_update(pickups, " << np << ", frames);\n";
+    C << "}\n\n";
+    if (nw) C << "void gameworlditems_before(game_world_player_t *player)\n{\n"
+                 "    game_world_objects_before(platforms, " << nw << ", player);\n}\n\n"
+                 "void gameworlditems_after(game_world_player_t *player)\n{\n"
+                 "    game_world_objects_after(platforms, " << nw << ", player);\n}\n\n";
+    if (np) C << "uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,\n"
+                 "    game_pickup_callback_t callback, void *user)\n{\n"
+                 "    return game_collectables_check(pickups, " << np << ", x, y, w, h, callback, user);\n}\n\n";
+    C << "void gameworlditems_draw(int32_t camera_x, int32_t camera_y)\n{\n";
+    if (nw) C << "    game_world_objects_draw(platforms, " << nw << ", camera_x, camera_y);\n";
+    if (np) C << "    game_collectables_draw(pickups, " << np << ", camera_x, camera_y);\n";
+    C << "}\n";
+    G << "CODERGIRL — GENERATED WORLD OBJECTS GUIDE\n"
+         "========================================\n\n"
+         "Regeneration replaces gameworlditems.c/.h/.txt. For hand-written notes,\n"
+         "use a separate filename. YOUR main.c is never modified.\n\n"
+         "Configured objects: " << np << " collectable(s), " << nw << " moving/world object(s).\n"
+         "Each uses its own graphics instance and WORLD coordinates from Game Designer.\n\n"
+         "After gameassets_init(), call gameworlditems_init().\n"
+         "Each frame call gameworlditems_update(1) before player physics.\n";
+    if (nw) G << "Bind game_world_player_t to the LIVE player physics fields,\n"
+                 "then call gameworlditems_before()/after() around player physics.\n";
+    if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
+    G << "Call gameworlditems_draw(camera_x,camera_y) after selecting the foreground buffer.\n"
+         "Do not call offset_spline() on attached object splines: draw applies camera offset.\n"
+         "Gameassets' drawworld() automatically excludes managed object sprites.\n\n"
+         "Full, current example: open maingame.c.txt in the Project Tree.\n";
+    const QString folder = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
+    if (!QDir().mkpath(folder)) { if (error) *error = tr("Cannot create %1").arg(folder); return false; }
+    struct Out { QString name, data; };
+    for (const Out &out : {Out{QStringLiteral("gameworlditems.h"),h},
+                           Out{QStringLiteral("gameworlditems.c"),c},
+                           Out{QStringLiteral("gameworlditems.txt"),guide}}) {
+        QSaveFile file(QDir(folder).filePath(out.name));
+        const QByteArray bytes = out.data.toUtf8();
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+            file.cancelWriting();
+            if (error) *error = tr("Cannot write generated %1").arg(out.name);
+            return false;
+        }
+    }
+    return true;
+}
+
+// An intentionally non-compiling, beginner-friendly example for the CURRENT
+// design. Recreated by Generate V1 Game Code; the user's main.c is untouched.
+bool SidboxGameDesigner::exportExampleMain(QString *error)
+{
+    int np = 0, nw = 0, moving = 0, animated = 0;
+    const Resource *playerResource = nullptr;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite")) continue;
+        if (r.objectType == QStringLiteral("collectable")) ++np;
+        else if (r.objectType != QStringLiteral("decoration")) ++nw;
+        if (r.objectType != QStringLiteral("decoration")) {
+            moving += !r.objectSplineId.isEmpty();
+            animated += r.objectAnimated;
+        } else if (r.name.compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0)
+            playerResource = &r;
+    }
+    const bool hasObjects = np || nw;
+    const bool hasMap = m_tilemapEnabled;
+    const bool hasPlayer = playerResource && !playerResource->path.isEmpty();
+    QString mock;
+    QTextStream out(&mock);
+
+    out << R"CG(/*
+CODERGIRL - MY GAME, EXPLAINED (V1)
+=================================
+
+WELCOME!
+This is maingame.c.txt, the learning example for YOUR Game Designer project.
+It is ordinary text, so it is NEVER compiled or linked into the game.
+Generate V1 Game Code again to refresh it after changing your design.
+CoderGirl NEVER modifies your real main.c when creating this example.
+
+HOW TO USE THIS GUIDE
+1. Read the comments beside each line; they explain WHAT and WHY.
+2. Find the equivalent part of your existing main.c.
+3. Copy or ADAPT only the parts you need; keep your working hardware setup.
+4. Open the .txt guides inside gamehelpers/ for helper-specific examples.
+5. Generated gameworlditems.c/.h and gameassets.c/.h are overwritten on export.
+   Keep your own game rules, scoring and custom logic in your own files.
+
+IMPORTANT IDEAS
+WORLD coordinates: positions on the whole level, even outside the screen.
+SCREEN coordinates: where something appears within the 480 x 320 viewport.
+  screen_x = world_x - camera_x;
+  screen_y = world_y - camera_y;
+Objects and tilemap/player physics work in WORLD coordinates. Only the
+DRAWING routines apply the camera offset. Do not subtract it twice!
+If a spline is attached to an object, gameworlditems updates its WORLD
+movement and draws it using the camera. Do NOT call offset_spline() on it.
+
+READ THE GAME LOOP IN THIS ORDER
+  wait for frame -> move objects -> carry rider BEFORE player physics
+  -> run player physics -> land/bounce/conveyor AFTER player physics
+  -> check pickups -> update camera -> draw tiles -> draw objects
+  -> draw player -> display frame.
+
+THIS PROJECT CURRENTLY CONTAINS
+)CG";
+    out << "Tilemap: " << (hasMap ? "attached" : "not attached") << "\n"
+        << "Game objects: " << np << " collectable(s), " << nw
+        << " lift/conveyor/spring object(s)\n"
+        << "Spline attachments: " << moving << "; sprite-frame animations: "
+        << animated << "\n"
+        << "Recognised player sprite: " << (hasPlayer ? spriteSymbol(*playerResource) : QStringLiteral("none"))
+        << "\n\n";
+
+    if (hasObjects) {
+        out << "GAME DESIGNER OBJECTS (each entry is a separate sprite instance)\n";
+        for (const Resource &r : m_resources) {
+            if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration"))
+                continue;
+            // This is printed inside a C comment, so protect comment delimiters
+            // and line breaks in programmer-supplied resource/path names.
+            QString name = r.name;
+            name.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+            name.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            name.replace(QLatin1Char('\r'), QLatin1Char(' '));
+            out << "  " << spriteSymbol(r) << " (" << name << "): " << r.objectType
+                << " at WORLD (" << r.x << ", " << r.y << ")"
+                << "; hitbox " << r.hitWidth << " x " << r.hitHeight << "\n";
+            if (r.objectType == QStringLiteral("collectable")) {
+                const QStringList kinds = {QStringLiteral("?"), QStringLiteral("coin"),
+                    QStringLiteral("health"), QStringLiteral("key"), QStringLiteral("gem")};
+                out << "    Pickup: " << kinds.at(qBound(1, r.pickupKind, 4))
+                    << "; value " << r.objectValue
+                    << ". gameworlditems_check() triggers your callback.\n";
+            } else if (r.objectType == QStringLiteral("spring")) {
+                out << "    Spring strength: " << r.springStrength << " (upwards launch).\n";
+            } else if (r.objectType == QStringLiteral("conveyor")) {
+                out << "    Conveyor speed: " << r.conveyorSpeed << " pixels/frame.\n";
+            } else if (r.objectType == QStringLiteral("lift")) {
+                out << "    Lift: carries a player standing on its top surface.\n";
+            }
+            if (!r.objectSplineId.isEmpty()) {
+                QString splineName = QStringLiteral("unresolved (check the Game Designer path)");
+                for (const SplinePath &path : m_splinePaths) {
+                    if (path.id == r.objectSplineId) {
+                        splineName = path.name;
+                        splineName.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+                        splineName.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                        splineName.replace(QLatin1Char('\r'), QLatin1Char(' '));
+                        break;
+                    }
+                }
+                out << "    Follows spline '" << splineName
+                    << "'; the generated wrapper owns its movement state.\n";
+            } else {
+                out << "    No spline: keeps its configured WORLD position.\n";
+            }
+            if (r.objectAnimated) {
+                out << "    Sprite animation: first frame " << r.animFirst
+                    << ", " << r.animCount << " frame(s), one step every "
+                    << r.animTicks << " tick(s), " << r.animMode << ".\n";
+            } else {
+                out << "    Sprite animation OFF: displays the selected frame.\n";
+            }
+            out << "    You configure these settings by right-clicking the sprite\n"
+                   "    in Game Resources. No manual per-object start code is needed.\n";
+        }
+        out << "\n";
+    }
+    out << R"CG(THE EXAMPLE BELOW
+This follows the V1 helper interfaces, but your real program may have
+additional input, music, error handling, custom buffers or hardware setup.
+It illustrates integration; it is NOT a replacement for your main.c.
+*/
+
+/* Headers tell C which types and functions the program can call.
+   Add only the ones used by your design, then keep your own includes. */
+#include <stdint.h>                  /* uint8_t, uint32_t, int32_t, etc. */
+#include "main.h"                   /* Your existing V1 entry-point definitions. */
+#include "apis.h"                   /* SIDBOX graphics, input and hardware API. */
+#include "gameassets/gameassets.h" /* Generated sprites, palettes and assets. */
+)CG";
+    if (hasMap) {
+        out << R"CG(#include "gamehelpers/gametilemap.h" /* Tile collision and drawing. */
+#include "gamelevels/level1.h"       /* Your EXPORTED level/map data. */
+)CG";
+    }
+    if (hasObjects) {
+        out << R"CG(#include "gamehelpers/gameworlditems.h" /* All configured pickups/lifts/springs. */
+)CG";
+    }
+    if (!m_splinePaths.isEmpty()) {
+        out << R"CG(
+/* EXTRA, MANUALLY CONTROLLED SPLINES ONLY
+Objects attached to splines in Game Designer already own their own
+spline state. Include these only if YOU also animate other sprites manually:
+#include "gamehelpers/gamespline.h"
+#include "gamehelpers/splinepaths.h"
+*/
+)CG";
+    }
+    out << R"CG(
+/* Visible screen size, NOT the full size of the scrolling level.
+   These dimensions match our SIDBOX V1 480 x 320 foreground example. */
+#define VIEW_W 480
+#define VIEW_H 320
+
+)CG";
+
+    if (hasMap && hasPlayer) {
+        out << R"CG(/* ============================================================
+   A. VARIABLES WHICH REMEMBER THE GAME'S STATE
+   ============================================================ */
+/* Real physics state: position, speed, ground status, collisions.
+   x100/y100/vy100 use units of 1/100 pixel for smooth movement.
+   Divide x100/y100 by 100 when a function expects WHOLE pixels. */
+static game_tile_player_t player_physics = {0};
+)CG";
+        if (nw) {
+            out << R"CG(
+/* An ADAPTER, not a second player. Its pointers refer to the LIVE
+   fields inside player_physics. World objects can therefore carry,
+   launch or move the real player without copying stale positions. */
+static game_world_player_t world_player = {0};
+)CG";
+        }
+        out << R"CG(
+/* Two different foreground framebuffers for smooth drawing.
+   We draw into one while SIDBOX displays the other. */
+static gfx_bitmap_t *front[2] = {0};
+static uint8_t draw_index = 0; /* Switch 0 -> 1 -> 0 each frame. */
+)CG";
+        if (np) {
+            out << R"CG(
+/* An example of YOUR game-specific response to a pickup.
+   The collectable helper detects overlap; it cannot know your rules.
+   'user' is an optional pointer supplied when we check for pickups.
+   Here it points to 'score', so we cast it back and add the value.
+   The helper deactivates collected items; the callback is called once. */
+static uint32_t score = 0;
+
+static void on_pickup(game_collectable_t *item, void *user)
+{
+    uint32_t *points = (uint32_t *)user;
+    if (!points || !item) return;
+    *points += item->value;
+    /* To give health, keys or sound effects, inspect item->kind here.
+       These rules belong to YOUR game, not the generated helper. */
+}
+)CG";
+        }
+        out << R"CG(
+/* ============================================================
+   B. STARTUP — RUN THIS ONCE, BEFORE THE GAME LOOP
+   ============================================================ */
+int main(int argc, char *argv[])
+{
+    (void)argc; (void)argv; /* This example does not use arguments. */
+
+    /* Select the V1 runtime and take control of the display. */
+    configure_runmode(GAMEMODE_PROFILE_0);
+    suspend_desktop();
+
+    /* Set up memory BEFORE loading any sprite bitmaps/palettes. */
+    initMalloc();
+
+    /* Set display ordering and nominal frame rate (50 FPS here).
+       Preserve your own working gfx_mode() parameters if different! */
+    gfx_setlcd(DEFAULT_RENDER_ORDER, FPS_50);
+    gfx_mode(VIEW_W, VIEW_H, 640, VIEW_H,
+             DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);
+
+    /* Creates/loads the gfxbob_t sprites and assets used by the scene.
+       gameworlditems_init() needs those sprites to exist FIRST. */
+    if (!gameassets_init()) return 1;
+)CG";
+        if (hasMap) {
+            out << R"CG(
+    /* Load the tile artwork ONCE from the SD card, after initMalloc().
+       Unlike earlier CoderGirl builds, level1.c contains map/collision
+       data but not atlas pixels. The loader validates the PPB dimensions,
+       checks its content hash and keeps pixels in their original PPB
+       layout for gfx_drawbob(). Old SD versions are rejected.
+       Copy the up-to-date PPB selected in the Tilemap Editor to SD.
+       Missing/old files are errors: do not proceed with blank graphics. */
+    if (!game_level1_load_atlas()) {
+        dbug("ERROR: tile atlas SD load failed\r\n");
+        return 5;
+    }
+)CG";
+        }
+        if (hasObjects) {
+            out << R"CG(
+    /* Binds every configured object to its sprite, optional spline,
+       optional frame animation and Game Designer world position.
+       You don't need individual start_spline() calls for these objects. */
+    if (!gameworlditems_init()) return 2;
+)CG";
+        }
+        out << R"CG(
+    /* Obtain two independent REAL foreground buffers.
+       Never draw into an invalid buffer, and don't use one twice. */
+    front[0] = gfx_getfbuffer1();
+    front[1] = gfx_getfbuffer2();
+    if (!front[0] || !front[1] || front[0] == front[1] ||
+        !front[0]->bitmap || !front[1]->bitmap ||
+        front[0]->bitmap == front[1]->bitmap) return 3;
+
+    /* Background palette/image and initial hardware scroll offset.
+       Foreground scrolling is done in software via camera_x/y below. */
+    gameassets_show_background();
+    gfx_scrollb(0, 0); gfx_scrollf(0, 0);
+
+    /* Reset animated tile frames, then bind the player's actual sprite
+       to the tile collision helper's movement state. */
+    game_tilemap_animation_reset();
+    if (!game_tile_player_start(&player_physics, &game_level1, &)CG";
+        out << spriteSymbol(*playerResource);
+        out << R"CG()) return 4;
+)CG";
+        if (nw) {
+            out << R"CG(
+    /* IMPORTANT: these are ADDRESSES of the existing fields, not values.
+       Any lift/conveyor/spring will act on the live tilemap player.
+       The collision width/height refer to the player's hitbox. */
+    world_player.x100 = &player_physics.x100;
+    world_player.y100 = &player_physics.y100;
+    world_player.vy100 = &player_physics.vy100;
+    world_player.on_ground = &player_physics.on_ground;
+    world_player.width = )CG";
+            out << spriteSymbol(*playerResource) << ".width;\n";
+            out << "    world_player.height = " << spriteSymbol(*playerResource) << ".height;\n";
+        }
+        out << R"CG(
+    /* ============================================================
+       C. ONE GAME FRAME — REPEATED FOREVER
+       ============================================================ */
+    while (1) {
+        /* 1. Sync the game to the screen's frame timing. */
+        gfx_lcdwait();
+)CG";
+        if (hasObjects) {
+            out << R"CG(
+        /* 2. Advance each configured object's spline and sprite frames.
+           '1' means one frame of elapsed animation time.
+           All positions remain WORLD positions, NOT screen positions. */
+        gameworlditems_update(1);
+)CG";
+        }
+        if (nw) {
+            out << R"CG(
+        /* 3. BEFORE physics: move any player already riding a lift by
+           the distance the lift travelled since the last frame.
+           This must happen before game_tile_player_run(). */
+        gameworlditems_before(&world_player);
+)CG";
+        }
+        out << R"CG(
+        /* 4. Apply joystick movement, gravity and tilemap collision.
+           This updates player_physics.x100/y100 in WORLD coordinates. */
+        game_tile_player_run(&player_physics, getjoyport(), 1);
+)CG";
+        if (nw) {
+            out << R"CG(
+        /* 5. AFTER physics: check for landing on lifts, conveyor speed
+           and spring launch. The ordering around physics MATTERS. */
+        gameworlditems_after(&world_player);
+)CG";
+        }
+        if (np) {
+            out << R"CG(
+        /* 6. Check pickups using the player's WORLD position.
+           '/ 100' converts fixed-point player coords into pixels.
+           A touching item becomes inactive and on_pickup() awards points. */
+        gameworlditems_check(player_physics.x100 / 100,
+            player_physics.y100 / 100, )CG";
+            out << spriteSymbol(*playerResource) << ".width,\n            "
+                << spriteSymbol(*playerResource) << ".height, on_pickup, &score);\n";
+        }
+        out << R"CG(
+        /* 7. Put the camera near the player, but don't let it scroll
+           beyond the map's edges. These are WORLD pixel offsets.
+           Subtracting VIEW_W/2 (or VIEW_H/2) centres the viewport. */
+        int32_t camera_x = player_physics.x100 / 100 - VIEW_W / 2;
+        int32_t camera_y = player_physics.y100 / 100 - VIEW_H / 2;
+
+        /* Map dimensions are stored in TILES, so multiply by tile_size.
+           A smaller-than-screen map gets a maximum camera offset of 0. */
+        int32_t max_x = (int32_t)game_level1.width * game_level1.tile_size - VIEW_W;
+        int32_t max_y = (int32_t)game_level1.height * game_level1.tile_size - VIEW_H;
+        if (max_x < 0) max_x = 0;
+        if (max_y < 0) max_y = 0;
+        if (camera_x < 0) camera_x = 0;
+        if (camera_y < 0) camera_y = 0;
+        if (camera_x > max_x) camera_x = max_x;
+        if (camera_y > max_y) camera_y = max_y;
+
+        /* 8. Advance animated MAP tiles (different from sprite frames).
+           Select the OFF-SCREEN foreground buffer to start painting. */
+        game_tilemap_animation_tick(1);
+        gfx_usebuffer(front[draw_index]);
+
+        /* 9. Clear old pixels, then draw the visible section of the map.
+           The tile helper understands camera_x/y directly. */
+        gfx_setcolour(0);
+        gfx_rectf(0, 0, VIEW_W, VIEW_H);
+        game_tilemap_blit_view(&game_level1, camera_x, camera_y,
+                               VIEW_W, VIEW_H);
+)CG";
+        if (hasObjects) {
+            out << R"CG(
+        /* 10. Draw collectables, lifts, conveyors and springs.
+           They move/animate themselves and subtract camera ONCE.
+           Don't also draw their original gameassets sprite copies. */
+        gameworlditems_draw(camera_x, camera_y);
+)CG";
+        }
+        out << R"CG(
+        /* 11. Put the player sprite at SCREEN position before drawing.
+           This does not change the player's WORLD physics position. */
+        game_tile_player_screen(&player_physics, camera_x, camera_y);
+        gfx_drawbob(&)CG";
+        out << spriteSymbol(*playerResource) << R"CG();
+
+        /* Draw extra ordinary sprites here if needed. For manually
+           managed WORLD sprites, project world -> screen when drawing.
+           drawworld() excludes objects owned by gameworlditems. */
+
+        /* 12. Hand over the finished frame and switch drawing buffers.
+           XOR 1 alternates indices: 0 -> 1 -> 0 -> 1. */
+        gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
+        gfx_displaynow();
+        draw_index ^= 1u;
+
+        /* Keep streamed/chip music playback updated each frame. */
+        music_update();
+    }
+}
+)CG";
+    } else {
+        // No invented player variables or fake compilable main: a clearly
+        // labelled recipe that stays valid for very different game designs.
+        out << R"CG(/*
+WHY THIS DESIGN GETS AN INTEGRATION RECIPE, NOT A FULL main()
+---------------------------------------------------------
+)CG";
+        if (!hasMap) {
+            out << "- There is no attached tilemap in the Game Designer.\n"
+                   "  Keep YOUR existing renderer, world dimensions and physics.\n";
+        }
+        if (!hasPlayer) {
+            out << "- CoderGirl cannot find an ordinary sprite named 'player' with\n"
+                   "  an assigned image. Your player may have another name or may\n"
+                   "  be created directly in code. Keep your existing player.\n";
+        }
+        out << R"CG(
+COPY THESE STEPS INTO THE EQUIVALENT PLACES IN YOUR EXISTING main.c
+
+A. AFTER the hardware, memory and gfx_mode() setup:
+   if (!gameassets_init()) return 1;
+   Why: the object wrapper needs the sprites created by gameassets.
+)CG";
+        if (hasMap) {
+            out << R"CG(   if (!game_level1_load_atlas()) return 5;
+   Why: level1.c no longer embeds tile pixels. Load and validate the
+   current atlas PPB from SD once after initMalloc(), before drawing.
+   Copy the latest atlas PPB to SD. Failure means missing/old artwork.
+)CG";
+        }
+        if (hasObjects) {
+            out << R"CG(   if (!gameworlditems_init()) return 2;
+   Why: this attaches the generated objects to their sprite instances,
+   assigned spline paths and frame animation states.
+)CG";
+        }
+        out << R"CG(
+B. ONCE PER GAME FRAME, in this EXACT order, after gfx_lcdwait():
+)CG";
+        if (hasObjects) {
+            out << R"CG(   gameworlditems_update(1);
+   Why: advance object movements and sprite frame animation first.
+)CG";
+        }
+        if (nw) {
+            out << R"CG(   gameworlditems_before(&world_player);
+   Why: move a player riding a lift BEFORE your normal physics.
+   IMPORTANT: create a game_world_player_t called world_player (or use
+   your own name) and point x100, y100, vy100 and on_ground at the LIVE
+   fields of your real physics player; set width and height too.
+   Do NOT point it at a camera-shifted drawing sprite.
+)CG";
+        }
+        out << R"CG(   // Your EXISTING joystick movement, gravity and collision step goes here.
+   Why: the helper cooperates with your game; it doesn't replace it.
+)CG";
+        if (nw) {
+            out << R"CG(   gameworlditems_after(&world_player);
+   Why: a lift catches the player, a conveyor pushes, a spring launches
+   AFTER the usual movement and tile collision calculations.
+)CG";
+        }
+        if (np) {
+            out << R"CG(   gameworlditems_check(player_world_x, player_world_y,
+                         player_w, player_h, on_pickup, &score);
+   Why: collectable detection uses WORLD pixels, not screen pixels.
+   player_world_x/y, player_w/h, score and on_pickup are PLACEHOLDERS.
+   Replace them with YOUR real player data and callback; see full
+   examples in gamecollectables.txt or gameworlditems.txt.
+)CG";
+        }
+        out << R"CG(
+C. AFTER choosing and clearing YOUR foreground drawing buffer:
+   // Draw your map/background first, using YOUR camera_x/y.
+)CG";
+        if (hasObjects) {
+            out << R"CG(   gameworlditems_draw(camera_x, camera_y);
+   Why: each object projects its own WORLD location onto the screen.
+   Pass the camera once. Do not also call offset_spline() on attached
+   object splines, or re-draw the same sprite manually.
+)CG";
+        }
+        out << R"CG(   // Draw the player and any other ordinary sprites; show the frame.
+
+D. NOTE ABOUT THE IDENTIFIERS ABOVE
+   The return values 1 and 2 above are examples for an int main().
+   Change error handling to match your own entry point.
+   'player_world_x', 'world_player', 'score', 'on_pickup' and camera_x/y
+   are integration examples, not automatically declared by CoderGirl.
+   Only use those lines after connecting them to the variables and
+   functions actually present in YOUR existing main.c.
+*/
+)CG";
+    }
+
+    out << R"CG(
+/*
+FILES, OWNERSHIP AND NEXT STEPS
+===============================
+GENERATED (regeneration may overwrite them):
+- gameassets/gameassets.c/.h: sprite data, palette and unmanaged scenery.
+)CG";
+    if (hasMap) {
+        out << "- gamelevels/level1.c/.h: exported map/tiles; export the map first.\n";
+    }
+    if (hasObjects) {
+        out << "- gamehelpers/gameworlditems.c/.h: per-object setup, updates and drawing.\n"
+               "- gamehelpers/gameworlditems.txt: generated object helper guide.\n";
+    }
+    if (moving) {
+        out << "- gamehelpers/splinepaths.c/.h: exported paths used by objects.\n";
+    }
+    out << R"CG(
+YOURS (NOT overwritten by Generate V1 Game Code):
+- main.c and any hand-written game logic files.
+- Custom callbacks for pickups, scoring, health, sounds and special events.
+
+REMEMBER
+- Regeneration will REFRESH this maingame.c.txt. Save personal notes elsewhere.
+- A sprite managed by gameworlditems is intentionally not drawn by
+  gameassets' drawworld(); gameworlditems_draw() handles it instead.
+- World Objects supports top-surface interaction, NOT full solid sides.
+- Ordinary sprites may need a world-to-screen camera projection.
+- Never copy these examples blindly over a working game's main.c.
+
+SPRITES FROM THIS DESIGN (symbols as exported by gameassets.h)
+)CG";
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
+        QString name = r.name;
+        name.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+        name.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        name.replace(QLatin1Char('\r'), QLatin1Char(' '));
+        out << "- " << spriteSymbol(r) << " : " << name << " (WORLD "
+            << r.x << ", " << r.y << ") / " << r.objectType << "\n";
+    }
+    out << R"CG(
+AUDIO / MUSIC
+- gameassets/gameassets.h lists your generated playsound* / playmusic*
+  functions, if you added sound/music resources.
+- Call the appropriate functions from YOUR events (pickups, jumps, etc.).
+  CoderGirl does not automatically decide when your game should play them.
+
+OTHER INSTALLED GAME HELPERS
+)CG";
+    const QDir helpers(QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gamehelpers")));
+    const QStringList headers = helpers.entryList({QStringLiteral("game*.h")},
+        QDir::Files, QDir::Name);
+    for (const QString &header : headers) {
+        const QString base = QFileInfo(header).completeBaseName();
+        if (base == QStringLiteral("gameworlditems")) continue;
+        out << "- " << header << ": open " << base << ".txt (if installed)\n";
+    }
+    out << R"CG(
+You can read all these .txt guides from the CoderGirl Project Tree.
+Happy coding! This document explains the pieces; YOUR main.c owns the game.
+*/
+)CG";
+
+    const QString path = QDir(QFileInfo(m_filePath).absolutePath())
+                             .filePath(QStringLiteral("maingame.c.txt"));
+    QSaveFile file(path);
+    const QByteArray data = mock.toUtf8();
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        file.cancelWriting();
+        if (error) *error = tr("Cannot generate %1").arg(path);
+        return false;
+    }
+    return true;
+}
+
 void SidboxGameDesigner::generateGameCode()
 {
     if (m_filePath.isEmpty() || !saveDesign()) return;
@@ -2704,6 +3792,20 @@ void SidboxGameDesigner::generateGameCode()
             QMessageBox::Cancel) != QMessageBox::Yes) return;
     }
 
+    bool anyWorldObject = false;
+    bool anyAttachedSpline = false;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        anyWorldObject = true;
+        if (!r.objectSplineId.isEmpty()) anyAttachedSpline = true;
+    }
+    QString integrationError;
+    if (anyWorldObject && !installMissingWorldHelpers(&integrationError)) {
+        QMessageBox::warning(this, tr("Game Object Dependencies"), integrationError);
+        return;
+    }
+    if (anyAttachedSpline && !exportSplinePaths(false)) return;
+
     SidboxGameCodeGen::Request request;
     request.designDirectory = QFileInfo(m_filePath).absolutePath();
     request.outputDirectory = output;
@@ -2712,6 +3814,8 @@ void SidboxGameDesigner::generateGameCode()
     for (const Resource &r : m_resources) {
         SidboxGameCodeGen::Asset a;
         a.name = r.name; a.kind = r.kind; a.plane = r.plane;
+        a.worldManaged = r.kind == QStringLiteral("sprite") &&
+                         r.objectType != QStringLiteral("decoration");
         a.backgroundMode = r.backgroundMode;
         if (!r.path.isEmpty()) a.absolutePath = resolvedPath(r.path);
         a.x = r.x; a.y = r.y; a.scale = r.scale;
@@ -2731,15 +3835,30 @@ void SidboxGameDesigner::generateGameCode()
         QMessageBox::warning(this, tr("V1 Game Code Generation"), result.error);
         return;
     }
+    integrationError.clear();
+    if (!exportWorldItems(&integrationError)) {
+        QMessageBox::warning(this, tr("Game World Object Generation"),
+            tr("Game assets were generated, but world objects were not: %1").arg(integrationError));
+        return;
+    }
+    if (!exportExampleMain(&integrationError)) {
+        QMessageBox::warning(this, tr("Mock Main Generation"),
+            tr("Game assets were generated, but maingame.c.txt was not: %1").arg(integrationError));
+        return;
+    }
     if (assetFilesChanged) assetFilesChanged();
     QString message = tr("Generated gameassets/gameassets.c and gameassets.h.\n\n"
                          "Include \"gameassets/gameassets.h\" from main.c.\n"
-                         "Call gameassets_init() after initMalloc() and gfx_mode(), then drawworld() inside "
-                         "your render loop.\n\n"
+                         "Call gameassets_init() after initMalloc() and gfx_mode().\n"
+                         "Use maingame.c.txt for the correct draw/update order.\n\n"
                          "The generated code owns NO display buffers or game logic. "
                          "In dual-plane mode, background sprite drawing is separate. "
                          "For a direct background buffer, call gameassets_show_background() "
                          "after gameassets_init().");
+    if (anyWorldObject)
+        message += tr("\n\nGenerated gamehelpers/gameworlditems.c/.h/.txt for your configured game objects.");
+    message += tr("\n\nGenerated maingame.c.txt — a safe, non-compiling beginner reference in the Project Tree. "
+                  "Your real main.c was not touched.");
     if (result.embeddedBytes)
         message += tr("\n\nEmbedded graphics: %1 KiB (uncompressed).")
             .arg((result.embeddedBytes + 1023) / 1024);
@@ -2819,6 +3938,25 @@ bool SidboxGameDesigner::loadDesign()
         r.cellHeight = qBound(0, a.value(QStringLiteral("cellHeight")).toInt(0), 16384);
         r.frame = qBound(0, a.value(QStringLiteral("frame")).toInt(0), 65535);
         r.locked = a.value(QStringLiteral("locked")).toBool(false);
+        const QJsonObject object = a.value(QStringLiteral("gameObject")).toObject();
+        const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
+        if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
+                QStringLiteral("conveyor"), QStringLiteral("spring")}.contains(type)
+            && r.kind == QStringLiteral("sprite")) r.objectType = type;
+        r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 4);
+        r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
+        r.hitWidth = qBound(1, object.value(QStringLiteral("hitWidth")).toInt(16), 1024);
+        r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
+        r.conveyorSpeed = qBound(-100, object.value(QStringLiteral("conveyorSpeed")).toInt(2), 100);
+        r.springStrength = qBound(1, object.value(QStringLiteral("springStrength")).toInt(11), 100);
+        r.objectSplineId = object.value(QStringLiteral("splineId")).toString();
+        r.objectAnimated = object.value(QStringLiteral("animated")).toBool(false);
+        r.animFirst = qBound(0, object.value(QStringLiteral("animFirst")).toInt(0), 255);
+        r.animCount = qBound(1, object.value(QStringLiteral("animCount")).toInt(1), 256);
+        r.animTicks = qBound(1, object.value(QStringLiteral("animTicks")).toInt(5), 65535);
+        r.animMode = object.value(QStringLiteral("animMode")).toString(QStringLiteral("loop"));
+        if (!QStringList{QStringLiteral("loop"), QStringLiteral("once"),
+                QStringLiteral("pingpong")}.contains(r.animMode)) r.animMode = QStringLiteral("loop");
         r.backgroundMode = a.value(QStringLiteral("backgroundMode")).toString(QStringLiteral("sprite"));
         if (r.kind != QStringLiteral("background") ||
             !QStringList{QStringLiteral("sprite"), QStringLiteral("direct_ready"),
@@ -2868,6 +4006,8 @@ bool SidboxGameDesigner::loadDesign()
         const QJsonObject value = entry.toObject();
         SplinePath path;
         path.name = value.value(QStringLiteral("name")).toString(QStringLiteral("path"));
+        path.id = value.value(QStringLiteral("id")).toString();
+        if (path.id.isEmpty()) path.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         path.durationFrames = qBound(1, value.value(QStringLiteral("frames")).toInt(100), 65535);
         path.loop = value.value(QStringLiteral("loop")).toBool(true);
         for (const QJsonValue &pointValue : value.value(QStringLiteral("points")).toArray()) {
@@ -2925,6 +4065,23 @@ bool SidboxGameDesigner::saveDesign()
         a.insert(QStringLiteral("cellHeight"), r.cellHeight);
         a.insert(QStringLiteral("frame"), r.frame);
         a.insert(QStringLiteral("locked"), r.locked);
+        if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
+            QJsonObject object;
+            object.insert(QStringLiteral("type"), r.objectType);
+            object.insert(QStringLiteral("pickupKind"), r.pickupKind);
+            object.insert(QStringLiteral("value"), r.objectValue);
+            object.insert(QStringLiteral("hitWidth"), r.hitWidth);
+            object.insert(QStringLiteral("hitHeight"), r.hitHeight);
+            object.insert(QStringLiteral("conveyorSpeed"), r.conveyorSpeed);
+            object.insert(QStringLiteral("springStrength"), r.springStrength);
+            object.insert(QStringLiteral("splineId"), r.objectSplineId);
+            object.insert(QStringLiteral("animated"), r.objectAnimated);
+            object.insert(QStringLiteral("animFirst"), r.animFirst);
+            object.insert(QStringLiteral("animCount"), r.animCount);
+            object.insert(QStringLiteral("animTicks"), r.animTicks);
+            object.insert(QStringLiteral("animMode"), r.animMode);
+            a.insert(QStringLiteral("gameObject"), object);
+        }
         if (r.kind == QStringLiteral("background"))
             a.insert(QStringLiteral("backgroundMode"), r.backgroundMode);
         if (r.kind == QStringLiteral("sound") || r.kind == QStringLiteral("music")) {
@@ -2946,6 +4103,7 @@ bool SidboxGameDesigner::saveDesign()
     for (const SplinePath &path : m_splinePaths) {
         QJsonObject data;
         data.insert(QStringLiteral("name"), path.name);
+        data.insert(QStringLiteral("id"), path.id);
         data.insert(QStringLiteral("frames"), path.durationFrames);
         data.insert(QStringLiteral("loop"), path.loop);
         QJsonArray coords;

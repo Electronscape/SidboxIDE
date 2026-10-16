@@ -72,6 +72,16 @@ private:
         int cellHeight = 0;
         int frame = 0;
         bool locked = false;
+        // Stage 3.0B: optional behaviours on each placed sprite instance.
+        QString objectType = QStringLiteral("decoration");
+        int pickupKind = 1;
+        int objectValue = 10;
+        int hitWidth = 16, hitHeight = 16;
+        int conveyorSpeed = 2, springStrength = 11;
+        QString objectSplineId; // stable spline ID, not name/array position
+        bool objectAnimated = false;
+        int animFirst = 0, animCount = 1, animTicks = 5;
+        QString animMode = QStringLiteral("loop");
         // Background rendering is independent of its foreground/sprite CLUT.
         // "sprite" keeps legacy gfx_drawbob; "direct_ready" is already
         // column-major; "direct_convert" transposes ordinary row-major PPB.
@@ -91,6 +101,7 @@ private:
     bool exportTilemap(bool showMessage, bool includeMissingHelper = false);
     struct SplinePath {
         QString name;
+        QString id; // persistent ID; renaming the path keeps object attachments
         QVector<QPoint> points;
         int durationFrames = 100;
         bool loop = true;
@@ -125,6 +136,13 @@ private:
     void importPngAsPpb();
     void exportSelectedC();
     void generateGameCode();
+    void configureGameObject(int index);
+    void refreshObjectHitbox();
+    bool installMissingWorldHelpers(QString *error);
+    bool exportWorldItems(QString *error);
+    bool exportExampleMain(QString *error);
+    QString splineSymbol(int index) const;
+    QString spriteSymbol(const Resource &r) const;
     void updateSelectedPixmap();
     QImage resourcePreview(const Resource &resource, QString *details = nullptr) const;
     QImage cachedImage(const QString &path, QString *error = nullptr) const;
@@ -148,6 +166,7 @@ private:
     QGraphicsRectItem *m_worldFrame = nullptr;
     QGraphicsItem *m_tilemapOverlayItem = nullptr;
     QGraphicsPathItem *m_splineCurveItem = nullptr;
+    QGraphicsRectItem *m_objectHitbox = nullptr;
     QVector<QGraphicsItem *> m_splineHandleItems;
     QVector<SplinePath> m_splinePaths;
     int m_activeSpline = -1;

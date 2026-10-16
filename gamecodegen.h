@@ -16,6 +16,7 @@ struct Asset {
     QString absolutePath;
     int x = 0, y = 0, scale = 100, cellWidth = 0, cellHeight = 0, frame = 0;
     int channel = 0, frequency = 22050, volume = 255, pan = 0;
+    bool worldManaged = false; // drawn by gameworlditems, not by drawworld()
     bool loop = false;
     int loopStart = 0, loopLength = 0, subsong = 0;
 };

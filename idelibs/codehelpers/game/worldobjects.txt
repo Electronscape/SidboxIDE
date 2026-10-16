@@ -1,0 +1,102 @@
+CODERGIRL V1 — MOVING PLATFORMS, CONVEYORS AND SPRINGS
+=====================================================
+
+INSTALL
+-------
+Game Designer -> right-click Game Resources -> Add Helper Code -> Game:
+  Sprite Animation, Sprite Spline, World Objects
+
+The helper operates on WORLD coordinates. It does NOT change the tilemap
+physics helper or use firmware collision routines. Sprites are optional:
+set sprite=NULL for an invisible collision surface. Sprite drawx/drawy are
+already loaded from Game Designer canvas positions by gameassets_init().
+
+BEGINNER EXAMPLE — STATIC CONVEYOR + SPRING + MOVING LIFT
+---------------------------------------------------------
+Add to main.c:
+
+#include "gamehelpers/gameworldobjects.h"
+#include "gamehelpers/splinepaths.h"
+
+static game_world_object_t objects[3];
+static game_spline_t lift_path = {0};
+static game_animation_t lift_animation = {0};
+static game_world_player_t world_player = {0};
+
+AFTER gameassets_init() and game_tile_player_start():
+
+// These sprites are examples. Replace with YOUR Game Designer asset names.
+// A conveyor moving right by 1 world pixel each frame.
+game_world_object_start(&objects[0], GAME_OBJECT_CONVEYOR,
+                        &conveyor_sprite, conveyor_sprite.drawx, conveyor_sprite.drawy, 96, 16);
+objects[0].conveyor_speed = 1;
+
+// A spring that launches the player at speed 11 px/frame.
+game_world_object_start(&objects[1], GAME_OBJECT_SPRING,
+                        &spring_sprite, spring_sprite.drawx, spring_sprite.drawy, 32, 16);
+objects[1].spring_strength = 11;
+
+// A lift with an optional animated sprite and an editable spline path.
+game_world_object_start(&objects[2], GAME_OBJECT_LIFT,
+                        &lift_sprite, lift_sprite.drawx, lift_sprite.drawy, 96, 16);
+start_spline(&lift_path, &lift_sprite,
+             spline_lift_path, spline_lift_count,
+             spline_lift_frames, spline_lift_loop);
+set_spline_pos(&lift_path, objects[2].x, objects[2].y);
+objects[2].spline = &lift_path;
+
+// If your lift sprite has 4 animation frames, you can ALSO do:
+if (start_animation(&lift_animation, &lift_sprite, 0, 4, 6, GAME_ANIM_LOOP))
+    objects[2].animation = &lift_animation;
+
+// Point at tilemap player physics WORLD fields, NOT drawx/drawy:
+world_player.x100 = &player_physics.x100;
+world_player.y100 = &player_physics.y100;
+world_player.vy100 = &player_physics.vy100;
+world_player.on_ground = &player_physics.on_ground;
+world_player.width = player.width;
+world_player.height = player.height;
+
+EXACT FRAME ORDER (one frame per call):
+
+// AFTER gfx_lcdwait(), BEFORE graphics drawing:
+game_world_objects_update(objects, 3, 1);
+game_world_objects_before(objects, 3, &world_player);
+game_tile_player_run(&player_physics, getjoyport(), 1);
+game_world_objects_after(objects, 3, &world_player);
+
+// AFTER gfx_usebuffer() + tilemap redraw:
+game_world_objects_draw(objects, 3, camera_x, camera_y);
+
+// THEN game_tile_player_screen(), draw player, flip buffers as usual.
+
+This is IMPORTANT: update -> before -> player physics -> after -> draw.
+Don't run an entire several-frame physics step and resolve just once.
+
+ANIMATED, MOVING AND BOUNCING AT THE SAME TIME?
+-----------------------------------------------
+YES. The object's spline moves its world coordinates, its animation changes
+its image index, and its type determines what happens when the player lands.
+A bouncing SPRING can itself follow a spline. A CONVEYOR can be mounted on a
+moving platform. Try small speeds first while testing collisions.
+
+IMPORTANT LIMITATIONS OF THIS FIRST VERSION
+-------------------------------------------
+- This is TOP-SURFACE interaction, not solid sides or undersides.
+- The existing tilemap still handles ordinary floors, walls and slopes.
+- Conveyors and lifts apply position changes independently; very fast
+  platforms might push a rider into solid tiles. Keep paths/speeds modest.
+- Springs launch only on falling/landing (not on side contact).
+- Sprites, if present, need their OWN gfxbob_t instances and should be
+  top-left origin / 100% scale. The image and hitbox sizes may differ.
+- Do NOT use offset_spline() on attached world objects. The drawing helper
+  applies camera coordinates exactly once.
+- Don't hand-edit generated spline points; use Game Designer to export them.
+- The spline names above are examples. Look in your own splinepaths.h.
+- `game_world_objects_before()` and `_after()` both need to run every frame.
+- Static moving platforms cannot yet be used as persistent walls/ceilings.
+- Adjust conveyor position or constraints if near walls/level edges.
+
+WHEN USING THE BASIC game_platformer_t INSTEAD OF THE ADVANCED TILEMAP:
+Use the same world_player struct pointing at physics.x100, physics.y100,
+physics.vy100, and physics.on_ground; call run_platformer() in the middle.

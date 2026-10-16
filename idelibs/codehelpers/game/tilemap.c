@@ -1,5 +1,75 @@
 #include "gametilemap.h"
 #include <string.h>
+#include <stdlib.h>
+
+/* GAME_TILEMAP_BOB_SD_ATLAS_V1
+   Load an indexed PPB into RAM in its ORIGINAL row-major pixel layout.
+   gfx_drawbob() already understands an atlas stride and selected cell.
+   Keeping the atlas unchanged avoids a second graphics representation.
+   The content hash catches stale SD files, even when dimensions match.
+   Load once at level startup, never once per frame. */
+uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
+                                   uint16_t atlas_width, uint16_t atlas_height,
+                                   uint32_t expected_hash)
+{
+    uint8_t hdr[16];
+    uint8_t *pixels = NULL;
+    uint32_t got = 0;
+    uint8_t ok = 0;
+    uint32_t hash = 2166136261u; /* FNV-1a, as exported by CoderGirl. */
+    if (!map || !file || !file[0] || map->atlas || !map->tile_size ||
+        !atlas_width || !atlas_height || !map->atlas_count ||
+        (map->tile_size != 8u && map->tile_size != 16u && map->tile_size != 32u) ||
+        atlas_width % map->tile_size || atlas_height % map->tile_size) return 0;
+
+    const uint32_t width = atlas_width, height = atlas_height;
+    const uint32_t count = width * height;
+    const uint32_t columns = width / map->tile_size;
+    const uint32_t rows = height / map->tile_size;
+    if (columns * rows != map->atlas_count || count > 4u * 1024u * 1024u)
+        return 0;
+
+    if (sfopen(0, (char *)file, SD_READ) != F_OK) return 0;
+    do {
+        if (sfread(0, hdr, sizeof(hdr), &got) != F_OK || got != sizeof(hdr)) break;
+        const uint32_t file_width = ((uint32_t)hdr[1] << 8) | hdr[2];
+        const uint32_t file_height = ((uint32_t)hdr[3] << 8) | hdr[4];
+        const uint32_t file_length = ((uint32_t)hdr[5] << 24) |
+            ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 8) | hdr[8];
+        if (file_width != width || file_height != height || file_length != count)
+            break;
+
+        pixels = (uint8_t *)malloc(count);
+        if (!pixels || sflseek(0, 1040u) != F_OK) break;
+        got = 0;
+        if (sfread(0, pixels, count, &got) != F_OK || got != count) break;
+
+        for (uint32_t i = 0; i < count; ++i) {
+            hash ^= pixels[i];
+            hash *= 16777619u;
+        }
+        if (hash != expected_hash) break;
+
+        map->atlas = pixels;
+        map->atlas_width = atlas_width;
+        map->atlas_height = atlas_height;
+        pixels = NULL; /* Ownership moves to the level only on success. */
+        ok = 1;
+    } while (0);
+    sfclose(0);
+    free(pixels);
+    return ok;
+}
+
+void game_tilemap_unload_ppb_atlas(game_tilemap_t *map)
+{
+    if (!map || !map->atlas) return;
+    /* Only call on a map whose atlas was allocated by this loader. */
+    free((void *)map->atlas);
+    map->atlas = NULL;
+    map->atlas_width = 0;
+    map->atlas_height = 0;
+}
 
 static int32_t limit(int32_t value, int32_t low, int32_t high)
 {
@@ -21,18 +91,11 @@ static int32_t floor_tile(int32_t n, int32_t divisor)
     return n >= 0 ? n / divisor : -1 - (-1 - n) / divisor;
 }
 
-/*
- * Stage 1.3 diagnostic: paint the visible tilemap using SIDBOX's own blitter.
- * A tile atlas contains consecutive, tightly packed row-major tile images.
- * The blitter handles the destination framebuffer layout and clipping.
- *
- * This intentionally repaints the WHOLE visible foreground so that we can
- * prove controls, map positioning and foreground page flipping work before
- * tackling the 960-pixel hardware-scrolling ring. No direct pixel writes,
- * no gfx_cls(), and no modification to the collision/physics system.
- *
- * IMPORTANT: gfx_usebuffer(front_buffer) must be called by the game first.
- */
+/* Draw the visible map using standard BOBs, directly from the PPB atlas.
+   Before each tile, clear its foreground rectangle to transparent index 0.
+   This preserves the old gfx_blit() behaviour even if the BOB has transparent
+   pixels and even when double-buffered pages contain an older camera view.
+   gfx_usebuffer(front_buffer) must be called by the game first. */
 static const uint8_t empty_tile[32u * 32u] __attribute__((aligned(32))) = {0};
 
 /* Single frame clock shared by all tile instances and both front pages.
@@ -105,7 +168,22 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
     const int32_t first_y = camera_y / size;
     const int32_t last_x = (camera_x + view_width - 1) / size;
     const int32_t last_y = (camera_y + view_height - 1) / size;
-    const uint32_t tile_pixels = (uint32_t)size * (uint32_t)size;
+    const uint32_t atlas_columns = m->atlas_width / (uint32_t)size;
+    const uint32_t atlas_rows = m->atlas_height / (uint32_t)size;
+    const uint8_t valid_atlas = (uint8_t)(m->atlas && atlas_columns &&
+         atlas_rows && atlas_columns * atlas_rows == m->atlas_count);
+
+    /* BOB is a lightweight descriptor: the pixels stay in the SD-loaded PPB.
+       Reposition its image pointer to the correct atlas ROW and set index to
+       the COLUMN. Since gfxbob_t.index is uint8_t, shift the pointer again
+       for columns beyond 255. No tile extraction/copying is required. */
+    gfxbob_t bob = {0};
+    bob.atlas_stride = m->atlas_width;
+    bob.atlas_height = (uint16_t)size;
+    bob.width = (uint16_t)size;
+    bob.height = (uint16_t)size;
+    bob.scale = 100;
+    bob.handle = BLIT_HANDLE_TOP_LEFT;
 
     for (int32_t ty = first_y; ty <= last_y; ++ty) {
         for (int32_t tx = first_x; tx <= last_x; ++tx) {
@@ -113,16 +191,26 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
             if (tx >= 0 && ty >= 0 && tx < m->width && ty < m->height)
                 id = m->graphics[(uint32_t)ty * m->width + (uint32_t)tx];
 
-            const uint8_t *source = empty_tile;
-            if (id && m->atlas && id <= m->atlas_count) {
-                const uint16_t frame_id = animation_graphic_for_map(m, id);
-                source = m->atlas + ((uint32_t)frame_id - 1u) * tile_pixels;
-            }
-
-            gfx_blit((uint8_t *)source,
-                     (int16_t)(tx * size - camera_x),
-                     (int16_t)(ty * size - camera_y),
+            const int16_t drawx = (int16_t)(tx * size - camera_x);
+            const int16_t drawy = (int16_t)(ty * size - camera_y);
+            /* All cells clear first, including empty graphic ID 0. This is
+               essential when tiles contain transparent palette index 0. */
+            gfx_blit((uint8_t *)empty_tile, drawx, drawy,
                      (uint16_t)size, (uint16_t)size);
+
+            if (!id || !valid_atlas || id > m->atlas_count) continue;
+            const uint16_t frame_id = animation_graphic_for_map(m, id);
+            if (!frame_id || frame_id > m->atlas_count) continue;
+            const uint32_t index0 = (uint32_t)frame_id - 1u;
+            const uint32_t row = index0 / atlas_columns;
+            const uint32_t col = index0 % atlas_columns;
+            const uint32_t page_col = col & ~255u;
+            bob.imgdat = m->atlas + row * (uint32_t)size * m->atlas_width
+                                      + page_col * (uint32_t)size;
+            bob.index = (uint8_t)(col - page_col);
+            bob.drawx = drawx;
+            bob.drawy = drawy;
+            gfx_drawbob(&bob);
         }
     }
 }

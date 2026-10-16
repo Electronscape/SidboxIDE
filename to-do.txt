@@ -12,29 +12,6 @@ Cancel = just exits and doesnae generate code
 
 The right pane is TOO wide tho. maybe reduce its minimum by 50px?
 
-ALL generated code that produces, hex codes in arrays, strings, need to be 0xX..... like 0x0000FF00, 0x1121FEED, 0xCAFEBABE....
-
-
-
-SO it looks like the background might need options. as blittin to the background doesnae work yet (think thats just a sidbox firmware issue atm)
-however the way sturdust loads its background usin the LoadPPB it loads direct to a buffer,
-we have to do it like this
-MEMALIGN32 static volatile gfx_bitmap_t backbitmap;
- backbitmap.memspacelen = (640 * 480);
-    backbitmap.width = 640;
-    backbitmap.height = 480;
-    backbitmap.stride = 480u;   // should be the height of the bitmap
-    backbitmap.bitmap = malloc(640 * 480);//bitground;
-    LoadPPB("graphics/back.ppb", backbitmap.bitmap);  // 640 x 480
-
-gfx_showbbuffer(&backbitmap);   // show the background buffer (assigns the buffer to the lcd)
-
-the thing is, since the frame buffer is hardwared LCD column-major, the image has to be rotated an flipped
-flipped x, then rotated counter clock wise.
-
-SO not sure how to think up a way to detirmin "direct to backbuffer" as part of the IDE dev,
-the IDE deffo would need to represent the image correctly but internally have it xfliped, then rotated CCW (cos thats what the direct to buffer is)
-THIS is a headmash, but i hope u understand!!
 
 
 

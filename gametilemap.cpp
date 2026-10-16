@@ -872,8 +872,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     }
     // Optional tile atlas is a normal indexed PPB sprite sheet, with each
     // graphic ID 1..65535 referring to successive tile-sized cells.
-    QByteArray packedTiles;
     unsigned tileCount = 0;
+    int atlasWidth = 0, atlasHeight = 0;
+    quint32 atlasHash = 2166136261u; /* FNV-1a over indexed pixel rows. */
     if (!map.atlasPath.isEmpty()) {
         SidboxPpb::Picture picture;
         if (!SidboxPpb::read(QDir(designDirectory).absoluteFilePath(map.atlasPath), &picture, error))
@@ -883,23 +884,25 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
             if (error) *error = QStringLiteral("Tile artwork dimensions must be multiples of %1 pixels.").arg(map.tileSize);
             return false;
         }
+        atlasWidth = image.width();
+        atlasHeight = image.height();
         const int cols = image.width() / map.tileSize, rows = image.height() / map.tileSize;
         if (qint64(cols) * rows > 65535) {
             if (error) *error = QStringLiteral("Atlas contains more than 65535 tiles (maximum graphic ID is 65535).");
             return false;
         }
         tileCount = unsigned(cols * rows);
-        // SIDBOX has finite SDRAM. Refuse unexpectedly huge embedded atlases.
-        if (qint64(tileCount) * map.tileSize * map.tileSize > 4 * 1024 * 1024) {
-            if (error) *error = QStringLiteral("Atlas exceeds 4 MiB of tile pixels. Use a smaller sheet or multiple levels.");
-            return false;
+        for (int y = 0; y < image.height(); ++y) {
+            const uchar *line = image.constScanLine(y);
+            for (int x = 0; x < image.width(); ++x) {
+                atlasHash ^= line[x];
+                atlasHash *= 16777619u;
+            }
         }
-        packedTiles.reserve(int(tileCount) * map.tileSize * map.tileSize);
-        for (unsigned t = 0; t < tileCount; ++t) {
-            const int ox = (int(t) % cols) * map.tileSize;
-            const int oy = (int(t) / cols) * map.tileSize;
-            for (int y = 0; y < map.tileSize; ++y)
-                packedTiles.append(reinterpret_cast<const char *>(image.constScanLine(oy+y) + ox), map.tileSize);
+        // SIDBOX has finite SDRAM. The atlas is loaded into RAM once at startup.
+        if (qint64(tileCount) * map.tileSize * map.tileSize > 4 * 1024 * 1024) {
+            if (error) *error = QStringLiteral("Atlas exceeds the current 4 MiB SDRAM budget. Use a smaller sheet or multiple levels.");
+            return false;
         }
     }
     // An assigned tile must exist in the selected atlas; ID 0 is blank.
@@ -932,9 +935,10 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         "#include <stdint.h>\n#include \"../gamehelpers/gametilemap.h\"\n\n"
         "extern const uint16_t game_level1_graphics[];\n"
         "extern const uint8_t game_level1_collisions[];\n"
-        "extern const uint8_t game_level1_atlas[];\n"
+        "uint8_t game_level1_load_atlas(void);\n"
+        "void game_level1_unload_atlas(void);\n"
         "extern const game_tile_animation_t game_level1_animations[];\n"
-        "extern const game_tilemap_t game_level1;\n"
+        "extern game_tilemap_t game_level1;\n"
         "#endif\n";
     QByteArray source = "#include \"level1.h\"\n\n";
     auto writeBytes = [&source](const QByteArray &data, const QByteArray &name) {
@@ -958,7 +962,6 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     }
     source += "};\n\n";
     writeBytes(map.collisions, "game_level1_collisions");
-    writeBytes(packedTiles.isEmpty() ? QByteArray(1, char(0)) : packedTiles, "game_level1_atlas");
     source += "const game_tile_animation_t game_level1_animations[] = {\n";
     if (map.animations.isEmpty()) source += "    {0, 0, 0, 0} // No animations yet\n";
     else {
@@ -970,13 +973,32 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         }
     }
     source += "};\n\n";
-    source += "const game_tilemap_t game_level1 = {\n";
-    source += "    game_level1_graphics, game_level1_collisions, game_level1_atlas,\n";
+    source += "game_tilemap_t game_level1 = {\n";
+    source += "    game_level1_graphics, game_level1_collisions, 0,\n";
     source += QByteArray("    ") + QByteArray::number(map.width) + ", " + QByteArray::number(map.height)
         + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
         + (map.animations.isEmpty() ? QByteArray("    0, 0") :
             QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
+        + ",\n    0, 0 /* atlas_width and atlas_height are set by the SD loader. */"
         + "\n};\n\n";
+    // The generated level remembers its SD resource. The runtime helper
+    // validates size and checksum and leaves the PPB pixels row-major.
+    // SIDBOX gfx_drawbob() selects cells directly from that image.
+    if (tileCount) {
+        QByteArray path = QDir::fromNativeSeparators(map.atlasPath).toUtf8();
+        path.replace("\\", "\\\\");
+        path.replace("\"", "\\\"");
+        source += "/* Once at startup, AFTER initMalloc(). No per-frame SD reads. */\n";
+        source += "uint8_t game_level1_load_atlas(void)\n{\n";
+        source += "    if (game_level1.atlas) return 1;\n";
+        source += "    return game_tilemap_load_ppb_atlas(&game_level1, \"" + path + "\", "
+            + QByteArray::number(atlasWidth) + ", " + QByteArray::number(atlasHeight)
+            + ", " + QByteArray::number(atlasHash) + "u);\n}\n\n";
+    } else {
+        source += "uint8_t game_level1_load_atlas(void) { return 1; }\n\n";
+    }
+    source += "void game_level1_unload_atlas(void)\n{\n"
+              "    game_tilemap_unload_ppb_atlas(&game_level1);\n}\n";
     const auto atomic = [error](const QString &path, const QByteArray &bytes) {
         QSaveFile f(path);
         if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size() || !f.commit()) {

@@ -534,9 +534,15 @@ Result generate(const Request &request)
         source << "void gameassets_draw_" << (background ? "background" : "foreground") << "(void)\n{\n";
         for (const Group &g : groups) {
             if (g.background != background) continue;
-            if (g.array)
-                source << "    for (int i = 0; i < " << g.count << "; ++i) draw" << g.symbol << "(i);\n";
-            else source << "    draw" << g.symbol << "();\n";
+            // World Objects and Collectables own their drawing and camera
+            // translation. Do not draw their unmoved world-space clones here.
+            for (int spriteIndex : g.sprites) {
+                const Sprite &sprite = sprites.at(spriteIndex);
+                if (sprite.asset.worldManaged) continue;
+                if (g.array)
+                    source << "    draw" << g.symbol << "(" << sprite.index << ");\n";
+                else source << "    draw" << g.symbol << "();\n";
+            }
         }
         source << "}\n\n";
     }
