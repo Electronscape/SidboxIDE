@@ -1,0 +1,13 @@
+the disabled controls dont look disabled, they just look like they dont work
+so for example in game objects, the window, selecting behaviours enable, disable certain controls
+but i cant easily tell. so drop down menus dont do anything (when they're disabled correct behaviour)
+this happens on a number of control boxes around the IDE
+
+
+A feature request:
+in the game resources, could we have another tree entry that deals with game objects, splines. this just makes it easier to select and show splines and game objects
+selecting a game object should pan the game canvas to it so its much easier to find too
+
+
+the back ups when "update project" is used, could we do those as .zip files as well as the .history does? ;)
+also maybe limit the amount of "backups" to say about 20? letting the user know this limit though
