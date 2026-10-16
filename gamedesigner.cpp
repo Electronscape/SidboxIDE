@@ -68,6 +68,7 @@
 #include <zlib.h>
 #include <limits>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSizePolicy>
 #include <QListView>
@@ -79,6 +80,8 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QSet>
 #include <QRegularExpression>
 #include <QVBoxLayout>
@@ -570,6 +573,17 @@ SidboxGameDesigner::~SidboxGameDesigner() = default;
 void SidboxGameDesigner::setTheme(const IDETheme &theme)
 {
     m_theme = theme;
+    // The marquee is painted in world coordinates, with a cosmetic (constant
+    // screen-width) border. Update it if a theme changes during a drag.
+    if (m_marqueeRect) {
+        QPen accentPen(theme.accent, 1);
+        accentPen.setCosmetic(true);
+        accentPen.setJoinStyle(Qt::MiterJoin);
+        m_marqueeRect->setPen(accentPen);
+        QColor fill = theme.accent;
+        fill.setAlpha(38);
+        m_marqueeRect->setBrush(fill);
+    }
     const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
     setStyleSheet(QStringLiteral(
         "QPushButton, QToolButton, QLineEdit, QSpinBox, QTreeWidget, "
@@ -1113,6 +1127,163 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
     return true;
 }
 
+// One spline editor is shared by the canvas context menu and the Game Resources
+// tree. All edits are staged in widgets until OK; Cancel never changes the path.
+void SidboxGameDesigner::editSplineProperties(int index)
+{
+    if (index < 0 || index >= m_splinePaths.size()) return;
+    if (m_activeSpline != index) {
+        m_activeSpline = index;
+        rebuildSplineOverlay();
+    }
+    const SplinePath original = m_splinePaths.at(index);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Spline Properties - %1").arg(original.name));
+    dialog.resize(560, 530);
+    // Follow the IDE theme, and never introduce rounded Qt controls.
+    const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
+    dialog.setStyleSheet(styleSheet() + QStringLiteral(
+        "QDialog, QTableWidget, QHeaderView, QSpinBox, QLineEdit, "
+        "QPushButton, QCheckBox { border-radius:0px; } "
+        "QTableWidget { background:%1; alternate-background-color:%2; color:%3; "
+        "gridline-color:%4; selection-background-color:%5; selection-color:%6; "
+        "border:1px solid %4; } "
+        "QHeaderView::section { background:%2; color:%3; border:1px solid %4; "
+        "padding:3px; border-radius:0px; }")
+        .arg(C(m_theme.inputBackground), C(m_theme.panelBackground), C(m_theme.text),
+             C(m_theme.border), C(m_theme.accent), C(m_theme.brightText)));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *name = new QLineEdit(original.name, &dialog);
+    auto *frames = new QSpinBox(&dialog);
+    frames->setRange(1, 65535);
+    frames->setValue(original.durationFrames);
+    frames->setSuffix(tr(" frames"));
+    auto *loop = new QCheckBox(tr("Loop smoothly from last point to first"), &dialog);
+    loop->setChecked(original.loop);
+    form->addRow(tr("Name"), name);
+    form->addRow(tr("Journey time"), frames);
+    form->addRow(QString(), loop);
+    layout->addLayout(form);
+
+    auto *help = new QLabel(tr("Edit the exact world coordinates below. "
+                               "Point 1 is the start; values are in pixels. "
+                               "Select a numbered row before removing a point. "
+                               "Click OK to update the canvas and exported path."), &dialog);
+    help->setWordWrap(true);
+    layout->addWidget(help);
+
+    auto *table = new QTableWidget(0, 2, &dialog);
+    table->setHorizontalHeaderLabels({tr("X (world)"), tr("Y (world)")});
+    table->verticalHeader()->setDefaultSectionSize(31);
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setAlternatingRowColors(true);
+    table->setMinimumHeight(170);
+    layout->addWidget(table, 1);
+
+    // The spinboxes accept integer world pixels with no grid snapping, so the
+    // programmer can place a control point precisely even if Snap is enabled.
+    auto appendPoint = [this, table, &dialog](const QPoint &point) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        for (int column = 0; column < 2; ++column) {
+            auto *coordinate = new QSpinBox(&dialog);
+            coordinate->setRange(0, column == 0 ? m_worldWidth->value() : m_worldHeight->value());
+            coordinate->setValue(column == 0 ? point.x() : point.y());
+            coordinate->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+            table->setCellWidget(row, column, coordinate);
+        }
+        table->setVerticalHeaderItem(row, new QTableWidgetItem(tr("Point %1").arg(row + 1)));
+    };
+    for (const QPoint &point : original.points) appendPoint(point);
+    if (table->rowCount()) table->selectRow(0);
+
+    auto *pointControls = new QHBoxLayout;
+    auto *addPoint = new QPushButton(tr("Add Point"), &dialog);
+    auto *removePoint = new QPushButton(tr("Remove Selected Point"), &dialog);
+    addPoint->setToolTip(tr("Insert a new point after the selected one (maximum 128)."));
+    removePoint->setToolTip(tr("At least two control points are required."));
+    pointControls->addWidget(addPoint);
+    pointControls->addWidget(removePoint);
+    pointControls->addStretch();
+    layout->addLayout(pointControls);
+
+    const auto updateButtons = [table, addPoint, removePoint]() {
+        addPoint->setEnabled(table->rowCount() < 128);
+        removePoint->setEnabled(table->rowCount() > 2 && table->currentRow() >= 0);
+    };
+    connect(table, &QTableWidget::itemSelectionChanged, &dialog, updateButtons);
+    connect(addPoint, &QPushButton::clicked, &dialog, [=]() {
+        if (table->rowCount() >= 128) return;
+        const int row = table->currentRow();
+        const int insertAt = row < 0 ? table->rowCount() : row + 1;
+        QPoint point(0, 0);
+        if (row >= 0) {
+            auto *x = qobject_cast<QSpinBox *>(table->cellWidget(row, 0));
+            auto *y = qobject_cast<QSpinBox *>(table->cellWidget(row, 1));
+            if (x && y) point = QPoint(x->value(), y->value());
+        }
+        // appendPoint creates the widgets, then move the row into place.
+        // Inserting before the end instead is simpler with a full table refresh.
+        QVector<QPoint> points;
+        for (int i = 0; i < table->rowCount(); ++i) {
+            auto *x = qobject_cast<QSpinBox *>(table->cellWidget(i, 0));
+            auto *y = qobject_cast<QSpinBox *>(table->cellWidget(i, 1));
+            points.append(QPoint(x->value(), y->value()));
+        }
+        points.insert(insertAt, point);
+        table->setRowCount(0);
+        for (const QPoint &p : points) appendPoint(p);
+        table->selectRow(insertAt);
+        updateButtons();
+    });
+    connect(removePoint, &QPushButton::clicked, &dialog, [=]() {
+        const int row = table->currentRow();
+        if (row < 0 || table->rowCount() <= 2) return;
+        table->removeRow(row);
+        for (int i = 0; i < table->rowCount(); ++i)
+            table->verticalHeaderItem(i)->setText(tr("Point %1").arg(i + 1));
+        table->selectRow(qMin(row, table->rowCount() - 1));
+        updateButtons();
+    });
+    updateButtons();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         Qt::Horizontal, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        if (name->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, tr("Spline Properties"),
+                                 tr("Please enter a spline name."));
+            return;
+        }
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    SplinePath updated = original;
+    updated.name = name->text().trimmed();
+    updated.durationFrames = frames->value();
+    updated.loop = loop->isChecked();
+    updated.points.clear();
+    for (int row = 0; row < table->rowCount(); ++row) {
+        auto *x = qobject_cast<QSpinBox *>(table->cellWidget(row, 0));
+        auto *y = qobject_cast<QSpinBox *>(table->cellWidget(row, 1));
+        if (x && y) updated.points.append(QPoint(x->value(), y->value()));
+    }
+    if (updated.name == original.name && updated.durationFrames == original.durationFrames
+        && updated.loop == original.loop && updated.points == original.points) return;
+    m_splinePaths[index] = updated; // Keep persistent ID for attached game objects.
+    refreshResources();
+    rebuildSplineOverlay();
+    setDirty();
+}
+
 void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
 {
     const QPointF worldPos = m_view->mapToScene(viewPos);
@@ -1138,7 +1309,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
     menu.addSeparator();
     QAction *insert = menu.addAction(tr("Insert Point Here"));
     QAction *removePoint = menu.addAction(tr("Delete This Point"));
-    QAction *settings = menu.addAction(tr("Spline Name / Time / Loop..."));
+    QAction *settings = menu.addAction(tr("Spline Properties (Points / Time / Loop)..."));
     QAction *removePath = menu.addAction(tr("Delete Spline Path..."));
     const bool hasPath = m_activeSpline >= 0 && m_activeSpline < m_splinePaths.size();
     insert->setEnabled(hasPath && m_splinePaths.at(m_activeSpline).points.size() < 128);
@@ -1207,34 +1378,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == settings) {
-        SplinePath &path = m_splinePaths[m_activeSpline];
-        QDialog dialog(this);
-        dialog.setWindowTitle(tr("Spline Path Settings"));
-        QVBoxLayout vertical(&dialog);
-        QFormLayout fields;
-        QLineEdit name(path.name, &dialog);
-        QSpinBox frames(&dialog);
-        frames.setRange(1, 65535);
-        frames.setValue(path.durationFrames);
-        frames.setSuffix(tr(" frames"));
-        QCheckBox loop(tr("Loop smoothly from last point to first"), &dialog);
-        loop.setChecked(path.loop);
-        fields.addRow(tr("Name"), &name);
-        fields.addRow(tr("Journey time"), &frames);
-        fields.addRow(QString(), &loop);
-        vertical.addLayout(&fields);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                             Qt::Horizontal, &dialog);
-        vertical.addWidget(buttons);
-        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        if (dialog.exec() != QDialog::Accepted || name.text().trimmed().isEmpty()) return;
-        path.name = name.text().trimmed();
-        path.durationFrames = frames.value();
-        path.loop = loop.isChecked();
-        refreshResources();
-        rebuildSplineOverlay();
-        setDirty();
+        editSplineProperties(m_activeSpline);
     } else if (chosen == removePath) {
         if (QMessageBox::question(this, tr("Delete Spline Path?"),
             tr("Remove the path '%1' from this design?\n"
@@ -1643,6 +1787,12 @@ void SidboxGameDesigner::buildUi()
             configureObject = menu.addAction(tr("Configure Game Object..."));
             configureObject->setToolTip(tr("Choose collectable, moving lift, conveyor or spring, plus animation and spline."));
         }
+        QAction *editThisSpline = nullptr;
+        const QString hitSplineId = hit ? hit->data(0, Qt::UserRole + 3).toString() : QString();
+        if (category == QStringLiteral("spline") && !hitSplineId.isEmpty()) {
+            menu.addSeparator();
+            editThisSpline = menu.addAction(tr("Edit Spline Properties..."));
+        }
         QAction *remove = nullptr;
         if (hasResource) {
             menu.addSeparator();
@@ -1674,6 +1824,14 @@ void SidboxGameDesigner::buildUi()
             addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
         }
         else if (configureObject && chosen == configureObject) configureGameObject(resourceIndex);
+        else if (editThisSpline && chosen == editThisSpline) {
+            for (int i = 0; i < m_splinePaths.size(); ++i) {
+                if (m_splinePaths.at(i).id == hitSplineId) {
+                    editSplineProperties(i);
+                    break;
+                }
+            }
+        }
         else if (editThisPalette && chosen == editThisPalette) openPaletteEditor(resourceIndex);
         else if (useAsPreview && chosen == useAsPreview) {
             const Resource &resource = m_resources.at(resourceIndex);
@@ -1689,6 +1847,29 @@ void SidboxGameDesigner::buildUi()
             setDirty();
         }
         else if (remove) { selectResource(resourceIndex); deleteSelectedResource(); }
+    });
+
+    // Double-click is a shortcut to the same editors as the context menus.
+    // Use persistent spline IDs: a refreshed tree can reorder its entries.
+    connect(m_resourceTree, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+        if (!item) return;
+        const QString group = item->data(0, Qt::UserRole + 1).toString();
+        if (group == QStringLiteral("gameobject") && item->data(0, Qt::UserRole).isValid()) {
+            const int index = item->data(0, Qt::UserRole).toInt();
+            if (index >= 0 && index < m_resources.size()
+                && m_resources.at(index).kind == QStringLiteral("sprite"))
+                configureGameObject(index);
+        } else if (group == QStringLiteral("spline")) {
+            const QString splineId = item->data(0, Qt::UserRole + 3).toString();
+            if (splineId.isEmpty()) return; // group header, not an actual spline
+            for (int index = 0; index < m_splinePaths.size(); ++index) {
+                if (m_splinePaths.at(index).id == splineId) {
+                    editSplineProperties(index);
+                    break;
+                }
+            }
+        }
     });
 
     auto *previewPanel = new QWidget(splitter);
@@ -1730,8 +1911,12 @@ void SidboxGameDesigner::buildUi()
     previewLayout->addLayout(previewControls);
     m_scene = new GameScene(this);
     m_view = new QGraphicsView(m_scene, previewPanel);
-    m_view->setDragMode(QGraphicsView::RubberBandDrag);
-    m_view->setToolTip(tr("Right-click to create or edit spline paths. Drag their numbered nodes to shape movement."));
+    // A custom accent-coloured marquee handles selection from empty space.
+    // Qt still handles dragging groups of selected QGraphicsPixmapItems.
+    m_view->setDragMode(QGraphicsView::NoDrag);
+    m_view->setToolTip(tr("Middle-drag pans the view. Left-drag empty space selects sprites; "
+                           "drag a selected sprite to move the group. "
+                           "Right-click to create or edit splines."));
     m_view->setFocusPolicy(Qt::StrongFocus);
     m_view->installEventFilter(this);
     m_view->viewport()->installEventFilter(this);
@@ -1739,7 +1924,10 @@ void SidboxGameDesigner::buildUi()
     m_view->setRenderHint(QPainter::SmoothPixmapTransform, false);
     m_view->setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     previewLayout->addWidget(m_view, 1);
-    auto *instruction = new QLabel(tr("Drag sprites to position. SPACE + left-drag moves the camera; Delete removes a reference. Ctrl+C/V duplicates sprites; Ctrl+Z/Y undo/redo resource edits. Right-click to draw spline paths and edit their numbered points."), previewPanel);
+    auto *instruction = new QLabel(tr("Middle-drag pans view. Left-drag empty space selects a group; "
+        "drag selected sprites to move together. Ctrl/Shift adds selection; "
+        "SPACE + left-drag moves camera. Ctrl+Z/Y undo/redo. "
+        "Right-click edits splines."), previewPanel);
     instruction->setWordWrap(true);
     previewLayout->addWidget(instruction);
 
@@ -2033,9 +2221,9 @@ void SidboxGameDesigner::buildUi()
             m_view->centerOn(m_sceneItems.at(index)->sceneBoundingRect().center());
     });
     connect(m_scene, &QGraphicsScene::selectionChanged, this, [this]() {
-        if (m_syncSelection) return;
-        const QList<QGraphicsItem *> selected = m_scene->selectedItems();
-        if (!selected.isEmpty()) selectResource(selected.first()->data(0).toInt());
+        // Do NOT call selectResource() here: it clears all other selected
+        // QGraphicsItems and makes marquee/group dragging impossible.
+        syncCanvasSelection();
     });
     connect(m_propName, &QLineEdit::textEdited, this, [this](const QString &text) {
         const int index = selectedIndex();
@@ -2109,6 +2297,44 @@ int SidboxGameDesigner::selectedIndex() const
     if (!value.isValid()) return -1;
     const int index = value.toInt();
     return index >= 0 && index < m_resources.size() ? index : -1;
+}
+
+// Keep the properties/tree focused on one of the selected sprites WITHOUT
+// collapsing the QGraphicsScene multi-selection. Selection is editor state,
+// not a change to the exported game or the undo history.
+void SidboxGameDesigner::syncCanvasSelection()
+{
+    if (m_syncSelection || !m_scene || !m_resourceTree) return;
+    const QList<QGraphicsItem *> selected = m_scene->selectedItems();
+    const int preferred = selectedIndex();
+    int primary = -1;
+    for (QGraphicsItem *item : selected) {
+        if (!item || !item->data(0).isValid()) continue;
+        const int id = item->data(0).toInt();
+        if (id < 0 || id >= m_resources.size()) continue;
+        if (id == preferred) { primary = id; break; }
+        if (primary < 0) primary = id;
+    }
+    {
+        QSignalBlocker block(m_resourceTree);
+        m_syncSelection = true;
+        if (primary < 0) {
+            m_resourceTree->setCurrentItem(nullptr);
+            m_resourceTree->clearSelection();
+        } else if (primary != preferred) {
+            for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+                QTreeWidgetItem *row = *it;
+                if (row->data(0, Qt::UserRole).isValid()
+                    && row->data(0, Qt::UserRole).toInt() == primary) {
+                    m_resourceTree->setCurrentItem(row);
+                    break;
+                }
+            }
+        }
+        m_syncSelection = false;
+    }
+    refreshProperties();
+    refreshObjectHitbox();
 }
 
 void SidboxGameDesigner::selectResource(int index)
@@ -2459,6 +2685,11 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
 void SidboxGameDesigner::rebuildScene()
 {
     m_loading = true;
+    // Scene::clear() deletes any editor-only marquee item.
+    m_marqueeRect = nullptr;
+    m_marqueeSelecting = false;
+    m_groupDragActive = false;
+    m_groupDragStarts.clear();
     m_splineHandleItems.clear();
     m_splineCurveItem = nullptr;
     m_objectHitbox = nullptr;
@@ -2484,7 +2715,8 @@ void SidboxGameDesigner::rebuildScene()
         item->setData(0, i);
         item->setFlag(QGraphicsItem::ItemIsMovable, !r.locked);
         item->snapped = [this, i](const QPointF &p) -> QPointF {
-            if (m_loading || !m_snap->isChecked() || m_resources.at(i).locked) return p;
+            if (m_loading || m_groupDragActive || !m_snap->isChecked()
+                || m_resources.at(i).locked) return p;
             const int step = m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt();
             if (step <= 0) return p;
             return QPointF(qRound(p.x() / step) * step, qRound(p.y() / step) * step);
@@ -4993,7 +5225,8 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
             if (key->key() == Qt::Key_Space && !key->isAutoRepeat()) {
                 m_spaceHeld = false;
                 m_panningCamera = false;
-                m_view->viewport()->unsetCursor();
+                if (!m_middlePanning && !m_marqueeSelecting)
+                    m_view->viewport()->unsetCursor();
                 return true;
             }
         }
@@ -5007,59 +5240,203 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
         }
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouse = static_cast<QMouseEvent *>(event);
-            m_dragResourceIndex = -1;
-            if (!m_spaceHeld && mouse->button() == Qt::LeftButton) {
-                QGraphicsItem *item = m_view->itemAt(mouse->position().toPoint());
-                while (item && !item->data(0).isValid()) item = item->parentItem();
-                if (item && item->flags().testFlag(QGraphicsItem::ItemIsMovable)) {
-                    const int index = item->data(0).toInt();
+            const QPoint where = mouse->position().toPoint();
+            if (mouse->button() == Qt::MiddleButton) {
+                // Pan the EDITOR view, not camera_x/y in the game design.
+                m_middlePanning = true;
+                m_panLastPos = where;
+                m_view->viewport()->setCursor(Qt::ClosedHandCursor);
+                return true;
+            }
+            if (m_spaceHeld && mouse->button() == Qt::LeftButton) {
+                m_panningCamera = true;
+                m_panLastPos = where;
+                m_view->viewport()->setCursor(Qt::ClosedHandCursor);
+                return true;
+            }
+            if (mouse->button() == Qt::LeftButton) {
+                m_dragResourceIndex = -1;
+                m_dragBefore.clear();
+                // itemAt() can return the huge tilemap overlay or camera
+                // frame, both of which reject mouse buttons. Look for a
+                // genuinely interactive sprite/handle instead.
+                QGraphicsItem *clicked = nullptr;
+                const QList<QGraphicsItem *> under = m_view->items(where);
+                for (QGraphicsItem *candidate : under) {
+                    if ((candidate->acceptedMouseButtons() & Qt::LeftButton)
+                        && (candidate->flags() & (QGraphicsItem::ItemIsMovable
+                                                 | QGraphicsItem::ItemIsSelectable))) {
+                        clicked = candidate;
+                        break;
+                    }
+                }
+                if (!clicked) {
+                    // Empty-space marquee; do not let QGraphicsView start a
+                    // competing native rubber-band selection.
+                    m_marqueeSelecting = true;
+                    m_marqueeAdditive = (mouse->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier)) != Qt::NoModifier;
+                    m_marqueeStartView = where;
+                    m_marqueeStartScene = m_view->mapToScene(where);
+                    QPen border(m_theme.accent, 1);
+                    border.setCosmetic(true); // same width at every zoom
+                    border.setJoinStyle(Qt::MiterJoin); // square corners
+                    QColor tint = m_theme.accent;
+                    tint.setAlpha(38);
+                    m_marqueeRect = m_scene->addRect(QRectF(m_marqueeStartScene,
+                        m_marqueeStartScene), border, QBrush(tint));
+                    m_marqueeRect->setZValue(20000);
+                    m_marqueeRect->setAcceptedMouseButtons(Qt::NoButton);
+                    m_view->viewport()->setCursor(Qt::CrossCursor);
+                    return true;
+                }
+                // Qt's native scene movement moves *all* selected sprites.
+                // Take just one undo snapshot for the entire group drag.
+                if (clicked->data(0).isValid()
+                    && clicked->flags().testFlag(QGraphicsItem::ItemIsMovable)) {
+                    const int index = clicked->data(0).toInt();
                     if (index >= 0 && index < m_resources.size()) {
                         m_dragResourceIndex = index;
                         m_dragResourceStart = QPoint(m_resources[index].x, m_resources[index].y);
                         m_dragBefore = m_resources;
+                        // Explicit group movement avoids Qt dropping the other
+                        // selected sprites when pressing the first one. Capture
+                        // one world-space delta for all unlocked members.
+                        if (clicked->isSelected() && m_scene->selectedItems().size() > 1) {
+                            m_groupDragStarts.clear();
+                            for (QGraphicsItem *member : m_scene->selectedItems()) {
+                                if (member && member->data(0).isValid()
+                                    && member->flags().testFlag(QGraphicsItem::ItemIsMovable)) {
+                                    const int id = member->data(0).toInt();
+                                    if (id >= 0 && id < m_sceneItems.size()
+                                        && m_sceneItems[id] == member)
+                                        m_groupDragStarts.insert(id, member->pos());
+                                }
+                            }
+                            if (m_groupDragStarts.size() > 1) {
+                                m_groupDragActive = true;
+                                m_groupDragStartView = where;
+                                return true; // handle press/move/release ourselves
+                            }
+                            m_groupDragStarts.clear();
+                        }
                     }
                 }
             }
-            if (m_spaceHeld && mouse->button() == Qt::LeftButton) {
-                m_panningCamera = true;
-                m_panLastPos = mouse->position().toPoint();
-                m_view->viewport()->setCursor(Qt::ClosedHandCursor);
+        }
+        if (event->type() == QEvent::MouseMove) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            const QPoint next = mouse->position().toPoint();
+            if (m_middlePanning) {
+                const QPoint delta = next - m_panLastPos;
+                m_panLastPos = next;
+                m_view->horizontalScrollBar()->setValue(
+                    m_view->horizontalScrollBar()->value() - delta.x());
+                m_view->verticalScrollBar()->setValue(
+                    m_view->verticalScrollBar()->value() - delta.y());
+                return true;
+            }
+            if (m_groupDragActive) {
+                const QPointF offset = m_view->mapToScene(next)
+                    - m_view->mapToScene(m_groupDragStartView);
+                QPointF delta = offset;
+                const int step = m_snap->isChecked()
+                    ? m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt()
+                    : 0;
+                if (step > 0 && m_groupDragStarts.contains(m_dragResourceIndex)) {
+                    const QPointF anchor = m_groupDragStarts.value(m_dragResourceIndex);
+                    delta = QPointF(qRound((anchor.x() + offset.x()) / step) * step,
+                                    qRound((anchor.y() + offset.y()) / step) * step) - anchor;
+                }
+                for (auto it = m_groupDragStarts.constBegin(); it != m_groupDragStarts.constEnd(); ++it) {
+                    if (it.key() >= 0 && it.key() < m_sceneItems.size()
+                        && m_sceneItems[it.key()])
+                        m_sceneItems[it.key()]->setPos(it.value() + delta);
+                }
+                return true;
+            }
+            if (m_marqueeSelecting) {
+                if (m_marqueeRect) {
+                    const QPointF current = m_view->mapToScene(next);
+                    m_marqueeRect->setRect(QRectF(m_marqueeStartScene,
+                                                 current).normalized());
+                }
+                return true;
+            }
+            if (m_panningCamera) {
+                const QPointF lastWorld = m_view->mapToScene(m_panLastPos);
+                const QPointF nowWorld = m_view->mapToScene(next);
+                const QPointF delta = nowWorld - lastWorld;
+                m_panLastPos = next;
+                m_cameraX->setValue(qBound(0, m_cameraX->value() + qRound(delta.x()),
+                                          m_cameraX->maximum()));
+                m_cameraY->setValue(qBound(0, m_cameraY->value() + qRound(delta.y()),
+                                          m_cameraY->maximum()));
                 return true;
             }
         }
-        if (event->type() == QEvent::MouseMove && m_panningCamera) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            const QPoint next = mouse->position().toPoint();
-            const QPointF lastWorld = m_view->mapToScene(m_panLastPos);
-            const QPointF nowWorld = m_view->mapToScene(next);
-            const QPointF delta = nowWorld - lastWorld;
-            m_panLastPos = next;
-            m_cameraX->setValue(qBound(0, m_cameraX->value() + qRound(delta.x()),
-                                      m_cameraX->maximum()));
-            m_cameraY->setValue(qBound(0, m_cameraY->value() + qRound(delta.y()),
-                                      m_cameraY->maximum()));
-            return true;
-        }
         if (event->type() == QEvent::MouseButtonRelease) {
             auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::MiddleButton && m_middlePanning) {
+                m_middlePanning = false;
+                m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                return true;
+            }
+            if (mouse->button() == Qt::LeftButton && m_marqueeSelecting) {
+                m_marqueeSelecting = false;
+                const QPoint finish = mouse->position().toPoint();
+                const QRectF selection = QRectF(m_marqueeStartScene,
+                    m_view->mapToScene(finish)).normalized();
+                if (m_marqueeRect) {
+                    m_scene->removeItem(m_marqueeRect);
+                    delete m_marqueeRect;
+                    m_marqueeRect = nullptr;
+                }
+                m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                // An empty click clears selection. A drag intersects whole
+                // sprite rectangles; spline handles and tilemap don't count.
+                const bool dragged = (finish - m_marqueeStartView).manhattanLength()
+                    >= QApplication::startDragDistance();
+                {
+                    QSignalBlocker block(m_scene);
+                    if (!m_marqueeAdditive) m_scene->clearSelection();
+                    if (dragged) {
+                        for (QGraphicsItem *item : m_sceneItems) {
+                            if (item && item->flags().testFlag(QGraphicsItem::ItemIsSelectable)
+                                && item->sceneBoundingRect().intersects(selection))
+                                item->setSelected(true);
+                        }
+                    }
+                }
+                syncCanvasSelection();
+                return true;
+            }
+            if (mouse->button() == Qt::LeftButton && m_panningCamera) {
+                m_panningCamera = false;
+                m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                return true;
+            }
             if (mouse->button() == Qt::LeftButton && m_dragResourceIndex >= 0) {
-                const int index = m_dragResourceIndex;
-                if (index < m_resources.size() &&
-                    m_dragResourceStart != QPoint(m_resources[index].x, m_resources[index].y)) {
+                m_groupDragActive = false;
+                m_groupDragStarts.clear();
+                // Include *every* moved resource, not only the sprite the
+                // user grabbed. One Ctrl+Z reverses the complete group move.
+                bool changed = false;
+                if (m_dragBefore.size() == m_resources.size()) {
+                    for (int i = 0; i < m_resources.size(); ++i) {
+                        if (m_dragBefore[i].x != m_resources[i].x
+                            || m_dragBefore[i].y != m_resources[i].y) {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+                if (changed) {
                     if (m_undoResources.size() >= 64) m_undoResources.removeFirst();
                     m_undoResources.append(m_dragBefore);
                     m_redoResources.clear();
                 }
                 m_dragResourceIndex = -1;
                 m_dragBefore.clear();
-            }
-        }
-        if (event->type() == QEvent::MouseButtonRelease && m_panningCamera) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton) {
-                m_panningCamera = false;
-                m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
-                return true;
             }
         }
     }

@@ -1,3 +1,31 @@
+tile editor needs an undo/redo feature (ctrl+z undo, ctrl+y | shift+ctrl+z redo)
+an possible might be nicer to have the tile editor as a button next to the centra view on LCD ?
+
+
+the calculator, could we have a text box that shows real number results too?
+doing 3/2 works a treat but it rounds up, (i get it for binary stuff) BUT sometimes i like to see the floating result too. THIS might mean makin the calculator a slightly taller to accomdate the "real value result" answer text box?
+
+
+the multiselector in the game canvas doesne work if theres a background there, it selects the background (rightly so) but we could get the multiselector to work if the backgrounds are locked?
+
+
+
+
+
+[done]
+1: a middle click on the canvas so i can pan the view, like the way it does in the TileMap editor!
+2: left click an hold is a multiselector tool, movin groups would be FAR easier too, the selection rectangle should be not rounded, also share the theme accent too please!
+
+
+
+
+
+
+
+
+
+
+[done]
 double clicks!
 in the game resources,
 could we have a double click, so that in say game objects, double clickin opens the dialog box for the object? right clickin is good but double clickin can also add to the experience ;)

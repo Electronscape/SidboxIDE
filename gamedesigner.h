@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QDateTime>
 #include <QPoint>
+#include <QPointF>
 #include <QStringList>
 #include "gameaudio.h"
 #include "gamepalette.h"
@@ -93,6 +94,7 @@ private:
     QString helperTemplatesRoot() const;
     void addCodeHelper(const QString &category, const QString &base);
     void showSplineMenu(const QPoint &viewPos);
+    void editSplineProperties(int index);
     void rebuildSplineOverlay();
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
@@ -113,6 +115,7 @@ private:
     void refreshFrame();
     void refreshProperties();
     void selectResource(int index);
+    void syncCanvasSelection();
     void addResource(const QString &kind, const QString &plane = QStringLiteral("foreground"));
     void suggestFirstBackgroundPalette(const Resource &background);
     void addPlaceholder();
@@ -211,8 +214,17 @@ private:
     QPoint m_dragResourceStart;
     QVector<Resource> m_dragBefore;
     bool m_spaceHeld = false;
-    bool m_panningCamera = false;
+    bool m_panningCamera = false; // SPACE + left = move game's camera
+    bool m_middlePanning = false; // middle drag = editor view only
+    bool m_groupDragActive = false;
+    QPoint m_groupDragStartView;
+    QHash<int, QPointF> m_groupDragStarts; // original world positions, keyed by resource
     QPoint m_panLastPos;
+    bool m_marqueeSelecting = false;
+    bool m_marqueeAdditive = false;
+    QPoint m_marqueeStartView;
+    QPointF m_marqueeStartScene;
+    QGraphicsRectItem *m_marqueeRect = nullptr; // non-owning; scene owns items
     QLabel *m_imageInfo = nullptr;
     QLabel *m_palettePreview = nullptr;
     SidboxGameAudioPanel *m_audioPanel = nullptr;
