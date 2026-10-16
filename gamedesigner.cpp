@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QPaintEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QEvent>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -21,6 +22,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QIcon>
 #include <QDateTime>
 #include <QFont>
 #include <QFormLayout>
@@ -63,6 +65,8 @@
 #include <QTimer>
 #include <memory>
 #include <QSaveFile>
+#include <zlib.h>
+#include <limits>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSizePolicy>
@@ -82,9 +86,188 @@
 #include <QtMath>
 
 namespace {
+// Game Resource icons are compiled into the executable with Qt's resource
+// system. Artists can replace icons/gr_icon_*.png in the source tree and
+// rebuild; there are no runtime file lookups or external icon dependencies.
+QIcon gameResourceIcon(const QString &fileName)
+{
+    return QIcon(QStringLiteral(":/icons/") + fileName);
+}
+
 constexpr int LCD_WIDTH = 480;
 constexpr int LCD_HEIGHT = 320;
 constexpr int MAX_WORLD = 16384; // Editor guard only; NOT a firmware/world-size claim.
+
+// ZIP backup writer using the zlib already linked by CoderGirl. Entries are
+// streamed, not buffered in RAM, and are compatible with Ark/7-Zip/unzip.
+// Standard ZIP32 intentionally rejects archives exceeding ZIP32 limits.
+struct GameBackupZipEntry {
+    QByteArray name;
+    quint32 crc = 0;
+    quint32 compressed = 0;
+    quint32 original = 0;
+    quint32 offset = 0;
+};
+
+bool gameBackupZip16(QIODevice *out, quint16 value)
+{
+    const char b[2] = {char(value & 255), char((value >> 8) & 255)};
+    return out->write(b, 2) == 2;
+}
+bool gameBackupZip32(QIODevice *out, quint32 value)
+{
+    const char b[4] = {char(value & 255), char((value >> 8) & 255),
+                       char((value >> 16) & 255), char((value >> 24) & 255)};
+    return out->write(b, 4) == 4;
+}
+
+bool gameBackupWriteZip(const QString &backupFolder, const QString &zipPath,
+                        QString *error)
+{
+    QDir root(backupFolder);
+    QStringList files;
+    QDirIterator iterator(backupFolder, QDir::Files | QDir::NoSymLinks,
+                          QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        const QString relative = QDir::fromNativeSeparators(root.relativeFilePath(iterator.next()));
+        if (relative == QStringLiteral("..") || relative.startsWith(QStringLiteral("../"))
+            || QDir::isAbsolutePath(relative)) {
+            if (error) *error = QObject::tr("Invalid file path inside backup: %1").arg(relative);
+            return false;
+        }
+        files << relative;
+    }
+    files.sort();
+    if (files.size() > 65535) {
+        if (error) *error = QObject::tr("Too many files for ZIP backup.");
+        return false;
+    }
+    QSaveFile output(zipPath);
+    if (!output.open(QIODevice::WriteOnly)) {
+        if (error) *error = QObject::tr("Cannot open ZIP archive: %1").arg(zipPath);
+        return false;
+    }
+    QVector<GameBackupZipEntry> entries;
+    char compressedBlock[65536];
+    auto fail = [&](const QString &why) {
+        if (error) *error = why;
+        output.cancelWriting();
+        return false;
+    };
+    for (const QString &relative : files) {
+        QFile input(root.filePath(relative));
+        if (!input.open(QIODevice::ReadOnly))
+            return fail(QObject::tr("Cannot read backup file: %1").arg(relative));
+        const QByteArray name = relative.toUtf8();
+        if (name.size() > 65535 || input.size() > std::numeric_limits<quint32>::max()
+            || output.pos() > std::numeric_limits<quint32>::max())
+            return fail(QObject::tr("ZIP32 limits exceeded by %1").arg(relative));
+        GameBackupZipEntry entry;
+        entry.name = name;
+        entry.offset = quint32(output.pos());
+        // Local file header: UTF-8 filenames and a data descriptor after data.
+        if (!gameBackupZip32(&output, 0x04034b50) || !gameBackupZip16(&output, 20)
+            || !gameBackupZip16(&output, 0x0808) || !gameBackupZip16(&output, 8)
+            || !gameBackupZip16(&output, 0) || !gameBackupZip16(&output, 0)
+            || !gameBackupZip32(&output, 0) || !gameBackupZip32(&output, 0)
+            || !gameBackupZip32(&output, 0) || !gameBackupZip16(&output, quint16(name.size()))
+            || !gameBackupZip16(&output, 0) || output.write(name) != name.size())
+            return fail(QObject::tr("Cannot write ZIP header for %1").arg(relative));
+        z_stream stream{};
+        if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                         -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+            return fail(QObject::tr("ZIP compressor initialization failed."));
+        quint32 crc = quint32(crc32(0L, Z_NULL, 0));
+        quint64 count = 0;
+        quint64 packed = 0;
+        bool ok = true;
+        while (!input.atEnd() && ok) {
+            const QByteArray data = input.read(65536);
+            if (data.isEmpty()) { ok = false; break; }
+            crc = quint32(crc32(crc, reinterpret_cast<const Bytef *>(data.constData()), uInt(data.size())));
+            count += quint64(data.size());
+            stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.constData()));
+            stream.avail_in = uInt(data.size());
+            do {
+                stream.next_out = reinterpret_cast<Bytef *>(compressedBlock);
+                stream.avail_out = sizeof(compressedBlock);
+                if (deflate(&stream, Z_NO_FLUSH) != Z_OK) { ok = false; break; }
+                const qint64 produced = qint64(sizeof(compressedBlock) - stream.avail_out);
+                if (output.write(compressedBlock, produced) != produced) { ok = false; break; }
+                packed += quint64(produced);
+            } while (stream.avail_in > 0 || stream.avail_out == 0);
+        }
+        if (input.error() != QFile::NoError) ok = false;
+        if (ok) {
+            int result = Z_OK;
+            do {
+                stream.next_out = reinterpret_cast<Bytef *>(compressedBlock);
+                stream.avail_out = sizeof(compressedBlock);
+                result = deflate(&stream, Z_FINISH);
+                if (result != Z_OK && result != Z_STREAM_END) { ok = false; break; }
+                const qint64 produced = qint64(sizeof(compressedBlock) - stream.avail_out);
+                if (output.write(compressedBlock, produced) != produced) { ok = false; break; }
+                packed += quint64(produced);
+            } while (result != Z_STREAM_END);
+        }
+        deflateEnd(&stream);
+        if (!ok || count > std::numeric_limits<quint32>::max()
+            || packed > std::numeric_limits<quint32>::max()
+            || output.pos() > std::numeric_limits<quint32>::max())
+            return fail(QObject::tr("Could not compress backup file: %1").arg(relative));
+        entry.crc = crc;
+        entry.compressed = quint32(packed);
+        entry.original = quint32(count);
+        if (!gameBackupZip32(&output, 0x08074b50) || !gameBackupZip32(&output, entry.crc)
+            || !gameBackupZip32(&output, entry.compressed)
+            || !gameBackupZip32(&output, entry.original))
+            return fail(QObject::tr("Could not finish ZIP entry: %1").arg(relative));
+        entries.append(entry);
+    }
+    if (output.pos() > std::numeric_limits<quint32>::max())
+        return fail(QObject::tr("ZIP archive exceeds 4 GiB ZIP32 limit."));
+    const quint32 centralOffset = quint32(output.pos());
+    for (const GameBackupZipEntry &entry : entries) {
+        if (!gameBackupZip32(&output, 0x02014b50) || !gameBackupZip16(&output, 20)
+            || !gameBackupZip16(&output, 20) || !gameBackupZip16(&output, 0x0808)
+            || !gameBackupZip16(&output, 8) || !gameBackupZip16(&output, 0)
+            || !gameBackupZip16(&output, 0) || !gameBackupZip32(&output, entry.crc)
+            || !gameBackupZip32(&output, entry.compressed)
+            || !gameBackupZip32(&output, entry.original)
+            || !gameBackupZip16(&output, quint16(entry.name.size()))
+            || !gameBackupZip16(&output, 0) || !gameBackupZip16(&output, 0)
+            || !gameBackupZip16(&output, 0) || !gameBackupZip16(&output, 0)
+            || !gameBackupZip32(&output, 0) || !gameBackupZip32(&output, entry.offset)
+            || output.write(entry.name) != entry.name.size())
+            return fail(QObject::tr("Could not write ZIP directory."));
+    }
+    if (output.pos() - centralOffset > std::numeric_limits<quint32>::max())
+        return fail(QObject::tr("ZIP directory exceeds ZIP32 limit."));
+    const quint32 centralLength = quint32(output.pos() - centralOffset);
+    if (!gameBackupZip32(&output, 0x06054b50) || !gameBackupZip16(&output, 0)
+        || !gameBackupZip16(&output, 0)
+        || !gameBackupZip16(&output, quint16(entries.size()))
+        || !gameBackupZip16(&output, quint16(entries.size()))
+        || !gameBackupZip32(&output, centralLength)
+        || !gameBackupZip32(&output, centralOffset)
+        || !gameBackupZip16(&output, 0))
+        return fail(QObject::tr("Cannot finish ZIP archive."));
+    if (!output.commit()) {
+        if (error) *error = QObject::tr("Cannot save ZIP archive: %1").arg(zipPath);
+        return false;
+    }
+    return true;
+}
+
+void gameBackupTrimArchives(const QDir &location)
+{
+    // Sort by timestamped filename; the .history/ backups are independent.
+    // Leave legacy Stage 3.4 folder backups untouched for manual recovery.
+    const QStringList archives = location.entryList({QStringLiteral("*.zip")},
+        QDir::Files, QDir::Name);
+    for (int i = 0; i < archives.size() - 20; ++i)
+        QFile::remove(location.filePath(archives.at(i)));
+}
 
 // Flat, theme-aware dropdown with a visible chevron. Drawing the arrow in
 // foreground avoids losing it to platform-specific Qt style-sheet rendering.
@@ -399,9 +582,22 @@ void SidboxGameDesigner::setTheme(const IDETheme &theme)
         "QComboBox QAbstractItemView { border:1px solid %1; border-radius:0px; "
         "background-color:%4; color:%3; selection-background-color:%5; "
         "selection-color:%6; outline:0px; } "
-        "QComboBox QAbstractItemView::item:selected { background:%5; color:%6; } ")
+        "QComboBox QAbstractItemView::item:selected { background:%5; color:%6; } "
+        "QComboBox:disabled, QLineEdit:disabled, QSpinBox:disabled, "
+        "QDoubleSpinBox:disabled { background:%7; color:%8; "
+        "border:1px solid %9; } "
+        "QComboBox::drop-down:disabled { background:%7; border-left:1px solid %9; } "
+        "QPushButton:disabled, QToolButton:disabled { background:%7; color:%8; "
+        "border:1px solid %9; } "
+        "QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled { color:%8; } "
+        "QComboBox QAbstractItemView:disabled { background:%7; color:%8; } ")
         .arg(C(theme.border), C(theme.inputBackground), C(theme.text),
-             C(theme.menuBackground), C(theme.accent), C(theme.brightText)));
+             C(theme.menuBackground), C(theme.accent), C(theme.brightText),
+             C(theme.panelBackground),
+             C(QColor::fromRgbF(theme.mutedText.redF() * 0.7 + theme.panelBackground.redF() * 0.3,
+                               theme.mutedText.greenF() * 0.7 + theme.panelBackground.greenF() * 0.3,
+                               theme.mutedText.blueF() * 0.7 + theme.panelBackground.blueF() * 0.3)),
+             C(theme.panelBackground)));
 
     // QComboBox popups can be separate windows on some Qt styles. Colour their
     // view explicitly so neither the desktop theme nor a default palette wins.
@@ -413,6 +609,14 @@ void SidboxGameDesigner::setTheme(const IDETheme &theme)
         colours.setColor(QPalette::ButtonText, theme.text);
         colours.setColor(QPalette::Highlight, theme.accent);
         colours.setColor(QPalette::HighlightedText, theme.brightText);
+        const QColor disabledText = QColor::fromRgbF(
+            theme.mutedText.redF() * 0.7 + theme.panelBackground.redF() * 0.3,
+            theme.mutedText.greenF() * 0.7 + theme.panelBackground.greenF() * 0.3,
+            theme.mutedText.blueF() * 0.7 + theme.panelBackground.blueF() * 0.3);
+        colours.setColor(QPalette::Disabled, QPalette::Text, disabledText);
+        colours.setColor(QPalette::Disabled, QPalette::ButtonText, disabledText);
+        colours.setColor(QPalette::Disabled, QPalette::Base, theme.panelBackground);
+        colours.setColor(QPalette::Disabled, QPalette::Button, theme.panelBackground);
         combo->setPalette(colours);
         if (auto *popup = combo->view()) {
             popup->setPalette(colours);
@@ -975,6 +1179,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
         }
         m_splinePaths.append(path);
         m_activeSpline = m_splinePaths.size() - 1;
+        refreshResources();
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == insert) {
@@ -1027,6 +1232,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
         path.name = name.text().trimmed();
         path.durationFrames = frames.value();
         path.loop = loop.isChecked();
+        refreshResources();
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == removePath) {
@@ -1038,6 +1244,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
             QMessageBox::Cancel) != QMessageBox::Yes) return;
         m_splinePaths.removeAt(m_activeSpline);
         m_activeSpline = m_splinePaths.isEmpty() ? -1 : qMin(m_activeSpline, m_splinePaths.size() - 1);
+        refreshResources();
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == exportCode) {
@@ -1306,6 +1513,7 @@ void SidboxGameDesigner::buildUi()
         importDroppedFiles(paths, kind, plane);
     };
     m_resourceTree->setHeaderHidden(true);
+    m_resourceTree->setIconSize(QSize(20, 20));
     m_resourceTree->setSelectionMode(QAbstractItemView::SingleSelection);
     resourcesLayout->addWidget(m_resourceTree, 1);
     auto *frontClutLabel = new QLabel(tr("Preview foreground CLUT"), resourcesPanel);
@@ -1356,7 +1564,8 @@ void SidboxGameDesigner::buildUi()
                                  "and regenerate V1 code plus maingame.c.txt in one operation."));
     resourcesLayout->addWidget(updateProject);
     connect(updateProject, &QPushButton::clicked, this, [this]() { updateGameProject(); });
-    m_resourceTree->setToolTip(tr("Drag files from Project Files here, or right-click a category to add resources."));
+    m_resourceTree->setToolTip(tr("Drag files from Project Files here, or right-click to add resources. "
+        "Select a Game Object or Spline to centre it on the world canvas."));
     m_resourceTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_resourceTree, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QTreeWidgetItem *hit = m_resourceTree->itemAt(pos);
@@ -1784,10 +1993,32 @@ void SidboxGameDesigner::buildUi()
     connect(m_resourceTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
         if (m_syncSelection) return;
         QTreeWidgetItem *item = m_resourceTree->currentItem();
+        if (item && item->data(0, Qt::UserRole + 1).toString() == QStringLiteral("spline")
+            && item->data(0, Qt::UserRole + 3).isValid()) {
+            const QString splineId = item->data(0, Qt::UserRole + 3).toString();
+            for (int i = 0; i < m_splinePaths.size(); ++i) {
+                if (m_splinePaths.at(i).id != splineId) continue;
+                if (m_activeSpline != i) {
+                    m_activeSpline = i;
+                    rebuildSplineOverlay();
+                    setDirty(); // Active spline is persisted in the design.
+                }
+                QRectF bounds;
+                for (const QPoint &point : m_splinePaths.at(i).points)
+                    bounds |= QRectF(QPointF(point), QSizeF(1, 1));
+                m_scene->clearSelection();
+                refreshProperties();
+                refreshObjectHitbox();
+                if (m_view && bounds.isValid()) m_view->centerOn(bounds.center());
+                return;
+            }
+        }
         if (!item || !item->data(0, Qt::UserRole).isValid()) {
             refreshObjectHitbox();
             return;
         }
+        const bool focusObject = item->data(0, Qt::UserRole + 1).toString()
+            == QStringLiteral("gameobject");
         const int index = item->data(0, Qt::UserRole).toInt();
         if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index)) {
             m_syncSelection = true;
@@ -1797,6 +2028,9 @@ void SidboxGameDesigner::buildUi()
         }
         refreshProperties();
         refreshObjectHitbox();
+        if (focusObject && m_view && index >= 0 && index < m_sceneItems.size()
+            && m_sceneItems.at(index))
+            m_view->centerOn(m_sceneItems.at(index)->sceneBoundingRect().center());
     });
     connect(m_scene, &QGraphicsScene::selectionChanged, this, [this]() {
         if (m_syncSelection) return;
@@ -1808,7 +2042,19 @@ void SidboxGameDesigner::buildUi()
         if (index < 0) return;
         rememberResourceEdit();
         m_resources[index].name = text;
-        if (auto *item = m_resourceTree->currentItem()) item->setText(0, text);
+        // The same configured sprite is visible under Sprites and Game Objects.
+        // Rename both entries without rebuilding the tree on each keystroke.
+        for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+            QTreeWidgetItem *item = *it;
+            const QVariant resource = item->data(0, Qt::UserRole);
+            if (!resource.isValid() || resource.toInt() != index) continue;
+            const QString group = item->data(0, Qt::UserRole + 1).toString();
+            if (m_resources.at(index).kind == QStringLiteral("sprite")
+                && m_resources.at(index).objectType != QStringLiteral("decoration"))
+                item->setText(0, tr("%1  [%2]").arg(text, m_resources.at(index).objectType));
+            else if (group != QStringLiteral("spline"))
+                item->setText(0, text);
+        }
         if (index < m_sceneItems.size() && m_sceneItems.at(index)) {
             for (auto *child : m_sceneItems.at(index)->childItems())
                 if (auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(child))
@@ -1869,12 +2115,14 @@ void SidboxGameDesigner::selectResource(int index)
 {
     if (index < 0 || index >= m_resources.size()) return;
     m_syncSelection = true;
-    for (QTreeWidgetItemIterator iterator(m_resourceTree); *iterator; ++iterator) {
-        auto *child = *iterator;
-        const QVariant value = child->data(0, Qt::UserRole);
-        if (value.isValid() && value.toInt() == index) {
-            m_resourceTree->setCurrentItem(child);
-            break;
+    if (selectedIndex() != index) {
+        for (QTreeWidgetItemIterator iterator(m_resourceTree); *iterator; ++iterator) {
+            auto *child = *iterator;
+            const QVariant value = child->data(0, Qt::UserRole);
+            if (value.isValid() && value.toInt() == index) {
+                m_resourceTree->setCurrentItem(child);
+                break;
+            }
         }
     }
     m_scene->clearSelection();
@@ -1955,11 +2203,45 @@ void SidboxGameDesigner::refreshPlanePreview()
 void SidboxGameDesigner::refreshResources()
 {
     const int preserve = selectedIndex();
+    const QString selectedGroup = m_resourceTree->currentItem()
+        ? m_resourceTree->currentItem()->data(0, Qt::UserRole + 1).toString() : QString();
+    const QString selectedSpline = (selectedGroup == QStringLiteral("spline"))
+        ? m_resourceTree->currentItem()->data(0, Qt::UserRole + 3).toString() : QString();
+    // Start every group closed, but remember the user's current expansion
+    // across updates (e.g. when adding, renaming or configuring resources).
+    // Palette's Foreground/Background subgroups have their own state.
+    QHash<QString, bool> expandedGroups;
+    for (int i = 0; i < m_resourceTree->topLevelItemCount(); ++i) {
+        const QTreeWidgetItem *oldRoot = m_resourceTree->topLevelItem(i);
+        const QString key = oldRoot->data(0, Qt::UserRole + 1).toString();
+        if (key.isEmpty()) continue;
+        expandedGroups.insert(key, oldRoot->isExpanded());
+        if (key == QStringLiteral("palette")) {
+            for (int n = 0; n < oldRoot->childCount(); ++n) {
+                const QTreeWidgetItem *sub = oldRoot->child(n);
+                const QString plane = sub->data(0, Qt::UserRole + 2).toString();
+                if (!plane.isEmpty())
+                    expandedGroups.insert(QStringLiteral("palette/") + plane,
+                                          sub->isExpanded());
+            }
+        }
+    }
+    const auto treeIcon = [](const QString &kind) -> QIcon {
+        if (kind == QStringLiteral("sprite")) return gameResourceIcon(QStringLiteral("gr_icon_sprite.png"));
+        if (kind == QStringLiteral("background")) return gameResourceIcon(QStringLiteral("gr_icon_background.png"));
+        if (kind == QStringLiteral("palette")) return gameResourceIcon(QStringLiteral("gr_icon_palette.png"));
+        if (kind == QStringLiteral("sound") || kind == QStringLiteral("music"))
+            return gameResourceIcon(QStringLiteral("gr_icon_audio.png"));
+        if (kind == QStringLiteral("gameobject")) return gameResourceIcon(QStringLiteral("gr_icon_object.png"));
+        if (kind == QStringLiteral("spline")) return gameResourceIcon(QStringLiteral("gr_icon_spline.png"));
+        return QIcon();
+    };
     QSignalBlocker block(m_resourceTree);
     m_resourceTree->clear();
     for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("background"),
                                  QStringLiteral("palette"), QStringLiteral("sound"), QStringLiteral("music")}) {
         auto *root = new QTreeWidgetItem(m_resourceTree, QStringList{kindTitle(kind)});
+        root->setIcon(0, treeIcon(kind));
         root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
         root->setData(0, Qt::UserRole + 1, kind);
         QTreeWidgetItem *frontRoot = nullptr;
@@ -1973,8 +2255,10 @@ void SidboxGameDesigner::refreshResources()
             backRoot->setFlags(backRoot->flags() & ~Qt::ItemIsSelectable);
             backRoot->setData(0, Qt::UserRole + 1, kind);
             backRoot->setData(0, Qt::UserRole + 2, QStringLiteral("background"));
-            frontRoot->setExpanded(true);
-            backRoot->setExpanded(true);
+            frontRoot->setIcon(0, treeIcon(kind));
+            backRoot->setIcon(0, treeIcon(kind));
+            frontRoot->setExpanded(expandedGroups.value(QStringLiteral("palette/foreground"), false));
+            backRoot->setExpanded(expandedGroups.value(QStringLiteral("palette/background"), false));
         }
         for (int index = 0; index < m_resources.size(); ++index) {
             const Resource &r = m_resources.at(index);
@@ -1988,6 +2272,7 @@ void SidboxGameDesigner::refreshResources()
             auto *child = new QTreeWidgetItem(parent, QStringList{
                 isActiveClut ? tr("%1  [preview]").arg(r.name) : r.name});
             child->setData(0, Qt::UserRole, index);
+            child->setIcon(0, treeIcon(kind));
             child->setToolTip(0, r.path);
             if (kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
                 child->setText(0, QStringLiteral("%1  [%2]").arg(r.name, r.objectType));
@@ -2010,10 +2295,61 @@ void SidboxGameDesigner::refreshResources()
                 .arg(count).arg((largest + 1023) / 1024));
             root->setToolTip(0, tr("Project Settings → MOD size can reserve space for the largest module."));
         }
-        root->setExpanded(true);
+        root->setExpanded(expandedGroups.value(kind, false));
     }
+    // Navigation aliases: the same sprite instance also remains under Sprites.
+    // No extra resource is created and nothing changes in the saved .sbgm.
+    auto *objectsRoot = new QTreeWidgetItem(m_resourceTree, QStringList{tr("Game Objects")});
+    objectsRoot->setIcon(0, treeIcon(QStringLiteral("gameobject")));
+    objectsRoot->setFlags(objectsRoot->flags() & ~Qt::ItemIsSelectable);
+    objectsRoot->setData(0, Qt::UserRole + 1, QStringLiteral("gameobject"));
+    for (int i = 0; i < m_resources.size(); ++i) {
+        const Resource &r = m_resources.at(i);
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        auto *item = new QTreeWidgetItem(objectsRoot,
+            QStringList{tr("%1  [%2]").arg(r.name, r.objectType)});
+        item->setData(0, Qt::UserRole, i);
+        item->setIcon(0, treeIcon(QStringLiteral("gameobject")));
+        item->setData(0, Qt::UserRole + 1, QStringLiteral("gameobject"));
+        item->setToolTip(0, tr("Select and centre the canvas on %1").arg(r.name));
+    }
+    objectsRoot->setExpanded(expandedGroups.value(QStringLiteral("gameobject"), false));
+
+    auto *splinesRoot = new QTreeWidgetItem(m_resourceTree, QStringList{tr("Splines")});
+    splinesRoot->setIcon(0, treeIcon(QStringLiteral("spline")));
+    splinesRoot->setFlags(splinesRoot->flags() & ~Qt::ItemIsSelectable);
+    splinesRoot->setData(0, Qt::UserRole + 1, QStringLiteral("spline"));
+    for (const SplinePath &path : m_splinePaths) {
+        auto *item = new QTreeWidgetItem(splinesRoot, QStringList{path.name});
+        item->setData(0, Qt::UserRole + 1, QStringLiteral("spline"));
+        item->setData(0, Qt::UserRole + 3, path.id);
+        item->setIcon(0, treeIcon(QStringLiteral("spline")));
+        item->setToolTip(0, tr("Select this spline and centre its points in the canvas"));
+    }
+    splinesRoot->setExpanded(expandedGroups.value(QStringLiteral("spline"), false));
+
     refreshPaletteSelectors();
-    if (preserve >= 0 && preserve < m_resources.size()) selectResource(preserve);
+    if (!selectedSpline.isEmpty()) {
+        for (int i = 0; i < splinesRoot->childCount(); ++i) {
+            QTreeWidgetItem *item = splinesRoot->child(i);
+            if (item->data(0, Qt::UserRole + 3).toString() == selectedSpline) {
+                m_resourceTree->setCurrentItem(item);
+                return;
+            }
+        }
+    }
+    if (preserve >= 0 && preserve < m_resources.size()) {
+        if (selectedGroup == QStringLiteral("gameobject")) {
+            for (int i = 0; i < objectsRoot->childCount(); ++i) {
+                QTreeWidgetItem *item = objectsRoot->child(i);
+                if (item->data(0, Qt::UserRole).toInt() == preserve) {
+                    m_resourceTree->setCurrentItem(item);
+                    return;
+                }
+            }
+        }
+        selectResource(preserve);
+    }
 }
 
 QImage SidboxGameDesigner::cachedImage(const QString &path, QString *error) const
@@ -3874,8 +4210,11 @@ void SidboxGameDesigner::updateGameProject()
         "export the current spline paths and tilemap (if present), then regenerate "
         "gameassets, gameworlditems and maingame.c.txt.\n\n"
         "Any edits in replaced helpers or generated files will be overwritten. "
-        "A timestamped backup is made FIRST.\n\n"
+        "A ZIP backup is made FIRST.\n\n"
         "Your main.c and existing .txt beginner guides are NOT changed.\n\n"
+        "Only the newest 20 Update Project ZIP backups are retained "
+        "(older ZIPs are deleted after a successful update). "
+        "Earlier folder-style backups are preserved.\n\n"
         "Replace %1 existing files; create up to %2 missing files.")
         .arg(replacing.size()).arg(adding.size()));
     confirm.setDetailedText(tr("FILES TO REPLACE:\n%1\n\nFILES TO CREATE:\n%2")
@@ -3891,7 +4230,9 @@ void SidboxGameDesigner::updateGameProject()
     if (confirm.clickedButton() != proceed) return;
 
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
-    const QString backupFolder = project.filePath(QStringLiteral(".codergirl-backups/updates/") + stamp);
+    const QDir backupRoot(project.filePath(QStringLiteral(".codergirl-backups/updates")));
+    const QString backupFolder = backupRoot.filePath(QStringLiteral(".staging-") + stamp);
+    const QString archivePath = backupRoot.filePath(stamp + QStringLiteral(".zip"));
     QDir backup(backupFolder);
     if (!QDir().mkpath(backupFolder)) {
         QMessageBox::warning(this, tr("Update Game Project"), tr("Cannot create backup folder:\n%1").arg(backupFolder));
@@ -3914,6 +4255,16 @@ void SidboxGameDesigner::updateGameProject()
                 tr("Backup failed; project update was NOT started.\n%1").arg(src));
             return;
         }
+    }
+
+    // Archive is complete before any generated or helper file is modified.
+    // Keep the staging copies until the update finishes for safe rollback.
+    QString zipError;
+    if (!gameBackupWriteZip(backupFolder, archivePath, &zipError)) {
+        QMessageBox::warning(this, tr("Update Game Project"),
+            tr("Could not create the ZIP backup; project update was NOT started.\n%1")
+                .arg(zipError));
+        return;
     }
 
     // Only the template-backed helper C/H files are deliberately replaced.
@@ -3986,19 +4337,25 @@ void SidboxGameDesigner::updateGameProject()
         const QString recovery = restoreFailures.isEmpty()
             ? tr("Files were restored to their pre-update state.")
             : tr("Automatic recovery could not restore these files:\n%1\n"
-                 "Recover them manually from the backup folder.")
+                 "Recover them manually from the ZIP backup (or staging folder).")
                   .arg(restoreFailures.join(QStringLiteral("\n")));
         QMessageBox::critical(this, tr("Update Game Project — Incomplete"),
-            tr("The update stopped: %1\n\n%2\n\nBackup location:\n%3")
-               .arg(error, recovery, backupFolder));
+            tr("The update stopped: %1\n\n%2\n\nZIP backup:\n%3")
+               .arg(error, recovery, archivePath));
+        if (restoreFailures.isEmpty()) QDir(backupFolder).removeRecursively();
         if (assetFilesChanged) assetFilesChanged();
         return;
     }
+    // Only now is it safe to delete the temporary rollback copies, and trim
+    // old ZIP archives after a fully successful project update.
+    QDir(backupFolder).removeRecursively();
+    gameBackupTrimArchives(backupRoot);
     if (assetFilesChanged) assetFilesChanged();
     QMessageBox::information(this, tr("Game Project Updated"),
         tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
            "Your original main.c and existing beginner guides are untouched.\n\n"
-           "Backups: %1").arg(backupFolder));
+           "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
+               .arg(archivePath));
 }
 
 void SidboxGameDesigner::generateGameCode()

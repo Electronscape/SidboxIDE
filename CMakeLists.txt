@@ -103,6 +103,12 @@ qt_add_resources(SidboxIDE "app_icons"
         icons/gadget_kbinput.png
         icons/gadget_uart1.png
         icons/nagelgirl.png
+        icons/gr_icon_sprite.png
+        icons/gr_icon_background.png
+        icons/gr_icon_palette.png
+        icons/gr_icon_audio.png
+        icons/gr_icon_object.png
+        icons/gr_icon_spline.png
     )
 
 # Optional user-provided Home artwork. The IDE still configures and builds

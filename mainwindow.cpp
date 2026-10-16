@@ -16303,7 +16303,7 @@ void MainWindow::applyTheme()
         return ideThemeColorName(colour);
     };
 
-    setStyleSheet(QStringLiteral(
+    const QString normalStyle = QStringLiteral(
         "QMainWindow, QWidget { background-color:%1; color:%2; }"
         "QLabel { background-color:%1; color:%3; border:none; }"
 
@@ -16367,7 +16367,28 @@ void MainWindow::applyTheme()
         .arg(C(m_theme.scrollHandle))          // 12
         .arg(C(m_theme.scrollHandleHover))     // 13
         .arg(C(m_theme.tooltipBackground))     // 14
-        .arg(C(m_theme.tooltipText)));         // 15
+        .arg(C(m_theme.tooltipText));          // 15
+
+    // Disabled widgets were still using their full-strength enabled colours.
+    // Apply explicit theme-derived disabled colours throughout the IDE, not
+    // merely to the Game Object Properties dialog. No rounded corners.
+    const QColor disabledText = QColor::fromRgbF(
+        m_theme.mutedText.redF() * 0.7 + m_theme.panelBackground.redF() * 0.3,
+        m_theme.mutedText.greenF() * 0.7 + m_theme.panelBackground.greenF() * 0.3,
+        m_theme.mutedText.blueF() * 0.7 + m_theme.panelBackground.blueF() * 0.3);
+    const QString disabledStyle = QStringLiteral(
+        "QPushButton:disabled, QToolButton:disabled, QComboBox:disabled, "
+        "QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled { "
+        "background-color:%1; color:%2; border:1px solid %3; "
+        "border-radius:0px; } "
+        "QComboBox::drop-down:disabled { background-color:%1; border-left:1px solid %3; } "
+        "QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled, "
+        "QGroupBox:disabled { color:%2; } "
+        "QMenu::item:disabled { color:%2; } "
+        "QTabBar::tab:disabled { background-color:%1; color:%2; } "
+        "QComboBox QAbstractItemView:disabled { background:%1; color:%2; }")
+        .arg(C(m_theme.panelBackground), C(disabledText), C(m_theme.panelBackground));
+    setStyleSheet(normalStyle + disabledStyle);
 
     // The memory bars get the active IDE theme (including user colour edits).
     // These use a continuous fill, without the global build-progress stripes.

@@ -1,3 +1,17 @@
+double clicks!
+in the game resources,
+could we have a double click, so that in say game objects, double clickin opens the dialog box for the object? right clickin is good but double clickin can also add to the experience ;)
+the spline, the same thing, a double click to edit its properties.
+ALSO add a feature in the spline tho, so we can set the spline points exactly, movin on the canvas is convenient but sometimes deff needs precision too ;)
+
+
+
+
+
+
+
+
+[DONE]
 the disabled controls dont look disabled, they just look like they dont work
 so for example in game objects, the window, selecting behaviours enable, disable certain controls
 but i cant easily tell. so drop down menus dont do anything (when they're disabled correct behaviour)
