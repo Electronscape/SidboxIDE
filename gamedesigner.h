@@ -88,6 +88,8 @@ private:
         QString targetAction = QStringLiteral("none"); // enable, disable, toggle.
         bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
         bool triggerOneShot = false; // Destroy/hide trigger after firing.
+        QString triggerMusicId; // Stable ID of music tree resource; empty means no chosen track.
+        QString triggerMusicAction = QStringLiteral("none"); // none, play, stop.
         // Stage 3.12: sound references are stable IDs of Sounds in Game Resources.
         // Empty ID = no sound. They are NEVER hard-coded filesystem paths.
         QString sfxPickup, sfxRespawn, sfxStart, sfxMove, sfxStop;
@@ -193,6 +195,7 @@ private:
     QVector<SplinePath> m_splinePaths;
     int m_activeSpline = -1;
     SidboxTilemap m_tilemap;
+    bool m_tilemapExternal = false; // false = embed .c, true = SD .map
     bool m_tilemapEnabled = false;
     QTreeWidget *m_resourceTree = nullptr;
     QFormLayout *m_propertiesForm = nullptr;

@@ -2,6 +2,46 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* One-player V1 platformer: CONTACT does not mean DEATH.
+   Contact notifications leave physics running; only game code can mark a
+   player dead. Registration survives resets and SD map reloads. */
+static game_death_callback_t cg_death_callback;
+static void *cg_death_user;
+static uint8_t cg_player_dead;
+
+void game_death_set_callback(game_death_callback_t callback, void *user)
+{
+    cg_death_callback = callback;
+    cg_death_user = user;
+}
+
+/* Hazard events are NOT fatal unless the programmer explicitly decides so.
+   Detectors report ENTERED once, INSIDE while overlapping, EXITED on leaving. */
+uint8_t game_hazard_notify(uint8_t reason, int32_t world_x, int32_t world_y)
+{
+    if (cg_player_dead || !cg_death_callback) return 0;
+    cg_death_callback(reason, world_x, world_y, cg_death_user);
+    return 1;
+}
+
+/* Mark dead without dispatching another callback. A damage handler can call
+   this after health reaches zero, avoiding a recursive second damage event. */
+void game_death_mark_dead(void) { cg_player_dead = 1; }
+
+/* Explicit scripted death still freezes physics; this is never called
+   automatically for an ordinary tile or Game Object hazard contact. */
+uint8_t game_death_trigger(uint8_t reason, int32_t world_x, int32_t world_y)
+{
+    if (cg_player_dead) return 0;
+    cg_player_dead = 1;
+    if (cg_death_callback)
+        cg_death_callback(reason, world_x, world_y, cg_death_user);
+    return 1;
+}
+
+uint8_t game_death_is_dead(void) { return cg_player_dead; }
+void game_death_rearm(void) { cg_player_dead = 0; }
+
 /* GAME_TILEMAP_BOB_SD_ATLAS_V1
    Load an indexed PPB into RAM in its ORIGINAL row-major pixel layout.
    gfx_drawbob() already understands an atlas stride and selected cell.
@@ -98,6 +138,107 @@ void game_tilemap_unload_ppb_atlas(game_tilemap_t *map)
     map->atlas_width = 0;
     map->atlas_height = 0;
     map->atlas_borrowed = 0;
+}
+
+/* GamerGirl / SIDBOX binary map version 1. Header 20 bytes, LE:
+   "SBMP", version, tile size, width, height, atlas count, animation count,
+   FNV-1a checksum, reserved. Payload: graphics (LE u16 per cell), collision
+   bytes, animations (6 bytes: LE ID, frames, ticks, flags, reserved).
+   Store no raw pointers in files; all allocations are under our control. */
+static uint16_t cg_map_u16(const uint8_t *b)
+{
+    return (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
+}
+static uint32_t cg_map_u32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+static uint32_t cg_map_hash(uint32_t h, const uint8_t *b, uint32_t length)
+{
+    while (length--) { h ^= *b++; h *= 16777619u; }
+    return h;
+}
+void game_tilemap_unload_map(game_tilemap_t *map)
+{
+    if (!map || !map->map_storage) return;
+    free(map->map_storage);
+    map->map_storage = NULL;
+    map->graphics = NULL;
+    map->collision = NULL;
+    map->animations = NULL;
+    map->animation_count = 0;
+    map->width = map->height = 0;
+}
+uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
+{
+    uint8_t hdr[20], extra;
+    uint8_t *memory = NULL;
+    uint32_t read_bytes = 0, hash = 2166136261u;
+    uint8_t ok = 0;
+    if (!map || !filename || !filename[0] || !map->tile_size) return 0;
+    if (sfopen(0, (char *)filename, SD_READ) != F_OK) return 0;
+    do {
+        if (sfread(0, hdr, sizeof(hdr), &read_bytes) != F_OK ||
+            read_bytes != sizeof(hdr) || memcmp(hdr, "SBMP", 4) ||
+            hdr[4] != 1 || hdr[5] != map->tile_size || hdr[18] || hdr[19]) break;
+        const uint16_t width = cg_map_u16(hdr + 6);
+        const uint16_t height = cg_map_u16(hdr + 8);
+        const uint16_t atlas_count = cg_map_u16(hdr + 10);
+        const uint16_t animation_count = cg_map_u16(hdr + 12);
+        const uint32_t checksum = cg_map_u32(hdr + 14);
+        if (!width || !height || width > 256 || height > 256 ||
+            atlas_count != map->atlas_count || animation_count > 128) break;
+        const uint32_t cells = (uint32_t)width * height;
+        const uint32_t graphics_bytes = cells * 2u;
+        const uint32_t animation_offset = (graphics_bytes + cells + 1u) & ~1u;
+        const uint32_t allocation = animation_offset +
+            (uint32_t)animation_count * sizeof(game_tile_animation_t);
+        memory = (uint8_t *)malloc(allocation);
+        if (!memory) break;
+        if (sfread(0, memory, graphics_bytes + cells, &read_bytes) != F_OK ||
+            read_bytes != graphics_bytes + cells) break;
+        hash = cg_map_hash(hash, memory, graphics_bytes + cells);
+        for (uint32_t i = 0; i < cells; ++i) {
+            const uint16_t id = cg_map_u16(memory + i * 2u);
+            if (id > atlas_count || memory[graphics_bytes + i] > GAME_TILE_DOOR)
+                goto map_done;
+        }
+        game_tile_animation_t *animations =
+            (game_tile_animation_t *)(void *)(memory + animation_offset);
+        for (uint16_t i = 0; i < animation_count; ++i) {
+            uint8_t b[6];
+            if (sfread(0, b, sizeof(b), &read_bytes) != F_OK ||
+                read_bytes != sizeof(b)) goto map_done;
+            hash = cg_map_hash(hash, b, sizeof(b));
+            animations[i].graphic_id = cg_map_u16(b);
+            animations[i].frames = b[2];
+            animations[i].frame_ticks = b[3];
+            animations[i].flags = b[4];
+            if (b[5] || !animations[i].graphic_id || !animations[i].frames ||
+                animations[i].frames > 16 || !animations[i].frame_ticks ||
+                (animations[i].flags & ~(GAME_TILE_ANIM_LOOP | GAME_TILE_ANIM_BOUNCE)) ||
+                (uint32_t)animations[i].graphic_id + animations[i].frames - 1u > atlas_count)
+                goto map_done;
+        }
+        if (sfread(0, &extra, 1, &read_bytes) != F_OK || read_bytes != 0 || hash != checksum)
+            break;
+        /* Commit only after COMPLETE validation. Retain the loaded PPB atlas. */
+        game_tilemap_unload_map(map);
+        map->map_storage = memory;
+        map->graphics = (const uint16_t *)(const void *)memory;
+        map->collision = memory + graphics_bytes;
+        map->animations = animation_count ? animations : NULL;
+        map->animation_count = animation_count;
+        map->width = width;
+        map->height = height;
+        memory = NULL;
+        ok = 1;
+    } while (0);
+map_done:
+    sfclose(0);
+    free(memory);
+    return ok;
 }
 
 static int32_t limit(int32_t value, int32_t low, int32_t high)
@@ -403,14 +544,15 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     if (!p || !p->sprite) return;
     p->x100 = (int32_t)x * 100; p->y100 = (int32_t)y * 100;
     p->vy100 = 0; p->on_ground = 0; p->jump_held = 0;
-    p->coyote = 0; p->touch_type = 0;
+    p->coyote = 0; p->touch_type = 0; p->hazard_contact = 0;
+    game_death_rearm();
     p->physics_vy100 = 0; p->external_ascent = 0;
     const int32_t feet = y + p->sprite->height;
     p->on_ground = tile_floor(p->map, x, p->sprite->width, feet, feet) == feet;
 }
 void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frames)
 {
-    if (!p || !p->sprite || !p->map) return;
+    if (!p || !p->sprite || !p->map || game_death_is_dead()) return;
     if (frames > 60) frames = 60;
     const game_tilemap_t *m = p->map;
     const int32_t w = p->sprite->width, h = p->sprite->height;
@@ -439,6 +581,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         int32_t x = p->x100 / 100, y = p->y100 / 100;
         const uint8_t walkingOnGround = p->on_ground && p->vy100 >= 0;
         uint8_t followedFloor = 0;
+        uint8_t crossed_hazard = special_type(m, x, y, w, h) == GAME_TILE_HAZARD;
 
         /* Resolve each horizontal pixel independently. A 45-degree slope
          * rises/falls one pixel per horizontal pixel. Move the player's Y
@@ -457,6 +600,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 touches_slope_body(m, nextX, nextPlayerY, w, h)) break;
             x = nextX;
             y = nextPlayerY;
+            if (special_type(m, x, y, w, h) == GAME_TILE_HAZARD)
+                crossed_hazard = 1;
             if (surface != 0x7FFFFFFF) followedFloor = 1;
         }
         p->x100 = x * 100;
@@ -486,6 +631,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                     p->vy100 = 0; blocked = 1; break;
                 }
                 y = testY;
+                if (special_type(m, x, y, w, h) == GAME_TILE_HAZARD)
+                    crossed_hazard = 1;
             }
         } else if (nextY < y) {
             for (int32_t testY = y - 1; testY >= nextY; --testY) {
@@ -493,6 +640,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                     p->vy100 = 0; blocked = 1; break;
                 }
                 y = testY;
+                if (special_type(m, x, y, w, h) == GAME_TILE_HAZARD)
+                    crossed_hazard = 1;
             }
         }
 
@@ -510,9 +659,36 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         else p->y100 = nextY100;
         if (wasGrounded && !p->on_ground) p->coyote = 5;
         p->touch_type = special_type(m, x, y, w, h);
+        const uint8_t was_in_hazard = p->hazard_contact;
+        const uint8_t ended_inside_hazard = p->touch_type == GAME_TILE_HAZARD;
+        /* Swept detection creates ENTERED when moving fully across hazards,
+           but must not prolong INSIDE after a player has physically left. */
+        const uint8_t touching_hazard = ended_inside_hazard ||
+            (!was_in_hazard && crossed_hazard);
+        if (touching_hazard) p->touch_type = GAME_TILE_HAZARD;
+        /* Update contact BEFORE dispatch: callbacks may reset, teleport or
+           mark the player dead. A tile-to-tile move stays INSIDE because
+           special_type() sees any overlapping hazard tile. Swept contacts
+           still generate ENTERED even when a fast player crosses entirely
+           through a hazard in one frame (followed by EXITED next frame). */
+        p->hazard_contact = touching_hazard;
         if (p->vy100 >= 0 || p->on_ground)
             p->external_ascent = 0;
         p->physics_vy100 = p->vy100;
+        if (touching_hazard && !was_in_hazard) {
+            game_hazard_notify(GAME_HAZARD_TILE_ENTERED, x, y);
+            /* Preserve the existing entry safety behaviour. */
+            return;
+        }
+        if (touching_hazard) {
+            game_hazard_notify(GAME_HAZARD_TILE_INSIDE, x, y);
+        } else if (was_in_hazard) {
+            game_hazard_notify(GAME_HAZARD_TILE_EXITED, x, y);
+        }
+        /* A handler can explicitly kill or teleport the player. Never
+           process more batched frames after it changes that state. */
+        if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+            return;
     }
 }
 void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cameraY)

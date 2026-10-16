@@ -1035,20 +1035,27 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
 {
     if (!m_tilemapEnabled) return false;
     const QString directory = QFileInfo(m_filePath).absolutePath();
-    // Do not overwrite user-edited helper C files. Only add missing files.
+    // Mode is per .sbgm and persists for automatic saves/Update Project.
+    // No mode choice during auto-export, so rebuilding stays deterministic.
     bool includeHelper = includeMissingHelper;
     if (showMessage) {
-        const QMessageBox::StandardButton answer = QMessageBox::question(this,
-            tr("Export Tilemap"),
-            tr("Would you like CoderGirl to include gametilemap.c/.h?\n"
-               "This helper draws the map and moves the platformer character.\n\n"
-               "Yes: Copy missing helper files and export the map.\n"
-               "No: Export the map data only.\n"
-               "Cancel: Do nothing."),
-            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
-            QMessageBox::Yes);
-        if (answer == QMessageBox::Cancel) return false;
-        includeHelper = answer == QMessageBox::Yes;
+        QMessageBox choice(this);
+        choice.setWindowTitle(tr("Export Platformer Tilemap"));
+        choice.setText(tr("Choose where the tilemap graphics and collision data live."));
+        choice.setInformativeText(tr("Embedded .c: map bytes become part of the .app.\n"
+            "SD .map: map bytes load from gamelevels/level1.map at runtime.\n"
+            "Both generate gamelevels/level1.c/.h for the shared game_level1 API.\n"
+            "The .map stores tile data and animations; placed game objects stay compiled."));
+        choice.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius:0px; }"));
+        auto *embedded = choice.addButton(tr("Export embedded .c"), QMessageBox::AcceptRole);
+        auto *sd = choice.addButton(tr("Export SD .map"), QMessageBox::AcceptRole);
+        choice.addButton(QMessageBox::Cancel);
+        choice.setDefaultButton(m_tilemapExternal ? sd : embedded);
+        choice.exec();
+        if (choice.clickedButton() != embedded && choice.clickedButton() != sd) return false;
+        m_tilemapExternal = choice.clickedButton() == sd;
+        setDirty();
+        includeHelper = true;
     }
     if (includeHelper) {
         const QDir sourceDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
@@ -1115,17 +1122,23 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         }
     }
     QString error;
-    if (!sidboxExportTilemap(m_tilemap, directory, &error)) {
+    if (!sidboxExportTilemap(m_tilemap, directory, &error, m_tilemapExternal)) {
         QMessageBox::warning(this, tr("Tilemap Export"), error);
         return false;
     }
     if (assetFilesChanged) assetFilesChanged();
     if (showMessage)
         QMessageBox::information(this, tr("Tilemap Exported"),
-            tr("Map exported to gamelevels/level1.c and level1.h.\n"
-               "Atlas artwork will load from its PPB on the SD card at level startup.\n"
-               "Call game_level1_load_atlas() once after initMalloc().\n"
-               "Copyable instructions: gamehelpers/gametilemap.txt."));
+            m_tilemapExternal
+                ? tr("Created gamelevels/level1.map plus level1.c/.h.\n"
+                     "Copy gamelevels/level1.map to the same SD-card path.\n"
+                     "Call game_level1_load_map(\"gamelevels/level1.map\") after initMalloc(), "
+                     "BEFORE game_level1_load_atlas().\n"
+                     "Object/sprite placement remains part of generated C.\n"
+                     "Use Update Project to refresh older installed tilemap helpers.")
+                : tr("Map exported into gamelevels/level1.c and level1.h.\n"
+                     "Call game_level1_load_atlas() once after initMalloc().\n"
+                     "Copyable instructions: gamehelpers/gametilemap.txt."));
     return true;
 }
 
@@ -1336,7 +1349,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
     removePath->setEnabled(hasPath);
     menu.addSeparator();
     QAction *editTiles = menu.addAction(tr("Tilemap Editor (Graphics + Collisions)..."));
-    QAction *exportTiles = menu.addAction(tr("Export Tilemap to C..."));
+    QAction *exportTiles = menu.addAction(tr("Export Tilemap (.c / .map)..."));
     exportTiles->setEnabled(m_tilemapEnabled);
     menu.addSeparator();
     QAction *exportCode = menu.addAction(tr("Export Spline Paths to C..."));
@@ -1763,7 +1776,7 @@ void SidboxGameDesigner::buildUi()
         QAction *useAsPreview = nullptr;
         QAction *editPalette = menu.addAction(tr("Palette Editor (Import / Export)..."));
         QAction *editTiles = menu.addAction(tr("Tilemap Editor (Graphics + Collisions)..."));
-        QAction *exportTiles = menu.addAction(tr("Export Tilemap to C..."));
+        QAction *exportTiles = menu.addAction(tr("Export Tilemap (.c / .map)..."));
         exportTiles->setEnabled(m_tilemapEnabled);
         QMenu *helpers = menu.addMenu(tr("Add Helper Code..."));
         const QString templateRoot = helperTemplatesRoot();
@@ -3399,6 +3412,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Spring / Bouncer"), QStringLiteral("spring"));
     type->addItem(tr("Trigger / Switch"), QStringLiteral("trigger"));
     type->addItem(tr("Door / Solid blocker"), QStringLiteral("door"));
+    type->addItem(tr("Hazard Zone (touch = callback)"), QStringLiteral("deathzone"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     form->addRow(tr("Behaviour"), type);
     auto *pickup = new GameComboBox(&dialog);
@@ -3444,6 +3458,21 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *triggerOneShot = new QCheckBox(tr("Remove switch after activation (one-shot)"), &dialog);
     triggerOneShot->setChecked(old.triggerOneShot);
     form->addRow(QString(), triggerOneShot);
+    auto *musicAction = new GameComboBox(&dialog);
+    musicAction->addItem(tr("No music action"), QStringLiteral("none"));
+    musicAction->addItem(tr("Play selected tune"), QStringLiteral("play"));
+    musicAction->addItem(tr("Stop current music"), QStringLiteral("stop"));
+    musicAction->setCurrentIndex(qMax(0, musicAction->findData(old.triggerMusicAction)));
+    form->addRow(tr("When triggered — music"), musicAction);
+    auto *musicTrack = new GameComboBox(&dialog);
+    musicTrack->addItem(tr("Choose a tune from Music"), QString());
+    for (const Resource &candidate : m_resources)
+        if (candidate.kind == QStringLiteral("music") && !candidate.path.isEmpty())
+            musicTrack->addItem(candidate.name, candidate.id);
+    musicTrack->setCurrentIndex(qMax(0, musicTrack->findData(old.triggerMusicId)));
+    musicTrack->setToolTip(tr("Choose a music resource. The IDE uses its saved ID, not the filename."));
+    form->addRow(tr("Tune"), musicTrack);
+
     auto *respawn = spin(0, 65535, old.respawnFrames);
     form->addRow(tr("Respawn after frames (0 = never)"), respawn);
     auto *hitW = spin(1, 1024, old.hitWidth);
@@ -3570,6 +3599,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto enableFields = [=]() {
         const QString behaviour = type->currentData().toString();
         const bool isObject = behaviour != QStringLiteral("decoration");
+        // Hazard Zones use the Advanced Platformer tilemap event API.
+        // They are intangible sensors; hitW/hitH define the lethal area.
         pickup->setEnabled(behaviour == QStringLiteral("collectable"));
         value->setEnabled(behaviour == QStringLiteral("collectable"));
         const bool isTrigger = behaviour == QStringLiteral("trigger");
@@ -3579,6 +3610,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         targetAction->setEnabled(isTrigger || isKey);
         triggerPress->setEnabled(isTrigger);
         triggerOneShot->setEnabled(isTrigger);
+        musicAction->setEnabled(isTrigger);
+        musicTrack->setEnabled(isTrigger && musicAction->currentData().toString() == QStringLiteral("play"));
         hitW->setEnabled(isObject); hitH->setEnabled(isObject);
         conveyor->setEnabled(behaviour == QStringLiteral("conveyor"));
         spring->setEnabled(behaviour == QStringLiteral("spring"));
@@ -3608,6 +3641,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(animated, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
     connect(pickup, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
+    connect(musicAction, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
     enableFields();
     // A late-created dialog is not part of setTheme()'s existing-combo pass.
@@ -3643,6 +3678,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return;
     const QString newType = type->currentData().toString();
+    if (newType == QStringLiteral("deathzone") && !m_tilemapEnabled) {
+        QMessageBox::warning(this, tr("Game Object"),
+            tr("Hazard Zones require an Advanced Platformer tilemap. "
+               "Enable a tilemap in the Game Designer before choosing this behaviour."));
+        return;
+    }
     if (newType != QStringLiteral("decoration") &&
         (old.path.isEmpty() || old.scale != 100 ||
          QFileInfo(resolvedPath(old.path)).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive))) {
@@ -3667,6 +3708,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.targetAction = targetAction->currentData().toString();
     r.triggerPress = triggerPress->isChecked();
     r.triggerOneShot = triggerOneShot->isChecked();
+    r.triggerMusicId = musicTrack->currentData().toString();
+    r.triggerMusicAction = musicAction->currentData().toString();
     r.sfxPickup = sfxPickup->currentData().toString();
     r.sfxRespawn = sfxRespawn->currentData().toString();
     r.sfxStart = sfxStart->currentData().toString();
@@ -3885,6 +3928,14 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         }
         return true;
     }
+    if (!m_tilemapEnabled) {
+        for (const Resource *r : platforms) {
+            if (r->objectType == QStringLiteral("deathzone")) {
+                if (error) *error = tr("Hazard Zone '%1' requires an Advanced Platformer tilemap. Enable the tilemap first.").arg(r->name);
+                return false;
+            }
+        }
+    }
     const int np = pickups.size(), nw = platforms.size();
     int nt = 0;
     for (const Resource *r : platforms) if (r->objectType == QStringLiteral("trigger")) ++nt;
@@ -3912,6 +3963,28 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             return false;
         }
     }
+    QHash<QString, const Resource *> musicById;
+    for (const Resource &asset : m_resources)
+        if (asset.kind == QStringLiteral("music") && !asset.path.isEmpty())
+            musicById.insert(asset.id, &asset);
+    for (const Resource *r : platforms) {
+        if (r->objectType != QStringLiteral("trigger") ||
+            r->triggerMusicAction != QStringLiteral("play")) continue;
+        if (!musicById.contains(r->triggerMusicId)) {
+            if (error) *error = tr("Trigger '%1' has no valid music track. Choose one from the Music tree.").arg(r->name);
+            return false;
+        }
+    }
+    auto musicAction = [&](const Resource &r) -> QString {
+        if (r.triggerMusicAction == QStringLiteral("stop")) return QStringLiteral("music_stop();");
+        if (r.triggerMusicAction != QStringLiteral("play")) return QString();
+        const Resource *music = musicById.value(r.triggerMusicId, nullptr);
+        if (!music) return QString();
+        const QString base = music->name.trimmed().isEmpty()
+            ? QFileInfo(resolvedPath(music->path)).completeBaseName() : music->name;
+        return QStringLiteral("playmusic%1();")
+            .arg(SidboxPpb::identifier(base).toLower());
+    };
     auto linkedAction = [&](const Resource &r) -> QString {
         if (r.targetAction == QStringLiteral("none") || r.targetObjectId.isEmpty()) return QString();
         const QString target = objectSlot.value(r.targetObjectId);
@@ -4043,6 +4116,8 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     if (np) C << "static game_collectable_t pickups[" << np << "];\n";
     if (np && !usedSfx.isEmpty()) C << "static uint8_t cg_pickup_was_inactive[" << np << "];\n";
     if (nw) C << "static game_world_object_t platforms[" << nw << "];\n";
+    if (nw && m_tilemapEnabled)
+        C << "static uint8_t cg_hazard_zone_contact;\n";
     // Per-lift motion state for start/stop/reverse transitions and faders.
     if (nw && !usedSfx.isEmpty()) {
         C << "static uint8_t cg_was_moving[" << nw << "];\n"
@@ -4060,6 +4135,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         if (platforms.at(i)->objectAnimated) C << "static game_animation_t platform_anim_" << i << " = {0};\n";
     }
     C << "\nuint8_t gameworlditems_init(void)\n{\n";
+    if (nw && m_tilemapEnabled) C << "    cg_hazard_zone_contact = 0;\n";
     if (nw && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << nw
         << "; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; "
            "cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }\n";
@@ -4095,6 +4171,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                 r.objectType == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
                 r.objectType == QStringLiteral("trigger") ? QStringLiteral("GAME_OBJECT_TRIGGER") :
                 r.objectType == QStringLiteral("door") ? QStringLiteral("GAME_OBJECT_DOOR") :
+                r.objectType == QStringLiteral("deathzone") ? QStringLiteral("GAME_OBJECT_DEATH_ZONE") :
                 QStringLiteral("GAME_OBJECT_SPRING");
             C << "    if (!game_world_object_start(" << target << ", " << kind << ", "
               << sprite << ", " << r.x << ", " << r.y << ", "
@@ -4220,14 +4297,35 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "}\n\n";
         }
         C << "void gameworlditems_before(game_world_player_t *player)\n{\n";
+        if (m_tilemapEnabled) C << "    if (game_death_is_dead()) return;\n";
         if (m_tilemapEnabled)
             C << "    if (player) {\n"
                  "        player->position_blocked = cg_world_player_blocked;\n"
                  "        player->collision_context = &game_level1;\n"
                  "    }\n";
         C << "    game_world_objects_before(platforms, " << nw << ", player);\n}\n\n"
-          << "void gameworlditems_after(game_world_player_t *player)\n{\n"
-          << "    game_world_objects_after(platforms, " << nw << ", player);\n";
+          << "void gameworlditems_after(game_world_player_t *player)\n{\n";
+        if (m_tilemapEnabled) C << "    if (game_death_is_dead()) return;\n";
+        C << "    game_world_objects_after(platforms, " << nw << ", player);\n";
+        if (m_tilemapEnabled) {
+            C << "    /* Hazard Zone: ENTERED once, INSIDE each frame, EXITED on leaving. */\n"
+                 "    uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&\n"
+                 "        player->width && player->height &&\n"
+                 "        game_world_objects_death_zone(platforms, " << nw
+              << ", *player->x100 / 100, *player->y100 / 100, player->width, player->height));\n"
+                 "    uint8_t was_in_hazard_zone = cg_hazard_zone_contact;\n"
+                 "    cg_hazard_zone_contact = in_hazard_zone;\n"
+                 "    if (player && player->x100 && player->y100) {\n"
+                 "        if (in_hazard_zone && !was_in_hazard_zone)\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_ENTERED, *player->x100 / 100, *player->y100 / 100);\n"
+                 "        else if (in_hazard_zone)\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_INSIDE, *player->x100 / 100, *player->y100 / 100);\n"
+                 "        else if (was_in_hazard_zone)\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_EXITED, *player->x100 / 100, *player->y100 / 100);\n"
+                 "        /* Callback may explicitly kill or teleport the player. */\n"
+                 "        if (game_death_is_dead()) return;\n"
+                 "    }\n";
+        }
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
             if (r.objectType == QStringLiteral("spring") && !r.sfxSpring.isEmpty()) {
@@ -4243,6 +4341,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     if (np) {
         C << "uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,\n"
              "    game_pickup_callback_t callback, void *user)\n{\n";
+        if (m_tilemapEnabled) C << "    if (game_death_is_dead()) return 0;\n";
         if (pickupSound || linkedKeys) {
             C << "    uint8_t was_active[" << np << "];\n"
               << "    for (uint16_t i = 0; i < " << np
@@ -4275,8 +4374,10 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
             const Resource &r = *platforms.at(i);
             if (r.objectType != QStringLiteral("trigger")) continue;
             const QString action = linkedAction(r);
-            if (action.isEmpty()) continue;
-            C << "    if (platforms[" << i << "].trigger_fired) " << action << "\n";
+            const QString audio = musicAction(r);
+            if (action.isEmpty() && audio.isEmpty()) continue;
+            C << "    if (platforms[" << i << "].trigger_fired) { "
+              << action << " " << audio << " }\n";
         }
         C << "    return fired;\n}\n\n";
     }
@@ -4336,6 +4437,13 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "ON launches on any hitbox contact, with no repeated bounce while overlapping.\n"
                  "Jump + spring is per-object. OFF uses spring strength alone,\n"
                  "ON adds jump speed ONLY on a new Jump press at contact.\n";
+    if (m_tilemapEnabled) G << "Player death: register game_death_set_callback(on_player_death, user)\n"
+        "once after game_tile_player_start(). Both hazardous tile collisions and\n"
+        "configured Hazard Zones dispatch a contact callback (with cause and WORLD X/Y).\n"
+        "Hazards report ENTERED, INSIDE each update, EXITED after leaving.\n"
+        "Contact is nonfatal; only game_death_mark_dead() or explicit death\n"
+        "stops player physics. Respawn with game_tile_player_reset().\n"
+        "See gametilemap.txt for all six hazard reason constants.\n";
     if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
     if (nt) G << "Switches and buttons run AUTOMATICALLY inside gameworlditems_after().\n"
                  "It checks player contact and FIRE2, then applies the configured\n"
@@ -4345,6 +4453,8 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "custom loops that intentionally skip the normal after() step.\n"
                  "Repeatable switches fire once per contact or button press.\n"
                  "One-shot switches deactivate themselves. Targets may start disabled.\n"
+             "Trigger music actions play a selected Music resource or stop playback.\n"
+             "Call music_update() in the main loop (the generated example does).\n"
                  "A Door / Solid blocker is collidable while enabled and vanishes when disabled.\n"
                  "Do NOT paint a permanent tilemap solid over a door: tilemap walls\n"
                  "are separate and will continue blocking after the door disappears.\n";
@@ -4491,6 +4601,8 @@ THIS PROJECT CURRENTLY CONTAINS
                     << (r.triggerOneShot ? "; one-shot.\n" : "; repeatable.\n");
             } else if (r.objectType == QStringLiteral("door")) {
                 out << "    Solid door: blocks contact while active; disappears when disabled.\n";
+            } else if (r.objectType == QStringLiteral("deathzone")) {
+                out << "    Hazard Zone: touch to notify GAME_DEATH_ZONE; movement keeps working.\n";
             } else if (r.objectType == QStringLiteral("conveyor")) {
                 out << "    Conveyor speed: " << r.conveyorSpeed << " pixels/frame.\n";
             } else if (r.objectType == QStringLiteral("lift")) {
@@ -4617,6 +4729,26 @@ static void on_pickup(game_collectable_t *item, void *user)
 )CG";
         }
         out << R"CG(
+/* Hazard contacts are NOT fatal. Callback reason reports ENTERED,
+   INSIDE (every following physics update), or EXITED for tile hazards
+   and configured Hazard Zones. The game decides what damage means. */
+static void on_player_death(uint8_t cause, int32_t x, int32_t y, void *user)
+{
+    (void)x; (void)y; (void)user;
+    if (cause == GAME_HAZARD_TILE_ENTERED || cause == GAME_HAZARD_ZONE_ENTERED) {
+        /* First contact: optional one-hit damage or sound. */
+    } else if (cause == GAME_HAZARD_TILE_INSIDE || cause == GAME_HAZARD_ZONE_INSIDE) {
+        /* Still in a hazard: use a timer for gradual health loss. */
+    } else if (cause == GAME_HAZARD_TILE_EXITED || cause == GAME_HAZARD_ZONE_EXITED) {
+        /* Just left: end damage/sound effects and clear timers. */
+    } else if (cause == GAME_DEATH_SCRIPT) {
+        /* Explicit programmer-scripted death. */
+    }
+    /* Example: subtract health for contact here. For a fatal hit call
+       game_death_mark_dead() to stop physics WITHOUT calling this callback
+       a second time. game_tile_player_reset() resumes after respawn. */
+}
+
 /* ============================================================
    B. STARTUP — RUN THIS ONCE, BEFORE THE GAME LOOP
    ============================================================ */
@@ -4641,6 +4773,17 @@ int main(int argc, char *argv[])
        gameworlditems_init() needs those sprites to exist FIRST. */
     if (!gameassets_init()) return 1;
 )CG";
+        if (hasMap && m_tilemapExternal) {
+            out << R"CG(
+    /* SD .map contains tile graphics, collisions and animations, not BOB pixels.
+       A missing or corrupt file fails safely; do not continue with NULL tiles.
+       This can be called with another .map of the SAME tile size and atlas. */
+    if (!game_level1_load_map("gamelevels/level1.map")) {
+        dbug("ERROR: level1.map SD load failed\r\n");
+        return 6;
+    }
+)CG";
+        }
         if (hasMap) {
             out << R"CG(
     /* Load the tile atlas ONCE, after gameassets_init().
@@ -4684,6 +4827,11 @@ int main(int argc, char *argv[])
     if (!game_tile_player_start(&player_physics, &game_level1, &)CG";
         out << spriteSymbol(*playerResource);
         out << R"CG()) return 4;
+)CG";
+        out << R"CG(
+    /* Hazard tiles / Hazard Zones report ENTERED, INSIDE and EXITED.
+       They do NOT stop physics unless your handler marks the player dead. */
+    game_death_set_callback(on_player_death, NULL);
 )CG";
         if (nw) {
             out << R"CG(
@@ -4834,6 +4982,9 @@ A. AFTER the hardware, memory and gfx_mode() setup:
    if (!gameassets_init()) return 1;
    Why: the object wrapper needs the sprites created by gameassets.
 )CG";
+        if (hasMap && m_tilemapExternal)
+            out << "   if (!game_level1_load_map(\"gamelevels/level1.map\")) return 6;\n"
+                   "   Copy the .map onto the SIDBOX SD card; it is not part of the .app.\n";
         if (hasMap) {
             out << R"CG(   if (!game_level1_load_atlas()) return 5;
    Why: level1.c no longer embeds tile pixels. After gameassets_init(),
@@ -5065,6 +5216,7 @@ void SidboxGameDesigner::updateGameProject()
     if (m_tilemapEnabled) {
         outputs.insert(QStringLiteral("gamelevels/level1.c"));
         outputs.insert(QStringLiteral("gamelevels/level1.h"));
+        if (m_tilemapExternal) outputs.insert(QStringLiteral("gamelevels/level1.map"));
     }
     for (const QString &base : helperNames) {
         const QString targetBase = QStringLiteral("gamehelpers/game") + base;
@@ -5427,7 +5579,8 @@ bool SidboxGameDesigner::loadDesign()
         const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
         if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
                 QStringLiteral("conveyor"), QStringLiteral("spring"),
-                QStringLiteral("trigger"), QStringLiteral("door")}.contains(type)
+                QStringLiteral("trigger"), QStringLiteral("door"),
+                QStringLiteral("deathzone")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 4);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -5449,6 +5602,10 @@ bool SidboxGameDesigner::loadDesign()
             r.targetAction = QStringLiteral("none");
         r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
         r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
+        r.triggerMusicId = object.value(QStringLiteral("triggerMusicId")).toString();
+        r.triggerMusicAction = object.value(QStringLiteral("triggerMusicAction")).toString(QStringLiteral("none"));
+        if (!QStringList{QStringLiteral("play"), QStringLiteral("stop")}.contains(r.triggerMusicAction))
+            r.triggerMusicAction = QStringLiteral("none");
         r.sfxPickup = object.value(QStringLiteral("sfxPickup")).toString();
         r.sfxRespawn = object.value(QStringLiteral("sfxRespawn")).toString();
         r.sfxStart = object.value(QStringLiteral("sfxStart")).toString();
@@ -5501,6 +5658,7 @@ bool SidboxGameDesigner::loadDesign()
     }
     const bool seededBackgroundPalette = m_resources.size() != originalResourceCount;
     m_tilemapEnabled = false;
+    m_tilemapExternal = obj.value(QStringLiteral("tilemapExternal")).toBool(false);
     m_tilemap = SidboxTilemap();
     if (obj.contains(QStringLiteral("tilemap"))) {
         if (!m_tilemap.fromJson(obj.value(QStringLiteral("tilemap")).toObject())) {
@@ -5602,6 +5760,8 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("targetAction"), r.targetAction);
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
             object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);
+            object.insert(QStringLiteral("triggerMusicId"), r.triggerMusicId);
+            object.insert(QStringLiteral("triggerMusicAction"), r.triggerMusicAction);
             object.insert(QStringLiteral("sfxPickup"), r.sfxPickup);
             object.insert(QStringLiteral("sfxRespawn"), r.sfxRespawn);
             object.insert(QStringLiteral("sfxStart"), r.sfxStart);
@@ -5658,7 +5818,10 @@ bool SidboxGameDesigner::saveDesign()
     }
     obj.insert(QStringLiteral("splinePaths"), pathList);
     obj.insert(QStringLiteral("activeSpline"), m_activeSpline);
-    if (m_tilemapEnabled) obj.insert(QStringLiteral("tilemap"), m_tilemap.toJson());
+    if (m_tilemapEnabled) {
+        obj.insert(QStringLiteral("tilemap"), m_tilemap.toJson());
+        obj.insert(QStringLiteral("tilemapExternal"), m_tilemapExternal);
+    }
     QSaveFile output(m_filePath);
     const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Indented);
     if (!output.open(QIODevice::WriteOnly)

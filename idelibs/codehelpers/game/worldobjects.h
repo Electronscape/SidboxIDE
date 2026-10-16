@@ -15,6 +15,7 @@
 #define GAME_OBJECT_SPRING    3u
 #define GAME_OBJECT_TRIGGER   4u
 #define GAME_OBJECT_DOOR      5u
+#define GAME_OBJECT_DEATH_ZONE 6u
 
 typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
@@ -90,6 +91,11 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
 /* Evaluate switches AFTER the normal player physics, one call per frame.
    'pressed' is nonzero when FIRE2 is held. Returns number of fired switches.
    Each object sets trigger_fired for the wrapper to apply its linked action. */
+/* Return 1 if an active Death Zone overlaps the player.
+   No callback is performed here: caller dispatches the shared death event. */
+uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
+                                      uint16_t count, int32_t x, int32_t y,
+                                      uint16_t w, uint16_t h);
 uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,
                                     int32_t x, int32_t y, uint16_t w, uint16_t h,
                                     uint8_t pressed);

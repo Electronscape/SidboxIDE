@@ -9,7 +9,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
                                 gfxbob_t *sprite, int32_t x, int32_t y,
                                 uint16_t width, uint16_t height)
 {
-    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_DOOR ||
+    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_DEATH_ZONE ||
         !width || !height) return 0;
     object->sprite = sprite;
     object->animation = 0;
@@ -145,6 +145,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
         for (uint16_t i = 0; i < count; ++i) {
             const game_world_object_t *o = &objects[i];
             if (!o->active || o->type == GAME_OBJECT_TRIGGER ||
+                o->type == GAME_OBJECT_DEATH_ZONE ||
                 (o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
                 feet != o->previous_y ||
                 (int64_t)x + p->width <= o->previous_x ||
@@ -219,7 +220,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             continue;
         }
         // Switches are intangible: they never behave like a platform.
-        if (o->type == GAME_OBJECT_TRIGGER) continue;
+        if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE) continue;
         // Door collision is resolved below, before the old one-way platform
         // rules. Only this new type uses blocking on all four sides.
         if (o->type == GAME_OBJECT_DOOR) {
@@ -353,6 +354,24 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         if (best->type == GAME_OBJECT_CONVEYOR)
             *p->x100 += (int32_t)best->conveyor_speed * 100;
     }
+}
+
+/* Death Zones are sensors, not solid objects or standing surfaces. */
+uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
+                                      uint16_t count, int32_t x, int32_t y,
+                                      uint16_t w, uint16_t h)
+{
+    if (!objects || !w || !h) return 0;
+    for (uint16_t i = 0; i < count; ++i) {
+        const game_world_object_t *o = &objects[i];
+        if (!o->active || o->type != GAME_OBJECT_DEATH_ZONE ||
+            !o->width || !o->height) continue;
+        if ((int64_t)x < (int64_t)o->x + o->width &&
+            (int64_t)x + w > o->x &&
+            (int64_t)y < (int64_t)o->y + o->height &&
+            (int64_t)y + h > o->y) return 1;
+    }
+    return 0;
 }
 
 uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,

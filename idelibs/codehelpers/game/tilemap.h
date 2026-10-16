@@ -17,6 +17,33 @@
 #define GAME_TILE_HAZARD      5u
 #define GAME_TILE_DOOR        6u
 
+/* GamerGirl hazard contact phases and scripted death.
+   Existing GAME_DEATH_TILE_HAZARD / GAME_DEATH_ZONE values are retained as
+   ENTERED aliases so older on_player_death() callbacks remain compatible.
+   ENTERED occurs on the first contact frame, INSIDE on each following
+   overlapping physics update, EXITED on the first update after leaving.
+   These are NOT fatal; only an explicit death call stops player physics. */
+#define GAME_DEATH_TILE_HAZARD 1u
+#define GAME_DEATH_ZONE        2u
+#define GAME_DEATH_SCRIPT      3u
+#define GAME_HAZARD_TILE_ENTERED GAME_DEATH_TILE_HAZARD
+#define GAME_HAZARD_ZONE_ENTERED GAME_DEATH_ZONE
+#define GAME_HAZARD_TILE_INSIDE 4u
+#define GAME_HAZARD_ZONE_INSIDE 5u
+#define GAME_HAZARD_TILE_EXITED 6u
+#define GAME_HAZARD_ZONE_EXITED 7u
+typedef void (*game_death_callback_t)(uint8_t reason, int32_t world_x,
+                                      int32_t world_y, void *user);
+void game_death_set_callback(game_death_callback_t callback, void *user);
+/* Contact notification; does NOT stop movement. Used by generated helpers. */
+uint8_t game_hazard_notify(uint8_t reason, int32_t world_x, int32_t world_y);
+/* Explicit death: freezes physics and notifies registered callback once. */
+uint8_t game_death_trigger(uint8_t reason, int32_t world_x, int32_t world_y);
+/* Explicit death from INSIDE the contact callback (no second notification). */
+void game_death_mark_dead(void);
+uint8_t game_death_is_dead(void);
+void game_death_rearm(void);
+
 #define GAME_TILE_ANIM_LOOP    1u
 #define GAME_TILE_ANIM_BOUNCE  2u
 
@@ -44,6 +71,7 @@ typedef struct {
     uint16_t atlas_width;   /* PPB width in pixels; set by atlas loader. */
     uint16_t atlas_height;  /* PPB height in pixels; set by atlas loader. */
     uint8_t atlas_borrowed; /* Nonzero: atlas owned by gameassets; never free here. */
+    void *map_storage; /* SD .map allocation. NULL for embedded C maps. */
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever
@@ -68,6 +96,13 @@ uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
                                             uint16_t atlas_width, uint16_t atlas_height,
                                             uint32_t expected_hash);
 void game_tilemap_unload_ppb_atlas(game_tilemap_t *map);
+/* SD .map v1: tile graphics, collisions and tile animations (not sprites,
+   object placements or atlas PPB pixels). All fields checked before swap.
+   Call after initMalloc(); optionally replace an already loaded SD map.
+   A failed load leaves the current map intact. Atlas must match tile size
+   and tile count. Unload the map allocation when leaving the level. */
+uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename);
+void game_tilemap_unload_map(game_tilemap_t *map);
 
 void game_tilemap_animation_reset(void);
 void game_tilemap_animation_tick(uint16_t frames);
@@ -95,6 +130,7 @@ typedef struct {
        No additional main.c wiring is required. */
     int32_t physics_vy100; /* Velocity at the end of the previous physics step. */
     uint8_t external_ascent;
+    uint8_t hazard_contact; /* Internal: overlapping tile hazard on previous update. */
 } game_tile_player_t;
 
 uint8_t game_tile_player_start(game_tile_player_t *p,

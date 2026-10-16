@@ -134,3 +134,77 @@ Use Game Designer -> Update Project... to refresh BOTH gametilemap.c and
 .h; the game is our generated-code test, so do not patch gamehelpers or
 main.c by hand. Neither Game Objects nor the exporter needs changing.
 
+
+GAMERGIRL SD .MAP LOADER (Stage 3.24)
+-----------------------------------
+In Game Designer, choose Export Tilemap (.c / .map)...
+Use Embedded .c for the old self-contained executable, or SD .map for
+external tile graphics, collisions and tile animations. SD mode writes
+gamelevels/level1.map plus small level1.c/.h. Copy the .map onto the
+SIDBOX SD card at gamelevels/level1.map before running.
+
+In SD mode, AFTER initMalloc() and gameassets_init(), call:
+    if (!game_level1_load_map("gamelevels/level1.map")) return 6;
+    if (!game_level1_load_atlas()) return 5;
+At shutdown: game_level1_unload_atlas(); game_level1_unload_map();
+Then gameassets_shutdown(). The SD map does not contain sprite BOB
+assets, placed objects, trigger links, or the atlas PPB artwork.
+Map loader verifies file content and leaves the current map untouched
+on errors. Multiple map files may share a tile size and atlas.
+An embedded-C export keeps game_level1_load_map() as a harmless no-op.
+Update Project refreshes gamehelpers/gametilemap.c/.h from the SDK.
+
+STAGE 3.27 — HAZARD CONTACT PHASES (TILES + ZONES)
+---------------------------------------------------
+GAME_TILE_HAZARD (collision type 5) is non-blocking. The SAME registered
+four-argument callback now distinguishes three phases for either hazard source:
+
+  GAME_HAZARD_TILE_ENTERED = first contact with any hazardous tile
+  GAME_HAZARD_TILE_INSIDE  = every following physics update while overlapping
+  GAME_HAZARD_TILE_EXITED  = first update after leaving all hazardous tiles
+
+  GAME_HAZARD_ZONE_ENTERED = first contact with any active Hazard Zone object
+  GAME_HAZARD_ZONE_INSIDE  = each following gameworlditems_after() while inside
+  GAME_HAZARD_ZONE_EXITED  = first gameworlditems_after() after leaving zones
+
+Register once after game_tile_player_start():
+
+    game_death_set_callback(on_player_death, NULL);
+
+    static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
+    {
+        (void)x; (void)y; (void)user;
+        if (reason == GAME_HAZARD_TILE_ENTERED ||
+            reason == GAME_HAZARD_ZONE_ENTERED) {
+            /* play start-of-damage effect; optional immediate single hit */
+        } else if (reason == GAME_HAZARD_TILE_INSIDE ||
+                   reason == GAME_HAZARD_ZONE_INSIDE) {
+            /* gradual damage: use a frame counter or elapsed-time timer */
+        } else if (reason == GAME_HAZARD_TILE_EXITED ||
+                   reason == GAME_HAZARD_ZONE_EXITED) {
+            /* end effects, cancel timers */
+        }
+    }
+
+GAME_DEATH_TILE_HAZARD and GAME_DEATH_ZONE retain their existing numeric values
+and are aliases of the corresponding ENTERED reasons. Old callbacks that only
+handle these reasons continue to behave as one-hit-on-entry callbacks.
+
+INSIDE fires ONCE per physics update for tile hazards, and once per call to
+gameworlditems_after() for Hazard Zones. At 50 updates/sec, INSIDE can fire
+50 times per second: throttle damage in YOUR game code. The event system
+never stops player movement automatically. Adjacent hazardous tiles and
+zones are treated as a single contact: no false exit/re-entry. Crossing an
+entire tile hazard at high speed still reports ENTERED, followed by EXITED.
+
+When your own game determines actual death, call game_death_mark_dead() from
+inside the callback. To programmatically kill the player from outside a
+hazard callback, call game_death_trigger(GAME_DEATH_SCRIPT, x, y). Both
+explicit death operations pause player physics. To respawn, call:
+
+    game_tile_player_reset(&player_physics, spawn_x, spawn_y);
+
+Do not respawn/reset on ordinary damage. A tile Hazard Zone and a placed
+Hazard Zone may BOTH generate events if they overlap; keep separate damage
+timers if you are using both. Update Game Project to replace helpers and
+generated gameworlditems.c. Existing main.c is not overwritten.

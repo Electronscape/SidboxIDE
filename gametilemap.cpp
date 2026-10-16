@@ -998,7 +998,7 @@ bool SidboxTilemapEditor::eventFilter(QObject *target, QEvent *event)
 }
 
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
-                         QString *error)
+                         QString *error, bool externalMap)
 {
     if (map.width < 30 || map.width > 256 || map.height < 20 || map.height > 256 ||
         (map.tileSize != 8 && map.tileSize != 16 && map.tileSize != 32) ||
@@ -1070,13 +1070,17 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     QByteArray header =
         "#ifndef SIDBOX_GAME_LEVEL1_H\n#define SIDBOX_GAME_LEVEL1_H\n"
         "#include <stdint.h>\n#include \"../gamehelpers/gametilemap.h\"\n\n"
-        "extern const uint16_t game_level1_graphics[];\n"
-        "extern const uint8_t game_level1_collisions[];\n"
+        "uint8_t game_level1_load_map(const char *filename);\n"
+        "void game_level1_unload_map(void);\n"
         "uint8_t game_level1_load_atlas(void);\n"
         "void game_level1_unload_atlas(void);\n"
-        "extern const game_tile_animation_t game_level1_animations[];\n"
         "extern game_tilemap_t game_level1;\n"
         "#endif\n";
+    if (!externalMap) header.replace("extern game_tilemap_t game_level1;",
+        "extern const uint16_t game_level1_graphics[];\n"
+        "extern const uint8_t game_level1_collisions[];\n"
+        "extern const game_tile_animation_t game_level1_animations[];\n"
+        "extern game_tilemap_t game_level1;");
     QByteArray source = "#include \"level1.h\"\n"
         "/* Optional sprite PPB sharing. Standalone tilemaps still work. */\n"
         "#if defined(__has_include)\n"
@@ -1084,6 +1088,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         "#  include \"../gameassets/gameassets.h\"\n"
         "# endif\n"
         "#endif\n\n";
+    if (!externalMap) {
+        source += "/* Embedded graphics and collision arrays: no SD map file needed. */\n";
     auto writeBytes = [&source](const QByteArray &data, const QByteArray &name) {
         source += "const uint8_t " + name + "[] __attribute__((aligned(32))) = {\n";
         for (int i = 0; i < data.size(); ++i) {
@@ -1105,6 +1111,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     }
     source += "};\n\n";
     writeBytes(map.collisions, "game_level1_collisions");
+    }
+    if (!externalMap) {
+
     source += "const game_tile_animation_t game_level1_animations[] = {\n";
     if (map.animations.isEmpty()) source += "    {0, 0, 0, 0} // No animations yet\n";
     else {
@@ -1116,14 +1125,27 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         }
     }
     source += "};\n\n";
+    }
     source += "game_tilemap_t game_level1 = {\n";
-    source += "    game_level1_graphics, game_level1_collisions, 0,\n";
+    source += externalMap ? "    0, 0, 0,\n" : "    game_level1_graphics, game_level1_collisions, 0,\n";
     source += QByteArray("    ") + QByteArray::number(map.width) + ", " + QByteArray::number(map.height)
         + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
-        + (map.animations.isEmpty() ? QByteArray("    0, 0") :
+        + (externalMap || map.animations.isEmpty() ? QByteArray("    0, 0") :
             QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
         + ",\n    0, 0, 0 /* atlas_width, atlas_height and borrowed flag. */"
         + "\n};\n\n";
+    if (externalMap) {
+        source += "/* SD map: file includes graphics, collision and animations. */\n"
+                  "uint8_t game_level1_load_map(const char *filename)\n" 
+                  "{ return game_tilemap_load_map(&game_level1, filename); }\n"
+                  "void game_level1_unload_map(void)\n"
+                  "{ game_tilemap_unload_map(&game_level1); }\n\n";
+    } else {
+        source += "/* Embedded C mode does not require reading an SD .map. */\n"
+                  "uint8_t game_level1_load_map(const char *filename)\n"
+                  "{ (void)filename; return 1; }\n"
+                  "void game_level1_unload_map(void) {}\n\n";
+    }
     // The generated level remembers its SD resource. The runtime helper
     // validates size and checksum and leaves the PPB pixels row-major.
     // SIDBOX gfx_drawbob() selects cells directly from that image.
@@ -1160,6 +1182,35 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         }
         return true;
     };
+    if (externalMap) {
+        // Fixed little-endian 20-byte header and FNV-1a over the payload.
+        // No absolute editor paths, object IDs or pointer bytes in the file.
+        QByteArray payload = map.graphics + map.collisions;
+        for (const SidboxTileAnimation &a : map.animations) {
+            payload.append(char(a.graphicId & 255));
+            payload.append(char((a.graphicId >> 8) & 255));
+            payload.append(char(a.frames));
+            payload.append(char(a.frameTicks));
+            payload.append(char((a.loop ? 1 : 0) | (a.bounce ? 2 : 0)));
+            payload.append(char(0));
+        }
+        quint32 hash = 2166136261u;
+        for (char b : payload) { hash ^= quint8(b); hash *= 16777619u; }
+        QByteArray bytes("SBMP", 4);
+        bytes.append(char(1)); // version
+        bytes.append(char(map.tileSize));
+        const auto appendU16 = [&bytes](unsigned v) {
+            bytes.append(char(v & 255)); bytes.append(char((v >> 8) & 255));
+        };
+        appendU16(unsigned(map.width)); appendU16(unsigned(map.height));
+        appendU16(tileCount); appendU16(unsigned(map.animations.size()));
+        for (int offset = 0; offset < 32; offset += 8)
+            bytes.append(char((hash >> offset) & 255));
+        appendU16(0); // reserved
+        bytes += payload;
+        if (!atomic(QDir(folder).filePath(QStringLiteral("level1.map")), bytes))
+            return false;
+    }
     return atomic(QDir(folder).filePath(QStringLiteral("level1.h")), header)
         && atomic(QDir(folder).filePath(QStringLiteral("level1.c")), source);
 }

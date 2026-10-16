@@ -103,6 +103,6 @@ private:
 // Exported level data always lives in gamelevels/. This function does not
 // create helper templates, modify gameassets, or touch main.c.
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
-                         QString *error);
+                         QString *error, bool externalMap = false);
 
 #endif

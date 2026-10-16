@@ -273,3 +273,21 @@ for custom loops that do not use gameworlditems_after().
 Update Game Project refreshes the runtime helper and generated world files,
 while keeping main.c and existing game sources untouched. Older designs
 start all objects active and contain no switch/key target links.
+
+STAGE 3.27 — HAZARD ZONES (ENTERED / INSIDE / EXITED)
+------------------------------------------------------
+Right-click a placed PPB sprite -> Configure Game Object -> Hazard Zone.
+The hitbox defines a NON-BLOCKING sensor; it can be visually transparent.
+Hazard Zones must be active, or enabled by a key/switch. The generated
+world-object wrapper checks all active zones inside gameworlditems_after().
+
+The callback set with game_death_set_callback() gets:
+  GAME_HAZARD_ZONE_ENTERED  when the player first overlaps a zone;
+  GAME_HAZARD_ZONE_INSIDE   each subsequent update while overlapping;
+  GAME_HAZARD_ZONE_EXITED   when the player leaves all active zones.
+
+Existing GAME_DEATH_ZONE is an alias of GAME_HAZARD_ZONE_ENTERED. The engine
+does NOT kill the player, stop movement or reduce health on contact. That
+policy belongs to the game. INSIDE may fire 50 times per second at FPS_50;
+use your own timer for gradual health loss. See gametilemap.txt for a
+callback example, explicit death and respawn functions.

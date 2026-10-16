@@ -1,0 +1,98 @@
+SIDBOX IDE / GamerGirl — Stage 3.25
+PLAYER DEATH CALLBACKS, TILE HAZARDS & DEATH ZONES
+=================================================
+BASELINE: Stage 3.24 Music Triggers and SD .map Loading.
+
+WHAT THIS ADDS
+--------------
+1. Tilemap hazard cells (collision value GAME_TILE_HAZARD = 5) now dispatch
+   a death callback automatically during game_tile_player_run(). The old
+   player_physics.touch_type field remains available for polling.
+2. New Game Object behaviour: Death Zone (touch = player death). Hitbox
+   contact emits the same callback, with reason GAME_DEATH_ZONE.
+3. Programmer can also call game_death_trigger(GAME_DEATH_SCRIPT, x, y)
+   to dispatch a scripted death (for enemies, falling off a map, etc).
+4. A death only fires ONCE until the player is reset/rearmed. Physics pauses
+   while dead. The game programmer controls lives, animations and respawns.
+5. Gameworlditems_after() automatically detects Death Zones when used with
+   the Advanced Platformer tilemap. Your main.c needs NO additional call
+   in its game loop. Death Zones are sensors (not platforms or solid walls).
+6. Two new Advanced Platformer pages under the F8 cheatsheet.
+
+INSTALL
+-------
+A. Extract Stage3.25 changed-files archive over your Stage 3.24 IDE source.
+B. Rebuild the IDE.
+C. In the IDE, Save Design then choose Update Game Project to refresh:
+   gamehelpers/gametilemap.c/.h and gamehelpers/gameworldobjects.c/.h
+   plus the generated gameworlditems.c/.h/.txt and maingame.c.txt.
+   Update Project makes a timestamped ZIP backup before replacements.
+   It NEVER rewrites your main.c. SD .map data remains compatible.
+D. Add the CALLBACK FUNCTION and the ONE REGISTRATION LINE below to your
+   existing main.c. Regenerate maingame.c.txt contains the example too.
+
+EXACT GAME CODE (main.c; if you already use game_tile_player_t):
+---------------------------------------------------------------
+At file scope, above your game's main():
+
+    static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
+    {
+        (void)x; (void)y; (void)user;
+        if (reason == GAME_DEATH_TILE_HAZARD) {
+            /* Spikes / dangerous tilemap collision. */
+        } else if (reason == GAME_DEATH_ZONE) {
+            /* Placed invisible or visible Death Zone object. */
+        } else if (reason == GAME_DEATH_SCRIPT) {
+            /* Your enemy/projectile/script. */
+        }
+        /* Decide how to animate death, reduce lives, restart, etc. */
+    }
+
+In main(), immediately AFTER successful game_tile_player_start():
+
+    game_death_set_callback(on_player_death, NULL);
+
+When YOU decide to respawn (e.g. AFTER the death animation finishes):
+
+    game_tile_player_reset(&player_physics, spawn_x, spawn_y);
+
+This resets the death latch AND the player position/physics state.
+Do not call reset over and over inside the game loop while still inside the
+hazard; if you respawn within another lethal area it will be lethal again.
+
+Additional public API in gamehelpers/gametilemap.h:
+
+    game_death_set_callback(callback, user);
+    game_death_trigger(GAME_DEATH_SCRIPT, world_x, world_y);
+    game_death_is_dead();
+    game_death_rearm();    // For manually-managed player state only.
+
+HOW TO PLACE DEATH ZONES
+------------------------
+Select a PPB sprite in Game Designer, right-click Configure Game Object,
+choose "Death Zone (touch = player death)". Set Collision width and height;
+leave Active when the level starts enabled, or enable the object via a switch.
+Save Design and Update Game Project. Existing gameworlditems_after() handles it.
+Death Zones currently require an Advanced Platformer tilemap.
+
+IMPORTANT DESIGN NOTES
+----------------------
+- This initial V1 API manages ONE local player/character death latch.
+- No health/lives/game-over policy is hard-coded.
+- No timer, automatic death animation or auto-respawn is provided.
+- Death Zone tests use the player's final hitbox each frame. Tile hazards
+  additionally check intermediate physics steps for fast crossing.
+- Only death event interfaces and world object collision behaviour changed;
+  the existing SD .map file format is unchanged.
+- Update Project can overwrite your installed gamehelpers/ C/H sources;
+  back up custom changes first (IDE also creates a ZIP snapshot).
+
+TESTS PERFORMED ON HOST
+-----------------------
+C code: sanitized death event and collision tests pass for tile hazards,
+fast-swept hazards, manual death, Death Zone contact, disabled zones,
+one-shot callbacks and reset/rearm. Existing sliding spring, keys,
+trigger/switch, door and SD map loader regression tests pass.
+
+Qt6 IDE GUI was NOT compiled in this environment (Qt6 dev packages absent).
+Hardware testing remains for your real SIDBOX.
