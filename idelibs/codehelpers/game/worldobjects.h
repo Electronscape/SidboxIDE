@@ -1,4 +1,4 @@
-/* CoderGirl V1 - Dynamic World Objects: lifts, conveyors, springs.
+/* CoderGirl V1 - Dynamic World Objects: lifts, conveyors, springs, switches, doors.
    See gamehelpers/gameworldobjects.txt for the frame order and examples.
    Reuses existing spline/animation helpers; collision is world-relative.
 */
@@ -13,6 +13,8 @@
 #define GAME_OBJECT_LIFT      1u
 #define GAME_OBJECT_CONVEYOR  2u
 #define GAME_OBJECT_SPRING    3u
+#define GAME_OBJECT_TRIGGER   4u
+#define GAME_OBJECT_DOOR      5u
 
 typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
@@ -22,10 +24,19 @@ typedef struct {
     int32_t previous_x, previous_y; /* Previous position for carrying rider. */
     uint16_t width, height;
     int16_t conveyor_speed;     /* Pixels / frame, signed; for CONVEYOR. */
-    int16_t spring_strength;    /* Positive upward speed in px/frame. */
+    int16_t spring_strength;    /* Positive UPWARD launch speed in px/frame. */
+    int16_t spring_launch_x;    /* Horizontal launch px/frame: -left, +right, 0=vertical. */
     uint8_t allow_jump_boost;  /* 0 = launch only; 1 = add jump on NEW press. */
+    uint8_t touch_activation;  /* 0 = top landing; 1 = any-side contact. */
+    uint8_t spring_slide;      /* 0 = constant X push; 1 = friction/inertia X kickback. */
+    uint8_t spring_touching;   /* Internal: contact latch, rearmed when separated. */
     uint8_t type, active;
     uint8_t spring_triggered;      /* Set on landing/launch; cleared in update. */
+    uint8_t trigger_press;         /* 1 = FIRE2, 0 = enter trigger hitbox. */
+    uint8_t trigger_one_shot;      /* One-use triggers remove themselves. */
+    uint8_t trigger_touching;      /* Contact edge latch. */
+    uint8_t trigger_pressed;       /* FIRE2 edge latch. */
+    uint8_t trigger_fired;         /* Set for current trigger() check. */
 } game_world_object_t;
 
 /* Point this at the live physics fields of game_tile_player_t OR
@@ -46,6 +57,10 @@ typedef struct {
     uint8_t *coyote;           /* Tilemap only; NULL for basic platformer. */
     const int16_t *jump_speed;
     uint8_t before_jump_held; /* Internal: input state before physics. */
+    int32_t spring_x100; /* Internal horizontal spring speed (1/100 px/frame).
+                           Normal mode clears on landing; slide mode eases off. */
+    int32_t spring_remainder_x100; /* Internal subpixel accumulator for slide. */
+    uint8_t spring_sliding; /* Internal: active inertia mode from last spring. */
     /* Optional collision test for platform carrying. Returns 1 if the
        player's hitbox would collide at WORLD (x,y). Generated tilemap games
        connect this automatically; standalone projects can leave it NULL. */
@@ -72,6 +87,12 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
    No modification to the tilemap's own collision code. */
 void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                                game_world_player_t *player);
+/* Evaluate switches AFTER the normal player physics, one call per frame.
+   'pressed' is nonzero when FIRE2 is held. Returns number of fired switches.
+   Each object sets trigger_fired for the wrapper to apply its linked action. */
+uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,
+                                    int32_t x, int32_t y, uint16_t w, uint16_t h,
+                                    uint8_t pressed);
 void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,
                               int32_t camera_x, int32_t camera_y);
 

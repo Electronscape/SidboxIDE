@@ -6369,7 +6369,7 @@ void MainWindow::setupInterface()
     toolBar->addSeparator();
     QAction *apiCheatSheetAction = toolBar->addAction(QIcon(":/icons/toolbar_cheatsheet.png"), tr("Cheat Sheet [F8]"));
     apiCheatSheetAction->setShortcut(Qt::Key_F8);
-    apiCheatSheetAction->setToolTip(tr("Open the searchable Sidbox API Cheat Sheet"));
+    apiCheatSheetAction->setToolTip(tr("Open searchable SDK and Game Engine guides"));
 
     QAction *aboutIdeAction = toolBar->addAction(QIcon(":/icons/ide_icon_32x32.png"), tr("About IDE"));
 
@@ -8842,8 +8842,9 @@ void MainWindow::showApiCheatSheet()
                  */
                 tree->collapseAll();
 
-                if (item->parent()) {
-                    item->parent()->setExpanded(true);
+                for (QTreeWidgetItem *ancestor = item->parent();
+                     ancestor; ancestor = ancestor->parent()) {
+                    ancestor->setExpanded(true);
                 }
 
                 tree->setCurrentItem(item);
@@ -8886,14 +8887,28 @@ void MainWindow::showApiCheatSheet()
     const QString libraryRoot =
         QDir(libsRoot).filePath(QStringLiteral("libraries"));
 
+    const QString guidesPath =
+        QDir(libsRoot).filePath(QStringLiteral("docs/cheatsheet.json"));
     if (!QFileInfo::exists(apiRoot)
-        && !QFileInfo::exists(libraryRoot)) {
+        && !QFileInfo::exists(libraryRoot)
+        && !QFileInfo::exists(guidesPath)) {
         QMessageBox::information(
             this,
             tr("Cheat Sheet"),
-            tr("Neither the Sidbox API nor libraries folder could be found under:\n%1")
+            tr("SIDBOX API, libraries and guides could not be found under:\n%1")
                 .arg(QDir::toNativeSeparators(libsRoot)));
         return;
+    }
+
+    QJsonObject cheatsheetDocument;
+    QFile guidesFile(guidesPath);
+    if (guidesFile.open(QIODevice::ReadOnly)) {
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(
+            guidesFile.readAll(), &parseError);
+        if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+            cheatsheetDocument = document.object();
+        }
     }
 
     auto *page = new QWidget(m_editorTabs);
@@ -8904,7 +8919,7 @@ void MainWindow::showApiCheatSheet()
     layout->setSpacing(6);
 
     auto *title = new QLabel(
-        tr("Sidbox API & Libraries Cheat Sheet"),
+        tr("SIDBOX SDK & Game Engine Cheat Sheet"),
         page);
 
     QFont titleFont = title->font();
@@ -8914,7 +8929,7 @@ void MainWindow::showApiCheatSheet()
     auto *search = new QLineEdit(page);
     search->setObjectName(QStringLiteral("apiCheatSearch"));
     search->setPlaceholderText(
-        tr("Search API/library functions, constants, types, descriptions..."));
+        tr("Search guides, platformer features, API functions and examples..."));
     search->setClearButtonEnabled(true);
 
     auto *splitter = new QSplitter(Qt::Horizontal, page);
@@ -8989,6 +9004,8 @@ void MainWindow::showApiCheatSheet()
         QString category;
         QString libraryArchive;
         bool libraryEntry = false;
+        bool guideEntry = false;
+        QString example;
         int line = -1;
     };
 
@@ -9126,6 +9143,26 @@ void MainWindow::showApiCheatSheet()
             continue;
         }
 
+        // Curated quick-reference descriptions are useful even when the
+        // declaration has no doc comment. Keep the real source/prototype.
+        const QJsonObject documented =
+            cheatsheetDocument.value(QStringLiteral("entries"))
+                .toObject().value(name).toObject();
+        if (!documented.isEmpty()) {
+            QStringList explanation;
+            const QString summary =
+                documented.value(QStringLiteral("summary")).toString();
+            const QString notes =
+                documented.value(QStringLiteral("notes")).toString();
+            const QString example =
+                documented.value(QStringLiteral("example")).toString();
+            if (!summary.isEmpty()) explanation << summary;
+            if (!notes.isEmpty()) explanation << notes;
+            if (!example.isEmpty()) explanation << tr("Example:\n%1").arg(example);
+            if (!explanation.isEmpty())
+                chosen.description = explanation.join(QStringLiteral("\n\n"));
+        }
+
         if (chosen.description.isEmpty()) {
             chosen.description =
                 chosen.libraryEntry
@@ -9138,6 +9175,27 @@ void MainWindow::showApiCheatSheet()
 
         entries.append(chosen);
         addedNames.insert(name);
+    }
+
+    // The SDK has long shipped beginner guides in this JSON. Display them
+    // alongside the API catalogue, plus the advanced V1 game-engine guides.
+    const QJsonArray guides =
+        cheatsheetDocument.value(QStringLiteral("guides")).toArray();
+    for (const QJsonValue &value : guides) {
+        if (!value.isObject()) continue;
+        const QJsonObject guide = value.toObject();
+        const QString name = guide.value(QStringLiteral("title")).toString().trimmed();
+        if (name.isEmpty()) continue;
+
+        ApiEntry item;
+        item.guideEntry = true;
+        item.name = name;
+        item.category = guide.value(QStringLiteral("category"))
+                            .toString(QStringLiteral("Getting Started"));
+        item.signature = guide.value(QStringLiteral("summary")).toString();
+        item.description = guide.value(QStringLiteral("notes")).toString();
+        item.example = guide.value(QStringLiteral("example")).toString();
+        entries.append(item);
     }
 
     std::sort(
@@ -9161,24 +9219,34 @@ void MainWindow::showApiCheatSheet()
     QHash<QString, QTreeWidgetItem *> categoryItems;
 
     for (const ApiEntry &entry : std::as_const(entries)) {
-        QTreeWidgetItem *category =
-            categoryItems.value(entry.category, nullptr);
-
-        if (!category) {
-            category = new QTreeWidgetItem(tree);
-            category->setText(0, entry.category);
-            category->setExpanded(false);
-            category->setData(
-                0,
-                Qt::UserRole + 20,
-                QStringLiteral("category"));
-            categoryItems.insert(entry.category, category);
+        // Slash-separated guide categories become real nested tree branches:
+        // Game Engines -> Advanced Platformer -> Springers, Keys, etc.
+        QTreeWidgetItem *category = nullptr;
+        QString categoryPath;
+        const QStringList segments = entry.category.split(
+            QLatin1Char('/'), Qt::SkipEmptyParts);
+        for (const QString &untrimmed : segments) {
+            const QString segment = untrimmed.trimmed();
+            if (segment.isEmpty()) continue;
+            if (!categoryPath.isEmpty()) categoryPath += QLatin1Char('/');
+            categoryPath += segment;
+            QTreeWidgetItem *found = categoryItems.value(categoryPath, nullptr);
+            if (!found) {
+                found = category
+                    ? new QTreeWidgetItem(category)
+                    : new QTreeWidgetItem(tree);
+                found->setText(0, segment);
+                found->setExpanded(false);
+                found->setData(0, Qt::UserRole + 20, QStringLiteral("category"));
+                categoryItems.insert(categoryPath, found);
+            }
+            category = found;
         }
+        if (!category) continue;
 
         auto *item = new QTreeWidgetItem(category);
         item->setText(0, entry.name);
         item->setToolTip(0, entry.signature);
-
         item->setData(0, Qt::UserRole, entry.filePath);
         item->setData(0, Qt::UserRole + 1, entry.line);
         item->setData(0, Qt::UserRole + 2, entry.signature);
@@ -9187,6 +9255,8 @@ void MainWindow::showApiCheatSheet()
         item->setData(0, Qt::UserRole + 5, entry.name);
         item->setData(0, Qt::UserRole + 6, entry.libraryArchive);
         item->setData(0, Qt::UserRole + 7, entry.libraryEntry);
+        item->setData(0, Qt::UserRole + 8, entry.guideEntry);
+        item->setData(0, Qt::UserRole + 9, entry.example);
     }
 
     auto showItem = [=](QTreeWidgetItem *item) {
@@ -9205,9 +9275,43 @@ void MainWindow::showApiCheatSheet()
         const int line =
             item->data(0, Qt::UserRole + 1).toInt();
 
+        const bool isGuide = item->data(0, Qt::UserRole + 8).toBool();
         symbolLabel->setText(name);
+        if (isGuide) {
+            signatureLabel->clear();
+            const QString example = item->data(0, Qt::UserRole + 9).toString();
+            const QString asHtml = [](const QString &content) {
+                return content.toHtmlEscaped().replace(
+                    QLatin1Char('\n'), QStringLiteral("<br/>"));
+            }(signature);
+            QString html = QStringLiteral("<h3>What this covers</h3><p>%1</p>")
+                               .arg(asHtml);
+            if (!explanation.isEmpty()) {
+                html += QStringLiteral("<h3>Steps and notes</h3><p>%1</p>")
+                            .arg(explanation.toHtmlEscaped().replace(
+                                QLatin1Char('\n'), QStringLiteral("<br/>")));
+            }
+            if (!example.isEmpty()) {
+                html += QStringLiteral("<h3>Example / reference</h3><pre>%1</pre>")
+                            .arg(example.toHtmlEscaped());
+            }
+            description->setHtml(html);
+            sourceLabel->setText(tr("Guide: %1").arg(
+                item->data(0, Qt::UserRole + 4).toString().replace(
+                    QLatin1Char('/'), QStringLiteral(" → "))));
+            openSourceButton->setEnabled(false);
+            openSourceButton->setProperty("apiFilePath", QString());
+            copyPrototypeButton->setText(tr("Copy Example"));
+            copyPrototypeButton->setProperty("apiPrototype", example);
+            copyPrototypeButton->setEnabled(!example.isEmpty());
+            description->verticalScrollBar()->setValue(0);
+            return;
+        }
+
+        copyPrototypeButton->setText(tr("Copy Prototype"));
         signatureLabel->setText(signature);
         description->setPlainText(explanation);
+        description->verticalScrollBar()->setValue(0);
 
         const bool libraryEntry =
             item->data(
@@ -9265,7 +9369,8 @@ void MainWindow::showApiCheatSheet()
     connect(tree, &QTreeWidget::itemDoubleClicked,
             page,
             [this](QTreeWidgetItem *item, int) {
-                if (!item || item->childCount() > 0) {
+                if (!item || item->childCount() > 0
+                    || item->data(0, Qt::UserRole + 8).toBool()) {
                     return;
                 }
 
@@ -9315,60 +9420,34 @@ void MainWindow::showApiCheatSheet()
     connect(search, &QLineEdit::textChanged,
             page,
             [tree](const QString &text) {
-                const QString needle =
-                    text.trimmed();
-
-                for (int i = 0;
-                     i < tree->topLevelItemCount();
-                     ++i) {
-                    QTreeWidgetItem *category =
-                        tree->topLevelItem(i);
-
-                    bool categoryHasMatch = false;
-
-                    for (int j = 0;
-                         j < category->childCount();
-                         ++j) {
-                        QTreeWidgetItem *item =
-                            category->child(j);
-
+                const QString needle = text.trimmed();
+                // Recursive matching keeps both levels of category visible,
+                // and lets searches match guide text, examples, and category.
+                std::function<bool(QTreeWidgetItem *, bool)> filterItem =
+                    [&](QTreeWidgetItem *item, bool matchingParent) -> bool {
                         const QString searchable =
-                            item->text(0)
+                            item->text(0) + QLatin1Char(' ')
+                            + item->data(0, Qt::UserRole + 2).toString()
                             + QLatin1Char(' ')
-                            + item->data(
-                                  0,
-                                  Qt::UserRole + 2).toString()
+                            + item->data(0, Qt::UserRole + 3).toString()
                             + QLatin1Char(' ')
-                            + item->data(
-                                  0,
-                                  Qt::UserRole + 3).toString()
+                            + item->data(0, Qt::UserRole + 4).toString()
                             + QLatin1Char(' ')
-                            + item->data(
-                                  0,
-                                  Qt::UserRole + 4).toString();
-
-                        const bool match =
-                            needle.isEmpty()
-                            || searchable.contains(
-                                needle,
-                                Qt::CaseInsensitive);
-
-                        item->setHidden(!match);
-
-                        if (match) {
-                            categoryHasMatch = true;
-                        }
-                    }
-
-                    category->setHidden(
-                        !categoryHasMatch);
-
-                    if (!needle.isEmpty()) {
-                        category->setExpanded(true);
-                    } else {
-                        category->setExpanded(false);
-                    }
-                }
+                            + item->data(0, Qt::UserRole + 9).toString();
+                        const bool ownMatch = needle.isEmpty()
+                            || searchable.contains(needle, Qt::CaseInsensitive);
+                        const bool branchMatch = matchingParent || ownMatch;
+                        bool childMatch = false;
+                        for (int j = 0; j < item->childCount(); ++j)
+                            childMatch |= filterItem(item->child(j), branchMatch);
+                        const bool visible = branchMatch || childMatch;
+                        item->setHidden(!visible);
+                        if (item->childCount() > 0)
+                            item->setExpanded(!needle.isEmpty() && visible);
+                        return visible;
+                    };
+                for (int i = 0; i < tree->topLevelItemCount(); ++i)
+                    filterItem(tree->topLevelItem(i), false);
             });
 
     const int index =
@@ -9378,7 +9457,7 @@ void MainWindow::showApiCheatSheet()
 
     m_editorTabs->setTabToolTip(
         index,
-        tr("F8 — searchable Sidbox API & Libraries Cheat Sheet"));
+        tr("F8 — searchable SIDBOX guides, game engine and API reference"));
 
     m_editorTabs->setCurrentIndex(index);
 
@@ -9392,7 +9471,7 @@ void MainWindow::showApiCheatSheet()
     }
 
     statusBar()->showMessage(
-        tr("Sidbox API & Libraries Cheat Sheet ready — %1 items")
+        tr("SIDBOX Cheat Sheet ready — %1 guides and API items")
             .arg(entries.size()),
         3000);
 }

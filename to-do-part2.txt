@@ -1,3 +1,15 @@
+TRIGGERABLES:
+need something that can be switches, toggles, and can enable / disable another game objects.
+THIS would be especially useful for things like button presses to open a door.
+the triggerables should also be destructive so IF a player goes into its bounds, it will remove it self from the game,
+good for like "i've been in this room and unlocked the door in another room" or like collecting a key.
+ALTHOUGH saying that, GAME objects have this already. BUT triggerables would still be good to have
+
+On to the Collectables:
+Keys, might be handy if there was a drop down to select another game object to (enable/disable) too ?
+
+
+[DONE]
 movers when the player is on the platform will move towards a wall, but the player is not pushed away from the wall, so he gets stuck
 
 bug still in the jumping physics on the springs, they still combin the two momentums when pressing jump and bouncing on the spring they add and make the player jump REALLY high xD

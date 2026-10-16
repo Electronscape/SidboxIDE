@@ -2350,13 +2350,25 @@ void SidboxGameDesigner::syncCanvasSelection()
         if (primary < 0) {
             m_resourceTree->setCurrentItem(nullptr);
             m_resourceTree->clearSelection();
-        } else if (primary != preferred) {
-            for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
-                QTreeWidgetItem *row = *it;
-                if (row->data(0, Qt::UserRole).isValid()
-                    && row->data(0, Qt::UserRole).toInt() == primary) {
-                    m_resourceTree->setCurrentItem(row);
-                    break;
+        } else {
+            // Canvas picks a configured sprite's Game Objects alias, not its
+            // Sprites alias. Both remain independently selectable in the tree.
+            const QString desiredGroup = (m_resources.at(primary).kind == QStringLiteral("sprite")
+                && m_resources.at(primary).objectType != QStringLiteral("decoration"))
+                ? QStringLiteral("gameobject") : m_resources.at(primary).kind;
+            const QString currentGroup = m_resourceTree->currentItem()
+                ? m_resourceTree->currentItem()->data(0, Qt::UserRole + 1).toString() : QString();
+            if (primary != preferred || currentGroup != desiredGroup) {
+                for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+                    QTreeWidgetItem *row = *it;
+                    if (row->data(0, Qt::UserRole).isValid()
+                        && row->data(0, Qt::UserRole).toInt() == primary
+                        && row->data(0, Qt::UserRole + 1).toString() == desiredGroup) {
+                        if (row->parent()) row->parent()->setExpanded(true);
+                        m_resourceTree->setCurrentItem(row);
+                        m_resourceTree->scrollToItem(row);
+                        break;
+                    }
                 }
             }
         }
@@ -3385,6 +3397,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Moving platform / Lift"), QStringLiteral("lift"));
     type->addItem(tr("Conveyor"), QStringLiteral("conveyor"));
     type->addItem(tr("Spring / Bouncer"), QStringLiteral("spring"));
+    type->addItem(tr("Trigger / Switch"), QStringLiteral("trigger"));
+    type->addItem(tr("Door / Solid blocker"), QStringLiteral("door"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     form->addRow(tr("Behaviour"), type);
     auto *pickup = new GameComboBox(&dialog);
@@ -3400,6 +3414,36 @@ void SidboxGameDesigner::configureGameObject(int index)
     };
     auto *value = spin(0, 65535, old.objectValue);
     form->addRow(tr("Pickup value"), value);
+    auto *initiallyActive = new QCheckBox(tr("Active when the level starts"), &dialog);
+    initiallyActive->setChecked(old.objectInitiallyActive);
+    form->addRow(QString(), initiallyActive);
+    auto *targetObject = new GameComboBox(&dialog);
+    targetObject->addItem(tr("None (no linked object)"), QString());
+    for (const Resource &candidate : m_resources) {
+        if (candidate.kind != QStringLiteral("sprite") ||
+            candidate.objectType == QStringLiteral("decoration") ||
+            candidate.id == old.id) continue;
+        targetObject->addItem(tr("%1 [%2]").arg(candidate.name, candidate.objectType), candidate.id);
+    }
+    targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
+    targetObject->setToolTip(tr("Choose a placed game-object instance. Its permanent ID is saved, "
+                                    "so renaming and reordering don't break the link."));
+    form->addRow(tr("Activate/deactivate object"), targetObject);
+    auto *targetAction = new GameComboBox(&dialog);
+    targetAction->addItem(tr("No action"), QStringLiteral("none"));
+    targetAction->addItem(tr("Enable target"), QStringLiteral("enable"));
+    targetAction->addItem(tr("Disable target"), QStringLiteral("disable"));
+    targetAction->addItem(tr("Toggle target (ON / OFF)"), QStringLiteral("toggle"));
+    targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
+    form->addRow(tr("Linked action"), targetAction);
+    auto *triggerPress = new QCheckBox(tr("Require FIRE2 while touching (otherwise activate on touch)"), &dialog);
+    triggerPress->setChecked(old.triggerPress);
+    triggerPress->setToolTip(tr("FIRE2 is the second fire button; unlike FIRE it does not jump. "
+                                 "Press once per activation while overlapping the switch."));
+    form->addRow(QString(), triggerPress);
+    auto *triggerOneShot = new QCheckBox(tr("Remove switch after activation (one-shot)"), &dialog);
+    triggerOneShot->setChecked(old.triggerOneShot);
+    form->addRow(QString(), triggerOneShot);
     auto *respawn = spin(0, 65535, old.respawnFrames);
     form->addRow(tr("Respawn after frames (0 = never)"), respawn);
     auto *hitW = spin(1, 1024, old.hitWidth);
@@ -3409,7 +3453,27 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *conveyor = spin(-100, 100, old.conveyorSpeed);
     form->addRow(tr("Conveyor px/frame"), conveyor);
     auto *spring = spin(1, 100, old.springStrength);
-    form->addRow(tr("Spring launch strength"), spring);
+    form->addRow(tr("Spring upward launch (px/frame)"), spring);
+    auto *springLaunchX = spin(-40, 40, old.springLaunchX);
+    springLaunchX->setToolTip(tr("Horizontal spring trajectory: negative launches LEFT, "
+                                 "positive launches RIGHT, and 0 launches straight up. "
+                                 "Normal mode pushes constantly until landing; Slidy mode "
+                                 "gradually slows down, including after landing."));
+    form->addRow(tr("Spring sideways launch (− left / + right)"), springLaunchX);
+    auto *springTouch = new QCheckBox(tr("Activate on touch (any side)"), &dialog);
+    springTouch->setChecked(old.springTouch);
+    springTouch->setToolTip(tr("Off: spring launches only when the player lands on its top. "
+                                 "On: entering the spring hitbox from above, below or either side "
+                                 "launches the player. Fires once per contact; leave it to rearm."));
+    form->addRow(QString(), springTouch);
+    auto *springSlide = new QCheckBox(tr("Slidy kickback (inertia + friction)"), &dialog);
+    springSlide->setChecked(old.springSlide);
+    springSlide->setToolTip(tr("Off: normal sideways spring launch stays at full speed "
+                               "until landing. On: sideways momentum fades gradually "
+                               "in the air and continues to slide with greater friction "
+                               "on the ground. Joystick steering still works. "
+                               "Uses the Spring sideways launch setting."));
+    form->addRow(QString(), springSlide);
     auto *springJumpBoost = new QCheckBox(tr("Combine jump + spring launch (extra boost)"), &dialog);
     springJumpBoost->setChecked(old.springJumpBoost);
     springJumpBoost->setToolTip(tr("Off: spring launch strength alone. On: a newly pressed Jump "
@@ -3508,9 +3572,19 @@ void SidboxGameDesigner::configureGameObject(int index)
         const bool isObject = behaviour != QStringLiteral("decoration");
         pickup->setEnabled(behaviour == QStringLiteral("collectable"));
         value->setEnabled(behaviour == QStringLiteral("collectable"));
+        const bool isTrigger = behaviour == QStringLiteral("trigger");
+        const bool isKey = behaviour == QStringLiteral("collectable") && pickup->currentData().toInt() == 3;
+        initiallyActive->setEnabled(isObject);
+        targetObject->setEnabled(isTrigger || isKey);
+        targetAction->setEnabled(isTrigger || isKey);
+        triggerPress->setEnabled(isTrigger);
+        triggerOneShot->setEnabled(isTrigger);
         hitW->setEnabled(isObject); hitH->setEnabled(isObject);
         conveyor->setEnabled(behaviour == QStringLiteral("conveyor"));
         spring->setEnabled(behaviour == QStringLiteral("spring"));
+        springLaunchX->setEnabled(behaviour == QStringLiteral("spring"));
+        springTouch->setEnabled(behaviour == QStringLiteral("spring"));
+        springSlide->setEnabled(behaviour == QStringLiteral("spring"));
         springJumpBoost->setEnabled(behaviour == QStringLiteral("spring"));
         sfxPickup->setEnabled(behaviour == QStringLiteral("collectable"));
         sfxRespawn->setEnabled(behaviour == QStringLiteral("collectable"));
@@ -3533,6 +3607,8 @@ void SidboxGameDesigner::configureGameObject(int index)
             [enableFields](int) { enableFields(); });
     connect(animated, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
+    connect(pickup, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
     enableFields();
     // A late-created dialog is not part of setTheme()'s existing-combo pass.
     // Colour its popup views explicitly to match Stage 2.5 theme rules.
@@ -3582,7 +3658,15 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.objectValue = value->value();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
     r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
+    r.springLaunchX = springLaunchX->value();
+    r.springTouch = springTouch->isChecked();
+    r.springSlide = springSlide->isChecked();
     r.springJumpBoost = springJumpBoost->isChecked();
+    r.objectInitiallyActive = initiallyActive->isChecked();
+    r.targetObjectId = targetObject->currentData().toString();
+    r.targetAction = targetAction->currentData().toString();
+    r.triggerPress = triggerPress->isChecked();
+    r.triggerOneShot = triggerOneShot->isChecked();
     r.sfxPickup = sfxPickup->currentData().toString();
     r.sfxRespawn = sfxRespawn->currentData().toString();
     r.sfxStart = sfxStart->currentData().toString();
@@ -3802,6 +3886,42 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         return true;
     }
     const int np = pickups.size(), nw = platforms.size();
+    int nt = 0;
+    for (const Resource *r : platforms) if (r->objectType == QStringLiteral("trigger")) ++nt;
+    QHash<QString, QString> objectSlot; // Stable object ID -> generated live runtime instance.
+    for (int i = 0; i < np; ++i)
+        objectSlot.insert(pickups.at(i)->id, QStringLiteral("pickups[%1]").arg(i));
+    for (int i = 0; i < nw; ++i)
+        objectSlot.insert(platforms.at(i)->id, QStringLiteral("platforms[%1]").arg(i));
+    bool linkedKeys = false;
+    for (const Resource *r : pickups) if (r->pickupKind == 3 &&
+        r->targetAction != QStringLiteral("none") && !r->targetObjectId.isEmpty()) linkedKeys = true;
+    for (const Resource *r : pickups) {
+        if (r->pickupKind != 3 || r->targetAction == QStringLiteral("none") ||
+            r->targetObjectId.isEmpty()) continue;
+        if (!objectSlot.contains(r->targetObjectId)) {
+            if (error) *error = tr("Key '%1' links to a missing game object. Reassign its target.").arg(r->name);
+            return false;
+        }
+    }
+    for (const Resource *r : platforms) {
+        if (r->objectType != QStringLiteral("trigger") || r->targetAction == QStringLiteral("none") ||
+            r->targetObjectId.isEmpty()) continue;
+        if (!objectSlot.contains(r->targetObjectId)) {
+            if (error) *error = tr("Trigger '%1' links to a missing game object. Reassign its target.").arg(r->name);
+            return false;
+        }
+    }
+    auto linkedAction = [&](const Resource &r) -> QString {
+        if (r.targetAction == QStringLiteral("none") || r.targetObjectId.isEmpty()) return QString();
+        const QString target = objectSlot.value(r.targetObjectId);
+        if (target.isEmpty()) return QString();
+        const QString field = target + QStringLiteral(".active");
+        if (r.targetAction == QStringLiteral("enable")) return field + QStringLiteral(" = 1;");
+        if (r.targetAction == QStringLiteral("disable")) return field + QStringLiteral(" = 0;");
+        if (r.targetAction == QStringLiteral("toggle")) return field + QStringLiteral(" = (uint8_t)!") + field + QStringLiteral(";");
+        return QString();
+    };
     // Every sound reference must resolve to a real Sound resource. Name changes
     // are harmless because Game Designer stores persistent resource IDs.
     QHash<QString, const Resource *> soundById;
@@ -3809,7 +3929,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if (asset.kind == QStringLiteral("sound") && !asset.path.isEmpty())
             soundById.insert(asset.id, &asset);
     QSet<QString> usedSfx;
+    bool pickupSound = false;
     for (const Resource *obj : pickups) {
+        if (!obj->sfxPickup.isEmpty()) pickupSound = true;
         if (!obj->sfxPickup.isEmpty()) usedSfx.insert(obj->sfxPickup);
         if (obj->respawnFrames && !obj->sfxRespawn.isEmpty())
             usedSfx.insert(obj->sfxRespawn);
@@ -3859,6 +3981,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
              "    uint16_t player_w, uint16_t player_h, game_pickup_callback_t callback, void *user);\n";
     if (nw) H << "void gameworlditems_before(game_world_player_t *player);\n"
              "void gameworlditems_after(game_world_player_t *player);\n";
+    if (nt) H << "uint16_t gameworlditems_trigger(int32_t player_x, int32_t player_y,\n"
+                 "    uint16_t player_w, uint16_t player_h, uint8_t fire2_pressed);\n";
     H << "#endif\n";
     C << "/* GENERATED by CoderGirl. Regeneration overwrites this file. */\n"
          "#include \"gameworlditems.h\"\n"
@@ -3964,18 +4088,31 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
               << pickConst << ", " << r.objectValue << ")) return 0;\n"
               << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
               << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n"
-              << "    pickups[" << ix << "].respawn_frames = " << r.respawnFrames << ";\n";
+              << "    pickups[" << ix << "].respawn_frames = " << r.respawnFrames << ";\n"
+              << "    pickups[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n";
         } else {
             const QString kind = r.objectType == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
                 r.objectType == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
+                r.objectType == QStringLiteral("trigger") ? QStringLiteral("GAME_OBJECT_TRIGGER") :
+                r.objectType == QStringLiteral("door") ? QStringLiteral("GAME_OBJECT_DOOR") :
                 QStringLiteral("GAME_OBJECT_SPRING");
             C << "    if (!game_world_object_start(" << target << ", " << kind << ", "
               << sprite << ", " << r.x << ", " << r.y << ", "
               << r.hitWidth << ", " << r.hitHeight << ")) return 0;\n";
+            C << "    platforms[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n";
+            if (r.objectType == QStringLiteral("trigger")) {
+                C << "    platforms[" << ix << "].trigger_press = " << (r.triggerPress ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].trigger_one_shot = " << (r.triggerOneShot ? "1" : "0") << ";\n";
+            }
             if (r.objectType == QStringLiteral("conveyor"))
                 C << "    platforms[" << ix << "].conveyor_speed = " << r.conveyorSpeed << ";\n";
             if (r.objectType == QStringLiteral("spring")) {
                 C << "    platforms[" << ix << "].spring_strength = " << r.springStrength << ";\n";
+                C << "    platforms[" << ix << "].spring_launch_x = " << r.springLaunchX << ";\n";
+                C << "    platforms[" << ix << "].touch_activation = "
+                  << (r.springTouch ? "1" : "0") << ";\n";
+                C << "    platforms[" << ix << "].spring_slide = "
+                  << (r.springSlide ? "1" : "0") << ";\n";
                 C << "    platforms[" << ix << "].allow_jump_boost = "
                   << (r.springJumpBoost ? "1" : "0") << ";\n";
             }
@@ -4002,11 +4139,13 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
             if (r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) {
-                C << "    " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
-                C << "    sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n";
-                C << "    cg_loop_playing[" << i << "] = 1;\n"
-                  << "    cg_loop_gain[" << i << "] = 0;\n"
-                  << "    cg_loop_target[" << i << "] = 255;\n";
+                C << "    if (platforms[" << i << "].active) {\n"
+                  << "        " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
+                C << "        sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n";
+                C << "        cg_loop_playing[" << i << "] = 1;\n"
+                  << "        cg_loop_gain[" << i << "] = 0;\n"
+                  << "        cg_loop_target[" << i << "] = 255;\n"
+                  << "    }\n";
             }
         }
     }
@@ -4096,17 +4235,28 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                   << cSfxCall(r.sfxSpring, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
             }
         }
+        if (nt) C << "    if (player && player->x100 && player->y100 && player->width && player->height)\n"
+                    "        gameworlditems_trigger(*player->x100 / 100, *player->y100 / 100,\n"
+                    "            player->width, player->height, (getjoyport() & BTN_FIRE2) != 0);\n";
         C << "}\n\n";
     }
     if (np) {
         C << "uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,\n"
              "    game_pickup_callback_t callback, void *user)\n{\n";
-        if (!usedSfx.isEmpty()) {
+        if (pickupSound || linkedKeys) {
             C << "    uint8_t was_active[" << np << "];\n"
               << "    for (uint16_t i = 0; i < " << np
               << "; ++i) was_active[i] = pickups[i].active;\n";
         }
         C << "    uint16_t count = game_collectables_check(pickups, " << np << ", x, y, w, h, callback, user);\n";
+        for (int i = 0; i < np; ++i) {
+            const Resource &r = *pickups.at(i);
+            if (r.pickupKind != 3) continue;
+            const QString action = linkedAction(r);
+            if (action.isEmpty()) continue;
+            C << "    if (was_active[" << i << "] && !pickups[" << i << "].active) "
+              << action << "\n";
+        }
         if (!usedSfx.isEmpty()) {
             for (int i = 0; i < np; ++i) {
                 const Resource &r = *pickups.at(i);
@@ -4116,6 +4266,19 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
             }
         }
         C << "    return count;\n}\n\n";
+    }
+    if (nt) {
+        C << "uint16_t gameworlditems_trigger(int32_t x, int32_t y, uint16_t w, uint16_t h, uint8_t pressed)\n{\n"
+          << "    uint16_t fired = game_world_objects_trigger(platforms, " << nw
+          << ", x, y, w, h, pressed);\n";
+        for (int i = 0; i < nw; ++i) {
+            const Resource &r = *platforms.at(i);
+            if (r.objectType != QStringLiteral("trigger")) continue;
+            const QString action = linkedAction(r);
+            if (action.isEmpty()) continue;
+            C << "    if (platforms[" << i << "].trigger_fired) " << action << "\n";
+        }
+        C << "    return fired;\n}\n\n";
     }
     C << "void gameworlditems_draw(int32_t camera_x, int32_t camera_y)\n{\n";
     if (nw) C << "    game_world_objects_draw(platforms, " << nw << ", camera_x, camera_y);\n";
@@ -4153,7 +4316,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
          "========================================\n\n"
          "Regeneration replaces gameworlditems.c/.h/.txt. For hand-written notes,\n"
          "use a separate filename. YOUR main.c is never modified.\n\n"
-         "Configured objects: " << np << " collectable(s), " << nw << " moving/world object(s).\n"
+         "Configured objects: " << np << " collectable(s), " << nw << " world object(s) (including " << nt << " triggers).\n"
          "Each uses its own graphics instance and WORLD coordinates from Game Designer.\n\n"
          "After gameassets_init(), call gameworlditems_init().\n"
          "Each frame call gameworlditems_update(1) before player physics.\n";
@@ -4169,9 +4332,22 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "  world_player.jump_held = &player_physics.jump_held;\n"
                  "  world_player.coyote = &player_physics.coyote;\n"
                  "  world_player.jump_speed = &player_physics.jump_speed;\n"
+                 "Spring touch activation is per-object. OFF requires landing on top;\n"
+                 "ON launches on any hitbox contact, with no repeated bounce while overlapping.\n"
                  "Jump + spring is per-object. OFF uses spring strength alone,\n"
-                 "ON adds jump speed ONLY on a new Jump press at landing.\n";
+                 "ON adds jump speed ONLY on a new Jump press at contact.\n";
     if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
+    if (nt) G << "Switches and buttons run AUTOMATICALLY inside gameworlditems_after().\n"
+                 "It checks player contact and FIRE2, then applies the configured\n"
+                 "enable/disable/toggle target action. No extra main.c call is needed\n"
+                 "if your existing main.c already calls gameworlditems_after().\n"
+                 "The optional gameworlditems_trigger(...) API is available for\n"
+                 "custom loops that intentionally skip the normal after() step.\n"
+                 "Repeatable switches fire once per contact or button press.\n"
+                 "One-shot switches deactivate themselves. Targets may start disabled.\n"
+                 "A Door / Solid blocker is collidable while enabled and vanishes when disabled.\n"
+                 "Do NOT paint a permanent tilemap solid over a door: tilemap walls\n"
+                 "are separate and will continue blocking after the door disappears.\n";
     G << "Call gameworlditems_draw(camera_x,camera_y) after selecting the foreground buffer.\n"
          "Do not call offset_spline() on attached object splines: draw applies camera offset.\n"
          "Gameassets' drawworld() automatically excludes managed object sprites.\n\n"
@@ -4212,12 +4388,15 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
 // design. Recreated by Generate V1 Game Code; the user's main.c is untouched.
 bool SidboxGameDesigner::exportExampleMain(QString *error)
 {
-    int np = 0, nw = 0, moving = 0, animated = 0;
+    int np = 0, nw = 0, nt = 0, moving = 0, animated = 0;
     const Resource *playerResource = nullptr;
     for (const Resource &r : m_resources) {
         if (r.kind != QStringLiteral("sprite")) continue;
         if (r.objectType == QStringLiteral("collectable")) ++np;
-        else if (r.objectType != QStringLiteral("decoration")) ++nw;
+        else if (r.objectType != QStringLiteral("decoration")) {
+            ++nw;
+            if (r.objectType == QStringLiteral("trigger")) ++nt;
+        }
         if (r.objectType != QStringLiteral("decoration")) {
             moving += !r.objectSplineId.isEmpty();
             animated += r.objectAnimated;
@@ -4261,14 +4440,14 @@ movement and draws it using the camera. Do NOT call offset_spline() on it.
 READ THE GAME LOOP IN THIS ORDER
   wait for frame -> move objects -> carry rider BEFORE player physics
   -> run player physics -> land/bounce/conveyor AFTER player physics
-  -> check pickups -> update camera -> draw tiles -> draw objects
+  -> check pickups -> check switches -> update camera -> draw tiles -> draw objects
   -> draw player -> display frame.
 
 THIS PROJECT CURRENTLY CONTAINS
 )CG";
     out << "Tilemap: " << (hasMap ? "attached" : "not attached") << "\n"
         << "Game objects: " << np << " collectable(s), " << nw
-        << " lift/conveyor/spring object(s)\n"
+        << " lift/conveyor/spring/trigger/door object(s) (" << nt << " triggers)\n"
         << "Spline attachments: " << moving << "; sprite-frame animations: "
         << animated << "\n"
         << "Recognised player sprite: " << (hasPlayer ? spriteSymbol(*playerResource) : QStringLiteral("none"))
@@ -4295,14 +4474,37 @@ THIS PROJECT CURRENTLY CONTAINS
                     << "; value " << r.objectValue
                     << ". gameworlditems_check() triggers your callback.\n";
             } else if (r.objectType == QStringLiteral("spring")) {
-                out << "    Spring strength: " << r.springStrength << " (upwards launch).\n"
+                out << "    Spring upward launch: " << r.springStrength << " px/frame.\n"
+                    << "    Spring sideways launch: " << r.springLaunchX
+                    << " px/frame (negative LEFT; positive RIGHT; 0 straight up).\n"
+                    << "    Sideways behaviour: " << (r.springSlide ? "SLIDY INERTIA" : "NORMAL KICKBACK")
+                    << (r.springSlide ? ". Drag gradually slows movement; friction remains on landing.\n"
+                                      : ". Constant sideways velocity until landing.\n")
+                    << "    Solid walls stop sideways momentum in either mode.\n"
+                    << "    Spring activation: " << (r.springTouch ? "TOUCH (any side)" : "LAND ON TOP")
+                    << ". Touch mode launches once per contact and rearms after leaving.\n"
                     << "    Jump + spring boost: " << (r.springJumpBoost ? "ON" : "OFF")
                     << ". OFF = consistent spring-only velocity; ON = extra height when Jump\n"
                        "    is newly pressed at contact (requires jump_held/jump_speed binding).\n";
+            } else if (r.objectType == QStringLiteral("trigger")) {
+                out << "    Switch: " << (r.triggerPress ? "FIRE2 while touching" : "touch to activate")
+                    << (r.triggerOneShot ? "; one-shot.\n" : "; repeatable.\n");
+            } else if (r.objectType == QStringLiteral("door")) {
+                out << "    Solid door: blocks contact while active; disappears when disabled.\n";
             } else if (r.objectType == QStringLiteral("conveyor")) {
                 out << "    Conveyor speed: " << r.conveyorSpeed << " pixels/frame.\n";
             } else if (r.objectType == QStringLiteral("lift")) {
                 out << "    Lift: carries a player standing on its top surface.\n";
+            }
+            if ((r.objectType == QStringLiteral("trigger") ||
+                 (r.objectType == QStringLiteral("collectable") && r.pickupKind == 3)) &&
+                 !r.targetObjectId.isEmpty() && r.targetAction != QStringLiteral("none")) {
+                for (const Resource &target : m_resources) {
+                    if (target.id == r.targetObjectId) {
+                        out << "    Linked action: " << r.targetAction << " -> " << target.name << "\n";
+                        break;
+                    }
+                }
             }
             if (!r.objectSplineId.isEmpty()) {
                 QString splineName = QStringLiteral("unresolved (check the Game Designer path)");
@@ -4351,7 +4553,7 @@ It illustrates integration; it is NOT a replacement for your main.c.
 )CG";
     }
     if (hasObjects) {
-        out << R"CG(#include "gamehelpers/gameworlditems.h" /* All configured pickups/lifts/springs. */
+        out << R"CG(#include "gamehelpers/gameworlditems.h" /* All configured pickups/lifts/springs/triggers/doors. */
 )CG";
     }
     if (!m_splinePaths.isEmpty()) {
@@ -4533,8 +4735,9 @@ int main(int argc, char *argv[])
 )CG";
         if (nw) {
             out << R"CG(
-        /* 5. AFTER physics: check for landing on lifts, conveyor speed
-           and spring launch. The ordering around physics MATTERS. */
+        /* 5. AFTER physics: check for landing on lifts, conveyor speed,
+           spring launches and connected switches. FIRE2 operates switches
+           configured for button input. The ordering around physics MATTERS. */
         gameworlditems_after(&world_player);
 )CG";
         }
@@ -4580,7 +4783,7 @@ int main(int argc, char *argv[])
 )CG";
         if (hasObjects) {
             out << R"CG(
-        /* 10. Draw collectables, lifts, conveyors and springs.
+        /* 10. Draw collectables, lifts, conveyors, springs, switches and doors.
            They move/animate themselves and subtract camera ONCE.
            Don't also draw their original gameassets sprite copies. */
         gameworlditems_draw(camera_x, camera_y);
@@ -4671,8 +4874,9 @@ B. ONCE PER GAME FRAME, in this EXACT order, after gfx_lcdwait():
 )CG";
         if (nw) {
             out << R"CG(   gameworlditems_after(&world_player);
-   Why: a lift catches the player, a conveyor pushes, a spring launches
-   AFTER the usual movement and tile collision calculations.
+   Why: a lift catches the player, a conveyor pushes, a spring launches;
+   switches and FIRE2-triggered buttons ALSO activate automatically here.
+   This runs AFTER the usual movement and tile collision calculations.
 )CG";
         }
         if (np) {
@@ -4734,7 +4938,8 @@ REMEMBER
 - Regeneration will REFRESH this maingame.c.txt. Save personal notes elsewhere.
 - A sprite managed by gameworlditems is intentionally not drawn by
   gameassets' drawworld(); gameworlditems_draw() handles it instead.
-- World Objects supports top-surface interaction, NOT full solid sides.
+- Lifts/springs/conveyors use top contact; DOOR objects block all sides.
+- Never overlay a solid tilemap wall on a door you need to disable.
 - Ordinary sprites may need a world-to-screen camera projection.
 - Never copy these examples blindly over a working game's main.c.
 
@@ -5221,7 +5426,8 @@ bool SidboxGameDesigner::loadDesign()
         const QJsonObject object = a.value(QStringLiteral("gameObject")).toObject();
         const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
         if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
-                QStringLiteral("conveyor"), QStringLiteral("spring")}.contains(type)
+                QStringLiteral("conveyor"), QStringLiteral("spring"),
+                QStringLiteral("trigger"), QStringLiteral("door")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 4);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -5229,9 +5435,20 @@ bool SidboxGameDesigner::loadDesign()
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
         r.conveyorSpeed = qBound(-100, object.value(QStringLiteral("conveyorSpeed")).toInt(2), 100);
         r.springStrength = qBound(1, object.value(QStringLiteral("springStrength")).toInt(11), 100);
+        r.springLaunchX = qBound(-40, object.value(QStringLiteral("springLaunchX")).toInt(0), 40);
         // Safe opt-in: designs predating this flag cannot silently acquire
         // extra spring+jump velocity. Explicitly saved ON remains ON.
         r.springJumpBoost = object.value(QStringLiteral("springJumpBoost")).toBool(false);
+        r.springTouch = object.value(QStringLiteral("springTouch")).toBool(false);
+        r.springSlide = object.value(QStringLiteral("springSlide")).toBool(false);
+        r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
+        r.targetObjectId = object.value(QStringLiteral("targetObjectId")).toString();
+        r.targetAction = object.value(QStringLiteral("targetAction")).toString(QStringLiteral("none"));
+        if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
+                         QStringLiteral("toggle")}.contains(r.targetAction))
+            r.targetAction = QStringLiteral("none");
+        r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
+        r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
         r.sfxPickup = object.value(QStringLiteral("sfxPickup")).toString();
         r.sfxRespawn = object.value(QStringLiteral("sfxRespawn")).toString();
         r.sfxStart = object.value(QStringLiteral("sfxStart")).toString();
@@ -5376,7 +5593,15 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("hitHeight"), r.hitHeight);
             object.insert(QStringLiteral("conveyorSpeed"), r.conveyorSpeed);
             object.insert(QStringLiteral("springStrength"), r.springStrength);
+            object.insert(QStringLiteral("springLaunchX"), r.springLaunchX);
             object.insert(QStringLiteral("springJumpBoost"), r.springJumpBoost);
+            object.insert(QStringLiteral("springTouch"), r.springTouch);
+            object.insert(QStringLiteral("springSlide"), r.springSlide);
+            object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
+            object.insert(QStringLiteral("targetObjectId"), r.targetObjectId);
+            object.insert(QStringLiteral("targetAction"), r.targetAction);
+            object.insert(QStringLiteral("triggerPress"), r.triggerPress);
+            object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);
             object.insert(QStringLiteral("sfxPickup"), r.sfxPickup);
             object.insert(QStringLiteral("sfxRespawn"), r.sfxRespawn);
             object.insert(QStringLiteral("sfxStart"), r.sfxStart);
@@ -5785,6 +6010,29 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                     m_marqueeRect->setAcceptedMouseButtons(Qt::NoButton);
                     m_view->viewport()->setCursor(Qt::CrossCursor);
                     return true;
+                }
+                // Clicking an already-selected canvas sprite may not emit
+                // selectionChanged. Still reveal its correct tree alias.
+                if (clicked->data(0).isValid()) {
+                    const int id = clicked->data(0).toInt();
+                    if (id >= 0 && id < m_resources.size()) {
+                        const Resource &r = m_resources.at(id);
+                        const QString group = (r.kind == QStringLiteral("sprite")
+                            && r.objectType != QStringLiteral("decoration"))
+                            ? QStringLiteral("gameobject") : r.kind;
+                        for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+                            QTreeWidgetItem *entry = *it;
+                            if (entry->data(0, Qt::UserRole).isValid()
+                                && entry->data(0, Qt::UserRole).toInt() == id
+                                && entry->data(0, Qt::UserRole + 1).toString() == group) {
+                                QSignalBlocker block(m_resourceTree);
+                                if (entry->parent()) entry->parent()->setExpanded(true);
+                                m_resourceTree->setCurrentItem(entry);
+                                m_resourceTree->scrollToItem(entry);
+                                break;
+                            }
+                        }
+                    }
                 }
                 // Qt's native scene movement moves *all* selected sprites.
                 // Take just one undo snapshot for the entire group drag.

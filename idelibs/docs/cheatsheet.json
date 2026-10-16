@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "title": "SIDBOX CoderGirl Quick Reference and Beginner Guides",
-  "source": "SIDBOX SDK headers and firmware Core (13 Oct 2026); Stage 25 IPC SDK extensions",
+  "source": "SIDBOX SDK headers and firmware Core (13 Oct 2026); Stage 25 IPC SDK extensions; Stage 3.23 V1 Game Engine/Advanced Platformer guides (16 Oct 2026)",
   "entries": {
     "SBOS_CreateWindow": {
       "summary": "Create a CoderGirl GUI window. Pass a pointer to a CGWindow handle, position, size, title, and SBX_WF_* flags. Register its event procedure with SBOS_SetWindowProc().",
@@ -981,6 +981,181 @@
       "summary": "CoderGirl can build older V1 applets and newer V2 applets. For a new GUI project that uses Messenger, choose V2 (relocatable ARM ELF / CGARM).",
       "notes": "V1 is the original fixed-address applet format, mainly for existing programs. V2 uses relocatable applets and provides the modern per-applet execution environment.\nThe IPC functions documented here have been tested with V2 applets. Do not assume a V1 applet can use V2 IPC without separate compatibility support. Many standard GUI concepts apply to either format, but their build and memory models differ.",
       "example": "/* New project needing IPC?\n   Project format: V2 / CGARM\n\n   Maintaining an existing old applet?\n   Keep its original V1 settings unless deliberately porting it.\n*/"
+    },
+    {
+      "title": "01 - V1 games vs V2 GUI applets",
+      "category": "Game Engines/Foundations",
+      "summary": "Game Designer and its platformer helpers build classic V1 fixed-address SIDBOX games. The V2/CGARM GUI Designer workflow is separate.",
+      "notes": "Choose a V1 Gaming project for Game Designer, tilemaps, gfxbob_t sprites and gamehelpers. Use a V2 GUI project for windows/gadgets and relocatable GUI applets. Do not mix V1 game physics and V2 GUI startup code.\nGame Designer is a visual arranger and code generator, not a separate run-time executable engine.",
+      "example": "V1: Game Designer -> Generate V1 Game Code / Update Project...\nV2: GUI Designer -> .sbui -> generated GUI applet."
+    },
+    {
+      "title": "02 - Explore Game Designer",
+      "category": "Game Engines/Foundations",
+      "summary": "World canvas, resource tree, camera/LCD frame, tilemaps, splines and sprite instances are edited in Game Designer.",
+      "notes": "Open Game Designer in a V1 Gaming project. Add/import PPB sprites under Sprites; use the world canvas to position them. Backgrounds, sounds and palettes have their own resource categories.\nThe yellow 480x320 LCD frame represents the visible viewport; the world can be larger. Camera X/Y edits the current view. Right-click the world for context actions; middle-drag pans the editor.\nUse Tilemap Editor... for atlas artwork and collision, Save Design for the .sbgm file.",
+      "example": "Game Resources -> Sprites / Game Objects / Sounds / Backgrounds\nCanvas: click/select; drag to place; right-click for actions."
+    },
+    {
+      "title": "03 - Generate, update, build",
+      "category": "Game Engines/Foundations",
+      "summary": "Generate V1 Game Code exports game resources; Update Project refreshes helper sources, exported tilemap/splines, world objects and a tailored integration example.",
+      "notes": "After editing the .sbgm design, Save Design. Use Update Project... (under Game Resources) when you change a game object, helper setup or level. Review the update/backup details before proceeding.\nThe generated maingame.c.txt is an instructional reference for YOUR level. It is not compiled automatically as your real main.c. Compare its setup/frame order with main.c rather than assuming the IDE overwrote your game loop.\nGenerated .c/.h files are overwritten by regeneration; keep hand-written gameplay in main.c or other user-owned sources. The update process makes backup archives of affected generated files.",
+      "example": "Save Design -> Update Project... -> inspect maingame.c.txt -> Build.\nNever manually patch generated gameworlditems.c for a permanent change."
+    },
+    {
+      "title": "04 - World positions vs screen positions",
+      "category": "Game Engines/Foundations",
+      "summary": "Physics and collision use world coordinates; the renderer subtracts the camera position when drawing.",
+      "notes": "The 480x320 LCD is a window onto a possibly larger level. A sprite placed at world X=800 does not collide at its on-screen X coordinate. Use physics.x100 / 100 and physics.y100 / 100 (or the generated game loop values) for collection/collision.\nA placed game object uses its own canvas world coordinates and can optionally follow a spline. Avoid subtracting camera X/Y yourself when using the generated world-object draw function.",
+      "example": "gameworlditems_draw(camera_x, camera_y);\n/* Object collision uses WORLD positions, not camera-adjusted screen positions. */"
+    },
+    {
+      "title": "01 - Advanced Platformer overview",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "V1 Advanced Platformer currently provides tilemap collision, player physics, collectables, keys, switches, doors, moving lifts, conveyors, springs, splines, animations and sound events.",
+      "notes": "This section documents the REAL controls in the current Game Designer. A game object starts as a PPB sprite INSTANCE, then gains gameplay behaviour in Game Object Properties.\nYou can assemble puzzles (key -> door), moving hazards/platforms, secret pressure plates, launchers and sliding jumps. The game still owns its overall loop and any custom logic such as score/health.\nChange an option, Save Design, use Update Project..., then test on SIDBOX.",
+      "example": "Example puzzle: Key [Disable target] -> Door / Solid blocker\nExample traversal: Touch spring [launch right + slidy] -> moving lift"
+    },
+    {
+      "title": "02 - Tilemaps, walls, slopes and hazards",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Tilemap Editor stores artwork separately from collision: floors, walls, slopes, one-way surfaces, hazards and door-marked tiles.",
+      "notes": "Open Tilemap Editor... and edit/export the level. The graphics map uses 16-bit IDs; collision uses separate 8-bit IDs. The helper resolves normal terrain collisions. Hazard/door tile meanings require your game logic where indicated by the tilemap helper.\nThe generated level references a PPB atlas on the SD card, loaded once with a size/checksum check. Do not assume the C level embeds atlas pixels. Copy the CURRENT atlas to SD.\nVERY IMPORTANT: A switch-controlled Door / Solid blocker must not overlap permanently solid tilemap collision, or the invisible solid tile remains after disabling the door.\nSee gamehelpers/gametilemap.txt in your game project for rendering and atlas-lifetime details.",
+      "example": "Tilemap Editor... -> Export Tilemap -> Update Project...\nStartup: game_level1_load_atlas() after gameassets_init()\nShutdown: game_level1_unload_atlas() before gameassets_shutdown()"
+    },
+    {
+      "title": "03 - Player physics and frame order",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "The advanced tilemap player helper handles jumping, gravity, collisions and slopes. World objects must update before and after player physics in the proper order.",
+      "notes": "Use the actual project-generated maingame.c.txt as the source of truth for your level and includes. Player physics runs once per VBlank. Normal jumps retain variable height (short release, long hold); springs use a separate fixed launch arc unless intentional extra jump boost is enabled.\nThe generated world-player bindings connect physics position, vertical velocity, on-ground and optional jump state. Do not mix the basic platformer and tilemap physics controllers on one player.\nOrdering is essential for carrying, spring launch, doors and button switches.",
+      "example": "/* Representative call order INSIDE the game loop: */\ngameworlditems_update(1);\ngameworlditems_before(&world_player);\ngame_tile_player_run(&player_physics, getjoyport(), 1);\ngameworlditems_after(&world_player);\n/* Collectables after physics, before draw: */\n/* gameworlditems_check(...); */\n/* gameworlditems_draw(camera_x, camera_y) during drawing. */"
+    },
+    {
+      "title": "04 - Sprites and Game Objects are two views",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "A configured Game Object is still a sprite. Selecting it on the canvas reveals its Game Objects tree alias; the same instance remains under Sprites.",
+      "notes": "Sprites holds the artwork placement and image reference. Game Objects holds the behaviour of configured sprites; they are not two separate copies.\nClick an ordinary sprite on the world canvas and Sprites is highlighted. Click a configured object and Game Objects is highlighted. You can also select its Sprites entry to edit ordinary sprite properties.\nRight-click a sprite or its tree entry and select Configure Game Object... to assign behaviour. Its stable instance ID makes links resistant to renaming/reordering.",
+      "example": "Game Resources -> Sprites -> [your sprite]\nGame Resources -> Game Objects -> [same configured sprite]\nRight-click -> Configure Game Object..."
+    },
+    {
+      "title": "05 - Hitboxes and activation state",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Game-object behaviours use a configurable rectangular collision width and height, plus an Active when the level starts option.",
+      "notes": "For an object to have gameplay behaviour, it must reference a PPB sprite at 100% scale. Adjust Collision width / height to fit the intended touch or solid area, not necessarily the image size. Game Designer displays a dashed hitbox outline for configured objects.\nActive when the level starts OFF is useful for hidden/unlocked later objects; a trigger or key can Enable one. A disabled object is not drawn or processed as an active collision target.\nAn ordinary Decoration has no special gameplay behaviour.\nEditing artwork is separate from configuring one placed instance.",
+      "example": "Configure Game Object...\nBehaviour: Door / Solid blocker\nCollision width: 24   Collision height: 48\nActive when the level starts: ON"
+    },
+    {
+      "title": "06 - Collectables: coins, health, gems and keys",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Collectable supports Coin, Health, Key and Gem pickup types, a numeric value, optional animation/spline, pickup sound and respawn timing.",
+      "notes": "Add a PPB sprite (100% scale), Configure Game Object... -> Collectable. Choose Pickup type and Pickup value. Use Respawn after frames = 0 for a permanent pickup or a positive number for a timed respawn.\nThe generated gameworlditems_check(...) performs player-bound collision after movement. Your game callback determines score/health/gameplay rewards for ordinary pickups; do not assume selecting Health edits your player-health variable automatically.\nA Key can additionally perform a linked Enable/Disable/Toggle action, detailed below. Sound effects are optional.",
+      "example": "Behaviour: Collectable\nPickup type: Coin / Health / Key / Gem\nPickup value: 10\nRespawn after frames: 0 (never)"
+    },
+    {
+      "title": "07 - Walkthrough: key unlocks a door",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Use a Key collectable to Disable a placed Door / Solid blocker elsewhere in the level. No manually typed numeric IDs are needed.",
+      "notes": "1. Place a PPB sprite for the door at 100% scale. Configure its Behaviour as Door / Solid blocker; size its collision rectangle and leave Active when the level starts checked.\n2. Place a second PPB sprite for the key at 100%. Configure as Collectable -> Key.\n3. In the KEY properties, set Activate/deactivate object to your door sprite and Linked action to Disable target.\n4. Set key Respawn after frames to 0 if it should be collected once.\n5. Save Design and Update Project... to regenerate the binding. Collecting the key deactivates the door (both appearance and blocking).\nDo not paint permanently solid map tiles in the openable doorway.",
+      "example": "DOOR: Behaviour = Door / Solid blocker; Active at start = ON\nKEY: Behaviour = Collectable; Pickup type = Key\n     Activate/deactivate object = [door]\n     Linked action = Disable target\n     Respawn after frames = 0"
+    },
+    {
+      "title": "08 - Doors and solid blockers",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "A Door / Solid blocker is a full-solid rectangular runtime object. Disabling it also removes its live solid collision.",
+      "notes": "Configure a sprite as Door / Solid blocker, size its hitbox, and choose its startup active state. A key or switch can Enable, Disable or Toggle it. An active door blocks player movement; a disabled door is hidden/non-blocking.\nUse Active at start OFF + Enable target for a barrier that appears later, or ON + Disable target for an unlockable door. Unlike a normal lift, the door is solid rather than a one-way platform.\nDo not leave permanent solid tilemap collision inside its doorway. For unusually high speeds or moving blockers, test collision on real hardware.",
+      "example": "Start ON + Disable target  = unlocked/opened door\nStart OFF + Enable target  = new barrier appears\nStart ON + Toggle target   = open/close switch"
+    },
+    {
+      "title": "09 - Switches: touch or FIRE2",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Trigger / Switch controls another placed object with Enable, Disable or Toggle. It can activate on contact or require FIRE2 while touching.",
+      "notes": "1. Configure a PPB sprite as Trigger / Switch. Set its Collision width / height as a sensor region.\n2. Select Activate/deactivate object; choose Linked action.\n3. Leave Require FIRE2 while touching unchecked for a touch plate. Check it for a deliberate button-activated switch (FIRE2 is the second fire button, not the normal Jump FIRE).\n4. For a repeatable switch, leave Remove switch after activation OFF. It rearms after a new touch, or a new FIRE2 press while touching. Holding contact does not toggle the door each frame.\n5. Save Design -> Update Project.... The existing gameworlditems_after() call handles switches in the normal generated game loop.",
+      "example": "Behaviour: Trigger / Switch\nActivate/deactivate object: [door]\nLinked action: Toggle target (ON / OFF)\nRequire FIRE2 while touching: ON\nRemove switch after activation: OFF"
+    },
+    {
+      "title": "10 - One-shot triggers and room discovery",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "A trigger can perform its linked action once and remove itself. Useful for secrets, opening another room, and single-use pressure plates.",
+      "notes": "Configure Trigger / Switch with the desired target/action, then check Remove switch after activation (one-shot). With FIRE2 unchecked, entering its hitbox activates it. Afterwards that trigger is disabled and no longer displayed/processed.\nSet the TARGET initially inactive and use Enable for a hidden item or passage that appears after entering a room. Set target initially active and choose Disable to open an already-closed barrier.\nThis is an in-level action, not an automatic persistent save to SD. Keeping a door unlocked across game restarts requires your game save logic.",
+      "example": "INVISIBLE/DECORATED SENSOR: Trigger / Switch\nTarget: [remote door]   Linked action: Disable target\nRequire FIRE2: OFF      Remove after activation: ON"
+    },
+    {
+      "title": "11 - Springers: normal bounce",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Spring / Bouncer launches the player upward when landing on top. Its upward strength and extra-jump option are independently configurable.",
+      "notes": "Configure a PPB sprite as Spring / Bouncer. Spring upward launch is measured in pixels per frame. The normal mode triggers only on a landing from above.\nA spring normally overrides the regular jump impulse and uses the controlled shorter spring arc; HOLDING Jump does not secretly add extra height. Combine jump + spring launch is an explicit optional boost when a NEW Jump press coincides with contact (requires jump physics bindings).\nSet Spring sideways launch to zero for a purely vertical bounce. Each successful bounce may play its configured launch sound.",
+      "example": "Behaviour: Spring / Bouncer\nSpring upward launch (px/frame): 11\nSpring sideways launch: 0\nActivate on touch (any side): OFF\nCombine jump + spring launch: OFF"
+    },
+    {
+      "title": "12 - Springers: touch and directional launches",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "A spring can trigger when touched from ANY side and launch left, right or vertically, without requiring a landing from above.",
+      "notes": "Enable Activate on touch (any side). Contact from above, below, left or right triggers the spring once; the player must leave the hitbox before it can rearm.\nSpring sideways launch: negative launches LEFT, positive launches RIGHT, zero is vertical. This is independent of the upward strength and of Slidy kickback.\nYou can build bumper walls, sideways cannons, or ceiling springs. Use modest initial strengths and a correctly sized hitbox; very large values can send the player through nearby scenery between frames.",
+      "example": "SPRING A: Upward 11, Sideways -6, Touch ON  -> up and LEFT\nSPRING B: Upward 11, Sideways +6, Touch ON  -> up and RIGHT\nSPRING C: Upward 11, Sideways  0, Touch OFF -> land to bounce"
+    },
+    {
+      "title": "13 - Springers: slidy inertia and jump boost",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Slidy kickback applies decaying horizontal momentum after a spring launch, including a ground skid; the old rigid kickback is still available.",
+      "notes": "Slidy kickback OFF: the sideways launch stays constant until landing, then stops.\nSlidy kickback ON: the initial sideways impulse gradually loses speed in the air and has stronger friction on the ground. Steering still works; walls stop the slide. The spring sideways launch value controls direction and initial kick.\nThe added Combine jump + spring launch setting is SEPARATE and should usually stay OFF until you intentionally want a stronger spring. Existing projects default the newer options OFF.\nThis mode is per spring, so normal springs and slidy springs can coexist.",
+      "example": "Behaviour: Spring / Bouncer\nSpring sideways launch: +8\nActivate on touch (any side): ON\nSlidy kickback (inertia + friction): ON\nCombine jump + spring launch: OFF"
+    },
+    {
+      "title": "14 - Moving lifts and platforms",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Moving platform / Lift can carry the player on its top while travelling along a configured spline path.",
+      "notes": "Place a platform sprite and configure as Moving platform / Lift. Assign Movement spline if it should travel; otherwise it remains at its placed coordinates.\nThe generated helper handles swept landings and attempts to carry the player without embedding them in solid tilemap walls or slope interiors (when an attached collision map exists). Sideways carry stops at a wall even if the platform continues beneath the rider.\nLift surfaces are one-way from above; they are not solid ceilings or general vertical walls. Optional sound events cover movement start/move/stop/reversal.",
+      "example": "Behaviour: Moving platform / Lift\nMovement spline: [lift_path]\nCollision width/height: fit the platform top\nOptional sound: Start / Move / Stop / Reverse"
+    },
+    {
+      "title": "15 - Conveyors",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Conveyor platforms move the player sideways while they stand on top, with a signed speed and optional ambient audio.",
+      "notes": "Configure the sprite as Conveyor, adjust Collision width/height and Conveyor px/frame. Negative values move LEFT, positive values move RIGHT. As with lifts, it acts from the top rather than as a solid wall.\nA conveyor can also be attached to a Movement spline for a travelling belt. Test interaction near walls and platform edges. The ambient sound can be given a radius and fading controls.",
+      "example": "Behaviour: Conveyor\nConveyor px/frame: -2 (left) / +2 (right)\nMovement spline: None or [path]\nAmbient sound: optional"
+    },
+    {
+      "title": "16 - Splines: move objects through a level",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "A spline is a set of editor control points used to move sprites/objects along a path; optional pauses can be placed at nodes.",
+      "notes": "On the world canvas, right-click -> Create Spline, add/drag nodes, and edit point X/Y or pause frames through the spline properties. Export Spline Paths to C or use Update Project... to refresh the generated game helpers.\nIn an object's Game Object Properties, select Movement spline. Collectables, lifts, conveyors and springs can combine spline motion with their behaviour and sprite animation.\nDo not manually subtract the camera during generated object drawing, or use offset_spline() on attached objects (the renderer handles coordinates).",
+      "example": "Canvas: right-click -> Create Spline\nGame Object Properties -> Movement spline -> [named path]\nUpdate Project... -> generated splinepaths.c/.h"
+    },
+    {
+      "title": "17 - Sprite animation on objects",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Game objects can animate frames from a PPB atlas while their behaviour (pickup, spring, platform, etc.) continues running.",
+      "notes": "Tick Animate sprite frames. Configure First frame (0 based), Number of frames and Frames per picture. Modes are Loop, Ping-pong, or Once. A sprite can animate and move along a spline simultaneously.\nKeep sprite sheet dimensions/cell layout consistent with the actual PPB. The generic Sprite Animation helper can also be used in hand-written game C.",
+      "example": "Animate sprite frames: ON\nFirst frame: 0  Number of frames: 4\nFrames per picture: 5\nAnimation mode: Loop"
+    },
+    {
+      "title": "18 - Tile atlas animation",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Tilemap graphics IDs and atlas tile animations are managed separately from placed Game Object sprite animation.",
+      "notes": "Open Tilemap Editor... to set animation sequences in the tile atlas. The runtime advances shared atlas animation by graphics ID with game_tilemap_animation_tick(1) per VBlank. There is no need to add a world object for every animated tile.\nThe atlas PPB on SD must be the same current artwork that the generated level validates. Regenerate/export the level and update SD assets after editing atlas graphics.",
+      "example": "game_tilemap_animation_tick(1); // once per VBlank\n/* Then blit the visible tiles with game_tilemap_blit_view(...). */"
+    },
+    {
+      "title": "19 - Sound effects, radius and channels",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Game Object Properties can link existing Sound resources to pickup, respawn, lift, conveyor and spring events.",
+      "notes": "Add/import WAV sounds under Sounds, configure the SIDBOX audio channel, and select those resources in the Game Object Properties sound section. Events are generated automatically for the supported object type.\nOptional Audio radius and fade frames help with spatial effects for applicable sounds. Shared channels interrupt/reconfigure one another, so choose channels deliberately. Triggerable links have no dedicated switch sound field in the current dialog; add a separate sound event in your game code if needed.",
+      "example": "Game Resources -> Sounds -> [WAV sound]\nGame Object Properties -> SOUND / AUDIO -> choose event sound\nUpdate Project... -> regenerated event wrappers"
+    },
+    {
+      "title": "20 - Troubleshooting checklist",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Use these checks when a door does not unlock, a spring will not bounce, or generated game behaviour seems missing.",
+      "notes": "1. Did you Save Design, then Update Project... after changing behaviour?\n2. Is the sprite a real PPB at 100% scale, not a placeholder or background?\n3. Does the object hitbox overlap the player path?\n4. Is the target a configured game object, selected in the dropdown? A deleted target will produce a generation error.\n5. Is the target initially active/inactive as the action expects?\n6. Is the door ALSO painted as permanent solid tilemap collision? Remove that collision from its opening.\n7. Does main.c follow maingame.c.txt, including before -> physics -> after, pickup checks and draw?\n8. Is the latest tile atlas PPB copied to SD, and loaded at startup?\n9. Are you using Jump/FIRE versus FIRE2 as intended?\n10. Avoid hand-editing generated gameworlditems.c; change the .sbgm design and regenerate.",
+      "example": "A key unlock did nothing?\nCheck: Key -> target = correct Door -> Linked action = Disable\nCheck: door start active ON, no permanent solid tile in opening\nCheck: gameworlditems_check(...) runs after player movement."
+    },
+    {
+      "title": "21 - Puzzle recipes to try",
+      "category": "Game Engines/Advanced Platformer",
+      "summary": "Combine documented features without any new engine code: secret doors, timed pickups, moving springs, reversible switches and sliding traversal puzzles.",
+      "notes": "Secret exit: a one-shot touch trigger disables a remote door.\nWall switch: a repeatable FIRE2 Trigger / Switch toggles a door each press.\nHidden treasure: a key enables an initially inactive Gem collectable.\nTimed coin trail: moving/animated collectables with a respawn delay.\nSpring gauntlet: touch springs with opposite left/right horizontal launches and Slidy ON.\nElevator puzzle: moving lift on a spline carries the player up to a key which disables a door.\nRemember: target actions affect objects in the current running level; persistent state across reloads is not automatically saved.",
+      "example": "Trigger -> [Door] Disable + one-shot ON\nKey -> [Gem] Enable (Gem initially inactive)\nSpring -> sideways +8, Touch ON, Slidy ON"
     }
   ]
 }

@@ -35,8 +35,11 @@ objects[0].conveyor_speed = 1;
 game_world_object_start(&objects[1], GAME_OBJECT_SPRING,
                         &spring_sprite, spring_sprite.drawx, spring_sprite.drawy, 32, 16);
 objects[1].spring_strength = 11;
+objects[1].spring_launch_x = 0; /* 0 straight up, -6 up-left, +6 up-right. */
 /* Spring only = repeatable launch speed, independent of Jump. */
 objects[1].allow_jump_boost = 0;
+/* Optional: 1 = activate if touched on any side; 0 = land on top (default). */
+objects[1].touch_activation = 0;
 
 // A lift with an optional animated sprite and an editable spline path.
 game_world_object_start(&objects[2], GAME_OBJECT_LIFT,
@@ -115,7 +118,8 @@ IMPORTANT LIMITATIONS OF THIS FIRST VERSION
   from their PREVIOUS to CURRENT world positions. This catches falling onto
   a rising lift even if they cross between rendered frames. Horizontal
   overlap is checked at the crossing time, not just at the frame end.
-- This is TOP-SURFACE interaction, not solid sides or undersides.
+- Normal springs/lifts/conveyors use the top surface only. Touch-mode
+  springs also detect sides and undersides.
 - Upward-moving players intentionally pass through the platform from below.
 - The existing tilemap still handles ordinary floors, walls and slopes.
 - When this design has an attached tilemap, CoderGirl automatically binds
@@ -127,7 +131,8 @@ IMPORTANT LIMITATIONS OF THIS FIRST VERSION
   and world_player.collision_context for collision-aware carrying. Without a
   callback, sideways carrying retains legacy, unchecked behaviour.
 - Movement is still one-way from above: platforms are not solid ceilings.
-- Springs launch only on falling/landing (not on side contact).
+- Springs default to landing from above. Enable "Activate on touch (any side)"
+  to launch on side/underside contact or any crossing of the hitbox.
 - Sprites, if present, need their OWN gfxbob_t instances and should be
   top-left origin / 100% scale. The image and hitbox sizes may differ.
 - Do NOT use offset_spline() on attached world objects. The drawing helper
@@ -148,7 +153,7 @@ Every successful spring launch sets object->spring_triggered to 1.
 The generated gameworlditems_after() uses that flag to play the configured
 launch WAV. The next game_world_objects_update() clears it automatically.
 Do not infer a launch from a held Jump button; the flag represents an
-actual successful swept platform collision.
+actual successful launch (including touch-activated springs).
 
 IMPORTANT SOUND CHANNEL NOTE
 ----------------------------
@@ -156,3 +161,115 @@ When multiple events use the same sound channel, they WILL interrupt or
 reconfigure one another. Set Sounds > Channel appropriately in Game Resources.
 The Game Designer writes sound events to the generated gameworlditems.c; this
 worldobjects.c helper does not own or load samples.
+
+STAGE 3.19 — DIRECTIONAL SPRING TRAJECTORIES
+-------------------------------------------
+A spring now has two independent launch speeds:
+  spring_strength = 11;   Upwards, pixels per frame. Always positive.
+  spring_launch_x = 0;  Sideways, signed pixels per frame.
+
+Examples:
+  spring_launch_x = -6;  Launches up and LEFT.
+  spring_launch_x = +6;  Launches up and RIGHT.
+  spring_launch_x =  0;  Launches straight UP (previous behaviour).
+
+Set these in Game Designer -> Game Objects -> Spring properties. The
+Update Project action will export both fields into gameworlditems.c.
+Do not edit generated code. Designs from earlier IDE versions default
+the new horizontal launch to zero and keep their existing vertical speed.
+
+Horizontal spring momentum persists while airborne and stops on landing.
+Ordinary left/right joystick movement can still steer the player. If a
+world collision callback is connected (automatically for generated
+advanced-tilemap projects), the push stops on a solid wall, without
+passing through it. Keep game_world_player_t persistent across frames:
+static game_world_player_t world_player = {0};
+
+IMPORTANT: Normal springs are top-contact and upward-facing. This version
+supports straight-up, up-left and up-right trajectories. Touch activation
+launches UP (and optionally sideways) from any contact side. Launching DOWN
+would require a separate vertical-direction control.
+Horizontal speed is a constant, not an accelerating impulse; choose
+modest values first to keep the player controllable. No change to main.c,
+no firmware changes, and no need to modify the tilemap graphics renderer.
+
+STAGE 3.20 — TOUCH-ACTIVATED SPRINGS
+-----------------------------------
+Game Designer -> Game Objects -> Spring properties ->
+  [ ] Activate on touch (any side)
+
+OFF (default, including existing .sbgm designs): only a landing on the
+spring's top triggers the bounce, preserving older collision behaviour.
+
+ON: any contact with the spring's collision hitbox triggers its upward and
+sideways launch, including touching its sides or underside. A swept test
+checks movement of both player and spring, so fast contact is detected.
+Touch launches do NOT move the player to the top of the spring. A spring
+triggers only once while touching; it rearms after the player separates.
+The spring sound plays once for each successful launch.
+
+The sideways trajectory, jump+spring boost option, sprites, animations and
+movement splines continue to work unchanged. If you update your IDE, use
+Update Project to copy the refreshed gameworldobjects helper and regenerate
+gameworlditems.c after changing a spring's contact mode.
+
+STAGE 3.21 — SLIDY SPRING KICKBACK (OPTIONAL INERTIA)
+---------------------------------------------------
+Game Designer -> Game Objects -> Spring properties ->
+  [ ] Slidy kickback (inertia + friction)
+
+OFF (default; all existing designs): spring sideways speed remains constant
+in the air and stops instantly on landing, exactly as before.
+
+ON: a spring with nonzero Sideways launch imparts horizontal inertia.
+Speed drops by 6% each airborne frame and 14% each ground frame, carrying
+momentum onto the ground for a brief skid. The player retains ordinary
+left/right steering. Solid walls halt the added spring momentum.
+As the strength approaches zero it stops, with fractional movement tracked
+so the last few pixels don't abruptly disappear. This is independent of
+'Activate on touch' and 'Combine jump + spring launch': any combination
+can be used. A vertical-only spring (sideways = 0) has no X slide.
+
+In generated gameworlditems.c, each enabled spring sets spring_slide = 1.
+Old designs load springSlide = false; the code helper starts springs with
+spring_slide = 0. Game projects need Update Game Project after installing
+the changed IDE. The game_world_player_t adapter must persist across frames
+(static or long-lived, zero initialized), as for existing spring trajectories.
+
+STAGE 3.22 — LINKED TRIGGERS, SWITCHES, KEYS AND DOORS
+-----------------------------------------------------
+In Game Designer, configure a placed PPB sprite at 100% scale as either
+Trigger / Switch, Door / Solid blocker, or Collectable (Pickup type Key).
+
+For a switch or Key pickup:
+  Activate/deactivate object: select any other configured game object.
+  Linked action: Enable target, Disable target or Toggle target.
+Target links are saved as stable object IDs, not sprite names. Renaming or
+moving a game object will not break the link.
+
+For a Trigger / Switch:
+  [ ] Require FIRE2 while touching: ON = use button 2, OFF = touch hitbox.
+  [ ] Remove switch after activation: ON = disappears after first activation.
+With removal OFF, touch switches rearm when the player leaves the hitbox,
+and FIRE2 switches rearm on release; holding FIRE2 does not repeat.
+
+For a locked door:
+  Configure Door / Solid blocker and leave Active when level starts ON.
+  Configure a Key or Switch with target = that door and action = DISABLE.
+  A disabled Door vanishes and no longer blocks the player.
+  IMPORTANT: do NOT also mark the tilemap cells under the door as solid.
+  Static tilemap wall collision is independent of the Door's active flag.
+
+To make something appear on activation, uncheck Active when level starts
+on the TARGET game object; then choose Enable target on the switch/key.
+
+gameworlditems_after(world_player) checks switches automatically when called
+after the platformer/tile player physics, including FIRE2. No new main.c
+call is required if your game already uses the generated before()/after()
+wrappers. Key actions run inside your existing gameworlditems_check().
+The optional gameworlditems_trigger(x,y,w,h,fire2_pressed) remains available
+for custom loops that do not use gameworlditems_after().
+
+Update Game Project refreshes the runtime helper and generated world files,
+while keeping main.c and existing game sources untouched. Older designs
+start all objects active and contain no switch/key target links.

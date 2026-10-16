@@ -79,7 +79,15 @@ private:
         int objectValue = 10;
         int hitWidth = 16, hitHeight = 16;
         int conveyorSpeed = 2, springStrength = 11;
+        int springLaunchX = 0; // Signed horizontal spring launch in pixels/frame; 0 = straight up.
         bool springJumpBoost = false; // Opt-in only, including older designs without this field.
+        bool springTouch = false; // OFF = land on top; ON = touch from any direction.
+        bool springSlide = false; // OFF = constant sideways push; ON = momentum with friction.
+        bool objectInitiallyActive = true; // Default for all old designs.
+        QString targetObjectId; // Stable resource ID; never a tree index or name.
+        QString targetAction = QStringLiteral("none"); // enable, disable, toggle.
+        bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
+        bool triggerOneShot = false; // Destroy/hide trigger after firing.
         // Stage 3.12: sound references are stable IDs of Sounds in Game Resources.
         // Empty ID = no sound. They are NEVER hard-coded filesystem paths.
         QString sfxPickup, sfxRespawn, sfxStart, sfxMove, sfxStop;
