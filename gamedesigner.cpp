@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QFont>
 #include <QFormLayout>
 #include <QGraphicsItem>
@@ -1346,6 +1347,15 @@ void SidboxGameDesigner::buildUi()
     m_buildPaletteButton->setToolTip(tr("Generates palette files only in gamepalettes/. "
         "Does not create or modify PPB images or change any resource paths."));
     resourcesLayout->addWidget(m_buildPaletteButton);
+    // Project preparation belongs next to Game Resources, not on the world
+    // canvas toolbar. The narrow resource column can still resize freely.
+    auto *updateProject = new QPushButton(tr("Update Project..."), resourcesPanel);
+    updateProject->setMinimumWidth(0);
+    updateProject->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    updateProject->setToolTip(tr("Back up and refresh installed game helpers, export splines/tiles, "
+                                 "and regenerate V1 code plus maingame.c.txt in one operation."));
+    resourcesLayout->addWidget(updateProject);
+    connect(updateProject, &QPushButton::clicked, this, [this]() { updateGameProject(); });
     m_resourceTree->setToolTip(tr("Drag files from Project Files here, or right-click a category to add resources."));
     m_resourceTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_resourceTree, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -2916,7 +2926,7 @@ QString SidboxGameDesigner::spriteSymbol(const Resource &r) const
 }
 
 // Only offer to copy missing C/H/TXT templates; never overwrite modified helpers.
-bool SidboxGameDesigner::installMissingWorldHelpers(QString *error)
+bool SidboxGameDesigner::installMissingWorldHelpers(QString *error, bool prompt)
 {
     bool pickups = false, worlds = false, animations = false, splines = false;
     for (const Resource &r : m_resources) {
@@ -2960,7 +2970,7 @@ bool SidboxGameDesigner::installMissingWorldHelpers(QString *error)
     if (pending.isEmpty()) return true;
     QStringList files;
     for (const Copy &c : pending) files << QDir(dest).relativeFilePath(c.to);
-    if (QMessageBox::question(this, tr("Install Missing Game Helpers?"),
+    if (prompt && QMessageBox::question(this, tr("Install Missing Game Helpers?"),
         tr("These helpers are needed for your configured game objects:\n\n%1\n\n"
            "Install the missing files? Existing source and guides will NOT be overwritten.")
            .arg(files.join(QStringLiteral("\n"))),
@@ -3765,6 +3775,232 @@ Happy coding! This document explains the pieces; YOUR main.c owns the game.
     return true;
 }
 
+void SidboxGameDesigner::updateGameProject()
+{
+    // This command deliberately operates on the currently opened .sbgm only.
+    // An explicit confirmation and a timestamped backup precede every write.
+    if (m_filePath.isEmpty() || !m_valid) return;
+    const QDir project(QFileInfo(m_filePath).absolutePath());
+    const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+    if (!templates.exists()) {
+        QMessageBox::warning(this, tr("Update Game Project"),
+            tr("Could not find the bundled game helper templates."));
+        return;
+    }
+
+    // Refresh installed helpers and add dependencies needed by this design.
+    // No unrelated helper is added, and .txt guides are never replaced.
+    QSet<QString> needed;
+    if (m_tilemapEnabled) needed.insert(QStringLiteral("tilemap"));
+    bool hasSpline = false;
+    for (const SplinePath &path : m_splinePaths)
+        if (path.points.size() >= 2) hasSpline = true;
+    if (hasSpline) needed.insert(QStringLiteral("spline"));
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        needed.insert(r.objectType == QStringLiteral("collectable")
+                          ? QStringLiteral("collectables") : QStringLiteral("worldobjects"));
+        needed.insert(QStringLiteral("animation"));
+        needed.insert(QStringLiteral("spline"));
+    }
+    const QDir installed(project.filePath(QStringLiteral("gamehelpers")));
+    const QStringList known = templates.entryList({QStringLiteral("*.c")}, QDir::Files, QDir::Name);
+    for (const QString &name : known) {
+        const QString base = QFileInfo(name).completeBaseName();
+        if (QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".c")))
+            || QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".h"))))
+            needed.insert(base);
+    }
+    // Make sure the required templates are all present before touching disk.
+    QStringList helperNames;
+    for (const QString &base : needed) helperNames << base;
+    helperNames.sort();
+    for (const QString &base : helperNames) {
+        for (const QString &ext : {QStringLiteral(".c"), QStringLiteral(".h")}) {
+            if (!QFileInfo::exists(templates.filePath(base + ext))) {
+                QMessageBox::warning(this, tr("Update Game Project"),
+                    tr("Missing SDK helper template: %1").arg(templates.filePath(base + ext)));
+                return;
+            }
+        }
+    }
+
+    // This is also the explicit write-set for the backup. New files won't
+    // exist in the snapshot, and the user's main.c is never in the write-set.
+    QSet<QString> outputs;
+    outputs.insert(QFileInfo(m_filePath).absoluteFilePath());
+    outputs.insert(QStringLiteral("gameassets/gameassets.c"));
+    outputs.insert(QStringLiteral("gameassets/gameassets.h"));
+    outputs.insert(QStringLiteral("gamehelpers/gameworlditems.c"));
+    outputs.insert(QStringLiteral("gamehelpers/gameworlditems.h"));
+    outputs.insert(QStringLiteral("gamehelpers/gameworlditems.txt"));
+    outputs.insert(QStringLiteral("maingame.c.txt"));
+    if (hasSpline
+        || QFileInfo::exists(installed.filePath(QStringLiteral("splinepaths.h")))) {
+        // saveDesign also refreshes previously exported paths even if the
+        // last spline was just deleted, so their originals need backing up.
+        outputs.insert(QStringLiteral("gamehelpers/splinepaths.c"));
+        outputs.insert(QStringLiteral("gamehelpers/splinepaths.h"));
+    }
+    if (m_tilemapEnabled) {
+        outputs.insert(QStringLiteral("gamelevels/level1.c"));
+        outputs.insert(QStringLiteral("gamelevels/level1.h"));
+    }
+    for (const QString &base : helperNames) {
+        const QString targetBase = QStringLiteral("gamehelpers/game") + base;
+        outputs.insert(targetBase + QStringLiteral(".c"));
+        outputs.insert(targetBase + QStringLiteral(".h"));
+        // Only missing beginner guides get installed; existing ones stay intact.
+        if (!QFileInfo::exists(project.filePath(targetBase + QStringLiteral(".txt")))
+            && QFileInfo::exists(templates.filePath(base + QStringLiteral(".txt"))))
+            outputs.insert(targetBase + QStringLiteral(".txt"));
+    }
+    QStringList paths;
+    for (const QString &path : outputs) paths << path;
+    paths.sort();
+    QStringList replacing, adding;
+    for (const QString &p : paths) {
+        if (QFileInfo::exists(QDir::isAbsolutePath(p) ? p : project.filePath(p))) replacing << p;
+        else adding << p;
+    }
+
+    QMessageBox confirm(this);
+    confirm.setIcon(QMessageBox::Warning);
+    confirm.setStyleSheet(QStringLiteral("QMessageBox, QPushButton, QCheckBox, QTextEdit { border-radius: 0px; }"));
+    confirm.setWindowTitle(tr("Update Game Project — Confirm"));
+    confirm.setText(tr("Back up and update the current game project?"));
+    confirm.setInformativeText(tr(
+        "CoderGirl will refresh existing game helper C/H files from the SDK, "
+        "export the current spline paths and tilemap (if present), then regenerate "
+        "gameassets, gameworlditems and maingame.c.txt.\n\n"
+        "Any edits in replaced helpers or generated files will be overwritten. "
+        "A timestamped backup is made FIRST.\n\n"
+        "Your main.c and existing .txt beginner guides are NOT changed.\n\n"
+        "Replace %1 existing files; create up to %2 missing files.")
+        .arg(replacing.size()).arg(adding.size()));
+    confirm.setDetailedText(tr("FILES TO REPLACE:\n%1\n\nFILES TO CREATE:\n%2")
+        .arg(replacing.isEmpty() ? tr("(none)") : replacing.join(QStringLiteral("\n")),
+             adding.isEmpty() ? tr("(none)") : adding.join(QStringLiteral("\n"))));
+    auto *embed = new QCheckBox(tr("Embed sprite PPB graphics in generated C (normally load from SD card)"), &confirm);
+    embed->setChecked(false);
+    confirm.setCheckBox(embed);
+    auto *proceed = confirm.addButton(tr("Back Up and Update"), QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.setDefaultButton(qobject_cast<QPushButton *>(confirm.button(QMessageBox::Cancel)));
+    confirm.exec();
+    if (confirm.clickedButton() != proceed) return;
+
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    const QString backupFolder = project.filePath(QStringLiteral(".codergirl-backups/updates/") + stamp);
+    QDir backup(backupFolder);
+    if (!QDir().mkpath(backupFolder)) {
+        QMessageBox::warning(this, tr("Update Game Project"), tr("Cannot create backup folder:\n%1").arg(backupFolder));
+        return;
+    }
+    for (const QString &relative : replacing) {
+        const QString src = QDir::isAbsolutePath(relative) ? relative : project.filePath(relative);
+        // .sbgm is inside the project in normal use. Restrict backup targets
+        // to project files, never copy a path outside the project tree.
+        const QString safeName = project.relativeFilePath(src);
+        if (safeName == QStringLiteral("..") || safeName.startsWith(QStringLiteral("../"))
+            || QDir::isAbsolutePath(safeName)) {
+            QMessageBox::warning(this, tr("Update Game Project"),
+                tr("Unsafe backup path: %1").arg(src));
+            return;
+        }
+        const QString dest = backup.filePath(safeName);
+        if (!QDir().mkpath(QFileInfo(dest).absolutePath()) || !QFile::copy(src, dest)) {
+            QMessageBox::warning(this, tr("Update Game Project"),
+                tr("Backup failed; project update was NOT started.\n%1").arg(src));
+            return;
+        }
+    }
+
+    // Only the template-backed helper C/H files are deliberately replaced.
+    // Their paired .txt guides are installed when missing, never overwritten.
+    QString error;
+    for (const QString &base : helperNames) {
+        const QString installedBase = QStringLiteral("game") + base;
+        for (const QString &ext : {QStringLiteral(".h"), QStringLiteral(".c"), QStringLiteral(".txt")}) {
+            const QString output = installed.filePath(installedBase + ext);
+            if (ext == QStringLiteral(".txt") && QFileInfo::exists(output)) continue;
+            QFile source(templates.filePath(base + ext));
+            if (ext == QStringLiteral(".txt") && !source.exists()) continue;
+            if (!source.open(QIODevice::ReadOnly)) {
+                error = tr("Cannot read template: %1").arg(source.fileName()); break;
+            }
+            QByteArray bytes = source.readAll();
+            if (ext == QStringLiteral(".c")) {
+                bytes.replace(QStringLiteral("\"%1.h\"").arg(base).toUtf8(),
+                              QStringLiteral("\"%1.h\"").arg(installedBase).toUtf8());
+            }
+            if (!QDir().mkpath(QFileInfo(output).absolutePath())) {
+                error = tr("Cannot create folder for: %1").arg(output); break;
+            }
+            QSaveFile file(output);
+            if (!file.open(QIODevice::WriteOnly)
+                || file.write(bytes) != bytes.size() || !file.commit()) {
+                file.cancelWriting();
+                error = tr("Cannot install helper: %1").arg(output); break;
+            }
+        }
+        if (!error.isEmpty()) break;
+    }
+    // saveDesign auto-updates previously exported paths/level; explicitly
+    // export again to cover first-time exports as well.
+    if (error.isEmpty() && !saveDesign()) error = tr("Saving the design failed.");
+    if (error.isEmpty() && hasSpline && !exportSplinePaths(false))
+        error = tr("Spline export failed.");
+    if (error.isEmpty() && m_tilemapEnabled && !exportTilemap(false, true))
+        error = tr("Tilemap export failed.");
+    if (error.isEmpty() && !generateGameCodeCore(embed->isChecked(), true))
+        error = tr("V1 game code generation failed.");
+    if (!error.isEmpty()) {
+        // Restore known outputs, using atomic replacement. The originals
+        // remain in the backup folder even if rollback itself fails.
+        QStringList restoreFailures;
+        for (const QString &relative : replacing) {
+            const QString destination = QDir::isAbsolutePath(relative)
+                ? relative : project.filePath(relative);
+            const QString from = backup.filePath(project.relativeFilePath(destination));
+            QFile original(from);
+            if (!original.open(QIODevice::ReadOnly)) {
+                restoreFailures << destination;
+                continue;
+            }
+            QSaveFile restored(destination);
+            const QByteArray bytes = original.readAll();
+            if (!restored.open(QIODevice::WriteOnly)
+                || restored.write(bytes) != bytes.size() || !restored.commit()) {
+                restored.cancelWriting();
+                restoreFailures << destination;
+            }
+        }
+        for (const QString &relative : adding) {
+            const QString created = QDir::isAbsolutePath(relative)
+                ? relative : project.filePath(relative);
+            if (QFileInfo::exists(created) && !QFile::remove(created))
+                restoreFailures << created;
+        }
+        setDirty(true); // The in-memory design may differ from restored .sbgm.
+        const QString recovery = restoreFailures.isEmpty()
+            ? tr("Files were restored to their pre-update state.")
+            : tr("Automatic recovery could not restore these files:\n%1\n"
+                 "Recover them manually from the backup folder.")
+                  .arg(restoreFailures.join(QStringLiteral("\n")));
+        QMessageBox::critical(this, tr("Update Game Project — Incomplete"),
+            tr("The update stopped: %1\n\n%2\n\nBackup location:\n%3")
+               .arg(error, recovery, backupFolder));
+        if (assetFilesChanged) assetFilesChanged();
+        return;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    QMessageBox::information(this, tr("Game Project Updated"),
+        tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
+           "Your original main.c and existing beginner guides are untouched.\n\n"
+           "Backups: %1").arg(backupFolder));
+}
+
 void SidboxGameDesigner::generateGameCode()
 {
     if (m_filePath.isEmpty() || !saveDesign()) return;
@@ -3793,6 +4029,11 @@ void SidboxGameDesigner::generateGameCode()
             QMessageBox::Cancel) != QMessageBox::Yes) return;
     }
 
+    generateGameCodeCore(choice == QMessageBox::No, false);
+}
+
+bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
+{
     bool anyWorldObject = false;
     bool anyAttachedSpline = false;
     for (const Resource &r : m_resources) {
@@ -3801,17 +4042,18 @@ void SidboxGameDesigner::generateGameCode()
         if (!r.objectSplineId.isEmpty()) anyAttachedSpline = true;
     }
     QString integrationError;
-    if (anyWorldObject && !installMissingWorldHelpers(&integrationError)) {
+    if (anyWorldObject && !installMissingWorldHelpers(&integrationError, !batchMode)) {
         QMessageBox::warning(this, tr("Game Object Dependencies"), integrationError);
-        return;
+        return false;
     }
-    if (anyAttachedSpline && !exportSplinePaths(false)) return;
+    if (anyAttachedSpline && !exportSplinePaths(false)) return false;
 
     SidboxGameCodeGen::Request request;
     request.designDirectory = QFileInfo(m_filePath).absolutePath();
-    request.outputDirectory = output;
+    request.outputDirectory = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gameassets"));
     request.dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
-    request.embedPixels = choice == QMessageBox::No;
+    request.embedPixels = embedPixels;
     for (const Resource &r : m_resources) {
         SidboxGameCodeGen::Asset a;
         a.name = r.name; a.kind = r.kind; a.plane = r.plane;
@@ -3834,18 +4076,18 @@ void SidboxGameDesigner::generateGameCode()
     const auto result = SidboxGameCodeGen::generate(request);
     if (!result.ok) {
         QMessageBox::warning(this, tr("V1 Game Code Generation"), result.error);
-        return;
+        return false;
     }
     integrationError.clear();
     if (!exportWorldItems(&integrationError)) {
         QMessageBox::warning(this, tr("Game World Object Generation"),
             tr("Game assets were generated, but world objects were not: %1").arg(integrationError));
-        return;
+        return false;
     }
     if (!exportExampleMain(&integrationError)) {
         QMessageBox::warning(this, tr("Mock Main Generation"),
             tr("Game assets were generated, but maingame.c.txt was not: %1").arg(integrationError));
-        return;
+        return false;
     }
     if (assetFilesChanged) assetFilesChanged();
     QString message = tr("Generated gameassets/gameassets.c and gameassets.h.\n\n"
@@ -3866,7 +4108,8 @@ void SidboxGameDesigner::generateGameCode()
     if (!result.warnings.isEmpty())
         message += QStringLiteral("\n\n") + tr("Warnings:")
             + QStringLiteral("\n• ") + result.warnings.join(QStringLiteral("\n• "));
-    QMessageBox::information(this, tr("V1 Game Code Generated"), message);
+    if (!batchMode) QMessageBox::information(this, tr("V1 Game Code Generated"), message);
+    return true;
 }
 
 bool SidboxGameDesigner::loadDesign()

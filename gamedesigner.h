@@ -136,9 +136,11 @@ private:
     void importPngAsPpb();
     void exportSelectedC();
     void generateGameCode();
+    void updateGameProject();
+    bool generateGameCodeCore(bool embedPixels, bool batchMode);
     void configureGameObject(int index);
     void refreshObjectHitbox();
-    bool installMissingWorldHelpers(QString *error);
+    bool installMissingWorldHelpers(QString *error, bool prompt = true);
     bool exportWorldItems(QString *error);
     bool exportExampleMain(QString *error);
     QString splineSymbol(int index) const;
