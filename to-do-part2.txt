@@ -1,16 +1,42 @@
+movers when the player is on the platform will move towards a wall, but the player is not pushed away from the wall, so he gets stuck
+
+bug still in the jumping physics on the springs, they still combin the two momentums when pressing jump and bouncing on the spring they add and make the player jump REALLY high xD
+when copying and pasting game assets in the canvas, the panning is working mostly, but it still moves up by maybe 1 or 2 pixels each time? (its better than what it was though!)
+default collapse the Files in project
+only expand them if theres a problem with the file (on compile)
+
+
+[done]
+bug - i think - when copying and pasting objects (or sprites), when i paste the canvas view port jumps to the top left again. i have to keep repositioning the view so i can see the newly pasted item
+
+and...
+with game objects, it might be nice to now attach sound effects.
+spring would trigger the sound effects when it launches,
+mover have say 3 sound options, one when moving, one when starting and another when stopped, maybe a 4th if changing direction?
+convayrs, probably just maybe has a ambient sound, SOO could we maybe have these playin the audio (obviously if its looped it will loop anyway) but these could also fade out an pan to where ever they are on screen?
+collectables, am sure just would be one sound, (BUT they might be worth havin a respawn timer and a sound attached if they DO respawn)
+
+
+[DONE]
+super jump on springs to be fix (we just did this)
+
+
+
+[DONE]
+spline fnuction update: additional
+for the spline, is it possible to have a delay at each point?
+so essentially we could have a pause at selected points?
+example this could be useful for a moving bridge on a mover, starts at the left pauses for xframes, then moves to the right (along the spline), pauses for x frames, before looping back .
+each point should have the ability to have x frame pause, so not every point needs a pause (set to zero) i would like it tho if the default is 0 pause though
+
+[DONE]
 tile editor needs an undo/redo feature (ctrl+z undo, ctrl+y | shift+ctrl+z redo)
 an possible might be nicer to have the tile editor as a button next to the centra view on LCD ?
-
 
 the calculator, could we have a text box that shows real number results too?
 doing 3/2 works a treat but it rounds up, (i get it for binary stuff) BUT sometimes i like to see the floating result too. THIS might mean makin the calculator a slightly taller to accomdate the "real value result" answer text box?
 
-
 the multiselector in the game canvas doesne work if theres a background there, it selects the background (rightly so) but we could get the multiselector to work if the backgrounds are locked?
-
-
-
-
 
 [done]
 1: a middle click on the canvas so i can pan the view, like the way it does in the TileMap editor!

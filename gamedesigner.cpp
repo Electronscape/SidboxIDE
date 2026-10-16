@@ -26,6 +26,8 @@
 #include <QDateTime>
 #include <QFont>
 #include <QFormLayout>
+#include <QFrame>
+#include <QGroupBox>
 #include <QGraphicsItem>
 #include <QApplication>
 #include <QGraphicsPixmapItem>
@@ -1140,7 +1142,7 @@ void SidboxGameDesigner::editSplineProperties(int index)
 
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Spline Properties - %1").arg(original.name));
-    dialog.resize(560, 530);
+    dialog.resize(630, 550);
     // Follow the IDE theme, and never introduce rounded Qt controls.
     const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
     dialog.setStyleSheet(styleSheet() + QStringLiteral(
@@ -1169,13 +1171,16 @@ void SidboxGameDesigner::editSplineProperties(int index)
 
     auto *help = new QLabel(tr("Edit the exact world coordinates below. "
                                "Point 1 is the start; values are in pixels. "
+                               "Pause holds the sprite at that point for extra game frames "
+                               "(0 means no delay). For looping paths, the last point's "
+                               "pause applies before travelling back to the start. "
                                "Select a numbered row before removing a point. "
                                "Click OK to update the canvas and exported path."), &dialog);
     help->setWordWrap(true);
     layout->addWidget(help);
 
-    auto *table = new QTableWidget(0, 2, &dialog);
-    table->setHorizontalHeaderLabels({tr("X (world)"), tr("Y (world)")});
+    auto *table = new QTableWidget(0, 3, &dialog);
+    table->setHorizontalHeaderLabels({tr("X (world)"), tr("Y (world)"), tr("Pause (frames)")});
     table->verticalHeader()->setDefaultSectionSize(31);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1187,19 +1192,21 @@ void SidboxGameDesigner::editSplineProperties(int index)
 
     // The spinboxes accept integer world pixels with no grid snapping, so the
     // programmer can place a control point precisely even if Snap is enabled.
-    auto appendPoint = [this, table, &dialog](const QPoint &point) {
+    auto appendPoint = [this, table, &dialog](const QPoint &point, int pauseFrames) {
         const int row = table->rowCount();
         table->insertRow(row);
-        for (int column = 0; column < 2; ++column) {
+        for (int column = 0; column < 3; ++column) {
             auto *coordinate = new QSpinBox(&dialog);
-            coordinate->setRange(0, column == 0 ? m_worldWidth->value() : m_worldHeight->value());
-            coordinate->setValue(column == 0 ? point.x() : point.y());
+            coordinate->setRange(0, column == 0 ? m_worldWidth->value()
+                                  : column == 1 ? m_worldHeight->value() : 65535);
+            coordinate->setValue(column == 0 ? point.x() : column == 1 ? point.y() : pauseFrames);
             coordinate->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
             table->setCellWidget(row, column, coordinate);
         }
         table->setVerticalHeaderItem(row, new QTableWidgetItem(tr("Point %1").arg(row + 1)));
     };
-    for (const QPoint &point : original.points) appendPoint(point);
+    for (int i = 0; i < original.points.size(); ++i)
+        appendPoint(original.points.at(i), original.pointPauses.value(i, 0));
     if (table->rowCount()) table->selectRow(0);
 
     auto *pointControls = new QHBoxLayout;
@@ -1222,22 +1229,22 @@ void SidboxGameDesigner::editSplineProperties(int index)
         const int row = table->currentRow();
         const int insertAt = row < 0 ? table->rowCount() : row + 1;
         QPoint point(0, 0);
-        if (row >= 0) {
-            auto *x = qobject_cast<QSpinBox *>(table->cellWidget(row, 0));
-            auto *y = qobject_cast<QSpinBox *>(table->cellWidget(row, 1));
-            if (x && y) point = QPoint(x->value(), y->value());
-        }
-        // appendPoint creates the widgets, then move the row into place.
-        // Inserting before the end instead is simpler with a full table refresh.
+        // A newly inserted point defaults to no pause, even when its
+        // coordinates are copied from the selected point.
         QVector<QPoint> points;
+        QVector<int> pauses;
         for (int i = 0; i < table->rowCount(); ++i) {
             auto *x = qobject_cast<QSpinBox *>(table->cellWidget(i, 0));
             auto *y = qobject_cast<QSpinBox *>(table->cellWidget(i, 1));
+            auto *pause = qobject_cast<QSpinBox *>(table->cellWidget(i, 2));
             points.append(QPoint(x->value(), y->value()));
+            pauses.append(pause->value());
         }
+        if (row >= 0) point = points.at(row);
         points.insert(insertAt, point);
+        pauses.insert(insertAt, 0);
         table->setRowCount(0);
-        for (const QPoint &p : points) appendPoint(p);
+        for (int i = 0; i < points.size(); ++i) appendPoint(points.at(i), pauses.at(i));
         table->selectRow(insertAt);
         updateButtons();
     });
@@ -1271,13 +1278,23 @@ void SidboxGameDesigner::editSplineProperties(int index)
     updated.durationFrames = frames->value();
     updated.loop = loop->isChecked();
     updated.points.clear();
+    updated.pointPauses.clear();
     for (int row = 0; row < table->rowCount(); ++row) {
         auto *x = qobject_cast<QSpinBox *>(table->cellWidget(row, 0));
         auto *y = qobject_cast<QSpinBox *>(table->cellWidget(row, 1));
-        if (x && y) updated.points.append(QPoint(x->value(), y->value()));
+        auto *pause = qobject_cast<QSpinBox *>(table->cellWidget(row, 2));
+        if (x && y && pause) {
+            updated.points.append(QPoint(x->value(), y->value()));
+            updated.pointPauses.append(pause->value());
+        }
     }
+    bool pausesChanged = false;
+    for (int i = 0; i < updated.points.size(); ++i)
+        if (updated.pointPauses.value(i, 0) != original.pointPauses.value(i, 0))
+            pausesChanged = true;
     if (updated.name == original.name && updated.durationFrames == original.durationFrames
-        && updated.loop == original.loop && updated.points == original.points) return;
+        && updated.loop == original.loop && updated.points == original.points
+        && !pausesChanged) return;
     m_splinePaths[index] = updated; // Keep persistent ID for attached game objects.
     refreshResources();
     rebuildSplineOverlay();
@@ -1309,7 +1326,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
     menu.addSeparator();
     QAction *insert = menu.addAction(tr("Insert Point Here"));
     QAction *removePoint = menu.addAction(tr("Delete This Point"));
-    QAction *settings = menu.addAction(tr("Spline Properties (Points / Time / Loop)..."));
+    QAction *settings = menu.addAction(tr("Spline Properties (Points / Pauses / Time)..."));
     QAction *removePath = menu.addAction(tr("Delete Spline Path..."));
     const bool hasPath = m_activeSpline >= 0 && m_activeSpline < m_splinePaths.size();
     insert->setEnabled(hasPath && m_splinePaths.at(m_activeSpline).points.size() < 128);
@@ -1348,6 +1365,7 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
             path.points.append(QPoint(qBound(0, point.x() + offset.x(), m_worldWidth->value()),
                                       qBound(0, point.y() + offset.y(), m_worldHeight->value())));
         }
+        path.pointPauses.fill(0, path.points.size());
         m_splinePaths.append(path);
         m_activeSpline = m_splinePaths.size() - 1;
         refreshResources();
@@ -1370,11 +1388,15 @@ void SidboxGameDesigner::showSplineMenu(const QPoint &viewPos)
             const qreal distance = QPointF::dotProduct(d, d);
             if (distance < best) { best = distance; at = i + 1; }
         }
+        while (path.pointPauses.size() < n) path.pointPauses.append(0);
         path.points.insert(at, point);
+        path.pointPauses.insert(at, 0);
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == removePoint) {
-        m_splinePaths[m_activeSpline].points.removeAt(clickedNode);
+        SplinePath &path = m_splinePaths[m_activeSpline];
+        path.points.removeAt(clickedNode);
+        if (clickedNode < path.pointPauses.size()) path.pointPauses.removeAt(clickedNode);
         rebuildSplineOverlay();
         setDirty();
     } else if (chosen == settings) {
@@ -1464,7 +1486,7 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
             tr("Cannot create folder:\n%1").arg(folder));
         return false;
     }
-    QByteArray header = "/* GENERATED by CoderGirl Game Designer. Edit paths in the canvas. */\n"
+    QByteArray header = "/* GENERATED by CoderGirl Game Designer. Edit paths and pauses in the canvas. */\n"
         "#ifndef CODERGIRL_V1_SPLINEPATHS_H\n#define CODERGIRL_V1_SPLINEPATHS_H\n"
         "#include \"gamespline.h\"\n\n";
     QByteArray source = "/* GENERATED by CoderGirl Game Designer. Do not edit this file. */\n"
@@ -1489,8 +1511,11 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
                           .arg(identifier).arg(path.points.size()).toUtf8();
         source += QStringLiteral("const game_spline_point_t %1_path[%2] = {\n")
                           .arg(identifier).arg(path.points.size()).toUtf8();
-        for (const QPoint &point : path.points)
-            source += QStringLiteral("    {%1, %2},\n").arg(point.x()).arg(point.y()).toUtf8();
+        for (int p = 0; p < path.points.size(); ++p) {
+            const QPoint &point = path.points.at(p);
+            source += QStringLiteral("    {%1, %2, %3},\n")
+                          .arg(point.x()).arg(point.y()).arg(path.pointPauses.value(p, 0)).toUtf8();
+        }
         source += QStringLiteral("};\nconst uint16_t %1_count = %2;\n"
                                  "const uint16_t %1_frames = %3;\n"
                                  "const uint8_t %1_loop = %4;\n\n")
@@ -1624,6 +1649,9 @@ void SidboxGameDesigner::buildUi()
     auto *focusCamera = new QPushButton(tr("Centre View on LCD"), this);
     focusCamera->setToolTip(tr("Centre the editor view on the yellow LCD frame. The game camera X/Y do not change."));
     topActions->addWidget(focusCamera);
+    auto *editTilemap = new QPushButton(tr("Tilemap Editor..."), this);
+    editTilemap->setToolTip(tr("Edit the attached tilemap artwork, collision and tile animations."));
+    topActions->addWidget(editTilemap);
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -2121,6 +2149,7 @@ void SidboxGameDesigner::buildUi()
         m_view->centerOn(m_cameraX->value() + LCD_WIDTH / 2,
                          m_cameraY->value() + LCD_HEIGHT / 2);
     });
+    connect(editTilemap, &QPushButton::clicked, this, [this]() { openTilemapEditor(); });
     connect(exportC, &QPushButton::clicked, this, [this]() { exportSelectedC(); });
     connect(m_deleteButton, &QPushButton::clicked, this, [this]() { deleteSelectedResource(); });
     connect(m_propBackgroundMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
@@ -2992,10 +3021,17 @@ void SidboxGameDesigner::pasteCopiedSprite()
     copy.x = qBound(-MAX_WORLD, copy.x + 8, MAX_WORLD);
     copy.y = qBound(-MAX_WORLD, copy.y + 8, MAX_WORLD);
     copy.locked = false; // A duplicate is immediately movable.
+    // Preserve EXACT scroll-bar pixels rather than round-tripping through
+    // mapToScene()/centerOn(). The latter introduces 1-2px drift on each paste.
+    // Restoring after selecting avoids tree/scene updates nudging the viewport.
+    const int previousHorizontalScroll = m_view->horizontalScrollBar()->value();
+    const int previousVerticalScroll = m_view->verticalScrollBar()->value();
     m_resources.append(copy);
     rebuildScene();
     refreshResources();
     selectResource(m_resources.size() - 1);
+    m_view->horizontalScrollBar()->setValue(previousHorizontalScroll);
+    m_view->verticalScrollBar()->setValue(previousVerticalScroll);
     setDirty();
 }
 
@@ -3310,7 +3346,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const Resource &old = m_resources.at(index);
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Game Object Properties - %1").arg(old.name));
-    dialog.resize(430, 480);
+    // Compact by default; both property columns scroll independently.
+    // Users can resize the dialog if they prefer more room.
+    dialog.resize(860, 540);
+    dialog.setMinimumSize(700, 420);
     // No new rounded widgets, even when the desktop theme uses rounded popups.
     dialog.setStyleSheet(styleSheet() + QStringLiteral(
         "QDialog, QGroupBox, QSpinBox, QComboBox, QPushButton, QLineEdit { border-radius:0px; }"));
@@ -3319,7 +3358,27 @@ void SidboxGameDesigner::configureGameObject(int index)
                             "Behaviour belongs to this sprite instance, not its PPB file."), &dialog);
     hint->setWordWrap(true);
     layout.addWidget(hint);
+    // QGroupBox with our custom theme can paint its title over the first row.
+    // Use a plain panel with an explicit header instead. Stack each field's
+    // label above the input so neither controls nor text can collide at narrow
+    // sizes. Separate scroll areas keep the dialog compact on smaller screens.
+    auto *objectPanel = new QWidget(&dialog);
+    auto *objectLayout = new QVBoxLayout(objectPanel);
+    objectLayout->setContentsMargins(10, 8, 10, 8);
+    objectLayout->setSpacing(8);
+    auto *objectHeading = new QLabel(tr("OBJECT / BEHAVIOUR"), objectPanel);
+    QFont headingFont = objectHeading->font();
+    headingFont.setBold(true);
+    objectHeading->setFont(headingFont);
+    objectLayout->addWidget(objectHeading);
     auto *form = new QFormLayout;
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    form->setLabelAlignment(Qt::AlignLeft);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setVerticalSpacing(5);
+    objectLayout->addLayout(form);
+    objectLayout->addStretch(1);
     auto *type = new GameComboBox(&dialog);
     type->addItem(tr("Ordinary sprite / Decoration"), QStringLiteral("decoration"));
     type->addItem(tr("Collectable"), QStringLiteral("collectable"));
@@ -3341,6 +3400,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     };
     auto *value = spin(0, 65535, old.objectValue);
     form->addRow(tr("Pickup value"), value);
+    auto *respawn = spin(0, 65535, old.respawnFrames);
+    form->addRow(tr("Respawn after frames (0 = never)"), respawn);
     auto *hitW = spin(1, 1024, old.hitWidth);
     auto *hitH = spin(1, 1024, old.hitHeight);
     form->addRow(tr("Collision width"), hitW);
@@ -3349,6 +3410,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Conveyor px/frame"), conveyor);
     auto *spring = spin(1, 100, old.springStrength);
     form->addRow(tr("Spring launch strength"), spring);
+    auto *springJumpBoost = new QCheckBox(tr("Combine jump + spring launch (extra boost)"), &dialog);
+    springJumpBoost->setChecked(old.springJumpBoost);
+    springJumpBoost->setToolTip(tr("Off: spring launch strength alone. On: a newly pressed Jump "
+                               "on contact adds the player's jump speed. "
+                               "Requires the optional physics jump bindings."));
+    form->addRow(QString(), springJumpBoost);
     auto *spline = new GameComboBox(&dialog);
     spline->addItem(tr("None (stationary)"), QString());
     for (const SplinePath &path : m_splinePaths)
@@ -3370,7 +3437,72 @@ void SidboxGameDesigner::configureGameObject(int index)
     mode->addItem(tr("Once"), QStringLiteral("once"));
     mode->setCurrentIndex(qMax(0, mode->findData(old.animMode)));
     form->addRow(tr("Animation mode"), mode);
-    layout.addLayout(form);
+    // Reuse actual Sound resources and their configured SIDBOX channels.
+    // Store stable IDs so renaming a resource cannot break object references.
+    auto soundPicker = [&](const QString &id) {
+        auto *box = new GameComboBox(&dialog);
+        box->addItem(tr("None"), QString());
+        for (const Resource &sound : m_resources)
+            if (sound.kind == QStringLiteral("sound"))
+                box->addItem(sound.name + QStringLiteral("  [Ch %1]").arg(sound.audio.channel), sound.id);
+        box->setCurrentIndex(qMax(0, box->findData(id)));
+        return box;
+    };
+    auto *sfxPickup = soundPicker(old.sfxPickup);
+    auto *sfxRespawn = soundPicker(old.sfxRespawn);
+    auto *sfxStart = soundPicker(old.sfxStart);
+    auto *sfxMove = soundPicker(old.sfxMove);
+    auto *sfxStop = soundPicker(old.sfxStop);
+    auto *sfxReverse = soundPicker(old.sfxReverse);
+    auto *sfxSpring = soundPicker(old.sfxSpring);
+    auto *sfxAmbient = soundPicker(old.sfxAmbient);
+    auto *radius = spin(0, 32767, old.audioRadius);
+    auto *fade = spin(0, 255, old.audioFadeFrames);
+    auto *audioPanel = new QWidget(&dialog);
+    auto *audioLayout = new QVBoxLayout(audioPanel);
+    audioLayout->setContentsMargins(10, 8, 10, 8);
+    audioLayout->setSpacing(8);
+    auto *audioHeading = new QLabel(tr("AUDIO (OPTIONAL)"), audioPanel);
+    audioHeading->setFont(headingFont);
+    audioLayout->addWidget(audioHeading);
+    auto *audioForm = new QFormLayout;
+    audioForm->setContentsMargins(0, 0, 0, 0);
+    audioForm->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    audioForm->setLabelAlignment(Qt::AlignLeft);
+    audioForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    audioForm->setVerticalSpacing(5);
+    audioLayout->addLayout(audioForm);
+    audioLayout->addStretch(1);
+    audioForm->addRow(tr("Pickup"), sfxPickup);
+    audioForm->addRow(tr("Respawn sound"), sfxRespawn);
+    audioForm->addRow(tr("Mover starts"), sfxStart);
+    audioForm->addRow(tr("Mover moving (loopable)"), sfxMove);
+    audioForm->addRow(tr("Mover stops"), sfxStop);
+    audioForm->addRow(tr("Mover reverses"), sfxReverse);
+    audioForm->addRow(tr("Spring launches"), sfxSpring);
+    audioForm->addRow(tr("Conveyor ambience (loopable)"), sfxAmbient);
+    audioForm->addRow(tr("Audible radius (0 = non-positional)"), radius);
+    audioForm->addRow(tr("Loop fade frames"), fade);
+    audioPanel->setToolTip(tr("Sound channels are assigned in Game Resources > Sounds. "
+        "Simultaneously playing sounds must use different channels to avoid interrupting each other. "
+        "For continuous movement or conveyor ambience, enable Loop in the chosen Sound resource."));
+    // Independently scrollable columns: Behaviour on the left, Audio on the
+    // right. No narrowing the combo boxes and no extra canvas toolbar rows.
+    auto *settingsColumns = new QHBoxLayout;
+    settingsColumns->setSpacing(12);
+    auto *objectScroll = new QScrollArea(&dialog);
+    objectScroll->setWidgetResizable(true);
+    objectScroll->setFrameShape(QFrame::NoFrame);
+    objectScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    objectScroll->setWidget(objectPanel);
+    settingsColumns->addWidget(objectScroll, 1);
+    auto *audioScroll = new QScrollArea(&dialog);
+    audioScroll->setWidgetResizable(true);
+    audioScroll->setFrameShape(QFrame::NoFrame);
+    audioScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    audioScroll->setWidget(audioPanel);
+    settingsColumns->addWidget(audioScroll, 1);
+    layout.addLayout(settingsColumns, 1);
     auto enableFields = [=]() {
         const QString behaviour = type->currentData().toString();
         const bool isObject = behaviour != QStringLiteral("decoration");
@@ -3379,6 +3511,18 @@ void SidboxGameDesigner::configureGameObject(int index)
         hitW->setEnabled(isObject); hitH->setEnabled(isObject);
         conveyor->setEnabled(behaviour == QStringLiteral("conveyor"));
         spring->setEnabled(behaviour == QStringLiteral("spring"));
+        springJumpBoost->setEnabled(behaviour == QStringLiteral("spring"));
+        sfxPickup->setEnabled(behaviour == QStringLiteral("collectable"));
+        sfxRespawn->setEnabled(behaviour == QStringLiteral("collectable"));
+        respawn->setEnabled(behaviour == QStringLiteral("collectable"));
+        sfxStart->setEnabled(behaviour == QStringLiteral("lift"));
+        sfxMove->setEnabled(behaviour == QStringLiteral("lift"));
+        sfxStop->setEnabled(behaviour == QStringLiteral("lift"));
+        sfxReverse->setEnabled(behaviour == QStringLiteral("lift"));
+        sfxSpring->setEnabled(behaviour == QStringLiteral("spring"));
+        sfxAmbient->setEnabled(behaviour == QStringLiteral("conveyor"));
+        radius->setEnabled(isObject);
+        fade->setEnabled(isObject);
         spline->setEnabled(isObject);
         animated->setEnabled(isObject);
         for (QWidget *w : {static_cast<QWidget *>(first), static_cast<QWidget *>(count),
@@ -3394,6 +3538,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     // Colour its popup views explicitly to match Stage 2.5 theme rules.
     const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
     for (QComboBox *combo : dialog.findChildren<QComboBox *>()) {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(14);
+        combo->setMinimumWidth(0);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         QPalette colours = combo->palette();
         colours.setColor(QPalette::Base, m_theme.inputBackground);
         colours.setColor(QPalette::Text, m_theme.text);
@@ -3434,6 +3582,18 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.objectValue = value->value();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
     r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
+    r.springJumpBoost = springJumpBoost->isChecked();
+    r.sfxPickup = sfxPickup->currentData().toString();
+    r.sfxRespawn = sfxRespawn->currentData().toString();
+    r.sfxStart = sfxStart->currentData().toString();
+    r.sfxMove = sfxMove->currentData().toString();
+    r.sfxStop = sfxStop->currentData().toString();
+    r.sfxReverse = sfxReverse->currentData().toString();
+    r.sfxSpring = sfxSpring->currentData().toString();
+    r.sfxAmbient = sfxAmbient->currentData().toString();
+    r.respawnFrames = respawn->value();
+    r.audioRadius = radius->value();
+    r.audioFadeFrames = fade->value();
     r.objectSplineId = spline->currentData().toString();
     r.objectAnimated = animated->isChecked();
     r.animFirst = first->value(); r.animCount = count->value();
@@ -3642,6 +3802,47 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         return true;
     }
     const int np = pickups.size(), nw = platforms.size();
+    // Every sound reference must resolve to a real Sound resource. Name changes
+    // are harmless because Game Designer stores persistent resource IDs.
+    QHash<QString, const Resource *> soundById;
+    for (const Resource &asset : m_resources)
+        if (asset.kind == QStringLiteral("sound") && !asset.path.isEmpty())
+            soundById.insert(asset.id, &asset);
+    QSet<QString> usedSfx;
+    for (const Resource *obj : pickups) {
+        if (!obj->sfxPickup.isEmpty()) usedSfx.insert(obj->sfxPickup);
+        if (obj->respawnFrames && !obj->sfxRespawn.isEmpty())
+            usedSfx.insert(obj->sfxRespawn);
+    }
+    for (const Resource *obj : platforms) {
+        if (obj->objectType == QStringLiteral("lift")) {
+            for (const QString &id : {obj->sfxStart, obj->sfxMove,
+                                      obj->sfxStop, obj->sfxReverse})
+                if (!id.isEmpty()) usedSfx.insert(id);
+        } else if (obj->objectType == QStringLiteral("spring")) {
+            if (!obj->sfxSpring.isEmpty()) usedSfx.insert(obj->sfxSpring);
+        } else if (obj->objectType == QStringLiteral("conveyor")) {
+            if (!obj->sfxAmbient.isEmpty()) usedSfx.insert(obj->sfxAmbient);
+        }
+    }
+    for (const QString &id : usedSfx) {
+        if (!soundById.contains(id)) {
+            if (error) *error = tr("A configured game-object sound no longer exists in Game Resources. "
+                                   "Open the object's properties and reassign its sound.");
+            return false;
+        }
+    }
+    auto cSoundSymbol = [&](const QString &id) -> QString {
+        const Resource *audio = soundById.value(id, nullptr);
+        return audio ? SidboxPpb::identifier(audio->name.trimmed().isEmpty()
+                                 ? QFileInfo(resolvedPath(audio->path)).completeBaseName()
+                                 : audio->name).toLower() : QString();
+    };
+    auto cSfxCall = [&](const QString &id, const QString &x, int radius) -> QString {
+        if (id.isEmpty()) return QString();
+        return QStringLiteral("cg_sound_%1(%2, %3);\n")
+            .arg(cSoundSymbol(id), x).arg(radius);
+    };
     QString h, c, guide;
     QTextStream H(&h), C(&c), G(&guide);
     H << "/* GENERATED by CoderGirl. Regeneration overwrites this file. */\n"
@@ -3666,9 +3867,66 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (int p : pickupPaths) if (p >= 0) anyPath = true;
     for (int p : platformPaths) if (p >= 0) anyPath = true;
     if (anyPath) C << "#include \"splinepaths.h\"\n";
+    if (nw && m_tilemapEnabled)
+        C << "#include \"gametilemap.h\"\n"
+             "#include \"../gamelevels/level1.h\"\n";
     C << "\n";
+    if (!usedSfx.isEmpty()) {
+        C << R"CG(
+/* Automatic object audio. WAVs and channels are defined in gameassets.
+   Object sounds are OPTIONAL. Each sound uses its assigned SIDBOX channel.
+   For spatial audio, 480 pixels is the V1 LCD width. */
+static int32_t cg_audio_camera_x;
+static int32_t cg_audio_distance(int32_t x)
+{
+    return x - (cg_audio_camera_x + 240);
+}
+static int32_t cg_audio_volume(int base, int32_t x, int radius)
+{
+    if (radius <= 0) return base;
+    int32_t distance = cg_audio_distance(x);
+    if (distance < 0) distance = -distance;
+    if (distance >= radius) return 0;
+    return (int32_t)((int64_t)base * (radius - distance) / radius);
+}
+static int8_t cg_audio_pan(int base, int32_t x, int radius)
+{
+    if (radius <= 0) return (int8_t)base;
+    int32_t pan = base + (cg_audio_distance(x) * 127) / 240;
+    if (pan < -127) pan = -127;
+    if (pan > 127) pan = 127;
+    return (int8_t)pan;
+}
+)CG";
+        // Generate one typed, stable wrapper per referenced Sound resource.
+        // These call the existing playsound...() functions generated by
+        // gamecodegen.cpp, then adjust position once per event.
+        QStringList ids;
+        for (const QString &id : usedSfx) ids.append(id);
+        ids.sort();
+        for (const QString &id : ids) {
+            const Resource &sound = *soundById.value(id);
+            const QString sym = cSoundSymbol(id);
+            C << "static void cg_sound_" << sym << "(int32_t x, int radius)\n{\n"
+              << "    playsound" << sym << "();\n"
+              << "    sound_setvolume(" << sound.audio.channel << ", cg_audio_volume("
+              << qBound(0, sound.audio.volume, 1024) << ", x, radius));\n"
+              << "    sound_setpanning(" << sound.audio.channel << ", cg_audio_pan("
+              << qBound(-127, sound.audio.pan, 127) << ", x, radius));\n"
+              << "}\n";
+        }
+    }
     if (np) C << "static game_collectable_t pickups[" << np << "];\n";
+    if (np && !usedSfx.isEmpty()) C << "static uint8_t cg_pickup_was_inactive[" << np << "];\n";
     if (nw) C << "static game_world_object_t platforms[" << nw << "];\n";
+    // Per-lift motion state for start/stop/reverse transitions and faders.
+    if (nw && !usedSfx.isEmpty()) {
+        C << "static uint8_t cg_was_moving[" << nw << "];\n"
+             "static int8_t cg_previous_direction[" << nw << "];\n"
+             "static uint8_t cg_loop_playing[" << nw << "];\n"
+             "static uint16_t cg_loop_gain[" << nw << "];\n"
+             "static uint16_t cg_loop_target[" << nw << "];\n";
+    }
     for (int i = 0; i < np; ++i) {
         if (pickupPaths.at(i) >= 0) C << "static game_spline_t pickup_path_" << i << " = {0};\n";
         if (pickups.at(i)->objectAnimated) C << "static game_animation_t pickup_anim_" << i << " = {0};\n";
@@ -3678,6 +3936,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if (platforms.at(i)->objectAnimated) C << "static game_animation_t platform_anim_" << i << " = {0};\n";
     }
     C << "\nuint8_t gameworlditems_init(void)\n{\n";
+    if (nw && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << nw
+        << "; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; "
+           "cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }\n";
     auto animMode = [](const QString &s) -> QString {
         return s == QStringLiteral("pingpong") ? QStringLiteral("GAME_ANIM_PINGPONG") :
                s == QStringLiteral("once") ? QStringLiteral("GAME_ANIM_ONCE") :
@@ -3702,7 +3963,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             C << "    if (!game_collectable_start(" << target << ", " << sprite << ", "
               << pickConst << ", " << r.objectValue << ")) return 0;\n"
               << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
-              << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n";
+              << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n"
+              << "    pickups[" << ix << "].respawn_frames = " << r.respawnFrames << ";\n";
         } else {
             const QString kind = r.objectType == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
                 r.objectType == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
@@ -3712,8 +3974,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
               << r.hitWidth << ", " << r.hitHeight << ")) return 0;\n";
             if (r.objectType == QStringLiteral("conveyor"))
                 C << "    platforms[" << ix << "].conveyor_speed = " << r.conveyorSpeed << ";\n";
-            if (r.objectType == QStringLiteral("spring"))
+            if (r.objectType == QStringLiteral("spring")) {
                 C << "    platforms[" << ix << "].spring_strength = " << r.springStrength << ";\n";
+                C << "    platforms[" << ix << "].allow_jump_boost = "
+                  << (r.springJumpBoost ? "1" : "0") << ";\n";
+            }
         }
         if (path >= 0) {
             const QString sym = splineSymbol(path);
@@ -3731,21 +3996,158 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
               << "    " << (collect ? "pickups" : "platforms") << "[" << ix << "].animation = &" << var << ";\n";
         }
     }
+    // Conveyor ambient sounds begin at world-object init; enable Loop in the
+    // SOUND resource to keep them playing. Gain fades in via draw().
+    if (!usedSfx.isEmpty()) {
+        for (int i = 0; i < nw; ++i) {
+            const Resource &r = *platforms.at(i);
+            if (r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) {
+                C << "    " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
+                C << "    sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n";
+                C << "    cg_loop_playing[" << i << "] = 1;\n"
+                  << "    cg_loop_gain[" << i << "] = 0;\n"
+                  << "    cg_loop_target[" << i << "] = 255;\n";
+            }
+        }
+    }
     C << "    return 1;\n}\n\n"
          "void gameworlditems_update(uint16_t frames)\n{\n";
     if (nw) C << "    game_world_objects_update(platforms, " << nw << ", frames);\n";
+    if (np && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << np
+        << "; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;\n";
     if (np) C << "    game_collectables_update(pickups, " << np << ", frames);\n";
+    if (!usedSfx.isEmpty()) {
+        for (int i = 0; i < np; ++i) {
+            const Resource &r = *pickups.at(i);
+            if (r.respawnFrames && !r.sfxRespawn.isEmpty()) {
+                // The timer reaches zero on this frame, once. An active item
+                // with respawn_frames>0 has no other way to reach that state.
+                C << "    if (pickups[" << i << "].active && pickups[" << i << "].respawn_frames "
+                     "&& pickups[" << i << "].respawn_left == 0 "
+                     "&& frames && cg_pickup_was_inactive[" << i << "]) {\n"
+                  << "        " << cSfxCall(r.sfxRespawn, QStringLiteral("pickups[%1].x").arg(i), r.audioRadius)
+                  << "    }\n";
+            }
+        }
+        for (int i = 0; i < nw; ++i) {
+            const Resource &r = *platforms.at(i);
+            if (r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) {
+                C << "    if (platforms[" << i << "].active && !cg_loop_playing[" << i << "]) {\n"
+                  << "        " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius)
+                  << "        sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n"
+                  << "        cg_loop_playing[" << i << "] = 1; cg_loop_gain[" << i << "] = 0;\n"
+                  << "    }\n"
+                  << "    cg_loop_target[" << i << "] = platforms[" << i << "].active ? 255 : 0;\n";
+            }
+            if (r.objectType != QStringLiteral("lift")) continue;
+            const QString base = QStringLiteral("platforms[%1]").arg(i);
+            C << "    {\n        int32_t dx = " << base << ".x - " << base << ".previous_x;\n"
+              << "        int32_t dy = " << base << ".y - " << base << ".previous_y;\n"
+              << "        uint8_t moving = dx != 0 || dy != 0;\n"
+              << "        int8_t dir = (dx ? (dx > 0 ? 1 : -1) : (dy ? (dy > 0 ? 1 : -1) : 0));\n";
+            if (!r.sfxStart.isEmpty())
+                C << "        if (moving && !cg_was_moving[" << i << "]) "
+                  << cSfxCall(r.sfxStart, base + QStringLiteral(".x"), r.audioRadius);
+            if (!r.sfxReverse.isEmpty())
+                C << "        if (moving && cg_previous_direction[" << i
+                  << "] && dir != cg_previous_direction[" << i << "]) "
+                  << cSfxCall(r.sfxReverse, base + QStringLiteral(".x"), r.audioRadius);
+            if (!r.sfxStop.isEmpty())
+                C << "        if (!moving && cg_was_moving[" << i << "]) "
+                  << cSfxCall(r.sfxStop, base + QStringLiteral(".x"), r.audioRadius);
+            if (!r.sfxMove.isEmpty()) {
+                C << "        if (moving && !cg_was_moving[" << i << "]) {\n"
+                  << "            " << cSfxCall(r.sfxMove, base + QStringLiteral(".x"), r.audioRadius)
+                  << "            sound_setvolume(" << soundById.value(r.sfxMove)->audio.channel << ", 0);\n"
+                  << "            cg_loop_playing[" << i << "] = 1; cg_loop_gain[" << i << "] = 0;\n"
+                  << "        }\n"
+                  << "        cg_loop_target[" << i << "] = moving ? 255 : 0;\n";
+            }
+            C << "        cg_was_moving[" << i << "] = moving;\n"
+              << "        if (moving) cg_previous_direction[" << i << "] = dir;\n"
+              << "    }\n";
+        }
+    }
     C << "}\n\n";
-    if (nw) C << "void gameworlditems_before(game_world_player_t *player)\n{\n"
-                 "    game_world_objects_before(platforms, " << nw << ", player);\n}\n\n"
-                 "void gameworlditems_after(game_world_player_t *player)\n{\n"
-                 "    game_world_objects_after(platforms, " << nw << ", player);\n}\n\n";
-    if (np) C << "uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,\n"
-                 "    game_pickup_callback_t callback, void *user)\n{\n"
-                 "    return game_collectables_check(pickups, " << np << ", x, y, w, h, callback, user);\n}\n\n";
+    if (nw) {
+        if (m_tilemapEnabled) {
+            C << "/* Use the same walls/slopes as game_tile_player_run() when\n"
+                 "   a moving platform carries the player. Generated automatically. */\n"
+                 "static uint8_t cg_world_player_blocked(int32_t x, int32_t y,\n"
+                 "    uint16_t width, uint16_t height, void *context)\n"
+                 "{\n"
+                 "    return game_tilemap_actor_blocked((const game_tilemap_t *)context,\n"
+                 "                                     x, y, width, height);\n"
+                 "}\n\n";
+        }
+        C << "void gameworlditems_before(game_world_player_t *player)\n{\n";
+        if (m_tilemapEnabled)
+            C << "    if (player) {\n"
+                 "        player->position_blocked = cg_world_player_blocked;\n"
+                 "        player->collision_context = &game_level1;\n"
+                 "    }\n";
+        C << "    game_world_objects_before(platforms, " << nw << ", player);\n}\n\n"
+          << "void gameworlditems_after(game_world_player_t *player)\n{\n"
+          << "    game_world_objects_after(platforms, " << nw << ", player);\n";
+        for (int i = 0; i < nw; ++i) {
+            const Resource &r = *platforms.at(i);
+            if (r.objectType == QStringLiteral("spring") && !r.sfxSpring.isEmpty()) {
+                C << "    if (platforms[" << i << "].spring_triggered) "
+                  << cSfxCall(r.sfxSpring, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
+            }
+        }
+        C << "}\n\n";
+    }
+    if (np) {
+        C << "uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,\n"
+             "    game_pickup_callback_t callback, void *user)\n{\n";
+        if (!usedSfx.isEmpty()) {
+            C << "    uint8_t was_active[" << np << "];\n"
+              << "    for (uint16_t i = 0; i < " << np
+              << "; ++i) was_active[i] = pickups[i].active;\n";
+        }
+        C << "    uint16_t count = game_collectables_check(pickups, " << np << ", x, y, w, h, callback, user);\n";
+        if (!usedSfx.isEmpty()) {
+            for (int i = 0; i < np; ++i) {
+                const Resource &r = *pickups.at(i);
+                if (!r.sfxPickup.isEmpty())
+                    C << "    if (was_active[" << i << "] && !pickups[" << i << "].active) "
+                      << cSfxCall(r.sfxPickup, QStringLiteral("pickups[%1].x").arg(i), r.audioRadius);
+            }
+        }
+        C << "    return count;\n}\n\n";
+    }
     C << "void gameworlditems_draw(int32_t camera_x, int32_t camera_y)\n{\n";
     if (nw) C << "    game_world_objects_draw(platforms, " << nw << ", camera_x, camera_y);\n";
     if (np) C << "    game_collectables_draw(pickups, " << np << ", camera_x, camera_y);\n";
+    if (!usedSfx.isEmpty()) {
+        C << "    cg_audio_camera_x = camera_x;\n";
+        for (int i = 0; i < nw; ++i) {
+            const Resource &r = *platforms.at(i);
+            const QString soundId = r.objectType == QStringLiteral("conveyor")
+                ? r.sfxAmbient : r.objectType == QStringLiteral("lift") ? r.sfxMove : QString();
+            if (soundId.isEmpty()) continue;
+            const Resource &sound = *soundById.value(soundId);
+            const int step = r.audioFadeFrames <= 0 ? 255 : qMax(1, (255 + r.audioFadeFrames - 1) / r.audioFadeFrames);
+            C << "    if (cg_loop_playing[" << i << "]) {\n"
+              << "        if (cg_loop_gain[" << i << "] < cg_loop_target[" << i << "]) {\n"
+              << "            uint16_t next = cg_loop_gain[" << i << "] + " << step << ";\n"
+              << "            cg_loop_gain[" << i << "] = next > 255 ? 255 : next;\n"
+              << "        } else if (cg_loop_gain[" << i << "] > cg_loop_target[" << i << "]) {\n"
+              << "            cg_loop_gain[" << i << "] = cg_loop_gain[" << i << "] > " << step
+              << " ? cg_loop_gain[" << i << "] - " << step << " : 0;\n"
+              << "        }\n"
+              << "        sound_setvolume(" << sound.audio.channel << ", (uint16_t)("
+              << "cg_audio_volume(" << qBound(0,sound.audio.volume,1024) << ", platforms[" << i << "].x, "
+              << r.audioRadius << ") * cg_loop_gain[" << i << "] / 255));\n"
+              << "        sound_setpanning(" << sound.audio.channel << ", cg_audio_pan("
+              << qBound(-127,sound.audio.pan,127) << ", platforms[" << i << "].x, "
+              << r.audioRadius << "));\n"
+              << "        if (cg_loop_gain[" << i << "] == 0 && cg_loop_target[" << i << "] == 0) {\n"
+              << "            sound_stop(" << sound.audio.channel << "); cg_loop_playing[" << i << "] = 0;\n"
+              << "        }\n    }\n";
+        }
+    }
     C << "}\n";
     G << "CODERGIRL — GENERATED WORLD OBJECTS GUIDE\n"
          "========================================\n\n"
@@ -3755,13 +4157,40 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
          "Each uses its own graphics instance and WORLD coordinates from Game Designer.\n\n"
          "After gameassets_init(), call gameworlditems_init().\n"
          "Each frame call gameworlditems_update(1) before player physics.\n";
+    if (nw && m_tilemapEnabled)
+        G << "Moving lift wall safety: CoderGirl automatically connects this\n"
+             "level's solid/slope collision map. The helper carries the player\n"
+             "only to the last safe pixel before a wall. You do not need to\n"
+             "add a collision callback in main.c. Update Project updates BOTH\n"
+             "World Objects and Tilemap helpers for this feature.\n\n";
     if (nw) G << "Bind game_world_player_t to the LIVE player physics fields,\n"
-                 "then call gameworlditems_before()/after() around player physics.\n";
+                 "then call gameworlditems_before()/after() around player physics.\n"
+                 "For exact spring jump behaviour with game_tile_player_t also bind:\n"
+                 "  world_player.jump_held = &player_physics.jump_held;\n"
+                 "  world_player.coyote = &player_physics.coyote;\n"
+                 "  world_player.jump_speed = &player_physics.jump_speed;\n"
+                 "Jump + spring is per-object. OFF uses spring strength alone,\n"
+                 "ON adds jump speed ONLY on a new Jump press at landing.\n";
     if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
     G << "Call gameworlditems_draw(camera_x,camera_y) after selecting the foreground buffer.\n"
          "Do not call offset_spline() on attached object splines: draw applies camera offset.\n"
          "Gameassets' drawworld() automatically excludes managed object sprites.\n\n"
          "Full, current example: open maingame.c.txt in the Project Tree.\n";
+    if (!usedSfx.isEmpty()) {
+        G << "\nSTAGE 3.12 SOUND EVENTS\n"
+             "------------------------\n"
+             "Sound resources are selected in the Game Object Properties window,\n"
+             "and generated playsound... functions are provided by gameassets.\n"
+             "Spring launches, pickups, respawns, lift start/stop/reverse and\n"
+             "continuous movement / conveyor ambience play automatically.\n"
+             "Enable Loop on the SOUND resource for continuous sounds.\n"
+             "Loop fade and stereo panning update once per gameworlditems_draw().\n"
+             "Radius 0 disables automatic distance attenuation and positional pan.\n"
+             "IMPORTANT: SIDBOX has 8 sample channels. Sounds using the SAME\n"
+             "channel can interrupt one another. Assign distinct channels to\n"
+             "simultaneously playing sounds in Game Resources > Sounds.\n"
+             "Do not free assets while a sample is playing; stop audio first.\n";
+    }
     const QString folder = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
     if (!QDir().mkpath(folder)) { if (error) *error = tr("Cannot create %1").arg(folder); return false; }
     struct Out { QString name, data; };
@@ -3866,7 +4295,10 @@ THIS PROJECT CURRENTLY CONTAINS
                     << "; value " << r.objectValue
                     << ". gameworlditems_check() triggers your callback.\n";
             } else if (r.objectType == QStringLiteral("spring")) {
-                out << "    Spring strength: " << r.springStrength << " (upwards launch).\n";
+                out << "    Spring strength: " << r.springStrength << " (upwards launch).\n"
+                    << "    Jump + spring boost: " << (r.springJumpBoost ? "ON" : "OFF")
+                    << ". OFF = consistent spring-only velocity; ON = extra height when Jump\n"
+                       "    is newly pressed at contact (requires jump_held/jump_speed binding).\n";
             } else if (r.objectType == QStringLiteral("conveyor")) {
                 out << "    Conveyor speed: " << r.conveyorSpeed << " pixels/frame.\n";
             } else if (r.objectType == QStringLiteral("lift")) {
@@ -4060,6 +4492,12 @@ int main(int argc, char *argv[])
     world_player.y100 = &player_physics.y100;
     world_player.vy100 = &player_physics.vy100;
     world_player.on_ground = &player_physics.on_ground;
+    /* Optional spring controls: use the LIVE input/physics state.
+       These three bindings let springs distinguish a fresh Jump press
+       from a button held earlier, and clear leftover coyote time. */
+    world_player.jump_held = &player_physics.jump_held;
+    world_player.coyote = &player_physics.coyote;
+    world_player.jump_speed = &player_physics.jump_speed;
     world_player.width = )CG";
             out << spriteSymbol(*playerResource) << ".width;\n";
             out << "    world_player.height = " << spriteSymbol(*playerResource) << ".height;\n";
@@ -4221,6 +4659,10 @@ B. ONCE PER GAME FRAME, in this EXACT order, after gfx_lcdwait():
    IMPORTANT: create a game_world_player_t called world_player (or use
    your own name) and point x100, y100, vy100 and on_ground at the LIVE
    fields of your real physics player; set width and height too.
+   For precise spring jump combination also bind jump_held and jump_speed;
+   with the advanced tilemap physics also bind coyote. Without those
+   OPTIONAL fields, spring-only launch still works, but extra jump boost
+   is not available and old jump grace-time may remain active.
    Do NOT point it at a camera-shifted drawing sprite.
 )CG";
         }
@@ -4311,6 +4753,11 @@ SPRITES FROM THIS DESIGN (symbols as exported by gameassets.h)
 AUDIO / MUSIC
 - gameassets/gameassets.h lists your generated playsound* / playmusic*
   functions, if you added sound/music resources.
+- Game object sounds selected in the object dialog fire automatically from
+  gameworlditems.c: pickups, respawns, lift starts/stops/reversals, springs.
+- Continuous lift/conveyor loops fade and pan during gameworlditems_draw().
+  Their SOUND resources must have Loop enabled, and simultaneous WAVs need
+  distinct SIDBOX SFX channels (0..7). Respawn=0 means never respawn.
 - Call the appropriate functions from YOUR events (pickups, jumps, etc.).
   CoderGirl does not automatically decide when your game should play them.
 
@@ -4782,6 +5229,20 @@ bool SidboxGameDesigner::loadDesign()
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
         r.conveyorSpeed = qBound(-100, object.value(QStringLiteral("conveyorSpeed")).toInt(2), 100);
         r.springStrength = qBound(1, object.value(QStringLiteral("springStrength")).toInt(11), 100);
+        // Safe opt-in: designs predating this flag cannot silently acquire
+        // extra spring+jump velocity. Explicitly saved ON remains ON.
+        r.springJumpBoost = object.value(QStringLiteral("springJumpBoost")).toBool(false);
+        r.sfxPickup = object.value(QStringLiteral("sfxPickup")).toString();
+        r.sfxRespawn = object.value(QStringLiteral("sfxRespawn")).toString();
+        r.sfxStart = object.value(QStringLiteral("sfxStart")).toString();
+        r.sfxMove = object.value(QStringLiteral("sfxMove")).toString();
+        r.sfxStop = object.value(QStringLiteral("sfxStop")).toString();
+        r.sfxReverse = object.value(QStringLiteral("sfxReverse")).toString();
+        r.sfxSpring = object.value(QStringLiteral("sfxSpring")).toString();
+        r.sfxAmbient = object.value(QStringLiteral("sfxAmbient")).toString();
+        r.respawnFrames = qBound(0, object.value(QStringLiteral("respawnFrames")).toInt(0), 65535);
+        r.audioRadius = qBound(0, object.value(QStringLiteral("audioRadius")).toInt(0), 32767);
+        r.audioFadeFrames = qBound(0, object.value(QStringLiteral("audioFadeFrames")).toInt(8), 255);
         r.objectSplineId = object.value(QStringLiteral("splineId")).toString();
         r.objectAnimated = object.value(QStringLiteral("animated")).toBool(false);
         r.animFirst = qBound(0, object.value(QStringLiteral("animFirst")).toInt(0), 255);
@@ -4843,12 +5304,20 @@ bool SidboxGameDesigner::loadDesign()
         if (path.id.isEmpty()) path.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         path.durationFrames = qBound(1, value.value(QStringLiteral("frames")).toInt(100), 65535);
         path.loop = value.value(QStringLiteral("loop")).toBool(true);
+        // Keep the original [x,y] point representation so old IDE versions
+        // can still read the geometry. The optional wait times live in a
+        // separate "pointPauses" array; older designs default to all zero.
+        const QJsonArray pauseValues = value.value(QStringLiteral("pointPauses")).toArray();
         for (const QJsonValue &pointValue : value.value(QStringLiteral("points")).toArray()) {
             if (!pointValue.isArray() || path.points.size() >= 128) continue;
             const QJsonArray coordinates = pointValue.toArray();
-            if (coordinates.size() != 2) continue;
+            if (coordinates.size() < 2) continue;
             path.points.append(QPoint(qBound(-32768, coordinates.at(0).toInt(), 32767),
                                       qBound(-32768, coordinates.at(1).toInt(), 32767)));
+            const int pointNumber = path.points.size() - 1;
+            const int pauseFrames = pointNumber < pauseValues.size()
+                ? pauseValues.at(pointNumber).toInt() : 0;
+            path.pointPauses.append(qBound(0, pauseFrames, 65535));
         }
         if (path.points.size() >= 2) m_splinePaths.append(path);
     }
@@ -4907,6 +5376,18 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("hitHeight"), r.hitHeight);
             object.insert(QStringLiteral("conveyorSpeed"), r.conveyorSpeed);
             object.insert(QStringLiteral("springStrength"), r.springStrength);
+            object.insert(QStringLiteral("springJumpBoost"), r.springJumpBoost);
+            object.insert(QStringLiteral("sfxPickup"), r.sfxPickup);
+            object.insert(QStringLiteral("sfxRespawn"), r.sfxRespawn);
+            object.insert(QStringLiteral("sfxStart"), r.sfxStart);
+            object.insert(QStringLiteral("sfxMove"), r.sfxMove);
+            object.insert(QStringLiteral("sfxStop"), r.sfxStop);
+            object.insert(QStringLiteral("sfxReverse"), r.sfxReverse);
+            object.insert(QStringLiteral("sfxSpring"), r.sfxSpring);
+            object.insert(QStringLiteral("sfxAmbient"), r.sfxAmbient);
+            object.insert(QStringLiteral("respawnFrames"), r.respawnFrames);
+            object.insert(QStringLiteral("audioRadius"), r.audioRadius);
+            object.insert(QStringLiteral("audioFadeFrames"), r.audioFadeFrames);
             object.insert(QStringLiteral("splineId"), r.objectSplineId);
             object.insert(QStringLiteral("animated"), r.objectAnimated);
             object.insert(QStringLiteral("animFirst"), r.animFirst);
@@ -4940,9 +5421,14 @@ bool SidboxGameDesigner::saveDesign()
         data.insert(QStringLiteral("frames"), path.durationFrames);
         data.insert(QStringLiteral("loop"), path.loop);
         QJsonArray coords;
-        for (const QPoint &point : path.points)
+        QJsonArray pauses;
+        for (int i = 0; i < path.points.size(); ++i) {
+            const QPoint &point = path.points.at(i);
             coords.append(QJsonArray{point.x(), point.y()});
+            pauses.append(path.pointPauses.value(i, 0));
+        }
         data.insert(QStringLiteral("points"), coords);
+        data.insert(QStringLiteral("pointPauses"), pauses);
         pathList.append(data);
     }
     obj.insert(QStringLiteral("splinePaths"), pathList);
@@ -5263,6 +5749,17 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                 QGraphicsItem *clicked = nullptr;
                 const QList<QGraphicsItem *> under = m_view->items(where);
                 for (QGraphicsItem *candidate : under) {
+                    // Locked backgrounds often cover the entire world. Treat
+                    // them as empty space for beginning a sprite marquee.
+                    const QVariant idData = candidate->data(0);
+                    if (idData.isValid()) {
+                        const int id = idData.toInt();
+                        if (id >= 0 && id < m_sceneItems.size()
+                            && m_sceneItems[id] == candidate
+                            && m_resources[id].kind == QStringLiteral("background")
+                            && m_resources[id].locked)
+                            continue;
+                    }
                     if ((candidate->acceptedMouseButtons() & Qt::LeftButton)
                         && (candidate->flags() & (QGraphicsItem::ItemIsMovable
                                                  | QGraphicsItem::ItemIsSelectable))) {
@@ -5400,7 +5897,12 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                     QSignalBlocker block(m_scene);
                     if (!m_marqueeAdditive) m_scene->clearSelection();
                     if (dragged) {
-                        for (QGraphicsItem *item : m_sceneItems) {
+                        for (int id = 0; id < m_sceneItems.size(); ++id) {
+                            QGraphicsItem *item = m_sceneItems[id];
+                            // A locked background is a visual reference, not
+                            // a participant in multi-sprite group movement.
+                            if (item && m_resources[id].kind == QStringLiteral("background")
+                                && m_resources[id].locked) continue;
                             if (item && item->flags().testFlag(QGraphicsItem::ItemIsSelectable)
                                 && item->sceneBoundingRect().intersects(selection))
                                 item->setSelected(true);

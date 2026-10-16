@@ -59,6 +59,7 @@
 #include <QListWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QLineEdit>
 #include <QLayoutItem>
 #include <QLocale>
@@ -5385,6 +5386,117 @@ private:
     QString m_error;
 };
 
+// Independent REAL result. The programmer readouts retain their unsigned
+// bitwise semantics; this parser evaluates arithmetic without truncating /.
+// Bit operations are deliberately unsupported for REAL results.
+class SidboxCalcRealParser
+{
+public:
+    explicit SidboxCalcRealParser(const QString &text) : m_text(text) {}
+
+    bool evaluate(double &result)
+    {
+        m_pos = 0;
+        m_ok = true;
+        const double value = expression();
+        skip();
+        if (!m_ok || m_pos != m_text.size() || !std::isfinite(value)) return false;
+        result = value;
+        return true;
+    }
+
+private:
+    void skip() { while (m_pos < m_text.size() && m_text[m_pos].isSpace()) ++m_pos; }
+    bool take(QChar ch)
+    {
+        skip();
+        if (m_pos < m_text.size() && m_text[m_pos] == ch) { ++m_pos; return true; }
+        return false;
+    }
+    double expression()
+    {
+        double lhs = term();
+        while (m_ok) {
+            if (take(QLatin1Char('+'))) lhs += term();
+            else if (take(QLatin1Char('-'))) lhs -= term();
+            else break;
+        }
+        return lhs;
+    }
+    double term()
+    {
+        double lhs = unary();
+        while (m_ok) {
+            if (take(QLatin1Char('*'))) lhs *= unary();
+            else if (take(QLatin1Char('/'))) {
+                const double denominator = unary();
+                if (denominator == 0.0) { m_ok = false; return 0.0; }
+                lhs /= denominator;
+            } else break;
+        }
+        return lhs;
+    }
+    double unary()
+    {
+        if (take(QLatin1Char('+'))) return unary();
+        if (take(QLatin1Char('-'))) return -unary();
+        if (take(QLatin1Char('('))) {
+            const double value = expression();
+            if (!take(QLatin1Char(')'))) m_ok = false;
+            return value;
+        }
+        return number();
+    }
+    double number()
+    {
+        skip();
+        const int start = m_pos;
+        if (m_text.mid(m_pos, 2).compare(QStringLiteral("0x"), Qt::CaseInsensitive) == 0
+            || m_text.mid(m_pos, 2).compare(QStringLiteral("0b"), Qt::CaseInsensitive) == 0) {
+            const int base = m_text.at(m_pos + 1).toLower() == QLatin1Char('x') ? 16 : 2;
+            m_pos += 2;
+            const int digitsStart = m_pos;
+            while (m_pos < m_text.size()) {
+                const QChar ch = m_text.at(m_pos);
+                const bool digit = ch >= QLatin1Char('0') && ch <= QLatin1Char('9');
+                const bool hex = ch.toLower() >= QLatin1Char('a') && ch.toLower() <= QLatin1Char('f');
+                if (digit || (base == 16 && hex)) ++m_pos;
+                else break;
+            }
+            bool ok = false;
+            const quint64 value = m_text.mid(digitsStart, m_pos - digitsStart)
+                .toULongLong(&ok, base);
+            if (!ok) m_ok = false;
+            return double(value);
+        }
+        // Decimal values also support fractional and scientific notation.
+        bool digits = false;
+        while (m_pos < m_text.size() && m_text[m_pos].isDigit()) { ++m_pos; digits = true; }
+        if (m_pos < m_text.size() && m_text[m_pos] == QLatin1Char('.')) {
+            ++m_pos;
+            while (m_pos < m_text.size() && m_text[m_pos].isDigit()) { ++m_pos; digits = true; }
+        }
+        if (!digits) { m_ok = false; return 0.0; }
+        if (m_pos < m_text.size() && (m_text[m_pos] == QLatin1Char('e')
+                                         || m_text[m_pos] == QLatin1Char('E'))) {
+            ++m_pos;
+            if (m_pos < m_text.size() && (m_text[m_pos] == QLatin1Char('+')
+                                             || m_text[m_pos] == QLatin1Char('-'))) ++m_pos;
+            const int exponentStart = m_pos;
+            while (m_pos < m_text.size() && m_text[m_pos].isDigit()) ++m_pos;
+            if (m_pos == exponentStart) m_ok = false;
+        }
+        bool ok = false;
+        const double value = m_text.mid(start, m_pos - start).toDouble(&ok);
+        if (!ok) m_ok = false;
+        return value;
+    }
+
+    QString m_text;
+    int m_pos = 0;
+    bool m_ok = true;
+};
+
 class SidboxProgrammerCalculator : public QWidget
 {
 public:
@@ -5433,6 +5545,19 @@ public:
             m_display[index]->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
             readouts->addWidget(m_display[index], index, 1);
         }
+        // The fourth row is informational: integer HEX/UDEC/SDEC and bit
+        // toggles still use fixed-width arithmetic independently.
+        auto *realCaption = new QLabel(tr("REAL"), this);
+        readouts->addWidget(realCaption, 3, 0);
+        m_realDisplay = new QLineEdit(this);
+        m_realDisplay->setObjectName(QStringLiteral("programmerCalculatorRealValue"));
+        m_realDisplay->setReadOnly(true);
+        m_realDisplay->setAlignment(Qt::AlignRight);
+        m_realDisplay->setMinimumWidth(0);
+        m_realDisplay->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        m_realDisplay->setToolTip(tr("Floating-point arithmetic result (for example 3/2 = 1.5). "
+            "Bitwise operations are integer-only; REAL then shows a dash."));
+        readouts->addWidget(m_realDisplay, 3, 1);
         readouts->setColumnStretch(1, 1);
         layout->addLayout(readouts);
 
@@ -5599,6 +5724,16 @@ private:
         quint64 value = 0;
         const QString expression = m_expression->text().trimmed();
         const bool empty = expression.isEmpty();
+        // Evaluate REAL separately, even if the integer parser rejects a
+        // decimal fraction. This does not change the fixed-width answer.
+        SidboxCalcRealParser realParser(empty ? QStringLiteral("0") : expression);
+        double realValue = 0.0;
+        if (realParser.evaluate(realValue)) {
+            m_realDisplay->setText(QString::number(realValue, 'g', 15));
+        } else {
+            m_realDisplay->setText(QStringLiteral("—"));
+        }
+        m_realDisplay->setCursorPosition(0);
         SidboxCalcParser parser(empty ? QStringLiteral("0") : expression, bits);
         m_valid = parser.evaluate(value, error);
         m_copyBinary->setEnabled(m_valid);
@@ -5642,6 +5777,7 @@ private:
     QLineEdit *m_expression = nullptr;
     QComboBox *m_width = nullptr;
     QLineEdit *m_display[3] = {nullptr, nullptr, nullptr};
+    QLineEdit *m_realDisplay = nullptr;
     QWidget *m_binaryArea = nullptr;
     QVBoxLayout *m_binaryRows = nullptr;
     QToolButton *m_bitButtons[64] = {};
@@ -13305,6 +13441,14 @@ void MainWindow::rescanProjectFiles()
 
 void MainWindow::refreshProjectFiles()
 {
+    // Default: collapsed. If the user manually expanded folders, do not snap
+    // them closed every time a file is generated or the tree is refreshed.
+    QSet<QString> previouslyExpanded;
+    for (QTreeWidgetItemIterator it(m_projectFiles); *it; ++it) {
+        const QTreeWidgetItem *item = *it;
+        if (item->data(0, Qt::UserRole + 1).toBool() && item->isExpanded())
+            previouslyExpanded.insert(item->data(0, Qt::UserRole).toString());
+    }
     m_projectFiles->clear();
 
     QHash<QString, QTreeWidgetItem *> folderItems;
@@ -13508,7 +13652,31 @@ void MainWindow::refreshProjectFiles()
         }
     }
 
-    m_projectFiles->expandAll();
+    // Restore only folders the user chose to open. The initial view remains
+    // collapsed; compiler-error folders are expanded explicitly below.
+    for (auto it = folderItems.cbegin(); it != folderItems.cend(); ++it) {
+        QTreeWidgetItem *folder = it.value();
+        if (previouslyExpanded.contains(folder->data(0, Qt::UserRole).toString()))
+            folder->setExpanded(true);
+    }
+    for (QTreeWidgetItemIterator it(m_projectFiles); *it; ++it) {
+        QTreeWidgetItem *item = *it;
+        if (item->data(0, Qt::UserRole + 1).toBool()) continue;
+        const QString path = item->data(0, Qt::UserRole).toString();
+        const auto diagnosticIt = m_compilerDiagnostics.constFind(path);
+        if (diagnosticIt == m_compilerDiagnostics.constEnd()) continue;
+        bool hasError = false;
+        for (const EditorDiagnostic &diagnostic : diagnosticIt.value()) {
+            if (diagnostic.severity == EditorDiagnostic::Severity::Error) {
+                hasError = true;
+                break;
+            }
+        }
+        if (hasError) {
+            for (QTreeWidgetItem *parent = item->parent(); parent; parent = parent->parent())
+                parent->setExpanded(true);
+        }
+    }
 }
 
 
@@ -13589,6 +13757,14 @@ void MainWindow::updateProjectDiagnosticMarkers()
                     item->setIcon(
                         0,
                         icon);
+
+                    // Compilation errors reveal only the relevant folder path;
+                    // ordinary folders stay collapsed unless opened by user.
+                    if (hasError) {
+                        for (QTreeWidgetItem *parent = item->parent(); parent;
+                             parent = parent->parent())
+                            parent->setExpanded(true);
+                    }
 
                     QString tooltip =
                         QDir::toNativeSeparators(

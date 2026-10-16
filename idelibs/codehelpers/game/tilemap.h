@@ -76,6 +76,12 @@ void game_tilemap_blit_view(const game_tilemap_t *map,
                             int32_t camera_x, int32_t camera_y,
                             uint16_t view_width, uint16_t view_height);
 
+/* Check whether a WORLD-space actor hitbox intersects solid walls or the
+   interior of slopes. Used to prevent lifts carrying a player into a wall. */
+uint8_t game_tilemap_actor_blocked(const game_tilemap_t *map,
+                                   int32_t x, int32_t y,
+                                   uint16_t width, uint16_t height);
+
 /* Advanced tile-aware player movement (world coordinates). */
 typedef struct {
     const game_tilemap_t *map;
@@ -83,6 +89,12 @@ typedef struct {
     int32_t x100, y100, vy100;
     int16_t walk_speed, jump_speed, gravity, max_fall_speed;
     uint8_t on_ground, jump_held, coyote, touch_type;
+    /* Internal: detect externally applied upward impulses (e.g. springs).
+       Such launches always use the SHORT-HOP gravity, independent of the
+       Jump button. Ordinary player jumps keep variable-height control.
+       No additional main.c wiring is required. */
+    int32_t physics_vy100; /* Velocity at the end of the previous physics step. */
+    uint8_t external_ascent;
 } game_tile_player_t;
 
 uint8_t game_tile_player_start(game_tile_player_t *p,

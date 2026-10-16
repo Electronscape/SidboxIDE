@@ -25,6 +25,8 @@ typedef struct {
     uint16_t width, height;         /* Pickup hitbox (not rendered). */
     uint16_t kind, value;           /* Game-specific kind and amount. */
     uint8_t active;                 /* 0 = already collected / hidden. */
+    uint16_t respawn_frames;        /* 0 = never respawn; delay after pickup. */
+    uint16_t respawn_left;          /* Internal countdown, in update frames. */
 } game_collectable_t;
 
 typedef void (*game_pickup_callback_t)(game_collectable_t *pickup, void *user);

@@ -25,10 +25,12 @@
 #include <QWheelEvent>
 #include <QPainter>
 #include <QSaveFile>
+#include <QShortcut>
 #include <QPushButton>
 #include <QPaintEvent>
 #include <QResizeEvent>
 #include <utility>
+#include <functional>
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QSplitter>
@@ -211,6 +213,8 @@ public:
     int collisionBrush = -1;
     bool painting = false;
     bool panning = false;
+    std::function<void()> strokeStarted;
+    std::function<void()> strokeFinished;
     QPoint lastPan;
     int wheelRemainderX = 0;
     int wheelRemainderY = 0;
@@ -342,7 +346,9 @@ protected:
             viewport()->setCursor(Qt::ClosedHandCursor); return;
         }
         if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
-            painting = true; paintAt(e->position().toPoint(), e->button() == Qt::RightButton);
+            if (strokeStarted) strokeStarted();
+            painting = true;
+            paintAt(e->position().toPoint(), e->button() == Qt::RightButton);
         }
     }
     void mouseMoveEvent(QMouseEvent *e) override
@@ -362,7 +368,10 @@ protected:
             panning = false;
             viewport()->setCursor(Qt::CrossCursor);
         }
-        if (e->button() == Qt::RightButton || e->button() == Qt::LeftButton) painting = false;
+        if ((e->button() == Qt::RightButton || e->button() == Qt::LeftButton) && painting) {
+            painting = false;
+            if (strokeFinished) strokeFinished();
+        }
     }
     void wheelEvent(QWheelEvent *e) override
     {
@@ -396,6 +405,93 @@ protected:
         e->accept();
     }
 };
+
+// One mouse paint stroke is one history entry; resizing and animation edits
+// also create entries. Qt's implicitly shared QByteArrays keep this practical.
+static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
+{
+    if (a.width != b.width || a.height != b.height || a.tileSize != b.tileSize
+        || a.atlasPath != b.atlasPath || a.graphics != b.graphics
+        || a.collisions != b.collisions || a.animations.size() != b.animations.size())
+        return false;
+    for (int i = 0; i < a.animations.size(); ++i) {
+        const auto &left = a.animations.at(i);
+        const auto &right = b.animations.at(i);
+        if (left.graphicId != right.graphicId || left.frames != right.frames
+            || left.frameTicks != right.frameTicks || left.loop != right.loop
+            || left.bounce != right.bounce) return false;
+    }
+    return true;
+}
+
+void SidboxTilemapEditor::updateHistoryActions()
+{
+    if (m_undoButton) m_undoButton->setEnabled(!m_undoStack.isEmpty());
+    if (m_redoButton) m_redoButton->setEnabled(!m_redoStack.isEmpty());
+}
+
+void SidboxTilemapEditor::recordChange(const SidboxTilemap &before)
+{
+    if (sameTilemap(before, m_map)) return;
+    constexpr int maxHistory = 64;
+    if (m_undoStack.size() == maxHistory) m_undoStack.removeFirst();
+    m_undoStack.append(before);
+    m_redoStack.clear();
+    updateHistoryActions();
+}
+
+void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
+{
+    const bool atlasChanged = m_map.atlasPath != snapshot.atlasPath;
+    m_map = snapshot;
+    // Restore the original settings without firing edit-history callbacks.
+    if (m_sizeX) {
+        QSignalBlocker block(m_sizeX);
+        m_sizeX->setValue(m_map.width);
+    }
+    if (m_sizeY) {
+        QSignalBlocker block(m_sizeY);
+        m_sizeY->setValue(m_map.height);
+    }
+    if (m_tileSizeCombo) {
+        QSignalBlocker block(m_tileSizeCombo);
+        m_tileSizeCombo->setCurrentIndex(
+            m_tileSizeCombo->findData(m_map.tileSize));
+    }
+    if (atlasChanged && m_atlasCombo) {
+        QSignalBlocker block(m_atlasCombo);
+        const QString full = m_map.atlasPath.isEmpty() ? QString()
+            : QDir(m_designDirectory).absoluteFilePath(m_map.atlasPath);
+        const int index = m_atlasCombo->findData(full);
+        m_atlasCombo->setCurrentIndex(index >= 0 ? index : 0);
+        setAtlas(full);
+    }
+    if (m_canvas) {
+        m_canvas->adjust();
+        m_canvas->viewport()->update();
+    }
+    updateAtlasPicker();
+    updateAnimationControls();
+    updateAnimationPreview();
+}
+
+void SidboxTilemapEditor::undoEdit()
+{
+    if (m_undoStack.isEmpty() || (m_canvas && m_canvas->painting)) return;
+    const SidboxTilemap previous = m_undoStack.takeLast();
+    m_redoStack.append(m_map);
+    restoreMap(previous);
+    updateHistoryActions();
+}
+
+void SidboxTilemapEditor::redoEdit()
+{
+    if (m_redoStack.isEmpty() || (m_canvas && m_canvas->painting)) return;
+    const SidboxTilemap next = m_redoStack.takeLast();
+    m_undoStack.append(m_map);
+    restoreMap(next);
+    updateHistoryActions();
+}
 
 void SidboxTilemapEditor::setTheme(const IDETheme &theme)
 {
@@ -468,9 +564,12 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     layout->setSpacing(6);
 
     auto *sizeX = new QSpinBox(this), *sizeY = new QSpinBox(this);
+    m_sizeX = sizeX;
+    m_sizeY = sizeY;
     sizeX->setRange(30, 256); sizeY->setRange(20, 256);
     sizeX->setValue(m_map.width); sizeY->setValue(m_map.height);
     auto *tileSize = new TilemapComboBox(this);
+    m_tileSizeCombo = tileSize;
     for (int s : {8, 16, 32}) tileSize->addItem(QString::number(s) + QStringLiteral(" px"), s);
     tileSize->setCurrentIndex(qMax(0, tileSize->findData(m_map.tileSize)));
     auto *zoom = new TilemapComboBox(this);
@@ -490,7 +589,27 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     form->addWidget(new QLabel(tr("Zoom"), this)); form->addWidget(zoom);
     form->addWidget(collisionOverlay);
     form->addStretch(1);
+    m_undoButton = new QPushButton(tr("Undo"), this);
+    m_redoButton = new QPushButton(tr("Redo"), this);
+    m_undoButton->setToolTip(tr("Undo the last tile stroke or map edit (Ctrl+Z)."));
+    m_redoButton->setToolTip(tr("Redo the last undone edit (Ctrl+Y or Ctrl+Shift+Z)."));
+    form->addWidget(m_undoButton);
+    form->addWidget(m_redoButton);
     layout->addLayout(form);
+    connect(m_undoButton, &QPushButton::clicked, this, [this]() { undoEdit(); });
+    connect(m_redoButton, &QPushButton::clicked, this, [this]() { redoEdit(); });
+    for (const QKeySequence &key : {QKeySequence(Qt::CTRL | Qt::Key_Z)}) {
+        auto *shortcut = new QShortcut(key, this);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this]() { undoEdit(); });
+    }
+    for (const QKeySequence &key : {QKeySequence(Qt::CTRL | Qt::Key_Y),
+                                     QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)}) {
+        auto *shortcut = new QShortcut(key, this);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this]() { redoEdit(); });
+    }
+    updateHistoryActions();
 
     // Both layers are painted with one drag. Either dropdown can opt out.
     auto *brushC = new TilemapComboBox(this);
@@ -534,6 +653,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     atlasTitle->setFont(sectionFont);
     sideLayout->addWidget(atlasTitle);
     auto *atlasChoice = new TilemapComboBox(sidebar);
+    m_atlasCombo = atlasChoice;
     atlasChoice->addItem(tr("No artwork (IDs only)"), QString());
     for (const auto &a : atlases) atlasChoice->addItem(a.first, a.second);
     const QString existing = QDir(m_designDirectory).absoluteFilePath(m_map.atlasPath);
@@ -612,6 +732,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_canvas->setMinimumWidth(300);
     m_canvas->map = &m_map;
     m_canvas->atlas = &m_atlas;
+    m_canvas->strokeStarted = [this]() { m_strokeStart = m_map; };
+    m_canvas->strokeFinished = [this]() { recordChange(m_strokeStart); };
     m_splitter->addWidget(sidebar);
     m_splitter->addWidget(m_canvas);
     m_splitter->setStretchFactor(0, 0);
@@ -624,6 +746,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
 
     auto *help = new QLabel(tr("LEFT-DRAG paints both enabled layers  |  RIGHT-DRAG erases  |  "
         "MIDDLE-DRAG or ALT+LEFT-DRAG pans  |  WHEEL scrolls one tile. "
+        "CTRL+Z undoes one stroke; CTRL+Y / CTRL+SHIFT+Z redoes. "
         "Pick artwork on the left; 'Don't change' leaves that layer untouched."), this);
     help->setWordWrap(true);
     layout->addWidget(help);
@@ -633,18 +756,28 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(sizeX, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        const SidboxTilemap before = m_map;
         m_map.resizeMap(v, m_map.height); m_canvas->adjust();
+        recordChange(before);
     });
     connect(sizeY, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        const SidboxTilemap before = m_map;
         m_map.resizeMap(m_map.width, v); m_canvas->adjust();
+        recordChange(before);
     });
     connect(tileSize, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, tileSize](int) {
+            const SidboxTilemap before = m_map;
             m_map.tileSize = tileSize->currentData().toInt();
             m_canvas->adjust(); updateAtlasPicker(); updateAnimationControls();
+            recordChange(before);
         });
     connect(atlasChoice, qOverload<int>(&QComboBox::currentIndexChanged), this,
-        [this, atlasChoice](int) { setAtlas(atlasChoice->currentData().toString()); });
+        [this, atlasChoice](int) {
+            const SidboxTilemap before = m_map;
+            setAtlas(atlasChoice->currentData().toString());
+            recordChange(before);
+        });
     connect(brushG, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, brushG](int) { m_canvas->graphicMode = brushG->currentData().toInt(); });
     connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -803,10 +936,12 @@ void SidboxTilemapEditor::saveSelectedAnimation()
             tr("The selected frame range goes past the end of the atlas."));
         return;
     }
+    const SidboxTilemap before = m_map;
     bool updated = false;
     for (SidboxTileAnimation &entry : m_map.animations)
         if (entry.graphicId == id) { entry = a; updated = true; break; }
     if (!updated) m_map.animations.append(a);
+    recordChange(before);
     updateAnimationControls();
     m_canvas->viewport()->update();
 }
@@ -815,11 +950,13 @@ void SidboxTilemapEditor::removeSelectedAnimation()
 {
     if (!m_canvas) return;
     const int id = m_canvas->graphicBrush;
+    const SidboxTilemap before = m_map;
     for (int i = 0; i < m_map.animations.size(); ++i)
         if (m_map.animations.at(i).graphicId == id) {
             m_map.animations.removeAt(i);
             break;
         }
+    recordChange(before);
     updateAnimationControls();
     m_canvas->viewport()->update();
 }

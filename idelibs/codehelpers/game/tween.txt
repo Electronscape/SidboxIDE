@@ -41,3 +41,22 @@ stop_tween(&movement); // Freeze at the current position
 
 Do NOT also run spline/platformer movement on this same sprite at the same
 time: both helpers would try to set sprite.drawx / sprite.drawy.
+
+OPTIONAL TWEEN PAUSES
+---------------------
+A tween can wait BEFORE moving and AFTER arriving. Zero means no wait.
+For example, after starting a looping tween:
+
+start_tween(&movement, &platform, 300, 160, 50, 1);
+set_tween_pauses(&movement, 25, 50);
+
+At 50 FPS the platform waits half a second at the start, moves for
+50 frames, then waits one second at the destination before repeating.
+The original start_tween() and run_tween() functions stay unchanged:
+
+run_tween(&movement, 1);
+
+Set the pauses immediately after start_tween(), before your game loop.
+Leave this call out to preserve the original, uninterrupted tween.
+For a nonlooping tween, the end pause holds the sprite at its destination
+before the tween becomes inactive. The movement does not run in reverse.

@@ -19,6 +19,7 @@
 typedef struct {
     int16_t x;
     int16_t y;
+    uint16_t pause_frames;        /* Hold at this point, 0 = no pause. */
 } game_spline_point_t;
 
 typedef struct {
@@ -31,6 +32,10 @@ typedef struct {
     uint16_t elapsed_frames;
     uint8_t loop;
     uint8_t active;
+    uint8_t has_pauses;           /* Keep zero-pause paths on the original timing path. */
+    uint8_t finish_after_pause;
+    uint16_t pause_remaining;
+    uint16_t next_pause_index;    /* Next knot to reach (1..number of segments). */
 } game_spline_t;
 
 void start_spline(game_spline_t *path, gfxbob_t *sprite,

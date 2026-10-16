@@ -79,6 +79,14 @@ private:
         int objectValue = 10;
         int hitWidth = 16, hitHeight = 16;
         int conveyorSpeed = 2, springStrength = 11;
+        bool springJumpBoost = false; // Opt-in only, including older designs without this field.
+        // Stage 3.12: sound references are stable IDs of Sounds in Game Resources.
+        // Empty ID = no sound. They are NEVER hard-coded filesystem paths.
+        QString sfxPickup, sfxRespawn, sfxStart, sfxMove, sfxStop;
+        QString sfxReverse, sfxSpring, sfxAmbient;
+        int respawnFrames = 0;       // 0 = collected permanently.
+        int audioRadius = 0;         // 0 = fixed volume/pan; otherwise attenuation in pixels.
+        int audioFadeFrames = 8;     // Fade of continuously moving/ambient sounds.
         QString objectSplineId; // stable spline ID, not name/array position
         bool objectAnimated = false;
         int animFirst = 0, animCount = 1, animTicks = 5;
@@ -105,6 +113,7 @@ private:
         QString name;
         QString id; // persistent ID; renaming the path keeps object attachments
         QVector<QPoint> points;
+        QVector<int> pointPauses; // One wait in frames per point; zero = no pause.
         int durationFrames = 100;
         bool loop = true;
     };

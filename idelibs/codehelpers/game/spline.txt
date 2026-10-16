@@ -2,7 +2,9 @@ CODERGIRL V1 — SPRITE SPLINE
 ===========================
 
 Draw a smooth curve using Game Designer -> right-click canvas -> Create Spline.
-Add, drag or delete nodes; set duration and loop. Then right-click the canvas
+Add, drag or delete nodes; double-click a spline in Game Resources to edit
+its exact X/Y coordinates and per-point Pause (frames). Every new point
+starts with pause = 0. Then right-click the canvas
 and choose Export Spline Paths to C. This creates splinepaths.c / .h.
 
 1. Include these files at the top of main.c:
@@ -82,3 +84,32 @@ stop_spline(&flight); // Freeze at the current position
 The spline updates sprite position only. You can combine it with the
 Sprite Animation helper (which changes sprite.index), but NOT with tween or
 platformer movement of the same sprite at the same time.
+
+PAUSING AT CONTROL POINTS — MOVING BRIDGE EXAMPLE
+-------------------------------------------------
+Double-click the spline in Game Resources -> Splines.
+For a two-point path set the following values:
+
+Point 1: X=100, Y=200, Pause=50
+Point 2: X=300, Y=200, Pause=50
+Journey time: 100 frames
+Loop: checked
+
+At 50 FPS the bridge waits 1 second at Point 1, travels to Point 2,
+waits 1 second there, then follows the loop back to Point 1 and waits
+again. Pauses ADD time to the journey; they do not shorten or slow the
+100-frame movement. All durations use game frames, not milliseconds.
+
+Save the .sbgm design, export the spline paths, and use Update Project...
+to refresh the project helpers. Generated splinepaths.c will include
+{x, y, pause_frames} for each control point.
+
+Existing start_spline(), run_spline(), set_spline_pos() and offset_spline()
+are unchanged. A spline with every Pause set to 0 behaves exactly as before.
+IMPORTANT: Update BOTH gamespline.c and gamespline.h together: the point
+structure includes a new pause_frames member.
+
+When Loop is off, the last point can pause before movement stops. With
+Loop on, the last point pauses before travelling back to the start.
+If a spline has many control points, allow enough journey frames for each
+segment to move visibly (at least one frame per segment).

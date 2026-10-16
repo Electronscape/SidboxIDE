@@ -290,6 +290,19 @@ static uint8_t touches_slope_body(const game_tilemap_t *m, int32_t x, int32_t y,
     return 0;
 }
 
+/* Public collision query for externally carried players (moving lifts).
+   Share precisely the wall/slope rules used by the advanced tilemap player.
+   One-way surfaces aren't walls: carrying a player across them is allowed. */
+uint8_t game_tilemap_actor_blocked(const game_tilemap_t *map,
+                                   int32_t x, int32_t y,
+                                   uint16_t width, uint16_t height)
+{
+    if (!map || !map->collision || !map->tile_size || !width || !height)
+        return 0;
+    return (uint8_t)(touches_solid(map, x, y, width, height) ||
+                     touches_slope_body(map, x, y, width, height));
+}
+
 /* Find the first landing surface beneath the ENTIRE width of the player.
  * A 32px player can overlap three 16px tiles: checking only its two
  * outside corners misses the solid tile in the middle and traps the player.
@@ -391,6 +404,7 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->x100 = (int32_t)x * 100; p->y100 = (int32_t)y * 100;
     p->vy100 = 0; p->on_ground = 0; p->jump_held = 0;
     p->coyote = 0; p->touch_type = 0;
+    p->physics_vy100 = 0; p->external_ascent = 0;
     const int32_t feet = y + p->sprite->height;
     p->on_ground = tile_floor(p->map, x, p->sprite->width, feet, feet) == feet;
 }
@@ -401,10 +415,21 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
     const game_tilemap_t *m = p->map;
     const int32_t w = p->sprite->width, h = p->sprite->height;
     for (uint16_t n = 0; n < frames; ++n) {
+        /* World Objects applies spring launches AFTER game_tile_player_run().
+           Detect an upward impulse made between physics calls rather than
+           treating it as an ordinary variable-height jump. This also works
+           for manually launched players without changing main.c or wiring
+           World Objects into the tilemap helper. */
+        if (p->vy100 < 0 && p->vy100 != p->physics_vy100)
+            p->external_ascent = 1;
+        if (p->vy100 >= 0)
+            p->external_ascent = 0;
+
         const uint8_t jumping = !!(buttons & (BTN_UP | BTN_FIRE));
         if (jumping && !p->jump_held && (p->on_ground || p->coyote)) {
             p->vy100 = -(int32_t)p->jump_speed * 100;
             p->on_ground = 0; p->coyote = 0;
+            p->external_ascent = 0; /* A regular jump retains short-hop control. */
         }
         p->jump_held = jumping;
         if (!p->on_ground && p->coyote) --p->coyote;
@@ -440,7 +465,13 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         p->vy100 += p->gravity;
         if (p->vy100 > (int32_t)p->max_fall_speed * 100)
             p->vy100 = (int32_t)p->max_fall_speed * 100;
-        if (!jumping && p->vy100 < 0) p->vy100 += p->gravity; // short hop
+        /* Spring/external launches must be independent of the Jump button,
+           but NOT given the long held-jump arc (Stage 3.17 regression).
+           Apply the existing short-hop gravity to an external ascent on
+           EVERY rising frame. A normal jump still gets that extra gravity
+           only when the Jump button is released. */
+        if (p->vy100 < 0 && (p->external_ascent || !jumping))
+            p->vy100 += p->gravity;
         const int32_t nextY100 = p->y100 + p->vy100;
         const int32_t nextY = nextY100 / 100;
         const uint8_t wasGrounded = p->on_ground;
@@ -479,6 +510,9 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         else p->y100 = nextY100;
         if (wasGrounded && !p->on_ground) p->coyote = 5;
         p->touch_type = special_type(m, x, y, w, h);
+        if (p->vy100 >= 0 || p->on_ground)
+            p->external_ascent = 0;
+        p->physics_vy100 = p->vy100;
     }
 }
 void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cameraY)

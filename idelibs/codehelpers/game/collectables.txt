@@ -55,7 +55,8 @@ AFTER gfx_usebuffer() and the tilemap, BEFORE swapping the display buffers:
 game_collectables_draw(coins, 1, camera_x, camera_y);
 
 The coin disappears when collected. The callback increases score by 10.
-You choose how to restore it: coins[0].active = 1;
+Set coins[0].respawn_frames = 150; to respawn it after 150 update frames.
+Set respawn_frames = 0 to keep it collected permanently.
 
 FLOATING / MOVING COIN ON AN EXPORTED SPLINE
 ---------------------------------------------
@@ -86,3 +87,10 @@ IMPORTANT
 - Use gfxbob_t TOP-LEFT handle, 100% scale for the hitbox.
 - Remember to compile and link gamecollectables.c, gamespline.c and
   gameanimation.c. The IDE's V1 project builder should include gamehelpers/.
+
+STAGE 3.12 — RESPAWN
+--------------------
+After game_collectable_start(), set item->respawn_frames = N.
+When collected the item becomes inactive and waits N update frames, then
+reactivates at its last world position. 0 means it never respawns.
+Generated gameworlditems.c can play optional pickup and respawn sounds.

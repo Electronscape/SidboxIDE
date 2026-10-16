@@ -31,6 +31,10 @@ typedef struct {
     uint16_t elapsed_frames;
     uint8_t loop;
     uint8_t active;
+    uint16_t start_pause_frames; /* Delay before each journey, default 0. */
+    uint16_t end_pause_frames;   /* Delay after arrival, default 0. */
+    uint16_t pause_remaining;
+    uint8_t phase;              /* Internal: 0 start, 1 travel, 2 destination. */
 } game_tween_t;
 
 /* Use duration_frames=0 to move immediately. 50 frames = 1 sec at FPS_50. */
@@ -38,6 +42,11 @@ void start_tween(game_tween_t *tween, gfxbob_t *sprite,
                  int16_t x, int16_t y, uint16_t duration_frames, uint8_t loop);
 /* Advance by frame_step game frames; usually 1 per VBlank. */
 void run_tween(game_tween_t *tween, uint16_t frame_step);
+/* Optional pauses in game frames. Call after start_tween().
+   Set both to zero for the original uninterrupted timing.
+   A looping tween pauses at start, moves, pauses at end, then repeats. */
+void set_tween_pauses(game_tween_t *tween, uint16_t start_frames,
+                      uint16_t end_frames);
 /* Move the whole route so its START point becomes (x,y).
    Safe to call while playing: timing and progress are preserved. */
 void set_tween_pos(game_tween_t *tween, int16_t x, int16_t y);

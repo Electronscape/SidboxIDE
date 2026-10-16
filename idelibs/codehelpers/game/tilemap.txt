@@ -99,3 +99,38 @@ IMPORTANT: After updating CoderGirl to use SD atlases, update existing
 project gamehelpers/gametilemap.c AND gametilemap.h to the new template
 (before building), because the generated level calls the new loader API.
 Do not overwrite programmer-edited files without saving a backup first.
+
+STAGE 3.16 — MOVING PLATFORM / WALL COLLISION
+-------------------------------------------
+Game Designer automatically connects generated World Objects to the level's
+collision map. The carried player is checked against solid tiles and slope
+interiors, pixel by pixel. You do not need to edit main.c or generated
+`gameworlditems.c` to enable this feature.
+
+Update Project... to refresh BOTH gametilemap.c/.h and gameworldobjects.c/.h,
+then regenerate V1 Game Code so the collision callback is wired up.
+Game Objects WITHOUT an attached tilemap retain their previous behaviour.
+
+STAGE 3.18 — CONTROLLED SPRING ARC / HELD-JUMP REGRESSION FIX
+--------------------------------------------------------------
+Ordinary jumps remain variable-height: release FIRE/UP early for a short hop;
+hold FIRE/UP for the longer normal-jump arc.
+
+Springs are intentionally different. World Objects gives the player a fixed
+upward impulse using the spring's configured Launch Strength. Tilemap physics
+recognises that external impulse and applies SHORT-HOP (extra) gravity
+throughout the ascent, REGARDLESS of whether FIRE/UP is held or released.
+
+Why? Stage 3.17 mistakenly gave every spring the LONG held-jump arc. Even
+released jumps became enormous. This version restores the shorter spring arc
+for both controls, matching the previously released-button behaviour.
+
+The launch strength still controls how HIGH the spring can send the player:
+15 is substantially stronger than the ordinary jump strength of 7. Reduce
+spring Launch Strength if you want a smaller bounce. The optional Combine
+Jump + Spring checkbox still intentionally adds a new-press jump impulse.
+
+Use Game Designer -> Update Project... to refresh BOTH gametilemap.c and
+.h; the game is our generated-code test, so do not patch gamehelpers or
+main.c by hand. Neither Game Objects nor the exporter needs changing.
+

@@ -35,6 +35,8 @@ objects[0].conveyor_speed = 1;
 game_world_object_start(&objects[1], GAME_OBJECT_SPRING,
                         &spring_sprite, spring_sprite.drawx, spring_sprite.drawy, 32, 16);
 objects[1].spring_strength = 11;
+/* Spring only = repeatable launch speed, independent of Jump. */
+objects[1].allow_jump_boost = 0;
 
 // A lift with an optional animated sprite and an editable spline path.
 game_world_object_start(&objects[2], GAME_OBJECT_LIFT,
@@ -54,6 +56,10 @@ world_player.x100 = &player_physics.x100;
 world_player.y100 = &player_physics.y100;
 world_player.vy100 = &player_physics.vy100;
 world_player.on_ground = &player_physics.on_ground;
+/* Optional but recommended for advanced spring behaviour: */
+world_player.jump_held = &player_physics.jump_held;
+world_player.coyote = &player_physics.coyote; /* Advanced tilemap only. */
+world_player.jump_speed = &player_physics.jump_speed;
 world_player.width = player.width;
 world_player.height = player.height;
 
@@ -73,6 +79,29 @@ game_world_objects_draw(objects, 3, camera_x, camera_y);
 This is IMPORTANT: update -> before -> player physics -> after -> draw.
 Don't run an entire several-frame physics step and resolve just once.
 
+SPRING JUMP COMBINATION (STAGE 3.11)
+------------------------------------
+Each spring offers "Combine jump + spring launch (extra boost)" in the
+Game Object Properties dialog. Springs default OFF, including older
+saved designs without a springJumpBoost property. Explicitly saved ON
+stays ON. Re-generate gameworlditems.c after changing the setting.
+
+OFF: Landing produces exactly -spring_strength*100 in vy100, regardless
+of whether Jump is held. Even if tilemap physics processed a NEW Jump press
+on the same frame as spring contact, the spring overrides the ordinary jump
+instead of adding it. With the optional `coyote` pointer bound above,
+no extra coyote jump can fire afterwards.
+
+ON: A NEW press of Jump during the landing frame adds player.jump_speed
+to the spring launch strength (for example 11 + 7 = 18 pixels/frame).
+Holding Jump from earlier frames does not count as a new press.
+Without jump_held/jump_speed pointers, the extra boost is not applied.
+The spring still works and uses its configured spring_strength.
+
+For the basic game_platformer_t (not tilemap), bind jump_held and
+jump_speed from that struct, and leave world_player.coyote = NULL.
+If you are reusing a global/static world_player, initialise it to {0}.
+
 ANIMATED, MOVING AND BOUNCING AT THE SAME TIME?
 -----------------------------------------------
 YES. The object's spline moves its world coordinates, its animation changes
@@ -89,8 +118,15 @@ IMPORTANT LIMITATIONS OF THIS FIRST VERSION
 - This is TOP-SURFACE interaction, not solid sides or undersides.
 - Upward-moving players intentionally pass through the platform from below.
 - The existing tilemap still handles ordinary floors, walls and slopes.
-- Conveyors and lifts apply position changes independently; very fast
-  platforms might push a rider into solid tiles. Keep paths/speeds modest.
+- When this design has an attached tilemap, CoderGirl automatically binds
+  the collision map to gameworlditems_before(). The mover checks each pixel
+  of sideways carry against the same solid walls/slope interiors as tilemap
+  player physics. It STOPS carrying sideways at the wall instead of embedding
+  the rider inside the wall. The platform can continue sliding underneath.
+- When setting up World Objects manually, set world_player.position_blocked
+  and world_player.collision_context for collision-aware carrying. Without a
+  callback, sideways carrying retains legacy, unchecked behaviour.
+- Movement is still one-way from above: platforms are not solid ceilings.
 - Springs launch only on falling/landing (not on side contact).
 - Sprites, if present, need their OWN gfxbob_t instances and should be
   top-left origin / 100% scale. The image and hitbox sizes may differ.
@@ -105,3 +141,18 @@ IMPORTANT LIMITATIONS OF THIS FIRST VERSION
 WHEN USING THE BASIC game_platformer_t INSTEAD OF THE ADVANCED TILEMAP:
 Use the same world_player struct pointing at physics.x100, physics.y100,
 physics.vy100, and physics.on_ground; call run_platformer() in the middle.
+
+STAGE 3.12 — SPRING EVENT SOUND
+--------------------------------
+Every successful spring launch sets object->spring_triggered to 1.
+The generated gameworlditems_after() uses that flag to play the configured
+launch WAV. The next game_world_objects_update() clears it automatically.
+Do not infer a launch from a held Jump button; the flag represents an
+actual successful swept platform collision.
+
+IMPORTANT SOUND CHANNEL NOTE
+----------------------------
+When multiple events use the same sound channel, they WILL interrupt or
+reconfigure one another. Set Sounds > Channel appropriately in Game Resources.
+The Game Designer writes sound events to the generated gameworlditems.c; this
+worldobjects.c helper does not own or load samples.
