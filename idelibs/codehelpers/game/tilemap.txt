@@ -7,8 +7,10 @@ IDs. Atlas animations are shared by graphics ID; no per-tile timers are needed.
 1. Draw the level in the Game Designer Tilemap Editor and choose Export
    Tilemap. This writes gamelevels/level1.c and gamelevels/level1.h.
    Atlas pixels are NOT embedded in the C level: the PPB is read from SD
-   ONCE at startup into RAM in its original PPB row-major layout.
-   gfx_drawbob() draws each visible tile using an atlas cell index.
+   ONCE at startup into RAM in its original PPB row-major layout,
+   UNLESS gameassets has already loaded the very SAME PPB (then the level
+   borrows that buffer, with no extra allocation). gfx_drawbob() draws
+   each visible tile using an atlas cell index.
 
 2. Include these files at the top of main.c:
 
@@ -72,9 +74,26 @@ For collision, the level's exported graphics and collision maps stay separate.
 The helper supports floors, walls, slopes, one-way tiles, hazards and doors.
 The game decides what to do with hazards and doors.
 
-When leaving a level, call game_level1_unload_atlas() to free tile pixels.
-Never call it every frame. If you change the atlas PPB on SD, restart/reload
-that level so the RAM copy updates. Map/collision/animation data stays compiled.
+When leaving a level, call game_level1_unload_atlas(). It frees a dedicated
+atlas allocation, OR releases its borrowed pointer without freeing sprite RAM.
+IMPORTANT: call game_level1_unload_atlas() BEFORE gameassets_shutdown()!
+Do not re-initialise gameassets while the tilemap is borrowing its pixels.
+Never call unload every frame. If you change the PPB on SD, restart/reload
+both assets and the level so their pixels update. Map/collision/animation
+code remains compiled, as before.
+
+STAGE 3.3 — ATLAS SHARING
+--------------------------
+When you generate gameassets.c/.h AND level1.c/.h with Stage 3.3:
+- If the sprite and tile atlas refer to exactly the SAME SD path, they
+  share a pixel pointer. No second allocation, no second SD read.
+- Checksums and atlas dimensions must match; mismatches fail safely.
+- If they use DIFFERENT PPBs, the level loads its own checked buffer.
+- Without generated gameassets.h, a standalone level still loads from SD.
+- Regenerate BOTH gameassets and the tilemap to enable sharing.
+- Update gamehelpers/gametilemap.c/.h to the new helper template first.
+- If your level is loaded before gameassets_init(), sharing cannot occur;
+  load gameassets first, as in the example above.
 
 IMPORTANT: After updating CoderGirl to use SD atlases, update existing
 project gamehelpers/gametilemap.c AND gametilemap.h to the new template

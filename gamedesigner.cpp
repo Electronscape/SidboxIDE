@@ -3431,13 +3431,13 @@ int main(int argc, char *argv[])
 )CG";
         if (hasMap) {
             out << R"CG(
-    /* Load the tile artwork ONCE from the SD card, after initMalloc().
-       Unlike earlier CoderGirl builds, level1.c contains map/collision
-       data but not atlas pixels. The loader validates the PPB dimensions,
-       checks its content hash and keeps pixels in their original PPB
-       layout for gfx_drawbob(). Old SD versions are rejected.
-       Copy the up-to-date PPB selected in the Tilemap Editor to SD.
-       Missing/old files are errors: do not proceed with blank graphics. */
+    /* Load the tile atlas ONCE, after gameassets_init().
+       If a sprite already uses the SAME PPB resource, share its pixel RAM
+       instead of allocating a second atlas. Different resources stay separate.
+       A missing sprite match falls back to SD loading. BOTH paths validate
+       the pixel checksum; outdated SD artwork is rejected. The tilemap
+       BOB draws the original PPB format without any pixel repacking.
+       On exit: unload this atlas BEFORE gameassets_shutdown(). */
     if (!game_level1_load_atlas()) {
         dbug("ERROR: tile atlas SD load failed\r\n");
         return 5;
@@ -3617,9 +3617,10 @@ A. AFTER the hardware, memory and gfx_mode() setup:
 )CG";
         if (hasMap) {
             out << R"CG(   if (!game_level1_load_atlas()) return 5;
-   Why: level1.c no longer embeds tile pixels. Load and validate the
-   current atlas PPB from SD once after initMalloc(), before drawing.
-   Copy the latest atlas PPB to SD. Failure means missing/old artwork.
+   Why: level1.c no longer embeds tile pixels. After gameassets_init(),
+   it BORROWS an already-loaded identical PPB if available, or loads the
+   tile atlas from SD if no sprite uses that resource. Both are checksum-
+   checked. On shutdown unload the level BEFORE gameassets_shutdown().
 )CG";
         }
         if (hasObjects) {

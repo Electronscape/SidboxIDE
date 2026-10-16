@@ -53,6 +53,7 @@ uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
         map->atlas = pixels;
         map->atlas_width = atlas_width;
         map->atlas_height = atlas_height;
+        map->atlas_borrowed = 0;
         pixels = NULL; /* Ownership moves to the level only on success. */
         ok = 1;
     } while (0);
@@ -61,14 +62,42 @@ uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
     return ok;
 }
 
+uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
+                                            const uint8_t *pixels,
+                                            uint16_t atlas_width, uint16_t atlas_height,
+                                            uint32_t expected_hash)
+{
+    if (!map || !pixels || map->atlas || !map->tile_size ||
+        !atlas_width || !atlas_height ||
+        atlas_width % map->tile_size || atlas_height % map->tile_size ||
+        (uint32_t)(atlas_width / map->tile_size) *
+            (atlas_height / map->tile_size) != map->atlas_count ||
+        (uint32_t)atlas_width * atlas_height > 4u * 1024u * 1024u)
+        return 0;
+
+    uint32_t hash = 2166136261u;
+    const uint32_t count = (uint32_t)atlas_width * atlas_height;
+    for (uint32_t i = 0; i < count; ++i) {
+        hash ^= pixels[i];
+        hash *= 16777619u;
+    }
+    if (hash != expected_hash) return 0;
+    map->atlas = pixels;
+    map->atlas_width = atlas_width;
+    map->atlas_height = atlas_height;
+    map->atlas_borrowed = 1;
+    return 1;
+}
+
 void game_tilemap_unload_ppb_atlas(game_tilemap_t *map)
 {
     if (!map || !map->atlas) return;
-    /* Only call on a map whose atlas was allocated by this loader. */
-    free((void *)map->atlas);
+    /* Borrowed pixels belong to gameassets, so never free them here. */
+    if (!map->atlas_borrowed) free((void *)map->atlas);
     map->atlas = NULL;
     map->atlas_width = 0;
     map->atlas_height = 0;
+    map->atlas_borrowed = 0;
 }
 
 static int32_t limit(int32_t value, int32_t low, int32_t high)

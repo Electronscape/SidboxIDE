@@ -82,7 +82,12 @@ moving platform. Try small speeds first while testing collisions.
 
 IMPORTANT LIMITATIONS OF THIS FIRST VERSION
 -------------------------------------------
+- Landings are now swept: the player's feet and platform top are tested
+  from their PREVIOUS to CURRENT world positions. This catches falling onto
+  a rising lift even if they cross between rendered frames. Horizontal
+  overlap is checked at the crossing time, not just at the frame end.
 - This is TOP-SURFACE interaction, not solid sides or undersides.
+- Upward-moving players intentionally pass through the platform from below.
 - The existing tilemap still handles ordinary floors, walls and slopes.
 - Conveyors and lifts apply position changes independently; very fast
   platforms might push a rider into solid tiles. Keep paths/speeds modest.

@@ -33,7 +33,8 @@ typedef struct {
     int32_t *x100, *y100, *vy100;
     uint8_t *on_ground;
     uint16_t width, height;
-    int32_t before_feet; /* Internal: set by game_world_objects_before(). */
+    int32_t before_feet; /* Feet BEFORE platform movement and player physics. */
+    int32_t before_x;    /* Player X before movement; used for swept landing. */
     uint8_t ready;      /* Internal. */
 } game_world_player_t;
 

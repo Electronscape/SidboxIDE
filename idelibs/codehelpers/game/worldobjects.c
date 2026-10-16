@@ -66,15 +66,21 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
     }
 }
 
+/* All positions are in WORLD coordinates.  Physics and platform splines
+   advance once per frame. Capture the *original* player position before
+   carrying them, because landing tests need both endpoints of the motion. */
 void game_world_objects_before(const game_world_object_t *objects, uint16_t count,
-                                game_world_player_t *p)
+                               game_world_player_t *p)
 {
     if (!p || !p->x100 || !p->y100 || !p->vy100 || !p->on_ground ||
         !p->width || !p->height) return;
     p->ready = 1;
-    int32_t x = *p->x100 / 100;
-    int32_t feet = *p->y100 / 100 + p->height;
-    /* Carry on one supporting surface only (never add deltas twice). */
+    const int32_t x = *p->x100 / 100;
+    const int32_t feet = *p->y100 / 100 + p->height;
+    p->before_x = x;
+    p->before_feet = feet;
+    /* Carry on one supporting surface only; never add platform deltas twice.
+       Capture the pre-carry coordinates above for swept collisions below. */
     if (objects && *p->on_ground && *p->vy100 >= 0) {
         for (uint16_t i = 0; i < count; ++i) {
             const game_world_object_t *o = &objects[i];
@@ -86,27 +92,49 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
             break;
         }
     }
-    p->before_feet = *p->y100 / 100 + p->height;
 }
 
+/* Swept one-way platform collision: evaluate the player's feet and the
+   platform TOP at the start AND end of the frame. Their relative motion must
+   cross zero from above; a rising platform can meet a falling player between
+   frames, even when neither endpoint happens to overlap.
+
+   X overlap is tested at the same crossing time, not just at frame end. This
+   avoids landing on a lift that passed sideways underneath the player. */
 void game_world_objects_after(const game_world_object_t *objects, uint16_t count,
-                               game_world_player_t *p)
+                              game_world_player_t *p)
 {
     if (!p || !p->ready || !p->x100 || !p->y100 || !p->vy100 ||
         !p->on_ground || !p->width || !p->height) return;
     p->ready = 0;
-    if (!objects || *p->vy100 < 0) return;
+    if (!objects || *p->vy100 < 0) return; /* Rising: one-way top only. */
     const int32_t x = *p->x100 / 100;
     const int32_t feet = *p->y100 / 100 + p->height;
     const game_world_object_t *best = 0;
-    /* Choose the uppermost surface intersected this frame. A surface
-       entered from below cannot support the player. */
+    int64_t best_n = 0, best_d = 1;
     for (uint16_t i = 0; i < count; ++i) {
         const game_world_object_t *o = &objects[i];
-        if (!o->active || o->width == 0 || o->height == 0 ||
-            (int64_t)x + p->width <= o->x || x >= (int64_t)o->x + o->width ||
-            p->before_feet > o->y || feet < o->y) continue;
-        if (!best || o->y < best->y) best = o;
+        if (!o->active || !o->width || !o->height) continue;
+        const int64_t start = (int64_t)p->before_feet - o->previous_y;
+        const int64_t end = (int64_t)feet - o->y;
+        if (start > 0 || end < 0) continue;
+        /* Collision time t = n/d, 0 <= t <= 1.
+           For a player already resting on the old top, use t=1 so X is
+           checked at the NEW position after being carried. */
+        int64_t n = -start;
+        int64_t d = end - start;
+        if (d == 0) { n = 1; d = 1; }
+        else if (n == 0) { n = d; }
+        const int64_t player_at_x = (int64_t)p->before_x * (d - n) + (int64_t)x * n;
+        const int64_t object_at_x = (int64_t)o->previous_x * (d - n) + (int64_t)o->x * n;
+        if (player_at_x + (int64_t)p->width * d <= object_at_x ||
+            player_at_x >= object_at_x + (int64_t)o->width * d) continue;
+        if (!best || n * best_d < best_n * d ||
+            (n * best_d == best_n * d && o->y < best->y)) {
+            best = o;
+            best_n = n;
+            best_d = d;
+        }
     }
     if (!best) return;
     *p->y100 = (best->y - p->height) * 100;

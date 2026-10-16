@@ -43,6 +43,7 @@ typedef struct {
     uint16_t animation_count;
     uint16_t atlas_width;   /* PPB width in pixels; set by atlas loader. */
     uint16_t atlas_height;  /* PPB height in pixels; set by atlas loader. */
+    uint8_t atlas_borrowed; /* Nonzero: atlas owned by gameassets; never free here. */
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever
@@ -59,6 +60,13 @@ typedef struct {
 uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
                                    uint16_t atlas_width, uint16_t atlas_height,
                                    uint32_t expected_hash);
+/* Borrow an already-loaded, path-matched sprite PPB if its exact pixel
+   checksum/dimensions match the level. Caller MUST unload tilemap before
+   gameassets_shutdown(); gameassets owns the borrowed allocation. */
+uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
+                                            const uint8_t *pixels,
+                                            uint16_t atlas_width, uint16_t atlas_height,
+                                            uint32_t expected_hash);
 void game_tilemap_unload_ppb_atlas(game_tilemap_t *map);
 
 void game_tilemap_animation_reset(void);

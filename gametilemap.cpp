@@ -940,7 +940,13 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         "extern const game_tile_animation_t game_level1_animations[];\n"
         "extern game_tilemap_t game_level1;\n"
         "#endif\n";
-    QByteArray source = "#include \"level1.h\"\n\n";
+    QByteArray source = "#include \"level1.h\"\n"
+        "/* Optional sprite PPB sharing. Standalone tilemaps still work. */\n"
+        "#if defined(__has_include)\n"
+        "# if __has_include(\"../gameassets/gameassets.h\")\n"
+        "#  include \"../gameassets/gameassets.h\"\n"
+        "# endif\n"
+        "#endif\n\n";
     auto writeBytes = [&source](const QByteArray &data, const QByteArray &name) {
         source += "const uint8_t " + name + "[] __attribute__((aligned(32))) = {\n";
         for (int i = 0; i < data.size(); ++i) {
@@ -979,18 +985,28 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
         + (map.animations.isEmpty() ? QByteArray("    0, 0") :
             QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
-        + ",\n    0, 0 /* atlas_width and atlas_height are set by the SD loader. */"
+        + ",\n    0, 0, 0 /* atlas_width, atlas_height and borrowed flag. */"
         + "\n};\n\n";
     // The generated level remembers its SD resource. The runtime helper
     // validates size and checksum and leaves the PPB pixels row-major.
     // SIDBOX gfx_drawbob() selects cells directly from that image.
     if (tileCount) {
-        QByteArray path = QDir::fromNativeSeparators(map.atlasPath).toUtf8();
+        QByteArray path = QDir::cleanPath(QDir::fromNativeSeparators(map.atlasPath)).toUtf8();
         path.replace("\\", "\\\\");
         path.replace("\"", "\\\"");
         source += "/* Once at startup, AFTER initMalloc(). No per-frame SD reads. */\n";
         source += "uint8_t game_level1_load_atlas(void)\n{\n";
         source += "    if (game_level1.atlas) return 1;\n";
+        source += "#ifdef GAMEASSETS_HAS_PPB_LOOKUP\n"
+                  "    /* Share ONLY an identical PPB with a matching pixel checksum. */\n"
+                  "    uint16_t shared_w = 0, shared_h = 0;\n"
+                  "    const uint8_t *shared = gameassets_find_ppb(\"" + path +
+                  "\", &shared_w, &shared_h);\n"
+                  "    if (shared)\n"
+                  "        return game_tilemap_attach_shared_ppb_atlas(&game_level1, "
+                  "shared, shared_w, shared_h, " + QByteArray::number(atlasHash) + "u);\n"
+                  "#endif\n";
+        source += "    /* No matching sprite atlas: allocate separately from SD. */\n";
         source += "    return game_tilemap_load_ppb_atlas(&game_level1, \"" + path + "\", "
             + QByteArray::number(atlasWidth) + ", " + QByteArray::number(atlasHeight)
             + ", " + QByteArray::number(atlasHash) + "u);\n}\n\n";

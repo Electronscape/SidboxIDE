@@ -377,6 +377,9 @@ Result generate(const Request &request)
               "#include <stdint.h>\n#include \"apis.h\"\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n"
               "/* Call AFTER initMalloc(), before the first draw. Returns 1 on success. */\n"
               "int gameassets_init(void);\nvoid gameassets_shutdown(void);\n"
+              "/* Exposes sprite PPB pixels for a matching tilemap atlas (no copy). */\n"
+              "#define GAMEASSETS_HAS_PPB_LOOKUP 1\n"
+              "const uint8_t *gameassets_find_ppb(const char *sd_path, uint16_t *width, uint16_t *height);\n"
               "/* Uses the CURRENT graphics draw buffer; does not flip/display. */\n"
               "void gameassets_draw_foreground(void);\nvoid gameassets_draw_background(void);\n"
               "/* Single plane: all placed assets. Dual plane: foreground only. */\n"
@@ -507,6 +510,21 @@ Result generate(const Request &request)
                << "    if (!gameassets_sfx_length_" << s.id << " || !gameassets_sfx_" << s.id << ") goto failed;\n";
     }
     source << "    return 1;\nfailed:\n    gameassets_shutdown();\n    return 0;\n}\n\n";
+
+    source << "/* Borrow-only lookup. The returned memory belongs to gameassets.\n"
+              "   Do not free it or use it after gameassets_shutdown(). */\n"
+              "const uint8_t *gameassets_find_ppb(const char *sd_path, uint16_t *width, uint16_t *height)\n{\n"
+              "    if (!sd_path) return NULL;\n";
+    for (const Bitmap &bm : bitmaps) {
+        source << "    if (strcmp(sd_path, " << cString(bm.sdPath) << ") == 0";
+        if (!request.embedPixels) source << " && " << bm.symbol;
+        source << ") {\n"
+               << "        if (width) *width = " << bm.width << "u;\n"
+               << "        if (height) *height = " << bm.height << "u;\n"
+               << "        return " << bm.symbol << ";\n"
+               << "    }\n";
+    }
+    source << "    return NULL;\n}\n\n";
 
     source << "void gameassets_shutdown(void)\n{\n";
     if (!request.embedPixels) {
