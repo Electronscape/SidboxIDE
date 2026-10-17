@@ -1,0 +1,61 @@
+SIDBOX / GamerGirl Stage 3.48 — Full-resolution PNG preview, zoom & pan
+======================================================================
+
+Based on: Stage 3.47a (the verified Qt `slots` variable-name fix).
+
+CHANGES
+-------
+* `pngpaletteimport.h`, `pngpaletteimport.cpp`:
+  - Original PNG and indexed PPB previews now display actual image pixels, not
+    resized 340x240 samples. The preview's palette conversion uses the same
+    full-resolution input as the final PPB save.
+  - `Fit to Window` automatically fits both views when the dialog is resized
+    or maximized.
+  - `1:1 (100%)` shows a 1-image-pixel-per-screen-logical-pixel view.
+  - `-` and `+` zoom buttons, or wheel above either preview. Range 12.5%..3200%.
+  - Left-drag to pan, with horizontal/vertical panning linked across the two
+    views for side-by-side comparison.
+  - Crisp nearest-neighbour pixels: no smoothing at any zoom.
+  - Checkerboard behind transparent pixels, respecting source pixel zoom.
+  - Short debounce when changing palette controls (140ms). Zooming, panning,
+    or maximizing does not rerun the colour conversion.
+  - All existing conversion, dithering and palette-save logic is unchanged.
+  - Sharp/square corners maintained (no rounded UI).
+* `idelibs/docs/cheatsheet.json`: update F8 Guide 40 to describe the new views.
+
+INSTALL
+-------
+Recommended for an existing Stage 3.47a IDE:
+  Replace pngpaletteimport.cpp and pngpaletteimport.h in the Qt IDE source
+  folder and replace idelibs/docs/cheatsheet.json with the changed file.
+  Rebuild with your existing Qt Creator/CMake workflow.
+
+Alternatively extract the full Stage 3.48 IDE archive into a separate
+source folder and build from there.
+
+SMOKE TESTS IN QT CREATOR
+-----------------------
+1. Game Resources -> Convert PNG -> PPB; load a small pixel-art PNG.
+2. Both previews show the full image initially. Click 1:1; check an actual
+   source pixel is drawn at exactly 100% (no interpolation).
+3. Use wheel, +/- and drag. Both views should zoom/pan together.
+4. Maximize the dialog, click Fit to Window, and resize it: images must refit.
+5. Try a small palette range and Floyd-Steinberg/Noise dithering and inspect
+   the actual pixel patterns at 400% or 800%.
+6. Click Continue to Save and verify the PPB/CLUT and resource destination
+   behave exactly as in Stage 3.47a.
+
+CAVEAT
+------
+For very large photographs, changing palette settings can take time because
+preview conversion now processes every source pixel. The 140ms debounce
+combines rapid control changes; the conversion itself is synchronous in the
+preview. The final save path remains the existing background worker.
+
+VALIDATION
+----------
+- Source comparison: SidboxPngImport::convert() is byte-identical to Stage
+  3.47a. No PPB, game runtime, map, palette or firmware changes.
+- JSON parser: cheatsheet validated.
+- Full Qt6 compilation and interaction test cannot be run here: Qt6 dev
+  configuration is unavailable (no Qt6Config.cmake). Please build on Fedora.

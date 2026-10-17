@@ -10,7 +10,7 @@
 namespace SidboxGameCodeGen {
 struct Asset {
     QString name;
-    QString kind; // sprite, background, palette, sound, music
+    QString kind; // sprite, tileatlas (resource only), background, palette, sound, music
     QString plane;
     QString backgroundMode = QStringLiteral("sprite");
     QString absolutePath;

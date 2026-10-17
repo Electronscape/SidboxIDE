@@ -155,7 +155,7 @@ private:
     void buildSharedPalette();
     void openPaletteEditor(int resourceIndex = -1);
     void pickResourceFile();
-    void importPngAsPpb();
+    void importPngAsPpb(const QString &suggestedKind = QStringLiteral("tileatlas"));
     void exportSelectedC();
     void generateGameCode();
     void updateGameProject();

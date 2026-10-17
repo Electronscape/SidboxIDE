@@ -204,6 +204,7 @@ Result generate(const Request &request)
     QVector<Sound> sounds;
     QVector<Music> music;
     QVector<DirectBackground> directBackgrounds;
+    bool selectedTileAtlasLoaded = false;
     QVector<quint32> frontClut, backClut;
     if (!readPalette(request.foregroundPalette, false, &frontClut, &result.error)
         || !readPalette(request.backgroundPalette, true, &backClut, &result.error)) return result;
@@ -211,9 +212,11 @@ Result generate(const Request &request)
     static const QRegularExpression arrayName(QStringLiteral("^([A-Za-z_][A-Za-z_0-9]*)\\[([0-9]+)\\]$"));
     for (const Asset &a : request.assets) {
         if (a.kind == QStringLiteral("palette")) continue;
-        if (a.kind == QStringLiteral("sprite") || a.kind == QStringLiteral("background")) {
+        if (a.kind == QStringLiteral("sprite") || a.kind == QStringLiteral("background")
+            || a.kind == QStringLiteral("tileatlas")) {
+            const bool tileAtlas = a.kind == QStringLiteral("tileatlas");
             if (a.absolutePath.isEmpty()) {
-                result.warnings.append(QStringLiteral("Empty visual placeholder '%1' omitted (no PPB yet).").arg(a.name));
+                result.warnings.append(QStringLiteral("Empty image resource '%1' omitted (no PPB yet).").arg(a.name));
                 continue;
             }
             if (QFileInfo(a.absolutePath).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0) {
@@ -258,6 +261,10 @@ Result generate(const Request &request)
                 if (!readPpb(path, &bitmap, &result.error)) return result;
                 b = bitmaps.size(); bitmaps.append(bitmap); bitmapIndex.insert(path, b);
             }
+            // A tile atlas owns PPB pixels, never a BOB/sprite or draw call.
+            // gameassets_find_ppb() exposes the same allocation to level1.c;
+            // game_level1_unload_atlas() correctly leaves borrowed pixels alone.
+            if (tileAtlas) { selectedTileAtlasLoaded = true; continue; }
             if (direct) {
                 DirectBackground db;
                 db.asset = a;
@@ -401,7 +408,7 @@ Result generate(const Request &request)
             source << "static uint8_t *" << bm.symbol << " = NULL;\n";
         source << '\n';
     }
-    if (frontClut.isEmpty() && !sprites.isEmpty())
+    if (frontClut.isEmpty() && (!sprites.isEmpty() || selectedTileAtlasLoaded))
         result.warnings.append(QStringLiteral("No foreground CLUT selected: your main.c must initialise the active foreground palette."));
     if (request.dualPlane && backClut.isEmpty())
         result.warnings.append(QStringLiteral("No background CLUT selected: your main.c must initialise the active background palette."));

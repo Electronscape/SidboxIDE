@@ -1,5 +1,6 @@
 #include "gamedesigner.h"
 #include "ppbcodec.h"
+#include "pngpaletteimport.h"
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
@@ -496,6 +497,7 @@ QString assetKindForFile(const QString &path)
 QString kindTitle(const QString &kind)
 {
     if (kind == QStringLiteral("sprite")) return QObject::tr("Sprites");
+    if (kind == QStringLiteral("tileatlas")) return QObject::tr("Tile Atlases");
     if (kind == QStringLiteral("background")) return QObject::tr("Backgrounds");
     if (kind == QStringLiteral("palette")) return QObject::tr("Palettes");
     if (kind == QStringLiteral("sound")) return QObject::tr("Sounds");
@@ -984,12 +986,22 @@ void SidboxGameDesigner::rebuildTilemapOverlay()
 void SidboxGameDesigner::openTilemapEditor()
 {
     QVector<QPair<QString, QString>> atlases;
+    const QString chosenPath = QDir::cleanPath(resolvedPath(m_tilemap.atlasPath));
     for (const Resource &r : m_resources) {
-        if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
+        // Dedicated PPB-only resource bank. These images are never canvas sprites.
+        // The existing atlas referenced by an older project stays selectable
+        // even if it still lives under Sprites (no forced migration).
+        if (r.kind != QStringLiteral("tileatlas")
+            && !(r.kind == QStringLiteral("sprite") && !m_tilemap.atlasPath.isEmpty()
+                 && QDir::cleanPath(resolvedPath(r.path)) == chosenPath)) continue;
+        if (r.path.isEmpty()) continue;
         const QString path = resolvedPath(r.path);
         if (QFileInfo(path).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0)
             continue;
-        atlases.append({r.name, path});
+        bool exists = false;
+        for (const auto &atlas : atlases)
+            if (QDir::cleanPath(atlas.second) == QDir::cleanPath(path)) { exists = true; break; }
+        if (!exists) atlases.append({r.name, path});
     }
     const QString directory = QFileInfo(m_filePath).absolutePath();
     SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
@@ -1837,6 +1849,8 @@ void SidboxGameDesigner::buildUi()
     resourcesLayout->addWidget(updateProject);
     connect(updateProject, &QPushButton::clicked, this, [this]() { updateGameProject(); });
     m_resourceTree->setToolTip(tr("Drag files from Project Files here, or right-click to add resources. "
+        "Tile Atlases holds PPB tile sheets without placing a sprite on the canvas. "
+        "Double-click a palette to open its editor. "
         "Select a Game Object or Spline to centre it on the world canvas."));
     m_resourceTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_resourceTree, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -1850,7 +1864,8 @@ void SidboxGameDesigner::buildUi()
         const QString category = target ? target->data(0, Qt::UserRole + 1).toString() : QString();
         const QString plane = target ? target->data(0, Qt::UserRole + 2).toString() : QString();
         QMenu menu(this);
-        QAction *addSprite = menu.addAction(tr("Add Sprite / Atlas..."));
+        QAction *addSprite = menu.addAction(tr("Add Sprite..."));
+        QAction *addAtlas = menu.addAction(tr("Add Tile Atlas..."));
         QAction *addEmpty = menu.addAction(tr("Add Empty Sprite"));
         QAction *addBackground = menu.addAction(tr("Add Background..."));
         QAction *addFrontPalette = menu.addAction(tr("Add Foreground Palette..."));
@@ -1910,6 +1925,20 @@ void SidboxGameDesigner::buildUi()
                 : tr("Use as Foreground Preview CLUT"));
         }
         QAction *configureObject = nullptr;
+        QAction *moveToAtlas = nullptr;
+        QAction *moveToSprite = nullptr;
+        if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")
+            && m_resources.at(resourceIndex).objectType == QStringLiteral("decoration")
+            && QFileInfo(m_resources.at(resourceIndex).path).suffix().compare(
+                   QStringLiteral("ppb"), Qt::CaseInsensitive) == 0) {
+            menu.addSeparator();
+            moveToAtlas = menu.addAction(tr("Move to Tile Atlases (stop drawing)..."));
+            moveToAtlas->setToolTip(tr("Keep the same PPB path and atlas references; remove only its canvas sprite."));
+        }
+        if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("tileatlas")) {
+            menu.addSeparator();
+            moveToSprite = menu.addAction(tr("Move to Sprites (place on canvas)..."));
+        }
         if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")) {
             menu.addSeparator();
             configureObject = menu.addAction(tr("Configure Game Object..."));
@@ -1928,6 +1957,7 @@ void SidboxGameDesigner::buildUi()
         }
         // Put the likely action first through default highlighting.
         if (category == QStringLiteral("background")) menu.setDefaultAction(addBackground);
+        else if (category == QStringLiteral("tileatlas")) menu.setDefaultAction(addAtlas);
         else if (category == QStringLiteral("sprite")) menu.setDefaultAction(addSprite);
         else if (category == QStringLiteral("palette"))
             menu.setDefaultAction(plane == QStringLiteral("background") ? addBackPalette : addFrontPalette);
@@ -1936,13 +1966,14 @@ void SidboxGameDesigner::buildUi()
         QAction *chosen = menu.exec(m_resourceTree->viewport()->mapToGlobal(pos));
         if (!chosen) return;
         if (chosen == addSprite) addResource(QStringLiteral("sprite"));
+        else if (chosen == addAtlas) addResource(QStringLiteral("tileatlas"));
         else if (chosen == addEmpty) addPlaceholder();
         else if (chosen == addBackground) addResource(QStringLiteral("background"));
         else if (chosen == addFrontPalette) addResource(QStringLiteral("palette"), QStringLiteral("foreground"));
         else if (chosen == addBackPalette) addResource(QStringLiteral("palette"), QStringLiteral("background"));
         else if (chosen == addSound) addResource(QStringLiteral("sound"));
         else if (chosen == addMusic) addResource(QStringLiteral("music"));
-        else if (chosen == convertPng) importPngAsPpb();
+        else if (chosen == convertPng) importPngAsPpb(category);
         else if (chosen == buildClut) buildSharedPalette();
         else if (chosen == editPalette) openPaletteEditor(-1);
         else if (chosen == editTiles) openTilemapEditor();
@@ -1952,6 +1983,24 @@ void SidboxGameDesigner::buildUi()
             addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
         }
         else if (configureObject && chosen == configureObject) configureGameObject(resourceIndex);
+        else if (moveToAtlas && chosen == moveToAtlas) {
+            if (QMessageBox::question(this, tr("Move Sprite to Tile Atlases"),
+                tr("Move '%1' out of the game canvas and into Tile Atlases?\n\n"
+                   "Its PPB file and the map's atlas reference are retained. "
+                   "It will no longer be drawn as a sprite.\n\n"
+                   "Any game code referring to its former sprite variable must be updated.")
+                   .arg(m_resources.at(resourceIndex).name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes) {
+                rememberResourceEdit();
+                m_resources[resourceIndex].kind = QStringLiteral("tileatlas");
+                rebuildScene(); refreshResources(); selectResource(resourceIndex); setDirty();
+            }
+        }
+        else if (moveToSprite && chosen == moveToSprite) {
+            rememberResourceEdit();
+            m_resources[resourceIndex].kind = QStringLiteral("sprite");
+            rebuildScene(); refreshResources(); selectResource(resourceIndex); setDirty();
+        }
         else if (editThisSpline && chosen == editThisSpline) {
             for (int i = 0; i < m_splinePaths.size(); ++i) {
                 if (m_splinePaths.at(i).id == hitSplineId) {
@@ -1977,7 +2026,7 @@ void SidboxGameDesigner::buildUi()
         else if (remove) { selectResource(resourceIndex); deleteSelectedResource(); }
     });
 
-    // Double-click is a shortcut to the same editors as the context menus.
+    // Double-click opens the same editors as the context menus (including palettes).
     // Use persistent spline IDs: a refreshed tree can reorder its entries.
     connect(m_resourceTree, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem *item, int) {
@@ -1988,6 +2037,13 @@ void SidboxGameDesigner::buildUi()
             if (index >= 0 && index < m_resources.size()
                 && m_resources.at(index).kind == QStringLiteral("sprite"))
                 configureGameObject(index);
+        } else if (group == QStringLiteral("palette") && item->data(0, Qt::UserRole).isValid()) {
+            // Only resource leaves have an index; double-clicking the Palette,
+            // Foreground or Background headings must not open an empty editor.
+            const int index = item->data(0, Qt::UserRole).toInt();
+            if (index >= 0 && index < m_resources.size()
+                && m_resources.at(index).kind == QStringLiteral("palette"))
+                openPaletteEditor(index);
         } else if (group == QStringLiteral("spline")) {
             const QString splineId = item->data(0, Qt::UserRole + 3).toString();
             if (splineId.isEmpty()) return; // group header, not an actual spline
@@ -2594,7 +2650,8 @@ void SidboxGameDesigner::refreshResources()
         }
     }
     const auto treeIcon = [](const QString &kind) -> QIcon {
-        if (kind == QStringLiteral("sprite")) return gameResourceIcon(QStringLiteral("gr_icon_sprite.png"));
+        if (kind == QStringLiteral("sprite") || kind == QStringLiteral("tileatlas"))
+            return gameResourceIcon(QStringLiteral("gr_icon_sprite.png"));
         if (kind == QStringLiteral("background")) return gameResourceIcon(QStringLiteral("gr_icon_background.png"));
         if (kind == QStringLiteral("palette")) return gameResourceIcon(QStringLiteral("gr_icon_palette.png"));
         if (kind == QStringLiteral("sound") || kind == QStringLiteral("music"))
@@ -2605,8 +2662,9 @@ void SidboxGameDesigner::refreshResources()
     };
     QSignalBlocker block(m_resourceTree);
     m_resourceTree->clear();
-    for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("background"),
-                                 QStringLiteral("palette"), QStringLiteral("sound"), QStringLiteral("music")}) {
+    for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("tileatlas"),
+                                 QStringLiteral("background"), QStringLiteral("palette"),
+                                 QStringLiteral("sound"), QStringLiteral("music")}) {
         auto *root = new QTreeWidgetItem(m_resourceTree, QStringList{kindTitle(kind)});
         root->setIcon(0, treeIcon(kind));
         root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
@@ -3025,7 +3083,12 @@ void SidboxGameDesigner::refreshProperties()
         spin->setEnabled(visual);
     if (!visual) {
         m_propFrame->setRange(0, 0);
-        if (r.kind != QStringLiteral("palette")) m_imageInfo->clear();
+        if (r.kind == QStringLiteral("tileatlas")) {
+            const QImage atlas = cachedImage(resolvedPath(r.path));
+            if (atlas.isNull()) m_imageInfo->setText(tr("Tile atlas PPB is unavailable"));
+            else m_imageInfo->setText(tr("Tile atlas: %1 x %2 pixels. Resource-only; no game canvas sprite.")
+                                      .arg(atlas.width()).arg(atlas.height()));
+        } else if (r.kind != QStringLiteral("palette")) m_imageInfo->clear();
         return;
     }
     const QImage image = cachedImage(resolvedPath(r.path));
@@ -3170,12 +3233,19 @@ void SidboxGameDesigner::addResource(const QString &kind, const QString &plane)
     if (!QFileInfo(m_filePath).absoluteDir().exists()) return;
     const QString path = QFileDialog::getOpenFileName(this, tr("Choose %1 resource").arg(kindTitle(kind)),
         QFileInfo(m_filePath).absolutePath(),
-        kind == QStringLiteral("sprite") || kind == QStringLiteral("background")
+        kind == QStringLiteral("tileatlas")
+            ? tr("SIDBOX Tile Atlas (*.ppb)")
+            : kind == QStringLiteral("sprite") || kind == QStringLiteral("background")
             ? tr("Graphics (*.ppb *.png *.bmp *.jpg *.jpeg *.gif);;All Files (*)")
             : kind == QStringLiteral("sound") ? tr("Sound (*.wav);;All Files (*)")
             : kind == QStringLiteral("music") ? tr("Music (*.mod *.s3m *.xm *.med *.tfmx *.sid *.sba);;All Files (*)")
             : tr("Palettes / Graphics (*.ppb *.pal *.act *.png *.bmp);;All Files (*)"));
     if (path.isEmpty()) return;
+    if (kind == QStringLiteral("tileatlas") &&
+        QFileInfo(path).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(this, tr("Tile Atlas"), tr("Tile atlases must be PPB files. Convert the image to PPB first."));
+        return;
+    }
     Resource r;
     r.kind = kind;
     r.plane = kind == QStringLiteral("background") ? QStringLiteral("background")
@@ -3239,7 +3309,12 @@ void SidboxGameDesigner::importDroppedFiles(const QStringList &paths, const QStr
         const QString guessed = assetKindForFile(path);
         const QString category = targetKind.isEmpty()
             ? (guessed.isEmpty() ? QStringLiteral("sprite") : guessed) : targetKind;
-        if (guessed != category) {
+        if (category == QStringLiteral("tileatlas")) {
+            if (info.suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0) {
+                warnings << tr("%1: Tile Atlases accepts PPB files only").arg(info.fileName());
+                continue;
+            }
+        } else if (guessed != category) {
             warnings << tr("%1: %2 dropped into %3")
                 .arg(info.fileName(), guessed.isEmpty() ? tr("unknown type") : guessed, category);
         }
@@ -3265,7 +3340,10 @@ void SidboxGameDesigner::importDroppedFiles(const QStringList &paths, const QStr
         ++added;
         if (added >= 128) break;
     }
-    if (!added) return;
+    if (!added) {
+        if (!warnings.isEmpty()) QMessageBox::warning(this, tr("Resource import"), warnings.join(QLatin1Char('\n')));
+        return;
+    }
     rebuildScene();
     refreshResources();
     if (lastImportedIndex >= 0) selectResource(lastImportedIndex);
@@ -3309,11 +3387,26 @@ void SidboxGameDesigner::pickResourceFile()
 {
     const int index = selectedIndex();
     if (index < 0) return;
+    const bool atlasResource = m_resources.at(index).kind == QStringLiteral("tileatlas");
     const QString path = QFileDialog::getOpenFileName(this, tr("Choose resource file"),
-                                                      QFileInfo(m_filePath).absolutePath());
+        QFileInfo(m_filePath).absolutePath(), atlasResource
+            ? tr("SIDBOX Tile Atlas (*.ppb)") : tr("All Files (*)"));
     if (path.isEmpty()) return;
+    if (atlasResource && QFileInfo(path).suffix().compare(
+            QStringLiteral("ppb"), Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(this, tr("Tile Atlas"), tr("Tile atlases must be PPB files."));
+        return;
+    }
+    // Replacing the PPB referenced by this resource should not leave the
+    // tilemap silently pointing at the old location. This does not rewrite
+    // the graphics/collision arrays; check the replacement's tile layout.
+    const bool replaceActiveAtlas = atlasResource && m_tilemapEnabled
+        && !m_tilemap.atlasPath.isEmpty() && !m_resources.at(index).path.isEmpty()
+        && QDir::cleanPath(resolvedPath(m_tilemap.atlasPath)) ==
+           QDir::cleanPath(resolvedPath(m_resources.at(index).path));
     rememberResourceEdit();
     m_resources[index].path = storedPath(path);
+    if (replaceActiveAtlas) m_tilemap.atlasPath = storedPath(path);
     suggestSpriteCells(m_resources[index]);
     rebuildScene();
     refreshResources();
@@ -3321,59 +3414,142 @@ void SidboxGameDesigner::pickResourceFile()
     setDirty();
 }
 
-void SidboxGameDesigner::importPngAsPpb()
+void SidboxGameDesigner::importPngAsPpb(const QString &suggestedKind)
 {
     if (m_pngConversionRunning) return;
-    const QString pngPath = QFileDialog::getOpenFileName(this, tr("Import PNG / Image"),
-        QFileInfo(m_filePath).absolutePath(), tr("Images (*.png *.bmp *.jpg *.jpeg);;All Files (*)"));
+    // Intentionally PNG-only: keep the alpha channel and reserve palette index 0.
+    const QString pngPath = QFileDialog::getOpenFileName(this, tr("Import PNG Image"),
+        QFileInfo(m_filePath).absolutePath(), tr("PNG Images (*.png)"));
     if (pngPath.isEmpty()) return;
-    // Ask for the destination BEFORE conversion. Conversion and file IO take
-    // place on a worker thread, never in the GUI event loop.
-    const QString suggested = QFileInfo(m_filePath).absoluteDir().filePath(
+    if (QFileInfo(pngPath).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(this, tr("PNG Import"), tr("Only PNG images are supported by this importer."));
+        return;
+    }
+    QImageReader reader(pngPath);
+    reader.setAutoTransform(true);
+    const QSize nativeSize = reader.size();
+    if (nativeSize.isValid() && (nativeSize.width() > 65535 || nativeSize.height() > 65535
+        || qint64(nativeSize.width()) * nativeSize.height() > 16LL * 1024 * 1024)) {
+        QMessageBox::warning(this, tr("PNG Import"), tr("PNG exceeds the 16-million-pixel PPB safety limit."));
+        return;
+    }
+    const QImage image = reader.read();
+    if (image.isNull() || qint64(image.width()) * image.height() > 16LL * 1024 * 1024) {
+        QMessageBox::warning(this, tr("PNG Import"),
+            image.isNull() ? reader.errorString() : tr("Image exceeds 16 million pixels."));
+        return;
+    }
+    const QString initialKind = (suggestedKind == QStringLiteral("sprite")
+        || suggestedKind == QStringLiteral("tileatlas")
+        || suggestedKind == QStringLiteral("background"))
+        ? suggestedKind : QStringLiteral("tileatlas");
+    PngPaletteImportDialog dialog(image, activePalette(QStringLiteral("foreground")),
+                                  activePalette(QStringLiteral("background")), initialKind,
+                                  m_planeMode->currentIndex() == 1, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const auto options = dialog.options();
+    const QString kind = dialog.destinationKind();
+    const QString plane = dialog.palettePlane();
+    const QVector<QRgb> startingPalette = dialog.basePalette();
+    const QString projectFolder = QFileInfo(m_filePath).absolutePath();
+    const QString suggestedPpb = QDir(projectFolder).filePath(
         QFileInfo(pngPath).completeBaseName() + QStringLiteral(".ppb"));
-    const QString output = QFileDialog::getSaveFileName(this, tr("Save PPB in Game Project"),
-        suggested, tr("SIDBOX pixel buffers (*.ppb)"));
-    if (output.isEmpty()) return;
-    const QString destination = output.endsWith(QStringLiteral(".ppb"), Qt::CaseInsensitive)
-        ? output : output + QStringLiteral(".ppb");
+    const QString selectedPpb = QFileDialog::getSaveFileName(this, tr("Save Converted PPB"),
+        suggestedPpb, tr("SIDBOX PPB (*.ppb)"));
+    if (selectedPpb.isEmpty()) return;
+    const QString destination = selectedPpb.endsWith(QStringLiteral(".ppb"), Qt::CaseInsensitive)
+        ? selectedPpb : selectedPpb + QStringLiteral(".ppb");
     if (QFileInfo::exists(destination) && QMessageBox::question(this, tr("Overwrite PPB?"),
-        tr("Replace the existing file?\n%1").arg(destination)) != QMessageBox::Yes) return;
+        tr("This replaces an existing PPB and could affect resources referencing it.\n%1\nContinue?")
+            .arg(destination)) != QMessageBox::Yes) return;
 
-    struct ConversionResult {
-        bool succeeded = false;
-        int width = 0, height = 0;
-        QString error;
-    };
+    QString paletteDestination;
+    if (options.buildColours) {
+        QDir(projectFolder).mkpath(QStringLiteral("gamepalettes"));
+        QString paletteSuggestion = QDir(projectFolder).filePath(
+            QStringLiteral("gamepalettes/png_import_%1.pal").arg(plane));
+        const QString activeId = plane == QStringLiteral("background")
+            ? m_activeBackgroundPalette : m_activeForegroundPalette;
+        for (const Resource &r : m_resources) {
+            if (r.kind == QStringLiteral("palette") && r.plane == plane && r.id == activeId) {
+                const QString currentPath = resolvedPath(r.path);
+                if (QFileInfo(currentPath).suffix().compare(QStringLiteral("pal"), Qt::CaseInsensitive) == 0)
+                    paletteSuggestion = currentPath;
+                break;
+            }
+        }
+        const QString chosen = QFileDialog::getSaveFileName(this, tr("Save Shared Palette (CLUT)"),
+            paletteSuggestion, tr("SIDBOX Palette (*.pal)"));
+        if (chosen.isEmpty()) return;
+        paletteDestination = chosen.endsWith(QStringLiteral(".pal"), Qt::CaseInsensitive)
+            ? chosen : chosen + QStringLiteral(".pal");
+        if (!QDir().mkpath(QFileInfo(paletteDestination).absolutePath())) {
+            QMessageBox::warning(this, tr("PNG Import"), tr("Could not create the palette directory."));
+            return;
+        }
+        if (QFileInfo::exists(paletteDestination)) {
+            const QString warning = tr(
+                "The palette file already exists. Only indices %1–%2 in the %3 bank will "
+                "receive new colours; indices outside this range come from the palette "
+                "selected in the importer. Existing PPBs using the changed indices may "
+                "change appearance. This cannot be undone with Game Resources Undo.\n\nOverwrite bank in:\n%4?")
+                .arg(options.first).arg(options.last).arg(plane).arg(paletteDestination);
+            if (QMessageBox::warning(this, tr("Modify Shared Palette?"), warning,
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) return;
+        }
+    }
+    struct ConversionResult { bool succeeded = false; QString error; int colours = 0; };
     const auto result = std::make_shared<ConversionResult>();
-    auto *progress = new QProgressDialog(tr("Converting image to indexed PPB..."), QString(), 0, 0, this);
+    auto *progress = new QProgressDialog(tr("Converting PNG and preparing indexed palette..."),
+                                         QString(), 0, 0, this);
     progress->setWindowTitle(tr("PNG → PPB"));
-    progress->setCancelButton(nullptr); // conversion is atomic, no partial file is kept
+    progress->setCancelButton(nullptr);
     progress->setMinimumDuration(0);
-    progress->setWindowModality(Qt::NonModal);
+    progress->setWindowModality(Qt::WindowModal);
     progress->show();
     m_pngConversionRunning = true;
-
-    QThread *thread = QThread::create([pngPath, destination, result]() {
-        QImageReader reader(pngPath);
-        reader.setAutoTransform(true);
-        const QImage source = reader.read();
-        if (source.isNull()) { result->error = reader.errorString(); return; }
-        result->width = source.width(); result->height = source.height();
-        SidboxPpb::Picture indexed;
-        if (!SidboxPpb::fromImage(source, &indexed, &result->error)) return;
-        result->succeeded = SidboxPpb::write(destination, indexed, &result->error);
+    QThread *thread = QThread::create([image, options, startingPalette, destination,
+                                        paletteDestination, plane, result]() {
+        SidboxPngImport::Result converted;
+        if (!SidboxPngImport::convert(image, startingPalette, options, &converted, &result->error)) return;
+        // Both formats use QSaveFile inside their writers; source PNG is never touched.
+        // PPB first: do not modify a shared palette if writing the image fails.
+        if (!SidboxPpb::write(destination, converted.picture, &result->error)) return;
+        if (!paletteDestination.isEmpty()) {
+            const QFileInfo paletteInfo(paletteDestination);
+            QVector<QRgb> otherBank;
+            if (paletteInfo.exists() && paletteInfo.size() == 2048) {
+                otherBank = SidboxGamePalette::readPalette(
+                    paletteDestination, plane != QStringLiteral("background"), &result->error);
+                if (otherBank.size() != 256) return;
+            }
+            const bool written = otherBank.isEmpty()
+                ? SidboxGamePalette::writeSinglePal(paletteDestination, converted.palette, &result->error)
+                : (plane == QStringLiteral("background")
+                    ? SidboxGamePalette::writePal(paletteDestination, otherBank, converted.palette, &result->error)
+                    : SidboxGamePalette::writePal(paletteDestination, converted.palette, otherBank, &result->error));
+            if (!written) {
+                result->error += QStringLiteral("\nThe PPB file was written, but the palette could not be saved. "
+                                                "Check the PPB before using it in the game.");
+                return;
+            }
+        }
+        result->colours = converted.paletteColours;
+        result->succeeded = true;
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-    connect(thread, &QThread::finished, this, [this, result, destination, progress]() {
+    connect(thread, &QThread::finished, this, [this, result, destination,
+                                                paletteDestination, plane, kind, image, progress]() {
         progress->close();
         progress->deleteLater();
         m_pngConversionRunning = false;
         if (!result->succeeded) {
-            QMessageBox::warning(this, tr("PNG → PPB"), result->error);
+            QMessageBox::warning(this, tr("PNG Import"), tr("Import was not completed: %1").arg(result->error));
             return;
         }
         Resource r;
-        r.kind = QStringLiteral("sprite");
+        r.kind = kind;
+        r.plane = kind == QStringLiteral("background") ? QStringLiteral("background") : plane;
         r.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         r.name = QFileInfo(destination).completeBaseName();
         r.path = storedPath(destination);
@@ -3382,12 +3558,45 @@ void SidboxGameDesigner::importPngAsPpb()
         suggestSpriteCells(r);
         rememberResourceEdit();
         m_resources.append(r);
-        rebuildScene(); refreshResources(); selectResource(m_resources.size() - 1); setDirty();
+        const int importedIndex = m_resources.size() - 1;
+        if (!paletteDestination.isEmpty()) {
+            bool found = false;
+            for (Resource &resource : m_resources) {
+                if (resource.kind == QStringLiteral("palette") && resource.plane == plane
+                    && resolvedPath(resource.path) == paletteDestination) {
+                    if (plane == QStringLiteral("background")) m_activeBackgroundPalette = resource.id;
+                    else m_activeForegroundPalette = resource.id;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                Resource palette;
+                palette.kind = QStringLiteral("palette");
+                palette.plane = plane;
+                palette.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                palette.name = QFileInfo(paletteDestination).completeBaseName();
+                palette.path = storedPath(paletteDestination);
+                m_resources.append(palette);
+                if (plane == QStringLiteral("background")) m_activeBackgroundPalette = palette.id;
+                else m_activeForegroundPalette = palette.id;
+            }
+            m_paletteCache.clear(); // CLUT file is fixed-size; timestamp alone may not change!
+        }
+        if (kind == QStringLiteral("background")) suggestFirstBackgroundPalette(r);
+        rebuildScene();
+        refreshResources();
+        selectResource(importedIndex);
+        setDirty();
         if (assetFilesChanged) assetFilesChanged();
         QMessageBox::information(this, tr("PNG → PPB"),
-            tr("Created %1 (%2 × %3 indexed pixels). Original image unchanged.\n"
-               "Index 0 is transparent; colours are quantised to at most 255 opaque entries.")
-            .arg(QFileInfo(destination).fileName()).arg(result->width).arg(result->height));
+            tr("Created %1 (%2 × %3) using %4 palette colours.\n"
+               "Index 0 is transparent. Original PNG unchanged.\n"
+               "%5")
+                .arg(QFileInfo(destination).fileName())
+                .arg(image.width()).arg(image.height()).arg(result->colours)
+                .arg(paletteDestination.isEmpty() ? tr("Used existing CLUT; no palette modified.")
+                        : tr("Shared CLUT saved: %1").arg(paletteDestination)));
     });
     thread->start();
 }
@@ -4947,7 +5156,8 @@ int main(int argc, char *argv[])
 )CG";
     }
     if (hasMap) {
-        out << R"CG(    /* Atlas PPB comes from the SD card or a shared gameassets sprite. */
+        out << R"CG(    /* Atlas PPB: dedicated Tile Atlases resource (shared with gameassets),
+       legacy sprite-based atlas, or direct SD fallback. Never drawn as a sprite. */
     if (!game_level1_load_atlas()) { result = 5; goto cleanup; }
     game_tilemap_animation_reset();
 )CG";
@@ -5277,7 +5487,7 @@ void SidboxGameDesigner::updateGameProject()
     confirm.setDetailedText(tr("FILES TO REPLACE:\n%1\n\nFILES TO CREATE:\n%2")
         .arg(replacing.isEmpty() ? tr("(none)") : replacing.join(QStringLiteral("\n")),
              adding.isEmpty() ? tr("(none)") : adding.join(QStringLiteral("\n"))));
-    auto *embed = new QCheckBox(tr("Embed sprite PPB graphics in generated C (normally load from SD card)"), &confirm);
+    auto *embed = new QCheckBox(tr("Embed sprite and selected tile-atlas PPBs in generated C (normally load from SD card)"), &confirm);
     embed->setChecked(false);
     confirm.setCheckBox(embed);
     auto *proceed = confirm.addButton(tr("Back Up and Update"), QMessageBox::AcceptRole);
@@ -5470,7 +5680,14 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         .filePath(QStringLiteral("gameassets"));
     request.dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
     request.embedPixels = embedPixels;
+    const QString activeAtlasPath = m_tilemapEnabled && !m_tilemap.atlasPath.isEmpty()
+        ? QDir::cleanPath(resolvedPath(m_tilemap.atlasPath)) : QString();
     for (const Resource &r : m_resources) {
+        // Tile Atlases are a library of possible sheets. Only the selected
+        // tilemap atlas is loaded, avoiding unused SDRAM allocations.
+        if (r.kind == QStringLiteral("tileatlas") &&
+            (activeAtlasPath.isEmpty() || r.path.isEmpty() ||
+             QDir::cleanPath(resolvedPath(r.path)) != activeAtlasPath)) continue;
         SidboxGameCodeGen::Asset a;
         a.name = r.name; a.kind = r.kind; a.plane = r.plane;
         a.worldManaged = r.kind == QStringLiteral("sprite") &&
@@ -5584,8 +5801,9 @@ bool SidboxGameDesigner::loadDesign()
         const QJsonObject a = value.toObject();
         Resource r;
         r.kind = a.value(QStringLiteral("kind")).toString();
-        if (!QStringList{QStringLiteral("sprite"), QStringLiteral("background"),
-                         QStringLiteral("palette"), QStringLiteral("sound"), QStringLiteral("music")}.contains(r.kind))
+        if (!QStringList{QStringLiteral("sprite"), QStringLiteral("tileatlas"),
+                         QStringLiteral("background"), QStringLiteral("palette"),
+                         QStringLiteral("sound"), QStringLiteral("music")}.contains(r.kind))
             continue;
         r.name = a.value(QStringLiteral("name")).toString();
         r.id = a.value(QStringLiteral("id")).toString();
@@ -5878,9 +6096,16 @@ void SidboxGameDesigner::buildSharedPalette()
     QVector<Input> inputs;
     const QRectF viewport(m_cameraX->value(), m_cameraY->value(), LCD_WIDTH, LCD_HEIGHT);
     QSet<QString> seenFiles;
+    const QString activeAtlas = m_tilemapEnabled && !m_tilemap.atlasPath.isEmpty()
+        ? QDir::cleanPath(resolvedPath(m_tilemap.atlasPath)) : QString();
     for (const Resource &r : m_resources) {
-        if (!visualKind(r.kind) || r.path.isEmpty()) continue;
-        const QString plane = resourcePlane(r);
+        // Include the selected atlas in the foreground CLUT even though it
+        // has no canvas rectangle to intersect the LCD camera viewport.
+        const bool selectedAtlas = r.kind == QStringLiteral("tileatlas")
+            && !activeAtlas.isEmpty() && !r.path.isEmpty()
+            && QDir::cleanPath(resolvedPath(r.path)) == activeAtlas;
+        if ((!visualKind(r.kind) && !selectedAtlas) || r.path.isEmpty()) continue;
+        const QString plane = selectedAtlas ? QStringLiteral("foreground") : resourcePlane(r);
         if (plane == QStringLiteral("background") && m_planeMode->currentIndex() == 0) continue;
         const QString absolute = resolvedPath(r.path);
         if (!QFileInfo(absolute).isFile()) continue;
@@ -5891,14 +6116,14 @@ void SidboxGameDesigner::buildSharedPalette()
         const int ch = r.cellHeight > 0 ? qMin(r.cellHeight, image.height()) : image.height();
         const QRectF bounds(r.x, r.y, cw * r.scale / 100.0, ch * r.scale / 100.0);
         const QString key = absolute + QLatin1Char('|') + plane;
-        if (!bounds.intersects(viewport) || seenFiles.contains(key)) continue;
+        if ((!selectedAtlas && !bounds.intersects(viewport)) || seenFiles.contains(key)) continue;
         seenFiles.insert(key);
         inputs.append(Input{absolute, plane});
     }
     if (inputs.isEmpty()) {
         QMessageBox::information(this, tr("Build Shared CLUT"), tr(
-            "No indexed PPB / indexed PNG graphics intersect the yellow LCD camera frame. "
-            "Convert any truecolour images with PNG → PPB first."));
+            "No indexed graphics intersect the yellow LCD camera frame, and no selected "
+            "Tile Atlas PPB was found. Convert any truecolour images to PPB first."));
         return;
     }
     const bool dual = m_planeMode->currentIndex() == 1;
@@ -5915,8 +6140,8 @@ void SidboxGameDesigner::buildSharedPalette()
         "files will be saved under gamepalettes/.\n\n"
         "Where two images disagree about the colour at an index, similar colours "
         "will be averaged; substantial conflicts retain the first value and are reported.\n\n"
-        "Only indexed graphics intersecting the LCD camera are included "
-        "(their complete sprite atlases are analysed).\n\n"
+        "Only placed graphics intersecting the LCD camera and the selected "
+        "Tile Atlas are included (complete PPB sheets are analysed).\n\n"
         "You can choose either generated CLUT in the preview dropdowns. "
         "Please verify the result on SIDBOX hardware.")
         .arg(foregroundCount).arg(dual ? backgroundCount : 0);

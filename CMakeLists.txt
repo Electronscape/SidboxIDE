@@ -40,6 +40,8 @@ qt_add_executable(SidboxIDE
     gamecodegen.h
     ppbcodec.cpp
     ppbcodec.h
+    pngpaletteimport.cpp
+    pngpaletteimport.h
     mainwindow.ui
     findreplacedialog.cpp
     findreplacedialog.h

@@ -8,6 +8,32 @@
 
 
 
+
+
+
+
+[DONE]
+what can we do about needing to have something in the game canvas to enable the tilemap to use its atlas?
+its a bit odd havin one sprite there just to host the tilemap atlas...
+it might be maybe better in the game resources tree to have
+Sprites
+TileAtlas (or better wording)
+Backgrounds
+Palettes
+Sounds
+Music
+Game Objects
+Splines
+
+that way any resources in the TileAtlas is used for the tilemap editor, an doensae show up as a sprite in the game play it literally is just a host.
+That also means that the tilemap can choose from the TileAtlas resources instead of the sprites.
+Might make things easier for the map loadin too?
+
+
+
+
+
+
 [FIXED]
 0: dealing with the frame drop now and then from the helpers (on going testing)
 
