@@ -1,7 +1,17 @@
 
+0: dealing with the frame drop now and then from the helpers (on going testing)
 
-bug:
-opening another project, after one is opened and edited,saved. the IDE just crashes, vanishes
+1: The tilemap editor needs to remember the zoom settings, and if possible the screen panning locations, needs to also remember the Paint Collision and Graphics index too.
+2: the Collision Stamps are too verbose an shouldnt really have that much reading in it, its should just be tips.
+3: left pane atlas : IS it possible for it calculate the visable cells instead of just the whole atlas, the width of the left pane causes a scroll which is a little bit frustrating.
+ONLY the up/down scroll should be there. BUT have ALL the atlas cells available.
+4: tile engine fun bit :) A status where the tile is over the top of the player?
+i realise this would be like two map passes, but am hopin that the second draw isnae gonna have that much in it anyway,
+since the background draw wont bother drawing a BOB if its flag is set to "draw front" an the second draw will only draw front bit set tiles?
+
+- the shift-click slope WORKS!!!
+
+
 
 
 

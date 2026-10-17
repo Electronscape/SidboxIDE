@@ -13196,6 +13196,10 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     const QJsonObject root = document.object();
     const QJsonArray files = root.value(QStringLiteral("files")).toArray();
 
+    // Tear down the previous project's tabs before changing the active
+    // project directory. Old GUI/Game Designer instances must never run
+    // their teardown against the next project's state.
+    clearEditorTabs();
     m_projectFilePath = QFileInfo(filePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
@@ -13272,7 +13276,6 @@ bool MainWindow::loadProjectFile(const QString &filePath)
         }
     }
 
-    clearEditorTabs();
     refreshProjectFiles();
 
     const QJsonArray openTabsArray = root.value(QStringLiteral("openTabs")).toArray();
@@ -13441,19 +13444,41 @@ void MainWindow::addProjectFile(const QString &filePath)
 
 void MainWindow::clearEditorTabs()
 {
+    // A pending analysis callback must not run while a different project is
+    // being installed. Other per-editor callbacks are destroyed with the tabs.
+    if (m_projectAnalysisTimer)
+        m_projectAnalysisTimer->stop();
     if (m_fileWatcher) {
         const QStringList watchedFiles = m_fileWatcher->files();
-        if (!watchedFiles.isEmpty()) {
+        if (!watchedFiles.isEmpty())
             m_fileWatcher->removePaths(watchedFiles);
-        }
     }
     m_pendingExternalReloads.clear();
     m_cachedFileFunctionSignatures.clear();
     m_cachedFileTypeNames.clear();
 
+    // The reusable split pane can borrow a QTextDocument owned by another
+    // tab. Return it to its own host before that document can be destroyed.
+    if (QSplitter *splitter = editorSplitWidget()) {
+        CodeEditor *host = splitHostEditor(splitter);
+        CodeEditor *secondary = splitSecondaryEditor(splitter);
+        if (host && secondary && secondary->document() != host->document()) {
+            secondary->setProperty("sidboxApiReference",
+                                   host->property("sidboxApiReference"));
+            secondary->shareDocumentFrom(host);
+        }
+    }
+
+    // A project switch can be initiated by a button on the Home tab itself.
+    // Do NOT synchronously delete a widget while its own clicked handler is
+    // executing. Detach the old tabs from the IDE object tree immediately,
+    // then let Qt destroy them when the current event has unwound.
+    // This also prevents findChildren() from seeing stale project editors.
+    QSignalBlocker blockTabSignals(m_editorTabs);
     while (m_editorTabs->count() > 0) {
         QWidget *widget = m_editorTabs->widget(0);
         m_editorTabs->removeTab(0);
+        widget->setParent(nullptr);
         widget->deleteLater();
     }
 }

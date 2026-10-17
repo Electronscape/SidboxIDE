@@ -66,6 +66,7 @@
 #include <QThread>
 #include <QTimer>
 #include <memory>
+#include <algorithm>
 #include <QSaveFile>
 #include <zlib.h>
 #include <limits>
@@ -373,7 +374,7 @@ public:
                 const int cell = y * m_map->width + x;
                 const quint8 flags = cell < m_map->flips.size() ? quint8(m_map->flips.at(cell)) : 0;
                 painter->drawImage(QRectF(x * tileSize, y * tileSize, tileSize, tileSize),
-                    flags ? tileImage.mirrored(bool(flags & 1), bool(flags & 2)) : tileImage);
+                    (flags & 3) ? tileImage.flipped(Qt::Orientations(static_cast<Qt::Orientation>(flags & 3))) : tileImage);
             }
         }
     }
@@ -997,6 +998,13 @@ void SidboxGameDesigner::openTilemapEditor()
     // the tile editor open. "Apply" still closes and follows the old export
     // prompt; "Cancel" discards changes since the last successful Save.
     const auto applyChanges = [this, &editor](const SidboxTilemap &map, bool saveEvenWithoutExport) -> bool {
+        // GameTilemapOverlay::boundingRect() reads dimensions from m_tilemap.
+        // Remove it from QGraphicsScene *before* changing the map geometry;
+        // otherwise the scene's spatial index may hold an invalid old rect.
+        if (m_tilemapOverlayItem) {
+            delete m_tilemapOverlayItem;
+            m_tilemapOverlayItem = nullptr;
+        }
         m_tilemap = map;
         m_tilemapEnabled = true;
         rebuildTilemapOverlay();
@@ -1131,6 +1139,68 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
                        "CoderGirl tilemap helper, then export again.\n"
                        "Your existing helper files have NOT been overwritten."));
                 return false;
+            }
+        }
+    }
+    // Custom collision stamps require the v3 SD map parser and per-pixel
+    // surface sampler. Never silently replace a programmer's custom helpers.
+    // Offer an explicit backup-and-upgrade when old V1 helpers are present.
+    const bool needsFrontTiles = std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),
+        [](char flags) { return (quint8(flags) & 4u) != 0; });
+    if (m_tilemap.collisions.contains(char(7)) ||
+        !m_tilemap.collisionPlacements.isEmpty() || needsFrontTiles) {
+        const QDir helperSourceDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+        const QString helperFolder = QDir(directory).filePath(QStringLiteral("gamehelpers"));
+        if (!QDir().mkpath(helperFolder)) {
+            QMessageBox::warning(this, tr("Custom Slopes"), tr("Cannot create the gamehelpers folder."));
+            return false;
+        }
+        const QString helperHeader = QDir(helperFolder).filePath(QStringLiteral("gametilemap.h"));
+        const QString helperSource = QDir(helperFolder).filePath(QStringLiteral("gametilemap.c"));
+        QFile cCheck(helperSource), hCheck(helperHeader);
+        bool current = cCheck.open(QIODevice::ReadOnly) && hCheck.open(QIODevice::ReadOnly);
+        if (current) {
+            const QByteArray existingC = cCheck.readAll();
+            const QByteArray existingH = hCheck.readAll();
+            current = existingC.contains("cg_map_load_v4") &&
+                existingH.contains("GAME_TILE_POINT_SLOPE") &&
+                (!needsFrontTiles || (existingC.contains("game_tilemap_blit_view_front") &&
+                                       existingH.contains("GAME_TILE_DRAW_FRONT")));
+        }
+        cCheck.close(); hCheck.close();
+        if (!current) {
+            if (QMessageBox::question(this, tr("Upgrade Tilemap Helpers"),
+                    tr("This level uses custom slopes or foreground tiles, but this "
+                       "project's gametilemap.c/.h need updating.\n\n"
+                       "Back up the existing helper files and install the new "
+                       "versions from the IDE? Your edited helpers will be "
+                       "preserved in timestamped .bak files."),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+                return false;
+            const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+            for (const QString &ext : {QStringLiteral("c"), QStringLiteral("h")}) {
+                const QString destinationPath = QDir(helperFolder).filePath(QStringLiteral("gametilemap.") + ext);
+                if (QFileInfo::exists(destinationPath) &&
+                    !QFile::copy(destinationPath, destinationPath + QStringLiteral(".bak-") + timestamp)) {
+                    QMessageBox::warning(this, tr("Custom Slopes"),
+                        tr("Cannot back up %1. No existing helper has been overwritten.").arg(destinationPath));
+                    return false;
+                }
+            }
+            for (const QString &ext : {QStringLiteral("c"), QStringLiteral("h")}) {
+                QFile sourceFile(helperSourceDir.filePath(QStringLiteral("tilemap.") + ext));
+                if (!sourceFile.open(QIODevice::ReadOnly)) {
+                    QMessageBox::warning(this, tr("Custom Slopes"), tr("Missing template: %1").arg(sourceFile.fileName()));
+                    return false;
+                }
+                QByteArray text = sourceFile.readAll();
+                if (ext == QStringLiteral("c")) text.replace("\"tilemap.h\"", "\"gametilemap.h\"");
+                QSaveFile output(QDir(helperFolder).filePath(QStringLiteral("gametilemap.") + ext));
+                if (!output.open(QIODevice::WriteOnly) || output.write(text) != text.size() || !output.commit()) {
+                    QMessageBox::warning(this, tr("Custom Slopes"),
+                        tr("Could not install %1. Restore the .bak files if necessary.").arg(output.fileName()));
+                    return false;
+                }
             }
         }
     }
@@ -3797,6 +3867,8 @@ QString SidboxGameDesigner::spriteSymbol(const Resource &r) const
 bool SidboxGameDesigner::installMissingWorldHelpers(QString *error, bool prompt)
 {
     bool pickups = false, worlds = false, animations = false, splines = false;
+    for (const SplinePath &path : m_splinePaths)
+        if (path.points.size() >= 2) splines = true;
     for (const Resource &r : m_resources) {
         if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
         pickups |= r.objectType == QStringLiteral("collectable");
@@ -3809,8 +3881,8 @@ bool SidboxGameDesigner::installMissingWorldHelpers(QString *error, bool prompt)
     if (worlds) names << QStringLiteral("worldobjects");
     // Both new helpers include these headers whether attached or not.
     if (pickups || worlds) { names << QStringLiteral("animation") << QStringLiteral("spline"); }
+    else if (splines) names << QStringLiteral("spline");
     Q_UNUSED(animations)
-    Q_UNUSED(splines)
     if (names.isEmpty()) return true;
     const QString dest = QDir(QFileInfo(m_filePath).absolutePath()).filePath(QStringLiteral("gamehelpers"));
     const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
@@ -4517,6 +4589,12 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     int pickups = 0, worldObjects = 0, spriteCount = 0;
     bool hasMusic = false, hasAudio = false, hasBackgroundSprites = false;
     bool hasHazards = m_tilemapEnabled && m_tilemap.collisions.contains(char(5));
+    QStringList attachedSplineDescriptions;
+    QSet<QString> attachedSplineIds;
+    int validSplineCount = 0;
+    for (const SplinePath &path : m_splinePaths)
+        if (path.points.size() >= 2) ++validSplineCount;
+    const bool hasSplines = validSplineCount > 0;
     const bool dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
     for (const Resource &r : m_resources) {
         if (r.kind == QStringLiteral("music") && !r.path.isEmpty()) hasMusic = true;
@@ -4525,6 +4603,23 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
             || (r.kind == QStringLiteral("sprite") && r.plane == QStringLiteral("background")))
             hasBackgroundSprites = true;
         if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
+        if (r.objectType != QStringLiteral("decoration") && !r.objectSplineId.isEmpty()) {
+            for (int i = 0; i < m_splinePaths.size(); ++i) {
+                if (m_splinePaths.at(i).id != r.objectSplineId ||
+                    m_splinePaths.at(i).points.size() < 2) continue;
+                attachedSplineIds.insert(r.objectSplineId);
+                // Describe exactly what the generated world-object code runs.
+                QString safeName = r.name;
+                safeName.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                safeName.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+                QString safePath = m_splinePaths.at(i).name;
+                safePath.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                safePath.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+                attachedSplineDescriptions << QStringLiteral(" *   %1 -> %2 (%3)\n")
+                    .arg(safeName).arg(safePath).arg(splineSymbol(i));
+                break;
+            }
+        }
         if (r.objectType == QStringLiteral("deathzone")) hasHazards = true;
         ++spriteCount;
         if (r.objectType == QStringLiteral("collectable")) ++pickups;
@@ -4540,7 +4635,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     QString program;
     QTextStream out(&program);
     out << R"CG(/*
- * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.29)
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.35)
  * ==============================================================
  * This is REAL C source code, not a list of pseudocode snippets.
  * It is generated from the resources in the CURRENT .sbgm design.
@@ -4566,7 +4661,14 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         << " * Sprites: " << spriteCount << ", collectables: " << pickups
         << ", other game objects: " << worldObjects << "\n"
         << " * Music: " << (hasMusic ? "present" : "none")
-        << ", sound: " << (hasAudio ? "present" : "none") << "\n";
+        << ", sound: " << (hasAudio ? "present" : "none") << "\n"
+        << " * Spline paths: " << validSplineCount
+        << ", attached moving sprites: " << attachedSplineDescriptions.size() << "\n";
+    if (hasMap && (m_tilemap.collisions.contains(char(7)) || !m_tilemap.collisionPlacements.isEmpty()))
+        out << " * Custom collision surfaces are handled automatically by game_tile_player_run().\n"
+               " * Point-defined stamps use shared definitions and whole placements (SBMP v4).\n"
+               " * Legacy Stage 3.35 painted slopes remain available as SBMP v3 data.\n"
+               " * Update gametilemap.c/.h to the new shape-aware helpers before building.\n";
     if (!hasMap) out << " * No tilemap: this starter displays placed sprites without tile physics.\n"
                        " * Add a tilemap and regenerate to enable built-in player movement.\n";
     if (hasMapOnly) out << " * No ordinary sprite named 'player' found: the map renders, but\n"
@@ -4587,6 +4689,9 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
                "#include \"gamelevels/level1.h\"\n";
     if (hasObjects)
         out << "#include \"gamehelpers/gameworlditems.h\"\n";
+    if (hasSplines)
+        out << "#include \"gamehelpers/gamespline.h\"\n"
+               "#include \"gamehelpers/splinepaths.h\"\n";
     out << R"CG(
 #define VIEW_W 480
 #define VIEW_H 320
@@ -4638,6 +4743,66 @@ static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
 }
 )CG";
     }
+    if (hasSplines) {
+        out << R"CG(
+/* SPLINE MOVEMENT -- GENERATED FROM YOUR GAME DESIGN
+ * -------------------------------------------------
+ * Update Game Project installs gamehelpers/gamespline.c/.h and exports
+ * gamehelpers/splinepaths.c/.h; both .c files must be compiled by the IDE.
+ * The path data is generated from the spline nodes in Game Designer.
+ *
+ * FOR SPRITES CONFIGURED AS GAME OBJECTS:
+ * Game Object Properties -> Movement spline attaches the saved path.
+ * The generated gameworlditems.c does ALL the spline setup and movement:
+ *   gameworlditems_init()       -> start_spline() + set_spline_pos()
+ *   gameworlditems_update(1)    -> run_spline() once per frame
+ *   gameworlditems_draw(cx,cy)  -> drawing with the camera offset
+ * Those calls are already in THIS main.c below when objects exist.
+ * Do NOT call run_spline() again for an attached object, or draw it twice.
+ *
+ * ATTACHED OBJECTS IN THIS DESIGN:
+)CG";
+        if (attachedSplineDescriptions.isEmpty())
+            out << " *   (none yet -- assign a Movement spline in Game Object Properties)\n";
+        else
+            for (const QString &description : attachedSplineDescriptions) out << description;
+        out << " *\n * EXPORTED PATHS:\n";
+        for (int i = 0; i < m_splinePaths.size(); ++i) {
+            if (m_splinePaths.at(i).points.size() < 2) continue;
+            const QString symbol = splineSymbol(i);
+            out << " *   " << symbol << "_path, " << symbol << "_count, "
+                << symbol << "_frames, " << symbol << "_loop"
+                << (attachedSplineIds.contains(m_splinePaths.at(i).id)
+                       ? "  [attached]" : "  [not attached]") << "\n";
+        }
+        out << R"CG( *
+ * OPTIONAL: HAND-CONTROLLED SPLINE (for an ordinary, non-managed sprite).
+ * The following is REAL C you may copy into your own game if you want to
+ * control a spline manually. It is intentionally NOT executed by default.
+ * Attach a spline through Game Object Properties instead for no-code movement.
+ *
+ * Near the top of main.c:
+ *     static game_spline_t custom_motion = {0};
+ * After gameassets_init(), substituting a REAL, non-player sprite variable:
+)CG";
+        for (int i = 0; i < m_splinePaths.size(); ++i) {
+            if (m_splinePaths.at(i).points.size() < 2) continue;
+            const QString sym = splineSymbol(i);
+            out << " *     start_spline(&custom_motion, &YOUR_SPRITE, " << sym
+                << "_path, " << sym << "_count, " << sym << "_frames, "
+                << sym << "_loop);\n"
+                << " *     set_spline_pos(&custom_motion, 100, 100); // optional world start\n";
+            break;
+        }
+        out << R"CG( * Once per frame, before rendering:
+ *     run_spline(&custom_motion, 1);
+ * Immediately BEFORE drawing this sprite, after camera_x/y are calculated:
+ *     offset_spline(&custom_motion, -camera_x, -camera_y);
+ *     gfx_drawbob(&YOUR_SPRITE);
+ * Do not also draw YOUR_SPRITE through gameassets_draw_foreground().
+ */
+)CG";
+    }
     out << R"CG(
 int main(int argc, char *argv[])
 {
@@ -4675,7 +4840,8 @@ int main(int argc, char *argv[])
 )CG";
     }
     if (hasObjects) {
-        out << R"CG(    /* Configured objects, animations, switches, doors and sounds. */
+        out << R"CG(    /* Configured objects, animations, switches, doors and sounds.
+       ALSO calls start_spline() for each configured moving object. */
     if (!gameworlditems_init()) { result = 2; goto cleanup; }
 )CG";
     }
@@ -4732,7 +4898,11 @@ int main(int argc, char *argv[])
     while (1) {
         gfx_lcdwait();
 )CG";
-    if (hasObjects) out << "        gameworlditems_update(1);\n";
+    if (hasObjects) {
+        if (!attachedSplineDescriptions.isEmpty())
+            out << "        /* This ALSO advances every attached spline exactly once. */\n";
+        out << "        gameworlditems_update(1);\n";
+    }
     if (hasPhysics) {
         if (worldObjects) out << "        gameworlditems_before(&world_player);\n";
         out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
@@ -4768,8 +4938,11 @@ int main(int argc, char *argv[])
 )CG";
     if (!dualPlane && hasBackgroundSprites)
         out << "        gameassets_draw_background(); /* Single-plane background */\n";
-    if (hasMap)
-        out << "        game_tilemap_blit_view(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n";
+    if (hasMap) {
+        // gfx_rectf() cleared the entire foreground just above, so the
+        // tile renderer need not clear every 8x8 tile a second time.
+        out << "        game_tilemap_blit_view_cleared(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n";
+    }
     if (hasObjects)
         out << "        gameworlditems_draw(camera_x, camera_y);\n";
     if (hasPhysics) {
@@ -4790,6 +4963,11 @@ int main(int argc, char *argv[])
         // With no tile/player combination, normal static BOB resources still
         // render and any configured world objects remain independently drawn.
         out << "        gameassets_draw_foreground();\n";
+    }
+    if (hasMap && std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),
+            [](char flags) { return (quint8(flags) & 4u) != 0; })) {
+        out << "        /* Foreground tiles are deliberately drawn AFTER the player. */\n"
+               "        game_tilemap_blit_view_front(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n";
     }
     out << R"CG(
         /* YOUR GAME LOGIC: scoring UI, effects and custom HUD go here.
@@ -5155,18 +5333,19 @@ void SidboxGameDesigner::generateGameCode()
 bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
 {
     bool anyWorldObject = false;
-    bool anyAttachedSpline = false;
+    bool anySpline = false;
+    for (const SplinePath &path : m_splinePaths)
+        if (path.points.size() >= 2) anySpline = true;
     for (const Resource &r : m_resources) {
         if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
         anyWorldObject = true;
-        if (!r.objectSplineId.isEmpty()) anyAttachedSpline = true;
     }
     QString integrationError;
-    if (anyWorldObject && !installMissingWorldHelpers(&integrationError, !batchMode)) {
+    if ((anyWorldObject || anySpline) && !installMissingWorldHelpers(&integrationError, !batchMode)) {
         QMessageBox::warning(this, tr("Game Object Dependencies"), integrationError);
         return false;
     }
-    if (anyAttachedSpline && !exportSplinePaths(false)) return false;
+    if (anySpline && !exportSplinePaths(false)) return false;
 
     SidboxGameCodeGen::Request request;
     request.designDirectory = QFileInfo(m_filePath).absolutePath();

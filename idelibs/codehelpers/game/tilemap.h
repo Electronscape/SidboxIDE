@@ -16,6 +16,8 @@
 #define GAME_TILE_SLOPE_DOWN  4u
 #define GAME_TILE_HAZARD      5u
 #define GAME_TILE_DOOR        6u
+#define GAME_TILE_CUSTOM_SLOPE 7u /* Legacy v3 per-pixel surface */
+#define GAME_TILE_POINT_SLOPE  8u /* Shared point-defined surface (v4) */
 
 /* GamerGirl hazard contact phases and scripted death.
    Existing GAME_DEATH_TILE_HAZARD / GAME_DEATH_ZONE values are retained as
@@ -46,6 +48,7 @@ void game_death_rearm(void);
 
 #define GAME_TILE_FLIP_X       1u
 #define GAME_TILE_FLIP_Y       2u
+#define GAME_TILE_DRAW_FRONT   4u /* foreground pass, after the player */
 
 #define GAME_TILE_ANIM_LOOP    1u
 #define GAME_TILE_ANIM_BOUNCE  2u
@@ -61,6 +64,25 @@ typedef struct {
     uint8_t flags;
 } game_tile_animation_t;
 
+/* SD v4 point-defined slope database. Shapes and points are shared by all
+ * placements. A per-cell uint16 reference makes collision queries O(1) to
+ * find the placement; then a handful of line segments are interpolated. */
+typedef struct {
+    uint8_t width, height; /* stamp dimensions in tile cells */
+    uint16_t point_offset; /* index into shape_points */
+    uint8_t point_count;
+    uint8_t reserved;
+    uint16_t reserved2;
+} game_tile_shape_t;
+typedef struct {
+    uint16_t x, y; /* local pixel position */
+} game_tile_shape_point_t;
+typedef struct {
+    uint16_t x, y; /* tile coordinates of top-left corner */
+    uint8_t shape; /* index into shape_defs */
+    uint8_t flags; /* bit 0: horizontal mirror */
+} game_tile_shape_instance_t;
+
 typedef struct {
     const uint16_t *graphics;
     const uint8_t *collision;
@@ -75,7 +97,14 @@ typedef struct {
     uint16_t atlas_height;  /* PPB height in pixels; set by atlas loader. */
     uint8_t atlas_borrowed; /* Nonzero: atlas owned by gameassets; never free here. */
     void *map_storage; /* SD .map allocation. NULL for embedded C maps. */
-    const uint8_t *flips; /* Per-cell X/Y graphics flip flags, NULL for legacy maps. */
+    const uint8_t *flips; /* Per-cell X/Y + front-layer flag; NULL for legacy maps. */
+    const uint8_t *slopes; /* Legacy v3 height array, NULL for pure v4 shapes. */
+    const uint16_t *shape_refs; /* [cell]: instance index + 1, 0 = none */
+    const game_tile_shape_instance_t *shape_instances;
+    const game_tile_shape_t *shape_defs;
+    const game_tile_shape_point_t *shape_points;
+    uint16_t shape_instance_count;
+    uint8_t shape_count;
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever
@@ -100,7 +129,7 @@ uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
                                             uint16_t atlas_width, uint16_t atlas_height,
                                             uint32_t expected_hash);
 void game_tilemap_unload_ppb_atlas(game_tilemap_t *map);
-/* SD .map v1: tile graphics, collisions and tile animations (not sprites,
+/* SD .map v1/v2/v3/v4: tile graphics, collisions and tile animations (not sprites,
    object placements or atlas PPB pixels). All fields checked before swap.
    Call after initMalloc(); optionally replace an already loaded SD map.
    A failed load leaves the current map intact. Atlas must match tile size
@@ -114,6 +143,18 @@ void game_tilemap_animation_tick(uint16_t frames);
 void game_tilemap_blit_view(const game_tilemap_t *map,
                             int32_t camera_x, int32_t camera_y,
                             uint16_t view_width, uint16_t view_height);
+
+/* Draw ONLY tiles marked GAME_TILE_DRAW_FRONT over the player.
+   Does not clear any pixels: call after the normal tile pass and player draw. */
+void game_tilemap_blit_view_front(const game_tilemap_t *map,
+                                  int32_t camera_x, int32_t camera_y,
+                                  uint16_t view_width, uint16_t view_height);
+
+/* Optimised redraw for a target buffer that was ALREADY cleared in full.
+   Skips redundant clear blits; all rear tiles render normally. */
+void game_tilemap_blit_view_cleared(const game_tilemap_t *map,
+                                    int32_t camera_x, int32_t camera_y,
+                                    uint16_t view_width, uint16_t view_height);
 
 /* Check whether a WORLD-space actor hitbox intersects solid walls or the
    interior of slopes. Used to prevent lifts carrying a player into a wall. */

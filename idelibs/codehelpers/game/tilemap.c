@@ -159,6 +159,148 @@ static uint32_t cg_map_hash(uint32_t h, const uint8_t *b, uint32_t length)
     while (length--) { h ^= *b++; h *= 16777619u; }
     return h;
 }
+/* SD .map v4: compact shared shapes and whole placements, no dense profile
+ * unless a pre-v4 design still contains legacy type-7 slope cells.
+ * Header[18] = number of shapes; header[19] = legacy-profile-present flag.
+ * Payload: graphics, collision, flips, [legacy heights], u16 cell references,
+ * u16 instance count, 8-byte shape descriptors, 4-byte points, 6-byte
+ * instances, 6-byte tile animations. Hash covers the entire payload. */
+static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
+{
+    uint8_t *prefix = NULL, *memory = NULL;
+    uint32_t got = 0, hash = 2166136261u;
+    uint8_t ok = 0;
+    const uint16_t w = cg_map_u16(hdr + 6), h = cg_map_u16(hdr + 8);
+    const uint16_t count = cg_map_u16(hdr + 12);
+    const uint8_t shapes = hdr[18], legacy = hdr[19];
+    if (!w || !h || w > 256 || h > 256 || !shapes || shapes > 128 ||
+        legacy > 1 || cg_map_u16(hdr+10) != map->atlas_count || count > 128)
+        return 0;
+    const uint32_t cells = (uint32_t)w * h;
+    const uint32_t gfxbytes = cells * 2u;
+    const uint32_t legacybytes = legacy ? cells * map->tile_size : 0u;
+    const uint32_t refs_at = gfxbytes + cells * 2u + legacybytes;
+    const uint32_t inst_count_at = refs_at + cells * 2u;
+    const uint32_t defs_at = inst_count_at + 2u;
+    const uint32_t fixed = defs_at + shapes * 8u;
+    prefix = (uint8_t *)malloc(fixed);
+    if (!prefix) goto finish;
+    if (sfread(0, prefix, fixed, &got) != F_OK || got != fixed) goto finish;
+    hash = cg_map_hash(hash, prefix, fixed);
+    const uint16_t instances = cg_map_u16(prefix + inst_count_at);
+    uint32_t point_count = 0;
+    for (uint8_t i = 0; i < shapes; ++i) {
+        const uint8_t *d = prefix + defs_at + 8u * i;
+        const uint16_t offset = cg_map_u16(d+2);
+        if (!d[0] || !d[1] || d[0] > 16 || d[1] > 16 ||
+            d[4] < 2 || d[4] > 128 || d[5] || cg_map_u16(d+6) ||
+            offset != point_count) goto finish;
+        point_count += d[4];
+    }
+    if (point_count > 16384u || instances > cells) goto finish;
+    const uint32_t points_at = fixed;
+    const uint32_t instances_at = points_at + point_count * 4u;
+    const uint32_t end_data = instances_at + (uint32_t)instances * 6u;
+    const uint32_t animations_at = (end_data + 1u) & ~1u;
+    const uint32_t total = animations_at + (uint32_t)count * sizeof(game_tile_animation_t);
+    memory = (uint8_t *)malloc(total);
+    if (!memory) goto finish;
+    memcpy(memory, prefix, fixed);
+    free(prefix); prefix = NULL;
+    if (sfread(0, memory + points_at, end_data - points_at, &got) != F_OK ||
+        got != end_data - points_at) goto finish;
+    hash = cg_map_hash(hash, memory + points_at, end_data - points_at);
+    const game_tile_shape_t *defs = (const game_tile_shape_t *)(const void *)(memory + defs_at);
+    const game_tile_shape_point_t *points =
+        (const game_tile_shape_point_t *)(const void *)(memory + points_at);
+    const game_tile_shape_instance_t *places =
+        (const game_tile_shape_instance_t *)(const void *)(memory + instances_at);
+    const uint16_t *refs = (const uint16_t *)(const void *)(memory + refs_at);
+    for (uint8_t i = 0; i < shapes; ++i) {
+        const game_tile_shape_t *d = &defs[i];
+        const game_tile_shape_point_t *pt = points + d->point_offset;
+        uint16_t prev = 0;
+        for (uint8_t k = 0; k < d->point_count; ++k) {
+            if ((k && pt[k].x <= prev) ||
+                pt[k].y > (uint16_t)d->height * map->tile_size ||
+                pt[k].x > (uint16_t)d->width * map->tile_size) goto finish;
+            if ((!k && pt[k].x) ||
+                (k == d->point_count-1 && pt[k].x != (uint16_t)d->width*map->tile_size))
+                goto finish;
+            prev = pt[k].x;
+        }
+    }
+    for (uint16_t i = 0; i < instances; ++i) {
+        const game_tile_shape_instance_t *p = places + i;
+        if (p->shape >= shapes || (p->flags & ~1u) ||
+            (uint32_t)p->x + defs[p->shape].width > w ||
+            (uint32_t)p->y + defs[p->shape].height > h) goto finish;
+        for (uint16_t y = p->y; y < p->y + defs[p->shape].height; ++y)
+            for (uint16_t x = p->x; x < p->x + defs[p->shape].width; ++x) {
+                const uint32_t index = (uint32_t)y * w + x;
+                if (refs[index] != i+1 || memory[gfxbytes + index] != GAME_TILE_POINT_SLOPE)
+                    goto finish;
+            }
+    }
+    for (uint32_t i = 0; i < cells; ++i) {
+        if (cg_map_u16(memory + i * 2u) > map->atlas_count ||
+            memory[gfxbytes + i] > GAME_TILE_POINT_SLOPE ||
+            (memory[gfxbytes + cells + i] & ~7u)) goto finish;
+        if (memory[gfxbytes + i] == GAME_TILE_POINT_SLOPE) {
+            if (!refs[i] || refs[i] > instances) goto finish;
+            const game_tile_shape_instance_t *p = places + refs[i]-1;
+            const game_tile_shape_t *d = &defs[p->shape];
+            if (i % w < p->x || i % w >= p->x+d->width ||
+                i / w < p->y || i / w >= p->y+d->height) goto finish;
+        } else if (refs[i]) goto finish;
+        if (memory[gfxbytes + i] == GAME_TILE_CUSTOM_SLOPE) {
+            if (!legacy) goto finish;
+            const uint8_t *heightvalues = memory + gfxbytes + cells*2u + i*map->tile_size;
+            for (uint16_t x = 0; x < map->tile_size; ++x)
+                if (heightvalues[x] > map->tile_size) goto finish;
+        }
+    }
+    game_tile_animation_t *animations =
+        (game_tile_animation_t *)(void *)(memory + animations_at);
+    for (uint16_t i = 0; i < count; ++i) {
+        uint8_t b[6];
+        if (sfread(0, b, sizeof(b), &got) != F_OK || got != sizeof(b)) goto finish;
+        hash = cg_map_hash(hash, b, sizeof(b));
+        animations[i].graphic_id = cg_map_u16(b);
+        animations[i].frames = b[2]; animations[i].frame_ticks = b[3];
+        animations[i].flags = b[4];
+        if (b[5] || !animations[i].graphic_id || !animations[i].frames ||
+            animations[i].frames > 16 || !animations[i].frame_ticks ||
+            animations[i].flags & ~(GAME_TILE_ANIM_LOOP | GAME_TILE_ANIM_BOUNCE) ||
+            (uint32_t)animations[i].graphic_id + animations[i].frames - 1u > map->atlas_count)
+            goto finish;
+    }
+    uint8_t extra = 0;
+    if (sfread(0, &extra, 1, &got) != F_OK || got || hash != cg_map_u32(hdr+14))
+        goto finish;
+    game_tilemap_unload_map(map);
+    map->map_storage = memory;
+    map->graphics = (const uint16_t *)(const void *)memory;
+    map->collision = memory + gfxbytes;
+    map->flips = memory + gfxbytes + cells;
+    map->slopes = legacy ? memory + gfxbytes + cells*2u : NULL;
+    map->shape_refs = refs;
+    map->shape_defs = defs;
+    map->shape_points = points;
+    map->shape_instances = places;
+    map->shape_count = shapes;
+    map->shape_instance_count = instances;
+    map->animations = count ? animations : NULL;
+    map->animation_count = count;
+    map->width = w; map->height = h;
+    memory = NULL;
+    ok = 1;
+finish:
+    free(prefix);
+    free(memory);
+    return ok;
+}
+
 void game_tilemap_unload_map(game_tilemap_t *map)
 {
     if (!map || !map->map_storage) return;
@@ -167,6 +309,13 @@ void game_tilemap_unload_map(game_tilemap_t *map)
     map->graphics = NULL;
     map->collision = NULL;
     map->flips = NULL;
+    map->slopes = NULL;
+    map->shape_refs = NULL;
+    map->shape_instances = NULL;
+    map->shape_defs = NULL;
+    map->shape_points = NULL;
+    map->shape_instance_count = 0;
+    map->shape_count = 0;
     map->animations = NULL;
     map->animation_count = 0;
     map->width = map->height = 0;
@@ -182,8 +331,10 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
     do {
         if (sfread(0, hdr, sizeof(hdr), &read_bytes) != F_OK ||
             read_bytes != sizeof(hdr) || memcmp(hdr, "SBMP", 4) ||
-            (hdr[4] != 1 && hdr[4] != 2) ||
-            hdr[5] != map->tile_size || hdr[18] || hdr[19]) break;
+            (hdr[4] != 1 && hdr[4] != 2 && hdr[4] != 3 && hdr[4] != 4) ||
+            hdr[5] != map->tile_size ||
+            (hdr[4] != 4 && (hdr[18] || hdr[19]))) break;
+        if (hdr[4] == 4) { ok = cg_map_load_v4(map, hdr); break; }
         const uint16_t width = cg_map_u16(hdr + 6);
         const uint16_t height = cg_map_u16(hdr + 8);
         const uint16_t atlas_count = cg_map_u16(hdr + 10);
@@ -193,7 +344,8 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
             atlas_count != map->atlas_count || animation_count > 128) break;
         const uint32_t cells = (uint32_t)width * height;
         const uint32_t graphics_bytes = cells * 2u;
-        const uint32_t payload_bytes = graphics_bytes + cells + (hdr[4] == 2 ? cells : 0u);
+        const uint32_t payload_bytes = graphics_bytes + cells + (hdr[4] >= 2 ? cells : 0u)
+            + (hdr[4] == 3 ? cells * map->tile_size : 0u);
         const uint32_t animation_offset = (payload_bytes + 1u) & ~1u;
         const uint32_t allocation = animation_offset +
             (uint32_t)animation_count * sizeof(game_tile_animation_t);
@@ -204,10 +356,16 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         hash = cg_map_hash(hash, memory, payload_bytes);
         for (uint32_t i = 0; i < cells; ++i) {
             const uint16_t id = cg_map_u16(memory + i * 2u);
-            if (id > atlas_count || memory[graphics_bytes + i] > GAME_TILE_DOOR)
+            if (id > atlas_count || memory[graphics_bytes + i] > (hdr[4] == 3 ? GAME_TILE_CUSTOM_SLOPE : GAME_TILE_DOOR))
                 goto map_done;
-            if (hdr[4] == 2 && (memory[graphics_bytes + cells + i] & ~3u))
+            if (hdr[4] >= 2 && (memory[graphics_bytes + cells + i] & ~7u))
                 goto map_done;
+            if (hdr[4] == 3 && memory[graphics_bytes + i] == GAME_TILE_CUSTOM_SLOPE) {
+                const uint8_t *heights = memory + graphics_bytes + 2u * cells +
+                                         i * map->tile_size;
+                for (uint16_t j = 0; j < map->tile_size; ++j)
+                    if (heights[j] > map->tile_size) goto map_done;
+            }
         }
         game_tile_animation_t *animations =
             (game_tile_animation_t *)(void *)(memory + animation_offset);
@@ -233,7 +391,8 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         map->map_storage = memory;
         map->graphics = (const uint16_t *)(const void *)memory;
         map->collision = memory + graphics_bytes;
-        map->flips = hdr[4] == 2 ? memory + graphics_bytes + cells : NULL;
+        map->flips = hdr[4] >= 2 ? memory + graphics_bytes + cells : NULL;
+        map->slopes = hdr[4] == 3 ? memory + graphics_bytes + 2u * cells : NULL;
         map->animations = animation_count ? animations : NULL;
         map->animation_count = animation_count;
         map->width = width;
@@ -324,9 +483,11 @@ static uint16_t animation_graphic_for_map(const game_tilemap_t *m, uint16_t id)
     return id;
 }
 
-void game_tilemap_blit_view(const game_tilemap_t *m,
-                            int32_t camera_x, int32_t camera_y,
-                            uint16_t view_width, uint16_t view_height)
+static void game_tilemap_blit_view_impl(const game_tilemap_t *m,
+                                        int32_t camera_x, int32_t camera_y,
+                                        uint16_t view_width, uint16_t view_height,
+                                        uint8_t buffer_already_cleared,
+                                        uint8_t front_only)
 {
     if (!m || !m->graphics || !m->tile_size || !m->width || !m->height ||
         (m->tile_size != 8u && m->tile_size != 16u && m->tile_size != 32u) ||
@@ -369,12 +530,17 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
 
             const int16_t drawx = (int16_t)(tx * size - camera_x);
             const int16_t drawy = (int16_t)(ty * size - camera_y);
-            /* All cells clear first, including empty graphic ID 0. This is
-               essential when tiles contain transparent palette index 0. */
-            gfx_blit((uint8_t *)empty_tile, drawx, drawy,
-                     (uint16_t)size, (uint16_t)size);
+            /* Legacy draws clear each cell themselves. If the caller has
+               ALREADY cleared the whole target buffer to palette index 0,
+               another 2400+ tiny gfx_blit calls are completely redundant. */
+            if (!buffer_already_cleared && !front_only)
+                gfx_blit((uint8_t *)empty_tile, drawx, drawy,
+                         (uint16_t)size, (uint16_t)size);
 
             if (!id || !valid_atlas || id > m->atlas_count) continue;
+            const uint32_t cell = (uint32_t)ty * m->width + (uint32_t)tx;
+            const uint8_t flip = m->flips ? m->flips[cell] : 0;
+            if (((flip & GAME_TILE_DRAW_FRONT) != 0) != (front_only != 0)) continue;
             const uint16_t frame_id = animation_graphic_for_map(m, id);
             if (!frame_id || frame_id > m->atlas_count) continue;
             const uint32_t index0 = (uint32_t)frame_id - 1u;
@@ -387,13 +553,43 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
             bob.drawx = drawx;
             bob.drawy = drawy;
             /* Set flags on EVERY tile: gfxbob_t is reused across the loop. */
-            const uint8_t flip = m->flips
-                ? m->flips[(uint32_t)ty * m->width + (uint32_t)tx] : 0;
             bob.flags = (uint8_t)(((flip & GAME_TILE_FLIP_X) ? BLIT_FLAG_FLIP_X : 0) |
                                   ((flip & GAME_TILE_FLIP_Y) ? BLIT_FLAG_FLIP_Y : 0));
             gfx_drawbob(&bob);
         }
     }
+}
+
+/* Fully self-contained original renderer: clears every tile, even blank ones.
+   Keep this default safe for callers that draw onto a non-cleared buffer. */
+void game_tilemap_blit_view(const game_tilemap_t *m,
+                            int32_t camera_x, int32_t camera_y,
+                            uint16_t view_width, uint16_t view_height)
+{
+    game_tilemap_blit_view_impl(m, camera_x, camera_y,
+                                view_width, view_height, 0, 0);
+}
+
+/* Fast path: use ONLY when the ENTIRE destination buffer has already been
+   cleared to palette index 0, e.g. gfx_setcolour(0); gfx_rectf(0,0,w,h).
+   Preserves the original rendering while skipping one blank gfx_blit per
+   visible tile cell. All tile atlas BOB draws and flip flags are unchanged. */
+void game_tilemap_blit_view_cleared(const game_tilemap_t *m,
+                                    int32_t camera_x, int32_t camera_y,
+                                    uint16_t view_width, uint16_t view_height)
+{
+    game_tilemap_blit_view_impl(m, camera_x, camera_y,
+                                view_width, view_height, 1, 0);
+}
+
+/* Foreground tiles are rendered after the player and never clear the
+   framebuffer. When no tiles are flagged, this submits no BOB commands. */
+void game_tilemap_blit_view_front(const game_tilemap_t *m,
+                                  int32_t camera_x, int32_t camera_y,
+                                  uint16_t view_width, uint16_t view_height)
+{
+    game_tilemap_blit_view_impl(m, camera_x, camera_y,
+                                view_width, view_height, 1, 1);
 }
 
 /* Collision checks only the few map cells touched by the player hitbox. */
@@ -415,6 +611,68 @@ static uint8_t touches_solid(const game_tilemap_t *m, int32_t x, int32_t y,
  * This is only used for HORIZONTAL motion; vertical landing is handled
  * separately by tile_floor(), allowing the player to land on a ramp.
  */
+/* Custom walkable ground. A height of 0 fills the tile column; tile_size
+ * means empty. One byte per horizontal pixel of a custom slope cell. */
+static int32_t custom_surface(const game_tilemap_t *m, int32_t tx, int32_t ty,
+                              int32_t left, int32_t right)
+{
+    if (tx < 0 || ty < 0 || tx >= m->width || ty >= m->height)
+        return 0x7FFFFFFF;
+    if (game_tile_at(m, tx, ty) == GAME_TILE_POINT_SLOPE) {
+        if (!m->shape_refs || !m->shape_instances || !m->shape_defs || !m->shape_points)
+            return 0x7FFFFFFF;
+        const uint16_t ref = m->shape_refs[(uint32_t)ty*m->width + tx];
+        if (!ref || ref > m->shape_instance_count) return 0x7FFFFFFF;
+        const game_tile_shape_instance_t *place = m->shape_instances + ref - 1;
+        if (place->shape >= m->shape_count) return 0x7FFFFFFF;
+        const game_tile_shape_t *d = m->shape_defs + place->shape;
+        const game_tile_shape_point_t *pts = m->shape_points + d->point_offset;
+        const int32_t width = (int32_t)d->width * m->tile_size;
+        const int32_t origin = (int32_t)place->x * m->tile_size;
+        /* A straight line is monotonic between its two endpoints. Instead
+           of interpolating EACH horizontal pixel covered by the actor,
+           inspect only the lowest endpoint inside each overlapping segment.
+           This returns precisely the same integer-rounded height as the
+           original pixel-by-pixel scan, but work scales with control points
+           instead of player width times control points. This is especially
+           helpful when a moving lift repeatedly checks actor collisions. */
+        int32_t local_left = left - origin;
+        int32_t local_right = right - origin;
+        if (place->flags & 1u) {
+            const int32_t mirrored_left = width - 1 - local_right;
+            local_right = width - 1 - local_left;
+            local_left = mirrored_left;
+        }
+        if (local_left < 0) local_left = 0;
+        if (local_right >= width) local_right = width - 1;
+        if (local_left > local_right) return 0x7FFFFFFF;
+        int32_t best = 0x7FFFFFFF;
+        for (uint8_t k = 1; k < d->point_count; ++k) {
+            const game_tile_shape_point_t *a = pts + k - 1;
+            const game_tile_shape_point_t *b = pts + k;
+            if (b->x < local_left) continue;
+            if (a->x > local_right) break;
+            const int32_t segment_left = local_left > a->x ? local_left : a->x;
+            const int32_t segment_right = local_right < b->x ? local_right : b->x;
+            /* A falling line reaches its minimum at the right endpoint,
+               a rising or level line at the left endpoint. */
+            const int32_t sample = b->y < a->y ? segment_right : segment_left;
+            const int32_t y = a->y + (int32_t)(b->y - (int32_t)a->y) *
+                                           (sample - a->x) / (b->x - a->x);
+            if (y < best) best = y;
+            if (b->x >= local_right) break;
+        }
+        return best == 0x7FFFFFFF ? best : (int32_t)place->y * m->tile_size + best;
+    }
+    if (!m->slopes) return 0x7FFFFFFF;
+    const int32_t s = m->tile_size;
+    const uint8_t *values = m->slopes + ((uint32_t)ty * m->width + tx) * s;
+    int32_t best = s;
+    for (int32_t x = left - tx * s; x <= right - tx * s; ++x)
+        if (values[x] < best) best = values[x];
+    return ty * s + best;
+}
+
 static uint8_t touches_slope_body(const game_tilemap_t *m, int32_t x, int32_t y,
                                   int32_t width, int32_t height)
 {
@@ -427,15 +685,16 @@ static uint8_t touches_slope_body(const game_tilemap_t *m, int32_t x, int32_t y,
     for (int32_t ty = firstY; ty <= lastY; ++ty) {
         for (int32_t tx = firstX; tx <= lastX; ++tx) {
             const uint8_t type = game_tile_at(m, tx, ty);
-            if (type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN)
-                continue;
+            if (type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN &&
+                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE) continue;
             const int32_t tileLeft = tx * s;
             const int32_t left = x > tileLeft ? x : tileLeft;
             const int32_t right = x + width - 1 < tileLeft + s - 1
                 ? x + width - 1 : tileLeft + s - 1;
-            const int32_t surface = ty * s +
-                (type == GAME_TILE_SLOPE_UP ? s - 1 - (right - tileLeft)
-                                            : left - tileLeft);
+            const int32_t surface = (type == GAME_TILE_CUSTOM_SLOPE || type == GAME_TILE_POINT_SLOPE)
+                ? custom_surface(m, tx, ty, left, right)
+                : ty * s + (type == GAME_TILE_SLOPE_UP ? s - 1 - (right - tileLeft)
+                                                         : left - tileLeft);
             if (feet > surface) return 1;
         }
     }
@@ -472,15 +731,19 @@ static int32_t tile_floor(const game_tilemap_t *m, int32_t worldX,
         for (int32_t tx = firstX; tx <= lastX; ++tx) {
             const uint8_t type = game_tile_at(m, tx, ty);
             if (type != GAME_TILE_SOLID && type != GAME_TILE_ONEWAY &&
-                type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN) continue;
+                type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN &&
+                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE) continue;
             int32_t top = ty * s;
-            if (type == GAME_TILE_SLOPE_UP || type == GAME_TILE_SLOPE_DOWN) {
+            if (type == GAME_TILE_SLOPE_UP || type == GAME_TILE_SLOPE_DOWN ||
+                (type == GAME_TILE_CUSTOM_SLOPE || type == GAME_TILE_POINT_SLOPE)) {
                 /* Sample the highest slope point covered by the feet. */
                 int32_t leftX = worldX > tx * s ? worldX : tx * s;
                 int32_t rightX = worldX + width - 1 < (tx + 1) * s - 1
                     ? worldX + width - 1 : (tx + 1) * s - 1;
-                top += type == GAME_TILE_SLOPE_UP
-                    ? s - 1 - (rightX - tx * s) : leftX - tx * s;
+                top = (type == GAME_TILE_CUSTOM_SLOPE || type == GAME_TILE_POINT_SLOPE)
+                    ? custom_surface(m, tx, ty, leftX, rightX)
+                    : top + (type == GAME_TILE_SLOPE_UP
+                    ? s - 1 - (rightX - tx * s) : leftX - tx * s);
             }
             if (oldBottom <= top && newBottom >= top && top < best) best = top;
         }
@@ -507,15 +770,21 @@ static int32_t ground_near_feet(const game_tilemap_t *m, int32_t worldX,
         for (int32_t tx = firstX; tx <= lastX; ++tx) {
             const uint8_t type = game_tile_at(m, tx, ty);
             if (type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN &&
-                type != GAME_TILE_SOLID && type != GAME_TILE_ONEWAY) continue;
+                type != GAME_TILE_SOLID && type != GAME_TILE_ONEWAY &&
+                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE) continue;
             const int32_t tileLeft = tx * s;
             const int32_t left = worldX > tileLeft ? worldX : tileLeft;
             const int32_t right = worldX + width - 1 < tileLeft + s - 1
                 ? worldX + width - 1 : tileLeft + s - 1;
-            const int32_t surface = ty * s +
-                (type == GAME_TILE_SLOPE_UP ? s - 1 - (right - tileLeft) :
-                 type == GAME_TILE_SLOPE_DOWN ? left - tileLeft : 0);
-            if (surface >= feet - above && surface <= feet + below &&
+            const int32_t surface = (type == GAME_TILE_CUSTOM_SLOPE || type == GAME_TILE_POINT_SLOPE)
+                ? custom_surface(m, tx, ty, left, right)
+                : ty * s + (type == GAME_TILE_SLOPE_UP ? s - 1 - (right - tileLeft) :
+                            type == GAME_TILE_SLOPE_DOWN ? left - tileLeft : 0);
+            /* A wider step-up search helps walkable polyline ramps.
+               Ordinary solid blocks remain limited to tiny ledges. */
+            const int32_t permittedUp = (type == GAME_TILE_SOLID ||
+                type == GAME_TILE_ONEWAY) ? 2 : above;
+            if (surface >= feet - permittedUp && surface <= feet + below &&
                 surface < best)
                 best = surface;
         }
@@ -603,7 +872,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
             int32_t nextPlayerY = y;
             int32_t surface = 0x7FFFFFFF;
             if (walkingOnGround) {
-                surface = ground_near_feet(m, nextX, w, y + h, 1, 1);
+                surface = ground_near_feet(m, nextX, w, y + h, 4, 2);
                 if (surface != 0x7FFFFFFF)
                     nextPlayerY = surface - h;
             }

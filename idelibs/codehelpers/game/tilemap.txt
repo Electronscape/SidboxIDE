@@ -50,7 +50,7 @@ game_tile_player_run(&physics, getjoyport(), 1);
 gfx_usebuffer(front[draw_index]);
 gfx_setcolour(0);
 gfx_rectf(0, 0, 480, 320);  // Erase this foreground page to transparent
-game_tilemap_blit_view(&game_level1, camera_x, camera_y, 480, 320);
+game_tilemap_blit_view_cleared(&game_level1, camera_x, camera_y, 480, 320);
 game_tile_player_screen(&physics, camera_x, camera_y);
 gfx_drawbob(&player);
 gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
@@ -62,10 +62,16 @@ The transparent foreground colour is palette index 0; this lets the separate
 background show through. Use the working full-viewport blitter baseline
 before trying further scrolling optimisations.
 
-The renderer clears each tile area before drawing its BOB, so transparent
-pixels and empty graphic ID 0 reveal the background correctly. The BOB
-index is 0-based; the map graphic ID is 1-based. Large atlases are safe
-because each visible tile selects its atlas row and 8-bit column separately.
+Because gfx_rectf() just erased the entire foreground buffer to palette
+index 0, game_tilemap_blit_view_cleared() can skip over 2400 extra per-cell
+clear blits for a 480x320 viewport with 8x8 tiles. This is a rendering-only
+optimisation: identical graphics and flip flags are submitted to BOB.
+
+When you have NOT erased the whole target buffer first, use the original
+self-contained game_tilemap_blit_view() instead: it still clears each
+visible cell itself. The BOB index is 0-based; map graphic ID is 1-based.
+Large atlases are safe because each visible tile selects its atlas row
+and 8-bit column separately.
 
 The animation functions make animated atlas tiles advance automatically.
 No per-tile sprite objects are necessary. Frame timing is in VBlanks.
@@ -249,3 +255,106 @@ The game must use the regenerated helper to understand v2 .map files.
 The flags are defined in the SIDBOX graphics API header; whether the
 currently installed SIDBOX firmware renders both correctly must be checked
 on the actual device (native tests validate only the flag values passed).
+
+
+STAGE 3.35 - COLLISION-ONLY SLOPE STAMPS
+----------------------------------------
+GamerGirl -> Tilemap Editor -> select a graphic stamp on the right ->
+Collision Stamps tab -> Add -> draw a ground surface over the faded art.
+Paint that collision stamp on the main map. ONLY collisions are modified;
+graphic IDs and per-cell X/Y flipping are never changed by collision stamps.
+
+A custom-slope cell uses collision type 7 (GAME_TILE_CUSTOM_SLOPE).
+The corresponding map->slopes[] entry has tile_size height bytes per cell.
+Each column has a surface height 0..tile_size measured from the tile top:
+0 = completely solid in this column, tile_size = empty in this column.
+There is solid ground below the line and no collision above it.
+The old 0..6 collision types and existing 45-degree ramps still work.
+
+For SD maps, the export is v3 ONLY IF custom-slope cells are present.
+Payload: graphics uint16LE [cells], collision uint8 [cells],
+flips uint8 [cells], slopeHeights uint8 [cells * tile_size],
+then any 6-byte animation records. Checksum covers the full payload.
+No custom slopes? The usual v2 .map is exported instead.
+The loader accepts v1, v2 and v3; invalid data never replaces the level.
+
+Existing game projects are offered an explicit helper upgrade for custom
+slopes, which saves timestamped backup copies before replacing helpers.
+Rebuild the .app after updating. Copy the new .map onto SD as usual.
+In embedded mode, game_level1_slopes[] is compiled into the app.
+
+Vertical stamp mirroring/ceilings/loops are NOT supported. Mirror X is.
+Use gently sloping surfaces for natural walking; abrupt cliffs block.
+If you re-paint a normal graphical stamp AFTER placing collision slopes,
+its existing collision cells can overwrite the custom-slope layer.
+Paint graphics first, collision stamps afterwards.
+
+STAGE 3.36 - LINKED POINT-SLOPE COLLISION STAMPS
+------------------------------------------------
+Collision stamps are now reusable point-defined shapes. The editor saves
+at least two points, fixed at the left and right sides of the stamp;
+intermediate points can be inserted, dragged, and deleted. The faded graphical
+stamp is a VISUAL REFERENCE ONLY. Map graphics and flip flags are separate.
+
+New collisions use GAME_TILE_POINT_SLOPE (8). Each placed stamp has a
+whole-instance record (origin tile x/y, shape index, horizontal mirror flag).
+The per-cell shape_refs[] is a two-byte index to an instance, 0 means none.
+Actual geometry is stored ONCE per named shape as connected (x,y) points,
+not as one copied height sample per pixel column. At runtime tilemap.c samples
+only the relevant line segment when testing player collision.
+
+The game tilemap SD v4 format uses the 20-byte SBMP header. Header byte 18
+contains number of shared shape definitions (1..128). Header byte 19 is 1
+if LEGACY v3 height array data is also included, else 0. Payload:
+    graphics: cells * 2 bytes (LE u16)
+    collision: cells bytes, supports types 0..8
+    flips: cells bytes
+    [legacy slope heights: cells * tile_size bytes IF hdr[19] == 1]
+    shape_refs: cells * 2 bytes (LE u16 instance+1)
+    instance count: LE u16
+    shape definitions: 8 bytes each: width, height, point_offset LE u16,
+        point_count, zero reserved, zero reserved LE u16
+    shape points: each x,y LE u16, 4 bytes per point
+    placements: each tile_x, tile_y LE u16, shape ID u8, mirror flags u8
+    animation records: 6 bytes each, same as older maps
+Checksum: FNV-1a over entire payload; no raw pointers in files.
+All references, points, stamp bounds and collision ownership are validated
+before the loader replaces any live map. Older v1, v2, v3 files still load.
+
+For 60x40 cells, new slope references require 4,800 bytes plus the small
+point/instance tables. The old dense profile required 19,200 bytes at 8px.
+Only old hand-painted type-7 slopes still incur dense legacy data. Those
+cells have no saved placement identity; repaint them with new collision
+stamps to remove that storage cost completely. Old .sbgm height-painted
+STAMP DEFINITIONS are migrated to editable point arrays on opening, but
+old ALREADY-PAINTED cells remain in legacy type-7 form.
+
+In embedded C mode, game_level1_shape_refs, game_level1_shape_defs,
+game_level1_shape_points and game_level1_shape_instances replace the
+per-pixel height array for NEW point-defined slopes. Game engine and
+main.c calling sequence are unchanged. The player helper follows the
+shared ground profile and solid underneath. Ceiling collision, full
+circular bodies and vertical flipping are not supported here.
+
+
+STAGE 3.38 — RENDER/COLLISION CPU FAST PATHS
+--------------------------------------------
+The advanced V1 player now samples a point-defined collision line using
+its overlapping segment endpoints rather than every pixel column. This
+keeps EXACTLY the same surface height and mirrored slope result, while
+reducing repeated work during moving-platform carry and walking.
+
+The project-aware maingame.c.txt generator calls
+    game_tilemap_blit_view_cleared(...)
+after it has filled the entire foreground buffer with palette index 0.
+The original game_tilemap_blit_view(...) remains available and unchanged
+in behaviour for manual code that doesn't clear the full buffer.
+
+Update Game Project makes a backup and refreshes gamehelpers/gametilemap.c
+and .h. Existing main.c is NEVER overwritten. If your existing main.c
+clears the foreground with gfx_setcolour(0); gfx_rectf(...) every frame,
+you may opt into the faster renderer by replacing ONE call with the
+_cleared version. Never use it on partially cleared buffers.
+
+This is not a proven fix for intermittent dropped frames: the actual
+SIDBOX timings still need measuring, including LCD wait and audio/IRQ.
