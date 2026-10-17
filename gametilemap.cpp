@@ -20,6 +20,7 @@
 #include <QListWidget>
 #include <QIcon>
 #include <QLineEdit>
+#include <QInputDialog>
 #include <QListView>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -216,6 +217,10 @@ QJsonObject SidboxTilemap::toJson() const
     result.insert(QStringLiteral("tileSize"), tileSize);
     result.insert(QStringLiteral("atlasPath"), atlasPath);
     result.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(graphics, 9).toBase64()));
+    QJsonArray zoneNames;
+    for (int i = 0; i < 8; ++i)
+        zoneNames.append(i < customZoneNames.size() ? customZoneNames.at(i) : QString());
+    result.insert(QStringLiteral("customZoneNames"), zoneNames);
     result.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(collisions, 9).toBase64()));
     result.insert(QStringLiteral("flipsZ"), QString::fromLatin1(qCompress(flips, 9).toBase64()));
     result.insert(QStringLiteral("slopesZ"), QString::fromLatin1(qCompress(slopes, 9).toBase64()));
@@ -319,9 +324,17 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
         if (slopesDecoded.size() != w * h * tile) return false;
     }
     if (c.contains(char(7)) && slopesValue.isUndefined()) return false;
+    QStringList zoneNames;
+    const QJsonValue namesValue = object.value(QStringLiteral("customZoneNames"));
+    if (!namesValue.isUndefined() && !namesValue.isArray()) return false;
+    if (namesValue.toArray().size() > 8) return false;
+    for (const QJsonValue &name : namesValue.toArray()) {
+        if (!name.isString() || name.toString().size() > 32) return false;
+        zoneNames.append(name.toString());
+    }
     for (int i = 0; i < w * h; ++i) {
         const int type = quint8(c.at(i));
-        if (type > 8) return false;
+        if (type > 24) return false;
         if (type == 7)
             for (int x = 0; x < tile; ++x)
                 if (quint8(slopesDecoded.at(i * tile + x)) > tile) return false;
@@ -482,6 +495,7 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
             graphics[i * 2] = g.at(i);
     }
     collisions = c;
+    customZoneNames = zoneNames;
     flips = f;
     slopes = slopesDecoded;
     animations = decoded;
@@ -1832,7 +1846,8 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
 {
     if (a.width != b.width || a.height != b.height || a.tileSize != b.tileSize
         || a.atlasPath != b.atlasPath || a.graphics != b.graphics
-        || a.collisions != b.collisions || a.animations.size() != b.animations.size()
+        || a.collisions != b.collisions || a.customZoneNames != b.customZoneNames
+        || a.animations.size() != b.animations.size()
         || a.stamps.size() != b.stamps.size() || a.flips != b.flips
         || a.slopes != b.slopes || a.collisionStamps.size() != b.collisionStamps.size()
         || a.collisionPlacements.size() != b.collisionPlacements.size())
@@ -1915,6 +1930,22 @@ void SidboxTilemapEditor::recordChange(const SidboxTilemap &before)
     updateLegacyStatus();
 }
 
+void SidboxTilemapEditor::updateCustomZoneBrushLabels()
+{
+    if (!m_customZoneBrush) return;
+    for (int i = 0; i < 8; ++i) {
+        QString label = i < m_map.customZoneNames.size()
+            ? m_map.customZoneNames.at(i).trimmed() : QString();
+        if (label.isEmpty()) label = tr("Custom %1").arg(i+1);
+        const int pass = m_customZoneBrush->findData(9+i);
+        const int solid = m_customZoneBrush->findData(17+i);
+        if (pass >= 0) m_customZoneBrush->setItemText(pass,
+            tr("%1 — %2 (pass-through)").arg(9+i).arg(label));
+        if (solid >= 0) m_customZoneBrush->setItemText(solid,
+            tr("%1 — %2 (solid)").arg(17+i).arg(label));
+    }
+}
+
 void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
 {
     if (m_canvas && m_canvas->temporaryActive) m_canvas->deactivateTemporary();
@@ -1951,6 +1982,7 @@ void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
     updateAnimationPreview();
     updateStampList();
     updateCollisionList();
+    updateCustomZoneBrushLabels();
     if (m_saveStatus) m_saveStatus->setText(tr("Unsaved changes"));
     updateLegacyStatus();
 }
@@ -2105,6 +2137,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
 
     // Both layers are painted with one drag. Either dropdown can opt out.
     auto *brushC = new TilemapComboBox(this);
+    m_customZoneBrush = brushC;
     for (const QPair<QString, int> &type : QVector<QPair<QString,int>>{
          {tr("Don't change collision"), -1},
          {tr("0 — Empty (no collision)"), 0}, {tr("1 — Solid"), 1},
@@ -2112,6 +2145,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
          {tr("4 — Slope falling right"), 4}, {tr("5 — Hazard"), 5},
          {tr("6 — Door"), 6}})
         brushC->addItem(type.first, type.second);
+    for (int i = 0; i < 8; ++i) {
+        QString name = i < m_map.customZoneNames.size()
+            ? m_map.customZoneNames.at(i).trimmed() : QString();
+        if (name.isEmpty()) name = tr("Custom %1").arg(i+1);
+        brushC->addItem(tr("%1 — %2 (pass-through)").arg(9+i).arg(name), 9+i);
+        brushC->addItem(tr("%1 — %2 (solid)").arg(17+i).arg(name), 17+i);
+    }
     brushC->setCurrentIndex(qMax(0, brushC->findData(
         windowSettings.value(QStringLiteral("GameTilemapEditor/collisionBrush"), -1).toInt())));
     auto *brushG = new TilemapComboBox(this);
@@ -2128,6 +2168,46 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *paintRow = new QHBoxLayout;
     paintRow->addWidget(new QLabel(tr("Paint collision:"), this));
     paintRow->addWidget(brushC);
+    auto *renameZone = new QPushButton(tr("Name Zone"), this);
+    renameZone->setToolTip(tr("Give Custom 1–8 a friendly name in this design. The C callback still receives zone 1–8."));
+    paintRow->addWidget(renameZone);
+    auto *customSolid = new QCheckBox(tr("Custom is solid"), this);
+    customSolid->setToolTip(tr("Blocking custom zones stop the player, but still report touch events. Pass-through zones do not block."));
+    paintRow->addWidget(customSolid);
+    connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
+        [brushC, renameZone, customSolid](int) {
+            const int id = brushC->currentData().toInt();
+            renameZone->setEnabled(id >= 9 && id <= 24);
+            customSolid->setEnabled(id >= 9 && id <= 24);
+            const QSignalBlocker guard(customSolid);
+            customSolid->setChecked(id >= 17 && id <= 24);
+        });
+    renameZone->setEnabled(brushC->currentData().toInt() >= 9 && brushC->currentData().toInt() <= 24);
+    customSolid->setEnabled(renameZone->isEnabled());
+    customSolid->setChecked(brushC->currentData().toInt() >= 17 && brushC->currentData().toInt() <= 24);
+    connect(customSolid, &QCheckBox::toggled, this, [brushC](bool solid) {
+        const int type = brushC->currentData().toInt();
+        if (type < 9 || type > 24) return;
+        const int zone = type <= 16 ? type - 9 : type - 17;
+        brushC->setCurrentIndex(brushC->findData((solid ? 17 : 9) + zone));
+    });
+    connect(renameZone, &QPushButton::clicked, this, [this, brushC]() {
+        const int selected = brushC->currentData().toInt();
+        if (selected < 9 || selected > 24) return;
+        const int zone = selected <= 16 ? selected - 9 : selected - 17;
+        const QString previous = zone < m_map.customZoneNames.size()
+            ? m_map.customZoneNames.at(zone) : QString();
+        bool ok = false;
+        const QString updated = QInputDialog::getText(this, tr("Name Custom Zone"),
+            tr("Custom %1 (logical zone %1):").arg(zone+1), QLineEdit::Normal,
+            previous, &ok).trimmed().left(32);
+        if (!ok || previous == updated) return;
+        const SidboxTilemap before = m_map;
+        while (m_map.customZoneNames.size() < 8) m_map.customZoneNames.append(QString());
+        m_map.customZoneNames[zone] = updated;
+        updateCustomZoneBrushLabels();
+        recordChange(before);
+    });
     paintRow->addSpacing(8);
     paintRow->addWidget(new QLabel(tr("Paint graphic:"), this));
     paintRow->addWidget(brushG, 1);
@@ -3501,7 +3581,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         return false;
     }
     for (int i = 0; i < map.width * map.height; ++i) {
-        if (quint8(map.collisions.at(i)) > 8) {
+        if (quint8(map.collisions.at(i)) > 24) {
             if (error) *error = QStringLiteral("Invalid collision type.");
             return false;
         }

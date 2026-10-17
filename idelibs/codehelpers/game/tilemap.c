@@ -1,4 +1,4 @@
-#include "gametilemap.h"
+#include "tilemap.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -8,6 +8,13 @@
 static game_death_callback_t cg_death_callback;
 static void *cg_death_user;
 static uint8_t cg_player_dead;
+static game_zone_callback_t cg_zone_callback;
+static void *cg_zone_user;
+void game_tile_set_zone_callback(game_zone_callback_t callback, void *user)
+{
+    cg_zone_callback = callback;
+    cg_zone_user = user;
+}
 
 void game_death_set_callback(game_death_callback_t callback, void *user)
 {
@@ -244,7 +251,7 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     }
     for (uint32_t i = 0; i < cells; ++i) {
         if (cg_map_u16(memory + i * 2u) > map->atlas_count ||
-            memory[gfxbytes + i] > GAME_TILE_POINT_SLOPE ||
+            memory[gfxbytes + i] > GAME_TILE_CUSTOM_ZONE_MAX ||
             (memory[gfxbytes + cells + i] & ~7u)) goto finish;
         if (memory[gfxbytes + i] == GAME_TILE_POINT_SLOPE) {
             if (!refs[i] || refs[i] > instances) goto finish;
@@ -356,7 +363,12 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         hash = cg_map_hash(hash, memory, payload_bytes);
         for (uint32_t i = 0; i < cells; ++i) {
             const uint16_t id = cg_map_u16(memory + i * 2u);
-            if (id > atlas_count || memory[graphics_bytes + i] > (hdr[4] == 3 ? GAME_TILE_CUSTOM_SLOPE : GAME_TILE_DOOR))
+            if (id > atlas_count ||
+                (hdr[4] == 1 && memory[graphics_bytes + i] > GAME_TILE_DOOR) ||
+                (hdr[4] >= 2 && memory[graphics_bytes + i] > GAME_TILE_CUSTOM_ZONE_MAX) ||
+                (hdr[4] == 2 && (memory[graphics_bytes + i] == GAME_TILE_CUSTOM_SLOPE ||
+                                  memory[graphics_bytes + i] == GAME_TILE_POINT_SLOPE)) ||
+                (hdr[4] == 3 && memory[graphics_bytes + i] == GAME_TILE_POINT_SLOPE))
                 goto map_done;
             if (hdr[4] >= 2 && (memory[graphics_bytes + cells + i] & ~7u))
                 goto map_done;
@@ -601,7 +613,8 @@ static uint8_t touches_solid(const game_tilemap_t *m, int32_t x, int32_t y,
     const int32_t firstY = floor_tile(y, s), lastY = floor_tile(y + height - 1, s);
     for (int32_t ty = firstY; ty <= lastY; ++ty)
         for (int32_t tx = firstX; tx <= lastX; ++tx)
-            if (game_tile_at(m, tx, ty) == GAME_TILE_SOLID) return 1;
+            if (game_tile_at(m, tx, ty) == GAME_TILE_SOLID ||
+                GAME_TILE_ZONE_BLOCKS(game_tile_at(m, tx, ty))) return 1;
     return 0;
 }
 
@@ -732,7 +745,8 @@ static int32_t tile_floor(const game_tilemap_t *m, int32_t worldX,
             const uint8_t type = game_tile_at(m, tx, ty);
             if (type != GAME_TILE_SOLID && type != GAME_TILE_ONEWAY &&
                 type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN &&
-                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE) continue;
+                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE &&
+                !GAME_TILE_ZONE_BLOCKS(type)) continue;
             int32_t top = ty * s;
             if (type == GAME_TILE_SLOPE_UP || type == GAME_TILE_SLOPE_DOWN ||
                 (type == GAME_TILE_CUSTOM_SLOPE || type == GAME_TILE_POINT_SLOPE)) {
@@ -771,7 +785,8 @@ static int32_t ground_near_feet(const game_tilemap_t *m, int32_t worldX,
             const uint8_t type = game_tile_at(m, tx, ty);
             if (type != GAME_TILE_SLOPE_UP && type != GAME_TILE_SLOPE_DOWN &&
                 type != GAME_TILE_SOLID && type != GAME_TILE_ONEWAY &&
-                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE) continue;
+                type != GAME_TILE_CUSTOM_SLOPE && type != GAME_TILE_POINT_SLOPE &&
+                !GAME_TILE_ZONE_BLOCKS(type)) continue;
             const int32_t tileLeft = tx * s;
             const int32_t left = worldX > tileLeft ? worldX : tileLeft;
             const int32_t right = worldX + width - 1 < tileLeft + s - 1
@@ -783,7 +798,7 @@ static int32_t ground_near_feet(const game_tilemap_t *m, int32_t worldX,
             /* A wider step-up search helps walkable polyline ramps.
                Ordinary solid blocks remain limited to tiny ledges. */
             const int32_t permittedUp = (type == GAME_TILE_SOLID ||
-                type == GAME_TILE_ONEWAY) ? 2 : above;
+                type == GAME_TILE_ONEWAY || GAME_TILE_ZONE_BLOCKS(type)) ? 2 : above;
             if (surface >= feet - permittedUp && surface <= feet + below &&
                 surface < best)
                 best = surface;
@@ -806,6 +821,97 @@ static uint8_t special_type(const game_tilemap_t *m, int32_t x, int32_t y,
     return found;
 }
 
+/* Build a bitmask for all eight zone identities. Blocking zones are detected
+   at the hitbox boundary too, so the player can touch a rock without passing
+   through it. Non-blocking zones require true overlap. */
+static uint8_t game_zone_at_player(const game_tilemap_t *m,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    const int32_t s = m->tile_size;
+    uint8_t mask = 0;
+    for (int32_t ty = floor_tile(y-1, s); ty <= floor_tile(y+height, s); ++ty)
+        for (int32_t tx = floor_tile(x-1, s); tx <= floor_tile(x+width, s); ++tx) {
+            const uint8_t type = game_tile_at(m, tx, ty);
+            const uint8_t zone = GAME_TILE_ZONE_NUMBER(type);
+            if (!zone) continue;
+            const int32_t left = tx*s, top = ty*s;
+            const int32_t margin = GAME_TILE_ZONE_BLOCKS(type) ? 1 : 0;
+            if (x + width - 1 + margin < left || x - margin >= left+s ||
+                y + height - 1 + margin < top || y - margin >= top+s) continue;
+            mask |= (uint8_t)(1u << (zone - 1u));
+        }
+    return mask;
+}
+
+/* Convert only at the API boundary; no FPU arithmetic in the physics loop.
+   Clamp before converting to fixed point to avoid invalid float-to-int casts. */
+void apply_force(game_tile_player_t *p, float x, float y)
+{
+    if (!p || !p->sprite || !p->map) return;
+    if (!(x >= -32.0f && x <= 32.0f)) {
+        if (x != x) x = 0.0f; /* NaN */
+        else x = x < 0.0f ? -32.0f : 32.0f;
+    }
+    if (!(y >= -32.0f && y <= 32.0f)) {
+        if (y != y) y = 0.0f;
+        else y = y < 0.0f ? -32.0f : 32.0f;
+    }
+    const int32_t dx = (int32_t)(x * 100.0f + (x < 0.0f ? -0.5f : 0.5f));
+    const int32_t dy = (int32_t)(y * 100.0f + (y < 0.0f ? -0.5f : 0.5f));
+    int32_t newX = p->force_vx100 + dx;
+    int32_t newY = p->vy100 + dy;
+    if (newX > 3200) newX = 3200;
+    if (newX < -3200) newX = -3200;
+    if (newY > 3200) newY = 3200;
+    if (newY < -3200) newY = -3200;
+    p->force_vx100 = newX;
+    p->vy100 = newY;
+    if (dy < 0) {
+        p->on_ground = 0;
+        p->coyote = 0;
+        p->external_ascent = 1;
+    }
+}
+void game_tile_player_set_force_drag(game_tile_player_t *p, uint8_t percent)
+{ if (p) p->force_drag_percent = percent > 100u ? 100u : percent; }
+void game_tile_player_step(game_tile_player_t *p, uint16_t frames)
+{ game_tile_player_run(p, 0, frames); }
+
+void game_tile_player_set_gravity(game_tile_player_t *p, int16_t gravity)
+{ if (p) p->gravity = gravity < 0 ? 0 : gravity; }
+void game_tile_player_set_walk_speed(game_tile_player_t *p, int16_t speed)
+{ if (p) p->walk_speed = speed < 0 ? 0 : speed > 16 ? 16 : speed; }
+void game_tile_player_set_physics(game_tile_player_t *p, uint8_t mode)
+{
+    if (!p || mode > GAME_PHYSICS_JETPACK) return;
+    p->physics_mode = mode;
+    p->slide_velocity100 = 0; p->slide_remainder100 = 0;
+    p->force_drag_percent = 12; /* Normal: slow external horizontal momentum. */
+    p->walk_speed = 3; p->jump_speed = 7;
+    p->gravity = 35; p->max_fall_speed = 9;
+    switch (mode) {
+        case GAME_PHYSICS_ICE: p->walk_speed = 4; p->force_drag_percent = 2; break;
+        case GAME_PHYSICS_WATER:
+            p->walk_speed = 2; p->jump_speed = 5;
+            p->gravity = 12; p->max_fall_speed = 3; p->force_drag_percent = 18; break;
+        case GAME_PHYSICS_SLOW: p->walk_speed = 1; p->force_drag_percent = 18; break;
+        case GAME_PHYSICS_SPACE:
+            p->gravity = 3; p->max_fall_speed = 3; p->force_drag_percent = 0; break;
+        case GAME_PHYSICS_FLOATING:
+            p->gravity = 7; p->max_fall_speed = 2; p->force_drag_percent = 4; break;
+        case GAME_PHYSICS_JETPACK:
+            p->gravity = 20; p->max_fall_speed = 6; p->force_drag_percent = 6; break;
+        default: break;
+    }
+}
+void game_tile_player_set_physics_normal(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_NORMAL); }
+void game_tile_player_set_physics_ice(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_ICE); }
+void game_tile_player_set_physics_water(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_WATER); }
+void game_tile_player_set_physics_slow(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_SLOW); }
+void game_tile_player_set_physics_space(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_SPACE); }
+void game_tile_player_set_physics_floating(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_FLOATING); }
+void game_tile_player_set_physics_jetpack(game_tile_player_t *p) { game_tile_player_set_physics(p, GAME_PHYSICS_JETPACK); }
+
 uint8_t game_tile_player_start(game_tile_player_t *p,
                                 const game_tilemap_t *m, gfxbob_t *sprite)
 {
@@ -815,7 +921,7 @@ uint8_t game_tile_player_start(game_tile_player_t *p,
     memset(p, 0, sizeof(*p));
     p->sprite = sprite; p->map = m;
     p->walk_speed = 3; p->jump_speed = 7;
-    p->gravity = 35; p->max_fall_speed = 9;
+    p->gravity = 35; p->max_fall_speed = 9; p->force_drag_percent = 12;
     game_tile_player_reset(p, sprite->drawx, sprite->drawy);
     return 1;
 }
@@ -826,7 +932,9 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->vy100 = 0; p->on_ground = 0; p->jump_held = 0;
     p->coyote = 0; p->touch_type = 0; p->hazard_contact = 0;
     game_death_rearm();
+    p->slide_velocity100 = 0; p->slide_remainder100 = 0; p->zone_contacts = 0;
     p->physics_vy100 = 0; p->external_ascent = 0;
+    p->force_vx100 = 0; p->force_remainder100 = 0;
     const int32_t feet = y + p->sprite->height;
     p->on_ground = tile_floor(p->map, x, p->sprite->width, feet, feet) == feet;
 }
@@ -859,6 +967,37 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         const int32_t deltaX = ((buttons & BTN_RIGHT) != 0) -
                                ((buttons & BTN_LEFT) != 0);
         int32_t x = p->x100 / 100, y = p->y100 / 100;
+        int32_t horizontalSteps = p->walk_speed;
+        if (p->physics_mode == GAME_PHYSICS_ICE) {
+            /* Acceleration + friction only in ICE mode; normal movement is
+               bit-for-bit compatible with the original platformer. */
+            if (deltaX) {
+                int32_t v = p->slide_velocity100 + deltaX * 35;
+                const int32_t top = (int32_t)p->walk_speed * 100;
+                if (v > top) v = top;
+                if (v < -top) v = -top;
+                p->slide_velocity100 = (int16_t)v;
+            } else {
+                p->slide_velocity100 = (int16_t)((int32_t)p->slide_velocity100 *
+                    (p->on_ground ? 90 : 96) / 100);
+            }
+            const int32_t step100 = p->slide_remainder100 + p->slide_velocity100;
+            horizontalSteps = step100 < 0 ? -(step100 / 100) : step100 / 100;
+            p->slide_remainder100 = (int16_t)(step100 % 100);
+        }
+        int32_t horizontalDirection = p->physics_mode == GAME_PHYSICS_ICE
+            ? ((p->slide_velocity100 > 0) - (p->slide_velocity100 < 0)) : deltaX;
+        /* Add external velocity to the ordinary horizontal displacement.
+           Keep a 1/100-pixel remainder so even gentle wind accelerates and
+           moves the player. No force means the old movement is unchanged. */
+        if (p->force_vx100 || p->force_remainder100) {
+            const int32_t delta100 = horizontalSteps * horizontalDirection * 100
+                + p->force_vx100 + p->force_remainder100;
+            const int32_t steps = delta100 / 100;
+            p->force_remainder100 = delta100 - steps * 100;
+            horizontalSteps = steps < 0 ? -steps : steps;
+            horizontalDirection = (steps > 0) - (steps < 0);
+        }
         const uint8_t walkingOnGround = p->on_ground && p->vy100 >= 0;
         uint8_t followedFloor = 0;
         uint8_t crossed_hazard = special_type(m, x, y, w, h) == GAME_TILE_HAZARD;
@@ -867,8 +1006,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
          * rises/falls one pixel per horizontal pixel. Move the player's Y
          * with its feet BEFORE checking the adjacent solid tiles.
          */
-        for (int32_t i = 0; i < p->walk_speed && deltaX; ++i) {
-            const int32_t nextX = x + deltaX;
+        for (int32_t i = 0; i < horizontalSteps && horizontalDirection; ++i) {
+            const int32_t nextX = x + horizontalDirection;
             int32_t nextPlayerY = y;
             int32_t surface = 0x7FFFFFFF;
             if (walkingOnGround) {
@@ -877,7 +1016,11 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                     nextPlayerY = surface - h;
             }
             if (touches_solid(m, nextX, nextPlayerY, w, h) ||
-                touches_slope_body(m, nextX, nextPlayerY, w, h)) break;
+                touches_slope_body(m, nextX, nextPlayerY, w, h)) {
+                p->slide_velocity100 = 0; p->slide_remainder100 = 0;
+                p->force_vx100 = 0; p->force_remainder100 = 0;
+                break;
+            }
             x = nextX;
             y = nextPlayerY;
             if (special_type(m, x, y, w, h) == GAME_TILE_HAZARD)
@@ -886,7 +1029,18 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         }
         p->x100 = x * 100;
         if (followedFloor) p->y100 = y * 100;
+        if (p->force_vx100 && p->force_drag_percent) {
+            p->force_vx100 = p->force_vx100 *
+                (100 - p->force_drag_percent) / 100;
+            if (p->force_vx100 > -2 && p->force_vx100 < 2)
+                p->force_vx100 = 0;
+        }
 
+        if (p->physics_mode == GAME_PHYSICS_JETPACK &&
+            (buttons & BTN_FIRE) && !p->on_ground) {
+            p->vy100 -= 65; /* sustained thrust, capped below */
+            if (p->vy100 < -700) p->vy100 = -700;
+        }
         p->vy100 += p->gravity;
         if (p->vy100 > (int32_t)p->max_fall_speed * 100)
             p->vy100 = (int32_t)p->max_fall_speed * 100;
@@ -957,10 +1111,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         p->physics_vy100 = p->vy100;
         if (touching_hazard && !was_in_hazard) {
             game_hazard_notify(GAME_HAZARD_TILE_ENTERED, x, y);
-            /* Preserve the existing entry safety behaviour. */
-            return;
-        }
-        if (touching_hazard) {
+        } else if (touching_hazard) {
             game_hazard_notify(GAME_HAZARD_TILE_INSIDE, x, y);
         } else if (was_in_hazard) {
             game_hazard_notify(GAME_HAZARD_TILE_EXITED, x, y);
@@ -969,6 +1120,22 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
            process more batched frames after it changes that state. */
         if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
             return;
+        const uint8_t currentZones = cg_zone_callback ?
+            game_zone_at_player(m, x, y, w, h) : 0;
+        const uint8_t previousZones = p->zone_contacts;
+        p->zone_contacts = currentZones; /* Store before callback/teleport. */
+        if (cg_zone_callback) {
+            for (uint8_t z = 0; z < 8; ++z) {
+                const uint8_t bit = (uint8_t)(1u << z);
+                const uint8_t event = (currentZones & bit)
+                    ? ((previousZones & bit) ? GAME_ZONE_INSIDE : GAME_ZONE_ENTERED)
+                    : ((previousZones & bit) ? GAME_ZONE_EXITED : 0);
+                if (!event) continue;
+                cg_zone_callback((uint8_t)(z+1), event, x, y, cg_zone_user);
+                if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+                    return;
+            }
+        }
     }
 }
 void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cameraY)

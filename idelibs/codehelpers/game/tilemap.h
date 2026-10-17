@@ -18,6 +18,26 @@
 #define GAME_TILE_DOOR        6u
 #define GAME_TILE_CUSTOM_SLOPE 7u /* Legacy v3 per-pixel surface */
 #define GAME_TILE_POINT_SLOPE  8u /* Shared point-defined surface (v4) */
+/* Programmable collision zones: 9..16 pass through; 17..24 block movement.
+   The same logical zone number (1..8) is reported for either physical mode.
+   Zone names are editor metadata and don't change the SD .map format. */
+#define GAME_TILE_CUSTOM1 9u
+#define GAME_TILE_CUSTOM8 16u
+#define GAME_TILE_CUSTOM1_SOLID 17u
+#define GAME_TILE_CUSTOM8_SOLID 24u
+#define GAME_TILE_CUSTOM_ZONE_MAX 24u
+#define GAME_TILE_ZONE_NUMBER(type) ((uint8_t)(((type) >= 17u && (type) <= 24u) ? (type) - 16u : ((type) >= 9u && (type) <= 16u) ? (type) - 8u : 0u))
+#define GAME_TILE_ZONE_BLOCKS(type) ((type) >= 17u && (type) <= 24u)
+
+/* Programmable zone callbacks are entirely separate from death callbacks.
+   ENTERED once, INSIDE on subsequent physics ticks, EXITED on leaving.
+   The engine never changes gravity or health without game code requesting it. */
+#define GAME_ZONE_ENTERED 1u
+#define GAME_ZONE_INSIDE  2u
+#define GAME_ZONE_EXITED  3u
+typedef void (*game_zone_callback_t)(uint8_t zone, uint8_t event,
+    int32_t world_x, int32_t world_y, void *user);
+void game_tile_set_zone_callback(game_zone_callback_t callback, void *user);
 
 /* GamerGirl hazard contact phases and scripted death.
    Existing GAME_DEATH_TILE_HAZARD / GAME_DEATH_ZONE values are retained as
@@ -176,13 +196,54 @@ typedef struct {
     int32_t physics_vy100; /* Velocity at the end of the previous physics step. */
     uint8_t external_ascent;
     uint8_t hazard_contact; /* Internal: overlapping tile hazard on previous update. */
+    uint8_t zone_contacts; /* Eight active custom-zone types, bit per type. */
+    uint8_t physics_mode; /* See GAME_PHYSICS_*; normal mode remains unchanged. */
+    int16_t slide_velocity100, slide_remainder100; /* Only used for ice physics. */
+    /* Optional external momentum, in 1/100 pixels per physics frame.
+       Stored separately from joystick movement so wind and explosions do not
+       overwrite walking speed. Completely inert until apply_force() is used. */
+    int32_t force_vx100, force_remainder100;
+    uint8_t force_drag_percent; /* Horizontal loss per frame: 0 = coast forever. */
 } game_tile_player_t;
 
 uint8_t game_tile_player_start(game_tile_player_t *p,
                                 const game_tilemap_t *map, gfxbob_t *sprite);
 void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y);
 void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frames);
+/* External impulses, in PIXELS PER FRAME. Positive X = right; positive Y = down.
+   Adds velocity, not an immediate position change. Call once for a knockback,
+   or every physics tick for continuous wind/thrust. Force is capped to 32 px/tick.
+   ALWAYS follow with game_tile_player_run() OR game_tile_player_step() so
+   movement, solid collisions and hazard/zone callbacks still run.
+   The force affects both stepping paths; do not call BOTH in the same tick.
+   No dynamic allocation or floating-point work occurs inside the frame loop. */
+void apply_force(game_tile_player_t *p, float x, float y);
+/* Tick the SAME collision-aware physics without interpreting joystick buttons.
+   Ideal when code supplies directional thrust with apply_force(). */
+void game_tile_player_step(game_tile_player_t *p, uint16_t frames);
+/* Horizontal momentum damping: 0 = no drag (space), 100 = stop immediately. */
+void game_tile_player_set_force_drag(game_tile_player_t *p, uint8_t percent);
 /* Move the bob to the correct SCREEN position before gfx_drawbob(). */
+/* Optional physics presets; explicitly selected by programmer callbacks.
+   NORMAL restores the original Stage 3.42 movement model/values.
+   CUSTOM zones do NOT apply any preset on their own. */
+#define GAME_PHYSICS_NORMAL 0u
+#define GAME_PHYSICS_ICE 1u
+#define GAME_PHYSICS_WATER 2u
+#define GAME_PHYSICS_SLOW 3u
+#define GAME_PHYSICS_SPACE 4u
+#define GAME_PHYSICS_FLOATING 5u
+#define GAME_PHYSICS_JETPACK 6u
+void game_tile_player_set_physics(game_tile_player_t *p, uint8_t mode);
+void game_tile_player_set_gravity(game_tile_player_t *p, int16_t gravity);
+void game_tile_player_set_walk_speed(game_tile_player_t *p, int16_t speed);
+void game_tile_player_set_physics_normal(game_tile_player_t *p);
+void game_tile_player_set_physics_ice(game_tile_player_t *p);
+void game_tile_player_set_physics_water(game_tile_player_t *p);
+void game_tile_player_set_physics_slow(game_tile_player_t *p);
+void game_tile_player_set_physics_space(game_tile_player_t *p);
+void game_tile_player_set_physics_floating(game_tile_player_t *p);
+void game_tile_player_set_physics_jetpack(game_tile_player_t *p);
 void game_tile_player_screen(game_tile_player_t *p, int32_t camera_x, int32_t camera_y);
 
 #endif

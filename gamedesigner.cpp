@@ -1147,8 +1147,10 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
     // Offer an explicit backup-and-upgrade when old V1 helpers are present.
     const bool needsFrontTiles = std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),
         [](char flags) { return (quint8(flags) & 4u) != 0; });
+    const bool needsCustomZones = std::any_of(m_tilemap.collisions.cbegin(), m_tilemap.collisions.cend(),
+        [](char type) { return quint8(type) >= 9 && quint8(type) <= 24; });
     if (m_tilemap.collisions.contains(char(7)) ||
-        !m_tilemap.collisionPlacements.isEmpty() || needsFrontTiles) {
+        !m_tilemap.collisionPlacements.isEmpty() || needsFrontTiles || needsCustomZones) {
         const QDir helperSourceDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
         const QString helperFolder = QDir(directory).filePath(QStringLiteral("gamehelpers"));
         if (!QDir().mkpath(helperFolder)) {
@@ -1165,12 +1167,14 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
             current = existingC.contains("cg_map_load_v4") &&
                 existingH.contains("GAME_TILE_POINT_SLOPE") &&
                 (!needsFrontTiles || (existingC.contains("game_tilemap_blit_view_front") &&
-                                       existingH.contains("GAME_TILE_DRAW_FRONT")));
+                                       existingH.contains("GAME_TILE_DRAW_FRONT"))) &&
+                (!needsCustomZones || (existingC.contains("game_zone_at_player") &&
+                                        existingH.contains("GAME_ZONE_ENTERED")));
         }
         cCheck.close(); hCheck.close();
         if (!current) {
             if (QMessageBox::question(this, tr("Upgrade Tilemap Helpers"),
-                    tr("This level uses custom slopes or foreground tiles, but this "
+                    tr("This level uses custom slopes, foreground tiles or programmable zones, but this "
                        "project's gametilemap.c/.h need updating.\n\n"
                        "Back up the existing helper files and install the new "
                        "versions from the IDE? Your edited helpers will be "
@@ -4589,6 +4593,16 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     int pickups = 0, worldObjects = 0, spriteCount = 0;
     bool hasMusic = false, hasAudio = false, hasBackgroundSprites = false;
     bool hasHazards = m_tilemapEnabled && m_tilemap.collisions.contains(char(5));
+    bool hasCustomZones = false;
+    bool usedCustomZones[8] = {false};
+    if (m_tilemapEnabled) {
+        for (char typeChar : m_tilemap.collisions) {
+            const int type = quint8(typeChar);
+            const int zone = type >= 9 && type <= 16 ? type - 9
+                : type >= 17 && type <= 24 ? type - 17 : -1;
+            if (zone >= 0) { hasCustomZones = true; usedCustomZones[zone] = true; }
+        }
+    }
     QStringList attachedSplineDescriptions;
     QSet<QString> attachedSplineIds;
     int validSplineCount = 0;
@@ -4635,7 +4649,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     QString program;
     QTextStream out(&program);
     out << R"CG(/*
- * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.35)
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.44)
  * ==============================================================
  * This is REAL C source code, not a list of pseudocode snippets.
  * It is generated from the resources in the CURRENT .sbgm design.
@@ -4741,6 +4755,105 @@ static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
     /* game_death_mark_dead() freezes physics. game_tile_player_reset()
        resumes at your chosen spawn point; neither is automatic. */
 }
+)CG";
+    }
+    if (hasPhysics && hasCustomZones) {
+        out << "/* CUSTOM ZONES IN THIS LEVEL (names are documentation only):\n";
+        for (int i = 0; i < 8; ++i) {
+            if (!usedCustomZones[i]) continue;
+            QString label = i < m_tilemap.customZoneNames.size()
+                ? m_tilemap.customZoneNames.at(i) : QString();
+            if (label.isEmpty()) label = QStringLiteral("Custom %1").arg(i+1);
+            label.replace(QStringLiteral("*/"), QStringLiteral("* /"));
+            label.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            out << " *   Zone " << (i+1) << ": " << label << "\n";
+        }
+        out << " */\n";
+        out << R"CG(
+/* OPTIONAL PROGRAMMABLE ZONES: these comments are EXAMPLES, not automatic
+ * physics changes. Each custom tile zone reports 1..8 and ENTERED/INSIDE/EXITED.
+ * Solid and pass-through versions share the same logical zone number.
+ * Change or remove these examples to suit your game. */
+static void on_custom_zone(uint8_t zone, uint8_t event,
+    int32_t x, int32_t y, void *user)
+{
+    (void)x; (void)y;
+    game_tile_player_t *p = (game_tile_player_t *)user;
+    if (!p) return;
+    if (event == GAME_ZONE_ENTERED) {
+        switch (zone) {
+            case 1: /* Optional: mud */
+                /* game_tile_player_set_physics_slow(p); */ break;
+            case 2: /* Optional: water */
+                /* game_tile_player_set_physics_water(p); */ break;
+            case 3: /* Optional: icy ground */
+                /* game_tile_player_set_physics_ice(p); */ break;
+            case 4: /* Optional: space */
+                /* game_tile_player_set_physics_space(p); */ break;
+            case 5: /* Optional: floating */
+                /* game_tile_player_set_physics_floating(p); */ break;
+            case 6: /* Optional: jetpack */
+                /* game_tile_player_set_physics_jetpack(p); */ break;
+            case 7: /* Optional: custom gravity */
+                /* game_tile_player_set_gravity(p, 10); */ break;
+            case 8: /* Optional: walking speed */
+                /* game_tile_player_set_walk_speed(p, 2); */ break;
+        }
+    } else if (event == GAME_ZONE_INSIDE) {
+        /* Example: count time inside for damage, sound or wind effects.
+         * Updraft: apply_force(p, 0.0f, -0.40f); // optional upward thrust
+         * Call the ordinary player-run OR the no-input player-step once
+         * per frame to advance physics and keep collision detection active.
+         */
+    } else if (event == GAME_ZONE_EXITED) {
+        /* Optional: restore defaults when leaving a zone.
+         * game_tile_player_set_physics_normal(p);
+         * If zones overlap, decide which remaining zone should take priority. */
+    }
+}
+)CG";
+    }
+    if (hasPhysics) {
+        out << R"CG(
+/* OPTIONAL: EXTERNAL FORCES / SPACE THRUSTERS
+ * -------------------------------------------
+ * apply_force(&player_physics, x, y) ADDS momentum in pixels/frame.
+ * +X = right, -X = left; +Y = down, -Y = upward thrust.
+ * It does NOT move the player immediately, so collisions remain safe.
+ * Call game_tile_player_run() OR game_tile_player_step() once per frame,
+ * not both! A simple wind or explosion also works in NORMAL movement:
+ *
+ *   apply_force(&player_physics, 2.0f, -1.0f); // one-time knockback
+ *   // ... your usual game_tile_player_run() then integrates the force.
+ *
+ * OPTIONAL zero-gravity, joystick-controlled spacecraft:
+ *   1. Enter the space zone in your on_custom_zone() callback (if present).
+ *      Set your own bool/flag named in_space to 1 on ENTERED,
+ *      and set it to 0 on EXITED. For example, Custom 4 can be Space.
+ *      game_tile_player_set_physics_space(&player_physics);
+ *      game_tile_player_set_gravity(&player_physics, 0);
+ *   2. Replace the game_tile_player_run() line in the loop below with:
+ *
+ *   if (in_space) {
+ *       const uint8_t joy = getjoyport();
+ *       if (joy & BTN_LEFT)  apply_force(&player_physics, -0.18f,  0.0f);
+ *       if (joy & BTN_RIGHT) apply_force(&player_physics,  0.18f,  0.0f);
+ *       if (joy & BTN_UP)    apply_force(&player_physics,  0.0f, -0.18f);
+ *       if (joy & BTN_DOWN)  apply_force(&player_physics,  0.0f,  0.18f);
+ *       game_tile_player_step(&player_physics, 1);
+ *   } else {
+ *       game_tile_player_run(&player_physics, getjoyport(), 1);
+ *   }
+ *
+ *   3. On leaving space call game_tile_player_set_physics_normal().
+ *
+ * External X momentum has configurable drag (percent lost per tick):
+ *   game_tile_player_set_force_drag(&player_physics, 0); // no drag: space
+ *   game_tile_player_set_force_drag(&player_physics, 12); // slow down
+ * Space preset sets X drag to 0 automatically. Gravity remains separate.
+ * Existing solids, ceilings, slopes, zone events and springs still work.
+ * Force inputs and callbacks are OPTIONAL. None are enabled here by default.
+ */
 )CG";
     }
     if (hasSplines) {
@@ -4874,6 +4987,8 @@ int main(int argc, char *argv[])
             << playerName << ")) { result = 4; goto cleanup; }\n";
         if (hasHazards)
             out << "    game_death_set_callback(on_player_death, NULL);\n";
+        if (hasCustomZones)
+            out << "    game_tile_set_zone_callback(on_custom_zone, &player_physics);\n";
         if (worldObjects) {
             out << R"CG(
     /* Do not copy world coordinates: bind addresses of live physics fields. */
@@ -4905,6 +5020,8 @@ int main(int argc, char *argv[])
     }
     if (hasPhysics) {
         if (worldObjects) out << "        gameworlditems_before(&world_player);\n";
+        out << "        /* OPTIONAL THRUSTERS: replace the next line with the in_space\n"
+               "         * example above, and still step physics every frame. */\n";
         out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
         if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
         if (pickups) {

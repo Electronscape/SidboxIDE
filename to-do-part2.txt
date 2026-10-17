@@ -1,6 +1,17 @@
 
+
+
+
+
+
+
+
+
+
+[FIXED]
 0: dealing with the frame drop now and then from the helpers (on going testing)
 
+[DONE]
 1: The tilemap editor needs to remember the zoom settings, and if possible the screen panning locations, needs to also remember the Paint Collision and Graphics index too.
 2: the Collision Stamps are too verbose an shouldnt really have that much reading in it, its should just be tips.
 3: left pane atlas : IS it possible for it calculate the visable cells instead of just the whole atlas, the width of the left pane causes a scroll which is a little bit frustrating.

@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QImage>
 #include <QJsonObject>
+#include <QStringList>
 #include <QString>
 #include <QVector>
 #include <QPair>
@@ -66,6 +67,7 @@ struct SidboxTilemap {
     QByteArray graphics = QByteArray(20000, char(0)); // 2 bytes per cell (LE uint16_t)
     QByteArray collisions = QByteArray(10000, char(0));
     QByteArray flips = QByteArray(10000, char(0)); // 0x01=flip X, 0x02=flip Y
+    QStringList customZoneNames; /* 8 optional friendly names, metadata only */
     QVector<SidboxTileAnimation> animations;
     QVector<SidboxTileStamp> stamps;
     QVector<SidboxCollisionStamp> collisionStamps;
@@ -154,6 +156,8 @@ private:
     QTimer *m_animationTimer = nullptr;
     QElapsedTimer m_animationClock;
     QComboBox *m_graphicMode = nullptr;
+    QComboBox *m_customZoneBrush = nullptr;
+    void updateCustomZoneBrushLabels();
     QComboBox *m_flipMode = nullptr;
     QCheckBox *m_flipX = nullptr;
     QCheckBox *m_flipY = nullptr;

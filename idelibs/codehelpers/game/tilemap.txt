@@ -358,3 +358,86 @@ _cleared version. Never use it on partially cleared buffers.
 
 This is not a proven fix for intermittent dropped frames: the actual
 SIDBOX timings still need measuring, including LCD wait and audio/IRQ.
+
+
+GAMERGIRL CUSTOM COLLISION ZONES (STAGE 3.43)
+---------------------------------------------
+Custom 1..8 can be named in the tilemap editor (names stored only in .sbgm).
+Paint collision IDs 9..16 for nonblocking sensors; 17..24 for solid zones.
+Both versions trigger callback zone numbers 1..8, with GAME_ZONE_ENTERED,
+GAME_ZONE_INSIDE and GAME_ZONE_EXITED. Nonblocking effects require overlap;
+solid zones trigger on physical contact at the player's hitbox boundary.
+These types take the existing collision byte; SD .map remains version 4.
+
+    static void on_zone(uint8_t zone, uint8_t event, int32_t x, int32_t y, void *u) {
+        game_tile_player_t *p = (game_tile_player_t *)u;
+        (void)x; (void)y;
+        if (zone == 2 && event == GAME_ZONE_ENTERED)
+            game_tile_player_set_physics_water(p);  // optional example
+        if (zone == 2 && event == GAME_ZONE_EXITED)
+            game_tile_player_set_physics_normal(p);
+    }
+    game_tile_set_zone_callback(on_zone, &player_physics);
+
+Physics presets are optional: _normal, _ice, _water, _slow, _space,
+_floating, _jetpack. Set custom values using game_tile_player_set_gravity()
+and game_tile_player_set_walk_speed(). ICE uses momentum/friction; JETPACK
+uses held FIRE to thrust upward while airborne. Presets do not modify
+player health or dispatch events, and zone contact does not auto-apply them.
+
+
+STAGE 3.44 — APPLY FORCE / SPACE THRUSTERS (OPTIONAL)
+----------------------------------------------------
+The V1 tilemap helper now supports an additive external velocity impulse:
+
+    apply_force(&physics, 1.5f, -0.75f);  // +right, -up
+
+The X/Y arguments are *velocity changes in pixels per frame*, not world
+positions. One call is an impulse (explosion/push), repeated calls are
+acceleration (wind, underwater currents, engine thrusters). Inputs clamp to
+32 pixels/frame per direction for safe collision stepping. External horizontal
+momentum is stored separately from ordinary joystick walking. No heap memory
+or floating point calculations are used by the collision solver;
+apply_force() converts float input to fixed point at its API boundary.
+
+IMPORTANT: apply_force() does NOT advance the player position by itself.
+Continue calling EXACTLY ONE of these once per frame:
+
+    game_tile_player_run(&physics, getjoyport(), 1); // normal controls + force
+    game_tile_player_step(&physics, 1);              // no built-in input + force
+
+Both have the same tile collision, ceilings, slopes, hazards and zone callbacks.
+If using a gameworlditems-managed player, still call gameworlditems_before()
+and gameworlditems_after() around your chosen physics step as normal.
+
+OPTIONAL zero-G, four-way joystick thrust example (add a boolean in_space
+that your custom-zone ENTERED/EXITED callback sets):
+
+    // On zone ENTERED:
+    game_tile_player_set_physics_space(&physics);
+    game_tile_player_set_gravity(&physics, 0); // literally weightless
+    // In the game loop, after gameworlditems_before() if any:
+    if (in_space) {
+        uint8_t joy = getjoyport();
+        if (joy & BTN_LEFT)  apply_force(&physics, -0.18f,  0.0f);
+        if (joy & BTN_RIGHT) apply_force(&physics,  0.18f,  0.0f);
+        if (joy & BTN_UP)    apply_force(&physics,  0.0f, -0.18f);
+        if (joy & BTN_DOWN)  apply_force(&physics,  0.0f,  0.18f);
+        game_tile_player_step(&physics, 1);
+    } else {
+        game_tile_player_run(&physics, getjoyport(), 1);
+    }
+    // On zone EXITED: game_tile_player_set_physics_normal(&physics);
+
+Change X drag (0..100% lost per frame):
+    game_tile_player_set_force_drag(&physics, 0);  // coast forever (space)
+    game_tile_player_set_force_drag(&physics, 12); // drift slows down
+Normal defaults to 12%; ICE 2%; WATER 18%; SPACE 0%. Gravity affects Y speed
+independently, and can be adjusted with game_tile_player_set_gravity().
+Wall collisions stop horizontal force, and ceilings stop upward travel.
+Respawning resets momentum. Existing worlds without apply_force() are unchanged.
+
+Update Game Project makes its normal backup, then installs the new
+`gamehelpers/gametilemap.c/.h` along with the project-aware generated
+maingame.c.txt. Existing main.c is NEVER overwritten. The .map binary
+format, firmware and other world-object helpers require NO changes.
