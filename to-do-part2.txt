@@ -1,3 +1,14 @@
+
+
+bug:
+opening another project, after one is opened and edited,saved. the IDE just crashes, vanishes
+
+
+
+
+
+
+[DONE]
 TRIGGERABLES:
 need something that can be switches, toggles, and can enable / disable another game objects.
 THIS would be especially useful for things like button presses to open a door.

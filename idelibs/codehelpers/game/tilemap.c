@@ -140,10 +140,10 @@ void game_tilemap_unload_ppb_atlas(game_tilemap_t *map)
     map->atlas_borrowed = 0;
 }
 
-/* GamerGirl / SIDBOX binary map version 1. Header 20 bytes, LE:
+/* GamerGirl / SIDBOX binary map versions 1 and 2. Header 20 bytes, LE:
    "SBMP", version, tile size, width, height, atlas count, animation count,
    FNV-1a checksum, reserved. Payload: graphics (LE u16 per cell), collision
-   bytes, animations (6 bytes: LE ID, frames, ticks, flags, reserved).
+   bytes, (version 2 only) flips per cell, animations (6 bytes: LE ID, frames, ticks, flags, reserved).
    Store no raw pointers in files; all allocations are under our control. */
 static uint16_t cg_map_u16(const uint8_t *b)
 {
@@ -166,6 +166,7 @@ void game_tilemap_unload_map(game_tilemap_t *map)
     map->map_storage = NULL;
     map->graphics = NULL;
     map->collision = NULL;
+    map->flips = NULL;
     map->animations = NULL;
     map->animation_count = 0;
     map->width = map->height = 0;
@@ -181,7 +182,8 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
     do {
         if (sfread(0, hdr, sizeof(hdr), &read_bytes) != F_OK ||
             read_bytes != sizeof(hdr) || memcmp(hdr, "SBMP", 4) ||
-            hdr[4] != 1 || hdr[5] != map->tile_size || hdr[18] || hdr[19]) break;
+            (hdr[4] != 1 && hdr[4] != 2) ||
+            hdr[5] != map->tile_size || hdr[18] || hdr[19]) break;
         const uint16_t width = cg_map_u16(hdr + 6);
         const uint16_t height = cg_map_u16(hdr + 8);
         const uint16_t atlas_count = cg_map_u16(hdr + 10);
@@ -191,17 +193,20 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
             atlas_count != map->atlas_count || animation_count > 128) break;
         const uint32_t cells = (uint32_t)width * height;
         const uint32_t graphics_bytes = cells * 2u;
-        const uint32_t animation_offset = (graphics_bytes + cells + 1u) & ~1u;
+        const uint32_t payload_bytes = graphics_bytes + cells + (hdr[4] == 2 ? cells : 0u);
+        const uint32_t animation_offset = (payload_bytes + 1u) & ~1u;
         const uint32_t allocation = animation_offset +
             (uint32_t)animation_count * sizeof(game_tile_animation_t);
         memory = (uint8_t *)malloc(allocation);
         if (!memory) break;
-        if (sfread(0, memory, graphics_bytes + cells, &read_bytes) != F_OK ||
-            read_bytes != graphics_bytes + cells) break;
-        hash = cg_map_hash(hash, memory, graphics_bytes + cells);
+        if (sfread(0, memory, payload_bytes, &read_bytes) != F_OK ||
+            read_bytes != payload_bytes) break;
+        hash = cg_map_hash(hash, memory, payload_bytes);
         for (uint32_t i = 0; i < cells; ++i) {
             const uint16_t id = cg_map_u16(memory + i * 2u);
             if (id > atlas_count || memory[graphics_bytes + i] > GAME_TILE_DOOR)
+                goto map_done;
+            if (hdr[4] == 2 && (memory[graphics_bytes + cells + i] & ~3u))
                 goto map_done;
         }
         game_tile_animation_t *animations =
@@ -228,6 +233,7 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         map->map_storage = memory;
         map->graphics = (const uint16_t *)(const void *)memory;
         map->collision = memory + graphics_bytes;
+        map->flips = hdr[4] == 2 ? memory + graphics_bytes + cells : NULL;
         map->animations = animation_count ? animations : NULL;
         map->animation_count = animation_count;
         map->width = width;
@@ -380,6 +386,11 @@ void game_tilemap_blit_view(const game_tilemap_t *m,
             bob.index = (uint8_t)(col - page_col);
             bob.drawx = drawx;
             bob.drawy = drawy;
+            /* Set flags on EVERY tile: gfxbob_t is reused across the loop. */
+            const uint8_t flip = m->flips
+                ? m->flips[(uint32_t)ty * m->width + (uint32_t)tx] : 0;
+            bob.flags = (uint8_t)(((flip & GAME_TILE_FLIP_X) ? BLIT_FLAG_FLIP_X : 0) |
+                                  ((flip & GAME_TILE_FLIP_Y) ? BLIT_FLAG_FLIP_Y : 0));
             gfx_drawbob(&bob);
         }
     }

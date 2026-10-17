@@ -1,0 +1,75 @@
+SIDBOX IDE / GamerGirl — STAGE 3.27: HAZARD CONTACT PHASES
+=========================================================
+Based on the working Stage 3.26 sources.
+
+INSTALL
+-------
+1. Extract Hazard-Phases-Stage3.27-changed-files.tar.gz OVER your Stage 3.26 IDE source folder.
+2. Rebuild the Qt IDE on your Fedora machine.
+3. Open Game Designer, save your design, and choose Update Game Project.
+   This replaces gamehelpers/gametilemap.c/.h and regenerates gameworlditems.c.
+   It does NOT overwrite your main.c.
+
+API — NO CHANGE TO CALLBACK SIGNATURE OR REGISTRATION
+------------------------------------------------------
+static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
+{
+    (void)x; (void)y; (void)user;
+
+    if (reason == GAME_HAZARD_TILE_ENTERED || reason == GAME_HAZARD_ZONE_ENTERED) {
+        /* First frame of contact; optionally play a sound / one-time hit. */
+    } else if (reason == GAME_HAZARD_TILE_INSIDE || reason == GAME_HAZARD_ZONE_INSIDE) {
+        /* Every subsequent overlap update; throttle damage using a timer. */
+    } else if (reason == GAME_HAZARD_TILE_EXITED || reason == GAME_HAZARD_ZONE_EXITED) {
+        /* First frame after leaving; stop effects / clear timers. */
+    } else if (reason == GAME_DEATH_SCRIPT) {
+        /* Scripted, explicitly fatal death. */
+    }
+}
+
+/* After successful game_tile_player_start(): */
+game_death_set_callback(on_player_death, NULL);
+
+EVENT CONSTANTS
+---------------
+Tile hazards: GAME_HAZARD_TILE_ENTERED, GAME_HAZARD_TILE_INSIDE,
+              GAME_HAZARD_TILE_EXITED
+Object zones:  GAME_HAZARD_ZONE_ENTERED, GAME_HAZARD_ZONE_INSIDE,
+              GAME_HAZARD_ZONE_EXITED
+
+Backwards compatible:
+  GAME_DEATH_TILE_HAZARD == GAME_HAZARD_TILE_ENTERED
+  GAME_DEATH_ZONE        == GAME_HAZARD_ZONE_ENTERED
+Existing callback code checking those original constants still receives entry events.
+
+Hazard contact does not freeze the player or reduce health automatically.
+INSIDE is fired every overlapping physics update, commonly 50 times per second
+at FPS_50. A timer in your main.c should control gradual health loss.
+Touching adjacent hazard tiles / zones counts as one continuous overlap.
+A fast crossing generates ENTERED, then EXITED on the following update.
+Both tile hazards and zones can dispatch if they overlap; plan for that if
+using one shared damage counter.
+
+To explicitly freeze physics when your game's health reaches zero:
+    game_death_mark_dead();
+To respawn afterward:
+    game_tile_player_reset(&player_physics, spawn_x, spawn_y);
+To deliberately trigger scripted fatal death:
+    game_death_trigger(GAME_DEATH_SCRIPT, player_x, player_y);
+
+CHANGED SOURCE FILES
+--------------------
+gamedesigner.cpp
+idelibs/codehelpers/game/tilemap.c
+idelibs/codehelpers/game/tilemap.h
+idelibs/codehelpers/game/tilemap.txt
+idelibs/codehelpers/game/worldobjects.txt
+idelibs/docs/cheatsheet.json
+
+TESTS
+-----
+Passed native C tests: hazard phases, adjacent hazard tiles, high-speed crossings,
+batched frames, non-fatal movement, explicit death, respawn; actual generated
+zone-wrapper C for entry/inside/exit/re-entry/disable; previous spring slide,
+switch/door, collectable and SD binary map tests.
+Full Qt IDE build and real SIDBOX hardware were not available in this environment.

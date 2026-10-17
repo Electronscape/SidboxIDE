@@ -208,3 +208,44 @@ Do not respawn/reset on ordinary damage. A tile Hazard Zone and a placed
 Hazard Zone may BOTH generate events if they overlap; keep separate damage
 timers if you are using both. Update Game Project to replace helpers and
 generated gameworlditems.c. Existing main.c is not overwritten.
+
+
+STAGE 3.30 — PER-CELL GRAPHICS FLIPPING (X/Y)
+-------------------------------------------------
+Tilemap graphic IDs remain 16-bit and collision bytes remain unchanged.
+The exported tilemap now also has a per-cell flip byte (bit 0 = X,
+bit 1 = Y). These are passed to gfx_drawbob() as BLIT_FLAG_FLIP_X / Y.
+This only mirrors artwork: collision types are separate properties.
+
+Embedded C maps export game_level1_flips[] alongside graphics/collisions;
+SD .map files exported by this IDE use SBMP version 2. Version 2 payload:
+  graphics uint16 LE [w*h], collision uint8 [w*h], flip uint8 [w*h],
+  followed by animation entries (unchanged, 6 bytes each).
+The 20-byte header and FNV-1a checksum logic remain unchanged; the new
+payload includes the flip bytes in that checksum. The updated loader also
+accepts legacy version-1 maps, treating their flip flags as zero.
+
+UI workflow:
+- Pick a graphic ID from the atlas on the left.
+- Tick Cell Flip X and/or Cell Flip Y, then paint on the map.
+- To change an existing graphic's flags WITHOUT replacing the ID,
+  select Paint graphic: Don't change graphic; then paint the flags.
+- Set flip mode to Don't change flip flags for collision-only painting.
+- In the stamp editor, use the same cell flip checkboxes when painting
+  each stamp cell. Saved stamps retain independent flags per cell.
+- Mirror stamp X/Y affects PLACEMENT only: source cell order is reversed
+  and every constituent flip bit is XORed with the mirror bit. The
+  original saved stamp stays unchanged. Horizontal stamp mirror also
+  swaps the two directional slope collision IDs (3 and 4).
+- There is NO ceiling-slope type: vertical stamp mirroring changes tile
+  artwork but retains collision types, so check slopes manually.
+- Stamps still expand into ordinary map cells; no runtime stamps exist.
+
+To get this feature into your existing game, regenerate the level files
+AND Update Game Project to copy the updated gamehelpers/gametilemap.h and
+.c into the game. Copy the newly exported level1.map to SD if using SD.
+The game must use the regenerated helper to understand v2 .map files.
+
+The flags are defined in the SIDBOX graphics API header; whether the
+currently installed SIDBOX firmware renders both correctly must be checked
+on the actual device (native tests validate only the flag values passed).

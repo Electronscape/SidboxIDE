@@ -5,10 +5,19 @@
 #include "main.h"
 #include "apis.h"
 /*
-
-    This is a shell starter for programs that dont use the GUI
-
-*/
+ * SIDBOX IDE - V1 Gaming starter
+ *
+ * For a beginner-friendly platformer, open Game Designer, add a tilemap,
+ * a PPB sprite named "player" and optional backgrounds or game objects.
+ * Save the design, then choose Update Game Project.
+ *
+ * GamerGirl generates maingame.c.txt containing a COMPLETE main.c example
+ * specifically for your current design. Copy that entire example into your
+ * main.c when ready. Your existing main.c is NEVER overwritten by the IDE.
+ *
+ * The default loop below is intentionally a blank graphics-only starting
+ * point for games not using the Platformer helpers.
+ */
 
 #define SCREEN_W 480
 #define SCREEN_H 320

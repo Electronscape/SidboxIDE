@@ -16,6 +16,11 @@
 #include <QHBoxLayout>
 #include <QJsonValue>
 #include <QJsonArray>
+#include <QListWidget>
+#include <QIcon>
+#include <QLineEdit>
+#include <QListView>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QRegion>
 #include <QSet>
@@ -41,11 +46,31 @@
 #include <QVBoxLayout>
 #include <QtGlobal>
 
+void SidboxTileStamp::resizeStamp(int w, int h)
+{
+    w = qBound(1, w, 16);
+    h = qBound(1, h, 16);
+    QByteArray nextG(w * h * 2, char(0));
+    QByteArray nextC(w * h, char(0));
+    QByteArray nextF(w * h, char(0));
+    for (int y = 0; y < qMin(height, h); ++y)
+        for (int x = 0; x < qMin(width, w); ++x) {
+            const int old = y * width + x;
+            const int now = y * w + x;
+            nextG[now * 2] = graphics.at(old * 2);
+            nextG[now * 2 + 1] = graphics.at(old * 2 + 1);
+            nextC[now] = collisions.at(old);
+            nextF[now] = flips.at(old);
+        }
+    width = w; height = h;
+    graphics = nextG; collisions = nextC; flips = nextF;
+}
+
 void SidboxTilemap::resizeMap(int w, int h)
 {
     w = qBound(30, w, 256);
     h = qBound(20, h, 256);
-    QByteArray nextG(w * h * 2, char(0)), nextC(w * h, char(0));
+    QByteArray nextG(w * h * 2, char(0)), nextC(w * h, char(0)), nextF(w * h, char(0));
     for (int y = 0; y < qMin(h, height); ++y)
         for (int x = 0; x < qMin(w, width); ++x) {
             const int from = y * width + x, to = y * w + x;
@@ -54,9 +79,10 @@ void SidboxTilemap::resizeMap(int w, int h)
                 nextG[to * 2 + 1] = graphics.at(from * 2 + 1);
             }
             if (from < collisions.size()) nextC[to] = collisions.at(from);
+            if (from < flips.size()) nextF[to] = flips.at(from);
         }
     width = w; height = h;
-    graphics = nextG; collisions = nextC;
+    graphics = nextG; collisions = nextC; flips = nextF;
 }
 
 QJsonObject SidboxTilemap::toJson() const
@@ -68,6 +94,7 @@ QJsonObject SidboxTilemap::toJson() const
     result.insert(QStringLiteral("atlasPath"), atlasPath);
     result.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(graphics, 9).toBase64()));
     result.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(collisions, 9).toBase64()));
+    result.insert(QStringLiteral("flipsZ"), QString::fromLatin1(qCompress(flips, 9).toBase64()));
     QJsonArray animated;
     for (const SidboxTileAnimation &a : animations) {
         QJsonObject item;
@@ -79,6 +106,19 @@ QJsonObject SidboxTilemap::toJson() const
         animated.append(item);
     }
     result.insert(QStringLiteral("animations"), animated);
+    QJsonArray stampList;
+    for (const SidboxTileStamp &stamp : stamps) {
+        QJsonObject item;
+        item.insert(QStringLiteral("name"), stamp.name);
+        item.insert(QStringLiteral("width"), stamp.width);
+        item.insert(QStringLiteral("height"), stamp.height);
+        item.insert(QStringLiteral("tileSize"), stamp.tileSize);
+        item.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(stamp.graphics, 9).toBase64()));
+        item.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(stamp.collisions, 9).toBase64()));
+        item.insert(QStringLiteral("flipsZ"), QString::fromLatin1(qCompress(stamp.flips, 9).toBase64()));
+        stampList.append(item);
+    }
+    result.insert(QStringLiteral("stamps"), stampList);
     return result;
 }
 
@@ -108,6 +148,18 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     const QByteArray g = qUncompress(compressedG);
     const QByteArray c = qUncompress(compressedC);
     if (g.size() != w * h * (extended ? 2 : 1) || c.size() != w * h) return false;
+    QByteArray f(w * h, char(0));
+    const QJsonValue flipsValueMap = object.value(QStringLiteral("flipsZ"));
+    if (!flipsValueMap.isUndefined()) {
+        if (!flipsValueMap.isString()) return false;
+        const QString encodedF = flipsValueMap.toString();
+        if (encodedF.size() > 131072) return false;
+        const QByteArray compressedF = QByteArray::fromBase64(encodedF.toLatin1());
+        if (expectedLength(compressedF) != quint32(w * h)) return false;
+        f = qUncompress(compressedF);
+        if (f.size() != w * h) return false;
+        for (char flags : f) if (quint8(flags) & ~quint8(3)) return false;
+    }
     QVector<SidboxTileAnimation> decoded;
     const QJsonValue animationValue = object.value(QStringLiteral("animations"));
     if (!animationValue.isUndefined() && !animationValue.isArray()) return false;
@@ -129,6 +181,43 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
         seen.insert(a.graphicId);
         decoded.append(a);
     }
+    QVector<SidboxTileStamp> decodedStamps;
+    const QJsonValue stampValue = object.value(QStringLiteral("stamps"));
+    if (!stampValue.isUndefined() && !stampValue.isArray()) return false;
+    const QJsonArray stampItems = stampValue.toArray();
+    if (stampItems.size() > 128) return false;
+    for (const QJsonValue &value : stampItems) {
+        if (!value.isObject()) return false;
+        const QJsonObject item = value.toObject();
+        SidboxTileStamp stamp;
+        stamp.name = item.value(QStringLiteral("name")).toString();
+        stamp.width = item.value(QStringLiteral("width")).toInt(0);
+        stamp.height = item.value(QStringLiteral("height")).toInt(0);
+        stamp.tileSize = item.value(QStringLiteral("tileSize")).toInt(0);
+        if (stamp.name.isEmpty() || stamp.name.size() > 80 || stamp.width < 1 ||
+            stamp.width > 16 || stamp.height < 1 || stamp.height > 16 ||
+            (stamp.tileSize != 8 && stamp.tileSize != 16 && stamp.tileSize != 32)) return false;
+        const auto decode = [](const QString &base64, int size) -> QByteArray {
+            if (base64.size() > 4000) return {};
+            const QByteArray encoded = QByteArray::fromBase64(base64.toLatin1());
+            if (encoded.size() < 4) return {};
+            const auto *p = reinterpret_cast<const unsigned char *>(encoded.constData());
+            const quint32 length = (quint32(p[0]) << 24) | (quint32(p[1]) << 16)
+                                 | (quint32(p[2]) << 8) | p[3];
+            if (length != quint32(size)) return {};
+            return qUncompress(encoded);
+        };
+        const int count = stamp.width * stamp.height;
+        stamp.graphics = decode(item.value(QStringLiteral("graphics16Z")).toString(), count * 2);
+        stamp.collisions = decode(item.value(QStringLiteral("collisionsZ")).toString(), count);
+        const QJsonValue flipsValue = item.value(QStringLiteral("flipsZ"));
+        stamp.flips = flipsValue.isUndefined() ? QByteArray(count, char(0))
+            : decode(flipsValue.toString(), count);
+        if (stamp.graphics.size() != count * 2 || stamp.collisions.size() != count ||
+            stamp.flips.size() != count) return false;
+        for (char f : stamp.flips) if ((quint8(f) & ~quint8(3)) != 0) return false;
+        decodedStamps.append(std::move(stamp));
+    }
     width = w; height = h; tileSize = tile;
     atlasPath = object.value(QStringLiteral("atlasPath")).toString();
     if (extended) graphics = g;
@@ -139,7 +228,9 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
             graphics[i * 2] = g.at(i);
     }
     collisions = c;
+    flips = f;
     animations = decoded;
+    stamps = std::move(decodedStamps);
     return true;
 }
 
@@ -211,8 +302,21 @@ public:
     int graphicMode = 1;
     int graphicBrush = 1;
     int collisionBrush = -1;
+    int flipMode = 1; // -1 = preserve existing, 1 = apply the current flip checkboxes
+    quint8 flipBrush = 0;
+    quint8 stampMirror = 0;
+    int stampIndex = -1; // -1 means ordinary atlas-tile painting
     bool painting = false;
     bool panning = false;
+    bool erasingStroke = false;
+    bool hoverValid = false;
+    QPoint hoverCell;
+    // An individual stamp drag is aligned to its first pressed map cell.
+    // Grid coordinates are measured in stamp widths/heights, not tile pixels.
+    QPoint stampAnchor;
+    QPoint lastStampGrid;
+    bool stampAnchorValid = false;
+    bool lastStampGridValid = false;
     std::function<void()> strokeStarted;
     std::function<void()> strokeFinished;
     QPoint lastPan;
@@ -245,6 +349,7 @@ public:
     {
         setFocusPolicy(Qt::StrongFocus);
         setMouseTracking(true);
+        viewport()->setMouseTracking(true); // QAbstractScrollArea uses a separate viewport widget
         viewport()->setCursor(Qt::CrossCursor);
     }
     void adjust()
@@ -257,6 +362,135 @@ public:
         verticalScrollBar()->setPageStep(viewport()->height());
         viewport()->update();
     }
+    // The preview is deliberately paint-only: it never changes a tile or the
+    // undo stack. While dragging a stamp it uses the same first-click grid
+    // and negative-coordinate floor division as paintAt().
+    QPoint previewBaseCell() const
+    {
+        if (!map || !hoverValid) return QPoint(-1, -1);
+        if (stampIndex < 0 || stampIndex >= map->stamps.size() ||
+            !painting || !stampAnchorValid) return hoverCell;
+        const SidboxTileStamp &stamp = map->stamps.at(stampIndex);
+        if (stamp.tileSize != map->tileSize) return hoverCell;
+        const int dx = hoverCell.x() - stampAnchor.x();
+        const int dy = hoverCell.y() - stampAnchor.y();
+        const int gx = dx >= 0 ? dx / stamp.width
+                               : -((-dx + stamp.width - 1) / stamp.width);
+        const int gy = dy >= 0 ? dy / stamp.height
+                               : -((-dy + stamp.height - 1) / stamp.height);
+        return QPoint(stampAnchor.x() + gx * stamp.width,
+                      stampAnchor.y() + gy * stamp.height);
+    }
+    QRect previewBounds() const
+    {
+        if (!map || !hoverValid || panning) return QRect();
+        const int px = map->tileSize * zoom;
+        int w = 1, h = 1;
+        if (stampIndex >= 0 && stampIndex < map->stamps.size()) {
+            const SidboxTileStamp &stamp = map->stamps.at(stampIndex);
+            if (stamp.tileSize == map->tileSize) {
+                w = stamp.width; h = stamp.height;
+            }
+        }
+        const QPoint base = previewBaseCell();
+        return QRect(base.x() * px - horizontalScrollBar()->value(),
+                     base.y() * px - verticalScrollBar()->value(),
+                     w * px, h * px).adjusted(-3, -3, 3, 3);
+    }
+    void updateHover(const QPoint &at)
+    {
+        const QRect before = previewBounds();
+        if (!map || at.x() < 0 || at.y() < 0) {
+            hoverValid = false;
+        } else {
+            const int px = map->tileSize * zoom;
+            hoverCell = QPoint((at.x() + horizontalScrollBar()->value()) / px,
+                               (at.y() + verticalScrollBar()->value()) / px);
+            hoverValid = hoverCell.x() >= 0 && hoverCell.x() < map->width &&
+                         hoverCell.y() >= 0 && hoverCell.y() < map->height;
+        }
+        const QRect after = previewBounds();
+        if (before != after) {
+            viewport()->update(before);
+            viewport()->update(after);
+        }
+    }
+    void paintBrushPreview(QPainter &painter)
+    {
+        if (!map || !hoverValid || panning) return;
+        const int px = map->tileSize * zoom;
+        const QPoint base = previewBaseCell();
+        int w = 1, h = 1;
+        const SidboxTileStamp *stamp = nullptr;
+        if (stampIndex >= 0 && stampIndex < map->stamps.size() &&
+            map->stamps.at(stampIndex).tileSize == map->tileSize) {
+            stamp = &map->stamps.at(stampIndex);
+            w = stamp->width; h = stamp->height;
+        }
+        const QRect mapPixels(-horizontalScrollBar()->value(),
+                              -verticalScrollBar()->value(),
+                              map->width * px, map->height * px);
+        const QRect footprint(base.x() * px - horizontalScrollBar()->value(),
+                              base.y() * px - verticalScrollBar()->value(),
+                              w * px, h * px);
+        if (!footprint.intersects(mapPixels)) return;
+        const bool erase = (painting && erasingStroke) ||
+            (!stamp && graphicMode == 0 && !painting);
+        const int cols = atlas && !atlas->isNull() ? atlas->width() / map->tileSize : 0;
+        const int rows = atlas && !atlas->isNull() ? atlas->height() / map->tileSize : 0;
+        painter.save();
+        painter.setClipRect(viewport()->rect().intersected(mapPixels));
+        // Show the actual sprite artwork, including the stamp's per-cell flags.
+        // Editing collisions only still shows a clear outline without inventing a tile.
+        if (!erase) {
+            painter.setOpacity(0.62);
+            for (int sy = 0; sy < h; ++sy) for (int sx = 0; sx < w; ++sx) {
+                const int x = base.x() + sx, y = base.y() + sy;
+                if (x < 0 || y < 0 || x >= map->width || y >= map->height) continue;
+                int id = 0;
+                quint8 flip = 0;
+                if (stamp) {
+                    const int sourceX = (stampMirror & 1) ? w - 1 - sx : sx;
+                    const int sourceY = (stampMirror & 2) ? h - 1 - sy : sy;
+                    const int i = sourceY * w + sourceX;
+                    id = mapGraphic(stamp->graphics, i);
+                    flip = quint8(stamp->flips.at(i)) ^ stampMirror;
+                } else if (graphicMode == 1) {
+                    id = graphicBrush;
+                    flip = flipMode >= 0 ? flipBrush :
+                        quint8(map->flips.at(y * map->width + x));
+                } else if (graphicMode == -1 && flipMode >= 0) {
+                    id = mapGraphic(map->graphics, y * map->width + x);
+                    flip = flipBrush;
+                }
+                if (!id) continue;
+                const QRect dest(x * px - horizontalScrollBar()->value(),
+                                 y * px - verticalScrollBar()->value(), px, px);
+                int frameTile = id;
+                if (const SidboxTileAnimation *anim = findTileAnimation(*map, id))
+                    if (id + anim->frames - 1 <= cols * rows)
+                        frameTile += tileAnimationFrame(*anim, animationTicks);
+                if (cols > 0 && frameTile <= cols * rows) {
+                    const int n = frameTile - 1;
+                    const QImage tile = atlas->copy((n % cols) * map->tileSize,
+                        (n / cols) * map->tileSize, map->tileSize, map->tileSize);
+                    painter.drawImage(dest, flip ? tile.mirrored(bool(flip & 1), bool(flip & 2)) : tile);
+                } else {
+                    painter.fillRect(dest, QColor(110, 137, 156));
+                }
+            }
+            painter.setOpacity(1.0);
+        } else {
+            painter.fillRect(footprint, QColor(240, 90, 90, 55));
+        }
+        // Double-outline remains visible against both very dark and bright tiles.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(0, 0, 0, 225), 3));
+        painter.drawRect(footprint.adjusted(1, 1, -2, -2));
+        painter.setPen(QPen(erase ? QColor(255, 110, 110) : QColor(93, 255, 226), 1));
+        painter.drawRect(footprint.adjusted(1, 1, -2, -2));
+        painter.restore();
+    }
     void paintAt(const QPoint &at, bool erase)
     {
         if (!map) return;
@@ -264,6 +498,82 @@ public:
         const int tx = (at.x() + horizontalScrollBar()->value()) / px;
         const int ty = (at.y() + verticalScrollBar()->value()) / px;
         if (tx < 0 || ty < 0 || tx >= map->width || ty >= map->height) return;
+        // A stamp is a design-time array of ordinary graphics + collisions.
+        // Anchor the temporary stamp-sized grid to the FIRST click of the
+        // drag, instead of trying to place a stamp at every 8x8 tile touched.
+        // Interpolate skipped stamp cells when the mouse moves quickly.
+        if (stampIndex >= 0 && stampIndex < map->stamps.size()) {
+            const SidboxTileStamp &stamp = map->stamps.at(stampIndex);
+            if (stamp.tileSize != map->tileSize) return;
+            if (!stampAnchorValid) {
+                stampAnchor = QPoint(tx, ty);
+                stampAnchorValid = true;
+                lastStampGridValid = false;
+            }
+            const int dx = tx - stampAnchor.x();
+            const int dy = ty - stampAnchor.y();
+            // C++ integer division truncates toward zero; floor division is
+            // required for stamps dragged LEFT/UP of the first clicked cell.
+            const int gx = dx >= 0 ? dx / stamp.width
+                                   : -((-dx + stamp.width - 1) / stamp.width);
+            const int gy = dy >= 0 ? dy / stamp.height
+                                   : -((-dy + stamp.height - 1) / stamp.height);
+            const QPoint target(gx, gy);
+            if (lastStampGridValid && target == lastStampGrid) return;
+
+            const auto applyStamp = [this, &stamp, erase, px](int gridX, int gridY) {
+                const int baseX = stampAnchor.x() + gridX * stamp.width;
+                const int baseY = stampAnchor.y() + gridY * stamp.height;
+                QRect dirty;
+                for (int sy = 0; sy < stamp.height; ++sy)
+                    for (int sx = 0; sx < stamp.width; ++sx) {
+                        const int x = baseX + sx, y = baseY + sy;
+                        if (x < 0 || y < 0 || x >= map->width || y >= map->height) continue;
+                        const int sourceX = (stampMirror & 1) ? stamp.width - 1 - sx : sx;
+                        const int sourceY = (stampMirror & 2) ? stamp.height - 1 - sy : sy;
+                        const int cell = sourceY * stamp.width + sourceX;
+                        const int index = y * map->width + x;
+                        const quint16 g = erase ? 0 : mapGraphic(stamp.graphics, cell);
+                        char c = erase ? char(0) : stamp.collisions.at(cell);
+                        if (!erase && (stampMirror & 1)) {
+                            if (quint8(c) == 3) c = char(4);
+                            else if (quint8(c) == 4) c = char(3);
+                        }
+                        const char f = (erase || !g) ? char(0)
+                            : char(quint8(stamp.flips.at(cell)) ^ stampMirror);
+                        bool changed = false;
+                        if (mapGraphic(map->graphics, index) != g) {
+                            setMapGraphic(map->graphics, index, g);
+                            changed = true;
+                        }
+                        if (map->collisions.at(index) != c) {
+                            map->collisions[index] = c;
+                            changed = true;
+                        }
+                        if (map->flips.at(index) != f) {
+                            map->flips[index] = f;
+                            changed = true;
+                        }
+                        if (changed) dirty |= QRect(x * px - horizontalScrollBar()->value(),
+                                                   y * px - verticalScrollBar()->value(), px + 1, px + 1);
+                    }
+                if (!dirty.isEmpty()) viewport()->update(dirty);
+            };
+
+            if (!lastStampGridValid) {
+                applyStamp(gx, gy);
+            } else {
+                const int diffX = gx - lastStampGrid.x();
+                const int diffY = gy - lastStampGrid.y();
+                const int steps = qMax(qAbs(diffX), qAbs(diffY));
+                for (int i = 1; i <= steps; ++i)
+                    applyStamp(lastStampGrid.x() + qRound(double(diffX) * i / steps),
+                               lastStampGrid.y() + qRound(double(diffY) * i / steps));
+            }
+            lastStampGrid = target;
+            lastStampGridValid = true;
+            return;
+        }
         const int index = ty * map->width + tx;
         bool changed = false;
         // One stroke can change graphics and collision together, or either one.
@@ -271,6 +581,13 @@ public:
             const quint16 value = quint16(erase ? 0 : (graphicMode == 0 ? 0 : graphicBrush));
             if (mapGraphic(map->graphics, index) != value) {
                 setMapGraphic(map->graphics, index, value);
+                changed = true;
+            }
+        }
+        if (erase || flipMode >= 0) {
+            const char value = char(erase ? 0 : (graphicMode == 0 ? 0 : flipBrush));
+            if (map->flips.at(index) != value) {
+                map->flips[index] = value;
                 changed = true;
             }
         }
@@ -314,8 +631,10 @@ protected:
                     frameTile += tileAnimationFrame(*anim, animationTicks);
             if (frameTile && cols > 0 && frameTile <= cols * rows) {
                 const int n = frameTile - 1;
-                painter.drawImage(dest, *atlas, QRect((n % cols) * map->tileSize,
-                    (n / cols) * map->tileSize, map->tileSize, map->tileSize));
+                const QImage tileImage = atlas->copy((n % cols) * map->tileSize,
+                    (n / cols) * map->tileSize, map->tileSize, map->tileSize);
+                const quint8 flip = quint8(map->flips.at(i));
+                painter.drawImage(dest, flip ? tileImage.mirrored(bool(flip & 1), bool(flip & 2)) : tileImage);
             } else if (tile) {
                 painter.fillRect(dest, QColor(84, 90, 105));
                 painter.setPen(Qt::white);
@@ -337,18 +656,37 @@ protected:
             painter.setPen(QColor(128, 157, 175, 68));
             painter.drawRect(dest.adjusted(0, 0, -1, -1));
         }
+        paintBrushPreview(painter);
+    }
+    bool viewportEvent(QEvent *event) override
+    {
+        if (event->type() == QEvent::Leave) {
+            const QRect previous = previewBounds();
+            hoverValid = false;
+            if (!previous.isEmpty()) viewport()->update(previous);
+        }
+        return QAbstractScrollArea::viewportEvent(event);
     }
     void mousePressEvent(QMouseEvent *e) override
     {
         if (e->button() == Qt::MiddleButton ||
             (e->button() == Qt::LeftButton && e->modifiers() & Qt::AltModifier)) {
+            const QRect previous = previewBounds();
             panning = true; lastPan = e->position().toPoint();
+            if (!previous.isEmpty()) viewport()->update(previous);
             viewport()->setCursor(Qt::ClosedHandCursor); return;
         }
         if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
             if (strokeStarted) strokeStarted();
+            const QRect previous = previewBounds();
             painting = true;
-            paintAt(e->position().toPoint(), e->button() == Qt::RightButton);
+            erasingStroke = e->button() == Qt::RightButton;
+            stampAnchorValid = false;
+            lastStampGridValid = false;
+            paintAt(e->position().toPoint(), erasingStroke);
+            updateHover(e->position().toPoint());
+            viewport()->update(previous);
+            viewport()->update(previewBounds());
         }
     }
     void mouseMoveEvent(QMouseEvent *e) override
@@ -359,19 +697,32 @@ protected:
             verticalScrollBar()->setValue(verticalScrollBar()->value() + lastPan.y() - at.y());
             lastPan = at;
         } else if (painting && e->buttons() & (Qt::LeftButton | Qt::RightButton)) {
-            paintAt(e->position().toPoint(), bool(e->buttons() & Qt::RightButton));
+            const QRect previous = previewBounds();
+            paintAt(e->position().toPoint(), erasingStroke);
+            updateHover(e->position().toPoint());
+            viewport()->update(previous);
+            viewport()->update(previewBounds());
+        } else if (!panning) {
+            updateHover(e->position().toPoint());
         }
     }
     void mouseReleaseEvent(QMouseEvent *e) override
     {
+        const QRect previous = previewBounds();
         if (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton) {
             panning = false;
             viewport()->setCursor(Qt::CrossCursor);
         }
         if ((e->button() == Qt::RightButton || e->button() == Qt::LeftButton) && painting) {
             painting = false;
+            erasingStroke = false;
+            stampAnchorValid = false;
+            lastStampGridValid = false;
             if (strokeFinished) strokeFinished();
         }
+        updateHover(e->position().toPoint());
+        viewport()->update(previous);
+        viewport()->update(previewBounds());
     }
     void wheelEvent(QWheelEvent *e) override
     {
@@ -402,7 +753,196 @@ protected:
         const int tilePixels = map ? map->tileSize * zoom : 16 * zoom;
         horizontalScrollBar()->setValue(horizontalScrollBar()->value() - notchesX * tilePixels);
         verticalScrollBar()->setValue(verticalScrollBar()->value() - notchesY * tilePixels);
+        updateHover(e->position().toPoint());
         e->accept();
+    }
+};
+
+// Bottom-right stamp editor. Atlas selections provide the individual cells;
+// stamps are saved in SidboxTilemap and NOT in the runtime .map file.
+class SidboxTilemapEditor::StampCanvas final : public QWidget
+{
+public:
+    SidboxTilemap *map = nullptr;
+    QImage *atlas = nullptr;
+    int selected = -1;
+    int graphicBrush = 1;
+    int graphicMode = 1;
+    int collisionBrush = -1;
+    int flipMode = 1;
+    quint8 flipBrush = 0;
+    std::function<void()> modified;
+    std::function<void()> strokeStarted;
+    bool painting = false;
+    bool erased = false;
+    bool strokeDirty = false;
+    bool hoverValid = false;
+    QPoint hoverCell;
+    explicit StampCanvas(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setCursor(Qt::CrossCursor);
+        setMinimumSize(180, 120);
+        setMouseTracking(true);
+    }
+    void refresh()
+    {
+        if (!map || selected < 0 || selected >= map->stamps.size()) {
+            setFixedSize(200, 130);
+        } else {
+            const auto &stamp = map->stamps.at(selected);
+            setFixedSize(qMax(200, stamp.width * 24 + 1),
+                         qMax(130, stamp.height * 24 + 1));
+        }
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor(28, 37, 49));
+        if (!map || selected < 0 || selected >= map->stamps.size()) {
+            painter.setPen(Qt::white);
+            painter.drawText(rect(), Qt::AlignCenter, tr("Add or select a stamp above"));
+            return;
+        }
+        const SidboxTileStamp &stamp = map->stamps.at(selected);
+        const int cols = atlas && !atlas->isNull() ? atlas->width() / stamp.tileSize : 0;
+        const int rows = atlas && !atlas->isNull() ? atlas->height() / stamp.tileSize : 0;
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        for (int y = 0; y < stamp.height; ++y)
+            for (int x = 0; x < stamp.width; ++x) {
+                const QRect cell(x * 24, y * 24, 24, 24);
+                const int i = y * stamp.width + x;
+                const quint16 tile = mapGraphic(stamp.graphics, i);
+                if (tile && cols > 0 && tile <= cols * rows) {
+                    const int n = tile - 1;
+                    const QImage tileImage = atlas->copy((n % cols) * stamp.tileSize,
+                              (n / cols) * stamp.tileSize, stamp.tileSize, stamp.tileSize);
+                    const quint8 flip = quint8(stamp.flips.at(i));
+                    painter.drawImage(cell, flip ? tileImage.mirrored(bool(flip & 1), bool(flip & 2)) : tileImage);
+                } else if (tile) {
+                    painter.fillRect(cell, QColor(84, 90, 105));
+                    painter.setPen(Qt::white);
+                    painter.drawText(cell, Qt::AlignCenter, QString::number(tile));
+                }
+                const quint8 collision = quint8(stamp.collisions.at(i));
+                if (collision) {
+                    painter.fillRect(cell, QColor(80, 195, 225, 75));
+                    painter.setPen(Qt::white);
+                    painter.drawText(cell, Qt::AlignBottom | Qt::AlignRight,
+                                     QString::number(collision));
+                }
+                painter.setPen(QColor(128, 157, 175, 115));
+                painter.drawRect(cell.adjusted(0, 0, -1, -1));
+            }
+        if (hoverValid && hoverCell.x() >= 0 && hoverCell.y() >= 0 &&
+            hoverCell.x() < stamp.width && hoverCell.y() < stamp.height) {
+            const QRect target(hoverCell.x() * 24, hoverCell.y() * 24, 24, 24);
+            painter.save();
+            if (painting && erased) {
+                painter.fillRect(target, QColor(240, 90, 90, 65));
+            } else if (graphicMode == 1 && cols > 0 &&
+                       graphicBrush > 0 && graphicBrush <= cols * rows) {
+                const int n = graphicBrush - 1;
+                const QImage tile = atlas->copy((n % cols) * stamp.tileSize,
+                    (n / cols) * stamp.tileSize, stamp.tileSize, stamp.tileSize);
+                const quint8 flip = flipMode >= 0 ? flipBrush :
+                    quint8(stamp.flips.at(hoverCell.y() * stamp.width + hoverCell.x()));
+                painter.setOpacity(0.62);
+                painter.drawImage(target, flip ? tile.mirrored(bool(flip & 1), bool(flip & 2)) : tile);
+                painter.setOpacity(1.0);
+            }
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(0, 0, 0, 225), 3));
+            painter.drawRect(target.adjusted(1, 1, -2, -2));
+            painter.setPen(QPen(painting && erased ? QColor(255, 110, 110) : QColor(93, 255, 226), 1));
+            painter.drawRect(target.adjusted(1, 1, -2, -2));
+            painter.restore();
+        }
+    }
+    void updateHover(const QPoint &at)
+    {
+        const QPoint previous = hoverCell;
+        const bool oldValid = hoverValid;
+        hoverCell = QPoint(at.x() / 24, at.y() / 24);
+        hoverValid = at.x() >= 0 && at.y() >= 0 && map && selected >= 0 &&
+                     selected < map->stamps.size() &&
+                     map->stamps.at(selected).tileSize == map->tileSize &&
+                     hoverCell.x() < map->stamps.at(selected).width &&
+                     hoverCell.y() < map->stamps.at(selected).height;
+        if (oldValid != hoverValid || previous != hoverCell) {
+            if (oldValid) update(QRect(previous.x() * 24, previous.y() * 24, 25, 25));
+            if (hoverValid) update(QRect(hoverCell.x() * 24, hoverCell.y() * 24, 25, 25));
+        }
+    }
+    void leaveEvent(QEvent *event) override
+    {
+        const bool wasValid = hoverValid;
+        hoverValid = false;
+        if (wasValid) update(QRect(hoverCell.x() * 24, hoverCell.y() * 24, 25, 25));
+        QWidget::leaveEvent(event);
+    }
+    bool paintCell(const QPoint &at, bool erase)
+    {
+        if (!map || selected < 0 || selected >= map->stamps.size()) return false;
+        SidboxTileStamp &stamp = map->stamps[selected];
+        if (stamp.tileSize != map->tileSize || at.x() < 0 || at.y() < 0) return false;
+        const int x = at.x() / 24, y = at.y() / 24;
+        if (x >= stamp.width || y >= stamp.height) return false;
+        const int cell = y * stamp.width + x;
+        bool changed = false;
+        // Keep graphic and collision painting independent, as on the main map.
+        if (erase || graphicMode >= 0) {
+            const quint16 tile = quint16(erase ? 0 : (graphicMode == 0 ? 0 : graphicBrush));
+            if (mapGraphic(stamp.graphics, cell) != tile) {
+                setMapGraphic(stamp.graphics, cell, tile);
+                changed = true;
+            }
+        }
+        if (erase || flipMode >= 0) {
+            const char flip = char(erase ? 0 : (graphicMode == 0 ? 0 : flipBrush));
+            if (stamp.flips.at(cell) != flip) {
+                stamp.flips[cell] = flip;
+                changed = true;
+            }
+        }
+        if (erase || collisionBrush >= 0) {
+            const char collision = char(erase ? 0 : collisionBrush);
+            if (stamp.collisions.at(cell) != collision) {
+                stamp.collisions[cell] = collision;
+                changed = true;
+            }
+        }
+        if (changed) update(QRect(x * 24, y * 24, 25, 25));
+        return changed;
+    }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton && event->button() != Qt::RightButton) return;
+        if (!map || selected < 0 || selected >= map->stamps.size()) return;
+        if (map->stamps.at(selected).tileSize != map->tileSize) return;
+        painting = true;
+        erased = event->button() == Qt::RightButton;
+        strokeDirty = false;
+        if (strokeStarted) strokeStarted();
+        strokeDirty |= paintCell(event->position().toPoint(), erased);
+        updateHover(event->position().toPoint());
+        update(); // erasing overlay changed, even if the hovered cell did not
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (painting && event->buttons() & (Qt::LeftButton | Qt::RightButton))
+            strokeDirty |= paintCell(event->position().toPoint(), erased);
+        updateHover(event->position().toPoint());
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (!painting || (event->button() != Qt::LeftButton &&
+                          event->button() != Qt::RightButton)) return;
+        painting = false;
+        update(); // return from eraser preview to normal brush preview
+        if (strokeDirty && modified) modified();
+        strokeDirty = false;
     }
 };
 
@@ -412,7 +952,8 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
 {
     if (a.width != b.width || a.height != b.height || a.tileSize != b.tileSize
         || a.atlasPath != b.atlasPath || a.graphics != b.graphics
-        || a.collisions != b.collisions || a.animations.size() != b.animations.size())
+        || a.collisions != b.collisions || a.animations.size() != b.animations.size()
+        || a.stamps.size() != b.stamps.size() || a.flips != b.flips)
         return false;
     for (int i = 0; i < a.animations.size(); ++i) {
         const auto &left = a.animations.at(i);
@@ -420,6 +961,14 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         if (left.graphicId != right.graphicId || left.frames != right.frames
             || left.frameTicks != right.frameTicks || left.loop != right.loop
             || left.bounce != right.bounce) return false;
+    }
+    for (int i = 0; i < a.stamps.size(); ++i) {
+        const auto &left = a.stamps.at(i);
+        const auto &right = b.stamps.at(i);
+        if (left.name != right.name || left.width != right.width ||
+            left.height != right.height || left.tileSize != right.tileSize ||
+            left.graphics != right.graphics || left.collisions != right.collisions ||
+            left.flips != right.flips) return false;
     }
     return true;
 }
@@ -437,6 +986,7 @@ void SidboxTilemapEditor::recordChange(const SidboxTilemap &before)
     if (m_undoStack.size() == maxHistory) m_undoStack.removeFirst();
     m_undoStack.append(before);
     m_redoStack.clear();
+    if (m_saveStatus) m_saveStatus->setText(tr("Unsaved changes"));
     updateHistoryActions();
 }
 
@@ -473,6 +1023,8 @@ void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
     updateAtlasPicker();
     updateAnimationControls();
     updateAnimationPreview();
+    updateStampList();
+    if (m_saveStatus) m_saveStatus->setText(tr("Unsaved changes"));
 }
 
 void SidboxTilemapEditor::undoEdit()
@@ -493,6 +1045,13 @@ void SidboxTilemapEditor::redoEdit()
     updateHistoryActions();
 }
 
+void SidboxTilemapEditor::setSaveCallback(
+    const std::function<bool(const SidboxTilemap &)> &callback)
+{
+    m_saveCallback = callback;
+    if (m_saveButton) m_saveButton->setEnabled(bool(m_saveCallback));
+}
+
 void SidboxTilemapEditor::setTheme(const IDETheme &theme)
 {
     const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
@@ -502,7 +1061,7 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
         "QDialog, QWidget { background-color:%1; color:%2; } "
         "QLabel { background:transparent; color:%2; border:none; } "
         "QPushButton, QToolButton, QSpinBox, QLineEdit, QCheckBox, "
-        "QScrollArea, QSplitter, QFrame { border-radius:0px; } "
+        "QScrollArea, QListWidget, QSplitter, QFrame { border-radius:0px; } "
         "QComboBox { border:1px solid %3; border-radius:0px; "
         "background-color:%4; color:%2; padding:3px 24px 3px 5px; } "
         "QComboBox::drop-down { width:20px; border-left:1px solid %3; "
@@ -637,6 +1196,27 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     paintRow->addWidget(new QLabel(tr("Paint graphic:"), this));
     paintRow->addWidget(brushG, 1);
     layout->addLayout(paintRow);
+    auto *flipRow = new QHBoxLayout;
+    m_flipMode = new TilemapComboBox(this);
+    m_flipMode->addItem(tr("Apply flip flags"), 1);
+    m_flipMode->addItem(tr("Don't change flip flags"), -1);
+    m_flipX = new QCheckBox(tr("Cell Flip X"), this);
+    m_flipY = new QCheckBox(tr("Cell Flip Y"), this);
+    m_stampMirrorX = new QCheckBox(tr("Mirror stamp X"), this);
+    m_stampMirrorY = new QCheckBox(tr("Mirror stamp Y"), this);
+    m_flipMode->setToolTip(tr("Choose whether a brush stroke changes flip flags. Choose 'Don't change' for collision-only work."));
+    m_flipX->setToolTip(tr("Set horizontal flip on individual cells painted into the map or stamp editor."));
+    m_flipY->setToolTip(tr("Set vertical flip on individual cells painted into the map or stamp editor."));
+    m_stampMirrorX->setToolTip(tr("Mirror the entire stamp when painting: reverses cell order and toggles each cell's X flip flag."));
+    m_stampMirrorY->setToolTip(tr("Mirror the entire stamp when painting: reverses cell order and toggles each cell's Y flip flag."));
+    flipRow->addWidget(m_flipMode);
+    flipRow->addWidget(m_flipX);
+    flipRow->addWidget(m_flipY);
+    flipRow->addSpacing(10);
+    flipRow->addWidget(m_stampMirrorX);
+    flipRow->addWidget(m_stampMirrorY);
+    flipRow->addStretch();
+    layout->addLayout(flipRow);
 
     // Adjustable atlas/animation sidebar on the left, map canvas on the right.
     m_splitter = new QSplitter(Qt::Horizontal, this);
@@ -734,27 +1314,185 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_canvas->atlas = &m_atlas;
     m_canvas->strokeStarted = [this]() { m_strokeStart = m_map; };
     m_canvas->strokeFinished = [this]() { recordChange(m_strokeStart); };
+    // Stamp sidebar: upper bank of thumbnails + lower editable stamp grid.
+    auto *stampSidebar = new QSplitter(Qt::Vertical, m_splitter);
+    stampSidebar->setChildrenCollapsible(false);
+    stampSidebar->setMinimumWidth(250);
+    auto *bankPane = new QWidget(stampSidebar);
+    auto *bankLayout = new QVBoxLayout(bankPane);
+    bankLayout->setContentsMargins(4, 0, 4, 4);
+    auto *bankTitle = new QLabel(tr("Stamp Bank"), bankPane);
+    bankTitle->setFont(sectionFont);
+    bankLayout->addWidget(bankTitle);
+    m_stampList = new QListWidget(bankPane);
+    m_stampList->setViewMode(QListView::IconMode);
+    m_stampList->setResizeMode(QListView::Adjust);
+    m_stampList->setMovement(QListView::Static);
+    m_stampList->setWrapping(true);
+    m_stampList->setIconSize(QSize(104, 76));
+    m_stampList->setGridSize(QSize(124, 116));
+    m_stampList->setWordWrap(true);
+    m_stampList->setSpacing(2);
+    m_stampList->setToolTip(tr("Click a stamp to select it as the painting brush. "
+                                   "Click an atlas tile on the left to return to single-tile painting."));
+    bankLayout->addWidget(m_stampList, 1);
+    m_stampStatus = new QLabel(tr("Brush: atlas tile"), bankPane);
+    m_stampStatus->setWordWrap(true);
+    bankLayout->addWidget(m_stampStatus);
+    auto *stampButtons = new QHBoxLayout;
+    auto *addStamp = new QPushButton(tr("Add"), bankPane);
+    auto *removeStamp = new QPushButton(tr("Remove"), bankPane);
+    stampButtons->addWidget(addStamp);
+    stampButtons->addWidget(removeStamp);
+    bankLayout->addLayout(stampButtons);
+
+    auto *editPane = new QWidget(stampSidebar);
+    auto *editLayout = new QVBoxLayout(editPane);
+    editLayout->setContentsMargins(4, 4, 4, 0);
+    auto *editTitle = new QLabel(tr("Stamp Editor"), editPane);
+    editTitle->setFont(sectionFont);
+    editLayout->addWidget(editTitle);
+    m_stampName = new QLineEdit(editPane);
+    m_stampName->setMaxLength(80);
+    m_stampName->setPlaceholderText(tr("Stamp name"));
+    editLayout->addWidget(m_stampName);
+    auto *stampSizeRow = new QHBoxLayout;
+    m_stampWidth = new QSpinBox(editPane);
+    m_stampHeight = new QSpinBox(editPane);
+    m_stampWidth->setRange(1, 16);
+    m_stampHeight->setRange(1, 16);
+    stampSizeRow->addWidget(new QLabel(tr("Width"), editPane));
+    stampSizeRow->addWidget(m_stampWidth);
+    stampSizeRow->addWidget(new QLabel(tr("Height"), editPane));
+    stampSizeRow->addWidget(m_stampHeight);
+    editLayout->addLayout(stampSizeRow);
+    auto *stampScroll = new QScrollArea(editPane);
+    stampScroll->setWidgetResizable(false);
+    m_stampCanvas = new StampCanvas(stampScroll);
+    m_stampCanvas->map = &m_map;
+    m_stampCanvas->atlas = &m_atlas;
+    stampScroll->setWidget(m_stampCanvas);
+    editLayout->addWidget(stampScroll, 1);
+    auto *stampHint = new QLabel(tr("Atlas tile + left-click: paint one stamp cell. "
+        "Right-click: clear cell. Use Paint collision and Cell Flip X/Y for each cell. "
+        "Choose a stamp above to paint it onto the map."), editPane);
+    stampHint->setWordWrap(true);
+    editLayout->addWidget(stampHint);
+    stampSidebar->addWidget(bankPane);
+    stampSidebar->addWidget(editPane);
+    stampSidebar->setStretchFactor(0, 1);
+    stampSidebar->setStretchFactor(1, 1);
+    stampSidebar->setSizes({300, 300});
+
     m_splitter->addWidget(sidebar);
     m_splitter->addWidget(m_canvas);
+    m_splitter->addWidget(stampSidebar);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
+    m_splitter->setStretchFactor(2, 0);
     const QByteArray savedSplit = windowSettings.value(
         QStringLiteral("GameTilemapEditor/splitter")).toByteArray();
     if (savedSplit.isEmpty() || !m_splitter->restoreState(savedSplit))
-        m_splitter->setSizes({340, 900});
+        m_splitter->setSizes({300, 760, 300});
     layout->addWidget(m_splitter, 1);
 
-    auto *help = new QLabel(tr("LEFT-DRAG paints both enabled layers  |  RIGHT-DRAG erases  |  "
+    auto *help = new QLabel(tr("HOVER previews the actual tile or stamp footprint  |  LEFT-DRAG paints atlas tile or selected stamp (stamp drags snap to the first-click stamp grid)  |  RIGHT-DRAG erases  |  "
         "MIDDLE-DRAG or ALT+LEFT-DRAG pans  |  WHEEL scrolls one tile. "
         "CTRL+Z undoes one stroke; CTRL+Y / CTRL+SHIFT+Z redoes. "
         "Pick artwork on the left; 'Don't change' leaves that layer untouched."), this);
     help->setWordWrap(true);
     layout->addWidget(help);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    buttons->button(QDialogButtonBox::Ok)->setText(tr("Apply to Design"));
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    // Keep the buttons in this exact order regardless of the desktop style.
+    auto *buttons = new QHBoxLayout;
+    m_saveStatus = new QLabel(this);
+    m_saveStatus->setText(QString());
+    buttons->addWidget(m_saveStatus, 1);
+    m_saveButton = new QPushButton(tr("Save"), this);
+    m_saveButton->setToolTip(tr("Save the current tilemap and stamp edits to the game design without closing this editor."));
+    m_saveButton->setEnabled(false); // Enabled once the owning Game Designer supplies a commit callback.
+    auto *apply = new QPushButton(tr("Apply to Design"), this);
+    auto *cancel = new QPushButton(tr("Cancel"), this);
+    buttons->addWidget(m_saveButton);
+    buttons->addWidget(apply);
+    buttons->addWidget(cancel);
+    layout->addLayout(buttons);
+    connect(m_saveButton, &QPushButton::clicked, this, [this]() {
+        if (!m_saveCallback) return;
+        if (m_canvas && m_canvas->painting) return;
+        if (m_saveCallback(m_map)) {
+            m_saveStatus->setText(tr("Saved to game design"));
+        } else {
+            m_saveStatus->setText(tr("Save failed — changes remain in editor"));
+        }
+    });
+    connect(apply, &QPushButton::clicked, this, &QDialog::accept);
+    connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(m_stampList, &QListWidget::itemClicked, this,
+        [this](QListWidgetItem *item) { selectStamp(m_stampList->row(item)); });
+    connect(m_stampList, &QListWidget::currentRowChanged, this,
+        [this](int row) { selectStamp(row); });
+    connect(addStamp, &QPushButton::clicked, this, [this]() {
+        if (m_map.stamps.size() >= 128) {
+            QMessageBox::warning(this, tr("Stamps"), tr("Maximum of 128 stamps reached."));
+            return;
+        }
+        const SidboxTilemap before = m_map;
+        SidboxTileStamp stamp;
+        stamp.name = tr("Stamp %1").arg(m_map.stamps.size() + 1);
+        stamp.tileSize = m_map.tileSize;
+        m_map.stamps.append(stamp);
+        recordChange(before);
+        updateStampList(m_map.stamps.size() - 1);
+        selectStamp(m_map.stamps.size() - 1);
+    });
+    connect(removeStamp, &QPushButton::clicked, this, [this]() {
+        const int row = m_stampList->currentRow();
+        if (row < 0 || row >= m_map.stamps.size()) return;
+        const SidboxTilemap before = m_map;
+        m_map.stamps.removeAt(row);
+        recordChange(before);
+        updateStampList(m_map.stamps.isEmpty() ? -1 : qMin(row, int(m_map.stamps.size()) - 1));
+        selectStamp(m_stampList->currentRow());
+    });
+    connect(m_stampName, &QLineEdit::editingFinished, this, [this]() {
+        const int row = m_stampList->currentRow();
+        if (row < 0 || row >= m_map.stamps.size()) return;
+        const QString name = m_stampName->text().trimmed();
+        if (name.isEmpty()) { updateStampEditor(); return; }
+        const SidboxTilemap before = m_map;
+        m_map.stamps[row].name = name;
+        recordChange(before);
+        updateStampList(row);
+    });
+    connect(m_stampWidth, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this](int width) {
+            const int row = m_stampList->currentRow();
+            if (row < 0 || row >= m_map.stamps.size()) return;
+            const SidboxTilemap before = m_map;
+            m_map.stamps[row].resizeStamp(width, m_map.stamps[row].height);
+            recordChange(before);
+            m_stampCanvas->refresh();
+            updateStampList(row);
+        });
+    connect(m_stampHeight, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this](int height) {
+            const int row = m_stampList->currentRow();
+            if (row < 0 || row >= m_map.stamps.size()) return;
+            const SidboxTilemap before = m_map;
+            m_map.stamps[row].resizeStamp(m_map.stamps[row].width, height);
+            recordChange(before);
+            m_stampCanvas->refresh();
+            updateStampList(row);
+        });
+    m_stampCanvas->modified = [this]() {
+        // Snapshot is captured immediately before the press in StampCanvas.
+        // The editor also supports undo for each single-cell modification.
+        recordChange(m_strokeStart);
+        updateStampList(m_stampList->currentRow());
+    };
+    m_stampCanvas->strokeStarted = [this]() { m_strokeStart = m_map; };
+    updateStampList(-1);
+
     connect(sizeX, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
         const SidboxTilemap before = m_map;
         m_map.resizeMap(v, m_map.height); m_canvas->adjust();
@@ -770,6 +1508,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             const SidboxTilemap before = m_map;
             m_map.tileSize = tileSize->currentData().toInt();
             m_canvas->adjust(); updateAtlasPicker(); updateAnimationControls();
+            updateStampEditor(); updateStampList();
             recordChange(before);
         });
     connect(atlasChoice, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -779,9 +1518,44 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             recordChange(before);
         });
     connect(brushG, qOverload<int>(&QComboBox::currentIndexChanged), this,
-        [this, brushG](int) { m_canvas->graphicMode = brushG->currentData().toInt(); });
+        [this, brushG](int) {
+            m_canvas->graphicMode = brushG->currentData().toInt();
+            m_stampCanvas->graphicMode = m_canvas->graphicMode;
+            m_canvas->viewport()->update();
+            m_stampCanvas->update();
+        });
+    connect(m_flipMode, qOverload<int>(&QComboBox::currentIndexChanged), this,
+        [this](int) {
+            const int mode = m_flipMode->currentData().toInt();
+            m_canvas->flipMode = mode;
+            m_stampCanvas->flipMode = mode;
+            m_canvas->viewport()->update();
+            m_stampCanvas->update();
+        });
+    auto updateFlipBrush = [this]() {
+        const quint8 flags = quint8((m_flipX->isChecked() ? 1 : 0) |
+                                   (m_flipY->isChecked() ? 2 : 0));
+        m_canvas->flipBrush = flags;
+        m_stampCanvas->flipBrush = flags;
+        m_canvas->viewport()->update();
+        m_stampCanvas->update();
+    };
+    connect(m_flipX, &QCheckBox::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
+    connect(m_flipY, &QCheckBox::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
+    auto updateStampMirror = [this]() {
+        m_canvas->stampMirror = quint8((m_stampMirrorX->isChecked() ? 1 : 0) |
+                                              (m_stampMirrorY->isChecked() ? 2 : 0));
+        m_canvas->viewport()->update();
+    };
+    connect(m_stampMirrorX, &QCheckBox::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
+    connect(m_stampMirrorY, &QCheckBox::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
     connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
-        [this, brushC](int) { m_canvas->collisionBrush = brushC->currentData().toInt(); });
+        [this, brushC](int) {
+            m_canvas->collisionBrush = brushC->currentData().toInt();
+            m_stampCanvas->collisionBrush = m_canvas->collisionBrush;
+            m_canvas->viewport()->update();
+            m_stampCanvas->update();
+        });
     connect(collisionOverlay, &QCheckBox::toggled, this,
         [this](bool enabled) {
             m_canvas->showCollisions = enabled;
@@ -803,6 +1577,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         [this](bool) { updateAnimationPreview(); });
     setAtlas(atlasChoice->currentData().toString());
     m_canvas->adjust();
+    updateStampList();
     m_animationClock.start();
     m_animationTimer = new QTimer(this);
     m_animationTimer->setInterval(40); // sample at 25fps, timing remains 50Hz
@@ -826,8 +1601,104 @@ void SidboxTilemapEditor::setAtlas(const QString &absolutePath)
         else QMessageBox::warning(this, tr("Tile Artwork"), error);
     }
     if (m_canvas) m_canvas->graphicBrush = 1;
+    if (m_stampCanvas) m_stampCanvas->graphicBrush = 1;
     updateAtlasPicker();
     updateAnimationControls();
+    if (m_canvas) m_canvas->viewport()->update();
+    updateStampList();
+    if (m_stampCanvas) m_stampCanvas->update();
+}
+
+void SidboxTilemapEditor::updateStampList(int wantedRow)
+{
+    if (!m_stampList) return;
+    if (wantedRow == -2) wantedRow = m_stampList->currentRow();
+    const QSignalBlocker block(m_stampList);
+    m_stampList->clear();
+    for (const SidboxTileStamp &stamp : m_map.stamps) {
+        QPixmap preview(104, 76);
+        preview.fill(QColor(28, 37, 49));
+        QPainter painter(&preview);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        const int unit = qMax(2, qMin(104 / stamp.width, 76 / stamp.height));
+        const int ox = (104 - stamp.width * unit) / 2;
+        const int oy = (76 - stamp.height * unit) / 2;
+        const int cols = m_atlas.isNull() ? 0 : m_atlas.width() / stamp.tileSize;
+        const int rows = m_atlas.isNull() ? 0 : m_atlas.height() / stamp.tileSize;
+        for (int y = 0; y < stamp.height; ++y)
+            for (int x = 0; x < stamp.width; ++x) {
+                const int i = y * stamp.width + x;
+                const int graphic = mapGraphic(stamp.graphics, i);
+                const QRect dest(ox + x * unit, oy + y * unit, unit, unit);
+                if (graphic && cols && graphic <= cols * rows) {
+                    const int n = graphic - 1;
+                    const QImage tileImage = m_atlas.copy((n % cols) * stamp.tileSize,
+                                      (n / cols) * stamp.tileSize, stamp.tileSize, stamp.tileSize);
+                    const quint8 flip = quint8(stamp.flips.at(i));
+                    painter.drawImage(dest, flip ? tileImage.mirrored(bool(flip & 1), bool(flip & 2)) : tileImage);
+                } else if (graphic) painter.fillRect(dest, QColor(90, 97, 111));
+                if (quint8(stamp.collisions.at(i)))
+                    painter.fillRect(dest, QColor(65, 170, 224, 70));
+                painter.setPen(QColor(140, 160, 180, 80));
+                painter.drawRect(dest.adjusted(0, 0, -1, -1));
+            }
+        auto *item = new QListWidgetItem(QIcon(preview), stamp.name);
+        item->setToolTip(tr("%1 — %2 × %3 tiles (%4 px per tile)")
+            .arg(stamp.name).arg(stamp.width).arg(stamp.height).arg(stamp.tileSize));
+        m_stampList->addItem(item);
+    }
+    m_stampList->setCurrentRow(wantedRow >= 0 && wantedRow < m_map.stamps.size() ? wantedRow : -1);
+    if (m_canvas && m_canvas->stampIndex >= 0 &&
+        (m_canvas->stampIndex >= m_map.stamps.size() ||
+         m_map.stamps.at(m_canvas->stampIndex).tileSize != m_map.tileSize)) {
+        m_canvas->stampIndex = -1;
+        if (m_stampStatus) m_stampStatus->setText(tr("Brush: atlas tile"));
+    }
+    updateStampEditor();
+}
+
+void SidboxTilemapEditor::updateStampEditor()
+{
+    if (!m_stampCanvas || !m_stampList) return;
+    const int row = m_stampList->currentRow();
+    const bool valid = row >= 0 && row < m_map.stamps.size();
+    m_stampName->setEnabled(valid);
+    m_stampWidth->setEnabled(valid);
+    m_stampHeight->setEnabled(valid);
+    {
+        const QSignalBlocker nameBlock(m_stampName);
+        const QSignalBlocker widthBlock(m_stampWidth);
+        const QSignalBlocker heightBlock(m_stampHeight);
+        m_stampName->setText(valid ? m_map.stamps.at(row).name : QString());
+        m_stampWidth->setValue(valid ? m_map.stamps.at(row).width : 2);
+        m_stampHeight->setValue(valid ? m_map.stamps.at(row).height : 2);
+    }
+    m_stampCanvas->selected = row;
+    m_stampCanvas->refresh();
+}
+
+void SidboxTilemapEditor::selectStamp(int row)
+{
+    if (!m_stampList) return;
+    if (row < 0 || row >= m_map.stamps.size()) {
+        if (m_canvas) m_canvas->stampIndex = -1;
+    } else {
+        const bool compatible = m_map.stamps.at(row).tileSize == m_map.tileSize;
+        if (m_canvas) m_canvas->stampIndex = compatible ? row : -1;
+        // Never silently reinterpret a stamp built with another atlas grid.
+        // A status message below explains why it cannot paint this map.
+    }
+    if (m_stampStatus) {
+        m_stampStatus->setText(m_canvas && m_canvas->stampIndex >= 0 &&
+            m_canvas->stampIndex < m_map.stamps.size()
+            ? tr("Brush: stamp '%1'").arg(m_map.stamps.at(m_canvas->stampIndex).name)
+            : (row >= 0 && row < m_map.stamps.size() &&
+               m_map.stamps.at(row).tileSize != m_map.tileSize
+                ? tr("Stamp uses %1px cells; map uses %2px. Cannot paint.")
+                    .arg(m_map.stamps.at(row).tileSize).arg(m_map.tileSize)
+                : tr("Brush: atlas tile")));
+    }
+    updateStampEditor();
     if (m_canvas) m_canvas->viewport()->update();
 }
 
@@ -858,6 +1729,8 @@ void SidboxTilemapEditor::updateAtlasPicker()
         m_atlasPicker->setPixmap(display);
         m_atlasPicker->adjustSize();
     }
+    if (m_canvas) m_canvas->viewport()->update();
+    if (m_stampCanvas) m_stampCanvas->update();
     if (m_graphicMode) {
         m_graphicMode->setItemText(2,
             tr("Selected atlas tile (ID %1)").arg(m_canvas->graphicBrush));
@@ -986,6 +1859,10 @@ bool SidboxTilemapEditor::eventFilter(QObject *target, QEvent *event)
                 const int id = ty*cols+tx+1;
                 if (id <= 65535) {
                     m_canvas->graphicBrush = id;
+                    m_canvas->stampIndex = -1;
+                    m_canvas->viewport()->update();
+                    if (m_stampStatus) m_stampStatus->setText(tr("Brush: atlas tile %1").arg(id));
+                    if (m_stampCanvas) m_stampCanvas->graphicBrush = id;
                     m_graphicMode->setCurrentIndex(2);
                     updateAtlasPicker();
                     updateAnimationControls();
@@ -1003,7 +1880,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     if (map.width < 30 || map.width > 256 || map.height < 20 || map.height > 256 ||
         (map.tileSize != 8 && map.tileSize != 16 && map.tileSize != 32) ||
         map.graphics.size() != map.width * map.height * 2 ||
-        map.collisions.size() != map.width * map.height) {
+        map.collisions.size() != map.width * map.height ||
+        map.flips.size() != map.width * map.height) {
         if (error) *error = QStringLiteral("Invalid tilemap dimensions or data.");
         return false;
     }
@@ -1039,6 +1917,12 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         // SIDBOX has finite SDRAM. The atlas is loaded into RAM once at startup.
         if (qint64(tileCount) * map.tileSize * map.tileSize > 4 * 1024 * 1024) {
             if (error) *error = QStringLiteral("Atlas exceeds the current 4 MiB SDRAM budget. Use a smaller sheet or multiple levels.");
+            return false;
+        }
+    }
+    for (char flags : map.flips) {
+        if (quint8(flags) & ~quint8(3)) {
+            if (error) *error = QStringLiteral("Invalid cell flip flags (only X/Y supported).");
             return false;
         }
     }
@@ -1079,6 +1963,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     if (!externalMap) header.replace("extern game_tilemap_t game_level1;",
         "extern const uint16_t game_level1_graphics[];\n"
         "extern const uint8_t game_level1_collisions[];\n"
+        "extern const uint8_t game_level1_flips[];\n"
         "extern const game_tile_animation_t game_level1_animations[];\n"
         "extern game_tilemap_t game_level1;");
     QByteArray source = "#include \"level1.h\"\n"
@@ -1111,6 +1996,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     }
     source += "};\n\n";
     writeBytes(map.collisions, "game_level1_collisions");
+    writeBytes(map.flips, "game_level1_flips");
     }
     if (!externalMap) {
 
@@ -1132,10 +2018,11 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
         + (externalMap || map.animations.isEmpty() ? QByteArray("    0, 0") :
             QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
-        + ",\n    0, 0, 0 /* atlas_width, atlas_height and borrowed flag. */"
+        + ",\n    0, 0, 0, /* atlas width, height, borrowed flag */\n"
+        + "    0, " + (externalMap ? QByteArray("0 /* SD flips loaded later */") : QByteArray("game_level1_flips"))
         + "\n};\n\n";
     if (externalMap) {
-        source += "/* SD map: file includes graphics, collision and animations. */\n"
+        source += "/* SD map v2: file includes graphics, collisions, per-cell flips and animations. */\n"
                   "uint8_t game_level1_load_map(const char *filename)\n" 
                   "{ return game_tilemap_load_map(&game_level1, filename); }\n"
                   "void game_level1_unload_map(void)\n"
@@ -1185,7 +2072,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     if (externalMap) {
         // Fixed little-endian 20-byte header and FNV-1a over the payload.
         // No absolute editor paths, object IDs or pointer bytes in the file.
-        QByteArray payload = map.graphics + map.collisions;
+        QByteArray payload = map.graphics + map.collisions + map.flips;
         for (const SidboxTileAnimation &a : map.animations) {
             payload.append(char(a.graphicId & 255));
             payload.append(char((a.graphicId >> 8) & 255));
@@ -1197,7 +2084,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         quint32 hash = 2166136261u;
         for (char b : payload) { hash ^= quint8(b); hash *= 16777619u; }
         QByteArray bytes("SBMP", 4);
-        bytes.append(char(1)); // version
+        bytes.append(char(2)); // version 2 adds one flip byte per map cell
         bytes.append(char(map.tileSize));
         const auto appendU16 = [&bytes](unsigned v) {
             bytes.append(char(v & 255)); bytes.append(char((v >> 8) & 255));

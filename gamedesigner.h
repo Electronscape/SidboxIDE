@@ -165,6 +165,7 @@ private:
     bool installMissingWorldHelpers(QString *error, bool prompt = true);
     bool exportWorldItems(QString *error);
     bool exportExampleMain(QString *error);
+    void offerCreateStarterMain();
     QString splineSymbol(int index) const;
     QString spriteSymbol(const Resource &r) const;
     void updateSelectedPixmap();

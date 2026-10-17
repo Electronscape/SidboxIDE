@@ -44,6 +44,9 @@ void game_death_mark_dead(void);
 uint8_t game_death_is_dead(void);
 void game_death_rearm(void);
 
+#define GAME_TILE_FLIP_X       1u
+#define GAME_TILE_FLIP_Y       2u
+
 #define GAME_TILE_ANIM_LOOP    1u
 #define GAME_TILE_ANIM_BOUNCE  2u
 
@@ -72,6 +75,7 @@ typedef struct {
     uint16_t atlas_height;  /* PPB height in pixels; set by atlas loader. */
     uint8_t atlas_borrowed; /* Nonzero: atlas owned by gameassets; never free here. */
     void *map_storage; /* SD .map allocation. NULL for embedded C maps. */
+    const uint8_t *flips; /* Per-cell X/Y graphics flip flags, NULL for legacy maps. */
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever

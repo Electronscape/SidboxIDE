@@ -368,9 +368,12 @@ public:
                 // here; only the V1 runtime advances them with VBlank.
                 if (id <= 0 || id > atlasTiles) continue;
                 const int n = id - 1;
+                const QImage tileImage = m_atlas.copy((n % cols) * tileSize,
+                    (n / cols) * tileSize, tileSize, tileSize);
+                const int cell = y * m_map->width + x;
+                const quint8 flags = cell < m_map->flips.size() ? quint8(m_map->flips.at(cell)) : 0;
                 painter->drawImage(QRectF(x * tileSize, y * tileSize, tileSize, tileSize),
-                    m_atlas, QRectF((n % cols) * tileSize, (n / cols) * tileSize,
-                                    tileSize, tileSize));
+                    flags ? tileImage.mirrored(bool(flags & 1), bool(flags & 2)) : tileImage);
             }
         }
     }
@@ -990,30 +993,40 @@ void SidboxGameDesigner::openTilemapEditor()
     const QString directory = QFileInfo(m_filePath).absolutePath();
     SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
     editor.setTheme(m_theme);
+    // "Save" commits this editor's working copy immediately while keeping
+    // the tile editor open. "Apply" still closes and follows the old export
+    // prompt; "Cancel" discards changes since the last successful Save.
+    const auto applyChanges = [this, &editor](const SidboxTilemap &map, bool saveEvenWithoutExport) -> bool {
+        m_tilemap = map;
+        m_tilemapEnabled = true;
+        rebuildTilemapOverlay();
+        refreshFrame();
+        // Tilemap dimensions affect neither the designer world nor the physical viewport.
+        setDirty();
+        const auto answer = QMessageBox::question(
+            saveEvenWithoutExport ? static_cast<QWidget *>(&editor) : this,
+            tr("Apply Tilemap"),
+            tr("Apply these tilemap changes and export the C level files now?\n\n"
+               "Yes: Save the game design, export gamelevels/level1.c/.h, "
+               "and add any missing tilemap helper files.\n"
+               "No: With Save, save the .sbgm (and refresh existing exports); "
+               "with Apply to Design, keep the changes in memory."),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (answer == QMessageBox::Yes) {
+            const bool needsExport = tilemapBuildFilesMissing();
+            if (!saveDesign()) return false;
+            if (needsExport && !exportTilemap(false, true)) return false;
+        } else if (saveEvenWithoutExport) {
+            // Unlike Apply's original "No", Save must persist the .sbgm.
+            if (!saveDesign()) return false;
+        }
+        return true;
+    };
+    editor.setSaveCallback([&applyChanges](const SidboxTilemap &map) {
+        return applyChanges(map, true);
+    });
     if (editor.exec() != QDialog::Accepted) return;
-    m_tilemap = editor.result();
-    m_tilemapEnabled = true;
-    rebuildTilemapOverlay();
-    refreshFrame();
-    // Tilemap dimensions belong to the freely pannable tilemap editor.
-    // Do NOT change the Game Designer world or physical viewport here.
-    // Example: a 100 x 20 map with 16px tiles is 1600 x 320 WORLD pixels,
-    // independently of the 960 x 320 physical foreground buffer.
-    setDirty();
-
-    const auto answer = QMessageBox::question(this, tr("Apply Tilemap"),
-        tr("Apply these tilemap changes and export the C level files now?\n\n"
-           "Yes: Save the game design, export gamelevels/level1.c/.h, "
-           "and add any missing tilemap helper files.\n"
-           "No: Apply to the design only. You can export later."),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-    if (answer == QMessageBox::Yes) {
-        // saveDesign already refreshes C exports that exist. For the first
-        // export (or missing helper) we must explicitly create the files.
-        const bool needsExport = tilemapBuildFilesMissing();
-        if (!saveDesign()) return;
-        if (needsExport && !exportTilemap(false, true)) return;
-    }
+    applyChanges(editor.result(), false);
 }
 
 bool SidboxGameDesigner::tilemapBuildFilesMissing() const
@@ -4494,420 +4507,247 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     return true;
 }
 
-// An intentionally non-compiling, beginner-friendly example for the CURRENT
-// design. Recreated by Generate V1 Game Code; the user's main.c is untouched.
+// Stage 3.29: generate a real V1 starter program from the current design.
+// maingame.c.txt contains valid C (including explanatory comments). It can
+// safely be copied to main.c without manually assembling different snippets.
+// Never overwrite the programmer's real main.c.
 bool SidboxGameDesigner::exportExampleMain(QString *error)
 {
-    int np = 0, nw = 0, nt = 0, moving = 0, animated = 0;
-    const Resource *playerResource = nullptr;
+    const Resource *player = nullptr;
+    int pickups = 0, worldObjects = 0, spriteCount = 0;
+    bool hasMusic = false, hasAudio = false, hasBackgroundSprites = false;
+    bool hasHazards = m_tilemapEnabled && m_tilemap.collisions.contains(char(5));
+    const bool dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
     for (const Resource &r : m_resources) {
-        if (r.kind != QStringLiteral("sprite")) continue;
-        if (r.objectType == QStringLiteral("collectable")) ++np;
-        else if (r.objectType != QStringLiteral("decoration")) {
-            ++nw;
-            if (r.objectType == QStringLiteral("trigger")) ++nt;
-        }
-        if (r.objectType != QStringLiteral("decoration")) {
-            moving += !r.objectSplineId.isEmpty();
-            animated += r.objectAnimated;
-        } else if (r.name.compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0)
-            playerResource = &r;
+        if (r.kind == QStringLiteral("music") && !r.path.isEmpty()) hasMusic = true;
+        if (r.kind == QStringLiteral("sound") && !r.path.isEmpty()) hasAudio = true;
+        if ((r.kind == QStringLiteral("background") && r.backgroundMode == QStringLiteral("sprite"))
+            || (r.kind == QStringLiteral("sprite") && r.plane == QStringLiteral("background")))
+            hasBackgroundSprites = true;
+        if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
+        if (r.objectType == QStringLiteral("deathzone")) hasHazards = true;
+        ++spriteCount;
+        if (r.objectType == QStringLiteral("collectable")) ++pickups;
+        else if (r.objectType != QStringLiteral("decoration")) ++worldObjects;
+        else if (r.name.trimmed().compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0)
+            player = &r;
     }
-    const bool hasObjects = np || nw;
     const bool hasMap = m_tilemapEnabled;
-    const bool hasPlayer = playerResource && !playerResource->path.isEmpty();
-    QString mock;
-    QTextStream out(&mock);
-
+    const bool hasPhysics = hasMap && player;
+    const bool hasObjects = pickups || worldObjects;
+    const bool hasMapOnly = hasMap && !player;
+    const QString playerName = hasPhysics ? spriteSymbol(*player) : QString();
+    QString program;
+    QTextStream out(&program);
     out << R"CG(/*
-CODERGIRL - MY GAME, EXPLAINED (V1)
-=================================
-
-WELCOME!
-This is maingame.c.txt, the learning example for YOUR Game Designer project.
-It is ordinary text, so it is NEVER compiled or linked into the game.
-Generate V1 Game Code again to refresh it after changing your design.
-CoderGirl NEVER modifies your real main.c when creating this example.
-
-HOW TO USE THIS GUIDE
-1. Read the comments beside each line; they explain WHAT and WHY.
-2. Find the equivalent part of your existing main.c.
-3. Copy or ADAPT only the parts you need; keep your working hardware setup.
-4. Open the .txt guides inside gamehelpers/ for helper-specific examples.
-5. Generated gameworlditems.c/.h and gameassets.c/.h are overwritten on export.
-   Keep your own game rules, scoring and custom logic in your own files.
-
-IMPORTANT IDEAS
-WORLD coordinates: positions on the whole level, even outside the screen.
-SCREEN coordinates: where something appears within the 480 x 320 viewport.
-  screen_x = world_x - camera_x;
-  screen_y = world_y - camera_y;
-Objects and tilemap/player physics work in WORLD coordinates. Only the
-DRAWING routines apply the camera offset. Do not subtract it twice!
-If a spline is attached to an object, gameworlditems updates its WORLD
-movement and draws it using the camera. Do NOT call offset_spline() on it.
-
-READ THE GAME LOOP IN THIS ORDER
-  wait for frame -> move objects -> carry rider BEFORE player physics
-  -> run player physics -> land/bounce/conveyor AFTER player physics
-  -> check pickups -> check switches -> update camera -> draw tiles -> draw objects
-  -> draw player -> display frame.
-
-THIS PROJECT CURRENTLY CONTAINS
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.29)
+ * ==============================================================
+ * This is REAL C source code, not a list of pseudocode snippets.
+ * It is generated from the resources in the CURRENT .sbgm design.
+ *
+ * START HERE:
+ *  1. In Game Designer select Update Game Project to export the helpers.
+ *  2. Copy THIS WHOLE FILE into main.c, ONLY if you want to replace your
+ *     existing starter yourself. The IDE NEVER overwrites existing main.c.
+ *  3. Put exported PPB, music and SD .map resources on the SIDBOX SD card.
+ *  4. Add your game rules inside the clearly marked sections.
+ *
+ * After changing your Game Designer resources, regenerate this example.
+ * Your main.c will NOT be changed by regeneration.
+ *
+ * WORLD coordinates are map positions. SCREEN coordinates subtract camera.
+ * Game objects are managed by gameworlditems; do not draw them twice.
+ *
+ * CURRENT DESIGN:
 )CG";
-    out << "Tilemap: " << (hasMap ? "attached" : "not attached") << "\n"
-        << "Game objects: " << np << " collectable(s), " << nw
-        << " lift/conveyor/spring/trigger/door object(s) (" << nt << " triggers)\n"
-        << "Spline attachments: " << moving << "; sprite-frame animations: "
-        << animated << "\n"
-        << "Recognised player sprite: " << (hasPlayer ? spriteSymbol(*playerResource) : QStringLiteral("none"))
-        << "\n\n";
-
-    if (hasObjects) {
-        out << "GAME DESIGNER OBJECTS (each entry is a separate sprite instance)\n";
-        for (const Resource &r : m_resources) {
-            if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration"))
-                continue;
-            // This is printed inside a C comment, so protect comment delimiters
-            // and line breaks in programmer-supplied resource/path names.
-            QString name = r.name;
-            name.replace(QStringLiteral("*/"), QStringLiteral("* /"));
-            name.replace(QLatin1Char('\n'), QLatin1Char(' '));
-            name.replace(QLatin1Char('\r'), QLatin1Char(' '));
-            out << "  " << spriteSymbol(r) << " (" << name << "): " << r.objectType
-                << " at WORLD (" << r.x << ", " << r.y << ")"
-                << "; hitbox " << r.hitWidth << " x " << r.hitHeight << "\n";
-            if (r.objectType == QStringLiteral("collectable")) {
-                const QStringList kinds = {QStringLiteral("?"), QStringLiteral("coin"),
-                    QStringLiteral("health"), QStringLiteral("key"), QStringLiteral("gem")};
-                out << "    Pickup: " << kinds.at(qBound(1, r.pickupKind, 4))
-                    << "; value " << r.objectValue
-                    << ". gameworlditems_check() triggers your callback.\n";
-            } else if (r.objectType == QStringLiteral("spring")) {
-                out << "    Spring upward launch: " << r.springStrength << " px/frame.\n"
-                    << "    Spring sideways launch: " << r.springLaunchX
-                    << " px/frame (negative LEFT; positive RIGHT; 0 straight up).\n"
-                    << "    Sideways behaviour: " << (r.springSlide ? "SLIDY INERTIA" : "NORMAL KICKBACK")
-                    << (r.springSlide ? ". Drag gradually slows movement; friction remains on landing.\n"
-                                      : ". Constant sideways velocity until landing.\n")
-                    << "    Solid walls stop sideways momentum in either mode.\n"
-                    << "    Spring activation: " << (r.springTouch ? "TOUCH (any side)" : "LAND ON TOP")
-                    << ". Touch mode launches once per contact and rearms after leaving.\n"
-                    << "    Jump + spring boost: " << (r.springJumpBoost ? "ON" : "OFF")
-                    << ". OFF = consistent spring-only velocity; ON = extra height when Jump\n"
-                       "    is newly pressed at contact (requires jump_held/jump_speed binding).\n";
-            } else if (r.objectType == QStringLiteral("trigger")) {
-                out << "    Switch: " << (r.triggerPress ? "FIRE2 while touching" : "touch to activate")
-                    << (r.triggerOneShot ? "; one-shot.\n" : "; repeatable.\n");
-            } else if (r.objectType == QStringLiteral("door")) {
-                out << "    Solid door: blocks contact while active; disappears when disabled.\n";
-            } else if (r.objectType == QStringLiteral("deathzone")) {
-                out << "    Hazard Zone: touch to notify GAME_DEATH_ZONE; movement keeps working.\n";
-            } else if (r.objectType == QStringLiteral("conveyor")) {
-                out << "    Conveyor speed: " << r.conveyorSpeed << " pixels/frame.\n";
-            } else if (r.objectType == QStringLiteral("lift")) {
-                out << "    Lift: carries a player standing on its top surface.\n";
-            }
-            if ((r.objectType == QStringLiteral("trigger") ||
-                 (r.objectType == QStringLiteral("collectable") && r.pickupKind == 3)) &&
-                 !r.targetObjectId.isEmpty() && r.targetAction != QStringLiteral("none")) {
-                for (const Resource &target : m_resources) {
-                    if (target.id == r.targetObjectId) {
-                        out << "    Linked action: " << r.targetAction << " -> " << target.name << "\n";
-                        break;
-                    }
-                }
-            }
-            if (!r.objectSplineId.isEmpty()) {
-                QString splineName = QStringLiteral("unresolved (check the Game Designer path)");
-                for (const SplinePath &path : m_splinePaths) {
-                    if (path.id == r.objectSplineId) {
-                        splineName = path.name;
-                        splineName.replace(QStringLiteral("*/"), QStringLiteral("* /"));
-                        splineName.replace(QLatin1Char('\n'), QLatin1Char(' '));
-                        splineName.replace(QLatin1Char('\r'), QLatin1Char(' '));
-                        break;
-                    }
-                }
-                out << "    Follows spline '" << splineName
-                    << "'; the generated wrapper owns its movement state.\n";
-            } else {
-                out << "    No spline: keeps its configured WORLD position.\n";
-            }
-            if (r.objectAnimated) {
-                out << "    Sprite animation: first frame " << r.animFirst
-                    << ", " << r.animCount << " frame(s), one step every "
-                    << r.animTicks << " tick(s), " << r.animMode << ".\n";
-            } else {
-                out << "    Sprite animation OFF: displays the selected frame.\n";
-            }
-            out << "    You configure these settings by right-clicking the sprite\n"
-                   "    in Game Resources. No manual per-object start code is needed.\n";
-        }
-        out << "\n";
-    }
-    out << R"CG(THE EXAMPLE BELOW
-This follows the V1 helper interfaces, but your real program may have
-additional input, music, error handling, custom buffers or hardware setup.
-It illustrates integration; it is NOT a replacement for your main.c.
-*/
-
-/* Headers tell C which types and functions the program can call.
-   Add only the ones used by your design, then keep your own includes. */
-#include <stdint.h>                  /* uint8_t, uint32_t, int32_t, etc. */
-#include "main.h"                   /* Your existing V1 entry-point definitions. */
-#include "apis.h"                   /* SIDBOX graphics, input and hardware API. */
-#include "gameassets/gameassets.h" /* Generated sprites, palettes and assets. */
+    out << " * Tilemap: " << (hasMap ? (m_tilemapExternal ? "SD .map" : "embedded C") : "none") << "\n"
+        << " * Player sprite (must be named 'player'): "
+        << (player ? spriteSymbol(*player) : QStringLiteral("not found")) << "\n"
+        << " * Sprites: " << spriteCount << ", collectables: " << pickups
+        << ", other game objects: " << worldObjects << "\n"
+        << " * Music: " << (hasMusic ? "present" : "none")
+        << ", sound: " << (hasAudio ? "present" : "none") << "\n";
+    if (!hasMap) out << " * No tilemap: this starter displays placed sprites without tile physics.\n"
+                       " * Add a tilemap and regenerate to enable built-in player movement.\n";
+    if (hasMapOnly) out << " * No ordinary sprite named 'player' found: the map renders, but\n"
+                          " * player movement is not invented. Name the player sprite 'player'\n"
+                          " * (case-insensitive), attach its image, and regenerate.\n";
+    if (!hasPhysics && hasObjects)
+        out << " * Game objects draw/animate, but need a physics player to trigger\n"
+               " * pickups, switches, lifts and springs automatically.\n";
+    out << R"CG( */
+#include <stdint.h>
+#include <stddef.h>
+#include "apis.h"
+#include "main.h"
+#include "gameassets/gameassets.h"
 )CG";
-    if (hasMap) {
-        out << R"CG(#include "gamehelpers/gametilemap.h" /* Tile collision and drawing. */
-#include "gamelevels/level1.h"       /* Your EXPORTED level/map data. */
-)CG";
-    }
-    if (hasObjects) {
-        out << R"CG(#include "gamehelpers/gameworlditems.h" /* All configured pickups/lifts/springs/triggers/doors. */
-)CG";
-    }
-    if (!m_splinePaths.isEmpty()) {
-        out << R"CG(
-/* EXTRA, MANUALLY CONTROLLED SPLINES ONLY
-Objects attached to splines in Game Designer already own their own
-spline state. Include these only if YOU also animate other sprites manually:
-#include "gamehelpers/gamespline.h"
-#include "gamehelpers/splinepaths.h"
-*/
-)CG";
-    }
+    if (hasMap)
+        out << "#include \"gamehelpers/gametilemap.h\"\n"
+               "#include \"gamelevels/level1.h\"\n";
+    if (hasObjects)
+        out << "#include \"gamehelpers/gameworlditems.h\"\n";
     out << R"CG(
-/* Visible screen size, NOT the full size of the scrolling level.
-   These dimensions match our SIDBOX V1 480 x 320 foreground example. */
 #define VIEW_W 480
 #define VIEW_H 320
 
+/* Two independent foreground buffers, swapped after each frame. */
+static gfx_bitmap_t *front[2];
+static uint8_t draw_index = 0;
 )CG";
-
-    if (hasMap && hasPlayer) {
-        out << R"CG(/* ============================================================
-   A. VARIABLES WHICH REMEMBER THE GAME'S STATE
-   ============================================================ */
-/* Real physics state: position, speed, ground status, collisions.
-   x100/y100/vy100 use units of 1/100 pixel for smooth movement.
-   Divide x100/y100 by 100 when a function expects WHOLE pixels. */
+    if (hasPhysics) {
+        out << R"CG(
+/* This is the ONE physical player. Position and velocity are in 1/100 px. */
 static game_tile_player_t player_physics = {0};
 )CG";
-        if (nw) {
+        if (worldObjects) {
             out << R"CG(
-/* An ADAPTER, not a second player. Its pointers refer to the LIVE
-   fields inside player_physics. World objects can therefore carry,
-   launch or move the real player without copying stale positions. */
+/* Adapter POINTS INTO player_physics, so spring/lift movement is live. */
 static game_world_player_t world_player = {0};
 )CG";
         }
+    }
+    if (hasPhysics && pickups) {
         out << R"CG(
-/* Two different foreground framebuffers for smooth drawing.
-   We draw into one while SIDBOX displays the other. */
-static gfx_bitmap_t *front[2] = {0};
-static uint8_t draw_index = 0; /* Switch 0 -> 1 -> 0 each frame. */
-)CG";
-        if (np) {
-            out << R"CG(
-/* An example of YOUR game-specific response to a pickup.
-   The collectable helper detects overlap; it cannot know your rules.
-   'user' is an optional pointer supplied when we check for pickups.
-   Here it points to 'score', so we cast it back and add the value.
-   The helper deactivates collected items; the callback is called once. */
 static uint32_t score = 0;
-
 static void on_pickup(game_collectable_t *item, void *user)
 {
     uint32_t *points = (uint32_t *)user;
-    if (!points || !item) return;
-    *points += item->value;
-    /* To give health, keys or sound effects, inspect item->kind here.
-       These rules belong to YOUR game, not the generated helper. */
+    if (!item || !points) return;
+    *points += item->value;  /* Replace with your own key/health/score rules. */
 }
 )CG";
-        }
+    }
+    if (hasPhysics && hasHazards) {
         out << R"CG(
-/* Hazard contacts are NOT fatal. Callback reason reports ENTERED,
-   INSIDE (every following physics update), or EXITED for tile hazards
-   and configured Hazard Zones. The game decides what damage means. */
-static void on_player_death(uint8_t cause, int32_t x, int32_t y, void *user)
+/* Hazard contacts NEVER kill automatically. YOUR game decides what to do. */
+static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
 {
     (void)x; (void)y; (void)user;
-    if (cause == GAME_HAZARD_TILE_ENTERED || cause == GAME_HAZARD_ZONE_ENTERED) {
-        /* First contact: optional one-hit damage or sound. */
-    } else if (cause == GAME_HAZARD_TILE_INSIDE || cause == GAME_HAZARD_ZONE_INSIDE) {
-        /* Still in a hazard: use a timer for gradual health loss. */
-    } else if (cause == GAME_HAZARD_TILE_EXITED || cause == GAME_HAZARD_ZONE_EXITED) {
-        /* Just left: end damage/sound effects and clear timers. */
-    } else if (cause == GAME_DEATH_SCRIPT) {
-        /* Explicit programmer-scripted death. */
+    if (reason == GAME_HAZARD_TILE_ENTERED || reason == GAME_HAZARD_ZONE_ENTERED) {
+        /* Entered: damage once, or start an effect. */
+    } else if (reason == GAME_HAZARD_TILE_INSIDE || reason == GAME_HAZARD_ZONE_INSIDE) {
+        /* Inside: fired each physics update; use a timer for gradual damage. */
+    } else if (reason == GAME_HAZARD_TILE_EXITED || reason == GAME_HAZARD_ZONE_EXITED) {
+        /* Exited: stop the effect. */
+    } else if (reason == GAME_DEATH_SCRIPT) {
+        /* Deliberate scripted death. */
     }
-    /* Example: subtract health for contact here. For a fatal hit call
-       game_death_mark_dead() to stop physics WITHOUT calling this callback
-       a second time. game_tile_player_reset() resumes after respawn. */
+    /* game_death_mark_dead() freezes physics. game_tile_player_reset()
+       resumes at your chosen spawn point; neither is automatic. */
 }
-
-/* ============================================================
-   B. STARTUP — RUN THIS ONCE, BEFORE THE GAME LOOP
-   ============================================================ */
+)CG";
+    }
+    out << R"CG(
 int main(int argc, char *argv[])
 {
-    (void)argc; (void)argv; /* This example does not use arguments. */
+    int result = 0;
+    (void)argc;
+    (void)argv;
 
-    /* Select the V1 runtime and take control of the display. */
+    /* 1. Set up SIDBOX hardware and memory BEFORE loading resources. */
     configure_runmode(GAMEMODE_PROFILE_0);
     suspend_desktop();
-
-    /* Set up memory BEFORE loading any sprite bitmaps/palettes. */
     initMalloc();
-
-    /* Set display ordering and nominal frame rate (50 FPS here).
-       Preserve your own working gfx_mode() parameters if different! */
-    gfx_setlcd(DEFAULT_RENDER_ORDER, FPS_50);
-    gfx_mode(VIEW_W, VIEW_H, 640, VIEW_H,
-             DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);
-
-    /* Creates/loads the gfxbob_t sprites and assets used by the scene.
-       gameworlditems_init() needs those sprites to exist FIRST. */
-    if (!gameassets_init()) return 1;
 )CG";
-        if (hasMap && m_tilemapExternal) {
-            out << R"CG(
-    /* SD .map contains tile graphics, collisions and animations, not BOB pixels.
-       A missing or corrupt file fails safely; do not continue with NULL tiles.
-       This can be called with another .map of the SAME tile size and atlas. */
+    if (hasMusic || hasAudio)
+        out << "    set_audio_dma(512);\n    set_music_dma = 1;\n";
+    out << "    gfx_setlcd(DEFAULT_RENDER_ORDER, FPS_50);\n"
+           "    gfx_mode(VIEW_W, VIEW_H, VIEW_W, VIEW_H, "
+        << (dualPlane ? "DISPFLAG_DUALLAYER" : "DISPFLAG_SINGLELAYER")
+        << " | DISPFLAG_SCROLLABLE);\n\n";
+    out << R"CG(    /* 2. Load the generated sprites, backgrounds, palettes and audio. */
+    if (!gameassets_init()) { result = 1; goto cleanup; }
+)CG";
+    if (hasMap && m_tilemapExternal) {
+        out << R"CG(    /* External tile/collision/animation map. Copy this .map to the SD card.
+       Objects are still compiled from the .sbgm game design. */
     if (!game_level1_load_map("gamelevels/level1.map")) {
-        dbug("ERROR: level1.map SD load failed\r\n");
-        return 6;
+        result = 6;
+        goto cleanup;
     }
 )CG";
-        }
-        if (hasMap) {
-            out << R"CG(
-    /* Load the tile atlas ONCE, after gameassets_init().
-       If a sprite already uses the SAME PPB resource, share its pixel RAM
-       instead of allocating a second atlas. Different resources stay separate.
-       A missing sprite match falls back to SD loading. BOTH paths validate
-       the pixel checksum; outdated SD artwork is rejected. The tilemap
-       BOB draws the original PPB format without any pixel repacking.
-       On exit: unload this atlas BEFORE gameassets_shutdown(). */
-    if (!game_level1_load_atlas()) {
-        dbug("ERROR: tile atlas SD load failed\r\n");
-        return 5;
     }
+    if (hasMap) {
+        out << R"CG(    /* Atlas PPB comes from the SD card or a shared gameassets sprite. */
+    if (!game_level1_load_atlas()) { result = 5; goto cleanup; }
+    game_tilemap_animation_reset();
 )CG";
-        }
-        if (hasObjects) {
-            out << R"CG(
-    /* Binds every configured object to its sprite, optional spline,
-       optional frame animation and Game Designer world position.
-       You don't need individual start_spline() calls for these objects. */
-    if (!gameworlditems_init()) return 2;
+    }
+    if (hasObjects) {
+        out << R"CG(    /* Configured objects, animations, switches, doors and sounds. */
+    if (!gameworlditems_init()) { result = 2; goto cleanup; }
 )CG";
-        }
-        out << R"CG(
-    /* Obtain two independent REAL foreground buffers.
-       Never draw into an invalid buffer, and don't use one twice. */
+    }
+    out << R"CG(
     front[0] = gfx_getfbuffer1();
     front[1] = gfx_getfbuffer2();
-    if (!front[0] || !front[1] || front[0] == front[1] ||
-        !front[0]->bitmap || !front[1]->bitmap ||
-        front[0]->bitmap == front[1]->bitmap) return 3;
-
-    /* Background palette/image and initial hardware scroll offset.
-       Foreground scrolling is done in software via camera_x/y below. */
+    if (!front[0] || !front[1] || front[0] == front[1]
+        || !front[0]->bitmap || !front[1]->bitmap
+        || front[0]->bitmap == front[1]->bitmap) {
+        result = 3;
+        goto cleanup;
+    }
+    /* Show a direct background PPB (if configured in Game Designer). */
     gameassets_show_background();
-    gfx_scrollb(0, 0); gfx_scrollf(0, 0);
-
-    /* Reset animated tile frames, then bind the player's actual sprite
-       to the tile collision helper's movement state. */
-    game_tilemap_animation_reset();
-    if (!game_tile_player_start(&player_physics, &game_level1, &)CG";
-        out << spriteSymbol(*playerResource);
-        out << R"CG()) return 4;
 )CG";
-        out << R"CG(
-    /* Hazard tiles / Hazard Zones report ENTERED, INSIDE and EXITED.
-       They do NOT stop physics unless your handler marks the player dead. */
-    game_death_set_callback(on_player_death, NULL);
+    if (dualPlane && hasBackgroundSprites) {
+        out << R"CG(    /* Background BOB resources are drawn once to the background plane.
+       Direct backgrounds are instead displayed by show_background above. */
+    gfx_bitmap_t *back = gfx_getbbuffer1();
+    if (!back || !back->bitmap) { result = 7; goto cleanup; }
+    gfx_usebuffer(back);
+    gameassets_draw_background();
+    gfx_showbbuffer(back);
 )CG";
-        if (nw) {
+    }
+    out << "    gfx_scrollb(0, 0);\n    gfx_scrollf(0, 0);\n";
+    if (hasPhysics) {
+        out << "\n    /* The sprite named 'player' becomes the physics-controlled character. */\n"
+               "    if (!game_tile_player_start(&player_physics, &game_level1, &"
+            << playerName << ")) { result = 4; goto cleanup; }\n";
+        if (hasHazards)
+            out << "    game_death_set_callback(on_player_death, NULL);\n";
+        if (worldObjects) {
             out << R"CG(
-    /* IMPORTANT: these are ADDRESSES of the existing fields, not values.
-       Any lift/conveyor/spring will act on the live tilemap player.
-       The collision width/height refer to the player's hitbox. */
+    /* Do not copy world coordinates: bind addresses of live physics fields. */
     world_player.x100 = &player_physics.x100;
     world_player.y100 = &player_physics.y100;
     world_player.vy100 = &player_physics.vy100;
     world_player.on_ground = &player_physics.on_ground;
-    /* Optional spring controls: use the LIVE input/physics state.
-       These three bindings let springs distinguish a fresh Jump press
-       from a button held earlier, and clear leftover coyote time. */
     world_player.jump_held = &player_physics.jump_held;
     world_player.coyote = &player_physics.coyote;
     world_player.jump_speed = &player_physics.jump_speed;
-    world_player.width = )CG";
-            out << spriteSymbol(*playerResource) << ".width;\n";
-            out << "    world_player.height = " << spriteSymbol(*playerResource) << ".height;\n";
+)CG";
+            out << "    world_player.width = " << playerName << ".width;\n"
+                << "    world_player.height = " << playerName << ".height;\n";
         }
-        out << R"CG(
-    /* ============================================================
-       C. ONE GAME FRAME — REPEATED FOREVER
-       ============================================================ */
+    }
+    if (hasMusic) out << R"CG(
+    /* To start a tune on launch, call playmusicNAME() from gameassets.h.
+       Music triggers configured on objects work automatically. */
+)CG";
+    out << R"CG(
+    /* 3. The frame loop. Leave the helper calls in this order. */
     while (1) {
-        /* 1. Sync the game to the screen's frame timing. */
         gfx_lcdwait();
 )CG";
-        if (hasObjects) {
-            out << R"CG(
-        /* 2. Advance each configured object's spline and sprite frames.
-           '1' means one frame of elapsed animation time.
-           All positions remain WORLD positions, NOT screen positions. */
-        gameworlditems_update(1);
-)CG";
+    if (hasObjects) out << "        gameworlditems_update(1);\n";
+    if (hasPhysics) {
+        if (worldObjects) out << "        gameworlditems_before(&world_player);\n";
+        out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
+        if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
+        if (pickups) {
+            out << "        gameworlditems_check(player_physics.x100 / 100,\n"
+                   "            player_physics.y100 / 100, " << playerName << ".width,\n"
+                << "            " << playerName << ".height, on_pickup, &score);\n";
         }
-        if (nw) {
-            out << R"CG(
-        /* 3. BEFORE physics: move any player already riding a lift by
-           the distance the lift travelled since the last frame.
-           This must happen before game_tile_player_run(). */
-        gameworlditems_before(&world_player);
-)CG";
-        }
-        out << R"CG(
-        /* 4. Apply joystick movement, gravity and tilemap collision.
-           This updates player_physics.x100/y100 in WORLD coordinates. */
-        game_tile_player_run(&player_physics, getjoyport(), 1);
-)CG";
-        if (nw) {
-            out << R"CG(
-        /* 5. AFTER physics: check for landing on lifts, conveyor speed,
-           spring launches and connected switches. FIRE2 operates switches
-           configured for button input. The ordering around physics MATTERS. */
-        gameworlditems_after(&world_player);
-)CG";
-        }
-        if (np) {
-            out << R"CG(
-        /* 6. Check pickups using the player's WORLD position.
-           '/ 100' converts fixed-point player coords into pixels.
-           A touching item becomes inactive and on_pickup() awards points. */
-        gameworlditems_check(player_physics.x100 / 100,
-            player_physics.y100 / 100, )CG";
-            out << spriteSymbol(*playerResource) << ".width,\n            "
-                << spriteSymbol(*playerResource) << ".height, on_pickup, &score);\n";
-        }
-        out << R"CG(
-        /* 7. Put the camera near the player, but don't let it scroll
-           beyond the map's edges. These are WORLD pixel offsets.
-           Subtracting VIEW_W/2 (or VIEW_H/2) centres the viewport. */
-        int32_t camera_x = player_physics.x100 / 100 - VIEW_W / 2;
-        int32_t camera_y = player_physics.y100 / 100 - VIEW_H / 2;
-
-        /* Map dimensions are stored in TILES, so multiply by tile_size.
-           A smaller-than-screen map gets a maximum camera offset of 0. */
+    }
+    out << "\n        int32_t camera_x = 0, camera_y = 0;\n";
+    if (hasPhysics) {
+        out << R"CG(        /* Follow the player in WORLD pixels, clamped to the level bounds. */
+        camera_x = player_physics.x100 / 100 - VIEW_W / 2;
+        camera_y = player_physics.y100 / 100 - VIEW_H / 2;
         int32_t max_x = (int32_t)game_level1.width * game_level1.tile_size - VIEW_W;
         int32_t max_y = (int32_t)game_level1.height * game_level1.tile_size - VIEW_H;
         if (max_x < 0) max_x = 0;
@@ -4916,234 +4756,120 @@ int main(int argc, char *argv[])
         if (camera_y < 0) camera_y = 0;
         if (camera_x > max_x) camera_x = max_x;
         if (camera_y > max_y) camera_y = max_y;
-
-        /* 8. Advance animated MAP tiles (different from sprite frames).
-           Select the OFF-SCREEN foreground buffer to start painting. */
-        game_tilemap_animation_tick(1);
+)CG";
+    }
+    if (!hasMap && !hasObjects) out << "        (void)camera_x; (void)camera_y;\n";
+    if (hasMap) out << "        game_tilemap_animation_tick(1);\n";
+    out << R"CG(
+        /* Draw into the hidden buffer, then display and swap. */
         gfx_usebuffer(front[draw_index]);
-
-        /* 9. Clear old pixels, then draw the visible section of the map.
-           The tile helper understands camera_x/y directly. */
         gfx_setcolour(0);
         gfx_rectf(0, 0, VIEW_W, VIEW_H);
-        game_tilemap_blit_view(&game_level1, camera_x, camera_y,
-                               VIEW_W, VIEW_H);
 )CG";
-        if (hasObjects) {
-            out << R"CG(
-        /* 10. Draw collectables, lifts, conveyors, springs, switches and doors.
-           They move/animate themselves and subtract camera ONCE.
-           Don't also draw their original gameassets sprite copies. */
-        gameworlditems_draw(camera_x, camera_y);
-)CG";
+    if (!dualPlane && hasBackgroundSprites)
+        out << "        gameassets_draw_background(); /* Single-plane background */\n";
+    if (hasMap)
+        out << "        game_tilemap_blit_view(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n";
+    if (hasObjects)
+        out << "        gameworlditems_draw(camera_x, camera_y);\n";
+    if (hasPhysics) {
+        // Draw ordinary scenery with their real WORLD coordinates. Never draw
+        // the player or a managed game object twice.
+        for (const Resource &r : m_resources) {
+            if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
+                r.objectType != QStringLiteral("decoration") || &r == player ||
+                r.plane == QStringLiteral("background")) continue;
+            const QString bob = spriteSymbol(r);
+            out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
+                << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
+                << "        gfx_drawbob(&" << bob << ");\n";
         }
-        out << R"CG(
-        /* 11. Put the player sprite at SCREEN position before drawing.
-           This does not change the player's WORLD physics position. */
-        game_tile_player_screen(&player_physics, camera_x, camera_y);
-        gfx_drawbob(&)CG";
-        out << spriteSymbol(*playerResource) << R"CG();
-
-        /* Draw extra ordinary sprites here if needed. For manually
-           managed WORLD sprites, project world -> screen when drawing.
-           drawworld() excludes objects owned by gameworlditems. */
-
-        /* 12. Hand over the finished frame and switch drawing buffers.
-           XOR 1 alternates indices: 0 -> 1 -> 0 -> 1. */
+        out << "        game_tile_player_screen(&player_physics, camera_x, camera_y);\n"
+            << "        gfx_drawbob(&" << playerName << ");\n";
+    } else {
+        // With no tile/player combination, normal static BOB resources still
+        // render and any configured world objects remain independently drawn.
+        out << "        gameassets_draw_foreground();\n";
+    }
+    out << R"CG(
+        /* YOUR GAME LOGIC: scoring UI, effects and custom HUD go here.
+           To exit, add your input check with break; cleanup is below. */
         gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
         gfx_displaynow();
         draw_index ^= 1u;
-
-        /* Keep streamed/chip music playback updated each frame. */
-        music_update();
+        music_update();  /* Keep SIDBOX music/audio processing alive. */
     }
+
+cleanup:
+    /* Stop audio before freeing samples. Unload atlas before gameassets,
+       because its pixels may be borrowed from a sprite PPB allocation. */
+    music_stop();
+)CG";
+    if (hasMap)
+        out << "    game_level1_unload_atlas();\n    game_level1_unload_map();\n";
+    out << R"CG(    gameassets_shutdown();
+    restore_desktop();
+    return result;
 }
 )CG";
-    } else {
-        // No invented player variables or fake compilable main: a clearly
-        // labelled recipe that stays valid for very different game designs.
-        out << R"CG(/*
-WHY THIS DESIGN GETS AN INTEGRATION RECIPE, NOT A FULL main()
----------------------------------------------------------
-)CG";
-        if (!hasMap) {
-            out << "- There is no attached tilemap in the Game Designer.\n"
-                   "  Keep YOUR existing renderer, world dimensions and physics.\n";
-        }
-        if (!hasPlayer) {
-            out << "- CoderGirl cannot find an ordinary sprite named 'player' with\n"
-                   "  an assigned image. Your player may have another name or may\n"
-                   "  be created directly in code. Keep your existing player.\n";
-        }
-        out << R"CG(
-COPY THESE STEPS INTO THE EQUIVALENT PLACES IN YOUR EXISTING main.c
-
-A. AFTER the hardware, memory and gfx_mode() setup:
-   if (!gameassets_init()) return 1;
-   Why: the object wrapper needs the sprites created by gameassets.
-)CG";
-        if (hasMap && m_tilemapExternal)
-            out << "   if (!game_level1_load_map(\"gamelevels/level1.map\")) return 6;\n"
-                   "   Copy the .map onto the SIDBOX SD card; it is not part of the .app.\n";
-        if (hasMap) {
-            out << R"CG(   if (!game_level1_load_atlas()) return 5;
-   Why: level1.c no longer embeds tile pixels. After gameassets_init(),
-   it BORROWS an already-loaded identical PPB if available, or loads the
-   tile atlas from SD if no sprite uses that resource. Both are checksum-
-   checked. On shutdown unload the level BEFORE gameassets_shutdown().
-)CG";
-        }
-        if (hasObjects) {
-            out << R"CG(   if (!gameworlditems_init()) return 2;
-   Why: this attaches the generated objects to their sprite instances,
-   assigned spline paths and frame animation states.
-)CG";
-        }
-        out << R"CG(
-B. ONCE PER GAME FRAME, in this EXACT order, after gfx_lcdwait():
-)CG";
-        if (hasObjects) {
-            out << R"CG(   gameworlditems_update(1);
-   Why: advance object movements and sprite frame animation first.
-)CG";
-        }
-        if (nw) {
-            out << R"CG(   gameworlditems_before(&world_player);
-   Why: move a player riding a lift BEFORE your normal physics.
-   IMPORTANT: create a game_world_player_t called world_player (or use
-   your own name) and point x100, y100, vy100 and on_ground at the LIVE
-   fields of your real physics player; set width and height too.
-   For precise spring jump combination also bind jump_held and jump_speed;
-   with the advanced tilemap physics also bind coyote. Without those
-   OPTIONAL fields, spring-only launch still works, but extra jump boost
-   is not available and old jump grace-time may remain active.
-   Do NOT point it at a camera-shifted drawing sprite.
-)CG";
-        }
-        out << R"CG(   // Your EXISTING joystick movement, gravity and collision step goes here.
-   Why: the helper cooperates with your game; it doesn't replace it.
-)CG";
-        if (nw) {
-            out << R"CG(   gameworlditems_after(&world_player);
-   Why: a lift catches the player, a conveyor pushes, a spring launches;
-   switches and FIRE2-triggered buttons ALSO activate automatically here.
-   This runs AFTER the usual movement and tile collision calculations.
-)CG";
-        }
-        if (np) {
-            out << R"CG(   gameworlditems_check(player_world_x, player_world_y,
-                         player_w, player_h, on_pickup, &score);
-   Why: collectable detection uses WORLD pixels, not screen pixels.
-   player_world_x/y, player_w/h, score and on_pickup are PLACEHOLDERS.
-   Replace them with YOUR real player data and callback; see full
-   examples in gamecollectables.txt or gameworlditems.txt.
-)CG";
-        }
-        out << R"CG(
-C. AFTER choosing and clearing YOUR foreground drawing buffer:
-   // Draw your map/background first, using YOUR camera_x/y.
-)CG";
-        if (hasObjects) {
-            out << R"CG(   gameworlditems_draw(camera_x, camera_y);
-   Why: each object projects its own WORLD location onto the screen.
-   Pass the camera once. Do not also call offset_spline() on attached
-   object splines, or re-draw the same sprite manually.
-)CG";
-        }
-        out << R"CG(   // Draw the player and any other ordinary sprites; show the frame.
-
-D. NOTE ABOUT THE IDENTIFIERS ABOVE
-   The return values 1 and 2 above are examples for an int main().
-   Change error handling to match your own entry point.
-   'player_world_x', 'world_player', 'score', 'on_pickup' and camera_x/y
-   are integration examples, not automatically declared by CoderGirl.
-   Only use those lines after connecting them to the variables and
-   functions actually present in YOUR existing main.c.
-*/
-)CG";
-    }
-
-    out << R"CG(
-/*
-FILES, OWNERSHIP AND NEXT STEPS
-===============================
-GENERATED (regeneration may overwrite them):
-- gameassets/gameassets.c/.h: sprite data, palette and unmanaged scenery.
-)CG";
-    if (hasMap) {
-        out << "- gamelevels/level1.c/.h: exported map/tiles; export the map first.\n";
-    }
-    if (hasObjects) {
-        out << "- gamehelpers/gameworlditems.c/.h: per-object setup, updates and drawing.\n"
-               "- gamehelpers/gameworlditems.txt: generated object helper guide.\n";
-    }
-    if (moving) {
-        out << "- gamehelpers/splinepaths.c/.h: exported paths used by objects.\n";
-    }
-    out << R"CG(
-YOURS (NOT overwritten by Generate V1 Game Code):
-- main.c and any hand-written game logic files.
-- Custom callbacks for pickups, scoring, health, sounds and special events.
-
-REMEMBER
-- Regeneration will REFRESH this maingame.c.txt. Save personal notes elsewhere.
-- A sprite managed by gameworlditems is intentionally not drawn by
-  gameassets' drawworld(); gameworlditems_draw() handles it instead.
-- Lifts/springs/conveyors use top contact; DOOR objects block all sides.
-- Never overlay a solid tilemap wall on a door you need to disable.
-- Ordinary sprites may need a world-to-screen camera projection.
-- Never copy these examples blindly over a working game's main.c.
-
-SPRITES FROM THIS DESIGN (symbols as exported by gameassets.h)
-)CG";
-    for (const Resource &r : m_resources) {
-        if (r.kind != QStringLiteral("sprite") || r.path.isEmpty()) continue;
-        QString name = r.name;
-        name.replace(QStringLiteral("*/"), QStringLiteral("* /"));
-        name.replace(QLatin1Char('\n'), QLatin1Char(' '));
-        name.replace(QLatin1Char('\r'), QLatin1Char(' '));
-        out << "- " << spriteSymbol(r) << " : " << name << " (WORLD "
-            << r.x << ", " << r.y << ") / " << r.objectType << "\n";
-    }
-    out << R"CG(
-AUDIO / MUSIC
-- gameassets/gameassets.h lists your generated playsound* / playmusic*
-  functions, if you added sound/music resources.
-- Game object sounds selected in the object dialog fire automatically from
-  gameworlditems.c: pickups, respawns, lift starts/stops/reversals, springs.
-- Continuous lift/conveyor loops fade and pan during gameworlditems_draw().
-  Their SOUND resources must have Loop enabled, and simultaneous WAVs need
-  distinct SIDBOX SFX channels (0..7). Respawn=0 means never respawn.
-- Call the appropriate functions from YOUR events (pickups, jumps, etc.).
-  CoderGirl does not automatically decide when your game should play them.
-
-OTHER INSTALLED GAME HELPERS
-)CG";
-    const QDir helpers(QDir(QFileInfo(m_filePath).absolutePath())
-        .filePath(QStringLiteral("gamehelpers")));
-    const QStringList headers = helpers.entryList({QStringLiteral("game*.h")},
-        QDir::Files, QDir::Name);
-    for (const QString &header : headers) {
-        const QString base = QFileInfo(header).completeBaseName();
-        if (base == QStringLiteral("gameworlditems")) continue;
-        out << "- " << header << ": open " << base << ".txt (if installed)\n";
-    }
-    out << R"CG(
-You can read all these .txt guides from the CoderGirl Project Tree.
-Happy coding! This document explains the pieces; YOUR main.c owns the game.
-*/
-)CG";
-
     const QString path = QDir(QFileInfo(m_filePath).absolutePath())
                              .filePath(QStringLiteral("maingame.c.txt"));
     QSaveFile file(path);
-    const QByteArray data = mock.toUtf8();
+    const QByteArray data = program.toUtf8();
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         file.cancelWriting();
         if (error) *error = tr("Cannot generate %1").arg(path);
         return false;
     }
     return true;
+}
+
+// Stage 3.29: a one-time, explicit opt-in for projects WITHOUT a main.c.
+// QFile::NewOnly prevents a race from replacing a file created meanwhile.
+void SidboxGameDesigner::offerCreateStarterMain()
+{
+    const QDir project(QFileInfo(m_filePath).absolutePath());
+    const QString mainPath = project.filePath(QStringLiteral("main.c"));
+    if (QFileInfo::exists(mainPath)) return;  // Never overwrite main.c.
+    const QString examplePath = project.filePath(QStringLiteral("maingame.c.txt"));
+    QFile example(examplePath);
+    if (!example.open(QIODevice::ReadOnly)) return;
+    const QByteArray contents = example.readAll();
+    if (contents.isEmpty()) return;
+
+    QMessageBox question(this);
+    question.setWindowTitle(tr("GamerGirl — Create main.c?"));
+    question.setIcon(QMessageBox::Question);
+    question.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius: 0px; }"));
+    question.setText(tr("This game project has no main.c. Create it from the generated starter?"));
+    question.setInformativeText(tr("The new main.c will contain the complete V1 starting program "
+        "for this design. You can edit it freely. Future regenerations only replace "
+        "maingame.c.txt, NEVER main.c."));
+    auto *create = question.addButton(tr("Create main.c"), QMessageBox::AcceptRole);
+    question.addButton(tr("Not now"), QMessageBox::RejectRole);
+    question.exec();
+    if (question.clickedButton() != create) return;
+
+    QFile target(mainPath);
+    if (!target.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+        QMessageBox::warning(this, tr("Create main.c"),
+            tr("Cannot create main.c (another file may already exist):\n%1")
+                .arg(mainPath));
+        return;
+    }
+    const bool written = target.write(contents) == contents.size() && target.flush();
+    target.close();
+    if (!written) {
+        QFile::remove(mainPath); // Only a file just created with NewOnly.
+        QMessageBox::warning(this, tr("Create main.c"),
+            tr("Could not write the complete main.c: %1").arg(mainPath));
+        return;
+    }
+    if (assetFilesChanged) assetFilesChanged();
+    QMessageBox::information(this, tr("GamerGirl — Starter Created"),
+        tr("Created main.c from the project-specific V1 starter.\n\n"
+           "Future Game Project updates leave it untouched.\n"
+           "Edit main.c to add your gameplay rules."));
 }
 
 void SidboxGameDesigner::updateGameProject()
@@ -5244,10 +4970,10 @@ void SidboxGameDesigner::updateGameProject()
     confirm.setInformativeText(tr(
         "CoderGirl will refresh existing game helper C/H files from the SDK, "
         "export the current spline paths and tilemap (if present), then regenerate "
-        "gameassets, gameworlditems and maingame.c.txt.\n\n"
+        "gameassets, gameworlditems and a complete, copyable maingame.c.txt.\n\n"
         "Any edits in replaced helpers or generated files will be overwritten. "
         "A ZIP backup is made FIRST.\n\n"
-        "Your main.c and existing .txt beginner guides are NOT changed.\n\n"
+        "Your existing main.c and existing .txt beginner guides are NOT changed.\n\nIf main.c is missing, you can choose to create it AFTER generation.\n\n"
         "Only the newest 20 Update Project ZIP backups are retained "
         "(older ZIPs are deleted after a successful update). "
         "Earlier folder-style backups are preserved.\n\n"
@@ -5392,6 +5118,7 @@ void SidboxGameDesigner::updateGameProject()
            "Your original main.c and existing beginner guides are untouched.\n\n"
            "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
                .arg(archivePath));
+    offerCreateStarterMain();
 }
 
 void SidboxGameDesigner::generateGameCode()
@@ -5478,7 +5205,7 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         return false;
     }
     if (!exportExampleMain(&integrationError)) {
-        QMessageBox::warning(this, tr("Mock Main Generation"),
+        QMessageBox::warning(this, tr("Starter Program Generation"),
             tr("Game assets were generated, but maingame.c.txt was not: %1").arg(integrationError));
         return false;
     }
@@ -5493,15 +5220,18 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
                          "after gameassets_init().");
     if (anyWorldObject)
         message += tr("\n\nGenerated gamehelpers/gameworlditems.c/.h/.txt for your configured game objects.");
-    message += tr("\n\nGenerated maingame.c.txt — a safe, non-compiling beginner reference in the Project Tree. "
-                  "Your real main.c was not touched.");
+    message += tr("\n\nGenerated maingame.c.txt — a complete, copyable V1 main.c program in the Project Tree. "
+                  "Your existing main.c was not touched.");
     if (result.embeddedBytes)
         message += tr("\n\nEmbedded graphics: %1 KiB (uncompressed).")
             .arg((result.embeddedBytes + 1023) / 1024);
     if (!result.warnings.isEmpty())
         message += QStringLiteral("\n\n") + tr("Warnings:")
             + QStringLiteral("\n• ") + result.warnings.join(QStringLiteral("\n• "));
-    if (!batchMode) QMessageBox::information(this, tr("V1 Game Code Generated"), message);
+    if (!batchMode) {
+        QMessageBox::information(this, tr("V1 Game Code Generated"), message);
+        offerCreateStarterMain();
+    }
     return true;
 }
 
