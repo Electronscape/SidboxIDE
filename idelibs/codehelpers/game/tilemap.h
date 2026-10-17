@@ -198,7 +198,11 @@ typedef struct {
     uint8_t hazard_contact; /* Internal: overlapping tile hazard on previous update. */
     uint8_t zone_contacts; /* Eight active custom-zone types, bit per type. */
     uint8_t physics_mode; /* See GAME_PHYSICS_*; normal mode remains unchanged. */
-    int16_t slide_velocity100, slide_remainder100; /* Only used for ice physics. */
+    /* Horizontal CONTROL momentum in 1/100 px per tick. In ordinary modes
+       this remembers the last walking speed, so ICE starts without a pause;
+       in ICE it is the sliding velocity and fractional displacement. */
+    int16_t slide_velocity100, slide_remainder100;
+    uint8_t physics_handoff_pending; /* Carry motion across non-ICE preset changes. */
     /* Optional external momentum, in 1/100 pixels per physics frame.
        Stored separately from joystick movement so wind and explosions do not
        overwrite walking speed. Completely inert until apply_force() is used. */
@@ -225,7 +229,12 @@ void game_tile_player_step(game_tile_player_t *p, uint16_t frames);
 void game_tile_player_set_force_drag(game_tile_player_t *p, uint8_t percent);
 /* Move the bob to the correct SCREEN position before gfx_drawbob(). */
 /* Optional physics presets; explicitly selected by programmer callbacks.
-   NORMAL restores the original Stage 3.42 movement model/values.
+   NORMAL restores Stage 3.42 control values. Preset changes NEVER reset
+   position, vertical velocity, spring launches or apply_force() momentum.
+   Entering ICE inherits the previous walking speed; switching to any other
+   preset transfers current motion (minus new walking input) into existing
+   external momentum. Use ENTERED/EXITED
+   events to select presets rather than resetting them every INSIDE tick.
    CUSTOM zones do NOT apply any preset on their own. */
 #define GAME_PHYSICS_NORMAL 0u
 #define GAME_PHYSICS_ICE 1u

@@ -1,0 +1,92 @@
+SIDBOX GamerGirl Stage 3.51 — Named Custom Collision Zones
+===========================================================
+Based directly on Stage 3.50 (continuous physics transitions).
+
+WHAT CHANGED
+------------
+Every custom tile zone (1..8) now gets an always-valid, stable C macro:
+    GAME_ZONE_ID_CUSTOM_1 = 1   ...   GAME_ZONE_ID_CUSTOM_8 = 8
+
+When a zone is named in the Tilemap Editor, the IDE also generates a
+friendly alias in the GAME-SPECIFIC file gamelevels/level1.h:
+
+    Custom 2 named "Water"       -> #define GAME_ZONE_ID_WATER GAME_ZONE_ID_CUSTOM_2
+    Custom 3 named "Ice"         -> #define GAME_ZONE_ID_ICE GAME_ZONE_ID_CUSTOM_3
+    Custom 4 named "Space"       -> #define GAME_ZONE_ID_SPACE GAME_ZONE_ID_CUSTOM_4
+    Custom 7 named "Low Gravity" -> #define GAME_ZONE_ID_LOW_GRAVITY GAME_ZONE_ID_CUSTOM_7
+
+These are logical zone IDs as passed to game_tile_set_zone_callback;
+solid and pass-through versions both use the SAME logical zone number.
+The .map format and collision byte layout do not change.
+
+Naming rules:
+- Uppercase ASCII letters and digits preserved, punctuation/spaces -> _.
+- If the name starts with a digit, N_ is prepended.
+- Duplicate names and names conflicting with the numeric fallbacks get
+  unique suffixes (e.g. GAME_ZONE_ID_SPACE_Z2 for second Space zone).
+- Blank or entirely non-ASCII names use GAME_ZONE_ID_CUSTOM_<number>.
+- The exact macros actually generated are also listed in maingame.c.txt.
+
+WHY level1.h INSTEAD OF gametilemap.h?
+--------------------------------------
+gametilemap.h is the reusable physics API shared by ALL game projects.
+The zone names belong to the individual level/project, and level1.h is
+already regenerated with every Tilemap export and included by the
+maingame.c.txt starter. Overwriting gametilemap.h for each game would
+risk accidentally wiping custom or upgraded physics helpers.
+
+WHAT THE GENERATOR NOW SHOWS
+----------------------------
+Your generated maingame.c.txt callback uses symbolic cases:
+
+    if (event == GAME_ZONE_ENTERED) {
+        switch (zone) {
+            case GAME_ZONE_ID_ICE:
+                /* game_tile_player_set_physics_ice(p); */ break;
+            case GAME_ZONE_ID_SPACE:
+                /* game_tile_player_set_physics_space(p); */ break;
+        }
+    }
+
+The optional preset examples remain COMMENTED. No auto-activation.
+If you rename your zones, Export Tilemap/Update Game Project regenerates
+level1.h and maingame.c.txt to match. Existing main.c is NEVER modified;
+if your own main.c references a renamed alias, update that code yourself.
+
+INSTALL / TEST
+--------------
+1. Back up the existing IDE tree and game project.
+2. Apply the changed-files patch to your Stage 3.50 IDE source, or use
+   the full Stage 3.51 IDE source archive.
+3. Rebuild the IDE (Qt6).
+4. Tilemap Editor -> select Custom 2 -> Name Zone -> Water; select
+   Custom 4 -> Name Zone -> Space. Save your design.
+5. Export Tilemap, or Update Game Project (auto-exports level1.c/.h).
+6. Inspect gamelevels/level1.h and maingame.c.txt. Verify the generated
+   GAME_ZONE_ID_WATER / GAME_ZONE_ID_SPACE identifiers.
+7. Use these names in your own code, then build the V1 game normally.
+
+CHANGED SOURCE FILES
+--------------------
+  gametilemap.cpp
+  gametilemap.h
+  gamedesigner.cpp
+  idelibs/codehelpers/game/tilemap.txt
+  idelibs/docs/cheatsheet.json
+
+VALIDATION
+----------
+- Four generated C callback/header test combinations compile with GCC
+  -std=c11 -Wall -Wextra -Werror (including duplicate/awkward names).
+- Cheatsheet JSON parsed successfully and generator wiring was inspected.
+- This environment does NOT have Qt6 development headers; full IDE
+  compile and on-hardware test remain for the user's Fedora machine.
+- No gamehelper physics changes, firmware changes, map format changes.
+
+NOTES
+-----
+- Naming aliases intentionally appear in gamelevels/level1.h, not the
+  shared gamehelpers/gametilemap.h. Include level1.h in custom game code.
+- Changing a zone's friendly name updates its macro symbol on re-export;
+  old C code mentioning the former symbol will need a rename.
+- Zone labels in .sbgm can be more descriptive than their C identifiers.

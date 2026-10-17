@@ -1,12 +1,14 @@
 
 
+with the custom regions having friendly names, COULD we have those as #defines maybe in the gametilemap.h, and then used in the zones call back?
+it would make a nice link to their game design and guessing what number would mean what is a bit of a nightmare for the programmer
 
 
 
 
 
-
-
+fixing momentum with changing regions.
+Buuut i have noticed that when movin in an out of regions, the physics sort of "reset" so while am walkin towards the icy area (or space, or where ever) there is a slight "hesitation" its like when settin the physics, it gets reset or somethin? shoulnt this just be continious an merge states?
 
 
 

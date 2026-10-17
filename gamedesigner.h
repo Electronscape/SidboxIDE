@@ -45,6 +45,8 @@ public:
 
     std::function<void()> tabTitleChanged;
     std::function<void()> assetFilesChanged;
+    // True when an open main.c editor has unsaved changes.
+    std::function<bool(const QString &)> mainSourceHasUnsavedEdits;
     QString filePath() const;
     void setFilePath(const QString &newPath);
     QString displayName() const;
@@ -165,7 +167,7 @@ private:
     bool installMissingWorldHelpers(QString *error, bool prompt = true);
     bool exportWorldItems(QString *error);
     bool exportExampleMain(QString *error);
-    void offerCreateStarterMain();
+    bool syncManagedMain(QString *error);
     QString splineSymbol(int index) const;
     QString spriteSymbol(const Resource &r) const;
     void updateSelectedPixmap();

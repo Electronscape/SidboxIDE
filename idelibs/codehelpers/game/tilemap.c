@@ -884,8 +884,14 @@ void game_tile_player_set_walk_speed(game_tile_player_t *p, int16_t speed)
 void game_tile_player_set_physics(game_tile_player_t *p, uint8_t mode)
 {
     if (!p || mode > GAME_PHYSICS_JETPACK) return;
+    /* Presets change material properties, NOT velocity. ICE uses the
+       previous joystick speed directly. Other mode switches carry the
+       outgoing speed into the force channel on the next physics tick,
+       when we know the NEW walk input (or zero for a space thruster step).
+       Never double-count current joystick input or existing impulses. */
+    if (p->physics_mode != mode)
+        p->physics_handoff_pending = (mode != GAME_PHYSICS_ICE);
     p->physics_mode = mode;
-    p->slide_velocity100 = 0; p->slide_remainder100 = 0;
     p->force_drag_percent = 12; /* Normal: slow external horizontal momentum. */
     p->walk_speed = 3; p->jump_speed = 7;
     p->gravity = 35; p->max_fall_speed = 9;
@@ -932,7 +938,8 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->vy100 = 0; p->on_ground = 0; p->jump_held = 0;
     p->coyote = 0; p->touch_type = 0; p->hazard_contact = 0;
     game_death_rearm();
-    p->slide_velocity100 = 0; p->slide_remainder100 = 0; p->zone_contacts = 0;
+    p->slide_velocity100 = 0; p->slide_remainder100 = 0;
+    p->physics_handoff_pending = 0; p->zone_contacts = 0;
     p->physics_vy100 = 0; p->external_ascent = 0;
     p->force_vx100 = 0; p->force_remainder100 = 0;
     const int32_t feet = y + p->sprite->height;
@@ -966,6 +973,24 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
 
         const int32_t deltaX = ((buttons & BTN_RIGHT) != 0) -
                                ((buttons & BTN_LEFT) != 0);
+        /* Conserve horizontal motion through a change of preset. Compare
+           PREVIOUS walking/sliding + existing force against NEW walking
+           input, and carry only the difference as decaying/free-floating
+           external momentum. If previously stationary, don't cancel the
+           player's very first step in the new mode. */
+        if (p->physics_handoff_pending && p->physics_mode != GAME_PHYSICS_ICE) {
+            int32_t previous = p->slide_velocity100
+                + p->slide_remainder100 + p->force_vx100;
+            if (previous) {
+                const int32_t target = deltaX * (int32_t)p->walk_speed * 100;
+                int32_t carry = previous - target;
+                if (carry > 3200) carry = 3200;
+                if (carry < -3200) carry = -3200;
+                p->force_vx100 = carry;
+            }
+            p->physics_handoff_pending = 0;
+            p->slide_remainder100 = 0;
+        }
         int32_t x = p->x100 / 100, y = p->y100 / 100;
         int32_t horizontalSteps = p->walk_speed;
         if (p->physics_mode == GAME_PHYSICS_ICE) {
@@ -1000,6 +1025,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         }
         const uint8_t walkingOnGround = p->on_ground && p->vy100 >= 0;
         uint8_t followedFloor = 0;
+        uint8_t horizontalBlocked = 0;
         uint8_t crossed_hazard = special_type(m, x, y, w, h) == GAME_TILE_HAZARD;
 
         /* Resolve each horizontal pixel independently. A 45-degree slope
@@ -1019,6 +1045,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 touches_slope_body(m, nextX, nextPlayerY, w, h)) {
                 p->slide_velocity100 = 0; p->slide_remainder100 = 0;
                 p->force_vx100 = 0; p->force_remainder100 = 0;
+                horizontalBlocked = 1;
                 break;
             }
             x = nextX;
@@ -1029,6 +1056,16 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         }
         p->x100 = x * 100;
         if (followedFloor) p->y100 = y * 100;
+        /* Track the joystick's last horizontal speed even on normal ground.
+           The zone callback at the END of this tick can now switch to ICE
+           without first forcing the player to accelerate from a standstill.
+           Do not include external forces in this value: they persist in
+           force_vx100 already, so including them would double the impulse. */
+        if (p->physics_mode != GAME_PHYSICS_ICE) {
+            p->slide_velocity100 = horizontalBlocked ? 0 :
+                (int16_t)(deltaX * (int32_t)p->walk_speed * 100);
+            p->slide_remainder100 = 0;
+        }
         if (p->force_vx100 && p->force_drag_percent) {
             p->force_vx100 = p->force_vx100 *
                 (100 - p->force_drag_percent) / 100;

@@ -12,8 +12,9 @@
  * Save the design, then choose Update Game Project.
  *
  * GamerGirl generates maingame.c.txt containing a COMPLETE main.c example
- * specifically for your current design. Copy that entire example into your
- * main.c when ready. Your existing main.c is NEVER overwritten by the IDE.
+ * specifically for your current design. While main.c is IDE-owned and
+ * unchanged, GamerGirl can regenerate it. Saving your own edits transfers
+ * ownership to you; the IDE then updates only maingame.c.txt.
  *
  * The default loop below is intentionally a blank graphics-only starting
  * point for games not using the Platformer helpers.

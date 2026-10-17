@@ -67,7 +67,7 @@ struct SidboxTilemap {
     QByteArray graphics = QByteArray(20000, char(0)); // 2 bytes per cell (LE uint16_t)
     QByteArray collisions = QByteArray(10000, char(0));
     QByteArray flips = QByteArray(10000, char(0)); // 0x01=flip X, 0x02=flip Y
-    QStringList customZoneNames; /* 8 optional friendly names, metadata only */
+    QStringList customZoneNames; /* 8 optional design names; exported as level1.h C aliases */
     QVector<SidboxTileAnimation> animations;
     QVector<SidboxTileStamp> stamps;
     QVector<SidboxCollisionStamp> collisionStamps;
@@ -196,6 +196,11 @@ private:
     void saveSelectedAnimation();
     void removeSelectedAnimation();
 };
+
+// Returns the per-project C symbol for logical custom zone 1..8.
+// The matching #defines are generated in gamelevels/level1.h on export;
+// engine-wide gametilemap.h is deliberately NOT rewritten for zone names.
+QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone);
 
 // Exported level data always lives in gamelevels/. This function does not
 // create helper templates, modify gameassets, or touch main.c.

@@ -4,6 +4,7 @@
 #include "codeeditor.h"
 #include "guidesigner.h"
 #include "gamedesigner.h"
+#include "gamemainownership.h"
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
@@ -7491,7 +7492,7 @@ void MainWindow::createNewProject()
                    "No project files were overwritten.").arg(templateFile.fileName()));
             return;
         }
-        mainCContents = templateFile.readAll();
+        mainCContents = GamerGirlMainOwnership::withOwnerHeader(templateFile.readAll());
     }
 
     const QByteArray mainHContents =
@@ -7557,6 +7558,18 @@ void MainWindow::createNewProject()
         || !writeDefaultFile(mainHPath, mainHContents, QStringLiteral("main.h"))) {
         statusBar()->showMessage(tr("New project creation cancelled"), 3000);
         return;
+    }
+
+    if (m_projectType == GameProjectType) {
+        QString ownershipError;
+        if (!GamerGirlMainOwnership::storeRecord(m_projectPath, QStringLiteral("IDE"),
+                                                 mainCContents, &ownershipError)) {
+            // Main.c is still safe: without a valid record no overwrite is allowed.
+            QMessageBox::warning(this, tr("Game main.c ownership"),
+                tr("Game project was created, but automatic main.c regeneration "
+                   "is disabled because its ownership record could not be saved:\n%1")
+                    .arg(ownershipError));
+        }
     }
 
     clearEditorTabs();
@@ -7704,6 +7717,15 @@ bool MainWindow::openGameDesigner(const QString &filePath)
     // New PNG/PPB/audio assets need only a file-tree refresh. A full Rescan
     // reparses all C functions and is unnecessary for binary resource imports.
     game->assetFilesChanged = [this]() { refreshProjectFiles(); };
+    game->mainSourceHasUnsavedEdits = [this](const QString &mainPath) {
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            CodeEditor *open = primaryEditorForTab(m_editorTabs->widget(i));
+            if (open && QFileInfo(open->filePath()).absoluteFilePath() ==
+                    QFileInfo(mainPath).absoluteFilePath() && open->document()->isModified())
+                return true;
+        }
+        return false;
+    };
     addProjectFile(absolute);
     m_editorTabs->setCurrentIndex(index);
     game->setFocus();
@@ -13049,6 +13071,19 @@ bool MainWindow::saveEditor(CodeEditor *editor)
             return false;
         }
     } else {
+        // The first programmer SAVE of generated main.c relinquishes IDE
+        // ownership. Change only the OWNER line in the editor's buffer.
+        // No ownership transfer happens on an unchanged Ctrl+S.
+        const bool claimMain = editor->document()->isModified()
+            && GamerGirlMainOwnership::matchesMainPath(editor->filePath(), m_projectPath)
+            && GamerGirlMainOwnership::loadRecord(m_projectPath).owner == QStringLiteral("IDE");
+        if (claimMain) {
+            const QByteArray oldPrefix("// GAMERGIRL GENERATED MAIN.C\n// OWNER: IDE");
+            if (editor->toPlainText().toUtf8().startsWith(oldPrefix)) {
+                QTextCursor cursor = editor->document()->find(QStringLiteral("// OWNER: IDE"));
+                if (!cursor.isNull()) cursor.insertText(QStringLiteral("// OWNER: user"));
+            }
+        }
         // Keep the OLD on-disk source before CodeEditor overwrites it.
         // Unchanged saves, non-project files and non-source files are skipped.
         QString historyError;
@@ -13071,6 +13106,16 @@ bool MainWindow::saveEditor(CodeEditor *editor)
                 tr("Could not save %1.").arg(QDir::toNativeSeparators(editor->filePath())));
             watchEditorFile(editor);
             return false;
+        }
+        if (claimMain) {
+            QString ownershipError;
+            if (!GamerGirlMainOwnership::recordUserSave(m_projectPath, &ownershipError)) {
+                QMessageBox::warning(this, tr("Game main.c ownership"),
+                    tr("Your main.c was saved, but ownership metadata could not be updated:\n%1")
+                        .arg(ownershipError));
+                // The generated file checksum no longer matches, so it still
+                // cannot be overwritten even if the metadata write failed.
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
+#include "gamemainownership.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -4714,7 +4715,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     G << "CODERGIRL — GENERATED WORLD OBJECTS GUIDE\n"
          "========================================\n\n"
          "Regeneration replaces gameworlditems.c/.h/.txt. For hand-written notes,\n"
-         "use a separate filename. YOUR main.c is never modified.\n\n"
+         "use a separate filename. User-owned main.c is never overwritten.\n\n"
          "Configured objects: " << np << " collectable(s), " << nw << " world object(s) (including " << nt << " triggers).\n"
          "Each uses its own graphics instance and WORLD coordinates from Game Designer.\n\n"
          "After gameassets_init(), call gameworlditems_init().\n"
@@ -4865,13 +4866,13 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
  *
  * START HERE:
  *  1. In Game Designer select Update Game Project to export the helpers.
- *  2. Copy THIS WHOLE FILE into main.c, ONLY if you want to replace your
- *     existing starter yourself. The IDE NEVER overwrites existing main.c.
+ *  2. The IDE regenerates main.c only while it remains IDE-owned.
+ *     Editing and saving main.c transfers ownership permanently to you.
  *  3. Put exported PPB, music and SD .map resources on the SIDBOX SD card.
  *  4. Add your game rules inside the clearly marked sections.
  *
  * After changing your Game Designer resources, regenerate this example.
- * Your main.c will NOT be changed by regeneration.
+ * User-owned main.c is never replaced. maingame.c.txt is always updated.
  *
  * WORLD coordinates are map positions. SCREEN coordinates subtract camera.
  * Game objects are managed by gameworlditems; do not draw them twice.
@@ -4975,13 +4976,17 @@ static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
             if (label.isEmpty()) label = QStringLiteral("Custom %1").arg(i+1);
             label.replace(QStringLiteral("*/"), QStringLiteral("* /"));
             label.replace(QLatin1Char('\n'), QLatin1Char(' '));
-            out << " *   Zone " << (i+1) << ": " << label << "\n";
+            out << " *   Zone " << (i+1) << ": " << label << " ("
+                << sidboxTilemapZoneMacroName(m_tilemap, i + 1) << ")\n";
         }
         out << " */\n";
-        out << R"CG(
+        QString zoneCallbackExample = QString::fromUtf8(R"CG(
 /* OPTIONAL PROGRAMMABLE ZONES: these comments are EXAMPLES, not automatic
  * physics changes. Each custom tile zone reports 1..8 and ENTERED/INSIDE/EXITED.
  * Solid and pass-through versions share the same logical zone number.
+ * Use the generated GAME_ZONE_ID_* names from gamelevels/level1.h,
+ * NOT hard-coded 1..8 numbers. Re-export after renaming a zone.
+ * The commented physics presets are EXAMPLES; names do not activate them.
  * Change or remove these examples to suit your game. */
 static void on_custom_zone(uint8_t zone, uint8_t event,
     int32_t x, int32_t y, void *user)
@@ -4991,21 +4996,21 @@ static void on_custom_zone(uint8_t zone, uint8_t event,
     if (!p) return;
     if (event == GAME_ZONE_ENTERED) {
         switch (zone) {
-            case 1: /* Optional: mud */
+            case @ZONE_1@: /* Example: slow */
                 /* game_tile_player_set_physics_slow(p); */ break;
-            case 2: /* Optional: water */
+            case @ZONE_2@: /* Example: water */
                 /* game_tile_player_set_physics_water(p); */ break;
-            case 3: /* Optional: icy ground */
+            case @ZONE_3@: /* Example: ice */
                 /* game_tile_player_set_physics_ice(p); */ break;
-            case 4: /* Optional: space */
+            case @ZONE_4@: /* Example: space */
                 /* game_tile_player_set_physics_space(p); */ break;
-            case 5: /* Optional: floating */
+            case @ZONE_5@: /* Example: floating */
                 /* game_tile_player_set_physics_floating(p); */ break;
-            case 6: /* Optional: jetpack */
+            case @ZONE_6@: /* Example: jetpack */
                 /* game_tile_player_set_physics_jetpack(p); */ break;
-            case 7: /* Optional: custom gravity */
+            case @ZONE_7@: /* Example: gravity */
                 /* game_tile_player_set_gravity(p, 10); */ break;
-            case 8: /* Optional: walking speed */
+            case @ZONE_8@: /* Example: walk speed */
                 /* game_tile_player_set_walk_speed(p, 2); */ break;
         }
     } else if (event == GAME_ZONE_INSIDE) {
@@ -5020,7 +5025,12 @@ static void on_custom_zone(uint8_t zone, uint8_t event,
          * If zones overlap, decide which remaining zone should take priority. */
     }
 }
-)CG";
+)CG");
+        // Each game's labels produce C identifiers that match level1.h.
+        for (int zone = 1; zone <= 8; ++zone)
+            zoneCallbackExample.replace(QStringLiteral("@ZONE_%1@").arg(zone),
+                sidboxTilemapZoneMacroName(m_tilemap, zone));
+        out << zoneCallbackExample;
     }
     if (hasPhysics) {
         out << R"CG(
@@ -5038,7 +5048,8 @@ static void on_custom_zone(uint8_t zone, uint8_t event,
  * OPTIONAL zero-gravity, joystick-controlled spacecraft:
  *   1. Enter the space zone in your on_custom_zone() callback (if present).
  *      Set your own bool/flag named in_space to 1 on ENTERED,
- *      and set it to 0 on EXITED. For example, Custom 4 can be Space.
+ *      and set it to 0 on EXITED. Compare zone with your generated
+ *      GAME_ZONE_ID_SPACE (if you named a zone Space).
  *      game_tile_player_set_physics_space(&player_physics);
  *      game_tile_player_set_gravity(&player_physics, 0);
  *   2. Replace the game_tile_player_run() line in the loop below with:
@@ -5329,52 +5340,31 @@ cleanup:
     return true;
 }
 
-// Stage 3.29: a one-time, explicit opt-in for projects WITHOUT a main.c.
-// QFile::NewOnly prevents a race from replacing a file created meanwhile.
-void SidboxGameDesigner::offerCreateStarterMain()
+// Stage 3.52: regenerate main.c only while it is verifiably IDE-owned.
+// maingame.c.txt is always generated; existing unregistered source is sacred.
+bool SidboxGameDesigner::syncManagedMain(QString *error)
 {
-    const QDir project(QFileInfo(m_filePath).absolutePath());
-    const QString mainPath = project.filePath(QStringLiteral("main.c"));
-    if (QFileInfo::exists(mainPath)) return;  // Never overwrite main.c.
-    const QString examplePath = project.filePath(QStringLiteral("maingame.c.txt"));
-    QFile example(examplePath);
-    if (!example.open(QIODevice::ReadOnly)) return;
-    const QByteArray contents = example.readAll();
-    if (contents.isEmpty()) return;
-
-    QMessageBox question(this);
-    question.setWindowTitle(tr("GamerGirl — Create main.c?"));
-    question.setIcon(QMessageBox::Question);
-    question.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius: 0px; }"));
-    question.setText(tr("This game project has no main.c. Create it from the generated starter?"));
-    question.setInformativeText(tr("The new main.c will contain the complete V1 starting program "
-        "for this design. You can edit it freely. Future regenerations only replace "
-        "maingame.c.txt, NEVER main.c."));
-    auto *create = question.addButton(tr("Create main.c"), QMessageBox::AcceptRole);
-    question.addButton(tr("Not now"), QMessageBox::RejectRole);
-    question.exec();
-    if (question.clickedButton() != create) return;
-
-    QFile target(mainPath);
-    if (!target.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
-        QMessageBox::warning(this, tr("Create main.c"),
-            tr("Cannot create main.c (another file may already exist):\n%1")
-                .arg(mainPath));
-        return;
+    const QString root = QFileInfo(m_filePath).absolutePath();
+    const QString mainFile = GamerGirlMainOwnership::mainPath(root);
+    if (mainSourceHasUnsavedEdits && mainSourceHasUnsavedEdits(mainFile)) {
+        // An unsaved buffer must NEVER be overwritten. Leave the file and
+        // record untouched; a subsequent Save transfers ownership to user.
+        return true;
     }
-    const bool written = target.write(contents) == contents.size() && target.flush();
-    target.close();
-    if (!written) {
-        QFile::remove(mainPath); // Only a file just created with NewOnly.
-        QMessageBox::warning(this, tr("Create main.c"),
-            tr("Could not write the complete main.c: %1").arg(mainPath));
-        return;
+    QFile example(QDir(root).filePath(QStringLiteral("maingame.c.txt")));
+    if (!example.open(QIODevice::ReadOnly)) {
+        if (error) *error = tr("Cannot read generated maingame.c.txt");
+        return false;
     }
-    if (assetFilesChanged) assetFilesChanged();
-    QMessageBox::information(this, tr("GamerGirl — Starter Created"),
-        tr("Created main.c from the project-specific V1 starter.\n\n"
-           "Future Game Project updates leave it untouched.\n"
-           "Edit main.c to add your gameplay rules."));
+    const QByteArray starter = example.readAll();
+    if (starter.isEmpty()) {
+        if (error) *error = tr("Generated maingame.c.txt is empty");
+        return false;
+    }
+    bool changed = false;
+    if (!GamerGirlMainOwnership::installGenerated(root, starter, &changed, error)) return false;
+    if (changed && assetFilesChanged) assetFilesChanged();
+    return true;
 }
 
 void SidboxGameDesigner::updateGameProject()
@@ -5428,7 +5418,7 @@ void SidboxGameDesigner::updateGameProject()
     }
 
     // This is also the explicit write-set for the backup. New files won't
-    // exist in the snapshot, and the user's main.c is never in the write-set.
+    // exist in the snapshot; user-owned main.c is backed up, never replaced.
     QSet<QString> outputs;
     outputs.insert(QFileInfo(m_filePath).absoluteFilePath());
     outputs.insert(QStringLiteral("gameassets/gameassets.c"));
@@ -5437,6 +5427,12 @@ void SidboxGameDesigner::updateGameProject()
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.txt"));
     outputs.insert(QStringLiteral("maingame.c.txt"));
+    // Main generation may create a missing file or transfer a dirty external
+    // file. Back up/track BOTH source and metadata for full rollback. User
+    // files are still excluded from actual regeneration by the CRC gate.
+    outputs.insert(QStringLiteral("main.c"));
+    outputs.insert(QStringLiteral(".codergirl/main-ownership.json"));
+
     if (hasSpline
         || QFileInfo::exists(installed.filePath(QStringLiteral("splinepaths.h")))) {
         // saveDesign also refreshes previously exported paths even if the
@@ -5478,7 +5474,9 @@ void SidboxGameDesigner::updateGameProject()
         "gameassets, gameworlditems and a complete, copyable maingame.c.txt.\n\n"
         "Any edits in replaced helpers or generated files will be overwritten. "
         "A ZIP backup is made FIRST.\n\n"
-        "Your existing main.c and existing .txt beginner guides are NOT changed.\n\nIf main.c is missing, you can choose to create it AFTER generation.\n\n"
+        "Only a verified, unchanged IDE-owned main.c may be regenerated. "
+        "Hand-edited, unknown and user-owned main.c files remain protected. "
+        "maingame.c.txt is always updated.\n\n"
         "Only the newest 20 Update Project ZIP backups are retained "
         "(older ZIPs are deleted after a successful update). "
         "Earlier folder-style backups are preserved.\n\n"
@@ -5620,10 +5618,9 @@ void SidboxGameDesigner::updateGameProject()
     if (assetFilesChanged) assetFilesChanged();
     QMessageBox::information(this, tr("Game Project Updated"),
         tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
-           "Your original main.c and existing beginner guides are untouched.\n\n"
+           "main.c is updated only while still IDE-owned. User-owned source and existing beginner guides are untouched.\n\n"
            "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
                .arg(archivePath));
-    offerCreateStarterMain();
 }
 
 void SidboxGameDesigner::generateGameCode()
@@ -5648,8 +5645,8 @@ void SidboxGameDesigner::generateGameCode()
     if (QFileInfo::exists(cPath) || QFileInfo::exists(hPath)) {
         if (QMessageBox::warning(this, tr("Regenerate V1 Game Code"),
             tr("The generated gameassets.c/.h files already exist.\n\n"
-               "Regenerating will replace those two files, including any manual edits "
-               "made to them. Your main.c and other project files will NOT change.\n\n"
+               "Regenerating replaces these files. A verified IDE-owned main.c may "
+               "also be refreshed; user-owned main.c is never replaced.\n\n"
                "Continue?"), QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel) != QMessageBox::Yes) return;
     }
@@ -5722,6 +5719,14 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
             tr("Game assets were generated, but maingame.c.txt was not: %1").arg(integrationError));
         return false;
     }
+    // Write only a verified IDE-owned main.c (or create a missing one).
+    // User-modified/legacy files remain protected, even with OWNER: IDE text.
+    if (!syncManagedMain(&integrationError)) {
+        QMessageBox::warning(this, tr("Protect main.c"),
+            tr("Game resources were generated, but main.c ownership processing failed:\n%1")
+                .arg(integrationError));
+        return false;
+    }
     if (assetFilesChanged) assetFilesChanged();
     QString message = tr("Generated gameassets/gameassets.c and gameassets.h.\n\n"
                          "Include \"gameassets/gameassets.h\" from main.c.\n"
@@ -5733,8 +5738,8 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
                          "after gameassets_init().");
     if (anyWorldObject)
         message += tr("\n\nGenerated gamehelpers/gameworlditems.c/.h/.txt for your configured game objects.");
-    message += tr("\n\nGenerated maingame.c.txt — a complete, copyable V1 main.c program in the Project Tree. "
-                  "Your existing main.c was not touched.");
+    message += tr("\n\nUpdated maingame.c.txt. main.c is regenerated only if "
+                  "it is IDE-owned and has not been manually edited.");
     if (result.embeddedBytes)
         message += tr("\n\nEmbedded graphics: %1 KiB (uncompressed).")
             .arg((result.embeddedBytes + 1023) / 1024);
@@ -5743,7 +5748,6 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
             + QStringLiteral("\n• ") + result.warnings.join(QStringLiteral("\n• "));
     if (!batchMode) {
         QMessageBox::information(this, tr("V1 Game Code Generated"), message);
-        offerCreateStarterMain();
     }
     return true;
 }

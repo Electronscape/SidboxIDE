@@ -746,7 +746,7 @@ public:
         stampAnchorValid = false;
         lastStampGridValid = false;
         if (temporaryStatus)
-            temporaryStatus(QStringLiteral("Copied %1×%2 · Esc: place · Shift+Esc: cancel")
+            temporaryStatus(QStringLiteral("Copied %1×%2 · Click: paste · Esc: cancel")
                             .arg(temp.width).arg(temp.height));
         viewport()->update();
         return true;
@@ -786,13 +786,6 @@ public:
             }
         if (strokeFinished) strokeFinished();
         viewport()->update();
-        return true;
-    }
-    bool finishTemporary(bool cancel = false)
-    {
-        if (!temporaryActive) return false;
-        if (!cancel && !applyTemporary(false)) return true;
-        deactivateTemporary();
         return true;
     }
     // The preview is deliberately paint-only: it never changes a tile or the
@@ -1421,7 +1414,7 @@ protected:
             draggingTemporary = false;
             updateHover(e->position().toPoint());
             // Drag = position the temporary brush. A stationary click pastes;
-            // Escape pastes the current preview and ends temporary mode.
+            // Escape discards the temporary brush without another paste.
             if (temporaryAnchor == hoverCell) applyTemporary(false);
             e->accept(); return;
         }
@@ -1444,7 +1437,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override
     {
         if (event->key() == Qt::Key_Escape && temporaryActive) {
-            finishTemporary(bool(event->modifiers() & Qt::ShiftModifier));
+            deactivateTemporary();
             event->accept();
             return;
         }
@@ -2169,7 +2162,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     paintRow->addWidget(new QLabel(tr("Paint collision:"), this));
     paintRow->addWidget(brushC);
     auto *renameZone = new QPushButton(tr("Name Zone"), this);
-    renameZone->setToolTip(tr("Give Custom 1–8 a friendly name in this design. The C callback still receives zone 1–8."));
+    renameZone->setToolTip(tr("Name Custom 1–8. Export creates GAME_ZONE_ID_NAME macros in gamelevels/level1.h; callback IDs stay 1–8."));
     paintRow->addWidget(renameZone);
     auto *customSolid = new QCheckBox(tr("Custom is solid"), this);
     customSolid->setToolTip(tr("Blocking custom zones stop the player, but still report touch events. Pass-through zones do not block."));
@@ -2684,7 +2677,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
 
     auto *help = new QLabel(tr("SHIFT+DRAG selects and copies a map region (Shift-click still edits slopes). "
         "Move the temporary stamp to preview it; LEFT-CLICK pastes, LEFT-DRAG positions, "
-        "RIGHT-CLICK erases its footprint, ESC pastes and finishes, SHIFT+ESC cancels. "
+        "RIGHT-CLICK erases its footprint, ESC cancels without pasting. "
         "MIDDLE-DRAG or ALT+LEFT-DRAG pans; WHEEL scrolls. CTRL+Z / CTRL+Y undo/redo. "
         "Stamp: use Draw Front setting overrides copied front flags when ticked."), this);
     help->setWordWrap(true);
@@ -3434,7 +3427,7 @@ void SidboxTilemapEditor::done(int result)
 void SidboxTilemapEditor::keyPressEvent(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Escape && m_canvas && m_canvas->temporaryActive) {
-        m_canvas->finishTemporary(bool(event->modifiers() & Qt::ShiftModifier));
+        m_canvas->deactivateTemporary();
         event->accept();
         return;
     }
@@ -3479,6 +3472,60 @@ bool SidboxTilemapEditor::eventFilter(QObject *target, QEvent *event)
         }
     }
     return QDialog::eventFilter(target, event);
+}
+
+// Friendly custom-zone names are design-specific, not properties of the
+// shared player engine. Generate legal, collision-free C symbols for level1.h.
+// All eight stable numeric fallbacks remain available even when unnamed.
+static QString cZoneLabel(const QString &label)
+{
+    QString out;
+    for (QChar ch : label.trimmed().toUpper()) {
+        const ushort c = ch.unicode();
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            out += ch;
+        } else if (!out.isEmpty() && !out.endsWith(QLatin1Char('_'))) {
+            out += QLatin1Char('_');
+        }
+    }
+    while (out.endsWith(QLatin1Char('_'))) out.chop(1);
+    if (!out.isEmpty() && out.at(0).isDigit()) out.prepend(QStringLiteral("N_"));
+    return out;
+}
+
+static QStringList cZoneSymbols(const SidboxTilemap &map)
+{
+    QStringList symbols;
+    QSet<QString> reserved;
+    for (int zone = 1; zone <= 8; ++zone) {
+        const QString fallback = QStringLiteral("GAME_ZONE_ID_CUSTOM_%1").arg(zone);
+        symbols.append(fallback);
+        reserved.insert(fallback);
+    }
+    for (int zone = 1; zone <= 8; ++zone) {
+        const QString label = zone - 1 < map.customZoneNames.size()
+            ? map.customZoneNames.at(zone - 1) : QString();
+        const QString cleaned = cZoneLabel(label);
+        if (cleaned.isEmpty()) continue;
+        QString name = QStringLiteral("GAME_ZONE_ID_") + cleaned;
+        if (name == symbols.at(zone - 1)) continue;
+        // Avoid a collision with another zone's stable name, or a prior alias.
+        if (reserved.contains(name))
+            name += QStringLiteral("_Z%1").arg(zone);
+        const QString uniqueBase = name;
+        int suffix = 2;
+        while (reserved.contains(name))
+            name = uniqueBase + QStringLiteral("_%1").arg(suffix++);
+        symbols[zone - 1] = name;
+        reserved.insert(name);
+    }
+    return symbols;
+}
+
+QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone)
+{
+    if (zone < 1 || zone > 8) return QString();
+    return cZoneSymbols(map).at(zone - 1);
 }
 
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
@@ -3637,6 +3684,25 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         "void game_level1_unload_atlas(void);\n"
         "extern game_tilemap_t game_level1;\n"
         "#endif\n";
+    // Logical IDs are 1..8 for BOTH blocking and pass-through custom tiles.
+    // Zone-friendly names live here, rather than in the reusable physics
+    // helper, because each game project may name those IDs differently.
+    const QStringList zoneSymbols = cZoneSymbols(map);
+    QByteArray zoneDefines =
+        "/* Generated from Tilemap Editor > Name Zone (project-specific).\n"
+        " * Edit names in GamerGirl and export the tilemap again.\n"
+        " * Zones 1..8 are unchanged by solid/pass-through selection. */\n";
+    for (int zone = 1; zone <= 8; ++zone)
+        zoneDefines += "#define GAME_ZONE_ID_CUSTOM_" + QByteArray::number(zone)
+            + " " + QByteArray::number(zone) + "u\n";
+    for (int zone = 1; zone <= 8; ++zone) {
+        const QByteArray fallback = "GAME_ZONE_ID_CUSTOM_" + QByteArray::number(zone);
+        const QByteArray name = zoneSymbols.at(zone - 1).toLatin1();
+        if (name != fallback)
+            zoneDefines += "#define " + name + " " + fallback + "\n";
+    }
+    zoneDefines += "\n";
+    header.replace("uint8_t game_level1_load_map", zoneDefines + "uint8_t game_level1_load_map");
     if (!externalMap) header.replace("extern game_tilemap_t game_level1;",
         "extern const uint16_t game_level1_graphics[];\n"
         "extern const uint8_t game_level1_collisions[];\n"

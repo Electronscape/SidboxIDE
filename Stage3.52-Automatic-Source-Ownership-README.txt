@@ -1,0 +1,87 @@
+SIDBOX IDE / GAMERGIRL STAGE 3.52 — AUTOMATIC SOURCE OWNERSHIP
+=============================================================
+
+Source base: complete Stage 3.51 Named Custom Zones.
+
+New rule
+--------
+GamerGirl can regenerate main.c only if it created that file AND the file
+still exactly matches the last IDE-generated version according to the
+recorded CRC32 and length. The header alone is NEVER a permit to overwrite.
+
+Generated main.c begins:
+
+  // GAMERGIRL GENERATED MAIN.C
+  // OWNER: IDE
+  // When OWNER is user, GamerGirl no longer regenerates main.c.
+  // Refer to maingame.c.txt for updated modular support and examples.
+
+The checksums are stored in the project's hidden directory:
+  .codergirl/main-ownership.json
+
+Owned -> user transition
+------------------------
+* Change main.c in CoderGirl and SAVE: the IDE changes only its OWNER line
+  from IDE to user before saving, then updates the ownership metadata.
+* Change main.c in another editor: at the next Generate/Update, a CRC32 or
+  size mismatch changes OWNER to user, leaving the rest of main.c intact.
+* User-owned main.c will NEVER be replaced by a subsequent Game Project update.
+* A legacy main.c with NO VALID ownership record will NEVER be overwritten,
+  even if a manual "OWNER: IDE" comment is added.
+* Any open, unsaved CoderGirl main.c editor blocks regeneration of main.c.
+* maingame.c.txt continues to regenerate EVERY time, regardless of main.c.
+* If main.c does not exist, the generator creates an IDE-owned one from the
+  latest maingame.c.txt (on Update Game Project / Generate V1 Code).
+* A NEW V1 Gaming project starts with IDE-owned generic main.c. The next
+  update turns it into the design-specific game until the programmer edits.
+* The Update Game Project ZIP backup tracks main.c and ownership metadata
+  so both can be restored on a failed update.
+
+How to test (USE A TEST PROJECT OR BACK UP YOUR MAIN FIRST!)
+-------------------------------------------------------------
+1. Shut any open main.c editor tabs first. RENAME main.c to main.c.backup.
+2. In Game Designer choose "Update Game Project", and confirm backup/update.
+3. main.c should appear automatically; at the top: OWNER: IDE.
+   .codergirl/main-ownership.json should also exist (CRC32 in hex).
+4. Change e.g. a game constant in main.c, then Save from CoderGirl.
+   OWNER: user should appear, and YOUR change stays intact.
+5. Change the game design and run Update Game Project again.
+   main.c MUST remain exactly as you last saved it, while
+   maingame.c.txt regenerates.
+6. Optional: Test another NEW test project. Leave OWNER: IDE and make a small
+   change to the design. Update Game Project should regenerate its main.c.
+7. External editing: Edit main.c in a text editor (without opening it in
+   CoderGirl), then Update Game Project. Only the OWNER line should switch
+   to user; user edits must remain. NEVER use your only important copy.
+8. Legacy safety: Put an old handmade main.c in a test game with no ownership
+   metadata; even adding // OWNER: IDE should not allow an overwrite.
+
+Why CRC32?
+----------
+CRC32 is a fast, small way to detect normal source modifications. This is
+not a cryptographic guarantee: theoretical CRC collisions exist. The IDE
+also checks file size, a valid ownership record and its generated header.
+
+What changed
+------------
+gamemainownership.h                  NEW: CRC32, metadata and safe ownership
+mainwindow.cpp                      claim ownership on Save, initialise games
+                                     as IDE-owned, detect unsaved editor buffers
+gamedesigner.cpp/.h                  regenerate only verified IDE-owned main.c;
+                                     back up both source and metadata
+idelibs/templates/games/main.c       update beginner starter documentation
+idelibs/docs/cheatsheet.json         update Guide 03 and 27; add Guide 52
+CMakeLists.txt                       list new source header
+
+No changes to SIDBOX firmware, game physics, PPB, SD maps or the runtime.
+
+Build/test status
+-----------------
+Source/code-path and JSON structural checks performed in this environment.
+A full Qt6 build and the optional Qt-based ownership unit test could not run:
+Qt6 development packages are not installed here. Compile on Fedora and test
+with a backed-up game before trusting this with valuable source code.
+
+Optional test source: development/tests/test_gamemainownership_stage352.cpp
+Build it separately with Qt6Core and zlib if desired. It isn't part of the
+main IDE application.

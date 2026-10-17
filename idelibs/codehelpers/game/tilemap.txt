@@ -362,7 +362,14 @@ SIDBOX timings still need measuring, including LCD wait and audio/IRQ.
 
 GAMERGIRL CUSTOM COLLISION ZONES (STAGE 3.43)
 ---------------------------------------------
-Custom 1..8 can be named in the tilemap editor (names stored only in .sbgm).
+Custom 1..8 can be named in the tilemap editor (stored in .sbgm).
+When exporting a level, the IDE writes these game-specific #defines into
+  gamelevels/level1.h  (included automatically by generated maingame.c.txt)
+For example, naming Custom 2 "Water" gives GAME_ZONE_ID_WATER, whose
+value is 2. The always-available GAME_ZONE_ID_CUSTOM_1..8 remain stable.
+Spaces/punctuation turn into underscores; duplicate names are suffixed.
+Re-export the tilemap after renaming any zone. Do not edit gametilemap.h
+for these names: that is the shared physics engine and may be upgraded.
 Paint collision IDs 9..16 for nonblocking sensors; 17..24 for solid zones.
 Both versions trigger callback zone numbers 1..8, with GAME_ZONE_ENTERED,
 GAME_ZONE_INSIDE and GAME_ZONE_EXITED. Nonblocking effects require overlap;
@@ -372,9 +379,9 @@ These types take the existing collision byte; SD .map remains version 4.
     static void on_zone(uint8_t zone, uint8_t event, int32_t x, int32_t y, void *u) {
         game_tile_player_t *p = (game_tile_player_t *)u;
         (void)x; (void)y;
-        if (zone == 2 && event == GAME_ZONE_ENTERED)
+        if (zone == GAME_ZONE_ID_WATER && event == GAME_ZONE_ENTERED)
             game_tile_player_set_physics_water(p);  // optional example
-        if (zone == 2 && event == GAME_ZONE_EXITED)
+        if (zone == GAME_ZONE_ID_WATER && event == GAME_ZONE_EXITED)
             game_tile_player_set_physics_normal(p);
     }
     game_tile_set_zone_callback(on_zone, &player_physics);
