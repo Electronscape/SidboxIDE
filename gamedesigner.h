@@ -74,6 +74,7 @@ private:
         int cellWidth = 0;  // 0 = whole image (old Stage 52 files stay compatible)
         int cellHeight = 0;
         int frame = 0;
+        QString animationFile; // optional .sbanim sidecar with named player animation states
         bool locked = false;
         // Stage 3.0B: optional behaviours on each placed sprite instance.
         QString objectType = QStringLiteral("decoration");
@@ -119,6 +120,7 @@ private:
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
     void openTilemapEditor();
+    void openPlayerAnimationEditor(int resourceIndex = -1);
     void rebuildTilemapOverlay();
     bool exportTilemap(bool showMessage, bool includeMissingHelper = false);
     struct SplinePath {

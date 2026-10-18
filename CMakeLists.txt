@@ -31,6 +31,8 @@ qt_add_executable(SidboxIDE
     gamemainownership.h
     gametilemap.cpp
     gametilemap.h
+    gameanimationeditor.cpp
+    gameanimationeditor.h
     gameaudio.cpp
     gameaudio.h
     gamepalette.cpp

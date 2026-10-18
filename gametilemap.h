@@ -47,6 +47,8 @@ struct SidboxCollisionStamp {
     int height = 2;
     int tileSize = 8;
     QVector<QPoint> points; // at least two: (0,y) ... (width*tileSize,y)
+    bool passiveSurface = false; // opt in: project gravity along the shape, per stamp
+    int dampingPercent = 2; // 0=free slide, 100=strong resistance; ignored unless enabled
     void resizeStamp(int w, int h);
 };
 
@@ -109,6 +111,7 @@ class QListWidget;
 class QLineEdit;
 class QTabWidget;
 class QScrollArea;
+class QSlider;
 
 class SidboxTilemapEditor final : public QDialog
 {
@@ -141,6 +144,11 @@ private:
     QLineEdit *m_collisionName = nullptr;
     QSpinBox *m_collisionWidth = nullptr;
     QSpinBox *m_collisionHeight = nullptr;
+    QCheckBox *m_collisionPassive = nullptr;
+    QSpinBox *m_collisionDamping = nullptr;
+    QSlider *m_collisionDampingSlider = nullptr;
+    SidboxTilemap m_collisionDampingStart;
+    bool m_collisionDampingDragging = false;
     QLabel *m_collisionPointLabel = nullptr;
     QSpinBox *m_collisionPointX = nullptr;
     QSpinBox *m_collisionPointY = nullptr;

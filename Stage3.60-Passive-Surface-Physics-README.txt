@@ -1,0 +1,69 @@
+GamerGirl Stage 3.60 — Passive Collision-Stamp Surface Physics
+===============================================================
+Base: Stage 3.59. This update changes the EDITOR and the bundled V1
+GAME HELPER; it does NOT patch the SIDBOX firmware.
+
+Changed source:
+  gametilemap.cpp
+  gametilemap.h
+  idelibs/codehelpers/game/tilemap.c
+  idelibs/codehelpers/game/tilemap.h
+  development/tests/test_surface_physics_stage360.c (new test)
+  development/tests/test_surface_motion_stage360.c (new test)
+
+EDITOR USE
+----------
+1. Rebuild the IDE in Qt Creator.
+2. Open Tilemap Editor > Collision Stamps and select a point-defined slope.
+   Bezier-generated curves use these same point-defined stamps.
+3. Check "Passive surface physics (slide with gravity)".
+4. Adjust Damping 0–100% using the slider or spin box:
+     0% = no surface momentum loss (ice-like)
+     2% = slippery with slight resistance (initial enabled default)
+     15% = rougher, motion slows more quickly
+     70% = very resistant to sliding
+     100% = stops passive/external horizontal momentum on contact
+   The damping setting affects external/gravity momentum while grounded;
+   joystick walking speed is still controlled by the normal player preset.
+5. Give the stamp an appropriate name, e.g. slope2slippery. All placements
+   share the SAME setting and follow edits to the original shape. Mirror X
+   reverses the calculated downhill direction.
+6. Save the map, Update Game Project, regenerate game resources/level1.c and
+   the SD .map when applicable. Update gametilemap.c/.h in the GAME PROJECT,
+   rebuild the V1 game, and recopy the regenerated SD .map if used.
+   The existing user-owned main.c does not require modification.
+
+HOW IT WORKS
+------------
+- The per-stamp setting is OFF for all existing .sbgm projects and stamps.
+- When the character stands on an enabled collision stamp, the runtime finds
+  the actual supporting curve segment, projects gravity along its tangent,
+  and adds downhill acceleration to the existing force_vx100 velocity.
+- The chosen stamp's damping replaces force_drag_percent ONLY for contact
+  frames. It does not permanently change the player's physics preset.
+- The feature adds no surface array. SD map v4 already stores an 8-byte
+  descriptor per point-shape: its previously reserved byte and u16 are now
+  damping_percent and surface_flags. Existing v4 files with zero reserved
+  data still load unchanged with the NEW helper. Old binaries/old helper
+  cannot be assumed to accept newly enabled surface data: UPDATE HELPERS.
+- Embedded C export carries identical metadata in shape_defs.
+- The result uses integer arithmetic in the V1 player loop; no malloc,
+  floating point or per-frame trigonometry.
+- Regular painted collision types 3/4 and legacy v3 slope pixels do not
+  acquire new settings; the opt-in is for point-defined collision stamps.
+- Loop Tracks are a separate circular guiding mode, unchanged by this pass.
+
+TESTING
+-------
+Host GCC -Wall -Wextra -Werror C syntax: PASS
+Host C tests of direction: downhill right/left, mirrored both ways, flat,
+  feature disabled, and noncontact: PASS (6 cases)
+Host C player simulation: stationary start downhill, 100% sticky and
+  legacy disabled: PASS
+Host C bowl simulation (piecewise two slopes, 0% damping): player slides
+  down the left, rises to the right, slows and reverses: PASS
+Qt6 build: NOT AVAILABLE here (Qt6 development files missing).
+Real SIDBOX game/hardware: NOT YET TESTED.
+Back up the project before applying. Test both external SD map and embedded
+map modes in your project, plus transitions onto/off slopes, jumps,
+interactions with ice/force presets, and mirrored curves.

@@ -1,0 +1,5 @@
+Stage 3.64 - Basic player animation wiring in generated maingame.c.txt
+Source changed: gamedesigner.cpp (SidboxGameDesigner::exportExampleMain())
+Extra: Stage3.64-Player-Animation-Easy-Integration-README.txt,
+       development/tests/stage364_main_animation_integration_test.py
+User-owned main.c is not overwritten. Original Stage 3.63 physics remains unchanged.

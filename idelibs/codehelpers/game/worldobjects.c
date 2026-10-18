@@ -87,8 +87,8 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
     if (!p || !p->x100 || !p->y100 || !p->vy100 || !p->on_ground ||
         !p->width || !p->height) return;
     p->ready = 1;
-    const int32_t x = *p->x100 / 100;
-    const int32_t feet = *p->y100 / 100 + p->height;
+    const int32_t x = *p->x100 / 100 + p->offset_x;
+    const int32_t feet = *p->y100 / 100 + p->offset_y + p->height;
     p->before_x = x;
     p->before_feet = feet;
     p->before_vy100 = *p->vy100;
@@ -116,7 +116,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
         int32_t moved = 0;
         for (int64_t n = 0; n < pixels; ++n) {
             if (p->position_blocked &&
-                p->position_blocked(x + moved + step, *p->y100 / 100,
+                p->position_blocked(x + moved + step, *p->y100 / 100 + p->offset_y,
                                     p->width, p->height, p->collision_context)) {
                 p->spring_x100 = 0; /* Solid walls absorb momentum. */
                 p->spring_remainder_x100 = 0;
@@ -155,13 +155,13 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
                straight THROUGH a solid wall before tile collision runs. */
             const int32_t delta_y = o->y - o->previous_y;
             const int32_t delta_x = o->x - o->previous_x;
-            int32_t new_y = *p->y100 / 100 + delta_y;
+            int32_t new_y = *p->y100 / 100 + p->offset_y + delta_y;
             if (!p->position_blocked ||
                 !p->position_blocked(x, new_y, p->width, p->height,
                                      p->collision_context))
                 *p->y100 += delta_y * 100;
             else
-                new_y = *p->y100 / 100;
+                new_y = *p->y100 / 100 + p->offset_y;
             if (!p->position_blocked) {
                 *p->x100 += delta_x * 100;
             } else {
@@ -204,8 +204,8 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     const uint8_t jumping_now = (uint8_t)(p->jump_held && *p->jump_held &&
                                           !p->before_jump_held);
     const uint8_t rising = (uint8_t)(*p->vy100 < 0);
-    const int32_t x = *p->x100 / 100;
-    const int32_t y = *p->y100 / 100;
+    const int32_t x = *p->x100 / 100 + p->offset_x;
+    const int32_t y = *p->y100 / 100 + p->offset_y;
     const int32_t feet = y + p->height;
     game_world_object_t *best = 0;
     uint8_t best_touch = 0;
@@ -228,13 +228,13 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             const int64_t oy2 = (int64_t)o->y + o->height;
             if ((int64_t)x < ox2 && (int64_t)x + p->width > o->x &&
                 (int64_t)y < oy2 && (int64_t)y + p->height > o->y) {
-                if ((int64_t)old_x + p->width <= o->x) *p->x100 = (o->x - p->width) * 100;
-                else if (old_x >= ox2) *p->x100 = (int32_t)ox2 * 100;
+                if ((int64_t)old_x + p->width <= o->x) *p->x100 = (o->x - p->width - p->offset_x) * 100;
+                else if (old_x >= ox2) *p->x100 = ((int32_t)ox2 - p->offset_x) * 100;
                 else if ((int64_t)old_y + p->height <= o->y) {
-                    *p->y100 = (o->y - p->height) * 100;
+                    *p->y100 = (o->y - p->height - p->offset_y) * 100;
                     *p->vy100 = 0; *p->on_ground = 1;
                 } else if (old_y >= oy2) {
-                    *p->y100 = (int32_t)oy2 * 100;
+                    *p->y100 = ((int32_t)oy2 - p->offset_y) * 100;
                     if (*p->vy100 < 0) *p->vy100 = 0;
                 }
                 p->spring_x100 = 0; p->spring_remainder_x100 = 0;
@@ -331,7 +331,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     }
     if (!best) return;
     /* Side/underside contact must NOT teleport the player onto the top. */
-    if (!best_touch) *p->y100 = (best->y - p->height) * 100;
+    if (!best_touch) *p->y100 = (best->y - p->height - p->offset_y) * 100;
     if (best->type == GAME_OBJECT_SPRING) {
         best->spring_triggered = 1; /* Exactly one sound event per launch. */
         int32_t launch = best->spring_strength > 0 ? best->spring_strength : 10;

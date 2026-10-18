@@ -97,8 +97,8 @@ typedef struct {
     uint8_t width, height; /* stamp dimensions in tile cells */
     uint16_t point_offset; /* index into shape_points */
     uint8_t point_count;
-    uint8_t reserved;
-    uint16_t reserved2;
+    uint8_t damping_percent; /* 0..100; active only when surface_flags bit 0 set */
+    uint16_t surface_flags; /* bit 0: passive gravity sliding, old maps: 0 */
 } game_tile_shape_t;
 typedef struct {
     uint16_t x, y; /* local pixel position */
@@ -227,6 +227,10 @@ typedef struct {
     int32_t force_vx100, force_remainder100;
     uint8_t force_drag_percent; /* Horizontal loss per frame: 0 = coast forever. */
     /* Loop track state. These fields are idle/zero for maps without loops. */
+    /* Physical hitbox inside the BOB. If width/height are zero, use the
+       original full BOB bounds (no animation setup required). Offsets are
+       measured from the sprite top-left WORLD position. */
+    uint16_t hitbox_x, hitbox_y, hitbox_w, hitbox_h;
     uint8_t loop_index; /* 0=not attached; index+1 otherwise */
     uint8_t loop_cooldown;
     int32_t loop_phase; /* signed [0..65536] revolution position */
@@ -236,6 +240,13 @@ typedef struct {
 uint8_t game_tile_player_start(game_tile_player_t *p,
                                 const game_tilemap_t *map, gfxbob_t *sprite);
 void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y);
+/* Set the physical hitbox relative to the visible BOB top-left. Returns 0
+   for invalid/out-of-sprite rectangles; then keeps the previous bounds.
+   Call after game_tile_player_start(), before the first game frame.
+   Width/height of 0 reset to full sprite (legacy fallback). */
+uint8_t game_tile_player_set_hitbox(game_tile_player_t *p,
+                                   uint16_t x, uint16_t y,
+                                   uint16_t width, uint16_t height);
 void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frames);
 /* External impulses, in PIXELS PER FRAME. Positive X = right; positive Y = down.
    Adds velocity, not an immediate position change. Call once for a knockback,

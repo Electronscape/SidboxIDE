@@ -476,3 +476,27 @@ second large temporary copy during level startup.
 Update the project's gametilemap.c/.h helper through Update Game Project
 after updating the IDE, and regenerate level1.c/.h and level1.map.
 Existing smaller maps remain compatible. No firmware change is needed.
+
+PLAYER ANIMATION HITBOX (Stage 3.68)
+------------------------------------
+GamerGirl's Player Animation Editor exposes Hitbox X / Y / W / H.
+Save Animations -> Yes updates gameanimations/player_anim.h with the values.
+The generated V1 main.c calls game_tile_player_set_hitbox() just after
+successful game_tile_player_start() when GAMERGIRL_PLAYER_ANIMATIONS == 1.
+A visual 64x64 BOB can therefore use a 32x52 hitbox at X=16 Y=12.
+The sprite still draws at its original world origin. Slopes, walls, loops,
+zones, hazards and the generated world-object adapter use physical bounds.
+The editor enforces X+W<=cellWidth, Y+H<=cellHeight and nonzero W/H.
+
+For a manually maintained game main.c, after successful player_start():
+    game_tile_player_set_hitbox(&player_physics,
+        PLAYER_ANIM_HITBOX_X, PLAYER_ANIM_HITBOX_Y,
+        PLAYER_ANIM_HITBOX_W, PLAYER_ANIM_HITBOX_H);
+Your player_anim.h must be regenerated in Stage 3.68 or newer so the HITBOX
+macros are present. Update both tilemap helpers and worldobjects helpers.
+Set the generated world_player.width/height and offset_x/offset_y fields
+from player_physics when using moving platforms or springs.
+
+Without animation configuration or with GAMERGIRL_PLAYER_ANIMATIONS off,
+the helper keeps the legacy FULL sprite width and height automatically.
+To clear a custom box manually, call set_hitbox(&player_physics,0,0,0,0).

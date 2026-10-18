@@ -305,6 +305,8 @@ QJsonObject SidboxTilemap::toJson() const
             QJsonArray pair; pair.append(p.x()); pair.append(p.y()); points.append(pair);
         }
         item.insert(QStringLiteral("points"), points);
+        item.insert(QStringLiteral("passiveSurface"), stamp.passiveSurface);
+        item.insert(QStringLiteral("dampingPercent"), stamp.dampingPercent);
         collisionStampList.append(item);
     }
     result.insert(QStringLiteral("collisionStamps"), collisionStampList);
@@ -475,6 +477,14 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
         stamp.width = item.value(QStringLiteral("width")).toInt(0);
         stamp.height = item.value(QStringLiteral("height")).toInt(0);
         stamp.tileSize = item.value(QStringLiteral("tileSize")).toInt(0);
+        const QJsonValue passive = item.value(QStringLiteral("passiveSurface"));
+        const QJsonValue damping = item.value(QStringLiteral("dampingPercent"));
+        if ((!passive.isUndefined() && !passive.isBool()) ||
+            (!damping.isUndefined() && (!damping.isDouble() ||
+             damping.toDouble() != damping.toInt(-1)))) return false;
+        stamp.passiveSurface = passive.toBool(false);
+        stamp.dampingPercent = damping.isUndefined() ? 2 : damping.toInt(-1);
+        if (stamp.dampingPercent < 0 || stamp.dampingPercent > 100) return false;
         if (stamp.name.isEmpty() || stamp.name.size() > 80 || stamp.width < 1 ||
             stamp.width > 16 || stamp.height < 1 || stamp.height > 16 ||
             (stamp.tileSize != 8 && stamp.tileSize != 16 && stamp.tileSize != 32)) return false;
@@ -2123,7 +2133,8 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         const auto &right = b.collisionStamps.at(i);
         if (left.name != right.name || left.width != right.width ||
             left.height != right.height || left.tileSize != right.tileSize ||
-            left.points != right.points) return false;
+            left.points != right.points || left.passiveSurface != right.passiveSurface ||
+            left.dampingPercent != right.dampingPercent) return false;
     }
     for (int i = 0; i < a.loops.size(); ++i) {
         const auto &l=a.loops.at(i), &r=b.loops.at(i);
@@ -2751,6 +2762,23 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionDimensions->addWidget(new QLabel(tr("Height"), collisionEditPane));
     collisionDimensions->addWidget(m_collisionHeight);
     collisionEditLayout->addLayout(collisionDimensions);
+    m_collisionPassive = new QCheckBox(tr("Passive surface physics (slide with gravity)"), collisionEditPane);
+    m_collisionPassive->setToolTip(tr("Enable automatic downhill acceleration on this collision stamp. "
+        "It works on straight slopes and Bezier-generated curves, including mirrored placements."));
+    collisionEditLayout->addWidget(m_collisionPassive);
+    auto *dampingRow = new QHBoxLayout;
+    dampingRow->addWidget(new QLabel(tr("Damping"), collisionEditPane));
+    m_collisionDampingSlider = new QSlider(Qt::Horizontal, collisionEditPane);
+    m_collisionDampingSlider->setRange(0, 100);
+    m_collisionDampingSlider->setToolTip(tr("0% keeps surface momentum; 100% removes it immediately. "
+        "Only applies while standing on this stamp, not to joystick walking speed."));
+    m_collisionDamping = new QSpinBox(collisionEditPane);
+    m_collisionDamping->setRange(0, 100);
+    m_collisionDamping->setSuffix(QStringLiteral("%"));
+    m_collisionDamping->setKeyboardTracking(false);
+    dampingRow->addWidget(m_collisionDampingSlider, 1);
+    dampingRow->addWidget(m_collisionDamping);
+    collisionEditLayout->addLayout(dampingRow);
     auto *collisionScroll = new QScrollArea(collisionEditPane);
     m_collisionCanvas = new CollisionCanvas(collisionScroll);
     m_collisionCanvas->map = &m_map;
@@ -3191,6 +3219,36 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         recordChange(before);
         updateCollisionList(row);
     });
+    connect(m_collisionPassive, &QCheckBox::toggled, this, [this](bool enabled) {
+        const int row = m_collisionList->currentRow();
+        if (row < 0 || row >= m_map.collisionStamps.size()) return;
+        const SidboxTilemap before = m_map;
+        m_map.collisionStamps[row].passiveSurface = enabled;
+        m_collisionDamping->setEnabled(enabled);
+        m_collisionDampingSlider->setEnabled(enabled);
+        recordChange(before);
+    });
+    connect(m_collisionDampingSlider, &QSlider::sliderPressed, this, [this]() {
+        m_collisionDampingStart = m_map;
+        m_collisionDampingDragging = true;
+    });
+    connect(m_collisionDampingSlider, &QSlider::sliderReleased, this, [this]() {
+        if (!m_collisionDampingDragging) return;
+        m_collisionDampingDragging = false;
+        recordChange(m_collisionDampingStart); // one undo step for an entire drag
+    });
+    connect(m_collisionDampingSlider, &QSlider::valueChanged,
+            m_collisionDamping, &QSpinBox::setValue);
+    connect(m_collisionDamping, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this](int value) {
+            m_collisionDampingSlider->setValue(value);
+            const int row = m_collisionList->currentRow();
+            if (row < 0 || row >= m_map.collisionStamps.size() ||
+                m_map.collisionStamps.at(row).dampingPercent == value) return;
+            const SidboxTilemap before = m_map;
+            m_map.collisionStamps[row].dampingPercent = value;
+            if (!m_collisionDampingDragging) recordChange(before);
+        });
     connect(m_collisionWidth, qOverload<int>(&QSpinBox::valueChanged), this,
         [this](int width) {
             if (!m_collisionList || m_collisionList->currentRow() < 0 ||
@@ -3829,6 +3887,16 @@ void SidboxTilemapEditor::updateCollisionEditorControls()
     m_collisionName->setEnabled(valid);
     m_collisionWidth->setEnabled(valid);
     m_collisionHeight->setEnabled(valid);
+    m_collisionPassive->setEnabled(valid);
+    const bool slideEnabled = valid && m_map.collisionStamps.at(selected).passiveSurface;
+    m_collisionDamping->setEnabled(slideEnabled);
+    m_collisionDampingSlider->setEnabled(slideEnabled);
+    const QSignalBlocker passiveBlock(m_collisionPassive);
+    const QSignalBlocker dampingBlock(m_collisionDamping);
+    const QSignalBlocker sliderBlock(m_collisionDampingSlider);
+    m_collisionPassive->setChecked(slideEnabled);
+    m_collisionDamping->setValue(valid ? m_map.collisionStamps.at(selected).dampingPercent : 2);
+    m_collisionDampingSlider->setValue(m_collisionDamping->value());
     const QSignalBlocker nameBlock(m_collisionName);
     const QSignalBlocker widthBlock(m_collisionWidth);
     const QSignalBlocker heightBlock(m_collisionHeight);
@@ -4444,7 +4512,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
             const auto &shape = map.collisionStamps.at(id);
             source += "    {" + QByteArray::number(shape.width) + ", " +
                 QByteArray::number(shape.height) + ", " + QByteArray::number(offset) +
-                ", " + QByteArray::number(shape.points.size()) + ", 0, 0},\n";
+                ", " + QByteArray::number(shape.points.size()) + ", " +
+                QByteArray::number(shape.passiveSurface ? shape.dampingPercent : 0) + ", " +
+                QByteArray::number(shape.passiveSurface ? 1 : 0) + "},\n";
             offset += shape.points.size();
         }
         source += "};\n\nconst game_tile_shape_point_t game_level1_shape_points[] = {\n";
@@ -4567,7 +4637,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
                 payload.append(char(shape.width)); payload.append(char(shape.height));
                 pushU16(offset);
                 payload.append(char(shape.points.size()));
-                payload.append(char(0)); pushU16(0);
+                payload.append(char(shape.passiveSurface ? shape.dampingPercent : 0));
+                pushU16(shape.passiveSurface ? 1 : 0);
                 offset += shape.points.size();
             }
             for (int id : usedShapes)

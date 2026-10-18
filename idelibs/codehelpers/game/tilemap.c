@@ -206,7 +206,7 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
         const uint8_t *d = metadata + 2u + 8u * i;
         const uint16_t offset = cg_map_u16(d+2);
         if (!d[0] || !d[1] || d[0] > 16 || d[1] > 16 ||
-            d[4] < 2 || d[4] > 128 || d[5] || cg_map_u16(d+6) ||
+            d[4] < 2 || d[4] > 128 || d[5] > 100 || (cg_map_u16(d+6) & ~1u) ||
             offset != point_count) goto finish;
         point_count += d[4];
     }
@@ -698,6 +698,197 @@ static int32_t custom_surface(const game_tilemap_t *m, int32_t tx, int32_t ty,
     return ty * s + best;
 }
 
+/* Optional, stamp-local ground response. Search ONLY the cells at the
+ * player's feet, then use the SAME line interpolation as ground collision.
+ * Find the segment that actually supports the player's whole hitbox; don't
+ * apply physics from a different curve underneath, or from artwork/regions.
+ * Values are in hundredths of a pixel/tick, and no floating point is used. */
+static uint8_t cg_passive_shape_surface(const game_tilemap_t *m,
+    int32_t x, int32_t feet, int32_t width, int32_t gravity,
+    int32_t *force_x100, uint8_t *damping, uint8_t continuing_slide)
+{
+    if (!m->shape_refs || !m->shape_instances || !m->shape_defs ||
+        !m->shape_points || gravity <= 0) return 0;
+    const int32_t s = m->tile_size;
+    const int32_t mid_left = x + (width - 1) / 2;
+    const int32_t mid_right = x + width / 2;
+
+    /* The feet can straddle two adjacent downhill stamps.  The heel still
+     * touches the UPPER stamp while the middle of the feet is already over
+     * the NEXT stamp, which begins several pixels lower.  Requiring the
+     * current supporting stamp to contain the foot centre makes passive
+     * acceleration disappear at every stamp join (especially with 32px
+     * players crossing 16px shapes).  Instead, require the centre to be
+     * over ANY enabled passive surface in a short downward search, then
+     * take the force from whichever slope actually supports the heel.
+     * This still prevents an overhanging heel from being dragged off a
+     * cliff when the foot centre hasn't reached the sloping ground. */
+    uint8_t centre_on_passive = 0;
+    const int32_t drop = width < 128 ? width : 128;
+    for (int32_t ty = floor_tile(feet - 2, s);
+         ty <= floor_tile(feet + drop, s) && !centre_on_passive; ++ty) {
+        if (ty < 0 || ty >= m->height) continue;
+        for (int32_t tx = floor_tile(mid_left, s);
+             tx <= floor_tile(mid_right, s); ++tx) {
+            if (tx < 0 || tx >= m->width ||
+                game_tile_at(m, tx, ty) != GAME_TILE_POINT_SLOPE) continue;
+            const uint16_t ref = m->shape_refs[(uint32_t)ty * m->width + tx];
+            if (!ref || ref > m->shape_instance_count) continue;
+            const game_tile_shape_instance_t *place = &m->shape_instances[ref-1];
+            if (place->shape >= m->shape_count) continue;
+            const game_tile_shape_t *d = &m->shape_defs[place->shape];
+            if (!(d->surface_flags & 1u) || d->point_count < 2) continue;
+            const game_tile_shape_point_t *pts = m->shape_points + d->point_offset;
+            const int32_t origin = (int32_t)place->x * s;
+            const int32_t shape_width = (int32_t)d->width * s;
+            const int32_t left = origin + ((place->flags & 1u)
+                ? shape_width - 1 - (int32_t)pts[d->point_count-1].x
+                : (int32_t)pts[0].x);
+            const int32_t right = origin + ((place->flags & 1u)
+                ? shape_width - 1 - (int32_t)pts[0].x
+                : (int32_t)pts[d->point_count-1].x);
+            if ((mid_left >= left && mid_left <= right) ||
+                (mid_right >= left && mid_right <= right)) {
+                centre_on_passive = 1;
+                break;
+            }
+        }
+    }
+    /* Entry requires centre contact. Once the slope has already started
+     * moving the player, don't stop sliding just because the centre has
+     * passed the final short stamp while the heel STILL stands on it. */
+    if (!centre_on_passive && !continuing_slide) return 0;
+
+    int32_t chosen_diff = 3;
+    uint8_t found = 0;
+    for (int32_t ty = floor_tile(feet - 1, s); ty <= floor_tile(feet, s); ++ty) {
+        if (ty < 0 || ty >= m->height) continue;
+        for (int32_t tx = floor_tile(x, s); tx <= floor_tile(x + width - 1, s); ++tx) {
+            if (tx < 0 || tx >= m->width ||
+                game_tile_at(m, tx, ty) != GAME_TILE_POINT_SLOPE) continue;
+            const uint16_t ref = m->shape_refs[(uint32_t)ty * m->width + tx];
+            if (!ref || ref > m->shape_instance_count) continue;
+            const game_tile_shape_instance_t *place = &m->shape_instances[ref-1];
+            if (place->shape >= m->shape_count) continue;
+            const game_tile_shape_t *d = &m->shape_defs[place->shape];
+            if (!(d->surface_flags & 1u)) continue;
+            const int32_t origin = (int32_t)place->x * s;
+            const int32_t shape_width = (int32_t)d->width * s;
+            const game_tile_shape_point_t *pts = m->shape_points + d->point_offset;
+            /* Engage passive motion only when the centre of the player's
+             * feet is supported by this stamp's real polyline footprint.
+             * For even-width hitboxes, count EITHER centre pixel. This
+             * gives the desired half-foot step-over behaviour at BOTH
+             * cliff edges without requiring the stamp to cover half of
+             * the entire player width. That old requirement disabled
+             * sliding on narrow stamps (e.g. an 8px ramp beneath a 20px
+             * collision box), and intermittently restored normal drag.
+             * The regular collision/landing footprint is unchanged. */
+            int32_t shape_left = origin + ((place->flags & 1u)
+                ? shape_width - 1 - (int32_t)pts[d->point_count-1].x
+                : (int32_t)pts[0].x);
+            int32_t shape_right = origin + ((place->flags & 1u)
+                ? shape_width - 1 - (int32_t)pts[0].x
+                : (int32_t)pts[d->point_count-1].x);
+            if (shape_left < origin) shape_left = origin;
+            if (shape_right >= origin + shape_width)
+                shape_right = origin + shape_width - 1;
+            const int32_t foot_middle_left = x + (width - 1) / 2;
+            const int32_t foot_middle_right = x + width / 2;
+            /* The centre may be on the NEXT, lower passive stamp.
+             * Evaluate this earlier stamp if it still holds the player's
+             * actual contact point; the separate centre gate above keeps
+             * edge-only contact from pulling the player. */
+            if (x + width - 1 < shape_left || x > shape_right)
+                continue;
+            /* The landing solver uses the HIGHEST point beneath the entire
+             * player footprint.  Sample that same point here, rather than
+             * the DOWNHILL end of an arbitrarily encountered tile segment.
+             * Previously the two heights could differ by several pixels on
+             * wide hitboxes and steep Bezier curves.  That intermittently
+             * disabled the stamp damping and made ice feel sticky again. */
+            int32_t left = x - origin;
+            int32_t right = x + width - 1 - origin;
+            int32_t centre = foot_middle_left - origin;
+            int32_t other_centre = foot_middle_right - origin;
+            if (place->flags & 1u) {
+                const int32_t old_left = left;
+                left = shape_width - 1 - right;
+                right = shape_width - 1 - old_left;
+                centre = shape_width - 1 - centre;
+                other_centre = shape_width - 1 - other_centre;
+            }
+            if (centre < (int32_t)pts[0].x ||
+                centre > (int32_t)pts[d->point_count-1].x)
+                centre = other_centre;
+            if (left < 0) left = 0;
+            if (right >= shape_width) right = shape_width - 1;
+            if (left > right) continue;
+
+            int32_t supporting_y = 0x7FFFFFFF;
+            int32_t tangent_dx = 0, tangent_dy = 0;
+            int32_t contact_dx = 0, contact_dy = 0;
+            for (uint8_t k = 1; k < d->point_count; ++k) {
+                const game_tile_shape_point_t *a = &pts[k-1], *b = &pts[k];
+                const int32_t dx = (int32_t)b->x - a->x;
+                const int32_t dy = (int32_t)b->y - a->y;
+                if (dx <= 0 || b->x < left || a->x > right) continue;
+                const int32_t seg_left = left > a->x ? left : a->x;
+                const int32_t seg_right = right < b->x ? right : b->x;
+                /* Minimum Y is the actual physical contact surface. */
+                const int32_t sample = dy < 0 ? seg_right : seg_left;
+                const int32_t surface = (int32_t)place->y * s + a->y +
+                    (int32_t)((int64_t)dy * (sample - a->x) / dx);
+                if (surface < supporting_y) {
+                    supporting_y = surface;
+                    contact_dx = dx;
+                    contact_dy = dy;
+                }
+                /* Use the tangent beneath the CENTRE of the player's feet,
+                 * not the outermost uphill edge.  The centre-foot coverage
+                 * gate above prevents an invisible tug at cliff edges. */
+                if (centre >= a->x && centre <= b->x) {
+                    tangent_dx = dx;
+                    tangent_dy = dy;
+                }
+            }
+            /* When the centre has moved into the next stamp, use the
+             * tangent of the actual supporting point on THIS stamp.
+             * When both lie on one curved stamp, prefer the centre tangent
+             * so a Bezier bowl reverses at its centre, not at the heel. */
+            if (!tangent_dx) {
+                tangent_dx = contact_dx;
+                tangent_dy = contact_dy;
+            }
+            if (!tangent_dx) continue;
+            const int32_t diff = supporting_y > feet
+                ? supporting_y - feet : feet - supporting_y;
+            if (diff <= 2 && diff < chosen_diff) {
+                const int64_t divisor = (int64_t)tangent_dx * tangent_dx +
+                                        (int64_t)tangent_dy * tangent_dy;
+                /* Gravity is measured in hundredths of a pixel/frame.
+                 * With a gentle ramp the tangent projection can be less
+                 * than one hundredth: truncating it to zero made a 2%
+                 * slippery slope behave like ordinary, stationary ground.
+                 * Round to nearest and retain the smallest representable
+                 * downhill impulse for a non-horizontal segment. */
+                const int64_t numerator = (int64_t)gravity *
+                    tangent_dy * tangent_dx;
+                int32_t acceleration = (int32_t)((numerator +
+                    (numerator >= 0 ? divisor/2 : -(divisor/2))) / divisor);
+                if (!acceleration && tangent_dy)
+                    acceleration = tangent_dy > 0 ? 1 : -1;
+                if (place->flags & 1u) acceleration = -acceleration;
+                *damping = d->damping_percent;
+                *force_x100 = acceleration;
+                chosen_diff = diff;
+                found = 1;
+            }
+        }
+    }
+    return found;
+}
+
 static uint8_t touches_slope_body(const game_tilemap_t *m, int32_t x, int32_t y,
                                   int32_t width, int32_t height)
 {
@@ -943,6 +1134,32 @@ uint8_t game_tile_player_start(game_tile_player_t *p,
     game_tile_player_reset(p, sprite->drawx, sprite->drawy);
     return 1;
 }
+uint8_t game_tile_player_set_hitbox(game_tile_player_t *p,
+                                   uint16_t x, uint16_t y,
+                                   uint16_t width, uint16_t height)
+{
+    if (!p || !p->sprite) return 0;
+    if (!width && !height) {
+        p->hitbox_x = p->hitbox_y = p->hitbox_w = p->hitbox_h = 0;
+    } else {
+        if (!width || !height || x >= p->sprite->width ||
+            y >= p->sprite->height ||
+            (uint32_t)x + width > p->sprite->width ||
+            (uint32_t)y + height > p->sprite->height)
+            return 0;
+        p->hitbox_x = x; p->hitbox_y = y;
+        p->hitbox_w = width; p->hitbox_h = height;
+    }
+    /* Keep the sprite's world position. Recheck feet at the new physical
+       bounds without clearing existing velocity or forces. */
+    const int32_t bx = p->x100 / 100 + p->hitbox_x;
+    const int32_t by = p->y100 / 100 + p->hitbox_y;
+    const int32_t w = p->hitbox_w ? p->hitbox_w : p->sprite->width;
+    const int32_t h = p->hitbox_h ? p->hitbox_h : p->sprite->height;
+    p->on_ground = tile_floor(p->map, bx, w, by+h, by+h) == by+h;
+    return 1;
+}
+
 void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
 {
     if (!p || !p->sprite) return;
@@ -956,8 +1173,11 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->force_vx100 = 0; p->force_remainder100 = 0;
     p->loop_index = 0; p->loop_phase = 0; p->loop_speed100 = 0;
     p->loop_cooldown = 0;
-    const int32_t feet = y + p->sprite->height;
-    p->on_ground = tile_floor(p->map, x, p->sprite->width, feet, feet) == feet;
+    const int32_t bx = (int32_t)x + p->hitbox_x;
+    const int32_t feet = (int32_t)y + p->hitbox_y +
+        (p->hitbox_h ? p->hitbox_h : p->sprite->height);
+    const int32_t w = p->hitbox_w ? p->hitbox_w : p->sprite->width;
+    p->on_ground = tile_floor(p->map, bx, w, feet, feet) == feet;
 }
 static const int16_t cg_loop_sine_q14[257] = {
     0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370,
@@ -989,7 +1209,8 @@ static uint8_t cg_player_contacts(game_tile_player_t *p, int32_t x, int32_t y,
                                    uint8_t crossed_hazard)
 {
     const game_tilemap_t *m=p->map;
-    const int32_t w=p->sprite->width, h=p->sprite->height;
+    const int32_t w=p->hitbox_w ? p->hitbox_w : p->sprite->width;
+    const int32_t h=p->hitbox_h ? p->hitbox_h : p->sprite->height;
     p->touch_type = special_type(m, x, y, w, h);
     const uint8_t was_in_hazard = p->hazard_contact;
     const uint8_t ended_inside_hazard = p->touch_type == GAME_TILE_HAZARD;
@@ -1016,7 +1237,8 @@ static uint8_t cg_player_contacts(game_tile_player_t *p, int32_t x, int32_t y,
     }
     /* A handler can explicitly kill or teleport the player. Never
        process more batched frames after it changes that state. */
-    if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+    if (game_death_is_dead() || p->x100 / 100 + p->hitbox_x != x ||
+        p->y100 / 100 + p->hitbox_y != y)
         return 0;
     const uint8_t currentZones = cg_zone_callback ?
         game_zone_at_player(m, x, y, w, h) : 0;
@@ -1030,7 +1252,8 @@ static uint8_t cg_player_contacts(game_tile_player_t *p, int32_t x, int32_t y,
                 : ((previousZones & bit) ? GAME_ZONE_EXITED : 0);
             if (!event) continue;
             cg_zone_callback((uint8_t)(z+1), event, x, y, cg_zone_user);
-            if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+            if (game_death_is_dead() || p->x100 / 100 + p->hitbox_x != x ||
+        p->y100 / 100 + p->hitbox_y != y)
                 return 0;
         }
     }
@@ -1053,7 +1276,8 @@ static int32_t cg_loop_abs(int32_t x) { return x < 0 ? -x : x; }
 static uint8_t cg_loop_try_attach(game_tile_player_t *p, int32_t w, int32_t h)
 {
     if (!p->map->loops || !p->map->loop_count || p->loop_cooldown) return 0;
-    const int32_t px = p->x100 / 100 + w/2, feet = p->y100 / 100 + h;
+    const int32_t px = p->x100 / 100 + p->hitbox_x + w/2,
+                  feet = p->y100 / 100 + p->hitbox_y + h;
     const int32_t vx = (int32_t)p->slide_velocity100 +
                        (int32_t)p->slide_remainder100 + p->force_vx100;
     /* A sideways spring may approach the entry while slightly airborne;
@@ -1127,10 +1351,11 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
     p->loop_phase += advance;
     if (p->loop_phase >= 65536 || p->loop_phase <= -65536) {
         p->loop_phase = 0;
-        p->x100 = (loop->center_x - w/2) * 100;
-        p->y100 = (loop->center_y + loop->radius - h) * 100;
+        p->x100 = (loop->center_x - w/2 - p->hitbox_x) * 100;
+        p->y100 = (loop->center_y + loop->radius - h - p->hitbox_y) * 100;
         cg_loop_detach(p, 0, 16384);
-        if (!cg_player_contacts(p, p->x100/100, p->y100/100, 0)) return 2;
+        if (!cg_player_contacts(p, p->x100/100 + p->hitbox_x,
+                               p->y100/100 + p->hitbox_y, 0)) return 2;
         return 1;
     }
     const int32_t ns = cg_loop_sin(p->loop_phase);
@@ -1143,13 +1368,14 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
         (int32_t)((int64_t)loop->radius * 100 * ns / 16384);
     const int32_t footY100 = loop->center_y * 100 +
         (int32_t)((int64_t)loop->radius * 100 * nc / 16384);
-    p->x100 = footX100 - w*50 - inset*100*ns/16384;
-    p->y100 = footY100 - h*50 - inset*100*nc/16384;
+    p->x100 = footX100 - w*50 - inset*100*ns/16384 - p->hitbox_x*100;
+    p->y100 = footY100 - h*50 - inset*100*nc/16384 - p->hitbox_y*100;
     p->on_ground = 1; p->coyote = 0; p->jump_held = 0;
     if (speed_squared < needed || cg_loop_abs(p->loop_speed100) < 15) {
         cg_loop_detach(p, ns, nc);
     }
-    if (!cg_player_contacts(p, p->x100/100, p->y100/100, 0)) return 2;
+    if (!cg_player_contacts(p, p->x100/100 + p->hitbox_x,
+                               p->y100/100 + p->hitbox_y, 0)) return 2;
     return 1;
 }
 uint8_t game_tile_player_on_loop(const game_tile_player_t *p)
@@ -1160,7 +1386,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
     if (!p || !p->sprite || !p->map || game_death_is_dead()) return;
     if (frames > 60) frames = 60;
     const game_tilemap_t *m = p->map;
-    const int32_t w = p->sprite->width, h = p->sprite->height;
+    const int32_t w = p->hitbox_w ? p->hitbox_w : p->sprite->width;
+    const int32_t h = p->hitbox_h ? p->hitbox_h : p->sprite->height;
     for (uint16_t n = 0; n < frames; ++n) {
         if (p->loop_cooldown) --p->loop_cooldown;
         if (p->loop_index) {
@@ -1187,6 +1414,51 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         p->jump_held = jumping;
         if (!p->on_ground && p->coyote) --p->coyote;
 
+        /* Per-stamp passive physics is temporary. The selected preset's
+           normal drag is never modified, so leaving the shape restores it. */
+        uint8_t damping = p->force_drag_percent;
+        uint8_t passive_surface = 0;
+        if (p->on_ground && p->vy100 >= 0) {
+            const int32_t feet = p->y100 / 100 + p->hitbox_y + h;
+            int32_t slope_acceleration = 0;
+            uint8_t surface_damping = damping;
+            if (cg_passive_shape_surface(m, p->x100/100 + p->hitbox_x, feet, w,
+                    p->gravity, &slope_acceleration, &surface_damping,
+                    p->force_vx100 != 0)) {
+                /* The centre may reach a slope while the player's heels
+                 * are STILL RESTING ON THE FLAT LEDGE beside it. Gravity
+                 * must not drag the character towards the edge until the
+                 * ledge no longer supports the collision box. Landing and
+                 * collision still use the original full-width foot box. */
+                uint8_t flat_support = 0;
+                if (feet == floor_tile(feet, m->tile_size) * (int32_t)m->tile_size) {
+                    const int32_t ty = floor_tile(feet, m->tile_size);
+                    for (int32_t tx = floor_tile(p->x100/100 + p->hitbox_x, m->tile_size);
+                         tx <= floor_tile(p->x100/100 + p->hitbox_x + w - 1, m->tile_size);
+                         ++tx) {
+                        const uint8_t type = game_tile_at(m, tx, ty);
+                        if (type == GAME_TILE_SOLID || type == GAME_TILE_ONEWAY ||
+                            GAME_TILE_ZONE_BLOCKS(type)) {
+                            flat_support = 1;
+                            break;
+                        }
+                    }
+                }
+                if (!flat_support) {
+                    passive_surface = 1;
+                    damping = surface_damping;
+                    if (damping == 100) {
+                        /* Sticky stops passive creeping, but permits walking. */
+                        p->force_vx100 = 0;
+                        p->force_remainder100 = 0;
+                    } else {
+                        p->force_vx100 += slope_acceleration;
+                        if (p->force_vx100 > 3200) p->force_vx100 = 3200;
+                        if (p->force_vx100 < -3200) p->force_vx100 = -3200;
+                    }
+                }
+            }
+        }
         const int32_t deltaX = ((buttons & BTN_RIGHT) != 0) -
                                ((buttons & BTN_LEFT) != 0);
         /* Conserve horizontal motion through a change of preset. Compare
@@ -1207,7 +1479,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
             p->physics_handoff_pending = 0;
             p->slide_remainder100 = 0;
         }
-        int32_t x = p->x100 / 100, y = p->y100 / 100;
+        int32_t x = p->x100 / 100 + p->hitbox_x;
+        int32_t y = p->y100 / 100 + p->hitbox_y;
         int32_t horizontalSteps = p->walk_speed;
         if (p->physics_mode == GAME_PHYSICS_ICE) {
             /* Acceleration + friction only in ICE mode; normal movement is
@@ -1276,8 +1549,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 crossed_hazard = 1;
             if (surface != 0x7FFFFFFF) followedFloor = 1;
         }
-        p->x100 = x * 100;
-        if (followedFloor) p->y100 = y * 100;
+        p->x100 = (x - p->hitbox_x) * 100;
+        if (followedFloor) p->y100 = (y - p->hitbox_y) * 100;
         /* Track the joystick's last horizontal speed even on normal ground.
            The zone callback at the END of this tick can now switch to ICE
            without first forcing the player to accelerate from a standstill.
@@ -1288,11 +1561,20 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 (int16_t)(deltaX * (int32_t)p->walk_speed * 100);
             p->slide_remainder100 = 0;
         }
-        if (p->force_vx100 && p->force_drag_percent) {
-            p->force_vx100 = p->force_vx100 *
-                (100 - p->force_drag_percent) / 100;
-            if (p->force_vx100 > -2 && p->force_vx100 < 2)
-                p->force_vx100 = 0;
+        if (p->force_vx100 && damping) {
+            if (passive_surface && damping < 100) {
+                /* At 2% damping, a 1/100px impulse must NOT disappear
+                 * every tick. Round the drag instead of truncating it,
+                 * and keep subpixel downhill momentum on this surface. */
+                const int64_t slowed = (int64_t)p->force_vx100 * (100 - damping);
+                p->force_vx100 = (int32_t)((slowed +
+                    (slowed >= 0 ? 50 : -50)) / 100);
+            } else {
+                /* Preserve the old external-force drag off passive stamps. */
+                p->force_vx100 = p->force_vx100 * (100 - damping) / 100;
+                if (p->force_vx100 > -2 && p->force_vx100 < 2)
+                    p->force_vx100 = 0;
+            }
         }
 
         if (p->physics_mode == GAME_PHYSICS_JETPACK &&
@@ -1311,7 +1593,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         if (p->vy100 < 0 && (p->external_ascent || !jumping))
             p->vy100 += p->gravity;
         const int32_t nextY100 = p->y100 + p->vy100;
-        const int32_t nextY = nextY100 / 100;
+        const int32_t nextY = (nextY100 + (int32_t)p->hitbox_y * 100) / 100;
         const uint8_t wasGrounded = p->on_ground;
         uint8_t blocked = 0;
         p->on_ground = 0;
@@ -1348,7 +1630,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 p->on_ground = 1; p->vy100 = 0; blocked = 1;
             }
         }
-        if (blocked) p->y100 = y * 100;
+        if (blocked) p->y100 = (y - p->hitbox_y) * 100;
         else p->y100 = nextY100;
         if (wasGrounded && !p->on_ground) p->coyote = 5;
         if (!cg_player_contacts(p, x, y, crossed_hazard)) return;

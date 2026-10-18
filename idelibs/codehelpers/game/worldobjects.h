@@ -47,6 +47,7 @@ typedef struct {
     int32_t *x100, *y100, *vy100;
     uint8_t *on_ground;
     uint16_t width, height;
+    uint16_t offset_x, offset_y; /* Physical bounds relative to sprite x100/y100. */
     int32_t before_feet; /* Feet BEFORE platform movement and player physics. */
     int32_t before_vy100; /* Velocity before jump input/physics (spring priority). */
     int32_t before_x;    /* Player X before movement; used for swept landing. */

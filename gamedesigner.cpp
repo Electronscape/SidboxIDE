@@ -4,6 +4,7 @@
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
+#include "gameanimationeditor.h"
 #include "gamemainownership.h"
 
 #include <QCheckBox>
@@ -661,14 +662,19 @@ void SidboxGameDesigner::setFilePath(const QString &path)
 {
     // Retarget paths if the designer file moves to a different directory.
     // Existing asset references must keep resolving to the SAME physical files.
-    QStringList absoluteResources;
-    for (const auto &r : m_resources)
+    QStringList absoluteResources, absoluteAnimations;
+    for (const auto &r : m_resources) {
         absoluteResources.append(r.path.isEmpty() ? QString() : resolvedPath(r.path));
+        absoluteAnimations.append(r.animationFile.isEmpty() ? QString() : resolvedPath(r.animationFile));
+    }
     const QString previousDir = QFileInfo(m_filePath).absolutePath();
     m_filePath = QFileInfo(path).absoluteFilePath();
-    for (int i = 0; i < m_resources.size(); ++i)
+    for (int i = 0; i < m_resources.size(); ++i) {
         if (!absoluteResources.at(i).isEmpty())
             m_resources[i].path = storedPath(absoluteResources.at(i));
+        if (!absoluteAnimations.at(i).isEmpty())
+            m_resources[i].animationFile = storedPath(absoluteAnimations.at(i));
+    }
     if (QFileInfo(m_filePath).absolutePath() != previousDir) setDirty();
     if (tabTitleChanged) tabTitleChanged();
 }
@@ -982,6 +988,59 @@ void SidboxGameDesigner::rebuildTilemapOverlay()
     }
     m_tilemapOverlayItem = new GameTilemapOverlay(&m_tilemap, atlas);
     m_scene->addItem(m_tilemapOverlayItem);
+}
+
+void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
+{
+    int index = resourceIndex >= 0 ? resourceIndex : selectedIndex();
+    if (index < 0 || index >= m_resources.size() ||
+        m_resources.at(index).kind != QStringLiteral("sprite")) {
+        QMessageBox::information(this, tr("Player Animations"),
+            tr("Select a Sprite under Game Resources first.\n\n"
+               "Animation states belong to the selected Sprite atlas."));
+        return;
+    }
+    const Resource &resource = m_resources.at(index);
+    const QString atlas = resolvedPath(resource.path);
+    if (!QFileInfo::exists(atlas)) {
+        QMessageBox::warning(this, tr("Player Animations"),
+            tr("The selected Sprite needs an existing PPB or PNG atlas.\n%1").arg(atlas));
+        return;
+    }
+    QString animationFile = resource.animationFile;
+    if (animationFile.isEmpty()) {
+        // Stable by resource ID; renaming an asset never loses its animation.
+        animationFile = QStringLiteral("gameanimations/%1.sbanim").arg(resource.id);
+    }
+    const QString absoluteAnimationFile = resolvedPath(animationFile);
+    // The generated main.c includes gameanimations/player_anim.h for the
+    // sprite named "player". Never overwrite that player header when editing
+    // animations belonging to a different Sprite resource.
+    const QString headerFile = resolvedPath(
+        resource.name.trimmed().compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0
+            ? QStringLiteral("gameanimations/player_anim.h")
+            : QStringLiteral("gameanimations/%1_anim.h").arg(resource.id));
+    SidboxPlayerAnimationEditor editor(atlas, absoluteAnimationFile, headerFile,
+        resource.cellWidth > 0 ? resource.cellWidth : 32,
+        resource.cellHeight > 0 ? resource.cellHeight : 32, this);
+    if (!editor.isUsable()) return;
+    if (editor.exec() != QDialog::Accepted) return;
+    // The atlas is never converted or modified by this editor. Store only
+    // the relative animation definition path in the .sbgm design document.
+    m_resources[index].animationFile = storedPath(editor.animationFile());
+    // The BOB's atlas-cell geometry MUST match the saved animation grid;
+    // otherwise gfxbob_t.index would select the wrong image on hardware.
+    const bool resizedCells = m_resources[index].cellWidth != editor.cellWidth()
+                           || m_resources[index].cellHeight != editor.cellHeight();
+    m_resources[index].cellWidth = editor.cellWidth();
+    m_resources[index].cellHeight = editor.cellHeight();
+    if (resizedCells) {
+        rebuildScene();
+        refreshResources();
+        selectResource(index);
+    }
+    setDirty();
+    if (assetFilesChanged) assetFilesChanged();
 }
 
 void SidboxGameDesigner::openTilemapEditor()
@@ -1765,6 +1824,10 @@ void SidboxGameDesigner::buildUi()
     auto *editTilemap = new QPushButton(tr("Tilemap Editor..."), this);
     editTilemap->setToolTip(tr("Edit the attached tilemap artwork, collision and tile animations."));
     topActions->addWidget(editTilemap);
+    auto *editPlayerAnimation = new QPushButton(tr("Player Animations..."), this);
+    editPlayerAnimation->setToolTip(tr("Build named sprite animations from a Sprite atlas, with directions, frame timing and C export."));
+    topActions->addWidget(editPlayerAnimation);
+    connect(editPlayerAnimation, &QPushButton::clicked, this, [this] { openPlayerAnimationEditor(); });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -1925,6 +1988,7 @@ void SidboxGameDesigner::buildUi()
                 ? tr("Use as Background Preview CLUT")
                 : tr("Use as Foreground Preview CLUT"));
         }
+        QAction *editSpriteAnimations = nullptr;
         QAction *configureObject = nullptr;
         QAction *moveToAtlas = nullptr;
         QAction *moveToSprite = nullptr;
@@ -1942,6 +2006,7 @@ void SidboxGameDesigner::buildUi()
         }
         if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")) {
             menu.addSeparator();
+            editSpriteAnimations = menu.addAction(tr("Edit Player Animations..."));
             configureObject = menu.addAction(tr("Configure Game Object..."));
             configureObject->setToolTip(tr("Choose collectable, moving lift, conveyor or spring, plus animation and spline."));
         }
@@ -2002,6 +2067,7 @@ void SidboxGameDesigner::buildUi()
             m_resources[resourceIndex].kind = QStringLiteral("sprite");
             rebuildScene(); refreshResources(); selectResource(resourceIndex); setDirty();
         }
+        else if (editSpriteAnimations && chosen == editSpriteAnimations) openPlayerAnimationEditor(resourceIndex);
         else if (editThisSpline && chosen == editThisSpline) {
             for (int i = 0; i < m_splinePaths.size(); ++i) {
                 if (m_splinePaths.at(i).id == hitSplineId) {
@@ -4613,16 +4679,16 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "    uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&\n"
                  "        player->width && player->height &&\n"
                  "        game_world_objects_death_zone(platforms, " << nw
-              << ", *player->x100 / 100, *player->y100 / 100, player->width, player->height));\n"
+              << ", *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y, player->width, player->height));\n"
                  "    uint8_t was_in_hazard_zone = cg_hazard_zone_contact;\n"
                  "    cg_hazard_zone_contact = in_hazard_zone;\n"
                  "    if (player && player->x100 && player->y100) {\n"
                  "        if (in_hazard_zone && !was_in_hazard_zone)\n"
-                 "            game_hazard_notify(GAME_HAZARD_ZONE_ENTERED, *player->x100 / 100, *player->y100 / 100);\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_ENTERED, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y);\n"
                  "        else if (in_hazard_zone)\n"
-                 "            game_hazard_notify(GAME_HAZARD_ZONE_INSIDE, *player->x100 / 100, *player->y100 / 100);\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_INSIDE, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y);\n"
                  "        else if (was_in_hazard_zone)\n"
-                 "            game_hazard_notify(GAME_HAZARD_ZONE_EXITED, *player->x100 / 100, *player->y100 / 100);\n"
+                 "            game_hazard_notify(GAME_HAZARD_ZONE_EXITED, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y);\n"
                  "        /* Callback may explicitly kill or teleport the player. */\n"
                  "        if (game_death_is_dead()) return;\n"
                  "    }\n";
@@ -4635,7 +4701,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
             }
         }
         if (nt) C << "    if (player && player->x100 && player->y100 && player->width && player->height)\n"
-                    "        gameworlditems_trigger(*player->x100 / 100, *player->y100 / 100,\n"
+                    "        gameworlditems_trigger(*player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y,\n"
                     "            player->width, player->height, (getjoyport() & BTN_FIRE2) != 0);\n";
         C << "}\n\n";
     }
@@ -4861,10 +4927,14 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     const bool hasObjects = pickups || worldObjects;
     const bool hasMapOnly = hasMap && !player;
     const QString playerName = hasPhysics ? spriteSymbol(*player) : QString();
+    // Stage 3.64: only show the player-animation integration when this
+    // actual player resource has a saved .sbanim sidecar. Generated main.c
+    // remains complete and buildable even before the C header is exported.
+    const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();
     QString program;
     QTextStream out(&program);
     out << R"CG(/*
- * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.55)
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.64)
  * ==============================================================
  * This is REAL C source code, not a list of pseudocode snippets.
  * It is generated from the resources in the CURRENT .sbgm design.
@@ -4893,6 +4963,9 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         << ", sound: " << (hasAudio ? "present" : "none") << "\n"
         << " * Spline paths: " << validSplineCount
         << ", attached moving sprites: " << attachedSplineDescriptions.size() << "\n";
+    if (hasPlayerAnimation)
+        out << " * Player animation: " << player->animationFile << " (editor metadata)\n"
+               " * V1 C export: gameanimations/player_anim.h (prompted on Save Animations)\n";
     if (hasMap && (m_tilemap.collisions.contains(char(7)) || !m_tilemap.collisionPlacements.isEmpty()))
         out << " * Custom collision surfaces are handled automatically by game_tile_player_run().\n"
                " * Point-defined stamps use shared definitions and whole placements (SBMP v4).\n"
@@ -4929,6 +5002,39 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     if (hasSplines)
         out << "#include \"gamehelpers/gamespline.h\"\n"
                "#include \"gamehelpers/splinepaths.h\"\n";
+    if (hasPlayerAnimation) {
+        out << R"CG(
+/* PLAYER ANIMATION -- ONE-SWITCH SETUP (Stage 3.64)
+ * ------------------------------------------------
+ * 1. Game Designer > Sprite named player > Player Animations...
+ *    Define frames for Idle / Walk / Jump / Fall (facing Right).
+ *    Tick Mirror Left from Right. Save Animations and save Game Design.
+ * 2. Click Save Animations, then YES when asked to create or update
+ *    gameanimations/player_anim.h. No manual export is necessary.
+ *    The header uses the player_anim C symbol prefix automatically.
+ *    Saving animation edits can update the header again on request.
+ * 3. Set GAMERGIRL_PLAYER_ANIMATIONS to 1 below and rebuild the V1 game.
+ *    The starter then selects Idle, Walk, Jump, Fall and X-flips for left.
+ *    BOB frame indexing is 0..255 and requires the same atlas cell size.
+ *    Use an indexed PPB atlas with palette index 0 transparent on SIDBOX.
+ *
+ * This starter animation is OPTIONAL: with the switch set to 0 it works
+ * without the exported header. If you rename/delete the four basic states,
+ * adjust the matching PLAYER_ANIM_STATE_* names below to match the export.
+ * Push/Run/Hurt/Slide and custom states can be chosen from YOUR game logic.
+ * No .sbanim is loaded by the runtime: it is editor metadata ONLY.
+ * IMPORTANT: Existing USER-OWNED main.c is NEVER replaced by Update Project.
+ * To use this code in a user-owned main.c, copy the animation sections from
+ * the newly regenerated maingame.c.txt into your game source deliberately.
+ */
+#define GAMERGIRL_PLAYER_ANIMATIONS 0  /* Change to 1 after saving the .h */
+#if GAMERGIRL_PLAYER_ANIMATIONS
+#include "gameanimations/player_anim.h"
+static player_anim_playeranim_t player_anim = {0};
+static uint8_t player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
+#endif
+)CG";
+    }
     out << R"CG(
 #define VIEW_W 480
 #define VIEW_H 320
@@ -5219,6 +5325,18 @@ int main(int argc, char *argv[])
         out << "\n    /* The sprite named 'player' becomes the physics-controlled character. */\n"
                "    if (!game_tile_player_start(&player_physics, &game_level1, &"
             << playerName << ")) { result = 4; goto cleanup; }\n";
+        if (hasPlayerAnimation) out << R"CG(
+#if GAMERGIRL_PLAYER_ANIMATIONS
+    /* Stage 3.68: the animation editor's hitbox drives physical contact.
+       Without enabled player animations, the original full BOB size is used.
+       Offsets are relative to the visible sprite, not its world coordinates. */
+    if (!game_tile_player_set_hitbox(&player_physics,
+            PLAYER_ANIM_HITBOX_X, PLAYER_ANIM_HITBOX_Y,
+            PLAYER_ANIM_HITBOX_W, PLAYER_ANIM_HITBOX_H)) {
+        result = 4; goto cleanup; /* Invalid/out-of-sprite hitbox. */
+    }
+#endif
+)CG";
         if (hasHazards)
             out << "    game_death_set_callback(on_player_death, NULL);\n";
         if (hasCustomZones)
@@ -5237,8 +5355,10 @@ int main(int argc, char *argv[])
     world_player.coyote = &player_physics.coyote;
     world_player.jump_speed = &player_physics.jump_speed;
 )CG";
-            out << "    world_player.width = " << playerName << ".width;\n"
-                << "    world_player.height = " << playerName << ".height;\n";
+            out << "    world_player.width = player_physics.hitbox_w ? player_physics.hitbox_w : " << playerName << ".width;\n"
+                << "    world_player.height = player_physics.hitbox_h ? player_physics.hitbox_h : " << playerName << ".height;\n"
+                   "    world_player.offset_x = player_physics.hitbox_x;\n"
+                   "    world_player.offset_y = player_physics.hitbox_y;\n";
         }
     }
     if (hasMusic) out << R"CG(
@@ -5259,12 +5379,36 @@ int main(int argc, char *argv[])
         if (worldObjects) out << "        gameworlditems_before(&world_player);\n";
         out << "        /* OPTIONAL THRUSTERS: replace the next line with the in_space\n"
                "         * example above, and still step physics every frame. */\n";
-        out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
+        if (hasPlayerAnimation) {
+            out << R"CG(        const uint8_t player_buttons = getjoyport();
+        game_tile_player_run(&player_physics, player_buttons, 1);
+#if GAMERGIRL_PLAYER_ANIMATIONS
+        /* Only change facing while pressing LEFT/RIGHT; idle retains facing.
+         * Select the animation AFTER physics, BEFORE drawing the player.
+         * If you override movement with game_tile_player_step(), retain this
+         * animation section after that physics call. */
+        if (player_buttons & BTN_LEFT)  player_anim_facing = PLAYER_ANIM_DIR_LEFT;
+        if (player_buttons & BTN_RIGHT) player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
+        uint8_t player_anim_state = PLAYER_ANIM_STATE_IDLE;
+        if (!player_physics.on_ground) {
+            player_anim_state = (player_physics.vy100 < 0)
+                              ? PLAYER_ANIM_STATE_JUMP : PLAYER_ANIM_STATE_FALL;
+        } else if (player_buttons & (BTN_LEFT | BTN_RIGHT)) {
+            player_anim_state = PLAYER_ANIM_STATE_WALK;
+        }
+)CG";
+            out << "        player_anim_step(&player_anim, &" << playerName
+                << ", player_anim_state, player_anim_facing, 1);\n";
+            out << "#endif\n";
+        } else {
+            out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
+        }
         if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
         if (pickups) {
-            out << "        gameworlditems_check(player_physics.x100 / 100,\n"
-                   "            player_physics.y100 / 100, " << playerName << ".width,\n"
-                << "            " << playerName << ".height, on_pickup, &score);\n";
+            out << "        gameworlditems_check(player_physics.x100 / 100 + player_physics.hitbox_x,\n"
+                   "            player_physics.y100 / 100 + player_physics.hitbox_y, "
+                   "player_physics.hitbox_w ? player_physics.hitbox_w : " << playerName << ".width,\n"
+                << "            player_physics.hitbox_h ? player_physics.hitbox_h : " << playerName << ".height, on_pickup, &score);\n";
         }
     }
     out << "\n        int32_t camera_x = 0, camera_y = 0;\n";
@@ -5838,6 +5982,7 @@ bool SidboxGameDesigner::loadDesign()
         r.cellWidth = qBound(0, a.value(QStringLiteral("cellWidth")).toInt(0), 16384);
         r.cellHeight = qBound(0, a.value(QStringLiteral("cellHeight")).toInt(0), 16384);
         r.frame = qBound(0, a.value(QStringLiteral("frame")).toInt(0), 65535);
+        r.animationFile = a.value(QStringLiteral("animationFile")).toString();
         r.locked = a.value(QStringLiteral("locked")).toBool(false);
         const QJsonObject object = a.value(QStringLiteral("gameObject")).toObject();
         const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
@@ -6005,6 +6150,8 @@ bool SidboxGameDesigner::saveDesign()
         a.insert(QStringLiteral("cellWidth"), r.cellWidth);
         a.insert(QStringLiteral("cellHeight"), r.cellHeight);
         a.insert(QStringLiteral("frame"), r.frame);
+        if (r.kind == QStringLiteral("sprite") && !r.animationFile.isEmpty())
+            a.insert(QStringLiteral("animationFile"), r.animationFile);
         a.insert(QStringLiteral("locked"), r.locked);
         if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
             QJsonObject object;

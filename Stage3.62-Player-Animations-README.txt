@@ -1,0 +1,130 @@
+SIDBOX GamerGirl -- Stage 3.62: Player Animation Editor (V1)
+==========================================================
+
+Starting point: complete Stage 3.61 codebase, including the cliff-edge
+passive physics fixes. Stage 3.62 does not change tilemap collision, loops,
+springs, map formats, or existing main.c.
+
+OPEN THE EDITOR
+===============
+
+Game Designer -> select a Sprite under GAME RESOURCES -> Player Animations...
+or right-click the Sprite -> Edit Player Animations...
+
+The asset must be a valid PNG or PPB atlas. Source graphics are NEVER modified.
+The editor treats each cell as one SIDBOX gfxbob_t.index (0..255).
+The default cell size is 32x32 unless the existing Sprite resource specifies
+an explicit size. You can change cell width/height inside the editor.
+On Save, those cell dimensions are also applied to the selected Sprite
+resource, ensuring generated gameassets BOB dimensions match the animations.
+The whole image must be an exact grid of no more than 256 cells.
+
+AUTHORING
+=========
+
+* Select a state (Idle, Walk, Run, Push, Jump, Fall, Slide, Balance, Hurt,
+  Land, or add a named custom state).
+* Select one of 2 / 4 / 8 directional modes.
+* Select a facing direction. Click a cell in the atlas to APPEND that frame
+  to the selected state/direction. Shift-click selects a consecutive range.
+* The timeline permits reordering by dragging items or with Move Left/Right,
+  and removal of the selected frame. Duplicate frame indexes are permitted.
+* Set frame time in 50 Hz SIDBOX VBlank ticks (5 ticks = 100 milliseconds).
+  Turn Loop on for walking/running; leave off for one-shot hurt animations.
+* The editor has hardware-style leftward mirroring: when "Mirror left from
+  right" is checked, Left, UpLeft and DownLeft sequences inherit their
+  corresponding Right directions if not assigned explicitly. The exported
+  gfxbob_t uses BLIT_FLAG_FLIP_X, retaining other BOB flags.
+* Live preview uses nearest-neighbour pixels (not bilinear/bicubic scaling).
+* Set a FOOT anchor and optional displayed collision box for design reference.
+  They are saved as METADATA, not automatically applied to the existing
+  tilemap physics/player hitbox.
+* "Export auto state chooser" optionally adds a state-selection function to
+  the V1 header. The game supplies physics/input readings to the function;
+  the IDE DOES NOT rewrite main.c to insert those calls.
+
+SAVING
+======
+
+Press Save Animations to write gameanimations/<sprite-resource-ID>.sbanim.
+Game Designer stores the relative animationFile path in the .sbgm document.
+SAVE THE GAME DESIGN as well to persist that link to future IDE sessions.
+Cancel never writes changes made since opening (except a separate Export
+operation, which explicitly saves the .sbanim before export).
+
+The source atlas stays a PPB/PNG file; .sbanim is only editor metadata.
+Export of animation C emits a new .h file. No firmware API changes.
+
+EXPORTING AND USING V1 CODE
+===========================
+
+Press Export V1 C Header... to write a standalone .h next to the .sbanim,
+or select another project path. The file embeds only INDEX ARRAYS + timing
+and frame selection: no pixel data, allocation or separate helper .c.
+
+For example, if you name the header gameanimations/hero_playeranim.h,
+the C prefix becomes "hero_playeranim", and a typical main.c would use:
+
+  #include "gameanimations/hero_playeranim.h"
+  static hero_playeranim_playeranim_t hero_anim = {0};
+
+  /* After player physics step, BEFORE gfx_drawbob(&hero_bob): */
+  hero_playeranim_step(&hero_anim, &hero_bob,
+                       HERO_PLAYERANIM_STATE_WALK,
+                       HERO_PLAYERANIM_DIR_RIGHT, 1);
+
+The generated header contains the actual valid enums for your choices.
+Each game/VBlank frame, choose state and facing, then call *_step(..., 1).
+Call after gameassets_init() has loaded the sprite PPB and set its image,
+width, height, and atlas stride/height. You MUST use BOB dimensions matching
+the editor cell size. The V1 BOB index is one byte: max 256 atlas cells.
+
+For auto mapping, when enabled, the header also defines:
+
+  hero_playeranim_auto_state(on_ground, vy100,
+      horizontal, is_running, is_pushing, is_sliding, is_balancing, is_hurt);
+
+The caller supplies grounded and vertical velocity (e.g. from the tilemap
+player), horizontal input -1/0/+1, and its relevant action flags. The edge
+balancing flag is NOT automatically detected by physics yet; pass 0 until
+that is implemented. Missing state/direction clips fall back to Idle.
+
+RESTRICTIONS / CURRENT STAGE
+============================
+
+* Qt6 IDE interaction has NOT been built or tested in this environment:
+  Qt6 6.5 development headers and libraries are not installed here. Build
+  with Qt Creator on your Fedora desktop.
+* The .sbanim is a source PROJECT resource, not an SD runtime file. Use the
+  generated .h when you are ready to animate the running game.
+* Automatic physics-to-state selection is available as an exported FUNCTION,
+  but is not inserted into your main.c or wired up to gameplay automatically.
+* Foot anchor and hitbox are preview/design metadata only at this stage.
+* SIDBOX does not provide general alpha blending for these sprites. Convert
+  your artwork to indexed PPB with colour index 0 as transparent. The editor
+  treats PPB index 0 transparent in its Qt preview. PNG images are preview
+  only until converted to PPB for actual BOB use.
+
+SOURCE CHANGES
+==============
+
+CMakeLists.txt                       adds two new Qt files
+gamedesigner.h                      Resource.animationFile + editor launcher
+gamedesigner.cpp                    toolbar/context menu, save/load reference
+gameanimationeditor.h/.cpp           player animation editor + V1 C export
+Stage3.62-Player-Animations-README.txt
+development/tests/stage362_player_animation_c_test.py
+
+VERIFICATION
+============
+
+PASSED: generated V1 playback and optional auto-state-selection code compiled
+as strict C99 with -Wall -Wextra -Werror -pedantic, including frame order,
+looping, one-shot, state switching, mirror X, preserving unrelated BOB flags,
+Idle fallback, and each automatic animation state.
+
+Run independently:
+  python3 development/tests/stage362_player_animation_c_test.py
+
+NOT VERIFIED: Qt Creator compile, the IDE window's live interactions, and
+actual STM32H743 / SIDBOX V1 playback. Please back up your working tree.
