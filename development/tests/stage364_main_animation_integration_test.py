@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-src = (Path(__file__).resolve().parents[2] / 'gamedesigner.cpp').read_text()
+src = (Path(__file__).resolve().parents[2] / 'gamedesigner_export.cpp').read_text()
 assert 'const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();' in src
 assert 'static player_anim_playeranim_t player_anim = {0};' in src
 assert 'player_anim_step(&player_anim, &' in src

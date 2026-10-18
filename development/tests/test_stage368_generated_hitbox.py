@@ -1,7 +1,7 @@
 """Check C code emitted by Game Designer for opt-in physics hitbox setup."""
 from pathlib import Path
 import re, subprocess, tempfile
-src=(Path(__file__).resolve().parents[2]/'gamedesigner.cpp').read_text()
+src=(Path(__file__).resolve().parents[2]/'gamedesigner_export.cpp').read_text()
 assert 'const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();' in src
 block=re.search(r'out << R"CG\(\n(#if GAMERGIRL_PLAYER_ANIMATIONS\n    /\* Stage 3\.68:.*?\n#endif\n)\)CG";',src,re.S)
 assert block, 'Stage 3.68 generated C block missing'

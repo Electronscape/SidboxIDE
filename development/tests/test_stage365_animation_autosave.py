@@ -5,7 +5,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 editor = (root / 'gameanimationeditor.cpp').read_text()
-designer = (root / 'gamedesigner.cpp').read_text()
+designer = (root / 'gamedesigner.cpp').read_text() + (root / 'gamedesigner_export.cpp').read_text()
 header = (root / 'gameanimationeditor.h').read_text()
 
 assert 'm_defaultHeaderFile(defaultHeaderFile)' in editor

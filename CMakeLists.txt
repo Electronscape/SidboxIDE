@@ -27,9 +27,14 @@ qt_add_executable(SidboxIDE
     guidesigner.cpp
     guidesigner.h
     gamedesigner.cpp
+    gamedesigner_export.cpp
+    gamedesigner_project.cpp
+    gamedesigner_update.cpp
     gamedesigner.h
+    gamedesigner_limits.h
     gamemainownership.h
     gametilemap.cpp
+    gametilemapmodel.cpp
     gametilemap.h
     gameanimationeditor.cpp
     gameanimationeditor.h
