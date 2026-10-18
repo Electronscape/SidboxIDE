@@ -9,6 +9,12 @@
  * Tile pixels come straight from the row-major SD PPB image.
  * SIDBOX's gfx_drawbob() handles atlas selection and foreground rendering.
  */
+/* Dimensions are uint16_t in the existing .map format. Cap resident maps
+ * independently from axis size: an SD level is loaded whole into SDRAM. */
+#define GAME_TILEMAP_MAX_AXIS  4096u
+#define GAME_TILEMAP_MAX_CELLS 262144u
+#define GAME_TILEMAP_MAX_SD_BYTES (3u * 1024u * 1024u)
+
 #define GAME_TILE_EMPTY       0u
 #define GAME_TILE_SOLID       1u
 #define GAME_TILE_ONEWAY      2u
@@ -103,6 +109,16 @@ typedef struct {
     uint8_t flags; /* bit 0: horizontal mirror */
 } game_tile_shape_instance_t;
 
+/* Optional generated loop tracks (NOT collision tiles). Each is a circular
+ * centreline with a bottom entry/exit, usable in either direction. A tracked
+ * player releases to standard collisions when it loses contact or completes
+ * the revolution. Placed loops live in level1.c, even for external SD maps. */
+typedef struct {
+    int32_t center_x, center_y; /* world pixels */
+    uint16_t radius; /* world pixels, >=16 */
+    uint16_t entry_speed100; /* min horizontal speed in 1/100 pixel/frame */
+} game_tile_loop_t;
+
 typedef struct {
     const uint16_t *graphics;
     const uint8_t *collision;
@@ -125,6 +141,8 @@ typedef struct {
     const game_tile_shape_point_t *shape_points;
     uint16_t shape_instance_count;
     uint8_t shape_count;
+    const game_tile_loop_t *loops; /* Optional auto-generated loop tracks */
+    uint8_t loop_count;
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever
@@ -208,6 +226,11 @@ typedef struct {
        overwrite walking speed. Completely inert until apply_force() is used. */
     int32_t force_vx100, force_remainder100;
     uint8_t force_drag_percent; /* Horizontal loss per frame: 0 = coast forever. */
+    /* Loop track state. These fields are idle/zero for maps without loops. */
+    uint8_t loop_index; /* 0=not attached; index+1 otherwise */
+    uint8_t loop_cooldown;
+    int32_t loop_phase; /* signed [0..65536] revolution position */
+    int32_t loop_speed100; /* signed tangential speed, 100 = 1 px/frame */
 } game_tile_player_t;
 
 uint8_t game_tile_player_start(game_tile_player_t *p,
@@ -225,6 +248,9 @@ void apply_force(game_tile_player_t *p, float x, float y);
 /* Tick the SAME collision-aware physics without interpreting joystick buttons.
    Ideal when code supplies directional thrust with apply_force(). */
 void game_tile_player_step(game_tile_player_t *p, uint16_t frames);
+/* Nonzero while attached to a generated circular loop track; call for an
+ * optional sprite animation. The renderer does not rotate sprites itself. */
+uint8_t game_tile_player_on_loop(const game_tile_player_t *p);
 /* Horizontal momentum damping: 0 = no drag (space), 100 = stop immediately. */
 void game_tile_player_set_force_drag(game_tile_player_t *p, uint8_t percent);
 /* Move the bob to the correct SCREEN position before gfx_drawbob(). */

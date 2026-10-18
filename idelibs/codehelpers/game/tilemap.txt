@@ -448,3 +448,31 @@ Update Game Project makes its normal backup, then installs the new
 `gamehelpers/gametilemap.c/.h` along with the project-aware generated
 maingame.c.txt. Existing main.c is NEVER overwritten. The .map binary
 format, firmware and other world-object helpers require NO changes.
+
+
+STAGE 3.53 — LONG LEVELS / SONIC-SIZED MAPS
+-------------------------------------------
+The map width and height are uint16_t in the original SBMP header, so no
+new .map file version is necessary. The Tilemap Editor accepts up to 4096
+tiles on either axis, but at most 262144 cells in TOTAL. The maximum for
+one dimension changes when you edit the other dimension; shrink Tiles Y
+before increasing Tiles X for a long horizontal level.
+
+Examples: 2048 x 128 (16,384 x 1024 world pixels at 8 x 8), and
+4096 x 64 (32,768 x 512 pixels at 8 x 8). 4096 x 256 is TOO LARGE.
+
+For big levels, prefer SD .map mode over massive embedded C arrays.
+The SD loader caps the resident map allocation at 3 MiB; maps with legacy
+per-pixel slope data might exceed that budget and must use fewer tiles or
+compact point-defined slopes. The exporter rejects oversized SD maps.
+The selected atlas is a SEPARATE PPB allocation, so its size and all other
+assets still count against available SDRAM.
+
+The runtime draws only tiles visible in the 480 x 320 camera viewport;
+map width alone does not increase the per-frame tile count. The v4
+shared-slope loader now uses one map-sized allocation, eliminating a
+second large temporary copy during level startup.
+
+Update the project's gametilemap.c/.h helper through Update Game Project
+after updating the IDE, and regenerate level1.c/.h and level1.map.
+Existing smaller maps remain compatible. No firmware change is needed.

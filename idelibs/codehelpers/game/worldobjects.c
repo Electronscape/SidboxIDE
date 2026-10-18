@@ -94,13 +94,11 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
     p->before_vy100 = *p->vy100;
     p->before_jump_held = p->jump_held ? *p->jump_held : 0;
 
-    /* Spring sideways velocity is in addition to joystick movement.
-       Default (OFF) deliberately retains Stage 3.20's exact behaviour:
-       constant X speed while airborne, stopped immediately on landing.
-       Inertia (ON) applies an independent impulse: air drag 6%/frame,
-       ground drag 14%/frame. The last subpixel fraction is accumulated,
-       since the tilemap player snaps X to whole pixels each frame.
-       A solid wall cancels the push in either mode. */
+    /* Legacy sideways spring movement for standalone platformers and for
+       NON-SLIDY springs. Tilemap SLIDY springs with spring_force_vx100
+       bound instead use the tilemap's normal external-force solver and
+       current physics-mode drag (ICE, WATER, SPACE, etc.). This legacy
+       path retains original airborne/grounded damping for old projects. */
     if (*p->on_ground && !p->spring_sliding) {
         p->spring_x100 = 0;
         p->spring_remainder_x100 = 0;
@@ -341,9 +339,27 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             !p->before_jump_held && *p->jump_held && *p->jump_speed > 0)
             launch += *p->jump_speed;
         *p->vy100 = -launch * 100;
-        p->spring_x100 = (int32_t)best->spring_launch_x * 100;
-        p->spring_sliding = best->spring_slide;
-        p->spring_remainder_x100 = 0;
+        if (best->spring_slide && p->spring_force_vx100) {
+            /* Share the tilemap player's external velocity with wind and
+               apply_force(): all use the same wall collisions and the
+               currently selected preset drag. A new spring adds its impulse
+               rather than resetting momentum already in flight. Clamp to
+               the same +/-32 px/frame range as apply_force(). */
+            int64_t v = (int64_t)*p->spring_force_vx100 +
+                        (int64_t)best->spring_launch_x * 100;
+            if (v > 3200) v = 3200;
+            if (v < -3200) v = -3200;
+            *p->spring_force_vx100 = (int32_t)v;
+            p->spring_x100 = 0;
+            p->spring_remainder_x100 = 0;
+            p->spring_sliding = 0;
+        } else {
+            /* Non-slidy launches and legacy adapters keep their original
+               behaviour, so older games and platformers aren't changed. */
+            p->spring_x100 = (int32_t)best->spring_launch_x * 100;
+            p->spring_sliding = best->spring_slide;
+            p->spring_remainder_x100 = 0;
+        }
         *p->on_ground = 0;
         if (p->coyote) *p->coyote = 0;
     } else {

@@ -174,13 +174,14 @@ static uint32_t cg_map_hash(uint32_t h, const uint8_t *b, uint32_t length)
  * instances, 6-byte tile animations. Hash covers the entire payload. */
 static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
 {
-    uint8_t *prefix = NULL, *memory = NULL;
+    uint8_t *metadata = NULL, *memory = NULL;
     uint32_t got = 0, hash = 2166136261u;
     uint8_t ok = 0;
     const uint16_t w = cg_map_u16(hdr + 6), h = cg_map_u16(hdr + 8);
     const uint16_t count = cg_map_u16(hdr + 12);
     const uint8_t shapes = hdr[18], legacy = hdr[19];
-    if (!w || !h || w > 256 || h > 256 || !shapes || shapes > 128 ||
+    if (!w || !h || w > GAME_TILEMAP_MAX_AXIS || h > GAME_TILEMAP_MAX_AXIS ||
+        (uint32_t)w * h > GAME_TILEMAP_MAX_CELLS || !shapes || shapes > 128 ||
         legacy > 1 || cg_map_u16(hdr+10) != map->atlas_count || count > 128)
         return 0;
     const uint32_t cells = (uint32_t)w * h;
@@ -190,14 +191,19 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     const uint32_t inst_count_at = refs_at + cells * 2u;
     const uint32_t defs_at = inst_count_at + 2u;
     const uint32_t fixed = defs_at + shapes * 8u;
-    prefix = (uint8_t *)malloc(fixed);
-    if (!prefix) goto finish;
-    if (sfread(0, prefix, fixed, &got) != F_OK || got != fixed) goto finish;
-    hash = cg_map_hash(hash, prefix, fixed);
-    const uint16_t instances = cg_map_u16(prefix + inst_count_at);
+    if (fixed > GAME_TILEMAP_MAX_SD_BYTES) goto finish;
+    // Read only the tiny shape directory first, so the large tile array is
+    // allocated ONCE at its actual size. The old loader held both a full
+    // prefix and the final map simultaneously (up to double peak RAM).
+    const uint32_t metadata_bytes = 2u + (uint32_t)shapes * 8u;
+    metadata = (uint8_t *)malloc(metadata_bytes);
+    if (!metadata || sflseek(0, 20u + inst_count_at) != F_OK ||
+        sfread(0, metadata, metadata_bytes, &got) != F_OK ||
+        got != metadata_bytes) goto finish;
+    const uint16_t instances = cg_map_u16(metadata);
     uint32_t point_count = 0;
     for (uint8_t i = 0; i < shapes; ++i) {
-        const uint8_t *d = prefix + defs_at + 8u * i;
+        const uint8_t *d = metadata + 2u + 8u * i;
         const uint16_t offset = cg_map_u16(d+2);
         if (!d[0] || !d[1] || d[0] > 16 || d[1] > 16 ||
             d[4] < 2 || d[4] > 128 || d[5] || cg_map_u16(d+6) ||
@@ -210,10 +216,13 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     const uint32_t end_data = instances_at + (uint32_t)instances * 6u;
     const uint32_t animations_at = (end_data + 1u) & ~1u;
     const uint32_t total = animations_at + (uint32_t)count * sizeof(game_tile_animation_t);
+    if (total > GAME_TILEMAP_MAX_SD_BYTES) goto finish;
     memory = (uint8_t *)malloc(total);
-    if (!memory) goto finish;
-    memcpy(memory, prefix, fixed);
-    free(prefix); prefix = NULL;
+    if (!memory || sflseek(0, 20u) != F_OK ||
+        sfread(0, memory, fixed, &got) != F_OK || got != fixed)
+        goto finish;
+    hash = cg_map_hash(hash, memory, fixed);
+    free(metadata); metadata = NULL;
     if (sfread(0, memory + points_at, end_data - points_at, &got) != F_OK ||
         got != end_data - points_at) goto finish;
     hash = cg_map_hash(hash, memory + points_at, end_data - points_at);
@@ -303,7 +312,7 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     memory = NULL;
     ok = 1;
 finish:
-    free(prefix);
+    free(metadata);
     free(memory);
     return ok;
 }
@@ -347,7 +356,9 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         const uint16_t atlas_count = cg_map_u16(hdr + 10);
         const uint16_t animation_count = cg_map_u16(hdr + 12);
         const uint32_t checksum = cg_map_u32(hdr + 14);
-        if (!width || !height || width > 256 || height > 256 ||
+        if (!width || !height || width > GAME_TILEMAP_MAX_AXIS ||
+            height > GAME_TILEMAP_MAX_AXIS ||
+            (uint32_t)width * height > GAME_TILEMAP_MAX_CELLS ||
             atlas_count != map->atlas_count || animation_count > 128) break;
         const uint32_t cells = (uint32_t)width * height;
         const uint32_t graphics_bytes = cells * 2u;
@@ -356,6 +367,7 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         const uint32_t animation_offset = (payload_bytes + 1u) & ~1u;
         const uint32_t allocation = animation_offset +
             (uint32_t)animation_count * sizeof(game_tile_animation_t);
+        if (allocation > GAME_TILEMAP_MAX_SD_BYTES) break;
         memory = (uint8_t *)malloc(allocation);
         if (!memory) break;
         if (sfread(0, memory, payload_bytes, &read_bytes) != F_OK ||
@@ -942,9 +954,207 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->physics_handoff_pending = 0; p->zone_contacts = 0;
     p->physics_vy100 = 0; p->external_ascent = 0;
     p->force_vx100 = 0; p->force_remainder100 = 0;
+    p->loop_index = 0; p->loop_phase = 0; p->loop_speed100 = 0;
+    p->loop_cooldown = 0;
     const int32_t feet = y + p->sprite->height;
     p->on_ground = tile_floor(p->map, x, p->sprite->width, feet, feet) == feet;
 }
+static const int16_t cg_loop_sine_q14[257] = {
+    0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370,
+    4756, 5139, 5520, 5897, 6270, 6639, 7005, 7366, 7723, 8076, 8423, 8765,
+    9102, 9434, 9760, 10080, 10394, 10702, 11003, 11297, 11585, 11866, 12140, 12406,
+    12665, 12916, 13160, 13395, 13623, 13842, 14053, 14256, 14449, 14635, 14811, 14978,
+    15137, 15286, 15426, 15557, 15679, 15791, 15893, 15986, 16069, 16143, 16207, 16261,
+    16305, 16340, 16364, 16379, 16384, 16379, 16364, 16340, 16305, 16261, 16207, 16143,
+    16069, 15986, 15893, 15791, 15679, 15557, 15426, 15286, 15137, 14978, 14811, 14635,
+    14449, 14256, 14053, 13842, 13623, 13395, 13160, 12916, 12665, 12406, 12140, 11866,
+    11585, 11297, 11003, 10702, 10394, 10080, 9760, 9434, 9102, 8765, 8423, 8076,
+    7723, 7366, 7005, 6639, 6270, 5897, 5520, 5139, 4756, 4370, 3981, 3590,
+    3196, 2801, 2404, 2006, 1606, 1205, 804, 402, 0, -402, -804, -1205,
+    -1606, -2006, -2404, -2801, -3196, -3590, -3981, -4370, -4756, -5139, -5520, -5897,
+    -6270, -6639, -7005, -7366, -7723, -8076, -8423, -8765, -9102, -9434, -9760, -10080,
+    -10394, -10702, -11003, -11297, -11585, -11866, -12140, -12406, -12665, -12916, -13160, -13395,
+    -13623, -13842, -14053, -14256, -14449, -14635, -14811, -14978, -15137, -15286, -15426, -15557,
+    -15679, -15791, -15893, -15986, -16069, -16143, -16207, -16261, -16305, -16340, -16364, -16379,
+    -16384, -16379, -16364, -16340, -16305, -16261, -16207, -16143, -16069, -15986, -15893, -15791,
+    -15679, -15557, -15426, -15286, -15137, -14978, -14811, -14635, -14449, -14256, -14053, -13842,
+    -13623, -13395, -13160, -12916, -12665, -12406, -12140, -11866, -11585, -11297, -11003, -10702,
+    -10394, -10080, -9760, -9434, -9102, -8765, -8423, -8076, -7723, -7366, -7005, -6639,
+    -6270, -5897, -5520, -5139, -4756, -4370, -3981, -3590, -3196, -2801, -2404, -2006,
+    -1606, -1205, -804, -402, 0,
+};
+/* Single notification path shared by regular platformer movement and
+ * guided loop tracks. Zone state must never freeze while attached. */
+static uint8_t cg_player_contacts(game_tile_player_t *p, int32_t x, int32_t y,
+                                   uint8_t crossed_hazard)
+{
+    const game_tilemap_t *m=p->map;
+    const int32_t w=p->sprite->width, h=p->sprite->height;
+    p->touch_type = special_type(m, x, y, w, h);
+    const uint8_t was_in_hazard = p->hazard_contact;
+    const uint8_t ended_inside_hazard = p->touch_type == GAME_TILE_HAZARD;
+    /* Swept detection creates ENTERED when moving fully across hazards,
+       but must not prolong INSIDE after a player has physically left. */
+    const uint8_t touching_hazard = ended_inside_hazard ||
+        (!was_in_hazard && crossed_hazard);
+    if (touching_hazard) p->touch_type = GAME_TILE_HAZARD;
+    /* Update contact BEFORE dispatch: callbacks may reset, teleport or
+       mark the player dead. A tile-to-tile move stays INSIDE because
+       special_type() sees any overlapping hazard tile. Swept contacts
+       still generate ENTERED even when a fast player crosses entirely
+       through a hazard in one frame (followed by EXITED next frame). */
+    p->hazard_contact = touching_hazard;
+    if (p->vy100 >= 0 || p->on_ground)
+        p->external_ascent = 0;
+    p->physics_vy100 = p->vy100;
+    if (touching_hazard && !was_in_hazard) {
+        game_hazard_notify(GAME_HAZARD_TILE_ENTERED, x, y);
+    } else if (touching_hazard) {
+        game_hazard_notify(GAME_HAZARD_TILE_INSIDE, x, y);
+    } else if (was_in_hazard) {
+        game_hazard_notify(GAME_HAZARD_TILE_EXITED, x, y);
+    }
+    /* A handler can explicitly kill or teleport the player. Never
+       process more batched frames after it changes that state. */
+    if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+        return 0;
+    const uint8_t currentZones = cg_zone_callback ?
+        game_zone_at_player(m, x, y, w, h) : 0;
+    const uint8_t previousZones = p->zone_contacts;
+    p->zone_contacts = currentZones; /* Store before callback/teleport. */
+    if (cg_zone_callback) {
+        for (uint8_t z = 0; z < 8; ++z) {
+            const uint8_t bit = (uint8_t)(1u << z);
+            const uint8_t event = (currentZones & bit)
+                ? ((previousZones & bit) ? GAME_ZONE_INSIDE : GAME_ZONE_ENTERED)
+                : ((previousZones & bit) ? GAME_ZONE_EXITED : 0);
+            if (!event) continue;
+            cg_zone_callback((uint8_t)(z+1), event, x, y, cg_zone_user);
+            if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* 16-bit revolution phase -> interpolated Q14 sine/cosine; no floating
+ * point or per-frame sin/cos calls. +Y is down in screen coordinates. */
+static int32_t cg_loop_sin(int32_t phase)
+{
+    const uint32_t angle = (uint32_t)phase & 65535u;
+    const uint32_t i = angle >> 8, frac = angle & 255u;
+    return ((int32_t)cg_loop_sine_q14[i] * (256 - (int32_t)frac) +
+            (int32_t)cg_loop_sine_q14[i + 1] * (int32_t)frac) / 256;
+}
+static int32_t cg_loop_abs(int32_t x) { return x < 0 ? -x : x; }
+
+/* Attach only at the bottom entrance, with existing walking, ice, and spring
+ * momentum projected onto the tangent. No teleports from other parts of map. */
+static uint8_t cg_loop_try_attach(game_tile_player_t *p, int32_t w, int32_t h)
+{
+    if (!p->map->loops || !p->map->loop_count || p->loop_cooldown) return 0;
+    const int32_t px = p->x100 / 100 + w/2, feet = p->y100 / 100 + h;
+    const int32_t vx = (int32_t)p->slide_velocity100 +
+                       (int32_t)p->slide_remainder100 + p->force_vx100;
+    /* A sideways spring may approach the entry while slightly airborne;
+     * reject steep falling/jumping arcs but do not require grounded status. */
+    if (!p->on_ground && cg_loop_abs(p->vy100) > cg_loop_abs(vx)/2)
+        return 0;
+    for (uint8_t i=0; i<p->map->loop_count; ++i) {
+        const game_tile_loop_t *loop = p->map->loops + i;
+        if (loop->radius < 16 || !loop->entry_speed100 ||
+            cg_loop_abs(vx) < loop->entry_speed100) continue;
+        const int32_t previousX = px - vx/100;
+        const uint8_t crossed = vx > 0
+            ? (previousX <= loop->center_x + 3 && px >= loop->center_x - 3)
+            : (previousX >= loop->center_x - 3 && px <= loop->center_x + 3);
+        if (!crossed || cg_loop_abs(px - loop->center_x) > cg_loop_abs(vx)/100 + 3 ||
+            cg_loop_abs(feet - (loop->center_y + loop->radius)) > 5) continue;
+        p->loop_index = (uint8_t)(i + 1);
+        p->loop_phase = 0; p->loop_speed100 = vx;
+        p->slide_velocity100 = 0; p->slide_remainder100 = 0;
+        p->force_vx100 = 0; p->force_remainder100 = 0;
+        p->vy100 = 0; p->external_ascent = 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Leave a track with the actual TANGENT velocity, not a horizontal-only kick.
+ * The ordinary tile physics resumes on the NEXT frame. */
+static void cg_loop_detach(game_tile_player_t *p, int32_t s, int32_t c)
+{
+    const int32_t vx = p->loop_speed100 * c / 16384;
+    const int32_t vy = -p->loop_speed100 * s / 16384;
+    p->loop_index = 0; p->loop_cooldown = 8;
+    p->on_ground = 0; p->coyote = 0;
+    p->vy100 = vy; p->physics_vy100 = vy;
+    p->force_vx100 = vx;
+    p->force_remainder100 = 0;
+    p->slide_velocity100 = 0; p->slide_remainder100 = 0;
+    p->external_ascent = vy < 0;
+}
+
+/* Return 1 when a loop tick consumed this frame. The arc is the travel path
+ * of the player's FEET; while attached, ordinary tile walls are not consulted
+ * because the loop interior and exit can otherwise contain solid art tiles.
+ * Gravity's tangential component slows climbing and speeds descending.
+ * At the top the centripetal threshold v^2 >= g*r decides release. */
+static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
+                            int32_t w, int32_t h)
+{
+    if (!p->loop_index || !p->map->loops ||
+        p->loop_index > p->map->loop_count) { p->loop_index = 0; return 0; }
+    const game_tile_loop_t *loop = p->map->loops + p->loop_index - 1;
+    const int32_t s = cg_loop_sin(p->loop_phase);
+    const int32_t c = cg_loop_sin(p->loop_phase + 16384);
+    /* External knocks while attached are projected onto the track tangent. */
+    if (p->force_vx100 || p->vy100) {
+        p->loop_speed100 += (int32_t)(((int64_t)p->force_vx100*c -
+                                      (int64_t)p->vy100*s)/16384);
+        p->force_vx100=0; p->vy100=0;
+    }
+    const int32_t steer = ((buttons & BTN_RIGHT) != 0) - ((buttons & BTN_LEFT) != 0);
+    p->loop_speed100 += steer * 12 - (int32_t)p->gravity * s / 16384;
+    /* Limit friction on a track while honouring low-drag regions. */
+    const int32_t drag = p->force_drag_percent > 3 ? 3 : p->force_drag_percent;
+    p->loop_speed100 = p->loop_speed100 * (100 - drag) / 100;
+    if (p->loop_speed100 > 3200) p->loop_speed100 = 3200;
+    if (p->loop_speed100 < -3200) p->loop_speed100 = -3200;
+    /* Tangential motion is arc length. Circumference in hundredths of px. */
+    const int32_t advance = p->loop_speed100 * 65536 /
+        ((int32_t)loop->radius * 628);
+    p->loop_phase += advance;
+    if (p->loop_phase >= 65536 || p->loop_phase <= -65536) {
+        p->loop_phase = 0;
+        p->x100 = (loop->center_x - w/2) * 100;
+        p->y100 = (loop->center_y + loop->radius - h) * 100;
+        cg_loop_detach(p, 0, 16384);
+        if (!cg_player_contacts(p, p->x100/100, p->y100/100, 0)) return 2;
+        return 1;
+    }
+    const int32_t ns = cg_loop_sin(p->loop_phase);
+    const int32_t nc = cg_loop_sin(p->loop_phase + 16384);
+    const int64_t speed_squared = (int64_t)p->loop_speed100*p->loop_speed100;
+    const int64_t needed = (int64_t)(p->gravity > 0 ? p->gravity : 0) *
+        loop->radius * 100 * (nc < 0 ? -nc : 0) / 16384;
+    const int32_t inset = (w < h ? w : h)/2;
+    const int32_t footX100 = loop->center_x * 100 +
+        (int32_t)((int64_t)loop->radius * 100 * ns / 16384);
+    const int32_t footY100 = loop->center_y * 100 +
+        (int32_t)((int64_t)loop->radius * 100 * nc / 16384);
+    p->x100 = footX100 - w*50 - inset*100*ns/16384;
+    p->y100 = footY100 - h*50 - inset*100*nc/16384;
+    p->on_ground = 1; p->coyote = 0; p->jump_held = 0;
+    if (speed_squared < needed || cg_loop_abs(p->loop_speed100) < 15) {
+        cg_loop_detach(p, ns, nc);
+    }
+    if (!cg_player_contacts(p, p->x100/100, p->y100/100, 0)) return 2;
+    return 1;
+}
+uint8_t game_tile_player_on_loop(const game_tile_player_t *p)
+{ return p && p->loop_index != 0; }
+
 void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frames)
 {
     if (!p || !p->sprite || !p->map || game_death_is_dead()) return;
@@ -952,6 +1162,12 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
     const game_tilemap_t *m = p->map;
     const int32_t w = p->sprite->width, h = p->sprite->height;
     for (uint16_t n = 0; n < frames; ++n) {
+        if (p->loop_cooldown) --p->loop_cooldown;
+        if (p->loop_index) {
+            const uint8_t loop_result = cg_loop_tick(p, buttons, w, h);
+            if (loop_result == 2) return; /* Death, user teleport, or reset. */
+            if (loop_result) continue;
+        }
         /* World Objects applies spring launches AFTER game_tile_player_run().
            Detect an upward impulse made between physics calls rather than
            treating it as an ordinary variable-height jump. This also works
@@ -1037,7 +1253,13 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
             int32_t nextPlayerY = y;
             int32_t surface = 0x7FFFFFFF;
             if (walkingOnGround) {
-                surface = ground_near_feet(m, nextX, w, y + h, 4, 2);
+                /* Allow a grounded player to climb genuinely steep curved
+                 * ramps a pixel at a time. Solid ledges are still limited
+                 * to 2px by ground_near_feet(), and this never attaches a
+                 * player to ceilings (loops need a separate track mode). */
+                const int32_t climb = h < (int32_t)m->tile_size * 2
+                    ? (h > 4 ? h : 4) : (int32_t)m->tile_size * 2;
+                surface = ground_near_feet(m, nextX, w, y + h, climb, 2);
                 if (surface != 0x7FFFFFFF)
                     nextPlayerY = surface - h;
             }
@@ -1129,50 +1351,8 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         if (blocked) p->y100 = y * 100;
         else p->y100 = nextY100;
         if (wasGrounded && !p->on_ground) p->coyote = 5;
-        p->touch_type = special_type(m, x, y, w, h);
-        const uint8_t was_in_hazard = p->hazard_contact;
-        const uint8_t ended_inside_hazard = p->touch_type == GAME_TILE_HAZARD;
-        /* Swept detection creates ENTERED when moving fully across hazards,
-           but must not prolong INSIDE after a player has physically left. */
-        const uint8_t touching_hazard = ended_inside_hazard ||
-            (!was_in_hazard && crossed_hazard);
-        if (touching_hazard) p->touch_type = GAME_TILE_HAZARD;
-        /* Update contact BEFORE dispatch: callbacks may reset, teleport or
-           mark the player dead. A tile-to-tile move stays INSIDE because
-           special_type() sees any overlapping hazard tile. Swept contacts
-           still generate ENTERED even when a fast player crosses entirely
-           through a hazard in one frame (followed by EXITED next frame). */
-        p->hazard_contact = touching_hazard;
-        if (p->vy100 >= 0 || p->on_ground)
-            p->external_ascent = 0;
-        p->physics_vy100 = p->vy100;
-        if (touching_hazard && !was_in_hazard) {
-            game_hazard_notify(GAME_HAZARD_TILE_ENTERED, x, y);
-        } else if (touching_hazard) {
-            game_hazard_notify(GAME_HAZARD_TILE_INSIDE, x, y);
-        } else if (was_in_hazard) {
-            game_hazard_notify(GAME_HAZARD_TILE_EXITED, x, y);
-        }
-        /* A handler can explicitly kill or teleport the player. Never
-           process more batched frames after it changes that state. */
-        if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
-            return;
-        const uint8_t currentZones = cg_zone_callback ?
-            game_zone_at_player(m, x, y, w, h) : 0;
-        const uint8_t previousZones = p->zone_contacts;
-        p->zone_contacts = currentZones; /* Store before callback/teleport. */
-        if (cg_zone_callback) {
-            for (uint8_t z = 0; z < 8; ++z) {
-                const uint8_t bit = (uint8_t)(1u << z);
-                const uint8_t event = (currentZones & bit)
-                    ? ((previousZones & bit) ? GAME_ZONE_INSIDE : GAME_ZONE_ENTERED)
-                    : ((previousZones & bit) ? GAME_ZONE_EXITED : 0);
-                if (!event) continue;
-                cg_zone_callback((uint8_t)(z+1), event, x, y, cg_zone_user);
-                if (game_death_is_dead() || p->x100 / 100 != x || p->y100 / 100 != y)
-                    return;
-            }
-        }
+        if (!cg_player_contacts(p, x, y, crossed_hazard)) return;
+        if (!p->loop_index) cg_loop_try_attach(p, w, h);
     }
 }
 void game_tile_player_screen(game_tile_player_t *p, int32_t cameraX, int32_t cameraY)

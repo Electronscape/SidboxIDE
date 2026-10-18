@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QSettings>
 #include <QCryptographicHash>
+#include <QCursor>
 #include <QPalette>
 #include <QPen>
 #include <QDialogButtonBox>
@@ -49,6 +50,9 @@
 #include <QPixmap>
 #include <QEvent>
 #include <QSpinBox>
+#include <QSlider>
+#include <QLineF>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QtGlobal>
 
@@ -92,6 +96,39 @@ void SidboxCollisionStamp::resizeStamp(int w, int h)
         if (points.at(i).x() <= points.at(i-1).x() ||
             points.at(i).x() >= points.at(i+1).x())
             points.removeAt(i);
+}
+
+/* Design-time cubic Bezier. The runtime still receives the exact same v4
+ * point-defined collision format, so SD loaders and established linear slopes
+ * do not change. X control handles must be ordered to ensure one Y per X;
+ * a full loop (where X reverses) is deliberately NOT represented as a slope. */
+static QVector<QPoint> sampledCubicSlope(int width, int height,
+                                        int startY, int endY,
+                                        QPoint handleA, QPoint handleB)
+{
+    QVector<QPoint> out;
+    if (width < 1 || height < 1 || handleA.x() < 0 ||
+        handleA.x() > handleB.x() || handleB.x() > width) return out;
+    const int intervals = qMin(width, 127); // <=128 exported points
+    out.reserve(intervals + 1);
+    for (int i = 0; i <= intervals; ++i) {
+        const int x = int(qint64(width) * i / intervals);
+        double low = 0.0, high = 1.0;
+        for (int iteration = 0; iteration < 24; ++iteration) {
+            const double t = (low + high) * 0.5, u = 1.0 - t;
+            const double bx = 3.0*u*u*t*handleA.x() +
+                3.0*u*t*t*handleB.x() + t*t*t*width;
+            if (bx < x) low = t; else high = t;
+        }
+        const double t = (low + high) * 0.5, u = 1.0-t;
+        const double by = u*u*u*startY + 3.0*u*u*t*handleA.y() +
+            3.0*u*t*t*handleB.y() + t*t*t*endY;
+        const int y = qBound(0, qRound(by), height);
+        out.append(QPoint(x, y));
+    }
+    out.first() = QPoint(0, startY);
+    out.last() = QPoint(width, endY);
+    return out;
 }
 
 static bool validSlopePoints(const SidboxCollisionStamp &stamp)
@@ -171,8 +208,11 @@ static int slopeY(const SidboxCollisionStamp &s, int x, bool mirror)
 
 void SidboxTilemap::resizeMap(int w, int h)
 {
-    w = qBound(30, w, 256);
-    h = qBound(20, h, 256);
+    w = qBound(30, w, SIDBOX_MAP_MAX_AXIS);
+    h = qBound(20, h, SIDBOX_MAP_MAX_AXIS);
+    // No silent shrinking of the other axis: the editor's spin boxes prevent
+    // oversize combinations. Preserve the map if called from somewhere else.
+    if (qint64(w) * h > SIDBOX_MAP_MAX_CELLS) return;
     QByteArray nextG(w * h * 2, char(0)), nextC(w * h, char(0)), nextF(w * h, char(0));
     QByteArray nextS(w * h * tileSize, char(0));
     for (int y = 0; y < qMin(h, height); ++y)
@@ -190,6 +230,11 @@ void SidboxTilemap::resizeMap(int w, int h)
         }
     width = w; height = h;
     graphics = nextG; collisions = nextC; flips = nextF; slopes = nextS;
+    for (int i = loops.size()-1; i >= 0; --i) {
+        const auto &track=loops.at(i);
+        if (track.centerX+track.radius >= w*tileSize ||
+            track.centerY+track.radius >= h*tileSize) loops.removeAt(i);
+    }
     for (int i = collisionPlacements.size() - 1; i >= 0; --i) {
         const auto &p = collisionPlacements.at(i);
         if (p.stamp < 0 || p.stamp >= collisionStamps.size() ||
@@ -273,6 +318,16 @@ QJsonObject SidboxTilemap::toJson() const
         placed.append(item);
     }
     result.insert(QStringLiteral("collisionPlacements"), placed);
+    QJsonArray loopList;
+    for (const SidboxLoopTrack &loop : loops) {
+        QJsonObject v;
+        v.insert(QStringLiteral("centerX"), loop.centerX);
+        v.insert(QStringLiteral("centerY"), loop.centerY);
+        v.insert(QStringLiteral("radius"), loop.radius);
+        v.insert(QStringLiteral("entrySpeed100"), loop.entrySpeed100);
+        loopList.append(v);
+    }
+    result.insert(QStringLiteral("loopTracks"), loopList);
     return result;
 }
 
@@ -281,13 +336,22 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     const int w = object.value(QStringLiteral("width")).toInt(100);
     const int h = object.value(QStringLiteral("height")).toInt(100);
     const int tile = object.value(QStringLiteral("tileSize")).toInt(16);
-    if (w < 30 || w > 256 || h < 20 || h > 256 ||
+    if (w < 30 || w > SIDBOX_MAP_MAX_AXIS || h < 20 ||
+        h > SIDBOX_MAP_MAX_AXIS || qint64(w) * h > SIDBOX_MAP_MAX_CELLS ||
         (tile != 8 && tile != 16 && tile != 32)) return false;
     const bool extended = object.contains(QStringLiteral("graphics16Z"));
     const QString encodedG = object.value(extended ? QStringLiteral("graphics16Z")
                                                   : QStringLiteral("graphicsZ")).toString();
     const QString encodedC = object.value(QStringLiteral("collisionsZ")).toString();
-    if (encodedG.size() > 400000 || encodedC.size() > 131072) return false;
+    // Base64-encoded zlib streams can be slightly larger than raw data.
+    // Bound compressed input by the selected map dimensions, never by a
+    // hard-coded 256x256-era limit.
+    const auto encodedLimit = [](qint64 rawBytes) -> qint64 {
+        return ((rawBytes + 4096) * 4 / 3) + 32;
+    };
+    const qint64 cells = qint64(w) * h;
+    if (encodedG.size() > encodedLimit(cells * (extended ? 2 : 1)) ||
+        encodedC.size() > encodedLimit(cells)) return false;
     const QByteArray compressedG = QByteArray::fromBase64(encodedG.toLatin1());
     const QByteArray compressedC = QByteArray::fromBase64(encodedC.toLatin1());
     // qUncompress uses a 4-byte big-endian uncompressed-length prefix.
@@ -307,7 +371,7 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     if (!flipsValueMap.isUndefined()) {
         if (!flipsValueMap.isString()) return false;
         const QString encodedF = flipsValueMap.toString();
-        if (encodedF.size() > 131072) return false;
+        if (encodedF.size() > encodedLimit(cells)) return false;
         const QByteArray compressedF = QByteArray::fromBase64(encodedF.toLatin1());
         if (expectedLength(compressedF) != quint32(w * h)) return false;
         f = qUncompress(compressedF);
@@ -317,7 +381,8 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     QByteArray slopesDecoded(w * h * tile, char(0));
     const QJsonValue slopesValue = object.value(QStringLiteral("slopesZ"));
     if (!slopesValue.isUndefined()) {
-        if (!slopesValue.isString() || slopesValue.toString().size() > 4000000) return false;
+        if (!slopesValue.isString() ||
+            slopesValue.toString().size() > encodedLimit(cells * tile)) return false;
         const QByteArray compressed = QByteArray::fromBase64(slopesValue.toString().toLatin1());
         if (expectedLength(compressed) != quint32(w * h * tile)) return false;
         slopesDecoded = qUncompress(compressed);
@@ -485,6 +550,24 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     }
     for (int i = 0; i < c.size(); ++i)
         if (quint8(c.at(i)) == 8 && !occupied.contains(i)) return false;
+    QVector<SidboxLoopTrack> decodedLoops;
+    const QJsonValue loopValue = object.value(QStringLiteral("loopTracks"));
+    if (!loopValue.isUndefined() && !loopValue.isArray()) return false;
+    if (loopValue.toArray().size() > 32) return false;
+    for (const QJsonValue &value : loopValue.toArray()) {
+        if (!value.isObject()) return false;
+        const QJsonObject v = value.toObject();
+        SidboxLoopTrack loop;
+        loop.centerX = v.value(QStringLiteral("centerX")).toInt(-1);
+        loop.centerY = v.value(QStringLiteral("centerY")).toInt(-1);
+        loop.radius = v.value(QStringLiteral("radius")).toInt(-1);
+        loop.entrySpeed100 = v.value(QStringLiteral("entrySpeed100")).toInt(-1);
+        if (loop.radius < 16 || loop.radius > 512 || loop.entrySpeed100 < 100 ||
+            loop.entrySpeed100 > 3200 || loop.centerX < loop.radius ||
+            loop.centerY < loop.radius || loop.centerX + loop.radius >= w*tile ||
+            loop.centerY + loop.radius >= h*tile) return false;
+        decodedLoops.append(loop);
+    }
     width = w; height = h; tileSize = tile;
     atlasPath = object.value(QStringLiteral("atlasPath")).toString();
     if (extended) graphics = g;
@@ -502,6 +585,7 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     stamps = std::move(decodedStamps);
     collisionStamps = std::move(decodedCollisionStamps);
     collisionPlacements = std::move(decodedPlacements);
+    loops = std::move(decodedLoops);
     return true;
 }
 
@@ -568,6 +652,8 @@ public:
     SidboxTilemap *map = nullptr;
     QImage *atlas = nullptr;
     int zoom = 2;
+    static constexpr int maxZoom = 16;
+    std::function<void(int)> zoomChanged;
     bool showCollisions = true;
     // -1 = preserve existing value, 0 = erase, 1 = selected atlas tile.
     int graphicMode = 1;
@@ -579,6 +665,11 @@ public:
     bool stampUseFrontBrush = false; // stamp override: use Draw in front of player checkbox
     int stampIndex = -1; // -1 means ordinary atlas-tile painting
     int collisionStampIndex = -1; // separate collision-only brush
+    bool loopEditMode = false;
+    int selectedLoop = -1;
+    int loopDragKind = 0; // 1 centre, 2 radius
+    QPoint loopDragOffset;
+    std::function<void()> loopEdited;
     bool painting = false;
     bool panning = false;
     bool erasingStroke = false;
@@ -609,8 +700,7 @@ public:
     // Shift-click a placed collision slope to edit its shared definition.
     std::function<void(int)> editPlacedCollision;
     QPoint lastPan;
-    int wheelRemainderX = 0;
-    int wheelRemainderY = 0;
+    int zoomWheelRemainder = 0;
     qint64 animationTicks = 0;
     void refreshAnimated(qint64 ticks)
     {
@@ -650,6 +740,33 @@ public:
         horizontalScrollBar()->setPageStep(viewport()->width());
         verticalScrollBar()->setPageStep(viewport()->height());
         viewport()->update();
+    }
+    // Zoom about a viewport pixel, not the map origin. The world pixel under
+    // this anchor stays under it as the zoom changes (unless clamped at an edge).
+    void setZoom(int requestedZoom, const QPoint &anchor)
+    {
+        const int nextZoom = qBound(1, requestedZoom, maxZoom);
+        if (!map || nextZoom == zoom) return;
+        const double worldX = double(horizontalScrollBar()->value() + anchor.x()) / zoom;
+        const double worldY = double(verticalScrollBar()->value() + anchor.y()) / zoom;
+        zoom = nextZoom;
+        adjust(); // Update scrollbar ranges BEFORE restoring the anchor.
+        horizontalScrollBar()->setValue(qRound(worldX * zoom - anchor.x()));
+        verticalScrollBar()->setValue(qRound(worldY * zoom - anchor.y()));
+        const QPoint mouse = viewport()->mapFromGlobal(QCursor::pos());
+        if (viewport()->rect().contains(mouse)) updateHover(mouse);
+        else if (hoverValid) {
+            hoverValid = false;
+            if (hoveredCellChanged) hoveredCellChanged();
+        }
+        viewport()->update();
+        if (zoomChanged) zoomChanged(zoom);
+    }
+    QPoint keyboardZoomAnchor() const
+    {
+        const QPoint mouse = viewport()->mapFromGlobal(QCursor::pos());
+        return viewport()->rect().contains(mouse)
+            ? mouse : viewport()->rect().center();
     }
     QPoint cellAt(const QPoint &at) const
     {
@@ -761,26 +878,63 @@ public:
             return false;
         }
         if (strokeStarted) strokeStarted();
-        // Remove full overlapping slope instances FIRST. Copy data lives in a
-        // separate snapshot, so overlapping the source is also safe.
-        removePlacementsInRect(*map, QRect(bx, by, w, h));
+        // A temporary region may contain collision shapes, but it must never
+        // delete a collision stamp already placed in the destination. If a
+        // copied shape would overlap one, skip that whole copied shape so no
+        // orphan type-8 markers can be left in its uncovered cells.
+        QVector<bool> blocked(temporaryPlacements.size(), false);
+        for (int n = 0; n < temporaryPlacements.size(); ++n) {
+            const auto &copy = temporaryPlacements.at(n);
+            if (copy.stamp < 0 || copy.stamp >= map->collisionStamps.size()) {
+                blocked[n] = true;
+                continue;
+            }
+            const auto &shape = map->collisionStamps.at(copy.stamp);
+            const QRect target(bx + copy.x, by + copy.y, shape.width, shape.height);
+            for (const auto &placed : map->collisionPlacements) {
+                if (placed.stamp < 0 || placed.stamp >= map->collisionStamps.size()) continue;
+                const auto &existing = map->collisionStamps.at(placed.stamp);
+                if (target.intersects(QRect(placed.x, placed.y, existing.width, existing.height))) {
+                    blocked[n] = true;
+                    break;
+                }
+            }
+        }
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x) {
                 const int src = y * w + x;
-                const int dst = (by + y) * map->width + bx + x;
+                const int dstX = bx + x, dstY = by + y;
+                const int dst = dstY * map->width + dstX;
                 const quint16 tile = erase ? 0 : mapGraphic(temporaryStamp.graphics, src);
                 setMapGraphic(map->graphics, dst, tile);
-                map->collisions[dst] = erase ? char(0) : temporaryStamp.collisions.at(src);
                 const quint8 saved = quint8(temporaryStamp.flips.at(src));
                 map->flips[dst] = erase ? char(0) : char((saved & ~4u) |
                     (stampUseFrontBrush ? (flipBrush & 4u) : (saved & 4u)));
-                for (int k = 0; k < map->tileSize; ++k)
-                    map->slopes[dst * map->tileSize + k] = erase ? char(0) :
-                        temporarySlopes.at(src * map->tileSize + k);
+                // Graphic edits always work; collision edits never displace
+                // an existing placed shape (including right-click erase).
+                bool protectCollision = collisionPlacementAt(*map, dstX, dstY) >= 0;
+                if (!protectCollision) for (int n = 0; n < temporaryPlacements.size(); ++n) {
+                    if (!blocked.at(n)) continue;
+                    const auto &copy = temporaryPlacements.at(n);
+                    if (copy.stamp < 0 || copy.stamp >= map->collisionStamps.size()) continue;
+                    const auto &shape = map->collisionStamps.at(copy.stamp);
+                    if (x >= copy.x && x < copy.x + shape.width &&
+                        y >= copy.y && y < copy.y + shape.height) {
+                        protectCollision = true;
+                        break;
+                    }
+                }
+                if (!protectCollision) {
+                    map->collisions[dst] = erase ? char(0) : temporaryStamp.collisions.at(src);
+                    for (int k = 0; k < map->tileSize; ++k)
+                        map->slopes[dst * map->tileSize + k] = erase ? char(0) :
+                            temporarySlopes.at(src * map->tileSize + k);
+                }
             }
         if (!erase)
-            for (auto place : temporaryPlacements) {
-                if (place.stamp < 0 || place.stamp >= map->collisionStamps.size()) continue;
+            for (int n = 0; n < temporaryPlacements.size(); ++n) {
+                if (blocked.at(n)) continue;
+                auto place = temporaryPlacements.at(n);
                 place.x += bx; place.y += by;
                 map->collisionPlacements.append(place);
             }
@@ -813,7 +967,7 @@ public:
     }
     QRect previewBounds() const
     {
-        if (!map || !hoverValid || panning || selectingRegion) return QRect();
+        if (!map || !hoverValid || panning || selectingRegion || loopEditMode) return QRect();
         const int px = map->tileSize * zoom;
         int w = temporaryActive ? temporaryStamp.width : 1;
         int h = temporaryActive ? temporaryStamp.height : 1;
@@ -854,7 +1008,7 @@ public:
     }
     void paintBrushPreview(QPainter &painter)
     {
-        if (!map || !hoverValid || panning || selectingRegion) return;
+        if (!map || !hoverValid || panning || selectingRegion || loopEditMode) return;
         const int px = map->tileSize * zoom;
         const QPoint base = previewBaseCell();
         int w = temporaryActive ? temporaryStamp.width : 1;
@@ -1031,7 +1185,16 @@ public:
                     // Never put incomplete instances along the map edges.
                     if (bx < 0 || by < 0 || bx + stamp.width > map->width ||
                         by + stamp.height > map->height) return;
-                    removePlacementsInRect(*map, QRect(bx, by, stamp.width, stamp.height));
+                    // Left-click never removes/replaces an existing collision
+                    // shape. Right-click with a collision-stamp brush is the
+                    // only canvas painting action which deletes a placement.
+                    const QRect newArea(bx, by, stamp.width, stamp.height);
+                    for (const auto &placed : map->collisionPlacements) {
+                        if (placed.stamp < 0 || placed.stamp >= map->collisionStamps.size()) continue;
+                        const auto &old = map->collisionStamps.at(placed.stamp);
+                        if (newArea.intersects(QRect(placed.x, placed.y, old.width, old.height)))
+                            return;
+                    }
                     for (int y = by; y < by + stamp.height; ++y)
                         for (int x = bx; x < bx + stamp.width; ++x) {
                             const int idx = y * map->width + x;
@@ -1109,18 +1272,22 @@ public:
                             setMapGraphic(map->graphics, index, g);
                             changed = true;
                         }
-                        if (collisionPlacementAt(*map, x, y) >= 0) {
-                            removePlacementsInRect(*map, QRect(x, y, 1, 1));
-                            changed = true;
-                            viewport()->update();
-                        }
-                        if (map->collisions.at(index) != c) {
-                            map->collisions[index] = c;
-                            changed = true;
-                        }
-                        for (int k = 0; k < map->tileSize; ++k) {
-                            const int off = index * map->tileSize + k;
-                            if (map->slopes[off] != 0) { map->slopes[off] = 0; changed = true; }
+                        // Graphics and per-tile flips can be painted over a
+                        // collision slope without deleting its shape. On
+                        // unoccupied cells, ordinary graphic-stamp collision
+                        // properties still work as before.
+                        if (collisionPlacementAt(*map, x, y) < 0) {
+                            if (map->collisions.at(index) != c) {
+                                map->collisions[index] = c;
+                                changed = true;
+                            }
+                            for (int k = 0; k < map->tileSize; ++k) {
+                                const int off = index * map->tileSize + k;
+                                if (map->slopes[off] != 0) {
+                                    map->slopes[off] = 0;
+                                    changed = true;
+                                }
+                            }
                         }
                         if (map->flips.at(index) != f) {
                             map->flips[index] = f;
@@ -1163,12 +1330,9 @@ public:
                 changed = true;
             }
         }
-        if (collisionBrush >= 0) {
-            if (collisionPlacementAt(*map, tx, ty) >= 0) {
-                removePlacementsInRect(*map, QRect(tx, ty, 1, 1));
-                changed = true;
-                viewport()->update();
-            }
+        if (collisionBrush >= 0 && collisionPlacementAt(*map, tx, ty) < 0) {
+            // A normal collision brush may paint empty cells, but cannot
+            // destroy an installed point-defined collision stamp.
             const char value = char(erase ? 0 : collisionBrush);
             if (map->collisions.at(index) != value) {
                 map->collisions[index] = value;
@@ -1293,6 +1457,41 @@ protected:
                 painter.drawRect(dest.adjusted(0, 0, -1, -1));
             }
         }
+        // Tracks are level-only objects. Show their collision centreline
+        // independently of ordinary walkable slopes and painted tiles.
+        if (showCollisions) for (const SidboxLoopTrack &track : map->loops) {
+            const QPoint centre(track.centerX*zoom-scrollX,
+                                track.centerY*zoom-scrollY);
+            const int r=track.radius*zoom;
+            if (!QRect(centre.x()-r,centre.y()-r,2*r,2*r).intersects(dirty)) continue;
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(117, 138, 255), 2, Qt::DashLine));
+            painter.drawEllipse(centre,r,r);
+            // Red ticks indicate surface normals, as in the loop sketch.
+            static const QPointF directions[] = {
+                {1,0},{0.7071,0.7071},{0,1},{-0.7071,0.7071},
+                {-1,0},{-0.7071,-0.7071},{0,-1},{0.7071,-0.7071}
+            };
+            painter.setPen(QPen(QColor(252, 85, 69), 2));
+            for (const QPointF &n : directions) {
+                const QPointF c(centre);
+                painter.drawLine(c + n*(r-5), c + n*(r+5));
+            }
+            painter.setPen(QPen(QColor(255, 206, 67), 2));
+            painter.drawEllipse(QPoint(centre.x(),centre.y()+r),4,4);
+            painter.drawText(QPoint(centre.x()+6,centre.y()+r-5),
+                             QStringLiteral("LOOP"));
+        }
+        if (loopEditMode && selectedLoop >= 0 && selectedLoop < map->loops.size()) {
+            const auto &track = map->loops.at(selectedLoop);
+            const QPoint c(track.centerX*zoom-scrollX,track.centerY*zoom-scrollY);
+            const QPoint edge(c.x()+track.radius*zoom,c.y());
+            painter.setPen(QPen(QColor(255,255,255),2));
+            painter.setBrush(QColor(60,230,200));
+            painter.drawRect(QRect(c-QPoint(5,5),QSize(11,11)));
+            painter.setBrush(QColor(255,194,63));
+            painter.drawEllipse(edge,6,6);
+        }
         paintBrushPreview(painter);
         if (selectingRegion) {
             const QRect selected = regionRect();
@@ -1327,6 +1526,29 @@ protected:
     void mousePressEvent(QMouseEvent *e) override
     {
         if (!map) return;
+        // Focus the canvas even when clicking loop anchors or empty map space.
+        if (e->button() == Qt::LeftButton || e->button() == Qt::MiddleButton ||
+            e->button() == Qt::RightButton) setFocus(Qt::MouseFocusReason);
+        if (loopEditMode && e->button() == Qt::LeftButton &&
+            selectedLoop >= 0 && selectedLoop < map->loops.size()) {
+            const auto &l=map->loops.at(selectedLoop);
+            const QPoint mouse=e->position().toPoint();
+            const QPoint c(l.centerX*zoom-horizontalScrollBar()->value(),
+                           l.centerY*zoom-verticalScrollBar()->value());
+            const QPoint radiusHandle=c+QPoint(l.radius*zoom,0);
+            if ((mouse-radiusHandle).manhattanLength() <= 18) loopDragKind=2;
+            else if ((mouse-c).manhattanLength() <= 18) loopDragKind=1;
+            if (loopDragKind) {
+                loopDragOffset=mouse-c;
+                if (strokeStarted) strokeStarted();
+                viewport()->setCursor(Qt::ClosedHandCursor);
+                e->accept(); return;
+            }
+        }
+        if (loopEditMode && (e->button() == Qt::LeftButton ||
+                             e->button() == Qt::RightButton)) {
+            e->accept(); return; // Anchors only; no tile painting or erasure.
+        }
         if (e->button() == Qt::LeftButton &&
             (e->modifiers() & Qt::ShiftModifier) && !(e->modifiers() & Qt::AltModifier)) {
             setFocus();
@@ -1373,6 +1595,42 @@ protected:
     }
     void mouseMoveEvent(QMouseEvent *e) override
     {
+        if (loopDragKind && selectedLoop >= 0 && selectedLoop < map->loops.size()) {
+            auto &l=map->loops[selectedLoop];
+            const QPoint pos=e->position().toPoint();
+            const int maxX=map->width*map->tileSize;
+            const int maxY=map->height*map->tileSize;
+            if (loopDragKind == 1) {
+                const QPoint centre=pos-loopDragOffset;
+                l.centerX=qBound(l.radius,(centre.x()+horizontalScrollBar()->value()+zoom/2)/zoom,maxX-l.radius-1);
+                l.centerY=qBound(l.radius,(centre.y()+verticalScrollBar()->value()+zoom/2)/zoom,maxY-l.radius-1);
+            } else {
+                const int x=(pos.x()+horizontalScrollBar()->value()+zoom/2)/zoom;
+                const int limit=qMin(512,qMin(qMin(l.centerX,maxX-l.centerX-1),
+                                              qMin(l.centerY,maxY-l.centerY-1)));
+                l.radius=qBound(16,x-l.centerX,qMax(16,limit));
+            }
+            viewport()->update();
+            if (loopEdited) loopEdited();
+            e->accept(); return;
+        }
+        if (loopEditMode && !panning) {
+            // Editing a loop is not painting. Show an ordinary arrow except
+            // directly over the centre and radius drag handles.
+            Qt::CursorShape cursor = Qt::ArrowCursor;
+            if (selectedLoop >= 0 && selectedLoop < map->loops.size()) {
+                const auto &l = map->loops.at(selectedLoop);
+                const QPoint mouse = e->position().toPoint();
+                const QPoint centre(l.centerX*zoom-horizontalScrollBar()->value(),
+                                    l.centerY*zoom-verticalScrollBar()->value());
+                const QPoint edge = centre + QPoint(l.radius*zoom, 0);
+                if ((mouse-centre).manhattanLength() <= 18 ||
+                    (mouse-edge).manhattanLength() <= 18)
+                    cursor = Qt::OpenHandCursor;
+            }
+            viewport()->setCursor(cursor);
+            e->accept(); return;
+        }
         if (selectingRegion) {
             regionEnd = cellAt(e->position().toPoint());
             viewport()->update();
@@ -1395,6 +1653,13 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *e) override
     {
+        if (loopDragKind && e->button() == Qt::LeftButton) {
+            loopDragKind=0;
+            viewport()->setCursor(Qt::OpenHandCursor);
+            if (strokeFinished) strokeFinished();
+            if (loopEdited) loopEdited();
+            e->accept(); return;
+        }
         if (selectingRegion && e->button() == Qt::LeftButton) {
             regionEnd = cellAt(e->position().toPoint());
             selectingRegion = false;
@@ -1421,7 +1686,7 @@ protected:
         const QRect previous = previewBounds();
         if (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton) {
             panning = false;
-            viewport()->setCursor(Qt::CrossCursor);
+            viewport()->setCursor(loopEditMode ? Qt::ArrowCursor : Qt::CrossCursor);
         }
         if ((e->button() == Qt::RightButton || e->button() == Qt::LeftButton) && painting) {
             painting = false;
@@ -1441,38 +1706,30 @@ protected:
             event->accept();
             return;
         }
+        if ((event->modifiers() & Qt::KeypadModifier) &&
+            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Minus)) {
+            setZoom(zoom + (event->key() == Qt::Key_Plus ? 1 : -1),
+                    keyboardZoomAnchor());
+            event->accept();
+            return;
+        }
         QAbstractScrollArea::keyPressEvent(event);
     }
     void wheelEvent(QWheelEvent *e) override
     {
-        // Move exactly one map tile per mouse-wheel notch, at the current zoom.
-        // Keep middle-button dragging pixel-accurate and unchanged.
-        const QPoint angle = e->angleDelta();
-        if (angle.isNull()) {
-            // Touchpads may send pixel-based scrolling instead of wheel notches.
+        // A vertical wheel notch changes zoom; its position anchors the map.
+        // Keep touchpad pixel scrolling and horizontal-wheel behaviour intact.
+        const int deltaY = e->angleDelta().y();
+        if (!deltaY) {
             QAbstractScrollArea::wheelEvent(e);
             return;
         }
-
-        int deltaX = angle.x();
-        int deltaY = angle.y();
-        if ((e->modifiers() & Qt::ShiftModifier) && deltaX == 0) {
-            deltaX = deltaY;
-            deltaY = 0;
-        }
-
-        // Some wheels send fractions of a notch: collect them until 120 units.
-        wheelRemainderX += deltaX;
-        wheelRemainderY += deltaY;
-        const int notchesX = wheelRemainderX / 120;
-        const int notchesY = wheelRemainderY / 120;
-        wheelRemainderX -= notchesX * 120;
-        wheelRemainderY -= notchesY * 120;
-
-        const int tilePixels = map ? map->tileSize * zoom : 16 * zoom;
-        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - notchesX * tilePixels);
-        verticalScrollBar()->setValue(verticalScrollBar()->value() - notchesY * tilePixels);
-        updateHover(e->position().toPoint());
+        zoomWheelRemainder += deltaY;
+        const int notches = zoomWheelRemainder / 120;
+        zoomWheelRemainder -= notches * 120;
+        if (notches) setZoom(zoom + notches, e->position().toPoint());
+        // Wheel interaction also focuses the map for subsequent numpad +/-.
+        setFocus(Qt::MouseFocusReason);
         e->accept();
     }
 };
@@ -1843,7 +2100,8 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         || a.animations.size() != b.animations.size()
         || a.stamps.size() != b.stamps.size() || a.flips != b.flips
         || a.slopes != b.slopes || a.collisionStamps.size() != b.collisionStamps.size()
-        || a.collisionPlacements.size() != b.collisionPlacements.size())
+        || a.collisionPlacements.size() != b.collisionPlacements.size()
+        || a.loops.size() != b.loops.size())
         return false;
     for (int i = 0; i < a.animations.size(); ++i) {
         const auto &left = a.animations.at(i);
@@ -1866,6 +2124,11 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         if (left.name != right.name || left.width != right.width ||
             left.height != right.height || left.tileSize != right.tileSize ||
             left.points != right.points) return false;
+    }
+    for (int i = 0; i < a.loops.size(); ++i) {
+        const auto &l=a.loops.at(i), &r=b.loops.at(i);
+        if (l.centerX!=r.centerX || l.centerY!=r.centerY ||
+            l.radius!=r.radius || l.entrySpeed100!=r.entrySpeed100) return false;
     }
     for (int i = 0; i < a.collisionPlacements.size(); ++i) {
         const auto &left = a.collisionPlacements.at(i);
@@ -1914,8 +2177,13 @@ void SidboxTilemapEditor::updateLegacyStatus()
 void SidboxTilemapEditor::recordChange(const SidboxTilemap &before)
 {
     if (sameTilemap(before, m_map)) return;
-    constexpr int maxHistory = 64;
-    if (m_undoStack.size() == maxHistory) m_undoStack.removeFirst();
+    // QByteArrays share unchanged snapshots, but slope edits can copy the
+    // dense per-cell legacy data. Limit worst-case history for huge maps.
+    const qint64 bytesPerMap = qint64(before.graphics.size()) +
+        before.collisions.size() + before.flips.size() + before.slopes.size();
+    const int maxHistory = qBound(4, int((64ll * 1024 * 1024) /
+        qMax<qint64>(1, bytesPerMap)), 64);
+    while (m_undoStack.size() >= maxHistory) m_undoStack.removeFirst();
     m_undoStack.append(before);
     m_redoStack.clear();
     if (m_saveStatus) m_saveStatus->setText(tr("Unsaved changes"));
@@ -1945,12 +2213,13 @@ void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
     const bool atlasChanged = m_map.atlasPath != snapshot.atlasPath;
     m_map = snapshot;
     // Restore the original settings without firing edit-history callbacks.
-    if (m_sizeX) {
-        QSignalBlocker block(m_sizeX);
+    if (m_sizeX && m_sizeY) {
+        QSignalBlocker blockX(m_sizeX), blockY(m_sizeY);
+        m_sizeX->setMaximum(qMin(SIDBOX_MAP_MAX_AXIS,
+                                 SIDBOX_MAP_MAX_CELLS / m_map.height));
+        m_sizeY->setMaximum(qMin(SIDBOX_MAP_MAX_AXIS,
+                                 SIDBOX_MAP_MAX_CELLS / m_map.width));
         m_sizeX->setValue(m_map.width);
-    }
-    if (m_sizeY) {
-        QSignalBlocker block(m_sizeY);
         m_sizeY->setValue(m_map.height);
     }
     if (m_tileSizeCombo) {
@@ -2082,16 +2351,23 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *sizeX = new QSpinBox(this), *sizeY = new QSpinBox(this);
     m_sizeX = sizeX;
     m_sizeY = sizeY;
-    sizeX->setRange(30, 256); sizeY->setRange(20, 256);
+    sizeX->setRange(30, qMin(SIDBOX_MAP_MAX_AXIS,
+                              SIDBOX_MAP_MAX_CELLS / m_map.height));
+    sizeY->setRange(20, qMin(SIDBOX_MAP_MAX_AXIS,
+                              SIDBOX_MAP_MAX_CELLS / m_map.width));
+    sizeX->setToolTip(tr("Maximum %1 cells total. For a longer map, reduce Tiles Y first.")
+                          .arg(SIDBOX_MAP_MAX_CELLS));
+    sizeY->setToolTip(sizeX->toolTip());
     sizeX->setValue(m_map.width); sizeY->setValue(m_map.height);
     auto *tileSize = new TilemapComboBox(this);
     m_tileSizeCombo = tileSize;
     for (int s : {8, 16, 32}) tileSize->addItem(QString::number(s) + QStringLiteral(" px"), s);
     tileSize->setCurrentIndex(qMax(0, tileSize->findData(m_map.tileSize)));
     auto *zoom = new TilemapComboBox(this);
-    for (int z : {1, 2, 3, 4}) zoom->addItem(QStringLiteral("%1×").arg(z), z);
+    for (int z = 1; z <= Canvas::maxZoom; ++z)
+        zoom->addItem(QStringLiteral("%1×").arg(z), z);
     zoom->setCurrentIndex(qMax(0, zoom->findData(qBound(1,
-        windowSettings.value(QStringLiteral("GameTilemapEditor/zoom"), 2).toInt(), 4))));
+        windowSettings.value(QStringLiteral("GameTilemapEditor/zoom"), 2).toInt(), Canvas::maxZoom))));
     auto *collisionOverlay = new QCheckBox(tr("Show collisions"), this);
     collisionOverlay->setChecked(true);
     collisionOverlay->setToolTip(tr("Show or hide the collision overlay while editing either layer."));
@@ -2493,6 +2769,230 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionPointRow->addWidget(new QLabel(tr("Y"), collisionEditPane));
     collisionPointRow->addWidget(m_collisionPointY);
     collisionEditLayout->addLayout(collisionPointRow);
+    // The cubic is baked into ordinary editable v4 points. Both ends are the
+    // stamp's existing end points; the two adjustable handles shape the curve.
+    // Keeping it a tool rather than a new collision type preserves old maps.
+    auto *generateCurve = new QPushButton(tr("Generate Bezier Curve..."), collisionEditPane);
+    generateCurve->setToolTip(tr("Shape a smooth ramp or bowl with two Bezier handles. "
+        "Converts to ordinary editable collision points; existing stamps and SD maps remain compatible."));
+    collisionEditLayout->addWidget(generateCurve);
+    connect(generateCurve, &QPushButton::clicked, this, [this]() {
+        const int row = m_collisionList ? m_collisionList->currentRow() : -1;
+        if (row < 0 || row >= m_map.collisionStamps.size()) return;
+        const SidboxCollisionStamp shape = m_map.collisionStamps.at(row);
+        const int w = shape.width * shape.tileSize, h = shape.height * shape.tileSize;
+        if (shape.points.size() < 2 || w < 1 || h < 1) return;
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Bezier collision surface — %1").arg(shape.name));
+        dialog.setStyleSheet(QStringLiteral("QDialog, QSpinBox, QSlider, QLabel, QPushButton { border-radius:0px; }"));
+        auto *form = new QFormLayout(&dialog);
+        // Sliders and exact pixel values are kept in sync; no new map data.
+        auto make = [&dialog, form](const QString &name, int min, int max, int value) {
+            auto *rowWidget = new QWidget(&dialog);
+            auto *rowLayout = new QHBoxLayout(rowWidget);
+            rowLayout->setContentsMargins(0, 0, 0, 0);
+            rowLayout->setSpacing(8);
+            auto *slider = new QSlider(Qt::Horizontal, rowWidget);
+            slider->setRange(min, max);
+            slider->setValue(value);
+            auto *spin = new QSpinBox(rowWidget);
+            spin->setRange(min, max);
+            spin->setValue(value);
+            spin->setMinimumWidth(76);
+            rowLayout->addWidget(slider, 1);
+            rowLayout->addWidget(spin);
+            form->addRow(name, rowWidget);
+            QObject::connect(slider, &QSlider::valueChanged, spin, &QSpinBox::setValue);
+            QObject::connect(spin, qOverload<int>(&QSpinBox::valueChanged),
+                             slider, &QSlider::setValue);
+            return std::pair<QSpinBox *, QSlider *>(spin, slider);
+        };
+        const int firstY = shape.points.first().y();
+        const int lastY = shape.points.last().y();
+        auto [x1, sliderAX] = make(tr("Handle A X"), 0, w, w/3);
+        auto [y1, sliderAY] = make(tr("Handle A Y"), 0, h, firstY);
+        auto [x2, sliderBX] = make(tr("Handle B X"), 0, w, w*2/3);
+        auto [y2, sliderBY] = make(tr("Handle B Y"), 0, h, lastY);
+
+        // A<=B is required by the existing single-valued-X slope sampler.
+        // Restrict both X controls in either editing direction, including drags.
+        auto limitHandleX = [=]() {
+            const int a = x1->value(), b = x2->value();
+            x1->setMaximum(b);
+            sliderAX->setMaximum(b);
+            x2->setMinimum(a);
+            sliderBX->setMinimum(a);
+        };
+        connect(x1, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [limitHandleX](int) { limitHandleX(); });
+        connect(x2, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [limitHandleX](int) { limitHandleX(); });
+        limitHandleX();
+
+        // Interactive preview: move A or B directly on the graph. This local
+        // widget needs no Q_OBJECT/moc and never changes the stamp before OK.
+        class BezierPreview final : public QWidget {
+        public:
+            BezierPreview(QWidget *parent, int curveW, int curveH,
+                          int startY, int endY,
+                          QSpinBox *ax, QSpinBox *ay, QSpinBox *bx, QSpinBox *by)
+                : QWidget(parent), m_w(curveW), m_h(curveH),
+                  m_startY(startY), m_endY(endY),
+                  m_ax(ax), m_ay(ay), m_bx(bx), m_by(by)
+            {
+                setMinimumSize(420, 260);
+                setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+                setMouseTracking(true);
+                setToolTip(tr("Drag the orange A or pink B point to shape the curve"));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.fillRect(rect(), QColor(27, 37, 49));
+                const QRectF plot = plotRect();
+                painter.setPen(QPen(QColor(103, 127, 145), 1));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(plot);
+
+                const QPointF start = toScreen(QPoint(0, m_startY));
+                const QPointF finish = toScreen(QPoint(m_w, m_endY));
+                const QPointF a = toScreen(QPoint(m_ax->value(), m_ay->value()));
+                const QPointF b = toScreen(QPoint(m_bx->value(), m_by->value()));
+
+                const auto pts = sampledCubicSlope(m_w, m_h, m_startY, m_endY,
+                    QPoint(m_ax->value(), m_ay->value()),
+                    QPoint(m_bx->value(), m_by->value()));
+                if (!pts.isEmpty()) {
+                    QPolygonF line;
+                    for (const QPoint &pt : pts) line << toScreen(pt);
+                    QPolygonF filled = line;
+                    filled << plot.bottomRight() << plot.bottomLeft();
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(QColor(45, 189, 157, 75));
+                    painter.drawPolygon(filled);
+                    painter.setBrush(Qt::NoBrush);
+                    painter.setPen(QPen(QColor(73, 255, 207), 2));
+                    painter.drawPolyline(line);
+                }
+
+                // Control polygon makes the curve's shape intuitive.
+                painter.setPen(QPen(QColor(174, 182, 199, 170), 1, Qt::DashLine));
+                painter.drawLine(start, a);
+                painter.drawLine(a, b);
+                painter.drawLine(b, finish);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(109, 212, 255));
+                painter.drawEllipse(start, 4, 4);
+                painter.drawEllipse(finish, 4, 4);
+                drawHandle(painter, a, QColor(255, 180, 65), QStringLiteral("A"));
+                drawHandle(painter, b, QColor(255, 107, 167), QStringLiteral("B"));
+                painter.setPen(QColor(191, 202, 213));
+                painter.drawText(QRectF(0, height() - 27, width(), 24),
+                                 Qt::AlignCenter, tr("Drag A (orange) or B (pink)  •  Blue dots = fixed endpoints"));
+            }
+
+            void mousePressEvent(QMouseEvent *event) override
+            {
+                if (event->button() != Qt::LeftButton) {
+                    QWidget::mousePressEvent(event); return;
+                }
+                const QPointF p = event->position();
+                const QPointF a = toScreen(QPoint(m_ax->value(), m_ay->value()));
+                const QPointF b = toScreen(QPoint(m_bx->value(), m_by->value()));
+                const qreal da = QLineF(p, a).length();
+                const qreal db = QLineF(p, b).length();
+                if (qMin(da, db) > 16.0) {
+                    QWidget::mousePressEvent(event); return;
+                }
+                m_dragging = (da <= db) ? 1 : 2;
+                setCursor(Qt::ClosedHandCursor);
+                event->accept();
+            }
+
+            void mouseMoveEvent(QMouseEvent *event) override
+            {
+                if (m_dragging != 0) {
+                    const QRectF plot = plotRect();
+                    int x = qBound(0, qRound((event->position().x() - plot.left()) * m_w / plot.width()), m_w);
+                    const int y = qBound(0, qRound((event->position().y() - plot.top()) * m_h / plot.height()), m_h);
+                    if (m_dragging == 1) {
+                        x = qMin(x, m_bx->value());
+                        m_ax->setValue(x); m_ay->setValue(y);
+                    } else {
+                        x = qMax(x, m_ax->value());
+                        m_bx->setValue(x); m_by->setValue(y);
+                    }
+                    update();
+                    event->accept(); return;
+                }
+                const QPointF p = event->position();
+                const bool hover = QLineF(p, toScreen(QPoint(m_ax->value(), m_ay->value()))).length() <= 16.0 ||
+                                   QLineF(p, toScreen(QPoint(m_bx->value(), m_by->value()))).length() <= 16.0;
+                setCursor(hover ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                QWidget::mouseMoveEvent(event);
+            }
+
+            void mouseReleaseEvent(QMouseEvent *event) override
+            {
+                if (event->button() == Qt::LeftButton && m_dragging != 0) {
+                    m_dragging = 0;
+                    setCursor(Qt::OpenHandCursor);
+                    event->accept(); return;
+                }
+                QWidget::mouseReleaseEvent(event);
+            }
+
+        private:
+            QRectF plotRect() const
+            {
+                return QRectF(28, 22, qMax(1, width() - 56), qMax(1, height() - 64));
+            }
+            QPointF toScreen(QPoint p) const
+            {
+                const QRectF r = plotRect();
+                return QPointF(r.left() + double(p.x()) * r.width() / m_w,
+                               r.top() + double(p.y()) * r.height() / m_h);
+            }
+            static void drawHandle(QPainter &p, QPointF pos, QColor colour, const QString &letter)
+            {
+                p.setPen(QPen(QColor(24, 28, 39), 2));
+                p.setBrush(colour);
+                p.drawEllipse(pos, 11, 11);
+                p.setPen(QColor(24, 28, 39));
+                p.drawText(QRectF(pos.x()-11, pos.y()-11, 22, 22), Qt::AlignCenter, letter);
+            }
+            int m_w, m_h, m_startY, m_endY;
+            QSpinBox *m_ax, *m_ay, *m_bx, *m_by;
+            int m_dragging = 0;
+        };
+
+        auto *preview = new BezierPreview(&dialog, w, h, firstY, lastY, x1, y1, x2, y2);
+        form->addRow(preview);
+        for (QSpinBox *spin : {x1, y1, x2, y2})
+            connect(spin, qOverload<int>(&QSpinBox::valueChanged), preview,
+                    [preview](int) { preview->update(); });
+        auto *hint = new QLabel(tr("The blue endpoints stay fixed. Use the sliders, exact pixel boxes, "
+            "or drag A/B directly in the preview. Apply generates editable collision points."), &dialog);
+        hint->setWordWrap(true); form->addRow(hint);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        form->addRow(buttons);
+        if (dialog.exec() != QDialog::Accepted || x1->value() > x2->value()) return;
+        const auto points = sampledCubicSlope(w, h, firstY, lastY,
+            QPoint(x1->value(), y1->value()), QPoint(x2->value(), y2->value()));
+        if (points.isEmpty()) return;
+        const SidboxTilemap before = m_map;
+        m_map.collisionStamps[row].points = points;
+        m_collisionCanvas->active = -1;
+        m_collisionCanvas->refresh();
+        updateCollisionList(row);
+        m_canvas->viewport()->update();
+        recordChange(before);
+    });
     auto *collisionPointButtons = new QHBoxLayout;
     m_collisionInsertPoint = new QPushButton(tr("Insert Point"), collisionEditPane);
     m_collisionDeletePoint = new QPushButton(tr("Delete Point"), collisionEditPane);
@@ -2509,11 +3009,138 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionSidebar->setStretchFactor(1, 1);
     collisionSidebar->setSizes({300, 300});
     m_stampTabs->addTab(collisionSidebar, tr("Collision Stamps"));
+    // Physics loop workspace. The yellow marker is the shared bottom
+    // entrance/exit; the blue circle is NOT an ordinary solid slope. The
+    // engine switches only this player to guided track movement at speed.
+    auto *loopPane = new QWidget(m_stampTabs);
+    auto *loopLayout = new QVBoxLayout(loopPane);
+    loopLayout->addWidget(new QLabel(tr("Loop Tracks — optional Sonic-style guided circular motion"), loopPane));
+    auto *loopList = new QListWidget(loopPane);
+    loopLayout->addWidget(loopList, 1);
+    auto *loopActions = new QHBoxLayout;
+    auto *loopAdd = new QPushButton(tr("Add Loop"), loopPane);
+    auto *loopRemove = new QPushButton(tr("Remove Loop"), loopPane);
+    loopActions->addWidget(loopAdd); loopActions->addWidget(loopRemove);
+    loopLayout->addLayout(loopActions);
+    auto *loopForm = new QFormLayout;
+    auto *loopX = new QSpinBox(loopPane);
+    auto *loopY = new QSpinBox(loopPane);
+    auto *loopRadius = new QSpinBox(loopPane);
+    auto *loopSpeed = new QSpinBox(loopPane);
+    auto *loopRadiusSlider = new QSlider(Qt::Horizontal,loopPane);
+    loopRadiusSlider->setRange(16,512);
+    loopRadius->setRange(16, 512);
+    loopSpeed->setRange(1, 32);
+    loopSpeed->setSuffix(tr(" px/frame"));
+    loopForm->addRow(tr("Center X (pixels)"), loopX);
+    loopForm->addRow(tr("Center Y (pixels)"), loopY);
+    loopForm->addRow(tr("Radius (pixels)"), loopRadius);
+    loopForm->addRow(tr("Radius slider"), loopRadiusSlider);
+    loopForm->addRow(tr("Entry minimum speed"), loopSpeed);
+    loopLayout->addLayout(loopForm);
+    auto *loopHint = new QLabel(tr("Entry/exit: yellow dot at the BOTTOM of the circle. "
+        "Approach from either direction with enough horizontal speed. "
+        "Gravity slows the climb; insufficient speed releases the player. "
+        "Use curved collision stamps for the green run-in/out. "
+        "The player graphic remains upright for now."), loopPane);
+    loopHint->setWordWrap(true);
+    loopLayout->addWidget(loopHint);
+    m_stampTabs->addTab(loopPane, tr("Loop Tracks"));
+    const auto updateLoopList = [this,loopList]() {
+        const int selected = loopList->currentRow();
+        QSignalBlocker block(loopList);
+        loopList->clear();
+        for (int i=0;i<m_map.loops.size();++i) {
+            const auto &l=m_map.loops.at(i);
+            loopList->addItem(tr("Loop %1 — (%2, %3), radius %4")
+                .arg(i+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
+        }
+        loopList->setCurrentRow(qBound(-1,selected,int(m_map.loops.size())-1));
+        m_canvas->viewport()->update();
+    };
+    const auto updateLoopEditors = [this,loopList,loopX,loopY,loopRadius,loopSpeed,loopRadiusSlider]() {
+        const int i=loopList->currentRow();
+        const bool valid=i>=0 && i<m_map.loops.size();
+        const int maxX=m_map.width*m_map.tileSize;
+        const int maxY=m_map.height*m_map.tileSize;
+        for (QSpinBox *v : {loopX,loopY,loopRadius,loopSpeed}) v->setEnabled(valid);
+        loopRadiusSlider->setEnabled(valid);
+        m_canvas->selectedLoop=i;
+        m_canvas->viewport()->update();
+        if (!valid) return;
+        const auto &l=m_map.loops.at(i);
+        const QSignalBlocker b1(loopX),b2(loopY),b3(loopRadius),b4(loopSpeed);
+        loopX->setRange(l.radius,maxX-l.radius-1);
+        loopY->setRange(l.radius,maxY-l.radius-1);
+        loopRadius->setMaximum(qMin(512,qMin(qMin(l.centerX,maxX-l.centerX-1),
+                                          qMin(l.centerY,maxY-l.centerY-1))));
+        loopX->setValue(l.centerX); loopY->setValue(l.centerY);
+        loopRadius->setValue(l.radius); loopSpeed->setValue(l.entrySpeed100/100);
+        const QSignalBlocker b5(loopRadiusSlider);
+        loopRadiusSlider->setMaximum(loopRadius->maximum());
+        loopRadiusSlider->setValue(l.radius);
+    };
+    connect(loopList,&QListWidget::currentRowChanged,this,
+            [updateLoopEditors](int){updateLoopEditors();});
+    connect(loopAdd,&QPushButton::clicked,this,[this,loopList,updateLoopList,updateLoopEditors]() {
+        if (m_map.loops.size()>=32) {
+            QMessageBox::warning(this,tr("Loop tracks"),tr("Maximum 32 loops per level.")); return;
+        }
+        SidboxLoopTrack l;
+        const int maxX=m_map.width*m_map.tileSize, maxY=m_map.height*m_map.tileSize;
+        l.radius=qMin(64,qMin(maxX,maxY)/4);
+        l.centerX=qBound(l.radius,(m_canvas->horizontalScrollBar()->value()+
+            m_canvas->viewport()->width()/2)/m_canvas->zoom,maxX-l.radius-1);
+        l.centerY=qBound(l.radius,(m_canvas->verticalScrollBar()->value()+
+            m_canvas->viewport()->height()/2)/m_canvas->zoom,maxY-l.radius-1);
+        const SidboxTilemap before=m_map;
+        m_map.loops.append(l);
+        recordChange(before);
+        updateLoopList();
+        loopList->setCurrentRow(m_map.loops.size()-1);
+        updateLoopEditors();
+    });
+    connect(loopRemove,&QPushButton::clicked,this,[this,loopList,updateLoopList,updateLoopEditors]() {
+        const int i=loopList->currentRow();
+        if (i<0 || i>=m_map.loops.size()) return;
+        const SidboxTilemap before=m_map;
+        m_map.loops.removeAt(i);
+        recordChange(before);
+        updateLoopList();
+        loopList->setCurrentRow(qMin(i,m_map.loops.size()-1));
+        updateLoopEditors();
+    });
+    const auto updateLoop = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
+                              updateLoopList,updateLoopEditors]() {
+        const int i=loopList->currentRow();
+        if (i<0 || i>=m_map.loops.size()) return;
+        auto l=m_map.loops.at(i);
+        l.centerX=loopX->value(); l.centerY=loopY->value();
+        l.radius=loopRadius->value(); l.entrySpeed100=loopSpeed->value()*100;
+        if (l.centerX<l.radius || l.centerY<l.radius ||
+            l.centerX+l.radius>=m_map.width*m_map.tileSize ||
+            l.centerY+l.radius>=m_map.height*m_map.tileSize) return;
+        const SidboxTilemap before=m_map;
+        m_map.loops[i]=l;
+        recordChange(before);
+        updateLoopList(); updateLoopEditors();
+    };
+    for (QSpinBox *spin : {loopX,loopY,loopRadius,loopSpeed})
+        connect(spin,qOverload<int>(&QSpinBox::valueChanged),this,
+                [updateLoop](int){updateLoop();});
+    connect(loopRadiusSlider,&QSlider::valueChanged,loopRadius,
+            &QSpinBox::setValue);
+    m_canvas->loopEdited=[updateLoopList,updateLoopEditors]() {
+        updateLoopList(); updateLoopEditors();
+    };
+    updateLoopList(); updateLoopEditors();
     connect(m_stampTabs, &QTabWidget::currentChanged, this, [this](int tab) {
         m_canvas->collisionStampIndex = -1;
         m_canvas->stampIndex = -1;
+        m_canvas->loopEditMode=(tab == 2);
+        m_canvas->viewport()->setCursor(tab == 2 ? Qt::ArrowCursor : Qt::CrossCursor);
         if (tab == 0) selectStamp(m_stampList->currentRow());
-        else selectCollisionStamp(m_collisionList->currentRow());
+        else if (tab == 1) selectCollisionStamp(m_collisionList->currentRow());
         m_stampMirrorY->setEnabled(tab == 0);
         if (tab == 1) m_stampMirrorY->setChecked(false);
         m_canvas->viewport()->update();
@@ -2678,7 +3305,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *help = new QLabel(tr("SHIFT+DRAG selects and copies a map region (Shift-click still edits slopes). "
         "Move the temporary stamp to preview it; LEFT-CLICK pastes, LEFT-DRAG positions, "
         "RIGHT-CLICK erases its footprint, ESC cancels without pasting. "
-        "MIDDLE-DRAG or ALT+LEFT-DRAG pans; WHEEL scrolls. CTRL+Z / CTRL+Y undo/redo. "
+        "MIDDLE-DRAG or ALT+LEFT-DRAG pans; WHEEL zooms at the pointer; NUMPAD +/- zooms (1-16x). CTRL+Z / CTRL+Y undo/redo. "
         "Stamp: use Draw Front setting overrides copied front flags when ticked."), this);
     help->setWordWrap(true);
     layout->addWidget(help);
@@ -2812,11 +3439,17 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(sizeX, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
         const SidboxTilemap before = m_map;
         m_map.resizeMap(v, m_map.height); m_canvas->adjust();
+        { QSignalBlocker block(m_sizeY);
+          m_sizeY->setMaximum(qMin(SIDBOX_MAP_MAX_AXIS,
+                                   SIDBOX_MAP_MAX_CELLS / m_map.width)); }
         recordChange(before);
     });
     connect(sizeY, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
         const SidboxTilemap before = m_map;
         m_map.resizeMap(m_map.width, v); m_canvas->adjust();
+        { QSignalBlocker block(m_sizeX);
+          m_sizeX->setMaximum(qMin(SIDBOX_MAP_MAX_AXIS,
+                                   SIDBOX_MAP_MAX_CELLS / m_map.height)); }
         recordChange(before);
     });
     connect(tileSize, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -2890,8 +3523,16 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             m_canvas->showCollisions = enabled;
             m_canvas->viewport()->update();
         });
+    // Keep the dropdown synchronised with zoom changes made by wheel or numpad.
+    m_canvas->zoomChanged = [zoom](int value) {
+        const QSignalBlocker blocker(zoom);
+        zoom->setCurrentIndex(zoom->findData(value));
+    };
     connect(zoom, qOverload<int>(&QComboBox::currentIndexChanged), this,
-        [this, zoom](int) { m_canvas->zoom = zoom->currentData().toInt(); m_canvas->adjust(); });
+        [this, zoom](int) {
+            m_canvas->setZoom(zoom->currentData().toInt(),
+                              m_canvas->viewport()->rect().center());
+        });
     connect(setAnimation, &QPushButton::clicked, this,
         [this]() { saveSelectedAnimation(); });
     connect(m_removeAnimation, &QPushButton::clicked, this,
@@ -3531,7 +4172,9 @@ QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone)
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
                          QString *error, bool externalMap)
 {
-    if (map.width < 30 || map.width > 256 || map.height < 20 || map.height > 256 ||
+    if (map.width < 30 || map.width > SIDBOX_MAP_MAX_AXIS ||
+        map.height < 20 || map.height > SIDBOX_MAP_MAX_AXIS ||
+        qint64(map.width) * map.height > SIDBOX_MAP_MAX_CELLS ||
         (map.tileSize != 8 && map.tileSize != 16 && map.tileSize != 32) ||
         map.graphics.size() != map.width * map.height * 2 ||
         map.collisions.size() != map.width * map.height ||
@@ -3575,6 +4218,19 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         }
     }
     const bool custom = map.collisions.contains(char(7)); // legacy v3 data
+    if (map.loops.size() > 32) {
+        if (error) *error = QStringLiteral("Too many loop tracks (maximum 32).");
+        return false;
+    }
+    for (const auto &l : map.loops) {
+        if (l.radius < 16 || l.radius > 512 || l.entrySpeed100 < 100 ||
+            l.entrySpeed100 > 3200 || l.centerX < l.radius || l.centerY < l.radius ||
+            l.centerX + l.radius >= map.width*map.tileSize ||
+            l.centerY + l.radius >= map.height*map.tileSize) {
+            if (error) *error = QStringLiteral("Loop track geometry is outside the level.");
+            return false;
+        }
+    }
     const bool pointShapes = !map.collisionPlacements.isEmpty();
     QVector<int> usedShapes;
     QVector<int> shapeRemap(map.collisionStamps.size(), -1);
@@ -3655,6 +4311,32 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         if (mapGraphic(map.graphics, i) > tileCount) {
             if (error) *error = QStringLiteral("The map uses graphic ID %1, but the atlas has only %2 tiles.")
                 .arg(mapGraphic(map.graphics, i)).arg(tileCount);
+            return false;
+        }
+    }
+    // Reject a map that would exceed the SIDBOX runtime loader's bounded
+    // resident allocation, rather than generating a file the device rejects.
+    // v2/v3: 4 bytes/cell (+ legacy slope bytes); v4: 6 bytes/cell
+    // (+ legacy slope bytes, shape definitions, points and placements).
+    if (externalMap) {
+        qint64 sdBytes = qint64(map.width) * map.height *
+            (pointShapes ? 6 : 4) + (custom ? qint64(map.slopes.size()) : 0);
+        if (pointShapes) {
+            sdBytes += 2 + qint64(usedShapes.size()) * 8 +
+                       qint64(map.collisionPlacements.size()) * 6;
+            for (int id : usedShapes)
+                sdBytes += qint64(map.collisionStamps.at(id).points.size()) * 4;
+        }
+        sdBytes += 4 + qint64(map.animations.size()) * 6;
+        if (sdBytes > 3ll * 1024 * 1024) {
+            if (error) *error = QStringLiteral(
+                "SD map needs %1 MiB of SDRAM, exceeding the 3 MiB map budget. "
+                "Reduce the map area or convert legacy slopes to compact point slopes.")
+                .arg(double(sdBytes) / (1024.0 * 1024.0), 0, 'f', 2);
+            return false;
+        }
+        if (map.animations.size() > 128) {
+            if (error) *error = QStringLiteral("SD maps support up to 128 animations.");
             return false;
         }
     }
@@ -3791,6 +4473,16 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     }
     source += "};\n\n";
     }
+    if (!map.loops.isEmpty()) {
+        source += "/* Level-only loop tracks. Available with embedded OR SD tilemaps. */\n";
+        source += "static const game_tile_loop_t game_level1_loops[] = {\n";
+        for (const SidboxLoopTrack &l : map.loops)
+            source += "    {" + QByteArray::number(l.centerX) + ", " +
+                QByteArray::number(l.centerY) + ", " +
+                QByteArray::number(l.radius) + ", " +
+                QByteArray::number(l.entrySpeed100) + "},\n";
+        source += "};\n\n";
+    }
     source += "game_tilemap_t game_level1 = {\n";
     source += externalMap ? "    0, 0, 0,\n" : "    game_level1_graphics, game_level1_collisions, 0,\n";
     source += QByteArray("    ") + QByteArray::number(map.width) + ", " + QByteArray::number(map.height)
@@ -3806,7 +4498,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
             QByteArray("game_level1_shape_refs, game_level1_shape_instances, ") +
             "game_level1_shape_defs, game_level1_shape_points, " +
             QByteArray::number(map.collisionPlacements.size()) + ", " +
-            QByteArray::number(map.collisionStamps.size())) : QByteArray())
+            QByteArray::number(usedShapes.size())) : QByteArray(",\n    0, 0, 0, 0, 0, 0"))
+        + (map.loops.isEmpty() ? QByteArray(",\n    0, 0") :
+            QByteArray(",\n    game_level1_loops, ") + QByteArray::number(map.loops.size()))
         + "\n};\n\n";
     if (externalMap) {
         source += "/* SD map v2/v3/v4: file includes graphics, collisions, flips, optional slopes and animations. */\n"

@@ -1,3 +1,0 @@
-#ifndef STAGE5_TEST_UNISTD_H
-#define STAGE5_TEST_UNISTD_H
-#endif

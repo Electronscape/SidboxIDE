@@ -236,6 +236,30 @@ spring_slide = 0. Game projects need Update Game Project after installing
 the changed IDE. The game_world_player_t adapter must persist across frames
 (static or long-lived, zero initialized), as for existing spring trajectories.
 
+STAGE 3.54 — SLIDY SPRINGS RESPECT PHYSICS ZONES
+-------------------------------------------------
+Stage 3.54 improves the Slidy kickback checkbox for tilemap-based players.
+The sideways kick is added to the SAME force_vx100 channel used by
+apply_force(), so the live physics preset determines horizontal momentum drag:
+  NORMAL 12% per frame; ICE 2%; WATER 18%; SPACE 0%; FLOATING 4%.
+The tilemap player handles wall collision, subpixel motion, and force decay.
+For example: a slidy kick into an ICE zone glides; on SPACE it coasts;
+in WATER it slows more quickly. Vertical spring launch is unchanged.
+
+IMPORTANT: A hand-written/user-owned main.c is protected and NEVER edited
+by Update Game Project. In the player/world adapter setup add ONE line:
+
+  world_player.spring_force_vx100 = &player_physics.force_vx100;
+
+Keep the existing world_player.x100/y100/vy100 and other bindings.
+Rebuild after updating gamehelpers/gameworldobjects.c/.h. The new generated
+maingame.c.txt will include the binding automatically.
+
+If the force pointer is NOT bound (for example legacy projects or the basic
+platformer without game_tile_player_t), Stage 3.21 slidy damping remains
+6% in air and 14% on ground. OFF/non-slidy springs keep their old behaviour.
+This is source/backwards compatible: old collision/map/resource data unchanged.
+
 STAGE 3.22 — LINKED TRIGGERS, SWITCHES, KEYS AND DOORS
 -----------------------------------------------------
 In Game Designer, configure a placed PPB sprite at 100% scale as either

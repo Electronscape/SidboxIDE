@@ -62,6 +62,12 @@ typedef struct {
                            Normal mode clears on landing; slide mode eases off. */
     int32_t spring_remainder_x100; /* Internal subpixel accumulator for slide. */
     uint8_t spring_sliding; /* Internal: active inertia mode from last spring. */
+    /* OPTIONAL: bind to game_tile_player_t.force_vx100 for SPRING SLIDY mode.
+       When set, a sideways spring kick joins the tilemap player's existing
+       external-force velocity and uses its current physics preset drag.
+       When NULL, legacy standalone/platformer spring damping is retained.
+       Set this once alongside x100/y100/vy100 (no game engine coupling). */
+    int32_t *spring_force_vx100;
     /* Optional collision test for platform carrying. Returns 1 if the
        player's hitbox would collide at WORLD (x,y). Generated tilemap games
        connect this automatically; standalone projects can leave it NULL. */

@@ -104,7 +104,7 @@ QIcon gameResourceIcon(const QString &fileName)
 
 constexpr int LCD_WIDTH = 480;
 constexpr int LCD_HEIGHT = 320;
-constexpr int MAX_WORLD = 16384; // Editor guard only; NOT a firmware/world-size claim.
+constexpr int MAX_WORLD = 131072; // Editor pixel-coordinate guard; matches 4096 tiles x 32 px.
 
 // ZIP backup writer using the zlib already linked by CoderGirl. Entries are
 // streamed, not buffered in RAM, and are compatible with Ark/7-Zip/unzip.
@@ -3794,11 +3794,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(QString(), springTouch);
     auto *springSlide = new QCheckBox(tr("Slidy kickback (inertia + friction)"), &dialog);
     springSlide->setChecked(old.springSlide);
-    springSlide->setToolTip(tr("Off: normal sideways spring launch stays at full speed "
-                               "until landing. On: sideways momentum fades gradually "
-                               "in the air and continues to slide with greater friction "
-                               "on the ground. Joystick steering still works. "
-                               "Uses the Spring sideways launch setting."));
+    springSlide->setToolTip(tr("Off: classic sideways kick stays at full speed until landing. "
+                               "On: sideways spring impulse uses the player's current "
+                               "physics friction (Ice, Water, Space, etc.) and works "
+                               "with apply_force(). Joystick steering still works. "
+                               "In user-owned main.c, also bind "
+                               "world_player.spring_force_vx100 to player_physics.force_vx100. "
+                               "Without this binding, legacy 6%/14% spring drag remains."));
     form->addRow(QString(), springSlide);
     auto *springJumpBoost = new QCheckBox(tr("Combine jump + spring launch (extra boost)"), &dialog);
     springJumpBoost->setChecked(old.springJumpBoost);
@@ -4732,6 +4734,9 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "  world_player.jump_held = &player_physics.jump_held;\n"
                  "  world_player.coyote = &player_physics.coyote;\n"
                  "  world_player.jump_speed = &player_physics.jump_speed;\n"
+                 "  world_player.spring_force_vx100 = &player_physics.force_vx100;\n"
+                 "  // Slidy spring kickback now respects the current physics preset.\n"
+                 "  // Existing OWNER: user main.c needs this one-time binding!\n"
                  "Spring touch activation is per-object. OFF requires landing on top;\n"
                  "ON launches on any hitbox contact, with no repeated bounce while overlapping.\n"
                  "Jump + spring is per-object. OFF uses spring strength alone,\n"
@@ -4859,7 +4864,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     QString program;
     QTextStream out(&program);
     out << R"CG(/*
- * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.44)
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.55)
  * ==============================================================
  * This is REAL C source code, not a list of pseudocode snippets.
  * It is generated from the resources in the CURRENT .sbgm design.
@@ -4893,6 +4898,14 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
                " * Point-defined stamps use shared definitions and whole placements (SBMP v4).\n"
                " * Legacy Stage 3.35 painted slopes remain available as SBMP v3 data.\n"
                " * Update gametilemap.c/.h to the new shape-aware helpers before building.\n";
+    if (hasMap && !m_tilemap.loops.isEmpty())
+        out << " * Loop tracks: " << m_tilemap.loops.size() << " circular tracks.\n"
+               " * These are generated into level1.c even for SD .map projects.\n"
+               " * Approach the bottom yellow marker fast enough in either direction.\n"
+               " * game_tile_player_run() handles attachment, gravity and release.\n"
+               " * game_tile_player_on_loop(&player_physics) tests attachment.\n"
+               " * IMPORTANT: track travel guides player movement, it doesn't rotate\n"
+               " * the sprite. For freeform/full pinball physics use custom C.\n";
     if (!hasMap) out << " * No tilemap: this starter displays placed sprites without tile physics.\n"
                        " * Add a tilemap and regenerate to enable built-in player movement.\n";
     if (hasMapOnly) out << " * No ordinary sprite named 'player' found: the map renders, but\n"
@@ -5216,6 +5229,9 @@ int main(int argc, char *argv[])
     world_player.x100 = &player_physics.x100;
     world_player.y100 = &player_physics.y100;
     world_player.vy100 = &player_physics.vy100;
+    /* Slidy springs use the same external momentum as apply_force(),
+       including current ICE/WATER/SPACE drag. */
+    world_player.spring_force_vx100 = &player_physics.force_vx100;
     world_player.on_ground = &player_physics.on_ground;
     world_player.jump_held = &player_physics.jump_held;
     world_player.coyote = &player_physics.coyote;

@@ -57,6 +57,22 @@ struct SidboxCollisionPlacement {
     bool mirrorX = false;
 };
 
+/* Level-only circular physics tracks. Not a collision tile: the player
+ * is guided around the circle while moving fast enough, and drops back
+ * to ordinary tile physics if speed is insufficient. World PIXEL units. */
+struct SidboxLoopTrack {
+    int centerX = 0;
+    int centerY = 0;
+    int radius = 64;
+    int entrySpeed100 = 400; // 4 px/frame
+};
+
+// Long levels are supported without changing the SD .map header: widths and
+// heights are already uint16_t. Limit the *area* to keep SIDBOX SDRAM usage
+// bounded (2048 x 128 cells is a useful side-scrolling example).
+constexpr int SIDBOX_MAP_MAX_AXIS = 4096;
+constexpr int SIDBOX_MAP_MAX_CELLS = 262144;
+
 // Editor graphics IDs use uint16_t (little-endian packed storage).
 // The collision map remains uint8_t, and the V1 renderer stays independent.
 struct SidboxTilemap {
@@ -72,6 +88,7 @@ struct SidboxTilemap {
     QVector<SidboxTileStamp> stamps;
     QVector<SidboxCollisionStamp> collisionStamps;
     QVector<SidboxCollisionPlacement> collisionPlacements;
+    QVector<SidboxLoopTrack> loops; /* Editor overlay + generated level data */
     QByteArray slopes = QByteArray(10000 * 16, char(0)); // tileSize bytes/cell, custom type 7
 
     void resizeMap(int w, int h);
