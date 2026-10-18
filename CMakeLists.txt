@@ -23,6 +23,15 @@ qt_add_executable(SidboxIDE
     projectsettingsdialog.cpp
     projectsettingsdialog.h
     mainwindow.cpp
+    mainwindow_projectexplorer.cpp
+    mainwindow_editorview.cpp
+    mainwindow_filewatch.cpp
+    mainwindow_findreplace.cpp
+    mainwindow_paths.cpp
+    mainwindow_output.cpp
+    mainwindow_preferences.cpp
+    mainwindow_uiicons.cpp
+    mainwindow_uiicons.h
     mainwindow.h
     guidesigner.cpp
     guidesigner.h

@@ -1,5 +1,6 @@
 #include <QScrollArea>
 #include "mainwindow.h"
+#include "mainwindow_uiicons.h"
 
 #include "codeeditor.h"
 #include "guidesigner.h"
@@ -1265,64 +1266,8 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("sid") || lower == QStringLiteral("sba");
 }
 
-QIcon editorTabIconForFile(const QString &filePath,
-                           int defaultType = 0)
-{
-    QString suffix = QFileInfo(filePath).suffix().toLower();
+// Stage 3.70: editorTabIconForFile moved to mainwindow_uiicons.cpp.
 
-    /*
-     * Untitled tabs have no file path yet, so use the same defaultType
-     * convention as tabTitleForEditor():
-     *   0 = C source, 1 = header, 2 = include.
-     */
-    if (suffix.isEmpty()) {
-        if (defaultType == 1) {
-            suffix = QStringLiteral("h");
-        } else if (defaultType == 2) {
-            suffix = QStringLiteral("inc");
-        } else {
-            suffix = QStringLiteral("c");
-        }
-    }
-
-    if (suffix == QStringLiteral("c")
-        || suffix == QStringLiteral("uis")
-        || suffix == QStringLiteral("cc")
-        || suffix == QStringLiteral("cpp")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_c.png"));
-    }
-
-    if (suffix == QStringLiteral("h")
-        || suffix == QStringLiteral("hpp")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_h.png"));
-    }
-
-    if (suffix == QStringLiteral("inc")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
-    }
-
-    if (suffix == QStringLiteral("res")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_res.png"));
-    }
-
-    if (suffix == QStringLiteral("txt")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
-    }
-
-    if (suffix == QStringLiteral("sbui")) {
-        return QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
-    }
-
-    if (suffix == QStringLiteral("sbgm")) {
-        return QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png"));
-    }
-
-    if (suffix == QStringLiteral("md")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_md.png"));
-    }
-
-    return QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
-}
 
 
 QIcon projectFileIconWithErrorBadge(
@@ -8064,173 +8009,11 @@ void MainWindow::showOptions()
     statusBar()->showMessage(tr("Options saved"), 3000);
 }
 
-void MainWindow::showFindReplace()
-{
-    if (!m_findReplaceDialog) {
-        m_findReplaceDialog = new FindReplaceDialog(this);
-        m_findReplaceDialog->setAttribute(Qt::WA_DeleteOnClose, true);
+// Stage 3.70: showFindReplace moved to mainwindow_findreplace.cpp.
 
-        connect(m_findReplaceDialog, &QObject::destroyed,
-                this, [this]() {
-                    m_findReplaceDialog = nullptr;
-                });
 
-        connect(m_findReplaceDialog, &FindReplaceDialog::findAllRequested,
-                this, [this]() {
-                    if (!m_findReplaceDialog) {
-                        return;
-                    }
+// Stage 3.70: showFindReplaceForCurrentWord moved to mainwindow_findreplace.cpp.
 
-                    const QList<ProjectSearchResult> results =
-                        findInProject(
-                            m_findReplaceDialog->findText(),
-                            m_findReplaceDialog->matchCase(),
-                            m_findReplaceDialog->wholeWord());
-
-                    m_findReplaceDialog->setResults(results);
-
-                    statusBar()->showMessage(
-                        tr("%1 match(es) found")
-                            .arg(results.size()),
-                        3000);
-                });
-
-        connect(m_findReplaceDialog, &FindReplaceDialog::resultActivated,
-                this, [this](int index) {
-                    if (!m_findReplaceDialog
-                        || index < 0
-                        || index >= m_findReplaceDialog->results().size()) {
-                        return;
-                    }
-
-                    jumpToProjectSearchResult(
-                        m_findReplaceDialog->results().at(index));
-                });
-
-        connect(m_findReplaceDialog, &FindReplaceDialog::replaceSelectedRequested,
-                this, [this]() {
-                    if (!m_findReplaceDialog) {
-                        return;
-                    }
-
-                    QList<ProjectSearchResult> selected;
-                    for (const int index :
-                         m_findReplaceDialog->selectedResultIndexes()) {
-                        if (index >= 0
-                            && index < m_findReplaceDialog->results().size()) {
-                            selected.append(
-                                m_findReplaceDialog->results().at(index));
-                        }
-                    }
-
-                    if (selected.isEmpty()) {
-                        return;
-                    }
-
-                    if (!replaceProjectResults(
-                            selected,
-                            m_findReplaceDialog->replaceText())) {
-                        return;
-                    }
-
-                    const QList<ProjectSearchResult> refreshed =
-                        findInProject(
-                            m_findReplaceDialog->findText(),
-                            m_findReplaceDialog->matchCase(),
-                            m_findReplaceDialog->wholeWord());
-
-                    m_findReplaceDialog->setResults(refreshed);
-
-                    statusBar()->showMessage(
-                        tr("%1 selected replacement(s) made")
-                            .arg(selected.size()),
-                        3000);
-                });
-
-        connect(m_findReplaceDialog, &FindReplaceDialog::replaceAllRequested,
-                this, [this]() {
-                    if (!m_findReplaceDialog
-                        || m_findReplaceDialog->results().isEmpty()) {
-                        return;
-                    }
-
-                    const QList<ProjectSearchResult> allResults =
-                        m_findReplaceDialog->results();
-
-                    QSet<QString> files;
-                    for (const ProjectSearchResult &result : allResults) {
-                        files.insert(QFileInfo(result.filePath).absoluteFilePath());
-                    }
-
-                    const QMessageBox::StandardButton answer =
-                        QMessageBox::question(
-                            this,
-                            tr("Replace All"),
-                            tr("Replace %1 occurrence(s) in %2 file(s)?\n\n"
-                               "Open files will remain as unsaved editor changes. "
-                               "Files which are not open will be written to disk.")
-                                .arg(allResults.size())
-                                .arg(files.size()),
-                            QMessageBox::Yes | QMessageBox::Cancel,
-                            QMessageBox::Cancel);
-
-                    if (answer != QMessageBox::Yes) {
-                        return;
-                    }
-
-                    if (!replaceProjectResults(
-                            allResults,
-                            m_findReplaceDialog->replaceText())) {
-                        return;
-                    }
-
-                    const QList<ProjectSearchResult> refreshed =
-                        findInProject(
-                            m_findReplaceDialog->findText(),
-                            m_findReplaceDialog->matchCase(),
-                            m_findReplaceDialog->wholeWord());
-
-                    m_findReplaceDialog->setResults(refreshed);
-
-                    statusBar()->showMessage(
-                        tr("%1 replacement(s) made")
-                            .arg(allResults.size()),
-                        4000);
-                });
-    }
-
-    m_findReplaceDialog->show();
-    m_findReplaceDialog->raise();
-    m_findReplaceDialog->activateWindow();
-}
-
-void MainWindow::showFindReplaceForCurrentWord()
-{
-    QString word;
-
-    if (CodeEditor *editor = activeEditor()) {
-        QTextCursor cursor = editor->textCursor();
-
-        if (cursor.hasSelection()) {
-            word = cursor.selectedText().trimmed();
-        } else {
-            cursor.select(QTextCursor::WordUnderCursor);
-            word = cursor.selectedText().trimmed();
-        }
-    }
-
-    showFindReplace();
-
-    if (!m_findReplaceDialog) {
-        return;
-    }
-
-    if (!word.isEmpty()) {
-        m_findReplaceDialog->setFindText(word);
-    } else {
-        m_findReplaceDialog->focusFindText();
-    }
-}
 
 
 
@@ -10246,643 +10029,44 @@ void MainWindow::compileActiveFile()
 
 
 
-void MainWindow::openProjectFile(QTreeWidgetItem *item, int column)
-{
-    Q_UNUSED(column);
+// Stage 3.70: openProjectFile moved to mainwindow_projectexplorer.cpp.
 
-    if (!item) {
-        return;
-    }
 
-    const bool isFolder = item->data(0, Qt::UserRole + 1).toBool();
-    const QString itemPath = item->data(0, Qt::UserRole).toString();
+// Stage 3.70: projectContextDirectory moved to mainwindow_projectexplorer.cpp.
 
-    if (isFolder) {
-        item->setExpanded(!item->isExpanded());
-        return;
-    }
 
-    if (!itemPath.isEmpty()) {
-        openFile(itemPath);
-    }
-}
+// Stage 3.70: moveProjectFile moved to mainwindow_projectexplorer.cpp.
 
-QString MainWindow::projectContextDirectory(QTreeWidgetItem *item) const
-{
-    if (m_projectPath.isEmpty()) {
-        return {};
-    }
 
-    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
+// Stage 3.70: addExistingProjectFile moved to mainwindow_projectexplorer.cpp.
 
-    if (!item) {
-        return projectRoot;
-    }
 
-    const QString itemPath = item->data(0, Qt::UserRole).toString();
-    const bool isFolder = item->data(0, Qt::UserRole + 1).toBool();
+// Stage 3.70: createProjectFile moved to mainwindow_projectexplorer.cpp.
 
-    if (itemPath.isEmpty()) {
-        return projectRoot;
-    }
 
-    QString directoryPath = isFolder
-        ? QFileInfo(itemPath).absoluteFilePath()
-        : QFileInfo(itemPath).absolutePath();
+// Stage 3.70: createProjectFileInDirectory moved to mainwindow_projectexplorer.cpp.
 
-    /*
-     * Files which live outside the project can appear as top-level items.
-     * Do not create new project files beside those external files.
-     */
-    if (directoryPath != projectRoot
-        && !directoryPath.startsWith(projectRoot + QDir::separator())) {
-        directoryPath = projectRoot;
-    }
 
-    return directoryPath;
-}
+// Stage 3.70: createResourceFile moved to mainwindow_projectexplorer.cpp.
 
-void MainWindow::moveProjectFile(const QString &sourceFilePath, const QString &targetDirectory)
-{
-    if (m_projectPath.isEmpty() || sourceFilePath.isEmpty()) {
-        return;
-    }
 
-    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
-    const QString sourcePath = QFileInfo(sourceFilePath).absoluteFilePath();
+// Stage 3.70: createResourceFileInDirectory moved to mainwindow_projectexplorer.cpp.
 
-    /*
-     * External files may appear in the project tree, but dragging should never
-     * silently relocate files from elsewhere on the machine.
-     */
-    if (sourcePath != projectRoot
-        && !sourcePath.startsWith(projectRoot + QDir::separator())) {
-        QMessageBox::information(
-            this,
-            tr("Move File"),
-            tr("Only files inside the project folder can be moved by drag and drop."));
-        refreshProjectFiles();
-        return;
-    }
 
-    QString destinationDirectory = targetDirectory.isEmpty()
-        ? projectRoot
-        : QFileInfo(targetDirectory).absoluteFilePath();
+// Stage 3.70: createProjectFolderInDirectory moved to mainwindow_projectexplorer.cpp.
 
-    if (destinationDirectory != projectRoot
-        && !destinationDirectory.startsWith(projectRoot + QDir::separator())) {
-        destinationDirectory = projectRoot;
-    }
 
-    if (!QFileInfo(destinationDirectory).isDir()) {
-        QMessageBox::warning(
-            this,
-            tr("Move File"),
-            tr("The destination folder no longer exists."));
-        refreshProjectFiles();
-        return;
-    }
+// Stage 3.70: removeSelectedProjectFile moved to mainwindow_projectexplorer.cpp.
 
-    const QFileInfo sourceInfo(sourcePath);
-    const QString destinationPath =
-        QFileInfo(QDir(destinationDirectory).filePath(sourceInfo.fileName())).absoluteFilePath();
 
-    /* Dropping onto the current folder is simply a no-op. */
-    if (destinationPath == sourcePath) {
-        refreshProjectFiles();
-        return;
-    }
+// Stage 3.70: renameSelectedProjectFile moved to mainwindow_projectexplorer.cpp.
 
-    if (QFileInfo::exists(destinationPath)) {
-        QMessageBox::warning(
-            this,
-            tr("Move File"),
-            tr("A file named %1 already exists in that folder.").arg(sourceInfo.fileName()));
-        refreshProjectFiles();
-        return;
-    }
 
-    if (!QFile::rename(sourcePath, destinationPath)) {
-        QMessageBox::warning(
-            this,
-            tr("Move File"),
-            tr("Could not move %1 to %2.")
-                .arg(QDir::toNativeSeparators(sourcePath),
-                     QDir::toNativeSeparators(destinationDirectory)));
-        refreshProjectFiles();
-        return;
-    }
+// Stage 3.70: setCompileProgressStage moved to mainwindow_output.cpp.
 
-    /* Update the explicit project-file list, if this file is stored there. */
-    m_projectFilesInProject.removeAll(sourcePath);
-    addProjectFile(destinationPath);
 
-    /*
-     * A .sbui is not a CodeEditor tab. Moving it without updating the live
-     * designer leaves m_filePath pointing at the old location; saving then
-     * recreates the old design and triggers duplicate-window diagnostics.
-     */
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        QWidget *tab = m_editorTabs->widget(i);
-        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
-            if (QFileInfo(game->filePath()).absoluteFilePath() == sourcePath) {
-                game->setFilePath(destinationPath);
-                m_editorTabs->setTabToolTip(i, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(destinationPath)));
-            }
-            continue;
-        }
-        if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
-            if (QFileInfo(designer->filePath()).absoluteFilePath() == sourcePath) {
-                designer->setFilePath(destinationPath);
-                m_editorTabs->setTabToolTip(i,
-                    tr("CoderGirl visual design\n%1")
-                        .arg(QDir::toNativeSeparators(destinationPath)));
-            }
-            continue;
-        }
+// Stage 3.70: finishCompileProgress moved to mainwindow_output.cpp.
 
-        auto *editor = primaryEditorForTab(tab);
-        if (editor
-            && !editor->filePath().isEmpty()
-            && QFileInfo(editor->filePath()).absoluteFilePath() == sourcePath) {
-            unwatchEditorFile(editor);
-            editor->setFilePath(destinationPath);
-            watchEditorFile(editor);
-            updateTabTitle(editor);
-        }
-    }
-
-    refreshProjectFiles();
-    refreshFunctionCompletions();
-
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-
-    statusBar()->showMessage(
-        tr("File moved: %1").arg(displayPath(destinationPath)),
-        4000);
-}
-
-void MainWindow::addExistingProjectFile()
-{
-    const QString baseDirectory = m_projectPath.isEmpty() ? QDir::homePath() : m_projectPath;
-    const QStringList filePaths = QFileDialog::getOpenFileNames(
-        this,
-        tr("Add File"),
-        baseDirectory,
-        tr("Project files (*.c *.h *.inc *.res *.txt *.md);;All files (*)"));
-
-    if (filePaths.isEmpty()) {
-        return;
-    }
-
-    for (const QString &filePath : filePaths) {
-        addProjectFile(filePath);
-    }
-
-    refreshProjectFiles();
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-    statusBar()->showMessage(tr("File added to project"));
-}
-
-void MainWindow::createProjectFile()
-{
-    createProjectFileInDirectory(m_projectPath);
-}
-
-void MainWindow::createProjectFileInDirectory(const QString &directoryPath)
-{
-    if (m_projectPath.isEmpty()) {
-        QMessageBox::information(this, tr("Create File"), tr("Save or create a project first so the IDE knows which folder to use."));
-        return;
-    }
-
-    QString targetDirectory = directoryPath.isEmpty()
-        ? QFileInfo(m_projectPath).absoluteFilePath()
-        : QFileInfo(directoryPath).absoluteFilePath();
-
-    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
-    if (targetDirectory != projectRoot
-        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
-        targetDirectory = projectRoot;
-    }
-
-    if (!QFileInfo(targetDirectory).isDir()) {
-        QMessageBox::warning(this, tr("Create File"), tr("The selected project folder no longer exists."));
-        return;
-    }
-
-    bool accepted = false;
-    QString fileName = QInputDialog::getText(
-        this,
-        tr("Create File"),
-        tr("File name:"),
-        QLineEdit::Normal,
-        QStringLiteral("newfile.c"),
-        &accepted).trimmed();
-
-    if (!accepted || fileName.isEmpty()) {
-        return;
-    }
-
-    if (QFileInfo(fileName).suffix().isEmpty()) {
-        fileName.append(QStringLiteral(".c"));
-    }
-
-    if (QFileInfo(fileName).fileName() != fileName) {
-        QMessageBox::warning(this, tr("Create File"), tr("Enter a file name, not a path."));
-        return;
-    }
-
-    const QString filePath = QFileInfo(QDir(targetDirectory).filePath(fileName)).absoluteFilePath();
-
-    if (!isProjectExplorerFile(filePath)) {
-        QMessageBox::warning(this, tr("Create File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md"));
-        return;
-    }
-
-    if (QFileInfo::exists(filePath)) {
-        QMessageBox::warning(this, tr("Create File"), tr("That file already exists."));
-        return;
-    }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Create File"), tr("Could not create %1.").arg(QDir::toNativeSeparators(filePath)));
-        return;
-    }
-    file.close();
-
-    addProjectFile(filePath);
-    refreshProjectFiles();
-    openFile(filePath);
-
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-
-    statusBar()->showMessage(tr("File created: %1").arg(displayPath(filePath)));
-}
-
-void MainWindow::createResourceFile()
-{
-    createResourceFileInDirectory(m_projectPath);
-}
-
-void MainWindow::createResourceFileInDirectory(const QString &directoryPath)
-{
-    if (m_projectPath.isEmpty()) {
-        QMessageBox::information(
-            this,
-            tr("Create Resource"),
-            tr("Save or create a project first so the IDE knows which folder to use."));
-        return;
-    }
-
-    QString targetDirectory = directoryPath.isEmpty()
-        ? QFileInfo(m_projectPath).absoluteFilePath()
-        : QFileInfo(directoryPath).absoluteFilePath();
-
-    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
-    if (targetDirectory != projectRoot
-        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
-        targetDirectory = projectRoot;
-    }
-
-    if (!QFileInfo(targetDirectory).isDir()) {
-        QMessageBox::warning(
-            this, tr("Create Resource"), tr("The selected project folder no longer exists."));
-        return;
-    }
-
-    bool accepted = false;
-    QString fileName = QInputDialog::getText(
-        this,
-        tr("Create Resource"),
-        tr("Resource file name:"),
-        QLineEdit::Normal,
-        QStringLiteral("resource.res"),
-        &accepted).trimmed();
-
-    if (!accepted || fileName.isEmpty()) {
-        return;
-    }
-
-    if (QFileInfo(fileName).suffix().isEmpty()) {
-        fileName.append(QStringLiteral(".res"));
-    }
-
-    if (QFileInfo(fileName).suffix().compare(
-            QStringLiteral("res"), Qt::CaseInsensitive) != 0) {
-        QMessageBox::warning(
-            this, tr("Create Resource"), tr("Sidbox resource source files use the .res extension."));
-        return;
-    }
-
-    if (QFileInfo(fileName).fileName() != fileName) {
-        QMessageBox::warning(this, tr("Create Resource"), tr("Enter a file name, not a path."));
-        return;
-    }
-
-    const QString filePath =
-        QFileInfo(QDir(targetDirectory).filePath(fileName)).absoluteFilePath();
-
-    if (QFileInfo::exists(filePath)) {
-        QMessageBox::warning(this, tr("Create Resource"), tr("That resource file already exists."));
-        return;
-    }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(
-            this,
-            tr("Create Resource"),
-            tr("Could not create %1.").arg(QDir::toNativeSeparators(filePath)));
-        return;
-    }
-
-    const QByteArray header =
-        "/*\n"
-        " * SIDBOX RESOURCE SOURCE\n"
-        " *\n"
-        " * This file contains C resource data. Sidbox IDE compiles .res\n"
-        " * files as C, but deliberately excludes them from IntelliSense,\n"
-        " * project symbol analysis and heavyweight syntax analysis.\n"
-        " */\n\n";
-
-    file.write(header);
-    file.close();
-
-    addProjectFile(filePath);
-    refreshProjectFiles();
-    openFile(filePath);
-
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-
-    statusBar()->showMessage(
-        tr("Resource created: %1").arg(displayPath(filePath)),
-        4000);
-}
-
-void MainWindow::createProjectFolderInDirectory(const QString &directoryPath)
-{
-    if (m_projectPath.isEmpty()) {
-        QMessageBox::information(this, tr("Create Folder"), tr("Save or create a project first so the IDE knows which folder to use."));
-        return;
-    }
-
-    QString targetDirectory = directoryPath.isEmpty()
-        ? QFileInfo(m_projectPath).absoluteFilePath()
-        : QFileInfo(directoryPath).absoluteFilePath();
-
-    const QString projectRoot = QFileInfo(m_projectPath).absoluteFilePath();
-    if (targetDirectory != projectRoot
-        && !targetDirectory.startsWith(projectRoot + QDir::separator())) {
-        targetDirectory = projectRoot;
-    }
-
-    if (!QFileInfo(targetDirectory).isDir()) {
-        QMessageBox::warning(this, tr("Create Folder"), tr("The selected project folder no longer exists."));
-        return;
-    }
-
-    bool accepted = false;
-    const QString folderName = QInputDialog::getText(
-        this,
-        tr("Create Folder"),
-        tr("Folder name:"),
-        QLineEdit::Normal,
-        QStringLiteral("NewFolder"),
-        &accepted).trimmed();
-
-    if (!accepted || folderName.isEmpty()) {
-        return;
-    }
-
-    if (folderName == QStringLiteral(".")
-        || folderName == QStringLiteral("..")
-        || QFileInfo(folderName).fileName() != folderName) {
-        QMessageBox::warning(this, tr("Create Folder"), tr("Enter a folder name, not a path."));
-        return;
-    }
-
-    const QString folderPath = QFileInfo(QDir(targetDirectory).filePath(folderName)).absoluteFilePath();
-
-    if (QFileInfo::exists(folderPath)) {
-        QMessageBox::warning(this, tr("Create Folder"), tr("That folder already exists."));
-        return;
-    }
-
-    QDir parentDirectory(targetDirectory);
-    if (!parentDirectory.mkdir(folderName)) {
-        QMessageBox::warning(this, tr("Create Folder"), tr("Could not create %1.").arg(QDir::toNativeSeparators(folderPath)));
-        return;
-    }
-
-    refreshProjectFiles();
-    statusBar()->showMessage(tr("Folder created: %1").arg(displayPath(folderPath)));
-}
-
-void MainWindow::removeSelectedProjectFile()
-{
-    QTreeWidgetItem *item = m_projectFiles->currentItem();
-    if (!item) {
-        return;
-    }
-
-    if (item->data(0, Qt::UserRole + 1).toBool()) {
-        return;
-    }
-
-    const QString filePath = item->data(0, Qt::UserRole).toString();
-    if (filePath.isEmpty()) {
-        return;
-    }
-
-    const bool inProjectFolder = !m_projectPath.isEmpty()
-        && QFileInfo(filePath).absoluteFilePath().startsWith(QFileInfo(m_projectPath).absoluteFilePath() + QDir::separator());
-
-    QMessageBox box(this);
-    box.setWindowTitle(tr("Remove File"));
-    box.setText(tr("Remove %1?").arg(displayPath(filePath)));
-    QPushButton *removeButton = box.addButton(inProjectFolder ? tr("Delete File") : tr("Remove From Project"), QMessageBox::DestructiveRole);
-    box.addButton(QMessageBox::Cancel);
-    box.exec();
-
-    if (box.clickedButton() != removeButton) {
-        return;
-    }
-
-    if (inProjectFolder && QFileInfo::exists(filePath) && !QFile::remove(filePath)) {
-        QMessageBox::warning(this, tr("Remove File"), tr("Could not delete %1.").arg(QDir::toNativeSeparators(filePath)));
-        return;
-    }
-
-    m_projectFilesInProject.removeAll(QFileInfo(filePath).absoluteFilePath());
-    for (int i = m_editorTabs->count() - 1; i >= 0; --i) {
-        QWidget *widget = m_editorTabs->widget(i);
-        if (auto *game = dynamic_cast<SidboxGameDesigner *>(widget)) {
-            if (QFileInfo(game->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
-                m_editorTabs->removeTab(i); widget->deleteLater(); continue;
-            }
-        }
-        if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(widget)) {
-            if (QFileInfo(designer->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
-                m_editorTabs->removeTab(i);
-                widget->deleteLater();
-                continue;
-            }
-        }
-        auto *editor = primaryEditorForTab(widget);
-        if (editor && !editor->filePath().isEmpty()
-            && QFileInfo(editor->filePath()).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
-            unwatchEditorFile(editor);
-            m_editorTabs->removeTab(i);
-            widget->deleteLater();
-        }
-    }
-
-    // Remove can be triggered from a QMenu::exec() on the project tree.
-    // Rebuilding that tree synchronously destroys the selected item while
-    // QMenu/Qt may still be dispatching the originating QAction event.
-    // Finish project-bookkeeping first, then rebuild after the menu unwinds.
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-    QTimer::singleShot(0, this, [this]() {
-        refreshProjectFiles();
-    });
-    statusBar()->showMessage(tr("File removed"));
-}
-
-void MainWindow::renameSelectedProjectFile()
-{
-    QTreeWidgetItem *item = m_projectFiles->currentItem();
-    if (!item) {
-        return;
-    }
-
-    if (item->data(0, Qt::UserRole + 1).toBool()) {
-        return;
-    }
-
-    const QString oldPath = item->data(0, Qt::UserRole).toString();
-    const QFileInfo oldInfo(oldPath);
-    if (!oldInfo.exists()) {
-        return;
-    }
-
-    bool accepted = false;
-    const QString newName = QInputDialog::getText(
-        this,
-        tr("Rename File"),
-        tr("New name:"),
-        QLineEdit::Normal,
-        oldInfo.fileName(),
-        &accepted).trimmed();
-
-    if (!accepted || newName.isEmpty() || newName == oldInfo.fileName()) {
-        return;
-    }
-
-    if (QFileInfo(newName).fileName() != newName) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Enter a file name, not a path."));
-        return;
-    }
-
-    const QString newPath = QFileInfo(oldInfo.dir().filePath(newName)).absoluteFilePath();
-    if (!isProjectExplorerFile(newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui, .sbgm, .uis"));
-        return;
-    }
-
-    if (QFileInfo::exists(newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("A file with that name already exists."));
-        return;
-    }
-
-    if (!QFile::rename(oldPath, newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Could not rename %1.").arg(QDir::toNativeSeparators(oldPath)));
-        return;
-    }
-
-    m_projectFilesInProject.removeAll(oldInfo.absoluteFilePath());
-    addProjectFile(newPath);
-
-    for (int i = m_editorTabs->count() - 1; i >= 0; --i) {
-        QWidget *tab = m_editorTabs->widget(i);
-        if (auto *game = dynamic_cast<SidboxGameDesigner *>(tab)) {
-            if (QFileInfo(game->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
-                game->setFilePath(newPath);
-                m_editorTabs->setTabToolTip(i, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(newPath)));
-            }
-            continue;
-        }
-        if (auto *designer = dynamic_cast<SidboxGuiDesigner *>(tab)) {
-            if (QFileInfo(designer->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
-                designer->setFilePath(newPath);
-                m_editorTabs->setTabToolTip(i,
-                    tr("CoderGirl visual design\n%1")
-                        .arg(QDir::toNativeSeparators(newPath)));
-                continue;
-            }
-        }
-        auto *editor = primaryEditorForTab(tab);
-        if (editor && !editor->filePath().isEmpty()
-            && QFileInfo(editor->filePath()).absoluteFilePath() == oldInfo.absoluteFilePath()) {
-            unwatchEditorFile(editor);
-            editor->setFilePath(newPath);
-            watchEditorFile(editor);
-            updateTabTitle(editor);
-        }
-    }
-
-    refreshProjectFiles();
-    if (!m_projectFilePath.isEmpty()) {
-        saveProjectFile(m_projectFilePath);
-    }
-    statusBar()->showMessage(tr("File renamed: %1").arg(displayPath(newPath)));
-}
-
-void MainWindow::setCompileProgressStage(const QString &text)
-{
-    /*
-     * The status message changes immediately so even lightning-fast builds
-     * have useful feedback. The animated bar itself is delayed to avoid a
-     * distracting flash when the whole build completes almost instantly.
-     */
-    statusBar()->showMessage(text);
-
-    if (m_compileProgressBar) {
-        m_compileProgressBar->setFormat(text);
-
-        if (m_compileProgressBar->isVisible()) {
-            return;
-        }
-    }
-
-    if (m_compileProgressDelayTimer
-        && !m_compileProgressDelayTimer->isActive()) {
-        m_compileProgressDelayTimer->start();
-    }
-}
-
-void MainWindow::finishCompileProgress()
-{
-    if (m_compileProgressDelayTimer) {
-        m_compileProgressDelayTimer->stop();
-    }
-
-    if (m_compileProgressBar) {
-        m_compileProgressBar->hide();
-        m_compileProgressBar->setFormat(tr("Compiling..."));
-    }
-}
 
 void MainWindow::handleCompilerFinished(int exitCode)
 {
@@ -11612,696 +10796,53 @@ void MainWindow::handleCompilerFinished(int exitCode)
     finishCompileProgress();
 }
 
-QList<CodeEditor *> MainWindow::editorsForTab(QWidget *tabWidget) const
-{
-    QList<CodeEditor *> editors;
+// Stage 3.70: editorsForTab moved to mainwindow_editorview.cpp.
 
-    if (!tabWidget) {
-        return editors;
-    }
 
-    if (auto *editor = qobject_cast<CodeEditor *>(tabWidget)) {
-        editors.append(editor);
-        return editors;
-    }
+// Stage 3.70: primaryEditorForTab moved to mainwindow_editorview.cpp.
 
-    if (auto *splitter = qobject_cast<QSplitter *>(tabWidget)) {
-        for (int i = 0; i < splitter->count(); ++i) {
-            if (auto *editor =
-                    qobject_cast<CodeEditor *>(splitter->widget(i))) {
-                editors.append(editor);
-            }
-        }
-    }
 
-    return editors;
-}
+// Stage 3.70: tabIndexForEditor moved to mainwindow_editorview.cpp.
 
-CodeEditor *MainWindow::primaryEditorForTab(QWidget *tabWidget) const
-{
-    const QList<CodeEditor *> editors = editorsForTab(tabWidget);
-    return editors.isEmpty() ? nullptr : editors.first();
-}
 
-int MainWindow::tabIndexForEditor(CodeEditor *editor) const
-{
-    if (!editor || !m_editorTabs) {
-        return -1;
-    }
+// Stage 3.70: activeEditor moved to mainwindow_editorview.cpp.
 
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        const QList<CodeEditor *> editors =
-            editorsForTab(m_editorTabs->widget(i));
 
-        if (editors.contains(editor)) {
-            return i;
-        }
-    }
+// Stage 3.70: editorSplitTabIndex moved to mainwindow_editorview.cpp.
 
-    return -1;
-}
 
-CodeEditor *MainWindow::activeEditor() const
-{
-    if (!m_editorTabs) {
-        return nullptr;
-    }
+// Stage 3.70: editorSplitWidget moved to mainwindow_editorview.cpp.
 
-    QWidget *tabWidget = m_editorTabs->currentWidget();
-    const QList<CodeEditor *> editors = editorsForTab(tabWidget);
 
-    if (editors.isEmpty()) {
-        return nullptr;
-    }
+// Stage 3.70: splitHostEditor moved to mainwindow_editorview.cpp.
 
-    /*
-     * In a split tab the editor which currently owns keyboard focus is the
-     * active side.  This keeps line/column, Ctrl+Click, search jumps and other
-     * editor actions naturally attached to the pane the programmer is using.
-     */
-    for (CodeEditor *editor : editors) {
-        if (editor->hasFocus()
-            || (editor->viewport() && editor->viewport()->hasFocus())) {
-            return editor;
-        }
-    }
 
-    return editors.first();
-}
+// Stage 3.70: splitSecondaryEditor moved to mainwindow_editorview.cpp.
 
-int MainWindow::editorSplitTabIndex() const
-{
-    if (!m_editorTabs) {
-        return -1;
-    }
 
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        auto *splitter =
-            qobject_cast<QSplitter *>(m_editorTabs->widget(i));
+// Stage 3.70: updateEditorSplitPresentation moved to mainwindow_editorview.cpp.
 
-        if (splitter
-            && splitter->objectName()
-                == QStringLiteral("editorSplitView")) {
-            return i;
-        }
-    }
 
-    return -1;
-}
+// Stage 3.70: openCurrentTabInExistingSplit moved to mainwindow_editorview.cpp.
 
-QSplitter *MainWindow::editorSplitWidget() const
-{
-    const int index = editorSplitTabIndex();
-    if (index < 0) {
-        return nullptr;
-    }
 
-    return qobject_cast<QSplitter *>(
-        m_editorTabs->widget(index));
-}
+// Stage 3.70: toggleCurrentEditorSplit moved to mainwindow_editorview.cpp.
 
-CodeEditor *MainWindow::splitHostEditor(
-    QSplitter *splitter) const
-{
-    if (!splitter) {
-        return nullptr;
-    }
 
-    const QList<CodeEditor *> editors =
-        editorsForTab(splitter);
+// Stage 3.70: updateCursorPositionStatus moved to mainwindow_editorview.cpp.
 
-    for (CodeEditor *editor : editors) {
-        if (editor->property(
-                "sidboxSplitHostEditor").toBool()) {
-            return editor;
-        }
-    }
 
-    return editors.isEmpty()
-        ? nullptr
-        : editors.first();
-}
+// Stage 3.70: watchEditorFile moved to mainwindow_filewatch.cpp.
 
-CodeEditor *MainWindow::splitSecondaryEditor(
-    QSplitter *splitter) const
-{
-    if (!splitter) {
-        return nullptr;
-    }
 
-    const QList<CodeEditor *> editors =
-        editorsForTab(splitter);
-    CodeEditor *host =
-        splitHostEditor(splitter);
+// Stage 3.70: unwatchEditorFile moved to mainwindow_filewatch.cpp.
 
-    for (CodeEditor *editor : editors) {
-        if (editor != host) {
-            return editor;
-        }
-    }
 
-    return nullptr;
-}
+// Stage 3.70: handleExternalFileChange moved to mainwindow_filewatch.cpp.
 
-void MainWindow::updateEditorSplitPresentation()
-{
-    const int index = editorSplitTabIndex();
-    QSplitter *splitter = editorSplitWidget();
 
-    if (index < 0 || !splitter) {
-        return;
-    }
+// Stage 3.70: reloadEditorFromDisk moved to mainwindow_filewatch.cpp.
 
-    CodeEditor *host = splitHostEditor(splitter);
-    CodeEditor *secondary =
-        splitSecondaryEditor(splitter);
-
-    if (!host) {
-        return;
-    }
-
-    QString title = tabTitleForEditor(host);
-    QString tooltip = host->filePath();
-
-    if (secondary
-        && secondary->document() != host->document()) {
-        title += QStringLiteral("  |  ");
-        title += tabTitleForEditor(secondary);
-
-        tooltip =
-            tr("Split view:\n%1\n%2")
-                .arg(
-                    QDir::toNativeSeparators(
-                        host->filePath()),
-                    QDir::toNativeSeparators(
-                        secondary->filePath()));
-    }
-
-    m_editorTabs->setTabText(index, title);
-    m_editorTabs->setTabIcon(
-        index,
-        editorTabIconForFile(host->filePath()));
-    m_editorTabs->setTabToolTip(index, tooltip);
-}
-
-void MainWindow::openCurrentTabInExistingSplit()
-{
-    const int splitIndex = editorSplitTabIndex();
-    QSplitter *splitter = editorSplitWidget();
-
-    if (splitIndex < 0 || !splitter) {
-        toggleCurrentEditorSplit();
-        return;
-    }
-
-    const int sourceTabIndex =
-        m_editorTabs->currentIndex();
-
-    if (sourceTabIndex < 0
-        || sourceTabIndex == splitIndex) {
-        return;
-    }
-
-    CodeEditor *sourceEditor =
-        primaryEditorForTab(
-            m_editorTabs->widget(sourceTabIndex));
-
-    CodeEditor *host =
-        splitHostEditor(splitter);
-    CodeEditor *secondary =
-        splitSecondaryEditor(splitter);
-
-    if (!sourceEditor || !host || !secondary) {
-        return;
-    }
-
-    QMessageBox sideBox(this);
-    sideBox.setWindowTitle(tr("Open in Split"));
-    sideBox.setText(
-        tr("Which side should show %1?")
-            .arg(
-                QFileInfo(sourceEditor->filePath())
-                    .fileName()));
-    sideBox.setInformativeText(
-        tr("The other side will keep %1.")
-            .arg(
-                QFileInfo(host->filePath())
-                    .fileName()));
-
-    QPushButton *leftButton =
-        sideBox.addButton(
-            tr("Left"),
-            QMessageBox::AcceptRole);
-
-    QPushButton *rightButton =
-        sideBox.addButton(
-            tr("Right"),
-            QMessageBox::AcceptRole);
-
-    sideBox.addButton(QMessageBox::Cancel);
-
-    if (sideBox.exec() == QMessageBox::Cancel
-        || !sideBox.clickedButton()) {
-        return;
-    }
-
-    const bool sourceOnLeft =
-        sideBox.clickedButton()
-        == static_cast<QAbstractButton *>(
-            leftButton);
-
-    Q_UNUSED(rightButton);
-
-    secondary->setProperty(
-        "sidboxApiReference",
-        sourceEditor->property(
-            "sidboxApiReference"));
-    secondary->shareDocumentFrom(sourceEditor);
-    secondary->setTextCursor(
-        sourceEditor->textCursor());
-    secondary->verticalScrollBar()->setValue(
-        sourceEditor->verticalScrollBar()->value());
-    secondary->horizontalScrollBar()->setValue(
-        sourceEditor->horizontalScrollBar()->value());
-    secondary->setDiagnostics(
-        sourceEditor->diagnostics());
-
-    /*
-     * Keep the split host's own live document on the opposite side.
-     * The selected tab's live document is borrowed by the reusable secondary
-     * view, so there is still only one document/save state for each file.
-     */
-    if (sourceOnLeft) {
-        splitter->insertWidget(0, secondary);
-    } else {
-        splitter->insertWidget(1, secondary);
-    }
-
-    const int available =
-        qMax(
-            240,
-            splitter->width()
-                - splitter->handleWidth());
-
-    splitter->setSizes(
-        {
-            available / 2,
-            available - (available / 2)
-        });
-
-    m_editorTabs->setCurrentIndex(splitIndex);
-    updateEditorSplitPresentation();
-
-    secondary->setFocus();
-    updateCursorPositionStatus();
-
-    statusBar()->showMessage(
-        tr("%1 opened in the %2 split")
-            .arg(
-                QFileInfo(sourceEditor->filePath())
-                    .fileName(),
-                sourceOnLeft
-                    ? tr("left")
-                    : tr("right")),
-        3000);
-}
-
-void MainWindow::toggleCurrentEditorSplit()
-{
-    if (!m_editorTabs
-        || m_editorTabs->currentIndex() < 0) {
-        return;
-    }
-
-    const int index =
-        m_editorTabs->currentIndex();
-
-    QWidget *tabWidget =
-        m_editorTabs->widget(index);
-
-    QList<CodeEditor *> editors =
-        editorsForTab(tabWidget);
-
-    if (editors.isEmpty()) {
-        statusBar()->showMessage(
-            tr("This tab cannot be split"),
-            2500);
-        return;
-    }
-
-    const int existingSplitIndex =
-        editorSplitTabIndex();
-
-    if (existingSplitIndex >= 0
-        && existingSplitIndex != index) {
-        openCurrentTabInExistingSplit();
-        return;
-    }
-
-    const QString tabText =
-        m_editorTabs->tabText(index);
-    const QIcon tabIcon =
-        m_editorTabs->tabIcon(index);
-    const QString tabToolTip =
-        m_editorTabs->tabToolTip(index);
-
-    if (auto *splitter =
-            qobject_cast<QSplitter *>(tabWidget)) {
-        CodeEditor *primary =
-            splitHostEditor(splitter);
-        CodeEditor *secondary =
-            splitSecondaryEditor(splitter);
-
-        if (!primary) {
-            return;
-        }
-
-        if (secondary
-            && activeEditor() == secondary
-            && secondary->document()
-                == primary->document()) {
-            primary->setTextCursor(
-                secondary->textCursor());
-            primary->verticalScrollBar()->setValue(
-                secondary->verticalScrollBar()->value());
-            primary->horizontalScrollBar()->setValue(
-                secondary->horizontalScrollBar()->value());
-        }
-
-        m_editorTabs->removeTab(index);
-        primary->setParent(m_editorTabs);
-        primary->setProperty(
-            "sidboxSplitHostEditor",
-            false);
-
-        if (secondary) {
-            secondary->deleteLater();
-        }
-
-        splitter->deleteLater();
-
-        m_editorTabs->insertTab(
-            index,
-            primary,
-            editorTabIconForFile(
-                primary->filePath()),
-            tabTitleForEditor(primary));
-
-        m_editorTabs->setTabToolTip(
-            index,
-            primary->filePath());
-
-        m_editorTabs->setCurrentIndex(index);
-
-        primary->setFocus();
-        updateCursorPositionStatus();
-
-        statusBar()->showMessage(
-            tr("Editor split closed"),
-            2000);
-        return;
-    }
-
-    CodeEditor *primary = editors.first();
-    if (!primary) {
-        return;
-    }
-
-    auto *splitter =
-        new QSplitter(
-            Qt::Horizontal,
-            m_editorTabs);
-
-    splitter->setObjectName(
-        QStringLiteral("editorSplitView"));
-    splitter->setChildrenCollapsible(false);
-    splitter->setHandleWidth(4);
-
-    primary->setProperty(
-        "sidboxSplitHostEditor",
-        true);
-
-    m_editorTabs->removeTab(index);
-    splitter->addWidget(primary);
-
-    CodeEditor *secondary =
-        createEditor(primary->filePath());
-
-    secondary->setProperty(
-        "sidboxApiReference",
-        primary->property(
-            "sidboxApiReference"));
-
-    secondary->setProperty(
-        "sidboxSplitHostEditor",
-        false);
-
-    secondary->shareDocumentFrom(primary);
-    secondary->setTextCursor(
-        primary->textCursor());
-    secondary->verticalScrollBar()->setValue(
-        primary->verticalScrollBar()->value());
-    secondary->horizontalScrollBar()->setValue(
-        primary->horizontalScrollBar()->value());
-
-    splitter->addWidget(secondary);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 1);
-
-    m_editorTabs->insertTab(
-        index,
-        splitter,
-        tabIcon,
-        tabText);
-
-    m_editorTabs->setTabToolTip(
-        index,
-        tabToolTip);
-
-    m_editorTabs->setCurrentIndex(index);
-
-    splitter->show();
-    primary->show();
-    secondary->show();
-
-    QTimer::singleShot(
-        0,
-        splitter,
-        [splitter, primary, secondary]() {
-            const int available =
-                qMax(
-                    240,
-                    splitter->width()
-                        - splitter->handleWidth());
-
-            const int left = available / 2;
-            const int right = available - left;
-
-            primary->setMinimumWidth(120);
-            secondary->setMinimumWidth(120);
-            splitter->setSizes({left, right});
-        });
-
-    updateEditorSplitPresentation();
-
-    primary->setFocus();
-    updateCursorPositionStatus();
-
-    statusBar()->showMessage(
-        tr("Split active — select another tab and choose Open in Existing Split"),
-        4500);
-}
-
-void MainWindow::updateCursorPositionStatus()
-{
-    if (!m_cursorPositionLabel) {
-        return;
-    }
-
-    CodeEditor *editor = activeEditor();
-    if (!editor) {
-        m_cursorPositionLabel->clear();
-        return;
-    }
-
-    const QTextCursor cursor = editor->textCursor();
-    m_cursorPositionLabel->setText(
-        tr("[ Ln %1, Col %2 ]  ")
-            .arg(cursor.blockNumber() + 1)
-            .arg(cursor.positionInBlock() + 1));
-}
-
-void MainWindow::watchEditorFile(CodeEditor *editor)
-{
-    if (!editor || !m_fileWatcher) {
-        return;
-    }
-
-    const QString path =
-        QFileInfo(editor->filePath()).absoluteFilePath();
-
-    if (path.isEmpty() || !QFileInfo::exists(path)) {
-        return;
-    }
-
-    if (!m_fileWatcher->files().contains(path)) {
-        m_fileWatcher->addPath(path);
-    }
-}
-
-void MainWindow::unwatchEditorFile(CodeEditor *editor)
-{
-    if (!editor || !m_fileWatcher) {
-        return;
-    }
-
-    const QString path =
-        QFileInfo(editor->filePath()).absoluteFilePath();
-
-    if (!path.isEmpty() && m_fileWatcher->files().contains(path)) {
-        m_fileWatcher->removePath(path);
-    }
-
-    m_pendingExternalReloads.remove(path);
-}
-
-void MainWindow::handleExternalFileChange(const QString &filePath)
-{
-    if (!m_fileWatcher || filePath.isEmpty()) {
-        return;
-    }
-
-    const QString path = QFileInfo(filePath).absoluteFilePath();
-
-    /*
-     * One external save can produce several filesystem events. Coalesce them
-     * into one reload after the writer has finished replacing the file.
-     */
-    if (m_pendingExternalReloads.contains(path)) {
-        return;
-    }
-
-    m_pendingExternalReloads.insert(path);
-
-    QTimer::singleShot(180, this, [this, path]() {
-        m_pendingExternalReloads.remove(path);
-
-        CodeEditor *editor = nullptr;
-        for (int i = 0; i < m_editorTabs->count(); ++i) {
-            auto *candidate =
-                primaryEditorForTab(m_editorTabs->widget(i));
-
-            if (candidate
-                && QFileInfo(candidate->filePath()).absoluteFilePath() == path) {
-                editor = candidate;
-                break;
-            }
-        }
-
-        /*
-         * The tab may have been closed while the debounce timer was waiting.
-         * In that case there is nothing left to watch.
-         */
-        if (!editor) {
-            if (m_fileWatcher->files().contains(path)) {
-                m_fileWatcher->removePath(path);
-            }
-            return;
-        }
-
-        /*
-         * QFileSystemWatcher can drop a watched path when an editor performs
-         * an atomic replace. By now the replacement should normally exist.
-         */
-        if (!QFileInfo::exists(path)) {
-            statusBar()->showMessage(
-                tr("%1 no longer exists on disk")
-                    .arg(QFileInfo(path).fileName()),
-                4000);
-            return;
-        }
-
-        bool reload = true;
-
-        if (editor->document()->isModified()) {
-            const QMessageBox::StandardButton answer =
-                QMessageBox::warning(
-                    this,
-                    tr("File Changed Outside Sidbox IDE"),
-                    tr("%1 was changed outside Sidbox IDE, but this tab also "
-                       "contains unsaved changes.\n\n"
-                       "Reload the file and discard the unsaved IDE changes?")
-                        .arg(QFileInfo(path).fileName()),
-                    QMessageBox::Yes | QMessageBox::No,
-                    QMessageBox::No);
-
-            reload = (answer == QMessageBox::Yes);
-        }
-
-        if (reload) {
-            reloadEditorFromDisk(editor);
-        }
-
-        /*
-         * Re-arm after every external event. This is essential for applications
-         * which save by replacing the file rather than modifying it in place.
-         */
-        watchEditorFile(editor);
-    });
-}
-
-bool MainWindow::reloadEditorFromDisk(CodeEditor *editor)
-{
-    if (!editor || editor->filePath().isEmpty()) {
-        return false;
-    }
-
-    const QString path =
-        QFileInfo(editor->filePath()).absoluteFilePath();
-
-    if (!QFileInfo::exists(path)) {
-        return false;
-    }
-
-    const QTextCursor oldCursor = editor->textCursor();
-    const int oldLine = oldCursor.blockNumber();
-    const int oldColumn = oldCursor.positionInBlock();
-    const int oldVerticalScroll = editor->verticalScrollBar()->value();
-    const int oldHorizontalScroll = editor->horizontalScrollBar()->value();
-
-    if (!editor->loadFromFile(path)) {
-        statusBar()->showMessage(
-            tr("Could not reload %1")
-                .arg(QFileInfo(path).fileName()),
-            4000);
-        return false;
-    }
-
-    const QTextBlock block =
-        editor->document()->findBlockByNumber(
-            qBound(0, oldLine, qMax(0, editor->blockCount() - 1)));
-
-    if (block.isValid()) {
-        QTextCursor cursor(block);
-        const int maxColumn = qMax(0, block.length() - 1);
-        cursor.setPosition(
-            block.position() + qMin(oldColumn, maxColumn));
-        editor->setTextCursor(cursor);
-    }
-
-    editor->verticalScrollBar()->setValue(oldVerticalScroll);
-    editor->horizontalScrollBar()->setValue(oldHorizontalScroll);
-    editor->document()->setModified(false);
-    updateTabTitle(editor);
-    updateCursorPositionStatus();
-
-    statusBar()->showMessage(
-        tr("Reloaded %1 — changed outside Sidbox IDE")
-            .arg(QFileInfo(path).fileName()),
-        3000);
-
-    return true;
-}
 
 
 
@@ -16402,50 +14943,14 @@ void MainWindow::jumpToProjectSearchResult(
     editor->setFocus();
 }
 
-QString MainWindow::toProjectRelativePath(const QString &filePath) const
-{
-    if (filePath.isEmpty() || m_projectPath.isEmpty()) {
-        return filePath;
-    }
+// Stage 3.70: toProjectRelativePath moved to mainwindow_paths.cpp.
 
-    return QDir(m_projectPath).relativeFilePath(filePath);
-}
 
-QString MainWindow::fromProjectRelativePath(const QString &filePath) const
-{
-    if (filePath.isEmpty()) {
-        return {};
-    }
+// Stage 3.70: fromProjectRelativePath moved to mainwindow_paths.cpp.
 
-    QFileInfo info(filePath);
-    if (info.isAbsolute()) {
-        return info.absoluteFilePath();
-    }
 
-    return QFileInfo(QDir(m_projectPath).filePath(filePath)).absoluteFilePath();
-}
+// Stage 3.70: ideLibsPath moved to mainwindow_paths.cpp.
 
-QString MainWindow::ideLibsPath() const
-{
-    const QDir appDir(QCoreApplication::applicationDirPath());
-    const QStringList candidates = {
-        appDir.filePath(QStringLiteral("idelibs")),
-        appDir.filePath(QStringLiteral("../idelibs")),
-        appDir.filePath(QStringLiteral("../../idelibs")),
-        appDir.filePath(QStringLiteral("../SidboxIDE/idelibs")),
-        QDir::current().filePath(QStringLiteral("idelibs")),
-        QDir::current().filePath(QStringLiteral("SidboxIDE/idelibs"))
-    };
-
-    for (const QString &candidate : candidates) {
-        const QFileInfo info(candidate);
-        if (info.exists() && info.isDir()) {
-            return info.absoluteFilePath();
-        }
-    }
-
-    return QFileInfo(appDir.filePath(QStringLiteral("../../idelibs"))).absoluteFilePath();
-}
 
 QString MainWindow::defaultLinkerScriptPath(const QString &projectType) const
 {
@@ -16453,25 +14958,11 @@ QString MainWindow::defaultLinkerScriptPath(const QString &projectType) const
     return QDir(ideLibsPath()).filePath(type == GameProjectType ? QStringLiteral("gaming.ld") : QStringLiteral("gui.ld"));
 }
 
-QString MainWindow::projectLinkerScriptPath() const
-{
-    if (m_projectFilePath.isEmpty()) {
-        return {};
-    }
+// Stage 3.70: projectLinkerScriptPath moved to mainwindow_paths.cpp.
 
-    const QString fileName = QFileInfo(m_projectFilePath).completeBaseName() + QStringLiteral(".ld");
-    return QDir(m_projectPath).filePath(fileName);
-}
 
-QString MainWindow::effectiveLinkerScriptPath() const
-{
-    if (!m_linkerScriptPath.isEmpty()) {
-        return m_linkerScriptPath;
-    }
+// Stage 3.70: effectiveLinkerScriptPath moved to mainwindow_paths.cpp.
 
-    const QString projectLinker = projectLinkerScriptPath();
-    return projectLinker.isEmpty() ? defaultLinkerScriptPath() : projectLinker;
-}
 
 bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
 {
@@ -16553,73 +15044,20 @@ bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
     return true;
 }
 
-QString MainWindow::compilerPath() const
-{
-    return QDir(ideLibsPath()).filePath(QStringLiteral("tools/bin/arm-none-eabi-gcc"));
-}
+// Stage 3.70: compilerPath moved to mainwindow_paths.cpp.
 
-QString MainWindow::objcopyPath() const
-{
-    return QDir(ideLibsPath()).filePath(QStringLiteral("tools/bin/arm-none-eabi-objcopy"));
-}
 
-QStringList MainWindow::sidboxApiSourceFiles() const
-{
-    // realistically this should scan the folders, and search for the .c / .h for function calls, type defs
-    const QDir apiDir(QDir(ideLibsPath()).filePath(QStringLiteral("api")));
-    const QStringList relativePaths = {
-        QStringLiteral("applet.s"),
-        QStringLiteral("apis.c"),
-        QStringLiteral("syscalls.c"),
-        QStringLiteral("crt/crt.c"),
-        QStringLiteral("graphics/graphics.c"),
-        QStringLiteral("audio/audio.c"),
-        QStringLiteral("touch/touch.c")
-    };
+// Stage 3.70: objcopyPath moved to mainwindow_paths.cpp.
 
-    QStringList files;
-    for (const QString &relativePath : relativePaths) {
-        const QString absolutePath = apiDir.filePath(relativePath);
-        if (QFileInfo::exists(absolutePath)) {
-            files.append(absolutePath);
-        }
-    }
-    return files;
-}
 
-QStringList MainWindow::sidboxLibraryFiles() const
-{
-    QStringList files;
-    const QString libraryPath = QDir(ideLibsPath()).filePath(QStringLiteral("libraries"));
-    if (!QFileInfo::exists(libraryPath)) {
-        return files;
-    }
+// Stage 3.70: sidboxApiSourceFiles moved to mainwindow_paths.cpp.
 
-    QDirIterator iterator(libraryPath, {QStringLiteral("*.a")}, QDir::Files, QDirIterator::Subdirectories);
-    while (iterator.hasNext()) {
-        files.append(iterator.next());
-    }
-    return files;
-}
 
-void MainWindow::applyEditorFont()
-{
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSize(m_editorFontPointSize);
+// Stage 3.70: sidboxLibraryFiles moved to mainwindow_paths.cpp.
 
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        const QList<CodeEditor *> editors =
-            editorsForTab(m_editorTabs->widget(i));
 
-        for (CodeEditor *editor : editors) {
-            editor->setFont(font);
-            editor->setTabStopDistance(
-                editor->fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
-            editor->setCompletionFont(font);
-            editor->refreshLineNumberAreaWidth();
-        }
-    }
-}
+// Stage 3.70: applyEditorFont moved to mainwindow_preferences.cpp.
+
 
 
 void MainWindow::applyTheme()
@@ -16827,80 +15265,15 @@ void MainWindow::applyTheme()
     }
 }
 
-void MainWindow::clearCompilerDiagnostics()
-{
-    m_compilerStderrBuffer.clear();
-    m_compilerDiagnostics.clear();
-
-    updateProjectDiagnosticMarkers();
-
-    if (!m_editorTabs) {
-        return;
-    }
-
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        const QList<CodeEditor *> editors =
-            editorsForTab(m_editorTabs->widget(i));
-
-        for (CodeEditor *editor : editors) {
-            editor->clearDiagnostics();
-        }
-    }
-}
+// Stage 3.70: clearCompilerDiagnostics moved to mainwindow_output.cpp.
 
 
-QString MainWindow::normalizedDiagnosticPath(const QString &compilerPath) const
-{
-    QString path = compilerPath.trimmed();
-    if (path.isEmpty()) {
-        return {};
-    }
 
-    QFileInfo info(path);
-    if (info.isAbsolute()) {
-        return info.absoluteFilePath();
-    }
+// Stage 3.70: normalizedDiagnosticPath moved to mainwindow_output.cpp.
 
-    if (m_compilerProcess && !m_compilerProcess->workingDirectory().isEmpty()) {
-        const QString fromWorkingDirectory =
-            QFileInfo(QDir(m_compilerProcess->workingDirectory()).filePath(path))
-                .absoluteFilePath();
 
-        if (QFileInfo::exists(fromWorkingDirectory)) {
-            return fromWorkingDirectory;
-        }
-    }
+// Stage 3.70: compilerOutputKindForLine moved to mainwindow_output.cpp.
 
-    if (!m_projectPath.isEmpty()) {
-        const QString fromProject =
-            QFileInfo(QDir(m_projectPath).filePath(path)).absoluteFilePath();
-
-        if (QFileInfo::exists(fromProject)) {
-            return fromProject;
-        }
-    }
-
-    return QFileInfo(path).absoluteFilePath();
-}
-
-MainWindow::OutputKind MainWindow::compilerOutputKindForLine(
-    const QString &line) const
-{
-    const QString lower = line.toLower();
-
-    if (lower.contains(QStringLiteral("warning:"))) {
-        return OutputKind::Warning;
-    }
-
-    if (lower.contains(QStringLiteral("fatal error:"))
-        || lower.contains(QStringLiteral("error:"))
-        || lower.contains(QStringLiteral("undefined reference"))
-        || lower.contains(QStringLiteral("ld returned"))) {
-        return OutputKind::Error;
-    }
-
-    return OutputKind::Normal;
-}
 
 void MainWindow::processCompilerStderrChunk(const QString &text)
 {
@@ -17097,113 +15470,18 @@ void MainWindow::processCompilerDiagnosticLine(const QString &line)
     }
 }
 
-void MainWindow::applyCompilerDiagnostics(CodeEditor *editor)
-{
-    if (!editor || editor->filePath().isEmpty()) {
-        return;
-    }
-
-    const QString path =
-        QFileInfo(editor->filePath()).absoluteFilePath();
-    const QList<EditorDiagnostic> diagnostics =
-        m_compilerDiagnostics.value(path);
-
-    const int tabIndex = tabIndexForEditor(editor);
-    if (tabIndex >= 0) {
-        const QList<CodeEditor *> editors =
-            editorsForTab(m_editorTabs->widget(tabIndex));
-        for (CodeEditor *view : editors) {
-            view->setDiagnostics(diagnostics);
-        }
-        return;
-    }
-
-    editor->setDiagnostics(diagnostics);
-}
+// Stage 3.70: applyCompilerDiagnostics moved to mainwindow_output.cpp.
 
 
-void MainWindow::appendOutputText(const QString &text, OutputKind kind)
-{
-    if (!m_outputPane || text.isEmpty()) {
-        return;
-    }
 
-    QColor color;
-    switch (kind) {
-    case OutputKind::Header:
-        color = m_theme.outputHeader;
-        break;
-    case OutputKind::Path:
-        color = m_theme.outputPath;
-        break;
-    case OutputKind::Success:
-        color = m_theme.outputSuccess;
-        break;
-    case OutputKind::Error:
-        color = m_theme.outputError;
-        break;
-    case OutputKind::Warning:
-        color = m_theme.outputWarning;
-        break;
-    case OutputKind::Muted:
-        color = m_theme.outputMuted;
-        break;
-    case OutputKind::Normal:
-        color = m_theme.outputNormal;
-        break;
-    }
+// Stage 3.70: appendOutputText moved to mainwindow_output.cpp.
 
-    QTextCharFormat format;
-    format.setForeground(color);
 
-    QTextCursor cursor = m_outputPane->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertText(text, format);
-    m_outputPane->setTextCursor(cursor);
-    m_outputPane->ensureCursorVisible();
-}
+// Stage 3.70: appendOutputLine moved to mainwindow_output.cpp.
 
-void MainWindow::appendOutputLine(const QString &text, OutputKind kind)
-{
-    appendOutputText(text + QLatin1Char('\n'), kind);
-}
 
-void MainWindow::loadOptions()
-{
-    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+// Stage 3.70: loadOptions moved to mainwindow_preferences.cpp.
 
-    m_editorFontPointSize =
-        qBound(6,
-               settings.value(QStringLiteral("editor/fontPointSize"), 10).toInt(),
-               36);
 
-    m_theme = defaultIDETheme();
+// Stage 3.70: saveOptions moved to mainwindow_preferences.cpp.
 
-    for (const IDEThemeColorField &field : ideThemeColorFields()) {
-        const QString key =
-            QStringLiteral("theme/") + QLatin1String(field.key);
-
-        if (!settings.contains(key)) {
-            continue;
-        }
-
-        const QColor colour(settings.value(key).toString());
-        if (colour.isValid()) {
-            m_theme.*(field.member) = colour;
-        }
-    }
-}
-
-void MainWindow::saveOptions() const
-{
-    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    settings.setValue(
-        QStringLiteral("editor/fontPointSize"),
-        m_editorFontPointSize);
-
-    for (const IDEThemeColorField &field : ideThemeColorFields()) {
-        settings.setValue(
-            QStringLiteral("theme/") + QLatin1String(field.key),
-            ideThemeColorName(m_theme.*(field.member)));
-    }
-}
