@@ -332,6 +332,14 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             for (const QString &id : {obj->sfxStart, obj->sfxMove,
                                       obj->sfxStop, obj->sfxReverse})
                 if (!id.isEmpty()) usedSfx.insert(id);
+        } else if (obj->objectType == QStringLiteral("breakable")) {
+            for (const QString &id : {obj->sfxBreakHit, obj->sfxBreakBounce,
+                                      obj->sfxBreakFinish})
+                if (!id.isEmpty()) usedSfx.insert(id);
+        } else if (obj->objectType == QStringLiteral("hazard")) {
+            for (const QString &id : {obj->sfxHazardHit, obj->sfxHazardBounce,
+                                      obj->sfxHazardAmbient})
+                if (!id.isEmpty()) usedSfx.insert(id);
         } else if (obj->objectType == QStringLiteral("spring")) {
             if (!obj->sfxSpring.isEmpty()) usedSfx.insert(obj->sfxSpring);
         } else if (obj->objectType == QStringLiteral("conveyor")) {
@@ -367,7 +375,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
       << "#define GAMEWORLDITEMS_PLATFORM_COUNT " << nw << "u\n"
          "uint8_t gameworlditems_init(void);\n"
          "void gameworlditems_update(uint16_t frames);\n"
-         "void gameworlditems_draw(int32_t camera_x, int32_t camera_y);\n";
+         "void gameworlditems_draw(int32_t camera_x, int32_t camera_y);\n"
+         "void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y);\n";
     if (np) H << "uint16_t gameworlditems_check(int32_t player_x, int32_t player_y,\n"
              "    uint16_t player_w, uint16_t player_h, game_pickup_callback_t callback, void *user);\n";
     if (nw) H << "void gameworlditems_before(game_world_player_t *player);\n"
@@ -483,24 +492,46 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
               << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
               << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n"
               << "    pickups[" << ix << "].respawn_frames = " << r.respawnFrames << ";\n"
-              << "    pickups[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n";
+              << "    pickups[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n"
+              << "    pickups[" << ix << "].draw_behind_tiles = " << (r.drawBehindTiles ? "1" : "0") << ";\n";
         } else {
             const QString kind = r.objectType == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
                 r.objectType == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
                 r.objectType == QStringLiteral("trigger") ? QStringLiteral("GAME_OBJECT_TRIGGER") :
                 r.objectType == QStringLiteral("door") ? QStringLiteral("GAME_OBJECT_DOOR") :
                 r.objectType == QStringLiteral("deathzone") ? QStringLiteral("GAME_OBJECT_DEATH_ZONE") :
+                r.objectType == QStringLiteral("breakable") ? QStringLiteral("GAME_OBJECT_BREAKABLE") :
+                r.objectType == QStringLiteral("hazard") ? QStringLiteral("GAME_OBJECT_HAZARD") :
                 QStringLiteral("GAME_OBJECT_SPRING");
             C << "    if (!game_world_object_start(" << target << ", " << kind << ", "
               << sprite << ", " << r.x << ", " << r.y << ", "
               << r.hitWidth << ", " << r.hitHeight << ")) return 0;\n";
-            C << "    platforms[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n";
+            C << "    platforms[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n"
+              << "    platforms[" << ix << "].draw_behind_tiles = " << (r.drawBehindTiles ? "1" : "0") << ";\n";
             if (r.objectType == QStringLiteral("trigger")) {
                 C << "    platforms[" << ix << "].trigger_press = " << (r.triggerPress ? "1" : "0") << ";\n"
                   << "    platforms[" << ix << "].trigger_one_shot = " << (r.triggerOneShot ? "1" : "0") << ";\n";
             }
             if (r.objectType == QStringLiteral("conveyor"))
                 C << "    platforms[" << ix << "].conveyor_speed = " << r.conveyorSpeed << ";\n";
+            if (r.objectType == QStringLiteral("breakable")) {
+                C << "    platforms[" << ix << "].break_hits_required = " << r.breakHits << ";\n";
+                C << "    platforms[" << ix << "].break_touch_mode = " << (r.breakTouch ? "1" : "0") << ";\n";
+                C << "    platforms[" << ix << "].break_bounce = " << (r.breakBounce ? "1" : "0") << ";\n";
+                C << "    platforms[" << ix << "].break_strength = " << r.breakStrength << ";\n";
+                C << "    platforms[" << ix << "].break_launch_x = " << r.breakLaunchX << ";\n";
+            }
+            if (r.objectType == QStringLiteral("hazard")) {
+                C << "    platforms[" << ix << "].hazard_damage = " << r.hazardDamage << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick = " << (r.hazardKick ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick_x = " << r.hazardKickX << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick_y = " << r.hazardKickY << ";\n"
+                  << "    platforms[" << ix << "].hazard_hurt_animation = " << (r.hazardHurtAnimation ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash = " << (r.hazardFlash ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_colour = " << r.hazardFlashColour << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_count = " << r.hazardFlashCount << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_frames = " << r.hazardFlashFrames << ";\n";
+            }
             if (r.objectType == QStringLiteral("spring")) {
                 C << "    platforms[" << ix << "].spring_strength = " << r.springStrength << ";\n";
                 C << "    platforms[" << ix << "].spring_launch_x = " << r.springLaunchX << ";\n";
@@ -533,10 +564,13 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     if (!usedSfx.isEmpty()) {
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
-            if (r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) {
+            if ((r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) ||
+                (r.objectType == QStringLiteral("hazard") && !r.sfxHazardAmbient.isEmpty())) {
+                const QString ambientId = r.objectType == QStringLiteral("hazard")
+                    ? r.sfxHazardAmbient : r.sfxAmbient;
                 C << "    if (platforms[" << i << "].active) {\n"
-                  << "        " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
-                C << "        sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n";
+                  << "        " << cSfxCall(ambientId, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
+                C << "        sound_setvolume(" << soundById.value(ambientId)->audio.channel << ", 0);\n";
                 C << "        cg_loop_playing[" << i << "] = 1;\n"
                   << "        cg_loop_gain[" << i << "] = 0;\n"
                   << "        cg_loop_target[" << i << "] = 255;\n"
@@ -565,10 +599,13 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         }
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
-            if (r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) {
+            if ((r.objectType == QStringLiteral("conveyor") && !r.sfxAmbient.isEmpty()) ||
+                (r.objectType == QStringLiteral("hazard") && !r.sfxHazardAmbient.isEmpty())) {
+                const QString ambientId = r.objectType == QStringLiteral("hazard")
+                    ? r.sfxHazardAmbient : r.sfxAmbient;
                 C << "    if (platforms[" << i << "].active && !cg_loop_playing[" << i << "]) {\n"
-                  << "        " << cSfxCall(r.sfxAmbient, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius)
-                  << "        sound_setvolume(" << soundById.value(r.sfxAmbient)->audio.channel << ", 0);\n"
+                  << "        " << cSfxCall(ambientId, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius)
+                  << "        sound_setvolume(" << soundById.value(ambientId)->audio.channel << ", 0);\n"
                   << "        cg_loop_playing[" << i << "] = 1; cg_loop_gain[" << i << "] = 0;\n"
                   << "    }\n"
                   << "    cg_loop_target[" << i << "] = platforms[" << i << "].active ? 255 : 0;\n";
@@ -624,7 +661,8 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         C << "    game_world_objects_before(platforms, " << nw << ", player);\n}\n\n"
           << "void gameworlditems_after(game_world_player_t *player)\n{\n";
         if (m_tilemapEnabled) C << "    if (game_death_is_dead()) return;\n";
-        C << "    game_world_objects_after(platforms, " << nw << ", player);\n";
+        C << "    game_world_objects_after(platforms, " << nw << ", player);\n"
+             "    game_world_objects_hazards(platforms, " << nw << ", player);\n";
         if (m_tilemapEnabled) {
             C << "    /* Hazard Zone: ENTERED once, INSIDE each frame, EXITED on leaving. */\n"
                  "    uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&\n"
@@ -649,6 +687,27 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
             if (r.objectType == QStringLiteral("spring") && !r.sfxSpring.isEmpty()) {
                 C << "    if (platforms[" << i << "].spring_triggered) "
                   << cSfxCall(r.sfxSpring, QStringLiteral("platforms[%1].x").arg(i), r.audioRadius);
+            }
+            if (r.objectType == QStringLiteral("hazard")) {
+                const QString pos = QStringLiteral("platforms[%1].x").arg(i);
+                if (!r.sfxHazardHit.isEmpty())
+                    C << "    if (platforms[" << i << "].hazard_hit_triggered) "
+                      << cSfxCall(r.sfxHazardHit, pos, r.audioRadius);
+                if (!r.sfxHazardBounce.isEmpty())
+                    C << "    if (platforms[" << i << "].hazard_bounce_triggered) "
+                      << cSfxCall(r.sfxHazardBounce, pos, r.audioRadius);
+            }
+            if (r.objectType == QStringLiteral("breakable")) {
+                const QString pos = QStringLiteral("platforms[%1].x").arg(i);
+                if (!r.sfxBreakHit.isEmpty())
+                    C << "    if (platforms[" << i << "].break_hit_triggered) "
+                      << cSfxCall(r.sfxBreakHit, pos, r.audioRadius);
+                if (!r.sfxBreakBounce.isEmpty())
+                    C << "    if (platforms[" << i << "].break_bounce_triggered) "
+                      << cSfxCall(r.sfxBreakBounce, pos, r.audioRadius);
+                if (!r.sfxBreakFinish.isEmpty())
+                    C << "    if (platforms[" << i << "].break_triggered) "
+                      << cSfxCall(r.sfxBreakFinish, pos, r.audioRadius);
             }
         }
         if (nt) C << "    if (player && player->x100 && player->y100 && player->width && player->height)\n"
@@ -699,15 +758,20 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         }
         C << "    return fired;\n}\n\n";
     }
+    C << "void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y)\n{\n";
+    if (nw) C << "    game_world_objects_draw_layer(platforms, " << nw << ", camera_x, camera_y, 1);\n";
+    if (np) C << "    game_collectables_draw_layer(pickups, " << np << ", camera_x, camera_y, 1);\n";
+    C << "}\n\n";
     C << "void gameworlditems_draw(int32_t camera_x, int32_t camera_y)\n{\n";
-    if (nw) C << "    game_world_objects_draw(platforms, " << nw << ", camera_x, camera_y);\n";
-    if (np) C << "    game_collectables_draw(pickups, " << np << ", camera_x, camera_y);\n";
+    if (nw) C << "    game_world_objects_draw_layer(platforms, " << nw << ", camera_x, camera_y, 0);\n";
+    if (np) C << "    game_collectables_draw_layer(pickups, " << np << ", camera_x, camera_y, 0);\n";
     if (!usedSfx.isEmpty()) {
         C << "    cg_audio_camera_x = camera_x;\n";
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
             const QString soundId = r.objectType == QStringLiteral("conveyor")
-                ? r.sfxAmbient : r.objectType == QStringLiteral("lift") ? r.sfxMove : QString();
+                ? r.sfxAmbient : r.objectType == QStringLiteral("hazard")
+                ? r.sfxHazardAmbient : r.objectType == QStringLiteral("lift") ? r.sfxMove : QString();
             if (soundId.isEmpty()) continue;
             const Resource &sound = *soundById.value(soundId);
             const int step = r.audioFadeFrames <= 0 ? 255 : qMax(1, (255 + r.audioFadeFrames - 1) / r.audioFadeFrames);
@@ -749,6 +813,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "then call gameworlditems_before()/after() around player physics.\n"
                  "For exact spring jump behaviour with game_tile_player_t also bind:\n"
                  "  world_player.jump_held = &player_physics.jump_held;\n"
+                 "  // Also REQUIRED for intentional-jump-only Breakable stomps.\n"
                  "  world_player.coyote = &player_physics.coyote;\n"
                  "  world_player.jump_speed = &player_physics.jump_speed;\n"
                  "  world_player.spring_force_vx100 = &player_physics.force_vx100;\n"
@@ -766,6 +831,14 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         "stops player physics. Respawn with game_tile_player_reset().\n"
         "See gametilemap.txt for all six hazard reason constants.\n";
     if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
+    G << "Optional Draw behind tiles: the generated starter calls\n"
+         "gameworlditems_draw_behind() BEFORE drawing the foreground map,\n"
+         "then gameworlditems_draw() AFTER it. Never draw the same sprite twice.\n"
+         "Hazard/Murder objects are non-solid moving sensors: a contact sets\n"
+         "world_player.hurt_triggered and hurt_damage_this_frame once.\n"
+         "YOUR game subtracts health. Default starter has an example.\n"
+         "The visual blink uses BLIT_FLAG_SOLIDCOLOUR with a foreground\n"
+         "palette index; Hurt animation is opt-in per hazard.\n";
     if (nt) G << "Switches and buttons run AUTOMATICALLY inside gameworlditems_after().\n"
                  "It checks player contact and FIRE2, then applies the configured\n"
                  "enable/disable/toggle target action. No extra main.c call is needed\n"
@@ -882,6 +955,9 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     // actual player resource has a saved .sbanim sidecar. Generated main.c
     // remains complete and buildable even before the C header is exported.
     const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();
+    const bool hasMurderObjects = hasPhysics && std::any_of(m_resources.cbegin(), m_resources.cend(),
+        [](const Resource &r) { return r.kind == QStringLiteral("sprite") &&
+                                      r.objectType == QStringLiteral("hazard"); });
     QString program;
     QTextStream out(&program);
     out << R"CG(/*
@@ -1009,6 +1085,26 @@ static game_world_player_t world_player = {0};
     }
     if (hasPhysics && pickups) {
         out << R"CG(
+/* COLLECTABLES — WHAT THIS CODE DOES
+ * ----------------------------------
+ * The Game Designer places collectables, but YOU decide what picking one up
+ * means (points, keys, health, ammunition, opening doors, playing sounds...).
+ *
+ * on_pickup() is called by gameworlditems_check() when the player's
+ * collision box touches an ACTIVE collectable. You do not call on_pickup()
+ * directly. 'item' tells you WHICH collectable was picked up; item->value
+ * is the value you entered in Game Object Properties.
+ *
+ * 'user' carries your own game state into the callback. Below we pass
+ * &score, the ADDRESS of our score variable. The cast turns that generic
+ * pointer back into a uint32_t pointer so we can add points to it.
+ * The NULL checks guard against accidental invalid arguments.
+ *
+ * This is only a STARTER EXAMPLE. Change the body to handle different
+ * pickup types (e.g. keys or health); don't assume every pickup is score.
+ * The helper handles marking ordinary pickups collected/respawning as
+ * configured; the callback is where YOUR game reacts to each pickup.
+ */
 static uint32_t score = 0;
 static void on_pickup(game_collectable_t *item, void *user)
 {
@@ -1018,6 +1114,12 @@ static void on_pickup(game_collectable_t *item, void *user)
 }
 )CG";
     }
+    if (hasMurderObjects) out << R"CG(
+/* The Game Designer's Hazard/Murder Objects fire ONE damage event per impact.
+ * This is YOUR game's health rule; change the starting HP or replace this code.
+ * Hit/bounce sounds and BOB flashing are managed automatically by helpers. */
+static uint32_t player_health = 3;
+)CG";
     if (hasPhysics && hasHazards) {
         out << R"CG(
 /* Hazard contacts NEVER kill automatically. YOUR game decides what to do. */
@@ -1342,6 +1444,15 @@ int main(int argc, char *argv[])
            Their final on_ground/vy100 are the values animation must see.
            Keep this ahead of animation selection, even for an idle rider. */
         if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
+        if (hasMurderObjects) out << R"CG(        /* Once per accepted spike/hazard hit; invulnerability prevents
+           repeated damage while flashing. You own game-over/health rules. */
+        if (world_player.hurt_triggered) {
+            if (player_health > world_player.hurt_damage_this_frame)
+                player_health -= world_player.hurt_damage_this_frame;
+            else player_health = 0;
+            /* TODO: if player_health == 0, run your death/respawn logic. */
+        }
+)CG";
         if (hasPlayerAnimation) {
             out << R"CG(#if GAMERGIRL_PLAYER_ANIMATIONS
         /* Stage 3.81: select animation AFTER world-object contacts resolve.
@@ -1360,11 +1471,30 @@ int main(int argc, char *argv[])
             player_anim_state = PLAYER_ANIM_STATE_WALK;
         }
 )CG";
+            if (hasMurderObjects) out << R"CG(#ifdef PLAYER_ANIM_STATE_HURT
+        /* Per-Hazard opt-in. A missing Hurt state leaves normal animation. */
+        if (world_player.hurt_anim_active && world_player.hurt_ticks_remaining)
+            player_anim_state = PLAYER_ANIM_STATE_HURT;
+#endif
+)CG";
             out << "        player_anim_step(&player_anim, &" << playerName
                 << ", player_anim_state, player_anim_facing, 1);\n";
             out << "#endif\n";
         }
         if (pickups) {
+            out << R"CG(        /* COLLECTABLE PICKUP CHECK — leave this AFTER player movement.
+         * Run it ONCE each frame. It compares the live player's WORLD
+         * collision rectangle against the Game Designer's collectables.
+         * x100/y100 are hundredths of a pixel, hence the / 100; hitbox_x/y
+         * shift the rectangle inside the player image. The fallback width
+         * and height use the sprite size if no custom hitbox was defined.
+         *
+         * on_pickup is the callback above; &score is the user-data pointer
+         * passed to it. Replace both if your game uses different state.
+         * The helper decides WHICH object was touched; your callback
+         * decides WHAT collecting it does. No pickup = no callback.
+         */
+)CG";
             out << "        gameworlditems_check(player_physics.x100 / 100 + player_physics.hitbox_x,\n"
                    "            player_physics.y100 / 100 + player_physics.hitbox_y, "
                    "player_physics.hitbox_w ? player_physics.hitbox_w : " << playerName << ".width,\n"
@@ -1396,6 +1526,32 @@ int main(int argc, char *argv[])
 )CG";
     if (!dualPlane && hasBackgroundSprites)
         out << "        gameassets_draw_background(); /* Single-plane background */\n";
+    if (hasObjects) out << R"CG(        /* GAME OBJECTS BEHIND THE TILEMAP — WHY DRAW THEM HERE?
+         * Each placed Game Object has an optional "Draw behind tilemap"
+         * setting. This call draws ONLY objects with that setting enabled.
+         * We draw them BEFORE the tilemap so the floor/walls can cover them:
+         * for example, spikes can rise gradually from behind a floor tile.
+         * Objects drawn in front are handled later by gameworlditems_draw().
+         *
+         * camera_x and camera_y are the camera's WORLD position. The helper
+         * subtracts them so moving objects appear in the right screen spot.
+         * This is VISUAL layering only: collision and damage still work.
+         * Keep this call BEFORE game_tilemap_blit_view_cleared(), or the
+         * tilemap won't be able to hide the parts of an object behind it.
+         */
+        gameworlditems_draw_behind(camera_x, camera_y);
+)CG";
+    if (hasMap) {
+        for (const Resource &r : m_resources) {
+            if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
+                r.objectType != QStringLiteral("decoration") || &r == player ||
+                r.plane == QStringLiteral("background") || !r.drawBehindTiles) continue;
+            const QString bob = spriteSymbol(r);
+            out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
+                << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
+                << "        gfx_drawbob(&" << bob << ");\n";
+        }
+    }
     if (hasMap) {
         // gfx_rectf() cleared the entire foreground just above, so the
         // tile renderer need not clear every 8x8 tile a second time.
@@ -1409,17 +1565,59 @@ int main(int argc, char *argv[])
         for (const Resource &r : m_resources) {
             if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
                 r.objectType != QStringLiteral("decoration") || &r == player ||
-                r.plane == QStringLiteral("background")) continue;
+                r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
             const QString bob = spriteSymbol(r);
             out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
                 << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
                 << "        gfx_drawbob(&" << bob << ");\n";
         }
-        out << "        game_tile_player_screen(&player_physics, camera_x, camera_y);\n"
-            << "        gfx_drawbob(&" << playerName << ");\n";
+        out << "        game_tile_player_screen(&player_physics, camera_x, camera_y);\n";
+        if (hasMurderObjects) {
+            out << R"CG(        /* PLAYER HURT FLASH — WHY MAKE A COPY OF THE SPRITE?
+         * A Hazard / Murder Object can make the player flash after a hit.
+         * The world_player helper knows the selected flash palette colour,
+         * how many flashes to show, and how many frames each one lasts.
+         *
+         * We copy the original gfxbob_t into player_visible for drawing
+         * THIS frame only. That means the solid-colour flag does not stick
+         * on the real player sprite after flashing ends, and your regular
+         * animation continues working normally.
+         *
+         * game_world_player_hurt_flash() returns true only during the ON
+         * parts of the flashing sequence. It puts the chosen foreground
+         * palette INDEX in flash_colour (not a 24-bit RGB colour).
+         * BLIT_FLAG_SOLIDCOLOUR tells SIDBOX to draw the BOB in a solid
+         * palette colour; flagval[BLIT_FLAG_TYPE_TINT_VALUE] picks which one.
+         * When the helper returns false, draw the ordinary sprite instead.
+         * gfx_drawbob() happens ONCE per frame in either case.
+         *
+         * Change the flash colour, count or timing in the Hazard object's
+         * properties in Game Designer; regenerate the project to update it.
+         */
+        {
+)CG";
+            out << "            gfxbob_t player_visible = " << playerName << ";\n"
+                   "            uint8_t flash_colour = 0;\n"
+                   "            if (game_world_player_hurt_flash(&world_player, &flash_colour)) {\n"
+                   "                player_visible.flags |= BLIT_FLAG_SOLIDCOLOUR;\n"
+                   "                player_visible.flagval[BLIT_FLAG_TYPE_TINT_VALUE] = flash_colour;\n"
+                   "            }\n"
+                   "            gfx_drawbob(&player_visible);\n"
+                   "        }\n";
+        } else out << "        gfx_drawbob(&" << playerName << ");\n";
+    } else if (hasMap) {
+        /* A tile-only world still needs the chosen foreground draw order. */
+        for (const Resource &r : m_resources) {
+            if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
+                r.objectType != QStringLiteral("decoration") ||
+                r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
+            const QString bob = spriteSymbol(r);
+            out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
+                << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
+                << "        gfx_drawbob(&" << bob << ");\n";
+        }
     } else {
-        // With no tile/player combination, normal static BOB resources still
-        // render and any configured world objects remain independently drawn.
+        /* Without a map, the traditional single foreground draw is safe. */
         out << "        gameassets_draw_foreground();\n";
     }
     if (hasMap && std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),

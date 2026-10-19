@@ -79,6 +79,8 @@
 #include <QSettings>
 #include <QSizePolicy>
 #include <QListView>
+#include <QListWidget>
+#include <QSlider>
 #include <QStringList>
 #include <QSignalBlocker>
 #include <QTextStream>
@@ -408,6 +410,40 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
         if (!loadDesign()) m_valid = false;
     } else rebuildScene();
     refreshColours();
+    // Animate only editor previews; gameplay uses its own 50 Hz VBlank clock.
+    m_objectPreviewClock.start();
+    m_objectPreviewTimer = new QTimer(this);
+    m_objectPreviewTimer->setInterval(20);
+    connect(m_objectPreviewTimer, &QTimer::timeout, this, [this]() {
+        if (!m_scene || m_loading || !isVisible()) return;
+        const qint64 ticks = m_objectPreviewClock.elapsed() / 20;
+        for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
+            const Resource &r = m_resources.at(i);
+            if (r.kind != QStringLiteral("sprite") || !r.objectAnimated || r.animCount <= 1)
+                continue;
+            auto *image = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(i));
+            if (!image) continue;
+            const qint64 step = ticks / qMax(1, r.animTicks);
+            int frameInClip = 0;
+            if (r.animMode == QStringLiteral("once"))
+                frameInClip = int(qMin(step, qint64(r.animCount - 1)));
+            else if (r.animMode == QStringLiteral("pingpong") && r.animCount > 1) {
+                const int cycle = 2 * r.animCount - 2;
+                const int phase = int(step % cycle);
+                frameInClip = phase < r.animCount ? phase : cycle - phase;
+            } else frameInClip = int(step % r.animCount);
+            const int index = r.animFirst + frameInClip;
+            if (image->data(1).toInt() == index) continue;
+            Resource frame = r;
+            frame.frame = index;
+            const QImage preview = resourcePreview(frame);
+            if (!preview.isNull()) {
+                image->setPixmap(QPixmap::fromImage(preview));
+                image->setData(1, index);
+            }
+        }
+    });
+    m_objectPreviewTimer->start();
 }
 
 SidboxGameDesigner::~SidboxGameDesigner()
@@ -806,11 +842,38 @@ void SidboxGameDesigner::rebuildTilemapOverlay()
         delete m_tilemapOverlayItem;
         m_tilemapOverlayItem = nullptr;
     }
+    for (QGraphicsItem *item : m_loopOverlayItems) delete item;
+    m_loopOverlayItems.clear();
     if (m_showTilemap) {
         m_showTilemap->setEnabled(m_tilemapEnabled);
         if (!m_tilemapEnabled || !m_showTilemap->isChecked()) return;
     } else return;
 
+    // Loop tracks are level geometry, not atlas tiles. Display the outline
+    // in the main file/world editor as a noninteractive placement guide.
+    // Their circles stay behind draggable Game Objects (Z=10).
+    for (int i = 0; i < m_tilemap.loops.size(); ++i) {
+        const SidboxLoopTrack &loop = m_tilemap.loops.at(i);
+        if (loop.radius <= 0) continue;
+        const QRectF circle(loop.centerX - loop.radius, loop.centerY - loop.radius,
+                            loop.radius * 2, loop.radius * 2);
+        QPen edge(QColor(117, 138, 255, 220), 2, Qt::DashLine);
+        edge.setCosmetic(true);
+        auto *ring = m_scene->addEllipse(circle, edge, Qt::NoBrush);
+        ring->setZValue(3);
+        ring->setAcceptedMouseButtons(Qt::NoButton);
+        m_loopOverlayItems.append(ring);
+        auto *caption = new QGraphicsSimpleTextItem(tr("LOOP %1").arg(i + 1), ring);
+        caption->setBrush(QColor(255, 206, 67));
+        caption->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+        caption->setAcceptedMouseButtons(Qt::NoButton);
+        caption->setPos(loop.centerX + 8, loop.centerY + loop.radius - 20);
+        auto *entry = new QGraphicsEllipseItem(-4, -4, 8, 8, ring);
+        entry->setPos(loop.centerX, loop.centerY + loop.radius);
+        entry->setPen(QPen(QColor(255, 206, 67), 2));
+        entry->setBrush(QColor(255, 206, 67));
+        entry->setAcceptedMouseButtons(Qt::NoButton);
+    }
     if (m_tilemap.atlasPath.isEmpty()) return;
     const QString atlasPath = QDir(QFileInfo(m_filePath).absolutePath())
                                   .absoluteFilePath(m_tilemap.atlasPath);
@@ -2802,6 +2865,7 @@ void SidboxGameDesigner::rebuildScene()
     m_objectHitbox = nullptr;
     m_scene->clear();
     m_tilemapOverlayItem = nullptr;
+    m_loopOverlayItems.clear(); // QGraphicsScene deleted the children above.
     m_sceneItems.clear();
     m_sceneItems.resize(m_resources.size());
     m_worldFrame = nullptr;
@@ -2820,6 +2884,7 @@ void SidboxGameDesigner::rebuildScene()
                                                  : QPixmap::fromImage(preview);
         auto *item = new PlacedImage(pixmap);
         item->setData(0, i);
+        item->setData(1, r.frame); // Atlas index currently displayed.
         item->setFlag(QGraphicsItem::ItemIsMovable, !r.locked);
         item->snapped = [this, i](const QPointF &p) -> QPointF {
             if (m_loading || m_groupDragActive || !m_snap->isChecked()
@@ -2831,6 +2896,8 @@ void SidboxGameDesigner::rebuildScene()
         item->setPos(r.x, r.y);
         item->setScale(r.scale / 100.0);
         if (r.kind == QStringLiteral("background")) item->setZValue(1);
+        else if (r.kind == QStringLiteral("sprite") && r.drawBehindTiles)
+            item->setZValue(1.9); // Behind Tilemap Overlay (Z=2), still draggable.
         item->moved = [this](QGraphicsItem *which) { syncFromSceneItem(which); };
         m_scene->addItem(item);
         auto *title = new QGraphicsSimpleTextItem(r.name, item);
@@ -2896,6 +2963,8 @@ void SidboxGameDesigner::updateSelectedItem()
     m_loading = true;
     item->setPos(r.x, r.y);
     item->setScale(r.scale / 100.0);
+    item->setZValue(r.kind == QStringLiteral("background") ? 1.0 :
+                    (r.kind == QStringLiteral("sprite") && r.drawBehindTiles) ? 1.9 : 10.0);
     m_loading = false;
     refreshObjectHitbox();
 }
@@ -2909,6 +2978,7 @@ void SidboxGameDesigner::updateSelectedPixmap()
     const QImage preview = resourcePreview(m_resources.at(index));
     item->setPixmap(preview.isNull() ? missingImage(m_resources.at(index).kind)
                                      : QPixmap::fromImage(preview));
+    item->setData(1, m_resources.at(index).frame);
 }
 
 void SidboxGameDesigner::refreshProperties()
@@ -3643,39 +3713,128 @@ void SidboxGameDesigner::configureGameObject(int index)
     const Resource &old = m_resources.at(index);
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Game Object Properties - %1").arg(old.name));
-    // Compact by default; both property columns scroll independently.
-    // Users can resize the dialog if they prefer more room.
-    dialog.resize(860, 540);
-    dialog.setMinimumSize(700, 420);
-    // No new rounded widgets, even when the desktop theme uses rounded popups.
-    dialog.setStyleSheet(styleSheet() + QStringLiteral(
-        "QDialog, QGroupBox, QSpinBox, QComboBox, QPushButton, QLineEdit { border-radius:0px; }"));
+    // Stage 3.93: three-column, theme-accented Game Object workstation.
+    // All original controls and Resource fields are retained; only the editor
+    // presentation changes. This dialog never creates new runtime behaviours.
+    dialog.resize(1180, 710);
+    dialog.setMinimumSize(930, 580);
+    const auto colour = [](const QColor &c) { return ideThemeColorName(c); };
+    dialog.setStyleSheet(styleSheet() + QStringLiteral(R"GGSTYLE(
+        QDialog { background:%1; color:%2; border-radius:0px; }
+        QFrame#GGObjectCard { background:%3; border:1px solid %4; border-radius:0px; }
+        QToolButton#GGSectionHeader { background:%5; color:%2; border:0px;
+          border-left:3px solid %6; padding:9px 10px; text-align:left;
+          font-weight:bold; border-radius:0px; }
+        QToolButton#GGSectionHeader:hover { background:%7; }
+        QListWidget#GGObjectTypes { background:%3; color:%2; border:1px solid %4;
+          border-radius:0px; outline:0px; }
+        QListWidget#GGObjectTypes::item { padding:8px; border-bottom:1px solid %4; }
+        QListWidget#GGObjectTypes::item:selected { background:%8; color:%2;
+          border-left:3px solid %6; }
+        QLabel#GGPreviewImage { background:%1; border:1px solid %4; }
+        QLabel#GGHelper { color:%9; }
+        QSpinBox, QComboBox, QLineEdit { background:%10; color:%2;
+          border:1px solid %4; border-radius:0px; min-height:23px; }
+        QSpinBox:focus, QComboBox:focus { border:1px solid %6; }
+        QSlider::groove:horizontal { height:5px; background:%4; border-radius:0px; }
+        QSlider::handle:horizontal { width:11px; margin:-5px 0; background:%6;
+          border:1px solid %2; border-radius:0px; }
+        QPushButton, QToolButton { border-radius:0px; }
+    )GGSTYLE")
+        .arg(colour(m_theme.windowBackground)).arg(colour(m_theme.text))
+        .arg(colour(m_theme.panelBackground)).arg(colour(m_theme.border))
+        .arg(colour(m_theme.alternateBackground)).arg(colour(m_theme.accent))
+        .arg(colour(m_theme.hover)).arg(colour(m_theme.accent.darker(230)))
+        .arg(colour(m_theme.mutedText)).arg(colour(m_theme.inputBackground)));
+
     QVBoxLayout layout(&dialog);
-    auto *hint = new QLabel(tr("World coordinates come from this sprite's canvas position. "
-                            "Behaviour belongs to this sprite instance, not its PPB file."), &dialog);
-    hint->setWordWrap(true);
-    layout.addWidget(hint);
-    // QGroupBox with our custom theme can paint its title over the first row.
-    // Use a plain panel with an explicit header instead. Stack each field's
-    // label above the input so neither controls nor text can collide at narrow
-    // sizes. Separate scroll areas keep the dialog compact on smaller screens.
-    auto *objectPanel = new QWidget(&dialog);
-    auto *objectLayout = new QVBoxLayout(objectPanel);
-    objectLayout->setContentsMargins(10, 8, 10, 8);
-    objectLayout->setSpacing(8);
-    auto *objectHeading = new QLabel(tr("OBJECT / BEHAVIOUR"), objectPanel);
-    QFont headingFont = objectHeading->font();
+    layout.setContentsMargins(10, 10, 10, 10);
+    layout.setSpacing(9);
+    auto *heading = new QLabel(tr("GAME OBJECT PROPERTIES   /   %1").arg(old.name), &dialog);
+    QFont headingFont = heading->font();
     headingFont.setBold(true);
-    objectHeading->setFont(headingFont);
-    objectLayout->addWidget(objectHeading);
-    auto *form = new QFormLayout;
-    form->setContentsMargins(0, 0, 0, 0);
-    form->setRowWrapPolicy(QFormLayout::WrapAllRows);
-    form->setLabelAlignment(Qt::AlignLeft);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    form->setVerticalSpacing(5);
-    objectLayout->addLayout(form);
-    objectLayout->addStretch(1);
+    headingFont.setPointSize(qMax(11, headingFont.pointSize() + 2));
+    heading->setFont(headingFont);
+    layout.addWidget(heading);
+
+    // Each card can be collapsed. Hidden cards are real layouts rather than
+    // disabled rows, so the editor adapts to the selected object behaviour.
+    struct PropertyCard {
+        QFrame *panel;
+        QWidget *body;
+        QFormLayout *form;
+    };
+    auto makeCard = [&](const QString &name, bool expanded = true) -> PropertyCard {
+        auto *panel = new QFrame(&dialog);
+        panel->setObjectName(QStringLiteral("GGObjectCard"));
+        auto *outer = new QVBoxLayout(panel);
+        outer->setContentsMargins(0, 0, 0, 0);
+        outer->setSpacing(0);
+        auto *toggle = new QToolButton(panel);
+        toggle->setObjectName(QStringLiteral("GGSectionHeader"));
+        toggle->setCheckable(true);
+        toggle->setChecked(expanded);
+        toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        toggle->setText((expanded ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + name);
+        outer->addWidget(toggle);
+        auto *body = new QWidget(panel);
+        auto *formLayout = new QFormLayout(body);
+        formLayout->setContentsMargins(12, 12, 12, 12);
+        formLayout->setSpacing(8);
+        formLayout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        formLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        outer->addWidget(body);
+        body->setVisible(expanded);
+        connect(toggle, &QToolButton::toggled, &dialog,
+                [toggle, body, name](bool show) {
+                    body->setVisible(show);
+                    toggle->setText((show ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + name);
+                });
+        return { panel, body, formLayout };
+    };
+    // General and visual settings apply to every sprite. Behaviour and sound
+    // cards are shown only for the matching object type.
+    const PropertyCard generalCard = makeCard(tr("General"));
+    const PropertyCard visualCard = makeCard(tr("Visual & Movement"));
+    const PropertyCard animationCard = makeCard(tr("Animation Frames"));
+    const PropertyCard collisionCard = makeCard(tr("Physics / Collision"));
+    const PropertyCard collectCard = makeCard(tr("Collectable"));
+    const PropertyCard linkedCard = makeCard(tr("Linked Object"));
+    const PropertyCard triggerCard = makeCard(tr("Switch & Trigger"));
+    const PropertyCard liftCard = makeCard(tr("Moving Platform"));
+    const PropertyCard conveyorCard = makeCard(tr("Conveyor"));
+    const PropertyCard springCard = makeCard(tr("Spring / Bouncer"));
+    const PropertyCard breakCard = makeCard(tr("Breakable"));
+    const PropertyCard hazardCard = makeCard(tr("Hazard / Murder Object"));
+    const PropertyCard audioCollectCard = makeCard(tr("Audio Events / Collectable"));
+    const PropertyCard audioLiftCard = makeCard(tr("Audio Events / Moving Platform"));
+    const PropertyCard audioSpringCard = makeCard(tr("Audio Events / Spring"));
+    const PropertyCard audioConveyorCard = makeCard(tr("Audio Events / Conveyor"));
+    const PropertyCard audioBreakCard = makeCard(tr("Audio Events / Breakable"));
+    const PropertyCard audioHazardCard = makeCard(tr("Audio Events / Hazard"));
+    const PropertyCard audioOptionsCard = makeCard(tr("Audio / Range & Fade"), false);
+
+    // Accurate number entry alongside a quick, keyboard-accessible slider.
+    const auto quickValue = [&dialog](QSpinBox *box) -> QWidget * {
+        auto *row = new QWidget(&dialog);
+        auto *line = new QHBoxLayout(row);
+        line->setContentsMargins(0, 0, 0, 0);
+        line->setSpacing(7);
+        auto *slider = new QSlider(Qt::Horizontal, row);
+        slider->setRange(box->minimum(), box->maximum());
+        slider->setValue(box->value());
+        slider->setMinimumWidth(60);
+        box->setMinimumWidth(78);
+        box->setMaximumWidth(116);
+        line->addWidget(slider, 1);
+        line->addWidget(box);
+        QObject::connect(slider, &QSlider::valueChanged, box, &QSpinBox::setValue);
+        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged),
+                         slider, &QSlider::setValue);
+        return row;
+    };
+    QFormLayout *form = collectCard.form;
     auto *type = new GameComboBox(&dialog);
     type->addItem(tr("Ordinary sprite / Decoration"), QStringLiteral("decoration"));
     type->addItem(tr("Collectable"), QStringLiteral("collectable"));
@@ -3685,8 +3844,17 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Trigger / Switch"), QStringLiteral("trigger"));
     type->addItem(tr("Door / Solid blocker"), QStringLiteral("door"));
     type->addItem(tr("Hazard Zone (touch = callback)"), QStringLiteral("deathzone"));
+    type->addItem(tr("Breakable Object"), QStringLiteral("breakable"));
+    type->addItem(tr("Hazard / Murder Object (touch hurts)"), QStringLiteral("hazard"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
-    form->addRow(tr("Behaviour"), type);
+    // The left-hand list is the behaviour selector; keep the combo as the
+    // original model for existing validation and signal connections.
+    type->hide();
+    generalCard.form->addRow(tr("Name"), new QLabel(old.name, &dialog));
+    auto *idInfo = new QLabel(old.id, &dialog);
+    idInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    idInfo->setToolTip(tr("Permanent ID of this placed sprite instance."));
+    generalCard.form->addRow(tr("Object ID"), idInfo);
     auto *pickup = new GameComboBox(&dialog);
     pickup->addItem(tr("Coin"), 1);
     pickup->addItem(tr("Health"), 2);
@@ -3700,9 +3868,17 @@ void SidboxGameDesigner::configureGameObject(int index)
     };
     auto *value = spin(0, 65535, old.objectValue);
     form->addRow(tr("Pickup value"), value);
+    form = generalCard.form;
     auto *initiallyActive = new QCheckBox(tr("Active when the level starts"), &dialog);
     initiallyActive->setChecked(old.objectInitiallyActive);
     form->addRow(QString(), initiallyActive);
+    auto *behindTiles = new QCheckBox(tr("Draw behind tiles"), &dialog);
+    behindTiles->setChecked(old.drawBehindTiles);
+    behindTiles->setToolTip(tr("Draw this placed sprite BEFORE tiles, so spikes can rise out of the ground. "
+                              "Works for decorations, collectables and all Game Objects. "
+                              "Foreground tiles intentionally marked as overdraw remain in front."));
+    form->addRow(QString(), behindTiles);
+    form = linkedCard.form;
     auto *targetObject = new GameComboBox(&dialog);
     targetObject->addItem(tr("None (no linked object)"), QString());
     for (const Resource &candidate : m_resources) {
@@ -3722,6 +3898,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     targetAction->addItem(tr("Toggle target (ON / OFF)"), QStringLiteral("toggle"));
     targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
     form->addRow(tr("Linked action"), targetAction);
+    form = triggerCard.form;
     auto *triggerPress = new QCheckBox(tr("Require FIRE2 while touching (otherwise activate on touch)"), &dialog);
     triggerPress->setChecked(old.triggerPress);
     triggerPress->setToolTip(tr("FIRE2 is the second fire button; unlike FIRE it does not jump. "
@@ -3745,22 +3922,28 @@ void SidboxGameDesigner::configureGameObject(int index)
     musicTrack->setToolTip(tr("Choose a music resource. The IDE uses its saved ID, not the filename."));
     form->addRow(tr("Tune"), musicTrack);
 
+    form = collectCard.form;
     auto *respawn = spin(0, 65535, old.respawnFrames);
-    form->addRow(tr("Respawn after frames (0 = never)"), respawn);
+    form->addRow(tr("Respawn frames"), quickValue(respawn));
+    form = collisionCard.form;
     auto *hitW = spin(1, 1024, old.hitWidth);
     auto *hitH = spin(1, 1024, old.hitHeight);
-    form->addRow(tr("Collision width"), hitW);
-    form->addRow(tr("Collision height"), hitH);
+    hitW->setToolTip(tr("Width in pixels of this object's collision rectangle."));
+    hitH->setToolTip(tr("Height in pixels of this object's collision rectangle."));
+    form->addRow(tr("Collision width"), quickValue(hitW));
+    form->addRow(tr("Collision height"), quickValue(hitH));
+    form = conveyorCard.form;
     auto *conveyor = spin(-100, 100, old.conveyorSpeed);
-    form->addRow(tr("Conveyor px/frame"), conveyor);
+    form->addRow(tr("Conveyor px/frame"), quickValue(conveyor));
+    form = springCard.form;
     auto *spring = spin(1, 100, old.springStrength);
-    form->addRow(tr("Spring upward launch (px/frame)"), spring);
+    form->addRow(tr("Launch upward"), quickValue(spring));
     auto *springLaunchX = spin(-40, 40, old.springLaunchX);
     springLaunchX->setToolTip(tr("Horizontal spring trajectory: negative launches LEFT, "
                                  "positive launches RIGHT, and 0 launches straight up. "
                                  "Normal mode pushes constantly until landing; Slidy mode "
                                  "gradually slows down, including after landing."));
-    form->addRow(tr("Spring sideways launch (− left / + right)"), springLaunchX);
+    form->addRow(tr("Launch sideways"), quickValue(springLaunchX));
     auto *springTouch = new QCheckBox(tr("Activate on touch (any side)"), &dialog);
     springTouch->setChecked(old.springTouch);
     springTouch->setToolTip(tr("Off: spring launches only when the player lands on its top. "
@@ -3783,6 +3966,102 @@ void SidboxGameDesigner::configureGameObject(int index)
                                "on contact adds the player's jump speed. "
                                "Requires the optional physics jump bindings."));
     form->addRow(QString(), springJumpBoost);
+
+    // Each placed Breakable has an independent hit counter at runtime.
+    form = breakCard.form;
+    auto *breakHits = spin(1, 4, old.breakHits);
+    breakHits->setToolTip(tr("The object disappears after 1 to 4 separate contacts."));
+    form->addRow(tr("Hits to break"), quickValue(breakHits));
+    auto *breakTouch = new QCheckBox(tr("Break on touch (leave before hitting again)"), &dialog);
+    breakTouch->setChecked(old.breakTouch);
+    breakTouch->setToolTip(tr("Off: count landings on the top only. On: touching from any side counts; "
+                               "leave the object before another touch can count."));
+    form->addRow(QString(), breakTouch);
+    auto *breakBounce = new QCheckBox(tr("Bounce on each stomp (spring launch)"), &dialog);
+    breakBounce->setChecked(old.breakBounce);
+    breakBounce->setToolTip(tr("When landing from above, launch the player on each hit, "
+                                "including the final break. Has no effect in touch mode."));
+    form->addRow(QString(), breakBounce);
+    auto *breakStrength = spin(1, 100, old.breakStrength);
+    form->addRow(tr("Bounce upward"), quickValue(breakStrength));
+    auto *breakLaunchX = spin(-40, 40, old.breakLaunchX);
+    form->addRow(tr("Bounce sideways"), quickValue(breakLaunchX));
+    const auto updateBreakControls = [type, breakHits, breakTouch, breakBounce, breakStrength, breakLaunchX]() {
+        const bool b = type->currentData().toString() == QStringLiteral("breakable");
+        breakHits->setEnabled(b);
+        breakTouch->setEnabled(b);
+        breakBounce->setEnabled(b && !breakTouch->isChecked());
+        breakStrength->setEnabled(b && !breakTouch->isChecked() && breakBounce->isChecked());
+        breakLaunchX->setEnabled(b && !breakTouch->isChecked() && breakBounce->isChecked());
+    };
+    connect(type, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+            [updateBreakControls](int) { updateBreakControls(); });
+    connect(breakTouch, &QCheckBox::toggled, &dialog, updateBreakControls);
+    connect(breakBounce, &QCheckBox::toggled, &dialog, updateBreakControls);
+    updateBreakControls();
+    // Hazards are intangible damage sensors. The direction values below are
+    // signed; negative Y sends the player UP, positive Y pushes them DOWN.
+    form = hazardCard.form;
+    auto *hazardDamage = spin(0, 65535, old.hazardDamage);
+    auto *hazardKick = new QCheckBox(tr("Knock player back on hit"), &dialog);
+    hazardKick->setChecked(old.hazardKick);
+    auto *hazardKickX = spin(-40, 40, old.hazardKickX);
+    auto *hazardKickY = spin(-40, 40, old.hazardKickY);
+    hazardKickX->setToolTip(tr("Negative = kick left; positive = kick right; zero = no horizontal kick."));
+    hazardKickY->setToolTip(tr("Negative = kick up; positive = kick down; zero = no vertical kick."));
+    hazardDamage->setToolTip(tr("Amount passed to your game's damage callback. Your game decides how health is used."));
+    auto *hazardHurtAnim = new QCheckBox(tr("Use player Hurt animation on damage"), &dialog);
+    hazardHurtAnim->setChecked(old.hazardHurtAnimation);
+    auto *hazardFlash = new QCheckBox(tr("Flash player using solid-colour BOB"), &dialog);
+    hazardFlash->setChecked(old.hazardFlash);
+    auto *hazardColour = new GameComboBox(&dialog);
+    QVector<QRgb> flashBank = activePalette(QStringLiteral("foreground"));
+    if (flashBank.size() != 256 && !old.path.isEmpty()) {
+        // For projects without a shared .pal, take the swatch colours from
+        // this PPB's own palette instead of presenting 256 grey rectangles.
+        SidboxPpb::Picture flashPicture;
+        if (SidboxPpb::read(resolvedPath(old.path), &flashPicture))
+            flashBank = flashPicture.indexed.colorTable();
+    }
+    for (int i = 0; i < 256; ++i) {
+        const QColor colour = i < flashBank.size() ? QColor::fromRgba(flashBank.at(i))
+                                                  : QColor::fromRgb(96, 96, 96);
+        QPixmap swatch(18, 14);
+        swatch.fill(colour);
+        hazardColour->addItem(QIcon(swatch), tr("Index %1").arg(i), i);
+    }
+    hazardColour->setCurrentIndex(qBound(0, old.hazardFlashColour, 255));
+    hazardColour->setToolTip(tr("The solid-colour BOB flag uses an 8-bit FOREGROUND CLUT index. "
+                              "Swatches use the active foreground palette, falling back to "
+                              "this PPB's colours. Palette index 0 is usually transparent."));
+    auto *hazardFlashes = spin(1, 32, old.hazardFlashCount);
+    auto *hazardFlashFrames = spin(1, 255, old.hazardFlashFrames);
+    form->addRow(tr("Damage per hit"), quickValue(hazardDamage));
+    form->addRow(QString(), hazardKick);
+    form->addRow(tr("Knockback X"), quickValue(hazardKickX));
+    form->addRow(tr("Knockback Y"), quickValue(hazardKickY));
+    form->addRow(QString(), hazardHurtAnim);
+    form->addRow(QString(), hazardFlash);
+    form->addRow(tr("Flash CLUT colour"), hazardColour);
+    form->addRow(tr("Number of flashes"), quickValue(hazardFlashes));
+    form->addRow(tr("Frames between flashes"), quickValue(hazardFlashFrames));
+    auto updateHazardControls = [=]() {
+        const bool hazard = type->currentData().toString() == QStringLiteral("hazard");
+        for (QWidget *w : {static_cast<QWidget *>(hazardDamage), static_cast<QWidget *>(hazardKick),
+                           static_cast<QWidget *>(hazardHurtAnim), static_cast<QWidget *>(hazardFlash)})
+            w->setEnabled(hazard);
+        hazardKickX->setEnabled(hazard && hazardKick->isChecked());
+        hazardKickY->setEnabled(hazard && hazardKick->isChecked());
+        hazardColour->setEnabled(hazard && hazardFlash->isChecked());
+        hazardFlashes->setEnabled(hazard && hazardFlash->isChecked());
+        hazardFlashFrames->setEnabled(hazard && hazardFlash->isChecked());
+    };
+    connect(hazardKick, &QCheckBox::toggled, &dialog, updateHazardControls);
+    connect(hazardFlash, &QCheckBox::toggled, &dialog, updateHazardControls);
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [updateHazardControls](int) { updateHazardControls(); });
+    updateHazardControls();
+    form = visualCard.form;
     auto *spline = new GameComboBox(&dialog);
     spline->addItem(tr("None (stationary)"), QString());
     for (const SplinePath &path : m_splinePaths)
@@ -3792,12 +4071,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *animated = new QCheckBox(tr("Animate sprite frames"), &dialog);
     animated->setChecked(old.objectAnimated);
     form->addRow(QString(), animated);
+    form = animationCard.form;
     auto *first = spin(0, 255, old.animFirst);
     auto *count = spin(1, 256, old.animCount);
     auto *ticks = spin(1, 65535, old.animTicks);
     form->addRow(tr("First frame"), first);
     form->addRow(tr("Number of frames"), count);
-    form->addRow(tr("Frames per picture"), ticks);
+    form->addRow(tr("Ticks per frame"), quickValue(ticks));
     auto *mode = new GameComboBox(&dialog);
     mode->addItem(tr("Loop"), QStringLiteral("loop"));
     mode->addItem(tr("Ping-pong"), QStringLiteral("pingpong"));
@@ -3823,53 +4103,222 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *sfxReverse = soundPicker(old.sfxReverse);
     auto *sfxSpring = soundPicker(old.sfxSpring);
     auto *sfxAmbient = soundPicker(old.sfxAmbient);
+    auto *sfxBreakHit = soundPicker(old.sfxBreakHit);
+    auto *sfxBreakBounce = soundPicker(old.sfxBreakBounce);
+    auto *sfxBreakFinish = soundPicker(old.sfxBreakFinish);
+    auto *sfxHazardHit = soundPicker(old.sfxHazardHit);
+    auto *sfxHazardBounce = soundPicker(old.sfxHazardBounce);
+    auto *sfxHazardAmbient = soundPicker(old.sfxHazardAmbient);
     auto *radius = spin(0, 32767, old.audioRadius);
     auto *fade = spin(0, 255, old.audioFadeFrames);
-    auto *audioPanel = new QWidget(&dialog);
-    auto *audioLayout = new QVBoxLayout(audioPanel);
-    audioLayout->setContentsMargins(10, 8, 10, 8);
-    audioLayout->setSpacing(8);
-    auto *audioHeading = new QLabel(tr("AUDIO (OPTIONAL)"), audioPanel);
-    audioHeading->setFont(headingFont);
-    audioLayout->addWidget(audioHeading);
-    auto *audioForm = new QFormLayout;
-    audioForm->setContentsMargins(0, 0, 0, 0);
-    audioForm->setRowWrapPolicy(QFormLayout::WrapAllRows);
-    audioForm->setLabelAlignment(Qt::AlignLeft);
-    audioForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    audioForm->setVerticalSpacing(5);
-    audioLayout->addLayout(audioForm);
-    audioLayout->addStretch(1);
+    QFormLayout *audioForm = audioCollectCard.form;
     audioForm->addRow(tr("Pickup"), sfxPickup);
     audioForm->addRow(tr("Respawn sound"), sfxRespawn);
+    audioForm = audioLiftCard.form;
     audioForm->addRow(tr("Mover starts"), sfxStart);
     audioForm->addRow(tr("Mover moving (loopable)"), sfxMove);
     audioForm->addRow(tr("Mover stops"), sfxStop);
     audioForm->addRow(tr("Mover reverses"), sfxReverse);
+    audioForm = audioSpringCard.form;
     audioForm->addRow(tr("Spring launches"), sfxSpring);
+    audioForm = audioConveyorCard.form;
     audioForm->addRow(tr("Conveyor ambience (loopable)"), sfxAmbient);
-    audioForm->addRow(tr("Audible radius (0 = non-positional)"), radius);
+    audioForm = audioBreakCard.form;
+    audioForm->addRow(tr("Breakable — hit"), sfxBreakHit);
+    audioForm->addRow(tr("Breakable — bounce"), sfxBreakBounce);
+    audioForm->addRow(tr("Breakable — shatter"), sfxBreakFinish);
+    audioForm = audioHazardCard.form;
+    audioForm->addRow(tr("Hazard — hit"), sfxHazardHit);
+    audioForm->addRow(tr("Hazard — knockback"), sfxHazardBounce);
+    audioForm->addRow(tr("Hazard — ambient (loopable)"), sfxHazardAmbient);
+    audioForm = audioOptionsCard.form;
+    audioForm->addRow(tr("Audible radius"), radius);
     audioForm->addRow(tr("Loop fade frames"), fade);
-    audioPanel->setToolTip(tr("Sound channels are assigned in Game Resources > Sounds. "
-        "Simultaneously playing sounds must use different channels to avoid interrupting each other. "
-        "For continuous movement or conveyor ambience, enable Loop in the chosen Sound resource."));
-    // Independently scrollable columns: Behaviour on the left, Audio on the
-    // right. No narrowing the combo boxes and no extra canvas toolbar rows.
-    auto *settingsColumns = new QHBoxLayout;
-    settingsColumns->setSpacing(12);
-    auto *objectScroll = new QScrollArea(&dialog);
-    objectScroll->setWidgetResizable(true);
-    objectScroll->setFrameShape(QFrame::NoFrame);
-    objectScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    objectScroll->setWidget(objectPanel);
-    settingsColumns->addWidget(objectScroll, 1);
-    auto *audioScroll = new QScrollArea(&dialog);
-    audioScroll->setWidgetResizable(true);
-    audioScroll->setFrameShape(QFrame::NoFrame);
-    audioScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    audioScroll->setWidget(audioPanel);
-    settingsColumns->addWidget(audioScroll, 1);
-    layout.addLayout(settingsColumns, 1);
+    // Three real editor columns. Settings scroll vertically; preview and
+    // object list stay in sight while editing (like Player Animation Toolkit).
+    auto *columns = new QHBoxLayout;
+    columns->setSpacing(9);
+    auto *selectorPanel = new QFrame(&dialog);
+    selectorPanel->setObjectName(QStringLiteral("GGObjectCard"));
+    selectorPanel->setFixedWidth(198);
+    auto *selectorLayout = new QVBoxLayout(selectorPanel);
+    selectorLayout->setContentsMargins(6, 6, 6, 6);
+    auto *selectorTitle = new QLabel(tr("OBJECT TYPE"), selectorPanel);
+    selectorTitle->setFont(headingFont);
+    selectorLayout->addWidget(selectorTitle);
+    auto *typeList = new QListWidget(selectorPanel);
+    typeList->setObjectName(QStringLiteral("GGObjectTypes"));
+    typeList->setSpacing(0);
+    const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
+        QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
+        QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
+        QStringLiteral("▦"), QStringLiteral("✹")};
+    const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
+        tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
+        tr("Hazard zone"), tr("Breakable"), tr("Murder object")};
+    for (int n = 0; n < type->count(); ++n) {
+        auto *item = new QListWidgetItem(icons.value(n) + QStringLiteral("   ") + titles.value(n));
+        item->setData(Qt::UserRole, type->itemData(n));
+        item->setToolTip(type->itemText(n));
+        item->setSizeHint(QSize(180, 43));
+        typeList->addItem(item);
+    }
+    typeList->setCurrentRow(type->currentIndex());
+    connect(typeList, &QListWidget::currentRowChanged, type,
+            [type](int row) { if (row >= 0) type->setCurrentIndex(row); });
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), typeList,
+            [typeList](int row) { if (typeList->currentRow() != row) typeList->setCurrentRow(row); });
+    selectorLayout->addWidget(typeList, 1);
+    auto *selectorHelp = new QLabel(tr("Only settings relevant to the selected object appear."), selectorPanel);
+    selectorHelp->setObjectName(QStringLiteral("GGHelper"));
+    selectorHelp->setWordWrap(true);
+    selectorLayout->addWidget(selectorHelp);
+    columns->addWidget(selectorPanel);
+
+    auto *propertiesPanel = new QWidget(&dialog);
+    auto *propertiesLayout = new QVBoxLayout(propertiesPanel);
+    propertiesLayout->setContentsMargins(2, 2, 4, 2);
+    propertiesLayout->setSpacing(7);
+    for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
+         collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard, hazardCard,
+         audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
+         audioBreakCard, audioHazardCard, audioOptionsCard}) {
+        propertiesLayout->addWidget(card.panel);
+    }
+    propertiesLayout->addStretch(1);
+    auto *propertiesScroll = new QScrollArea(&dialog);
+    propertiesScroll->setWidgetResizable(true);
+    propertiesScroll->setFrameShape(QFrame::NoFrame);
+    propertiesScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    propertiesScroll->setWidget(propertiesPanel);
+    columns->addWidget(propertiesScroll, 1);
+
+    auto *previewPanel = new QFrame(&dialog);
+    previewPanel->setObjectName(QStringLiteral("GGObjectCard"));
+    previewPanel->setMinimumWidth(235);
+    previewPanel->setMaximumWidth(290);
+    auto *previewLayout = new QVBoxLayout(previewPanel);
+    previewLayout->setContentsMargins(8, 9, 8, 9);
+    previewLayout->setSpacing(9);
+    auto *previewTitle = new QLabel(tr("LIVE PREVIEW"), previewPanel);
+    previewTitle->setFont(headingFont);
+    previewLayout->addWidget(previewTitle);
+    auto *spritePreview = new QLabel(previewPanel);
+    spritePreview->setObjectName(QStringLiteral("GGPreviewImage"));
+    spritePreview->setMinimumHeight(235);
+    spritePreview->setAlignment(Qt::AlignCenter);
+    previewLayout->addWidget(spritePreview);
+    auto *playRow = new QHBoxLayout;
+    auto *playButton = new QPushButton(tr("▶ Play"), previewPanel);
+    auto *pauseButton = new QPushButton(tr("Ⅱ Pause"), previewPanel);
+    playRow->addWidget(playButton);
+    playRow->addWidget(pauseButton);
+    previewLayout->addLayout(playRow);
+    auto *spriteInfo = new QLabel(previewPanel);
+    spriteInfo->setObjectName(QStringLiteral("GGHelper"));
+    spriteInfo->setWordWrap(true);
+    previewLayout->addWidget(spriteInfo);
+    auto *collisionTitle = new QLabel(tr("COLLISION PREVIEW"), previewPanel);
+    collisionTitle->setFont(headingFont);
+    previewLayout->addWidget(collisionTitle);
+    auto *collisionPreview = new QLabel(previewPanel);
+    collisionPreview->setObjectName(QStringLiteral("GGPreviewImage"));
+    collisionPreview->setMinimumHeight(150);
+    collisionPreview->setAlignment(Qt::AlignCenter);
+    previewLayout->addWidget(collisionPreview);
+    previewLayout->addStretch(1);
+    columns->addWidget(previewPanel);
+    layout.addLayout(columns, 1);
+
+    QImage atlas = cachedImage(resolvedPath(old.path));
+    if (atlas.format() == QImage::Format_Indexed8) {
+        const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
+        if (palette.size() == 256)
+            atlas.setColorTable(colourPreviewBank(palette, true));
+    }
+    int previewFrame = 0;
+    auto *previewTimer = new QTimer(&dialog);
+    const auto updatePreview = [=, &previewFrame]() {
+        const int cw = atlas.isNull() ? 1 :
+            (old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width());
+        const int ch = atlas.isNull() ? 1 :
+            (old.cellHeight > 0 ? qMin(old.cellHeight, atlas.height()) : atlas.height());
+        const int cols = atlas.isNull() ? 1 : qMax(1, atlas.width() / qMax(1, cw));
+        const int rows = atlas.isNull() ? 1 : qMax(1, atlas.height() / qMax(1, ch));
+        const int available = cols * rows;
+        const int from = animated->isChecked() ? first->value() : old.frame;
+        const int countFrames = animated->isChecked() ? qMax(1, count->value()) : 1;
+        int frameInClip = 0;
+        if (animated->isChecked() && countFrames > 1) {
+            const QString playMode = mode->currentData().toString();
+            if (playMode == QStringLiteral("once"))
+                frameInClip = qMin(previewFrame, countFrames - 1);
+            else if (playMode == QStringLiteral("pingpong")) {
+                const int cycle = 2 * countFrames - 2;
+                const int phase = previewFrame % cycle;
+                frameInClip = phase < countFrames ? phase : cycle - phase;
+            } else frameInClip = previewFrame % countFrames;
+        }
+        const int selected = qBound(0, from + frameInClip, available - 1);
+        const QImage frame = atlas.isNull() ? QImage() :
+            atlas.copy((selected % cols) * cw, (selected / cols) * ch, cw, ch);
+        const auto makeCanvas = [=](int width, int height, bool showCollision) {
+            QPixmap canvas(width, height);
+            canvas.fill(m_theme.windowBackground);
+            QPainter painter(&canvas);
+            painter.setPen(QPen(m_theme.border, 1));
+            for (int x = 0; x < width; x += 20) painter.drawLine(x, 0, x, height);
+            for (int y = 0; y < height; y += 20) painter.drawLine(0, y, width, y);
+            if (!frame.isNull()) {
+                const int maxW = width - 28;
+                const int maxH = height - 28;
+                const int factor = qMax(1, qMin(maxW / qMax(1, frame.width()),
+                                                 maxH / qMax(1, frame.height())));
+                const int w = qMin(maxW, frame.width() * factor);
+                const int h = qMin(maxH, frame.height() * factor);
+                const QRect destination((width-w)/2, (height-h)/2, w, h);
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                painter.drawImage(destination, frame);
+                if (showCollision) {
+                    const double sx = double(destination.width()) / qMax(1, frame.width());
+                    const double sy = double(destination.height()) / qMax(1, frame.height());
+                    painter.setPen(QPen(m_theme.accent, 2, Qt::DashLine));
+                    painter.drawRect(QRectF(destination.x(), destination.y(),
+                        qMin(double(destination.width()), hitW->value()*sx),
+                        qMin(double(destination.height()), hitH->value()*sy)));
+                }
+            } else {
+                painter.setPen(m_theme.mutedText);
+                painter.drawText(canvas.rect(), Qt::AlignCenter, tr("No sprite preview"));
+            }
+            return canvas;
+        };
+        spritePreview->setPixmap(makeCanvas(255, 235, false));
+        collisionPreview->setPixmap(makeCanvas(255, 150, true));
+        spriteInfo->setText(tr("%1  •  %2 × %3 px  •  Frame %4/%5")
+            .arg(QFileInfo(old.path).fileName()).arg(cw).arg(ch)
+            .arg(selected + 1).arg(available));
+    };
+    connect(previewTimer, &QTimer::timeout, &dialog, [=, &previewFrame]() {
+        ++previewFrame;
+        updatePreview();
+    });
+    const auto refreshTimer = [=]() {
+        previewTimer->setInterval(qMax(1, ticks->value()) * 20);
+        if (animated->isChecked()) previewTimer->start();
+        else previewTimer->stop();
+        updatePreview();
+    };
+    connect(playButton, &QPushButton::clicked, &dialog, [=]() { previewTimer->start(); });
+    connect(pauseButton, &QPushButton::clicked, previewTimer, &QTimer::stop);
+    connect(animated, &QCheckBox::toggled, &dialog, [=](bool) { refreshTimer(); });
+    connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [=](int) { updatePreview(); });
+    for (QSpinBox *spin : {first, count, ticks, hitW, hitH})
+        connect(spin, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [=](int) { refreshTimer(); });
+    refreshTimer();
+
     auto enableFields = [=]() {
         const QString behaviour = type->currentData().toString();
         const bool isObject = behaviour != QStringLiteral("decoration");
@@ -3902,6 +4351,13 @@ void SidboxGameDesigner::configureGameObject(int index)
         sfxReverse->setEnabled(behaviour == QStringLiteral("lift"));
         sfxSpring->setEnabled(behaviour == QStringLiteral("spring"));
         sfxAmbient->setEnabled(behaviour == QStringLiteral("conveyor"));
+        sfxBreakHit->setEnabled(behaviour == QStringLiteral("breakable"));
+        sfxBreakBounce->setEnabled(behaviour == QStringLiteral("breakable") &&
+                                    !breakTouch->isChecked() && breakBounce->isChecked());
+        sfxBreakFinish->setEnabled(behaviour == QStringLiteral("breakable"));
+        sfxHazardHit->setEnabled(behaviour == QStringLiteral("hazard"));
+        sfxHazardBounce->setEnabled(behaviour == QStringLiteral("hazard") && hazardKick->isChecked());
+        sfxHazardAmbient->setEnabled(behaviour == QStringLiteral("hazard"));
         radius->setEnabled(isObject);
         fade->setEnabled(isObject);
         spline->setEnabled(isObject);
@@ -3909,10 +4365,44 @@ void SidboxGameDesigner::configureGameObject(int index)
         for (QWidget *w : {static_cast<QWidget *>(first), static_cast<QWidget *>(count),
                            static_cast<QWidget *>(ticks), static_cast<QWidget *>(mode)})
             w->setEnabled(isObject && animated->isChecked());
+        // Hide irrelevant cards, rather than leaving disabled controls stacked
+        // in front of the user. No values are reset by these visibility rules.
+        const bool isCollect = behaviour == QStringLiteral("collectable");
+        const bool isLift = behaviour == QStringLiteral("lift");
+        const bool isConveyor = behaviour == QStringLiteral("conveyor");
+        const bool isSpring = behaviour == QStringLiteral("spring");
+        const bool isBreak = behaviour == QStringLiteral("breakable");
+        const bool isHazard = behaviour == QStringLiteral("hazard");
+        generalCard.panel->setVisible(true);
+        visualCard.panel->setVisible(true);
+        animationCard.panel->setVisible(isObject && animated->isChecked());
+        collisionCard.panel->setVisible(isObject);
+        collectCard.panel->setVisible(isCollect);
+        linkedCard.panel->setVisible(isTrigger || isKey);
+        triggerCard.panel->setVisible(isTrigger);
+        liftCard.panel->setVisible(false); // sound controls are in Audio Events
+        conveyorCard.panel->setVisible(isConveyor);
+        springCard.panel->setVisible(isSpring);
+        breakCard.panel->setVisible(isBreak);
+        hazardCard.panel->setVisible(isHazard);
+        audioCollectCard.panel->setVisible(isCollect);
+        audioLiftCard.panel->setVisible(isLift);
+        audioSpringCard.panel->setVisible(isSpring);
+        audioConveyorCard.panel->setVisible(isConveyor);
+        audioBreakCard.panel->setVisible(isBreak);
+        audioHazardCard.panel->setVisible(isHazard);
+        audioOptionsCard.panel->setVisible(isCollect || isLift || isSpring ||
+            isConveyor || isBreak || isHazard);
     };
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
     connect(animated, &QCheckBox::toggled, &dialog,
+            [enableFields](bool) { enableFields(); });
+    connect(breakTouch, &QCheckBox::toggled, &dialog,
+            [enableFields](bool) { enableFields(); });
+    connect(breakBounce, &QCheckBox::toggled, &dialog,
+            [enableFields](bool) { enableFields(); });
+    connect(hazardKick, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
     connect(pickup, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
@@ -3948,6 +4438,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          Qt::Horizontal, &dialog);
     layout.addWidget(buttons);
+    if (auto *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setStyleSheet(QStringLiteral("QPushButton { background:%1; color:%2; "
+            "border:1px solid %1; padding:6px 30px; border-radius:0px; }")
+                .arg(colour(m_theme.accent), colour(m_theme.brightText)));
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return;
@@ -3977,7 +4471,22 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.springTouch = springTouch->isChecked();
     r.springSlide = springSlide->isChecked();
     r.springJumpBoost = springJumpBoost->isChecked();
+    r.breakTouch = breakTouch->isChecked();
+    r.breakBounce = breakBounce->isChecked();
+    r.breakHits = breakHits->value();
+    r.breakStrength = breakStrength->value();
+    r.breakLaunchX = breakLaunchX->value();
     r.objectInitiallyActive = initiallyActive->isChecked();
+    r.drawBehindTiles = behindTiles->isChecked();
+    r.hazardDamage = hazardDamage->value();
+    r.hazardKick = hazardKick->isChecked();
+    r.hazardKickX = hazardKickX->value();
+    r.hazardKickY = hazardKickY->value();
+    r.hazardHurtAnimation = hazardHurtAnim->isChecked();
+    r.hazardFlash = hazardFlash->isChecked();
+    r.hazardFlashColour = hazardColour->currentData().toInt();
+    r.hazardFlashCount = hazardFlashes->value();
+    r.hazardFlashFrames = hazardFlashFrames->value();
     r.targetObjectId = targetObject->currentData().toString();
     r.targetAction = targetAction->currentData().toString();
     r.triggerPress = triggerPress->isChecked();
@@ -3992,6 +4501,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.sfxReverse = sfxReverse->currentData().toString();
     r.sfxSpring = sfxSpring->currentData().toString();
     r.sfxAmbient = sfxAmbient->currentData().toString();
+    r.sfxBreakHit = sfxBreakHit->currentData().toString();
+    r.sfxBreakBounce = sfxBreakBounce->currentData().toString();
+    r.sfxBreakFinish = sfxBreakFinish->currentData().toString();
+    r.sfxHazardHit = sfxHazardHit->currentData().toString();
+    r.sfxHazardBounce = sfxHazardBounce->currentData().toString();
+    r.sfxHazardAmbient = sfxHazardAmbient->currentData().toString();
     r.respawnFrames = respawn->value();
     r.audioRadius = radius->value();
     r.audioFadeFrames = fade->value();

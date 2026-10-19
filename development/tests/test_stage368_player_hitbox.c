@@ -99,7 +99,7 @@ int main(void) {
     assert(custom.x100/100 + custom.hitbox_x > 100);
 
     /* The loop track uses the box centre/feet, not the decorative sprite. */
-    game_tile_loop_t loop={100,100,40,100,0};
+    game_tile_loop_t loop={100,100,40,100,0,0, 0};
     m.loops=&loop; m.loop_count=1;
     gfxbob_t aBob={0}, bBob={0};
     aBob.width=32;aBob.height=32;bBob.width=64;bBob.height=64;

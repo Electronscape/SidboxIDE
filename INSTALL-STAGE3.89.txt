@@ -1,0 +1,28 @@
+STAGE 3.89 — GAME OBJECT BREAKABLES AND VISUAL PREVIEWS
+
+Only the following production files changed:
+  gamedesigner.h
+  gamedesigner.cpp
+  gamedesigner_project.cpp
+  gamedesigner_export.cpp
+  idelibs/codehelpers/game/worldobjects.c
+  idelibs/codehelpers/game/worldobjects.h
+  idelibs/codehelpers/game/worldobjects.txt (user guide)
+
+Copy those to the identical paths in your CoderGirl IDE source folder.
+Rebuild CoderGirl in Qt Creator. Then open the Game Designer and configure
+Sprite -> Game Object -> Breakable Object (1..4 hits).
+
+For actual SIDBOX playback use F5 -> Update and Compile so the generated
+world-object files and installed gamehelpers/gameworldobjects.c/.h are
+updated TOGETHER. Back up your project before replacing customised helpers.
+Do not use the IDE executable bundled in the full-source archive until
+rebuilding: it is the user's original executable, not a newly compiled one.
+
+When Show Tilemap is ON, loop tracks appear as dashed blue rings under the
+moveable sprites on the Game Designer world canvas. Animated object sprites
+preview in the canvas when Animate sprite frames is enabled.
+
+New notes only: development/notes/STAGE3.89-BREAKABLES-AND-VISUAL-PREVIEWS.md
+Qt6 unavailable in the test environment. Native physics and headless source
+integration tests passed; hardware and Qt GUI behaviour await local test.

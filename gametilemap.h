@@ -68,6 +68,8 @@ struct SidboxLoopTrack {
     int radius = 64;
     int entrySpeed100 = 400; // 4 px/frame
     int downhillBoost100 = 0; // Extra speed per downhill frame, 100 = +1 px/frame; zero = legacy physics
+    bool coastAfterExit = false; // After a completed lap, ignore ordinary drag until wall or left/right input
+    int coastFalloffPermille = 0; // Optional exit coast decay: 0..200 = 0.0..20.0% per 50Hz frame
 };
 
 // Long levels are supported without changing the SD .map header: widths and

@@ -208,8 +208,8 @@ public:
             "font-size:18px; color:%1; }")
             .arg(ideThemeColorName(m_theme.text)));
 
-        auto *spacer = new QWidget(panel);
-        spacer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+        // Use layout space instead of an opaque child widget. A QWidget
+        // spacer can cover Nagelgirl's portrait in the painted splash panel.
 
         auto *statusCaption = new QLabel(QCoreApplication::translate("ProjectLoadProgressDialog", "Current asset / task"), panel);
         statusCaption->setStyleSheet(QStringLiteral(
@@ -229,7 +229,7 @@ public:
         m_progressBar->setRange(0, 100);
         m_progressBar->setValue(0);
         m_progressBar->setTextVisible(true);
-        m_progressBar->setFormat(QStringLiteral("%p%%"));
+        m_progressBar->setFormat(QStringLiteral("%p%"));
         m_progressBar->setMinimumHeight(26);
         m_progressBar->setStyleSheet(QStringLiteral(
             "QProgressBar { background:%1; color:%2; border:2px solid %3; "
@@ -249,7 +249,7 @@ public:
 
         panelLayout->addWidget(m_titleLabel);
         panelLayout->addWidget(subtitleLabel);
-        panelLayout->addWidget(spacer);
+        panelLayout->addStretch(1);
         panelLayout->addWidget(statusCaption);
         panelLayout->addWidget(m_statusLabel);
         panelLayout->addWidget(m_progressBar);

@@ -118,6 +118,8 @@ typedef struct {
     uint16_t radius; /* world pixels, >=16 */
     uint16_t entry_speed100; /* min horizontal speed in 1/100 pixel/frame */
     uint16_t downhill_boost100; /* extra speed per DOWNHILL tick, 100 = 1 px/frame; 0 = old physics */
+    uint8_t coast_after_exit; /* preserve external momentum after a full lap until wall or direction input */
+    uint16_t coast_falloff_permille; /* 0..200 = 0.0..20.0% per physics frame while coasting */
 } game_tile_loop_t;
 
 typedef struct {
@@ -236,6 +238,8 @@ typedef struct {
     uint8_t loop_cooldown;
     int32_t loop_phase; /* signed [0..65536] revolution position */
     int32_t loop_speed100; /* signed tangential speed, 100 = 1 px/frame */
+    uint8_t loop_coast_active; /* loop exit immunity to ordinary drag; cleared by wall or left/right */
+    uint16_t loop_coast_falloff_permille; /* rate copied from last completed loop */
 } game_tile_player_t;
 
 uint8_t game_tile_player_start(game_tile_player_t *p,

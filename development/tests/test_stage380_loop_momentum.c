@@ -13,7 +13,7 @@
 #define MW 64
 #define MH 64
 static uint8_t cells[MW * MH];
-static game_tile_loop_t track = {100, 100, 40, 100, 0};
+static game_tile_loop_t track = {100, 100, 40, 100, 0, 0, 0};
 static game_tilemap_t map;
 static gfxbob_t bob;
 

@@ -13,7 +13,7 @@
 #define MW 64
 #define MH 64
 static uint8_t tiles[MW * MH];
-static game_tile_loop_t loop = {100,100,40,100,0};
+static game_tile_loop_t loop = {100,100,40,100,0,0, 0};
 static game_tilemap_t m;
 
 static void check(int sprite_w, int sprite_h, int bx, int by, int w, int h)

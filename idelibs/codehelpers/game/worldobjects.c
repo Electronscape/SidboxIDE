@@ -9,7 +9,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
                                 gfxbob_t *sprite, int32_t x, int32_t y,
                                 uint16_t width, uint16_t height)
 {
-    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_DEATH_ZONE ||
+    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_HAZARD ||
         !width || !height) return 0;
     object->sprite = sprite;
     object->animation = 0;
@@ -28,6 +28,29 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->touch_activation = 0; /* Existing springs always use landing behaviour. */
     object->spring_slide = 0; /* Existing springs keep constant-speed kickback. */
     object->spring_touching = 0;
+    object->break_hits_required = 1;
+    object->break_hits_done = 0;
+    object->break_touch_mode = 0;
+    object->break_bounce = 0;
+    object->break_strength = 11;
+    object->break_launch_x = 0;
+    object->break_touching = 0;
+    object->break_triggered = 0;
+    object->break_hit_triggered = 0;
+    object->break_bounce_triggered = 0;
+    object->draw_behind_tiles = 0;
+    object->hazard_damage = 1;
+    object->hazard_kick_x = 0;
+    object->hazard_kick_y = -11;
+    object->hazard_kick = 1;
+    object->hazard_hurt_animation = 1;
+    object->hazard_flash = 1;
+    object->hazard_flash_colour = 15;
+    object->hazard_flash_count = 4;
+    object->hazard_flash_frames = 3;
+    object->hazard_touching = 0;
+    object->hazard_hit_triggered = 0;
+    object->hazard_bounce_triggered = 0;
     object->active = 1;
     object->spring_triggered = 0;
     object->trigger_press = 0;
@@ -66,7 +89,17 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
     for (uint16_t i = 0; i < count; ++i) {
         game_world_object_t *object = &objects[i];
         object->spring_triggered = 0;
-        if (!object->active) { object->spring_touching = 0; continue; }
+        object->break_triggered = 0;
+        object->break_hit_triggered = 0;
+        object->break_bounce_triggered = 0;
+        object->hazard_hit_triggered = 0;
+        object->hazard_bounce_triggered = 0;
+        if (!object->active) {
+            object->spring_touching = 0;
+            object->break_touching = 0;
+            object->hazard_touching = 0;
+            continue;
+        }
         object->previous_x = object->x;
         object->previous_y = object->y;
         if (object->spline && object->sprite) {
@@ -93,6 +126,16 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
     p->before_feet = feet;
     p->before_vy100 = *p->vy100;
     p->before_jump_held = p->jump_held ? *p->jump_held : 0;
+    p->hurt_triggered = 0;
+    p->hurt_damage_this_frame = 0;
+    if (p->hurt_ticks_remaining) {
+        --p->hurt_ticks_remaining;
+        ++p->hurt_elapsed;
+    }
+    if (!p->hurt_ticks_remaining) {
+        p->hurt_anim_active = 0;
+        p->hurt_flash_active = 0;
+    }
 
     /* Legacy sideways spring movement for standalone platformers and for
        NON-SLIDY springs. Tilemap SLIDY springs with spring_force_vx100
@@ -144,7 +187,9 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
             const game_world_object_t *o = &objects[i];
             if (!o->active || o->type == GAME_OBJECT_TRIGGER ||
                 o->type == GAME_OBJECT_DEATH_ZONE ||
+                o->type == GAME_OBJECT_HAZARD ||
                 (o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
+                (o->type == GAME_OBJECT_BREAKABLE && o->break_touch_mode) ||
                 feet != o->previous_y ||
                 (int64_t)x + p->width <= o->previous_x ||
                 x >= (int64_t)o->previous_x + o->width) continue;
@@ -204,6 +249,16 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     const uint8_t jumping_now = (uint8_t)(p->jump_held && *p->jump_held &&
                                           !p->before_jump_held);
     const uint8_t rising = (uint8_t)(*p->vy100 < 0);
+    /* The tile player sets jump_held on a new press and changes vy100 to
+       negative ONLY when the jump is allowed. Remember that takeoff across
+       subsequent frames: the FIRE button will often be released by landing.
+       An ordinary fall, walking onto a platform, or a spring launch without
+       a new jump press must not masquerade as an intentional stomp. */
+    const uint8_t deliberate_takeoff = (uint8_t)(jumping_now && rising &&
+                                                   p->before_vy100 >= 0 &&
+                                                   !*p->on_ground);
+    if (*p->on_ground) p->break_stomp_armed = 0;
+    if (deliberate_takeoff) p->break_stomp_armed = 1;
     const int32_t x = *p->x100 / 100 + p->offset_x;
     const int32_t y = *p->y100 / 100 + p->offset_y;
     const int32_t feet = y + p->height;
@@ -215,10 +270,21 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         game_world_object_t *o = &objects[i];
         if (!o->active || !o->width || !o->height) {
             o->spring_touching = 0;
+            o->break_touching = 0;
             continue;
         }
+        if (o->type == GAME_OBJECT_BREAKABLE && o->break_touching) {
+            /* A hit only rearms once the player's bounds have separated. */
+            const uint8_t still_touching = (uint8_t)(
+                (int64_t)x <= (int64_t)o->x + o->width &&
+                (int64_t)x + p->width >= o->x &&
+                (int64_t)y <= (int64_t)o->y + o->height &&
+                (int64_t)y + p->height >= o->y);
+            if (!still_touching) o->break_touching = 0;
+        }
         // Switches are intangible: they never behave like a platform.
-        if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE) continue;
+        if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE ||
+            o->type == GAME_OBJECT_HAZARD) continue;
         // Door collision is resolved below, before the old one-way platform
         // rules. Only this new type uses blocking on all four sides.
         if (o->type == GAME_OBJECT_DOOR) {
@@ -243,7 +309,8 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             continue;
         }
 
-        if (o->type == GAME_OBJECT_SPRING && o->touch_activation) {
+        if ((o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
+            (o->type == GAME_OBJECT_BREAKABLE && o->break_touch_mode)) {
             /* Inclusive edges count as touch. This also detects a spring
                moving into a stationary player. The per-axis swept test uses
                relative player/object movement from the same frame. */
@@ -252,8 +319,9 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                 (int64_t)x + p->width >= o->x &&
                 (int64_t)y <= (int64_t)o->y + o->height &&
                 (int64_t)y + p->height >= o->y);
-            const uint8_t already_touching = o->spring_touching;
-            o->spring_touching = touching_now;
+            const uint8_t already_touching = o->type == GAME_OBJECT_BREAKABLE
+                ? o->break_touching : o->spring_touching;
+            if (o->type == GAME_OBJECT_SPRING) o->spring_touching = touching_now;
             if (already_touching) continue;
 
             /* Time of entry/exit in millionths of a game frame.
@@ -332,7 +400,43 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     if (!best) return;
     /* Side/underside contact must NOT teleport the player onto the top. */
     if (!best_touch) *p->y100 = (best->y - p->height - p->offset_y) * 100;
-    if (best->type == GAME_OBJECT_SPRING) {
+    if (best->type == GAME_OBJECT_BREAKABLE) {
+        /* Touch-mode counts a fresh contact from any direction. Stomp-mode
+           counts ONLY a landing following an actual player jump; gravity
+           alone is not an attack. A non-stomping landing is still solid. */
+        const uint8_t valid_hit = (uint8_t)(best_touch || p->break_stomp_armed);
+        if (valid_hit && !best->break_touching) {
+            best->break_touching = 1;
+            if (best->break_hits_done < 4) ++best->break_hits_done;
+            best->break_hit_triggered = 1; /* A valid hit, including the final break. */
+            if (best->break_hits_done >= (best->break_hits_required
+                    ? best->break_hits_required : 1)) {
+                best->break_triggered = 1;
+                best->active = 0; /* Draw and collisions disappear immediately. */
+            }
+        }
+        if (!best_touch && valid_hit && best->break_bounce && !best->break_touch_mode) {
+            best->break_bounce_triggered = 1; /* A real bounce, never mere contact. */
+            *p->vy100 = -(int32_t)(best->break_strength > 0 ? best->break_strength : 11) * 100;
+            *p->on_ground = 0;
+            if (p->coyote) *p->coyote = 0;
+            if (p->spring_force_vx100) {
+                int64_t vx = (int64_t)*p->spring_force_vx100 +
+                             (int64_t)best->break_launch_x * 100;
+                if (vx > 3200) vx = 3200;
+                if (vx < -3200) vx = -3200;
+                *p->spring_force_vx100 = (int32_t)vx;
+            } else {
+                p->spring_x100 = (int32_t)best->break_launch_x * 100;
+            }
+        } else if (!best_touch) {
+            /* Walking/falling onto a breakable is a normal landing. An
+               unbounced successful stomp consumes the intentional jump. */
+            *p->vy100 = 0;
+            *p->on_ground = !best->break_triggered;
+            p->break_stomp_armed = 0;
+        }
+    } else if (best->type == GAME_OBJECT_SPRING) {
         best->spring_triggered = 1; /* Exactly one sound event per launch. */
         int32_t launch = best->spring_strength > 0 ? best->spring_strength : 10;
         if (best->allow_jump_boost && p->jump_held && p->jump_speed &&
@@ -367,6 +471,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         if (!p->spring_sliding) p->spring_x100 = 0;
         *p->vy100 = 0;
         *p->on_ground = 1;
+        p->break_stomp_armed = 0;
         if (best->type == GAME_OBJECT_CONVEYOR)
             *p->x100 += (int32_t)best->conveyor_speed * 100;
     }
@@ -423,16 +528,124 @@ uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count
     return fired;
 }
 
-void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,
-                              int32_t cx, int32_t cy)
+/* Relative swept axis-aligned rectangle check. Both player AND hazard can
+   move during the frame. Inclusive edges make thin spikes reliable at speed. */
+static uint8_t hazard_swept_contact(const game_world_player_t *p,
+                                    const game_world_object_t *o,
+                                    int32_t x, int32_t y)
+{
+    const int64_t start[2] = {(int64_t)p->before_x - o->previous_x,
+                              (int64_t)p->before_feet - p->height - o->previous_y};
+    const int64_t end[2] = {(int64_t)x - o->x, (int64_t)y - o->y};
+    const int64_t low[2] = {-(int64_t)p->width, -(int64_t)p->height};
+    const int64_t high[2] = {o->width, o->height};
+    const int64_t scale = 1000000;
+    int64_t entry = 0, exit = scale;
+    for (uint8_t axis = 0; axis < 2; ++axis) {
+        const int64_t delta = end[axis] - start[axis];
+        if (!delta) {
+            if (start[axis] < low[axis] || start[axis] > high[axis]) return 0;
+            continue;
+        }
+        const int64_t distance = delta < 0 ? -delta : delta;
+        const int64_t enter_dist = delta > 0 ? low[axis] - start[axis]
+                                                   : start[axis] - high[axis];
+        const int64_t exit_dist = delta > 0 ? high[axis] - start[axis]
+                                                  : start[axis] - low[axis];
+        const int64_t a = enter_dist <= 0 ? 0 :
+                          (enter_dist * scale + distance - 1) / distance;
+        const int64_t b = exit_dist < 0 ? -1 : exit_dist * scale / distance;
+        if (a > entry) entry = a;
+        if (b < exit) exit = b;
+        if (entry > exit) return 0;
+    }
+    return 1;
+}
+
+void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
+                                game_world_player_t *p)
+{
+    if (!objects || !p || !p->x100 || !p->y100 || !p->vy100 ||
+        !p->on_ground || !p->width || !p->height) return;
+    const int32_t x = *p->x100 / 100 + p->offset_x;
+    const int32_t y = *p->y100 / 100 + p->offset_y;
+    for (uint16_t i = 0; i < count; ++i) {
+        game_world_object_t *o = &objects[i];
+        if (o->type != GAME_OBJECT_HAZARD) continue;
+        if (!o->active || !o->width || !o->height) {
+            o->hazard_touching = 0;
+            continue;
+        }
+        const uint8_t touching = (uint8_t)(
+            (int64_t)x <= (int64_t)o->x + o->width &&
+            (int64_t)x + p->width >= o->x &&
+            (int64_t)y <= (int64_t)o->y + o->height &&
+            (int64_t)y + p->height >= o->y);
+        if (!touching && o->hazard_touching) o->hazard_touching = 0;
+        if (o->hazard_touching || p->hurt_ticks_remaining ||
+            !hazard_swept_contact(p, o, x, y)) continue;
+        o->hazard_touching = 1;
+        o->hazard_hit_triggered = 1;
+        p->hurt_triggered = 1;
+        p->hurt_damage_this_frame = o->hazard_damage;
+        p->hurt_anim_active = o->hazard_hurt_animation;
+        p->hurt_flash_active = o->hazard_flash;
+        p->hurt_flash_colour = o->hazard_flash_colour;
+        p->hurt_flash_frames = o->hazard_flash_frames ? o->hazard_flash_frames : 1;
+        p->hurt_elapsed = 0;
+        /* Shared grace period: protects against a second overlapping spike
+           damaging every game frame, even if flashing was disabled. */
+        const uint32_t duration = o->hazard_flash && o->hazard_flash_count
+            ? (uint32_t)o->hazard_flash_count * p->hurt_flash_frames * 2u : 20u;
+        p->hurt_ticks_remaining = (uint16_t)(duration > 65535u ? 65535u : duration);
+        if (o->hazard_kick) {
+            o->hazard_bounce_triggered = 1;
+            *p->vy100 = (int32_t)o->hazard_kick_y * 100;
+            *p->on_ground = 0;
+            if (p->coyote) *p->coyote = 0;
+            if (p->spring_force_vx100) {
+                int64_t vx = (int64_t)*p->spring_force_vx100 +
+                             (int64_t)o->hazard_kick_x * 100;
+                if (vx > 3200) vx = 3200;
+                if (vx < -3200) vx = -3200;
+                *p->spring_force_vx100 = (int32_t)vx;
+            } else {
+                p->spring_x100 = (int32_t)o->hazard_kick_x * 100;
+            }
+        }
+        break; /* One damage event maximum per frame. */
+    }
+}
+
+uint8_t game_world_player_hurt_flash(const game_world_player_t *p,
+                                    uint8_t *palette_index)
+{
+    if (!p || !p->hurt_ticks_remaining || !p->hurt_flash_active ||
+        !p->hurt_flash_frames) return 0;
+    if (palette_index) *palette_index = p->hurt_flash_colour;
+    return (uint8_t)((p->hurt_elapsed / p->hurt_flash_frames) % 2u == 0u);
+}
+
+void game_world_objects_draw_layer(const game_world_object_t *objects,
+                                   uint16_t count, int32_t cx, int32_t cy,
+                                   uint8_t behind)
 {
     if (!objects) return;
     for (uint16_t i = 0; i < count; ++i) {
         const game_world_object_t *object = &objects[i];
-        if (!object->active || !object->sprite) continue;
+        if (!object->active || !object->sprite ||
+            !!object->draw_behind_tiles != !!behind) continue;
         gfxbob_t visible = *object->sprite;
         visible.drawx = clamp16((int64_t)object->x - cx);
         visible.drawy = clamp16((int64_t)object->y - cy);
         gfx_drawbob(&visible);
     }
+}
+
+/* Legacy API draws FRONT objects only; a newly generated game calls
+   draw_layer(behind=1) before the tilemap for background objects. */
+void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,
+                              int32_t cx, int32_t cy)
+{
+    game_world_objects_draw_layer(objects, count, cx, cy, 0);
 }

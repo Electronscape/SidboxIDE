@@ -25,6 +25,7 @@ typedef struct {
     uint16_t width, height;         /* Pickup hitbox (not rendered). */
     uint16_t kind, value;           /* Game-specific kind and amount. */
     uint8_t active;                 /* 0 = already collected / hidden. */
+    uint8_t draw_behind_tiles; /* Draw before tilemap rather than after. */
     uint16_t respawn_frames;        /* 0 = never respawn; delay after pickup. */
     uint16_t respawn_left;          /* Internal countdown, in update frames. */
 } game_collectable_t;
@@ -53,6 +54,8 @@ uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
 
 /* Draw to the CURRENT foreground buffer, using temporary sprite copies.
    This NEVER alters the real sprite's world position or animation frame. */
+void game_collectables_draw_layer(const game_collectable_t *items, uint16_t count,
+                                   int32_t camera_x, int32_t camera_y, uint8_t behind);
 void game_collectables_draw(const game_collectable_t *items, uint16_t count,
                              int32_t camera_x, int32_t camera_y);
 

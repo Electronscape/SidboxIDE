@@ -7,6 +7,7 @@
 #include <QString>
 #include <QHash>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QPoint>
 #include <QPointF>
 #include <QStringList>
@@ -30,6 +31,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QTimer;
 
 /*
  * Stage 53: V1 game design document with host-side PPB import/preview and
@@ -92,7 +94,22 @@ private:
         bool springJumpBoost = false; // Opt-in only, including older designs without this field.
         bool springTouch = false; // OFF = land on top; ON = touch from any direction.
         bool springSlide = false; // OFF = constant sideways push; ON = momentum with friction.
+        bool breakTouch = false; // false = stomp from above; true = touch/leave/touch again
+        bool breakBounce = false; // launch after each qualifying stomp
+        int breakHits = 1; // 1..4, stored per placed instance
+        int breakStrength = 11; // upward px/frame for bounce
+        int breakLaunchX = 0; // -left, +right px/frame
         bool objectInitiallyActive = true; // Default for all old designs.
+        bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
+        int hazardDamage = 1; // Per contact; game owns its health/score rules.
+        int hazardKickX = 0, hazardKickY = -11; // Signed px/frame; Y negative is UP.
+        bool hazardKick = true;
+        bool hazardHurtAnimation = true;
+        bool hazardFlash = true;
+        int hazardFlashColour = 15; // Foreground palette index, 0..255.
+        int hazardFlashCount = 4; // Number of ON flashes.
+        int hazardFlashFrames = 3; // ON and OFF frames per flash.
+
         QString targetObjectId; // Stable resource ID; never a tree index or name.
         QString targetAction = QStringLiteral("none"); // enable, disable, toggle.
         bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
@@ -103,6 +120,9 @@ private:
         // Empty ID = no sound. They are NEVER hard-coded filesystem paths.
         QString sfxPickup, sfxRespawn, sfxStart, sfxMove, sfxStop;
         QString sfxReverse, sfxSpring, sfxAmbient;
+        // Independent optional sounds for each placed Breakable.
+        QString sfxBreakHit, sfxBreakBounce, sfxBreakFinish;
+        QString sfxHazardHit, sfxHazardBounce, sfxHazardAmbient;
         int respawnFrames = 0;       // 0 = collected permanently.
         int audioRadius = 0;         // 0 = fixed volume/pan; otherwise attenuation in pixels.
         int audioFadeFrames = 8;     // Fade of continuously moving/ambient sounds.
@@ -200,6 +220,9 @@ private:
     QGraphicsRectItem *m_cameraFrame = nullptr;
     QGraphicsRectItem *m_worldFrame = nullptr;
     QGraphicsItem *m_tilemapOverlayItem = nullptr;
+    QVector<QGraphicsItem *> m_loopOverlayItems; // Visual-only, no collisions.
+    QTimer *m_objectPreviewTimer = nullptr;
+    QElapsedTimer m_objectPreviewClock;
     QGraphicsPathItem *m_splineCurveItem = nullptr;
     QGraphicsRectItem *m_objectHitbox = nullptr;
     QVector<QGraphicsItem *> m_splineHandleItems;

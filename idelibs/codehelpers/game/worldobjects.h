@@ -16,6 +16,8 @@
 #define GAME_OBJECT_TRIGGER   4u
 #define GAME_OBJECT_DOOR      5u
 #define GAME_OBJECT_DEATH_ZONE 6u
+#define GAME_OBJECT_BREAKABLE  7u
+#define GAME_OBJECT_HAZARD     8u /* damaging, non-solid, movable spikes etc. */
 
 typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
@@ -31,7 +33,24 @@ typedef struct {
     uint8_t touch_activation;  /* 0 = top landing; 1 = any-side contact. */
     uint8_t spring_slide;      /* 0 = constant X push; 1 = friction/inertia X kickback. */
     uint8_t spring_touching;   /* Internal: contact latch, rearmed when separated. */
+    uint8_t break_hits_required;  /* 1..4; each instance owns its own count. */
+    uint8_t break_hits_done;
+    uint8_t break_touch_mode;    /* 0=stomp, 1=touch from any side. */
+    uint8_t break_bounce;        /* Stomp: launch again after each contact. */
+    int16_t break_strength;      /* Upward bounce, pixels/frame. */
+    int16_t break_launch_x;      /* Optional left/right bounce, pixels/frame. */
+    uint8_t break_touching;      /* Edge latch; leave before hitting again. */
+    uint8_t break_triggered;     /* One-frame break event on final hit. */
+    uint8_t break_hit_triggered; /* One-frame event for each accepted hit, final included. */
+    uint8_t break_bounce_triggered; /* One-frame event for each actual bounce. */
     uint8_t type, active;
+    uint8_t draw_behind_tiles; /* 1 = draw before tilemap */
+    uint16_t hazard_damage;
+    int16_t hazard_kick_x, hazard_kick_y; /* Signed px/frame; Y up is negative. */
+    uint8_t hazard_kick;
+    uint8_t hazard_hurt_animation, hazard_flash;
+    uint8_t hazard_flash_colour, hazard_flash_count, hazard_flash_frames;
+    uint8_t hazard_touching, hazard_hit_triggered, hazard_bounce_triggered;
     uint8_t spring_triggered;      /* Set on landing/launch; cleared in update. */
     uint8_t trigger_press;         /* 1 = FIRE2, 0 = enter trigger hitbox. */
     uint8_t trigger_one_shot;      /* One-use triggers remove themselves. */
@@ -59,6 +78,20 @@ typedef struct {
     uint8_t *coyote;           /* Tilemap only; NULL for basic platformer. */
     const int16_t *jump_speed;
     uint8_t before_jump_held; /* Internal: input state before physics. */
+    /* Stomp-mode breakables require an actual player-initiated jump, not
+       simply stepping off a ledge or walking onto an object's top.
+       Carried until landing; an optional breakable bounce can keep it armed. */
+    uint8_t break_stomp_armed;
+    /* Player damage events: bind once, read after gameworlditems_after().
+       Game owns actual health/lives. Event fires ONCE per accepted impact. */
+    uint16_t hurt_damage_this_frame;
+    uint8_t hurt_triggered;
+    uint8_t hurt_anim_active;
+    uint8_t hurt_flash_active;
+    uint8_t hurt_flash_colour;
+    uint8_t hurt_flash_frames;
+    uint16_t hurt_ticks_remaining;
+    uint16_t hurt_elapsed;
     int32_t spring_x100; /* Internal horizontal spring speed (1/100 px/frame).
                            Normal mode clears on landing; slide mode eases off. */
     int32_t spring_remainder_x100; /* Internal subpixel accumulator for slide. */
@@ -106,6 +139,15 @@ uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
 uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,
                                     int32_t x, int32_t y, uint16_t w, uint16_t h,
                                     uint8_t pressed);
+/* Hazard contact is resolved separately AFTER ordinary platform collisions.
+   Uses swept player vs moving object rectangles and an invulnerability timer. */
+void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
+                                game_world_player_t *player);
+/* Non-zero only on the ON portion of a flashing hurt window. */
+uint8_t game_world_player_hurt_flash(const game_world_player_t *player,
+                                    uint8_t *palette_index);
+void game_world_objects_draw_layer(const game_world_object_t *objects, uint16_t count,
+                                   int32_t camera_x, int32_t camera_y, uint8_t behind);
 void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,
                               int32_t camera_x, int32_t camera_y);
 

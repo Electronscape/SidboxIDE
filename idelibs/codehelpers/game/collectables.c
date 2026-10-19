@@ -21,6 +21,7 @@ uint8_t game_collectable_start(game_collectable_t *item, gfxbob_t *sprite,
     item->kind = kind;
     item->value = value;
     item->active = 1;
+    item->draw_behind_tiles = 0;
     item->respawn_frames = 0;
     item->respawn_left = 0;
     return 1;
@@ -88,16 +89,23 @@ uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
     return taken;
 }
 
-void game_collectables_draw(const game_collectable_t *items, uint16_t count,
-                             int32_t cx, int32_t cy)
+void game_collectables_draw_layer(const game_collectable_t *items, uint16_t count,
+                                   int32_t cx, int32_t cy, uint8_t behind)
 {
     if (!items) return;
     for (uint16_t i = 0; i < count; ++i) {
         const game_collectable_t *item = &items[i];
-        if (!item->active || !item->sprite) continue;
+        if (!item->active || !item->sprite ||
+            !!item->draw_behind_tiles != !!behind) continue;
         gfxbob_t visible = *item->sprite;
         visible.drawx = clamp16((int64_t)item->x - cx);
         visible.drawy = clamp16((int64_t)item->y - cy);
         gfx_drawbob(&visible);
     }
+}
+
+void game_collectables_draw(const game_collectable_t *items, uint16_t count,
+                             int32_t cx, int32_t cy)
+{
+    game_collectables_draw_layer(items, count, cx, cy, 0);
 }

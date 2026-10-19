@@ -315,3 +315,67 @@ does NOT kill the player, stop movement or reduce health on contact. That
 policy belongs to the game. INSIDE may fire 50 times per second at FPS_50;
 use your own timer for gradual health loss. See gametilemap.txt for a
 callback example, explicit death and respawn functions.
+
+
+BREAKABLE GAME OBJECTS (STAGE 3.90)
+----------------------------------
+Choose Game Resources -> a placed Sprite -> Configure Game Object ->
+Behaviour: Breakable Object. Every placed object keeps its own 1..4 hit count.
+
+* Break on touch = OFF: only a landing after an actual player-initiated JUMP
+  counts as a stomp. Simply walking or falling onto it does NOT damage it or
+  trigger its bounce; the object remains a solid one-way standing platform.
+  A stomp counts only once until you leave it. The jump can be released before
+  landing; when Bounce is enabled, bouncing back down can count another stomp.
+* Break on touch = ON: entering the hitbox from any direction counts one hit.
+  The player must leave the hitbox before returning for the next hit. The
+  object is a touch sensor, not a solid standing surface in this mode.
+* Bounce on each stomp = ON: stomp mode launches upward (default) and optionally
+  left or right on every hit, including the last. Adjust upward and sideways
+  launch strengths independently. With Bounce OFF the player must jump off
+  and land again for the next stomp; merely standing does NOT add more hits.
+* The sprite and its collision disappear when the hit count is reached. The
+  brief `break_triggered` flag is set during the last contact, if custom game
+  code wants a shatter effect/sound. The object does not respawn on its own.
+
+OPTIONAL BREAKABLE SOUNDS (STAGE 3.91)
+-------------------------------------
+Configure Game Object -> AUDIO: choose Hit, Bounce, and Shatter from existing
+Game Resources -> Sounds. All three default to None for older game designs.
+* Hit: once per real damaging contact, INCLUDING the final hit.
+* Bounce: once for an actual bounce launch (stomp mode, bounce enabled).
+* Shatter: once on the final hit when the object disappears.
+A final bouncing stomp can trigger all three if configured. To hear effects
+simultaneously, assign different SIDBOX sound channels in the Sounds resources:
+the later play on a shared channel replaces/interferes with the earlier one.
+Audible radius and source volume/pan use the same system as normal springs.
+
+For custom C, call game_world_objects_update/before/after ONCE each frame and
+inspect the one-frame flags break_hit_triggered, break_bounce_triggered,
+and break_triggered after game_world_objects_after(). The update() call resets
+these flags; reading only after the next update() would miss the event.
+
+For hand-written games (rather than generated Game Designer code):
+
+    game_world_object_start(&my_crate, GAME_OBJECT_BREAKABLE, &crate_bob,
+                            crate_x, crate_y, 32, 16);
+    my_crate.break_hits_required = 3;
+    my_crate.break_touch_mode = 0; /* 0=stomp, 1=touch */
+    my_crate.break_bounce = 1;
+    my_crate.break_strength = 11;
+    my_crate.break_launch_x = 0; /* +right, -left, zero straight up */
+
+Call game_world_objects_update/before/after/draw as usual. For stomp-mode
+breakables, connect game_world_player_t.jump_held to the LIVE player's jump
+button state; otherwise the helper cannot distinguish deliberate jumps from
+walking/falling. The generated advanced platformer already connects it.
+For directional impulse, connect game_world_player_t.spring_force_vx100 to
+the live tilemap player's force_vx100 (also connected by generated code).
+
+IDE WORLD CANVAS VISUAL GUIDES (STAGE 3.89)
+-------------------------------------------
+When Show Tilemap is enabled in Game Designer, loop circles are visible
+on the world canvas (blue dashed rings, entry point marked yellow). The
+rings are noninteractive guides; only the Tilemap Editor edits loop geometry.
+Game Object sprite animations are also previewed on the world canvas while
+the designer is visible. This has no impact on runtime animation speed.

@@ -180,7 +180,7 @@ bool SidboxGameDesigner::loadDesign()
         if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
                 QStringLiteral("conveyor"), QStringLiteral("spring"),
                 QStringLiteral("trigger"), QStringLiteral("door"),
-                QStringLiteral("deathzone")}.contains(type)
+                QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 4);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -194,7 +194,21 @@ bool SidboxGameDesigner::loadDesign()
         r.springJumpBoost = object.value(QStringLiteral("springJumpBoost")).toBool(false);
         r.springTouch = object.value(QStringLiteral("springTouch")).toBool(false);
         r.springSlide = object.value(QStringLiteral("springSlide")).toBool(false);
+        r.breakTouch = object.value(QStringLiteral("breakTouch")).toBool(false);
+        r.breakBounce = object.value(QStringLiteral("breakBounce")).toBool(false);
+        r.breakHits = qBound(1, object.value(QStringLiteral("breakHits")).toInt(1), 4);
+        r.breakStrength = qBound(1, object.value(QStringLiteral("breakStrength")).toInt(11), 100);
+        r.breakLaunchX = qBound(-40, object.value(QStringLiteral("breakLaunchX")).toInt(0), 40);
         r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
+        r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
+        r.hazardKickX = qBound(-40, object.value(QStringLiteral("hazardKickX")).toInt(0), 40);
+        r.hazardKickY = qBound(-40, object.value(QStringLiteral("hazardKickY")).toInt(-11), 40);
+        r.hazardKick = object.value(QStringLiteral("hazardKick")).toBool(true);
+        r.hazardHurtAnimation = object.value(QStringLiteral("hazardHurtAnimation")).toBool(true);
+        r.hazardFlash = object.value(QStringLiteral("hazardFlash")).toBool(true);
+        r.hazardFlashColour = qBound(0, object.value(QStringLiteral("hazardFlashColour")).toInt(15), 255);
+        r.hazardFlashCount = qBound(1, object.value(QStringLiteral("hazardFlashCount")).toInt(4), 32);
+        r.hazardFlashFrames = qBound(1, object.value(QStringLiteral("hazardFlashFrames")).toInt(3), 255);
         r.targetObjectId = object.value(QStringLiteral("targetObjectId")).toString();
         r.targetAction = object.value(QStringLiteral("targetAction")).toString(QStringLiteral("none"));
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
@@ -213,6 +227,12 @@ bool SidboxGameDesigner::loadDesign()
         r.sfxStop = object.value(QStringLiteral("sfxStop")).toString();
         r.sfxReverse = object.value(QStringLiteral("sfxReverse")).toString();
         r.sfxSpring = object.value(QStringLiteral("sfxSpring")).toString();
+        r.sfxBreakHit = object.value(QStringLiteral("sfxBreakHit")).toString();
+        r.sfxBreakBounce = object.value(QStringLiteral("sfxBreakBounce")).toString();
+        r.sfxBreakFinish = object.value(QStringLiteral("sfxBreakFinish")).toString();
+        r.sfxHazardHit = object.value(QStringLiteral("sfxHazardHit")).toString();
+        r.sfxHazardBounce = object.value(QStringLiteral("sfxHazardBounce")).toString();
+        r.sfxHazardAmbient = object.value(QStringLiteral("sfxHazardAmbient")).toString();
         r.sfxAmbient = object.value(QStringLiteral("sfxAmbient")).toString();
         r.respawnFrames = qBound(0, object.value(QStringLiteral("respawnFrames")).toInt(0), 65535);
         r.audioRadius = qBound(0, object.value(QStringLiteral("audioRadius")).toInt(0), 32767);
@@ -225,6 +245,7 @@ bool SidboxGameDesigner::loadDesign()
         r.animMode = object.value(QStringLiteral("animMode")).toString(QStringLiteral("loop"));
         if (!QStringList{QStringLiteral("loop"), QStringLiteral("once"),
                 QStringLiteral("pingpong")}.contains(r.animMode)) r.animMode = QStringLiteral("loop");
+        r.drawBehindTiles = a.value(QStringLiteral("drawBehindTiles")).toBool(false);
         r.backgroundMode = a.value(QStringLiteral("backgroundMode")).toString(QStringLiteral("sprite"));
         if (r.kind != QStringLiteral("background") ||
             !QStringList{QStringLiteral("sprite"), QStringLiteral("direct_ready"),
@@ -344,6 +365,8 @@ bool SidboxGameDesigner::saveDesign()
         if (r.kind == QStringLiteral("sprite") && !r.animationFile.isEmpty())
             a.insert(QStringLiteral("animationFile"), r.animationFile);
         a.insert(QStringLiteral("locked"), r.locked);
+        if (r.kind == QStringLiteral("sprite"))
+            a.insert(QStringLiteral("drawBehindTiles"), r.drawBehindTiles);
         if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
             QJsonObject object;
             object.insert(QStringLiteral("type"), r.objectType);
@@ -357,7 +380,21 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("springJumpBoost"), r.springJumpBoost);
             object.insert(QStringLiteral("springTouch"), r.springTouch);
             object.insert(QStringLiteral("springSlide"), r.springSlide);
+            object.insert(QStringLiteral("breakTouch"), r.breakTouch);
+            object.insert(QStringLiteral("breakBounce"), r.breakBounce);
+            object.insert(QStringLiteral("breakHits"), r.breakHits);
+            object.insert(QStringLiteral("breakStrength"), r.breakStrength);
+            object.insert(QStringLiteral("breakLaunchX"), r.breakLaunchX);
             object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
+            object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
+            object.insert(QStringLiteral("hazardKickX"), r.hazardKickX);
+            object.insert(QStringLiteral("hazardKickY"), r.hazardKickY);
+            object.insert(QStringLiteral("hazardKick"), r.hazardKick);
+            object.insert(QStringLiteral("hazardHurtAnimation"), r.hazardHurtAnimation);
+            object.insert(QStringLiteral("hazardFlash"), r.hazardFlash);
+            object.insert(QStringLiteral("hazardFlashColour"), r.hazardFlashColour);
+            object.insert(QStringLiteral("hazardFlashCount"), r.hazardFlashCount);
+            object.insert(QStringLiteral("hazardFlashFrames"), r.hazardFlashFrames);
             object.insert(QStringLiteral("targetObjectId"), r.targetObjectId);
             object.insert(QStringLiteral("targetAction"), r.targetAction);
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
@@ -371,6 +408,12 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("sfxStop"), r.sfxStop);
             object.insert(QStringLiteral("sfxReverse"), r.sfxReverse);
             object.insert(QStringLiteral("sfxSpring"), r.sfxSpring);
+            object.insert(QStringLiteral("sfxBreakHit"), r.sfxBreakHit);
+            object.insert(QStringLiteral("sfxBreakBounce"), r.sfxBreakBounce);
+            object.insert(QStringLiteral("sfxBreakFinish"), r.sfxBreakFinish);
+            object.insert(QStringLiteral("sfxHazardHit"), r.sfxHazardHit);
+            object.insert(QStringLiteral("sfxHazardBounce"), r.sfxHazardBounce);
+            object.insert(QStringLiteral("sfxHazardAmbient"), r.sfxHazardAmbient);
             object.insert(QStringLiteral("sfxAmbient"), r.sfxAmbient);
             object.insert(QStringLiteral("respawnFrames"), r.respawnFrames);
             object.insert(QStringLiteral("audioRadius"), r.audioRadius);

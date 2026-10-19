@@ -1173,6 +1173,8 @@ void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y)
     p->force_vx100 = 0; p->force_remainder100 = 0;
     p->loop_index = 0; p->loop_phase = 0; p->loop_speed100 = 0;
     p->loop_cooldown = 0;
+    p->loop_coast_active = 0;
+    p->loop_coast_falloff_permille = 0;
     const int32_t bx = (int32_t)x + p->hitbox_x;
     const int32_t feet = (int32_t)y + p->hitbox_y +
         (p->hitbox_h ? p->hitbox_h : p->sprite->height);
@@ -1296,6 +1298,8 @@ static uint8_t cg_loop_try_attach(game_tile_player_t *p, int32_t w, int32_t h)
             cg_loop_abs(feet - (loop->center_y + loop->radius)) > 5) continue;
         p->loop_index = (uint8_t)(i + 1);
         p->loop_phase = 0; p->loop_speed100 = vx;
+        p->loop_coast_active = 0; /* A new loop supersedes any earlier coast. */
+        p->loop_coast_falloff_permille = 0;
         p->slide_velocity100 = 0; p->slide_remainder100 = 0;
         p->force_vx100 = 0; p->force_remainder100 = 0;
         p->vy100 = 0; p->external_ascent = 0;
@@ -1311,6 +1315,8 @@ static void cg_loop_detach(game_tile_player_t *p, int32_t s, int32_t c)
     const int32_t vx = p->loop_speed100 * c / 16384;
     const int32_t vy = -p->loop_speed100 * s / 16384;
     p->loop_index = 0; p->loop_cooldown = 8;
+    p->loop_coast_active = 0; /* Falling off a loop is not a completed lap. */
+    p->loop_coast_falloff_permille = 0;
     p->on_ground = 0; p->coyote = 0;
     p->vy100 = vy; p->physics_vy100 = vy;
     p->force_vx100 = vx;
@@ -1372,6 +1378,10 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
         p->x100 = (loop->center_x - w/2 - p->hitbox_x) * 100;
         p->y100 = (loop->center_y + loop->radius - h - p->hitbox_y) * 100;
         cg_loop_detach(p, 0, 16384);
+        p->loop_coast_active = loop->coast_after_exit != 0;
+        p->loop_coast_falloff_permille = p->loop_coast_active
+            ? (loop->coast_falloff_permille > 200 ? 200 : loop->coast_falloff_permille)
+            : 0;
         if (!cg_player_contacts(p, p->x100/100 + p->hitbox_x,
                                p->y100/100 + p->hitbox_y, 0)) return 2;
         return 1;
@@ -1429,6 +1439,12 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
         if (p->vy100 >= 0)
             p->external_ascent = 0;
 
+        /* First deliberate directional input hands control back to the
+         * selected physics preset. Jump alone does NOT cancel coasting. */
+        if (buttons & (BTN_LEFT | BTN_RIGHT)) {
+            p->loop_coast_active = 0;
+            p->loop_coast_falloff_permille = 0;
+        }
         const uint8_t jumping = !!(buttons & (BTN_UP | BTN_FIRE));
         if (jumping && !p->jump_held && (p->on_ground || p->coyote)) {
             p->vy100 = -(int32_t)p->jump_speed * 100;
@@ -1471,7 +1487,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 if (!flat_support) {
                     passive_surface = 1;
                     damping = surface_damping;
-                    if (damping == 100) {
+                    if (damping == 100 && !p->loop_coast_active) {
                         /* Sticky stops passive creeping, but permits walking. */
                         p->force_vx100 = 0;
                         p->force_remainder100 = 0;
@@ -1537,6 +1553,12 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
             horizontalDirection = (steps > 0) - (steps < 0);
         }
         const uint8_t walkingOnGround = p->on_ground && p->vy100 >= 0;
+        /* At high post-loop speed a horizontal step can outrun gravity.
+         * Ordinary walking deliberately hugs 2px downhill steps, but a
+         * friction-free loop exit should become airborne as soon as the
+         * supporting surface drops away.  Once launched, do not snap back
+         * onto a later downhill tile during this same horizontal sweep. */
+        uint8_t coastAirborne = 0;
         uint8_t followedFloor = 0;
         uint8_t horizontalBlocked = 0;
         uint8_t crossed_hazard = special_type(m, x, y, w, h) == GAME_TILE_HAZARD;
@@ -1549,7 +1571,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
             const int32_t nextX = x + horizontalDirection;
             int32_t nextPlayerY = y;
             int32_t surface = 0x7FFFFFFF;
-            if (walkingOnGround) {
+            if (walkingOnGround && !coastAirborne) {
                 /* Allow a grounded player to climb genuinely steep curved
                  * ramps a pixel at a time. Solid ledges are still limited
                  * to 2px by ground_near_feet(), and this never attaches a
@@ -1557,14 +1579,25 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 const int32_t climb = h < (int32_t)m->tile_size * 2
                     ? (h > 4 ? h : 4) : (int32_t)m->tile_size * 2;
                 surface = ground_near_feet(m, nextX, w, y + h, climb, 2);
-                if (surface != 0x7FFFFFFF)
+                if (p->loop_coast_active &&
+                    (surface == 0x7FFFFFFF || surface > y + h)) {
+                    /* A lip, cliff, or descending hill must NOT pull a fast
+                     * coasting player downward.  Keep the last supported Y
+                     * and let the vertical gravity/collision pass below
+                     * determine the actual fall trajectory. */
+                    coastAirborne = 1;
+                    surface = 0x7FFFFFFF;
+                } else if (surface != 0x7FFFFFFF) {
                     nextPlayerY = surface - h;
+                }
             }
             if (touches_solid(m, nextX, nextPlayerY, w, h) ||
                 touches_slope_body(m, nextX, nextPlayerY, w, h)) {
                 p->slide_velocity100 = 0; p->slide_remainder100 = 0;
                 p->force_vx100 = 0; p->force_remainder100 = 0;
                 horizontalBlocked = 1;
+                p->loop_coast_active = 0; /* Wall collision ends no-friction mode. */
+                p->loop_coast_falloff_permille = 0;
                 break;
             }
             x = nextX;
@@ -1585,7 +1618,7 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 (int16_t)(deltaX * (int32_t)p->walk_speed * 100);
             p->slide_remainder100 = 0;
         }
-        if (p->force_vx100 && damping) {
+        if (p->force_vx100 && damping && !p->loop_coast_active) {
             if (passive_surface && damping < 100) {
                 /* At 2% damping, a 1/100px impulse must NOT disappear
                  * every tick. Round the drag instead of truncating it,
@@ -1599,6 +1632,16 @@ void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frame
                 if (p->force_vx100 > -2 && p->force_vx100 < 2)
                     p->force_vx100 = 0;
             }
+        }
+        /* Loop-only coast falloff, independent from surface/preset friction.
+         * Applied AFTER this frame's horizontal movement, including while
+         * airborne. Integer truncation moves small positive/negative values
+         * toward zero, preventing an endless fractional drift. At 0 this
+         * branch is skipped: existing free-coasting is exactly preserved. */
+        if (p->loop_coast_active && p->loop_coast_falloff_permille && p->force_vx100) {
+            const uint16_t falloff = p->loop_coast_falloff_permille > 200
+                ? 200 : p->loop_coast_falloff_permille;
+            p->force_vx100 = (int32_t)((int64_t)p->force_vx100 * (1000 - falloff) / 1000);
         }
 
         if (p->physics_mode == GAME_PHYSICS_JETPACK &&

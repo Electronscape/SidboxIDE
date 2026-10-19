@@ -1695,7 +1695,9 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         const auto &l=a.loops.at(i), &r=b.loops.at(i);
         if (l.centerX!=r.centerX || l.centerY!=r.centerY ||
             l.radius!=r.radius || l.entrySpeed100!=r.entrySpeed100 ||
-            l.downhillBoost100!=r.downhillBoost100) return false;
+            l.downhillBoost100!=r.downhillBoost100 ||
+            l.coastAfterExit!=r.coastAfterExit ||
+            l.coastFalloffPermille!=r.coastFalloffPermille) return false;
     }
     for (int i = 0; i < a.collisionPlacements.size(); ++i) {
         const auto &left = a.collisionPlacements.at(i);
@@ -2225,6 +2227,11 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     };
     // Stamp sidebar: upper bank of thumbnails + lower editable stamp grid.
     m_stampTabs = new QTabWidget(m_splitter);
+    // The right-hand pane is resizable, even when a tab has long help text.
+    // QSizePolicy::Ignored prevents the active tab's preferred width from
+    // forcing the centre canvas into an unnecessarily narrow column.
+    m_stampTabs->setMinimumWidth(250);
+    m_stampTabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     auto *stampSidebar = new QSplitter(Qt::Vertical, m_stampTabs);
     stampSidebar->setChildrenCollapsible(false);
     stampSidebar->setMinimumWidth(250);
@@ -2614,8 +2621,11 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     // entrance/exit; the blue circle is NOT an ordinary solid slope. The
     // engine switches only this player to guided track movement at speed.
     auto *loopPane = new QWidget(m_stampTabs);
+    loopPane->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto *loopLayout = new QVBoxLayout(loopPane);
-    loopLayout->addWidget(new QLabel(tr("Loop Tracks — optional Sonic-style guided circular motion"), loopPane));
+    loopLayout->setContentsMargins(6, 6, 6, 6);
+    loopLayout->setSpacing(6);
+    // The tab already says Loop Tracks; no extra title or third-party name.
     auto *loopList = new QListWidget(loopPane);
     loopLayout->addWidget(loopList, 1);
     auto *loopActions = new QHBoxLayout;
@@ -2624,6 +2634,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     loopActions->addWidget(loopAdd); loopActions->addWidget(loopRemove);
     loopLayout->addLayout(loopActions);
     auto *loopForm = new QFormLayout;
+    loopForm->setContentsMargins(0, 0, 0, 0);
+    loopForm->setSpacing(5);
+    loopForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     auto *loopX = new QSpinBox(loopPane);
     auto *loopY = new QSpinBox(loopPane);
     auto *loopRadius = new QSpinBox(loopPane);
@@ -2631,12 +2644,31 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *loopRadiusSlider = new QSlider(Qt::Horizontal,loopPane);
     auto *loopBoostSlider = new QSlider(Qt::Horizontal, loopPane);
     auto *loopBoostValue = new QLabel(tr("+0.00 px/frame²"), loopPane);
+    auto *loopCoast = new QCheckBox(tr("Ignore friction after exit"), loopPane);
+    auto *loopFalloffSlider = new QSlider(Qt::Horizontal, loopPane);
+    auto *loopFalloffValue = new QLabel(tr("0.0% / frame"), loopPane);
+    loopFalloffSlider->setRange(0, 200); // 0.1% increments, maximum 20% per 50Hz tick.
+    loopFalloffSlider->setSingleStep(1);
+    loopFalloffSlider->setPageStep(10);
+    loopFalloffSlider->setToolTip(tr("Gradually slow the player's LOOP EXIT coast by this percent "
+        "each physics frame (50 frames per second). 0.0% keeps coasting at full speed. "
+        "Only applies after completing a loop with Ignore friction after exit enabled."));
+    loopFalloffValue->setMinimumWidth(76);
+    loopFalloffValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto *loopFalloffRow = new QHBoxLayout;
+    loopFalloffRow->setContentsMargins(0, 0, 0, 0);
+    loopFalloffRow->addWidget(loopFalloffSlider, 1);
+    loopFalloffRow->addWidget(loopFalloffValue);
+    loopCoast->setToolTip(tr("After a COMPLETE revolution, preserve the loop's exit momentum "
+        "without friction. Hitting a wall or pressing Left/Right ends the effect "
+        "and restores the normal physics preset's drag. Each loop can opt in separately."));
     loopBoostSlider->setRange(0, 200); // Hundredths of a pixel/frame gained each tick.
     loopBoostSlider->setSingleStep(5);
     loopBoostSlider->setPageStep(20);
     loopBoostSlider->setToolTip(tr("Adds speed only on the descending half. "
         "A boosted loop holds its speed going uphill. Zero restores normal loop physics."));
-    loopBoostValue->setMinimumWidth(108);
+    loopBoostValue->setMinimumWidth(93);
+    loopBoostValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     auto *loopBoostRow = new QHBoxLayout;
     loopBoostRow->setContentsMargins(0, 0, 0, 0);
     loopBoostRow->addWidget(loopBoostSlider, 1);
@@ -2644,23 +2676,39 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     loopRadiusSlider->setRange(16,512);
     loopRadius->setRange(16, 512);
     loopSpeed->setRange(1, 32);
-    loopSpeed->setSuffix(tr(" px/frame"));
-    loopForm->addRow(tr("Center X (pixels)"), loopX);
-    loopForm->addRow(tr("Center Y (pixels)"), loopY);
-    loopForm->addRow(tr("Radius (pixels)"), loopRadius);
-    loopForm->addRow(tr("Radius slider"), loopRadiusSlider);
-    loopForm->addRow(tr("Entry minimum speed"), loopSpeed);
-    loopForm->addRow(tr("Momentum Add"), loopBoostRow);
+    loopSpeed->setSuffix(tr(" px/f"));
+    loopSpeed->setToolTip(tr("Minimum horizontal approach speed, in pixels per frame (50 FPS)."));
+    loopX->setMinimumWidth(54);
+    loopY->setMinimumWidth(54);
+    loopX->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    loopY->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    auto *loopCenterRow = new QHBoxLayout;
+    loopCenterRow->setContentsMargins(0, 0, 0, 0);
+    loopCenterRow->setSpacing(4);
+    loopCenterRow->addWidget(new QLabel(tr("X"), loopPane));
+    loopCenterRow->addWidget(loopX, 1);
+    loopCenterRow->addWidget(new QLabel(tr("Y"), loopPane));
+    loopCenterRow->addWidget(loopY, 1);
+    auto *loopRadiusRow = new QHBoxLayout;
+    loopRadiusRow->setContentsMargins(0, 0, 0, 0);
+    loopRadiusRow->setSpacing(4);
+    loopRadiusRow->addWidget(loopRadiusSlider, 1);
+    loopRadiusRow->addWidget(loopRadius);
+    loopForm->addRow(tr("Center"), loopCenterRow);
+    loopForm->addRow(tr("Radius"), loopRadiusRow);
+    loopForm->addRow(tr("Entry speed"), loopSpeed);
+    loopForm->addRow(tr("Momentum +"), loopBoostRow);
+    loopForm->addRow(QString(), loopCoast);
+    loopForm->addRow(tr("Falloff"), loopFalloffRow);
     loopLayout->addLayout(loopForm);
-    auto *loopHint = new QLabel(tr("Entry/exit: yellow dot at the BOTTOM of the circle. "
-        "Approach from either direction with enough horizontal speed. "
-        "With Momentum Add set to zero, normal loop gravity and friction apply. "
-        "With a boost, uphill speed is held and the descending half gains speed "
-        "(+0.01 px/frame per tick for each slider point). "
-        "Insufficient speed can still release the player. "
-        "Use curved collision stamps for the green run-in/out. "
-        "The player graphic remains upright for now."), loopPane);
+    auto *loopHint = new QLabel(tr("Yellow dot = loop entry/exit. Hover over a control for help."), loopPane);
     loopHint->setWordWrap(true);
+    loopHint->setToolTip(tr("Enter from either direction at the minimum speed. "
+        "Momentum Add boosts the downhill half; uphill speed is maintained. "
+        "Ignore friction after exit works only after a full lap, until steering or a wall. "
+        "Falloff then gradually reduces that coasting speed each 50Hz frame. "
+        "Slower players can fall off the track. Use curved collision stamps "
+        "for run-in and run-out slopes. Player art remains upright."));
     loopLayout->addWidget(loopHint);
     // Tiny crisp icon: circular track and gold entrance/exit at six o'clock.
     QPixmap loopIconPixmap(16, 16);
@@ -2684,7 +2732,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         for (int i=0;i<m_map.loops.size();++i) {
             const auto &l=m_map.loops.at(i);
             auto *item = new QListWidgetItem(loopIcon,
-                tr("Loop %1 — (%2, %3), radius %4")
+                tr("Loop %1  (%2, %3)  R%4")
                 .arg(i+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
             loopList->addItem(item);
         }
@@ -2692,7 +2740,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         m_canvas->viewport()->update();
     };
     const auto updateLoopEditors = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
-                                    loopRadiusSlider,loopBoostSlider,loopBoostValue]() {
+                                    loopRadiusSlider,loopBoostSlider,loopBoostValue,
+                                    loopCoast,loopFalloffSlider,loopFalloffValue]() {
         const int i=loopList->currentRow();
         const bool valid=i>=0 && i<m_map.loops.size();
         const int maxX=m_map.width*m_map.tileSize;
@@ -2701,6 +2750,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         loopRadiusSlider->setEnabled(valid);
         loopBoostSlider->setEnabled(valid);
         loopBoostValue->setEnabled(valid);
+        loopCoast->setEnabled(valid);
+        loopFalloffSlider->setEnabled(valid && m_map.loops.at(i).coastAfterExit);
+        loopFalloffValue->setEnabled(valid && m_map.loops.at(i).coastAfterExit);
         m_canvas->selectedLoop=i;
         m_canvas->viewport()->update();
         if (!valid) return;
@@ -2717,6 +2769,12 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         loopRadiusSlider->setValue(l.radius);
         const QSignalBlocker b6(loopBoostSlider);
         loopBoostSlider->setValue(l.downhillBoost100);
+        const QSignalBlocker coastBlock(loopCoast);
+        loopCoast->setChecked(l.coastAfterExit);
+        const QSignalBlocker falloffBlock(loopFalloffSlider);
+        loopFalloffSlider->setValue(l.coastFalloffPermille);
+        loopFalloffValue->setText(tr("%1% / frame")
+            .arg(l.coastFalloffPermille / 10.0, 0, 'f', 1));
         loopBoostValue->setText(tr("+%1 px/frame²")
             .arg(l.downhillBoost100 / 100.0, 0, 'f', 2));
     };
@@ -2751,13 +2809,16 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         updateLoopEditors();
     });
     const auto updateLoop = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
-                             loopBoostSlider,updateLoopList,updateLoopEditors]() {
+                             loopBoostSlider,loopCoast,loopFalloffSlider,
+                             updateLoopList,updateLoopEditors]() {
         const int i=loopList->currentRow();
         if (i<0 || i>=m_map.loops.size()) return;
         auto l=m_map.loops.at(i);
         l.centerX=loopX->value(); l.centerY=loopY->value();
         l.radius=loopRadius->value(); l.entrySpeed100=loopSpeed->value()*100;
         l.downhillBoost100=loopBoostSlider->value();
+        l.coastAfterExit=loopCoast->isChecked();
+        l.coastFalloffPermille=loopFalloffSlider->value();
         if (l.centerX<l.radius || l.centerY<l.radius ||
             l.centerX+l.radius>=m_map.width*m_map.tileSize ||
             l.centerY+l.radius>=m_map.height*m_map.tileSize) return;
@@ -2772,6 +2833,10 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(loopRadiusSlider,&QSlider::valueChanged,loopRadius,
             &QSpinBox::setValue);
     connect(loopBoostSlider,&QSlider::valueChanged,this,
+            [updateLoop](int){updateLoop();});
+    connect(loopCoast,&QCheckBox::toggled,this,
+            [updateLoop](bool){updateLoop();});
+    connect(loopFalloffSlider,&QSlider::valueChanged,this,
             [updateLoop](int){updateLoop();});
     m_canvas->loopEdited=[updateLoopList,updateLoopEditors]() {
         updateLoopList(); updateLoopEditors();
@@ -4167,7 +4232,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
                 QByteArray::number(l.centerY) + ", " +
                 QByteArray::number(l.radius) + ", " +
                 QByteArray::number(l.entrySpeed100) + ", " +
-                QByteArray::number(l.downhillBoost100) + "},\n";
+                QByteArray::number(l.downhillBoost100) + ", " +
+                QByteArray::number(l.coastAfterExit ? 1 : 0) + ", " +
+                QByteArray::number(l.coastFalloffPermille) + "},\n";
         source += "};\n\n";
     }
     source += "game_tilemap_t game_level1 = {\n";
