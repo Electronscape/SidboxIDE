@@ -10,6 +10,7 @@
 
 class QListWidget;
 class QComboBox;
+class QButtonGroup;
 class QSpinBox;
 class QCheckBox;
 class QLabel;
@@ -35,6 +36,7 @@ public:
 private:
     struct Clip {
         QVector<int> frames;
+        QVector<int> frameTicks; // Per-position VBlank duration; never separate from frames.
         int ticks = 5; // SIDBOX 50 Hz VBlanks per image
         bool loop = true;
     };
@@ -59,9 +61,10 @@ private:
 
     QListWidget *m_stateList = nullptr;
     QComboBox *m_directions = nullptr;
-    QComboBox *m_directionMode = nullptr;
+    QButtonGroup *m_directionModeButtons = nullptr;
     QListWidget *m_timeline = nullptr;
     QSpinBox *m_width = nullptr, *m_height = nullptr, *m_zoom = nullptr, *m_ticks = nullptr;
+    QSpinBox *m_frameTicks = nullptr;
     QSpinBox *m_footX = nullptr, *m_footY = nullptr;
     QSpinBox *m_boxX = nullptr, *m_boxY = nullptr, *m_boxW = nullptr, *m_boxH = nullptr;
     QCheckBox *m_loop = nullptr, *m_mirrorCheck = nullptr, *m_autoCheck = nullptr;
@@ -87,6 +90,8 @@ private:
     void removeFrame();
     void moveFrame(int delta);
     void saveClipSettings();
+    void saveSelectedFrameTicks();
+    void updateSelectedFrameTicks();
     void readDocument();
     bool writeDocument();
     void exportHeader();

@@ -2,9 +2,20 @@
 #include "ppbcodec.h"
 
 #include <QAbstractItemView>
+#include <QButtonGroup>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QMimeData>
+#include <QRadioButton>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDropEvent>
+#include <QPen>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -49,13 +60,249 @@ QStringList directionsFor(int count)
     return {"Right", "Left"};
 }
 
+// The requested compact state glyphs are drawn locally — no extra PNGs,
+// resources or runtime asset dependencies.
+QIcon animationStateIcon(const QString &state)
+{
+    QPixmap pix(20, 20);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(222, 234, 245), 2, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(QColor(222, 234, 245));
+    p.drawEllipse(QRect(8, 2, 4, 4));
+    const bool running = state.compare(QStringLiteral("Run"), Qt::CaseInsensitive) == 0;
+    const bool jumping = state.compare(QStringLiteral("Jump"), Qt::CaseInsensitive) == 0;
+    const bool walking = running || state.compare(QStringLiteral("Walk"), Qt::CaseInsensitive) == 0;
+    const int lean = running ? 3 : walking ? 1 : 0;
+    p.drawLine(10, 7, 10 + lean, 12);
+    if (jumping) {
+        p.drawLine(10, 8, 5, 4); p.drawLine(10, 8, 15, 4);
+        p.drawLine(10 + lean, 12, 5, 16); p.drawLine(10 + lean, 12, 16, 15);
+    } else if (walking) {
+        p.drawLine(10, 8, 5, 11); p.drawLine(10, 8, 16, 9);
+        p.drawLine(10 + lean, 12, 5, 17); p.drawLine(10 + lean, 12, 16, 15);
+    } else {
+        p.drawLine(10, 8, 6, 11); p.drawLine(10, 8, 14, 11);
+        p.drawLine(10, 12, 7, 18); p.drawLine(10, 12, 13, 18);
+    }
+    return QIcon(pix);
+}
+
+// A real timeline drag: transfer the source/destination positions, not QListWidget's
+// visual icon coordinates. The editor then updates frames AND frameTicks together.
+class AnimationTimelineList final : public QListWidget {
+public:
+    explicit AnimationTimelineList(QWidget *parent = nullptr) : QListWidget(parent) {}
+    std::function<void(int, int)> reordered;
+
+protected:
+    int insertionAt(const QPoint &at) const
+    {
+        if (count() == 0) return 0;
+        QListWidgetItem *target = itemAt(at);
+        if (target) {
+            const int r = row(target);
+            return r + (at.x() > visualItemRect(target).center().x() ? 1 : 0);
+        }
+        // Empty margins before the first card and after the last card.
+        return at.x() < visualItemRect(item(0)).left() ? 0 : count();
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QListWidget::paintEvent(event);
+        if (m_dropInsertion < 0 || count() == 0) return;
+        const QRect edge = m_dropInsertion >= count()
+            ? visualItemRect(item(count() - 1))
+            : visualItemRect(item(m_dropInsertion));
+        const int x = m_dropInsertion >= count() ? edge.right() + 2 : edge.left() - 2;
+        QPainter painter(viewport());
+        painter.setPen(QPen(QColor(244, 70, 95), 3));
+        painter.drawLine(x, 8, x, viewport()->height() - 10);
+    }
+
+    void startDrag(Qt::DropActions) override
+    {
+        const int source = currentRow();
+        if (source < 0 || source >= count()) return;
+        auto *drag = new QDrag(this);
+        auto *mime = new QMimeData;
+        mime->setData("application/x-sidbox-animation-frame", QByteArray::number(source));
+        drag->setMimeData(mime);
+        const QPixmap pix = item(source)->icon().pixmap(QSize(64, 64));
+        if (!pix.isNull()) {
+            drag->setPixmap(pix);
+            drag->setHotSpot(QPoint(pix.width() / 2, pix.height() / 2));
+        }
+        drag->exec(Qt::MoveAction);
+        drag->deleteLater();
+        m_dropInsertion = -1;
+        viewport()->update();
+    }
+
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (event->source() == this &&
+            event->mimeData()->hasFormat("application/x-sidbox-animation-frame")) {
+            event->setDropAction(Qt::MoveAction);
+            event->accept();
+        } else {
+            event->ignore();
+        }
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (event->source() == this &&
+            event->mimeData()->hasFormat("application/x-sidbox-animation-frame")) {
+            const int next = insertionAt(event->position().toPoint());
+            if (m_dropInsertion != next) {
+                m_dropInsertion = next;
+                viewport()->update();
+            }
+            event->setDropAction(Qt::MoveAction);
+            event->accept();
+        } else {
+            event->ignore();
+        }
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        m_dropInsertion = -1;
+        viewport()->update();
+        QListWidget::dragLeaveEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        if (event->source() != this ||
+            !event->mimeData()->hasFormat("application/x-sidbox-animation-frame")) {
+            event->ignore();
+            return;
+        }
+        bool valid = false;
+        const int source = event->mimeData()
+                               ->data("application/x-sidbox-animation-frame")
+                               .toInt(&valid);
+        if (!valid || source < 0 || source >= count()) {
+            event->ignore();
+            return;
+        }
+        // Drop before/after a hovered card; dropping into free space appends.
+        const int insertion = insertionAt(event->position().toPoint());
+        m_dropInsertion = -1;
+        viewport()->update();
+        const int destination = qBound(0, insertion - (insertion > source ? 1 : 0), count() - 1);
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+        if (source == destination || !reordered) return;
+
+        // Do not replace the list while Qt is still processing the drop event.
+        QTimer::singleShot(0, this, [this, source, destination] {
+            if (reordered) reordered(source, destination);
+        });
+    }
+
+private:
+    int m_dropInsertion = -1;
+};
+
+// One square-cornered frame card: atlas index / sprite / per-frame duration.
+// The data remains on ordinary QListWidgetItems for saving and drag handling.
+class AnimationFrameCardDelegate final : public QStyledItemDelegate {
+public:
+    explicit AnimationFrameCardDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
+    {
+        return QSize(90, 136);
+    }
+
+    void paint(QPainter *p, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        p->save();
+        const QRect card = option.rect.adjusted(4, 4, -4, -4);
+        const bool selected = option.state & QStyle::State_Selected;
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        const QColor border = selected ? QColor(244, 70, 95)
+                                        : hovered ? QColor(118, 139, 163)
+                                                  : QColor(55, 69, 85);
+        p->fillRect(card, QColor(16, 25, 35));
+        p->fillRect(QRect(card.left() + 1, card.top() + 1,
+                          card.width() - 2, 21), QColor(21, 33, 46));
+        p->fillRect(QRect(card.left() + 1, card.bottom() - 22,
+                          card.width() - 2, 21), QColor(20, 30, 42));
+        p->setPen(QPen(border, selected ? 2 : 1));
+        p->drawRect(card.adjusted(0, 0, -1, -1));
+        p->setPen(QColor(52, 66, 81));
+        p->drawLine(card.left() + 1, card.top() + 23,
+                    card.right() - 1, card.top() + 23);
+        p->drawLine(card.left() + 1, card.bottom() - 23,
+                    card.right() - 1, card.bottom() - 23);
+
+        const int cell = index.data(Qt::UserRole).toInt();
+        const int ticks = qMax(1, index.data(Qt::UserRole + 1).toInt());
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        QFont font = option.font;
+        font.setPixelSize(12);
+        font.setBold(selected);
+        p->setFont(font);
+        p->setPen(QColor(220, 229, 241));
+        p->drawText(QRect(card.left() + 2, card.top() + 2,
+                          card.width() - 4, 18), Qt::AlignCenter, QString::number(cell));
+        const QRect imageArea(card.left() + 4, card.top() + 26,
+                              card.width() - 8, card.height() - 52);
+        const QPixmap pix = icon.pixmap(QSize(64, 64));
+        if (!pix.isNull()) {
+            const QPoint centre = imageArea.center();
+            p->drawPixmap(centre.x() - pix.width() / 2,
+                          centre.y() - pix.height() / 2, pix);
+        }
+        font.setBold(false);
+        font.setPixelSize(11);
+        p->setFont(font);
+        p->setPen(QColor(163, 177, 193));
+        p->drawText(QRect(card.left() + 2, card.bottom() - 22,
+                          card.width() - 4, 21), Qt::AlignCenter,
+                    QStringLiteral("%1ms").arg(ticks * 20));
+        p->restore();
+    }
+};
+
+// Small diagram icons for 2/4/8-direction controls (no resource files needed).
+QPixmap directionModeGlyph(int count)
+{
+    QPixmap result(20, 20);
+    result.fill(Qt::transparent);
+    QPainter p(&result);
+    p.setPen(Qt::NoPen);
+    const QColor active(195, 209, 225), inactive(76, 92, 111);
+    const int n = count == 8 ? 3 : 2;
+    const int cell = n == 3 ? 4 : 6, space = n == 3 ? 2 : 3;
+    const int origin = (20 - (n * cell + (n - 1) * space)) / 2;
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            bool on = count == 2 ? (x == y)
+                       : count == 4 ? true
+                       : !(x == 1 && y == 1);
+            p.fillRect(origin + x * (cell + space), origin + y * (cell + space),
+                       cell, cell, on ? active : inactive);
+        }
+    }
+    return result;
+}
+
 // A lightweight clickable sheet with one native-zoomed 32x32 (or custom)
 // grid. No pixmap interpolation or alpha blending is done by this widget.
 class AnimationAtlasView final : public QWidget {
 public:
     QImage image;
     int cellW = 32, cellH = 32, zoom = 3, selected = -1;
-    std::function<void(int, bool)> clicked;
+    std::function<void(int, bool)> doubleClicked;
     explicit AnimationAtlasView(QWidget *parent = nullptr) : QWidget(parent) {
         setMouseTracking(true);
         setCursor(Qt::CrossCursor);
@@ -78,6 +325,19 @@ protected:
         p.setPen(QColor(105, 107, 116, 130));
         for (int x = 0; x <= cols; ++x) p.drawLine(x * cellW * zoom, 0, x * cellW * zoom, rows * cellH * zoom);
         for (int y = 0; y <= rows; ++y) p.drawLine(0, y * cellH * zoom, cols * cellW * zoom, y * cellH * zoom);
+        // Atlas indexes are visible at all zoom levels (row-major, zero based).
+        QFont numberFont = p.font(); numberFont.setBold(true);
+        numberFont.setPixelSize(qBound(9, 4 * zoom, 13));
+        p.setFont(numberFont);
+        for (int n = 0; n < cols * rows; ++n) {
+            const QPoint topLeft((n % cols) * cellW * zoom, (n / cols) * cellH * zoom);
+            const QString number = QString::number(n);
+            const int width = p.fontMetrics().horizontalAdvance(number) + 8;
+            const int height = p.fontMetrics().height() + 3;
+            p.fillRect(QRect(topLeft.x() + 2, topLeft.y() + 2, width, height), QColor(9, 15, 24, 220));
+            p.setPen(QColor(240, 245, 254));
+            p.drawText(topLeft + QPoint(6, 2 + p.fontMetrics().ascent()), number);
+        }
         if (selected >= 0 && selected < cols * rows) {
             p.setPen(QPen(QColor(248, 70, 103), 2));
             p.setBrush(Qt::NoBrush);
@@ -94,7 +354,16 @@ protected:
         if (col < 0 || col >= cols || row < 0 || row >= rows) return;
         const int frame = row * cols + col;
         selected = frame; update();
-        if (clicked) clicked(frame, event->modifiers() & Qt::ShiftModifier);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (event->button() != Qt::LeftButton || image.isNull()) return;
+        const int col = int(event->position().x()) / (cellW * zoom);
+        const int row = int(event->position().y()) / (cellH * zoom);
+        const int cols = image.width() / cellW, rows = image.height() / cellH;
+        if (col < 0 || col >= cols || row < 0 || row >= rows) return;
+        const int frame = row * cols + col;
+        if (doubleClicked) doubleClicked(frame, event->modifiers() & Qt::ShiftModifier);
+        selected = frame; update();
     }
 };
 
@@ -134,10 +403,34 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
         m_atlas = reader.read().convertToFormat(QImage::Format_ARGB32);
     }
     setWindowTitle(tr("Player Animation Editor — %1").arg(QFileInfo(atlasFile).fileName()));
-    setMinimumSize(1040, 650);
-    resize(1260, 790);
-    setStyleSheet(QStringLiteral("QDialog, QPushButton, QComboBox, QSpinBox, QListWidget, "
-                                 "QScrollArea, QLineEdit, QFrame { border-radius:0px; }"));
+    setMinimumSize(1080, 690);
+    resize(1370, 860);
+    // Same sharp-corner dark workspace treatment as the requested mock-up.
+    // No global QApp stylesheet changes: this is scoped to this editor.
+    setStyleSheet(QStringLiteral(R"CSS(
+        QDialog { background:#10161e; color:#e5eaf2; }
+        QWidget { color:#e1e6ef; font-size:13px; }
+        QLabel { background:transparent; }
+        QSplitter::handle { background:#27313e; width:2px; }
+        QListWidget, QScrollArea { background:#111923; border:1px solid #354252; border-radius:0px; }
+        QListWidget::item { padding:3px; }
+        QListWidget::item:selected { background:#6b2030; color:#fff; border-left:3px solid #f0465d; }
+        QListWidget::item:hover { background:#283545; }
+        QPushButton { background:#222c39; color:#e7eaf0; border:1px solid #465263;
+                      border-radius:0px; padding:6px 10px; min-height:22px; }
+        QPushButton:hover { border-color:#f0465d; background:#333743; }
+        QPushButton:pressed { background:#692332; }
+        QComboBox, QSpinBox, QLineEdit { background:#17222e; color:#e7eaf0;
+                       border:1px solid #435165; border-radius:0px; padding:4px; min-height:22px; }
+        QComboBox::drop-down { border:0; }
+        QComboBox QAbstractItemView { background:#17222e; color:#e7eaf0; selection-background-color:#682636; }
+        QCheckBox { spacing:7px; }
+        QCheckBox::indicator { width:16px; height:16px; border:1px solid #728295; border-radius:0px; background:#182330; }
+        QCheckBox::indicator:checked { background:#f0465d; border-color:#f0465d; }
+        QScrollBar:horizontal, QScrollBar:vertical { background:#101820; border:0; }
+        QScrollBar::handle:horizontal, QScrollBar::handle:vertical { background:#465366; border-radius:0px; min-width:18px; min-height:18px; }
+        QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
+    )CSS"));
     m_states = {"Idle", "Walk", "Run", "Push", "Jump", "Fall", "Slide", "Balance", "Hurt", "Land"};
     if (!m_atlas.isNull()) readDocument();
     createUi();
@@ -187,15 +480,10 @@ void SidboxPlayerAnimationEditor::createUi()
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(7, 7, 7, 7);
     auto *headline = new QHBoxLayout;
-    auto *title = new QLabel(tr("PLAYER ANIMATION EDITOR  |  V1 SIDBOX"), this);
+    auto *title = new QLabel(tr("PLAYER ANIMATION TOOLKIT  |  SIDBOX V1"), this);
     QFont font = title->font(); font.setBold(true); title->setFont(font);
     headline->addWidget(title);
     headline->addStretch();
-    headline->addWidget(new QLabel(tr("Direction mode:"), this));
-    m_directionMode = new QComboBox(this);
-    for (int n : {2, 4, 8}) m_directionMode->addItem(tr("%1 directions").arg(n), n);
-    m_directionMode->setCurrentIndex(m_mode == 2 ? 0 : m_mode == 4 ? 1 : 2);
-    headline->addWidget(m_directionMode);
     outer->addLayout(headline);
 
     auto *split = new QSplitter(Qt::Horizontal, this);
@@ -204,7 +492,7 @@ void SidboxPlayerAnimationEditor::createUi()
 
     auto *left = new QWidget(split);
     auto *leftLayout = new QVBoxLayout(left);
-    leftLayout->addWidget(new QLabel(tr("ANIMATION STATES"), left));
+    leftLayout->addWidget(new QLabel(tr("Animation States"), left));
     m_stateList = new QListWidget(left);
     leftLayout->addWidget(m_stateList, 1);
     auto *stateButtons = new QHBoxLayout;
@@ -212,8 +500,34 @@ void SidboxPlayerAnimationEditor::createUi()
     auto *removeState = new QPushButton(tr("- State"), left);
     stateButtons->addWidget(addState); stateButtons->addWidget(removeState);
     leftLayout->addLayout(stateButtons);
-    leftLayout->addWidget(new QLabel(tr("DIRECTION"), left));
+    // Screenshot-style direction mode selector directly below Animation States.
+    auto *modeBox = new QWidget(left);
+    modeBox->setStyleSheet(QStringLiteral(
+        "QWidget { background:#101820; border:1px solid #304052; border-radius:0px; }"
+        "QLabel, QRadioButton { border:0; background:transparent; }"));
+    auto *modeLayout = new QVBoxLayout(modeBox);
+    modeLayout->setContentsMargins(8, 8, 8, 8);
+    modeLayout->setSpacing(5);
+    auto *modeHeading = new QLabel(tr("Direction Mode"), modeBox);
+    QFont modeFont = modeHeading->font(); modeFont.setBold(true);
+    modeHeading->setFont(modeFont);
+    modeLayout->addWidget(modeHeading);
+    m_directionModeButtons = new QButtonGroup(modeBox);
+    for (int n : {2, 4, 8}) {
+        auto *line = new QHBoxLayout;
+        auto *radio = new QRadioButton(tr("%1-Direction").arg(n), modeBox);
+        radio->setChecked(m_mode == n);
+        m_directionModeButtons->addButton(radio, n);
+        line->addWidget(radio);
+        line->addStretch();
+        auto *symbol = new QLabel(modeBox);
+        symbol->setPixmap(directionModeGlyph(n));
+        line->addWidget(symbol);
+        modeLayout->addLayout(line);
+    }
+    leftLayout->addWidget(modeBox);
     m_directions = new QComboBox(left);
+    m_directions->setToolTip(tr("Direction whose frames you are editing."));
     leftLayout->addWidget(m_directions);
     m_mirrorCheck = new QCheckBox(tr("Mirror left from right"), left);
     m_mirrorCheck->setChecked(m_mirror);
@@ -223,7 +537,9 @@ void SidboxPlayerAnimationEditor::createUi()
     m_autoCheck->setChecked(m_autoState);
     m_autoCheck->setToolTip(tr("Optional C function for Idle/Walk/Run/Jump/Fall/Slide/Balance/Push/Hurt. Your game calls it with its player physics values."));
     leftLayout->addWidget(m_autoCheck);
-    leftLayout->addWidget(new QLabel(tr("Tip: click atlas frames to add them.\nShift-click adds a range.\nEmpty left sequences inherit right."), left));
+    leftLayout->addWidget(new QLabel(tr("Double-click atlas cells to add frames.\n"
+                                       "Shift+double-click adds a range.\n"
+                                       "Drag frames to reorder them."), left));
     leftLayout->addStretch();
 
     auto *middle = new QWidget(split);
@@ -249,17 +565,24 @@ void SidboxPlayerAnimationEditor::createUi()
     m_atlasView = atlas;
     scroll->setWidget(atlas);
     mid->addWidget(scroll, 1);
-    mid->addWidget(new QLabel(tr("FRAME TIMELINE — select frames, then remove/reorder them"), middle));
-    m_timeline = new QListWidget(middle);
+    mid->addWidget(new QLabel(tr("Frame Timeline — drag to reorder; select for individual duration"), middle));
+    m_timeline = new AnimationTimelineList(middle);
     m_timeline->setViewMode(QListView::IconMode);
     m_timeline->setFlow(QListView::LeftToRight);
     m_timeline->setWrapping(false);
     m_timeline->setIconSize(QSize(64, 64));
-    m_timeline->setGridSize(QSize(85, 93));
+    m_timeline->setGridSize(QSize(92, 136));
+    m_timeline->setItemDelegate(new AnimationFrameCardDelegate(m_timeline));
+    // Keep icon-mode dragging enabled; our dropEvent owns the actual reorder.
     m_timeline->setMovement(QListView::Snap);
-    m_timeline->setDragDropMode(QAbstractItemView::InternalMove);
+    m_timeline->setMouseTracking(true);
+    m_timeline->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_timeline->setDragEnabled(true);
+    m_timeline->setAcceptDrops(true);
+    m_timeline->setDropIndicatorShown(true);
+    m_timeline->setDragDropMode(QAbstractItemView::DragDrop);
     m_timeline->setDefaultDropAction(Qt::MoveAction);
-    m_timeline->setFixedHeight(125);
+    m_timeline->setFixedHeight(157);
     mid->addWidget(m_timeline);
     auto *timelineActions = new QHBoxLayout;
     auto *removeFrame = new QPushButton(tr("Remove frame"), middle);
@@ -269,16 +592,23 @@ void SidboxPlayerAnimationEditor::createUi()
     timelineActions->addWidget(moveRight); timelineActions->addStretch();
     m_ticks = new QSpinBox(middle); m_ticks->setRange(1, 250); m_ticks->setValue(5);
     m_ticks->setSuffix(tr(" ticks"));
-    m_ticks->setToolTip(tr("50Hz VBlank frames per animation image. 5 ticks = 100 ms."));
-    timelineActions->addWidget(new QLabel(tr("Frame time:"), middle));
+    m_ticks->setToolTip(tr("Default duration assigned to newly inserted frames. 50 Hz: 5 ticks = 100 ms."));
+    timelineActions->addWidget(new QLabel(tr("New frame duration:"), middle));
     timelineActions->addWidget(m_ticks);
+    m_frameTicks = new QSpinBox(middle);
+    m_frameTicks->setRange(1, 250);
+    m_frameTicks->setSuffix(tr(" ticks"));
+    m_frameTicks->setToolTip(tr("Duration of the currently selected timeline frame (50 Hz: 1 tick = 20 ms)."));
+    m_frameTicks->setEnabled(false);
+    timelineActions->addWidget(new QLabel(tr("Selected frame:"), middle));
+    timelineActions->addWidget(m_frameTicks);
     m_loop = new QCheckBox(tr("Loop"), middle); m_loop->setChecked(true);
     timelineActions->addWidget(m_loop);
     mid->addLayout(timelineActions);
 
     auto *right = new QWidget(split);
     auto *rightLayout = new QVBoxLayout(right);
-    rightLayout->addWidget(new QLabel(tr("LIVE PREVIEW"), right));
+    rightLayout->addWidget(new QLabel(tr("Live Preview"), right));
     m_preview = new QLabel(right);
     m_preview->setAlignment(Qt::AlignCenter);
     m_preview->setMinimumSize(210, 220);
@@ -287,7 +617,7 @@ void SidboxPlayerAnimationEditor::createUi()
     rightLayout->addWidget(m_preview, 1);
     m_play = new QPushButton(tr("Pause preview"), right);
     rightLayout->addWidget(m_play);
-    rightLayout->addWidget(new QLabel(tr("SPRITE ANCHORS"), right));
+    rightLayout->addWidget(new QLabel(tr("Animation Properties"), right));
     auto *props = new QFormLayout;
     auto *foot = new QWidget(right);
     auto *footRow = new QHBoxLayout(foot); footRow->setContentsMargins(0, 0, 0, 0);
@@ -327,8 +657,8 @@ void SidboxPlayerAnimationEditor::createUi()
     rebuildStateList(); rebuildDirections(); updateAtlas(); refreshAll();
     connect(m_stateList, &QListWidget::currentRowChanged, this, [this] { refreshAll(); });
     connect(m_directions, &QComboBox::currentIndexChanged, this, [this] { refreshAll(); });
-    connect(m_directionMode, &QComboBox::currentIndexChanged, this, [this] {
-        m_mode = m_directionMode->currentData().toInt();
+    connect(m_directionModeButtons, &QButtonGroup::idClicked, this, [this](int mode) {
+        m_mode = mode;
         rebuildDirections(); refreshAll();
     });
     connect(m_mirrorCheck, &QCheckBox::toggled, this, [this](bool v) { m_mirror = v; refreshAll(); });
@@ -361,26 +691,39 @@ void SidboxPlayerAnimationEditor::createUi()
     connect(m_width, &QSpinBox::valueChanged, this, [this](int v) { m_cellW = v; updateAtlas(); refreshAll(); });
     connect(m_height, &QSpinBox::valueChanged, this, [this](int v) { m_cellH = v; updateAtlas(); refreshAll(); });
     connect(m_zoom, &QSpinBox::valueChanged, this, [this](int) { updateAtlas(); });
-    atlas->clicked = [this](int index, bool range) { appendFrame(index, range); };
-    connect(m_timeline->model(), &QAbstractItemModel::rowsMoved, this,
-        [this] {
-            if (m_refreshing) return;
-            const QString key = clipKey(currentState(), currentDirection());
-            Clip &local = m_clips[key];
-            // Inherited leftward frames cannot be silently edited, because
-            // that would unexpectedly stop hardware X mirroring.
-            if (local.frames.isEmpty()) {
-                QTimer::singleShot(0, this, [this] { refreshTimeline(); });
-                return;
-            }
-            QVector<int> reordered;
-            for (int i = 0; i < m_timeline->count(); ++i)
-                reordered.append(m_timeline->item(i)->data(Qt::UserRole).toInt());
-            if (reordered.size() == local.frames.size()) local.frames = reordered;
-        });
+    atlas->doubleClicked = [this](int index, bool range) { appendFrame(index, range); };
+    static_cast<AnimationTimelineList *>(m_timeline)->reordered = [this](int from, int to) {
+        if (m_refreshing) return;
+        const QString key = clipKey(currentState(), currentDirection());
+        auto it = m_clips.find(key);
+        if (it == m_clips.end() || it->frames.isEmpty()) {
+            refreshTimeline();
+            return;
+        }
+        if (from < 0 || to < 0 || from >= it->frames.size() || to >= it->frames.size())
+            return;
+        // Move the *pair* — duplicate atlas cells can each have unique pauses.
+        while (it->frameTicks.size() < it->frames.size())
+            it->frameTicks.append(it->ticks);
+        const int frame = it->frames.takeAt(from);
+        const int ticks = it->frameTicks.takeAt(from);
+        it->frames.insert(to, frame);
+        it->frameTicks.insert(to, ticks);
+        m_previewPosition = to;
+        m_previewElapsed = 0;
+        refreshTimeline();
+        m_timeline->setCurrentRow(to);
+        refreshPreview();
+    };
     connect(removeFrame, &QPushButton::clicked, this, [this] { this->removeFrame(); });
     connect(moveLeft, &QPushButton::clicked, this, [this] { moveFrame(-1); });
     connect(moveRight, &QPushButton::clicked, this, [this] { moveFrame(1); });
+    connect(m_timeline, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (m_refreshing) return;
+        m_previewPosition = qMax(0, row); m_previewElapsed = 0;
+        updateSelectedFrameTicks(); refreshPreview();
+    });
+    connect(m_frameTicks, &QSpinBox::valueChanged, this, [this](int) { saveSelectedFrameTicks(); });
     connect(m_ticks, &QSpinBox::valueChanged, this, [this](int) { saveClipSettings(); });
     connect(m_loop, &QCheckBox::toggled, this, [this] { saveClipSettings(); });
     for (auto *spin : {m_footX, m_footY, m_boxX, m_boxY, m_boxW, m_boxH})
@@ -401,7 +744,9 @@ void SidboxPlayerAnimationEditor::createUi()
         if (!m_playing) return;
         const Clip *c = effectiveClip();
         if (!c || c->frames.isEmpty()) return;
-        if (++m_previewElapsed < c->ticks) return;
+        const int pos = qBound(0, m_previewPosition, c->frames.size() - 1);
+        const int ticks = pos < c->frameTicks.size() ? c->frameTicks.at(pos) : c->ticks;
+        if (++m_previewElapsed < qMax(1, ticks)) return;
         m_previewElapsed = 0;
         if (m_previewPosition + 1 < c->frames.size()) ++m_previewPosition;
         else if (c->loop) m_previewPosition = 0;
@@ -413,7 +758,11 @@ void SidboxPlayerAnimationEditor::createUi()
 void SidboxPlayerAnimationEditor::rebuildStateList(int selected)
 {
     QSignalBlocker guard(m_stateList);
-    m_stateList->clear(); m_stateList->addItems(m_states);
+    m_stateList->clear();
+    for (const QString &state : m_states) {
+        auto *item = new QListWidgetItem(animationStateIcon(state), state);
+        m_stateList->addItem(item);
+    }
     if (!m_states.isEmpty()) m_stateList->setCurrentRow(qBound(0, selected, m_states.size() - 1));
 }
 void SidboxPlayerAnimationEditor::rebuildDirections(const QString &keep)
@@ -447,30 +796,73 @@ void SidboxPlayerAnimationEditor::refreshAll()
 }
 void SidboxPlayerAnimationEditor::refreshTimeline()
 {
+    const int previous = m_timeline->currentRow();
     m_refreshing = true;
     QSignalBlocker guard(m_timeline);
     m_timeline->clear();
     const Clip *clip = effectiveClip();
     if (clip) {
-        for (int frame : clip->frames) {
-            auto *item = new QListWidgetItem(frameIcon(m_atlas, frame, m_cellW, m_cellH), QString::number(frame));
+        for (int i = 0; i < clip->frames.size(); ++i) {
+            const int frame = clip->frames.at(i);
+            const int ticks = i < clip->frameTicks.size() ? clip->frameTicks.at(i) : clip->ticks;
+            auto *item = new QListWidgetItem(frameIcon(m_atlas, frame, m_cellW, m_cellH),
+                tr("%1\n%2 ms").arg(frame).arg(ticks * 20));
             item->setData(Qt::UserRole, frame);
+            item->setData(Qt::UserRole + 1, ticks);
+            item->setToolTip(tr("Atlas cell %1 — %2 ticks (%3 ms); drag to reorder")
+                                 .arg(frame).arg(ticks).arg(ticks * 20));
+            item->setTextAlignment(Qt::AlignCenter);
             m_timeline->addItem(item);
         }
     }
+    if (m_timeline->count())
+        m_timeline->setCurrentRow(qBound(0, previous, m_timeline->count() - 1));
     {
         QSignalBlocker ticks(m_ticks), loop(m_loop);
         m_ticks->setValue(clip ? clip->ticks : 5);
         m_loop->setChecked(clip ? clip->loop : true);
     }
     m_refreshing = false;
+    updateSelectedFrameTicks();
     bool flipped = false; effectiveClip(&flipped);
     const int cols = m_cellW ? m_atlas.width() / m_cellW : 0;
     const int rows = m_cellH ? m_atlas.height() / m_cellH : 0;
-    m_status->setText(tr("%1 / %2  |  %3 frames%4  |  %5 atlas cells  |  1 image = %6 ms at 50Hz")
+    m_status->setText(tr("%1 / %2  |  %3 frames%4  |  %5 atlas cells  |  per-frame timing at 50 Hz")
         .arg(currentState(), currentDirection()).arg(clip ? clip->frames.size() : 0)
         .arg(flipped ? tr("  [mirrored from right]") : QString())
-        .arg(cols * rows).arg(m_ticks->value() * 20));
+        .arg(cols * rows));
+}
+void SidboxPlayerAnimationEditor::updateSelectedFrameTicks()
+{
+    if (!m_frameTicks) return;
+    QSignalBlocker block(m_frameTicks);
+    const Clip *clip = effectiveClip();
+    const int row = m_timeline->currentRow();
+    const bool valid = clip && row >= 0 && row < clip->frames.size();
+    const bool local = !currentState().isEmpty() && !currentDirection().isEmpty()
+        && m_clips.contains(clipKey(currentState(), currentDirection()))
+        && !m_clips.value(clipKey(currentState(), currentDirection())).frames.isEmpty();
+    m_frameTicks->setEnabled(valid && local);
+    m_frameTicks->setValue(valid ? (row < clip->frameTicks.size()
+                              ? clip->frameTicks.at(row) : clip->ticks) : m_ticks->value());
+}
+void SidboxPlayerAnimationEditor::saveSelectedFrameTicks()
+{
+    if (m_refreshing) return;
+    const QString key = clipKey(currentState(), currentDirection());
+    const int row = m_timeline->currentRow();
+    auto it = m_clips.find(key);
+    if (it == m_clips.end() || row < 0 || row >= it->frames.size()) return;
+    while (it->frameTicks.size() < it->frames.size()) it->frameTicks.append(it->ticks);
+    it->frameTicks[row] = m_frameTicks->value();
+    if (auto *item = m_timeline->item(row)) {
+        item->setData(Qt::UserRole + 1, it->frameTicks[row]);
+        item->setText(tr("%1\n%2 ms").arg(it->frames[row]).arg(it->frameTicks[row] * 20));
+        item->setToolTip(tr("Atlas cell %1 — %2 ticks (%3 ms); drag to reorder")
+                             .arg(it->frames[row]).arg(it->frameTicks[row])
+                             .arg(it->frameTicks[row] * 20));
+    }
+    m_previewElapsed = 0;
 }
 void SidboxPlayerAnimationEditor::refreshPreview()
 {
@@ -478,6 +870,13 @@ void SidboxPlayerAnimationEditor::refreshPreview()
     QImage preview(256, 256, QImage::Format_ARGB32);
     preview.fill(QColor(35, 39, 44));
     QPainter painter(&preview);
+    painter.fillRect(QRect(0, 0, 256, 256), QColor(16, 24, 34));
+    painter.setPen(QPen(QColor(48, 65, 83), 1));
+    const QPoint horizon(128, 164);
+    for (int x = -128; x <= 384; x += 48)
+        painter.drawLine(horizon, QPoint(x, 255));
+    for (int y : {177, 190, 207, 229, 251})
+        painter.drawLine(0, y, 255, y);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     const int scale = qMax(1, qMin(6, qMin(220 / qMax(1, m_cellW), 220 / qMax(1, m_cellH))));
     const int x = (256 - m_cellW * scale) / 2, y = (256 - m_cellH * scale) / 2;
@@ -517,7 +916,10 @@ void SidboxPlayerAnimationEditor::appendFrame(int index, bool range)
     const int start = range && m_selectedAtlasFrame >= 0 ? m_selectedAtlasFrame : index;
     const int step = start <= index ? 1 : -1;
     for (int i = start; ; i += step) {
-        if (i >= 0 && i < count && clip.frames.size() < 256) clip.frames.append(i);
+        if (i >= 0 && i < count && clip.frames.size() < 256) {
+            clip.frames.append(i);
+            clip.frameTicks.append(m_ticks->value());
+        }
         if (i == index) break;
     }
     m_selectedAtlasFrame = index;
@@ -535,6 +937,7 @@ void SidboxPlayerAnimationEditor::removeFrame()
     }
     if (position < 0 || position >= clip.frames.size()) return;
     clip.frames.removeAt(position);
+    if (position < clip.frameTicks.size()) clip.frameTicks.removeAt(position);
     refreshTimeline(); m_timeline->setCurrentRow(qMin(position, clip.frames.size() - 1)); refreshPreview();
 }
 void SidboxPlayerAnimationEditor::moveFrame(int delta)
@@ -549,6 +952,8 @@ void SidboxPlayerAnimationEditor::moveFrame(int delta)
     const int to = pos + delta;
     if (pos < 0 || to < 0 || to >= clip.frames.size()) return;
     std::swap(clip.frames[pos], clip.frames[to]);
+    while (clip.frameTicks.size() < clip.frames.size()) clip.frameTicks.append(clip.ticks);
+    std::swap(clip.frameTicks[pos], clip.frameTicks[to]);
     refreshTimeline(); m_timeline->setCurrentRow(to); refreshPreview();
 }
 void SidboxPlayerAnimationEditor::saveClipSettings()
@@ -599,6 +1004,12 @@ void SidboxPlayerAnimationEditor::readDocument()
             const int frame = f.toInt(-1);
             if (frame >= 0 && frame < 256 && clip.frames.size() < 256) clip.frames << frame;
         }
+        const QJsonArray frameDurations = c.value("frameTicks").toArray();
+        for (int i = 0; i < clip.frames.size(); ++i) {
+            clip.frameTicks.append(i < frameDurations.size()
+                ? qBound(1, frameDurations.at(i).toInt(clip.ticks), 250)
+                : clip.ticks);
+        }
         m_clips[clipKey(state, dir)] = clip;
     }
 }
@@ -634,7 +1045,7 @@ bool SidboxPlayerAnimationEditor::writeDocument()
         return false;
     }
     QJsonObject root;
-    root["format"] = "SIDBOX-PLAYER-ANIM"; root["version"] = 1;
+    root["format"] = "SIDBOX-PLAYER-ANIM"; root["version"] = 2;
     root["atlas"] = QDir(QFileInfo(m_file).absolutePath()).relativeFilePath(m_atlasFile);
     root["cellWidth"] = m_cellW; root["cellHeight"] = m_cellH;
     root["directions"] = m_mode; root["mirrorLeft"] = m_mirror;
@@ -653,7 +1064,13 @@ bool SidboxPlayerAnimationEditor::writeDocument()
         c["ticks"] = it.value().ticks; c["loop"] = it.value().loop;
         QJsonArray frames;
         for (int f : it.value().frames) frames.append(f);
-        c["frames"] = frames; clips.append(c);
+        c["frames"] = frames;
+        QJsonArray frameDurations;
+        for (int i = 0; i < it.value().frames.size(); ++i)
+            frameDurations.append(i < it.value().frameTicks.size()
+                                  ? it.value().frameTicks.at(i) : it.value().ticks);
+        c["frameTicks"] = frameDurations;
+        clips.append(c);
     }
     root["clips"] = clips;
     const QDir dir(QFileInfo(m_file).absolutePath());
@@ -707,7 +1124,7 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
     s += "};\n\n";
     s += QString("#define %1_STATE_COUNT %2u\n#define %1_DIRECTION_COUNT %3u\n\n")
         .arg(prefix.toUpper()).arg(m_states.size()).arg(dirs.size());
-    s += QString("typedef struct { const uint8_t *frames; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } %1_clip_t;\n")
+    s += QString("typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } %1_clip_t;\n")
         .arg(prefix);
     s += QString("typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; } %1_playeranim_t;\n\n")
         .arg(prefix);
@@ -731,14 +1148,29 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
             }
         }
         if (!clip) {
-            entries << "    { 0, 0, 1, 1, 0 },";
+            entries << "    { 0, 0, 0, 1, 1, 0 },";
         } else {
             const QString name = QString("%1_frames_%2").arg(prefix).arg(index);
             arrays += QString("static const uint8_t %1[] = { ").arg(name);
             for (int f : clip->frames) arrays += QString::number(f) + ", ";
             arrays += "};\n";
-            entries << QString("    { %1, %2u, %3u, %4u, %5u },")
-                          .arg(name).arg(clip->frames.size()).arg(clip->ticks)
+            QString timings = QStringLiteral("0");
+            bool nonuniform = false;
+            for (int pos = 0; pos < clip->frames.size(); ++pos) {
+                if ((pos < clip->frameTicks.size() ? clip->frameTicks.at(pos) : clip->ticks) != clip->ticks) {
+                    nonuniform = true; break;
+                }
+            }
+            if (nonuniform) {
+                timings = QString("%1_ticks_%2").arg(prefix).arg(index);
+                arrays += QString("static const uint8_t %1[] = { ").arg(timings);
+                for (int pos = 0; pos < clip->frames.size(); ++pos)
+                    arrays += QString::number(pos < clip->frameTicks.size()
+                        ? clip->frameTicks.at(pos) : clip->ticks) + ", ";
+                arrays += "};\n";
+            }
+            entries << QString("    { %1, %2, %3u, %4u, %5u, %6u },")
+                          .arg(name).arg(timings).arg(clip->frames.size()).arg(clip->ticks)
                           .arg(clip->loop ? 1 : 0).arg(flip ? 1 : 0);
         }
         ++index;
@@ -765,13 +1197,27 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
                  "        a->started = 1; a->state = state; a->direction = direction;\n"
                  "        a->position = 0; a->elapsed = 0;\n"
                  "    } else if (frame_step && (clip->loop || a->position + 1u < clip->count)) {\n"
-                 "        uint32_t ticks = (uint32_t)a->elapsed + frame_step;\n"
-                 "        uint32_t steps = ticks / clip->ticks;\n"
-                 "        a->elapsed = (uint16_t)(ticks %% clip->ticks);\n"
-                 "        if (steps) {\n"
-                 "            uint32_t next = (uint32_t)a->position + steps;\n"
-                 "            a->position = clip->loop ? (uint16_t)(next %% clip->count)\n"
-                 "                         : (uint16_t)(next >= clip->count ? clip->count - 1u : next);\n"
+                 "        uint32_t remaining = (uint32_t)a->elapsed + frame_step;\n"
+                 "        if (!clip->frame_ticks) {\n"
+                 "            /* Fast path for uniform timings, identical to legacy playback. */\n"
+                 "            uint32_t steps = remaining / clip->ticks;\n"
+                 "            a->elapsed = (uint16_t)(remaining %% clip->ticks);\n"
+                 "            if (steps) {\n"
+                 "                uint32_t next = (uint32_t)a->position + steps;\n"
+                 "                a->position = clip->loop ? (uint16_t)(next %% clip->count)\n"
+                 "                             : (uint16_t)(next >= clip->count ? clip->count - 1u : next);\n"
+                 "            }\n"
+                 "        } else {\n"
+                 "            /* Duration belongs to the frame POSITION, not its atlas index. */\n"
+                 "            uint16_t duration = clip->frame_ticks[a->position];\n"
+                 "            while (remaining >= duration) {\n"
+                 "                remaining -= duration;\n"
+                 "                if (a->position + 1u < clip->count) ++a->position;\n"
+                 "                else if (clip->loop) a->position = 0;\n"
+                 "                else { remaining = 0; break; }\n"
+                 "                duration = clip->frame_ticks[a->position];\n"
+                 "            }\n"
+                 "            a->elapsed = (uint16_t)remaining;\n"
                  "        }\n"
                  "    }\n"
                  "    bob->index = clip->frames[a->position];\n"
