@@ -1694,7 +1694,8 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
     for (int i = 0; i < a.loops.size(); ++i) {
         const auto &l=a.loops.at(i), &r=b.loops.at(i);
         if (l.centerX!=r.centerX || l.centerY!=r.centerY ||
-            l.radius!=r.radius || l.entrySpeed100!=r.entrySpeed100) return false;
+            l.radius!=r.radius || l.entrySpeed100!=r.entrySpeed100 ||
+            l.downhillBoost100!=r.downhillBoost100) return false;
     }
     for (int i = 0; i < a.collisionPlacements.size(); ++i) {
         const auto &left = a.collisionPlacements.at(i);
@@ -2106,14 +2107,31 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     sideLayout->addWidget(atlasTitle);
     auto *atlasChoice = new TilemapComboBox(sidebar);
     m_atlasCombo = atlasChoice;
+    atlasChoice->setToolTip(tr("Choose a PPB from Game Resources > Tile Atlases. "
+        "Sprites are not tile atlases. Selecting a different atlas does not change "
+        "the existing tile IDs or collision cells."));
     atlasChoice->addItem(tr("No artwork (IDs only)"), QString());
     for (const auto &a : atlases) atlasChoice->addItem(a.first, a.second);
-    const QString existing = QDir(m_designDirectory).absoluteFilePath(m_map.atlasPath);
+    if (atlases.isEmpty()) {
+        atlasChoice->setToolTip(tr("No Tile Atlas resources yet. In Game Designer, "
+            "right-click Tile Atlases to add or import a PPB. "
+            "An existing map's artwork will remain loaded until you select a new atlas."));
+    }
+    const QString existing = m_map.atlasPath.isEmpty() ? QString()
+        : QDir::cleanPath(QDir(m_designDirectory).absoluteFilePath(m_map.atlasPath));
     const int selected = atlasChoice->findData(existing);
     if (selected >= 0) atlasChoice->setCurrentIndex(selected);
     else if (!m_map.atlasPath.isEmpty()) {
-        atlasChoice->addItem(tr("Missing: %1").arg(m_map.atlasPath), existing);
-        atlasChoice->setCurrentIndex(atlasChoice->count()-1);
+        // Preserve the CURRENT artwork during a project migration. Never
+        // silently switch the map to a different atlas (tile IDs depend on it).
+        // Clearly label the old reference instead of presenting its Sprite
+        // resource name as though it belongs to the Tile Atlases bank.
+        const QString fileName = QFileInfo(existing).fileName();
+        atlasChoice->addItem(tr("Current map PPB (not in Tile Atlases): %1").arg(fileName), existing);
+        atlasChoice->setItemData(atlasChoice->count() - 1,
+            tr("This map still references an older PPB outside the Tile Atlases bank. "
+               "Select the correct resource above, or move its Sprite into Tile Atlases."), Qt::ToolTipRole);
+        atlasChoice->setCurrentIndex(atlasChoice->count() - 1);
     }
     sideLayout->addWidget(atlasChoice);
 
@@ -2611,6 +2629,18 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *loopRadius = new QSpinBox(loopPane);
     auto *loopSpeed = new QSpinBox(loopPane);
     auto *loopRadiusSlider = new QSlider(Qt::Horizontal,loopPane);
+    auto *loopBoostSlider = new QSlider(Qt::Horizontal, loopPane);
+    auto *loopBoostValue = new QLabel(tr("+0.00 px/frame²"), loopPane);
+    loopBoostSlider->setRange(0, 200); // Hundredths of a pixel/frame gained each tick.
+    loopBoostSlider->setSingleStep(5);
+    loopBoostSlider->setPageStep(20);
+    loopBoostSlider->setToolTip(tr("Adds speed only on the descending half. "
+        "A boosted loop holds its speed going uphill. Zero restores normal loop physics."));
+    loopBoostValue->setMinimumWidth(108);
+    auto *loopBoostRow = new QHBoxLayout;
+    loopBoostRow->setContentsMargins(0, 0, 0, 0);
+    loopBoostRow->addWidget(loopBoostSlider, 1);
+    loopBoostRow->addWidget(loopBoostValue);
     loopRadiusSlider->setRange(16,512);
     loopRadius->setRange(16, 512);
     loopSpeed->setRange(1, 32);
@@ -2620,34 +2650,57 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     loopForm->addRow(tr("Radius (pixels)"), loopRadius);
     loopForm->addRow(tr("Radius slider"), loopRadiusSlider);
     loopForm->addRow(tr("Entry minimum speed"), loopSpeed);
+    loopForm->addRow(tr("Momentum Add"), loopBoostRow);
     loopLayout->addLayout(loopForm);
     auto *loopHint = new QLabel(tr("Entry/exit: yellow dot at the BOTTOM of the circle. "
         "Approach from either direction with enough horizontal speed. "
-        "Gravity slows the climb; insufficient speed releases the player. "
+        "With Momentum Add set to zero, normal loop gravity and friction apply. "
+        "With a boost, uphill speed is held and the descending half gains speed "
+        "(+0.01 px/frame per tick for each slider point). "
+        "Insufficient speed can still release the player. "
         "Use curved collision stamps for the green run-in/out. "
         "The player graphic remains upright for now."), loopPane);
     loopHint->setWordWrap(true);
     loopLayout->addWidget(loopHint);
-    m_stampTabs->addTab(loopPane, tr("Loop Tracks"));
-    const auto updateLoopList = [this,loopList]() {
+    // Tiny crisp icon: circular track and gold entrance/exit at six o'clock.
+    QPixmap loopIconPixmap(16, 16);
+    loopIconPixmap.fill(Qt::transparent);
+    {
+        QPainter painter(&loopIconPixmap);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.setPen(QPen(QColor(38, 160, 190), 2));
+        painter.drawEllipse(2, 1, 11, 11);
+        painter.setPen(QPen(QColor(247, 196, 63), 2));
+        painter.drawLine(5, 13, 10, 13);
+        painter.fillRect(7, 11, 2, 3, QColor(247, 196, 63));
+    }
+    const QIcon loopIcon(loopIconPixmap);
+    loopList->setIconSize(QSize(16, 16));
+    m_stampTabs->addTab(loopPane, loopIcon, tr("Loop Tracks"));
+    const auto updateLoopList = [this,loopList,loopIcon]() {
         const int selected = loopList->currentRow();
         QSignalBlocker block(loopList);
         loopList->clear();
         for (int i=0;i<m_map.loops.size();++i) {
             const auto &l=m_map.loops.at(i);
-            loopList->addItem(tr("Loop %1 — (%2, %3), radius %4")
+            auto *item = new QListWidgetItem(loopIcon,
+                tr("Loop %1 — (%2, %3), radius %4")
                 .arg(i+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
+            loopList->addItem(item);
         }
         loopList->setCurrentRow(qBound(-1,selected,int(m_map.loops.size())-1));
         m_canvas->viewport()->update();
     };
-    const auto updateLoopEditors = [this,loopList,loopX,loopY,loopRadius,loopSpeed,loopRadiusSlider]() {
+    const auto updateLoopEditors = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
+                                    loopRadiusSlider,loopBoostSlider,loopBoostValue]() {
         const int i=loopList->currentRow();
         const bool valid=i>=0 && i<m_map.loops.size();
         const int maxX=m_map.width*m_map.tileSize;
         const int maxY=m_map.height*m_map.tileSize;
         for (QSpinBox *v : {loopX,loopY,loopRadius,loopSpeed}) v->setEnabled(valid);
         loopRadiusSlider->setEnabled(valid);
+        loopBoostSlider->setEnabled(valid);
+        loopBoostValue->setEnabled(valid);
         m_canvas->selectedLoop=i;
         m_canvas->viewport()->update();
         if (!valid) return;
@@ -2662,6 +2715,10 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         const QSignalBlocker b5(loopRadiusSlider);
         loopRadiusSlider->setMaximum(loopRadius->maximum());
         loopRadiusSlider->setValue(l.radius);
+        const QSignalBlocker b6(loopBoostSlider);
+        loopBoostSlider->setValue(l.downhillBoost100);
+        loopBoostValue->setText(tr("+%1 px/frame²")
+            .arg(l.downhillBoost100 / 100.0, 0, 'f', 2));
     };
     connect(loopList,&QListWidget::currentRowChanged,this,
             [updateLoopEditors](int){updateLoopEditors();});
@@ -2694,12 +2751,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         updateLoopEditors();
     });
     const auto updateLoop = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
-                              updateLoopList,updateLoopEditors]() {
+                             loopBoostSlider,updateLoopList,updateLoopEditors]() {
         const int i=loopList->currentRow();
         if (i<0 || i>=m_map.loops.size()) return;
         auto l=m_map.loops.at(i);
         l.centerX=loopX->value(); l.centerY=loopY->value();
         l.radius=loopRadius->value(); l.entrySpeed100=loopSpeed->value()*100;
+        l.downhillBoost100=loopBoostSlider->value();
         if (l.centerX<l.radius || l.centerY<l.radius ||
             l.centerX+l.radius>=m_map.width*m_map.tileSize ||
             l.centerY+l.radius>=m_map.height*m_map.tileSize) return;
@@ -2713,6 +2771,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 [updateLoop](int){updateLoop();});
     connect(loopRadiusSlider,&QSlider::valueChanged,loopRadius,
             &QSpinBox::setValue);
+    connect(loopBoostSlider,&QSlider::valueChanged,this,
+            [updateLoop](int){updateLoop();});
     m_canvas->loopEdited=[updateLoopList,updateLoopEditors]() {
         updateLoopList(); updateLoopEditors();
     };
@@ -3846,7 +3906,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         return false;
     }
     for (const auto &l : map.loops) {
-        if (l.radius < 16 || l.radius > 512 || l.entrySpeed100 < 100 ||
+        if (l.downhillBoost100 < 0 || l.downhillBoost100 > 200 ||
+            l.radius < 16 || l.radius > 512 || l.entrySpeed100 < 100 ||
             l.entrySpeed100 > 3200 || l.centerX < l.radius || l.centerY < l.radius ||
             l.centerX + l.radius >= map.width*map.tileSize ||
             l.centerY + l.radius >= map.height*map.tileSize) {
@@ -4105,7 +4166,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
             source += "    {" + QByteArray::number(l.centerX) + ", " +
                 QByteArray::number(l.centerY) + ", " +
                 QByteArray::number(l.radius) + ", " +
-                QByteArray::number(l.entrySpeed100) + "},\n";
+                QByteArray::number(l.entrySpeed100) + ", " +
+                QByteArray::number(l.downhillBoost100) + "},\n";
         source += "};\n\n";
     }
     source += "game_tilemap_t game_level1 = {\n";

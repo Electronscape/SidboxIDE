@@ -170,6 +170,7 @@ QJsonObject SidboxTilemap::toJson() const
         v.insert(QStringLiteral("centerY"), loop.centerY);
         v.insert(QStringLiteral("radius"), loop.radius);
         v.insert(QStringLiteral("entrySpeed100"), loop.entrySpeed100);
+        v.insert(QStringLiteral("downhillBoost100"), loop.downhillBoost100);
         loopList.append(v);
     }
     result.insert(QStringLiteral("loopTracks"), loopList);
@@ -415,7 +416,10 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
         loop.centerY = v.value(QStringLiteral("centerY")).toInt(-1);
         loop.radius = v.value(QStringLiteral("radius")).toInt(-1);
         loop.entrySpeed100 = v.value(QStringLiteral("entrySpeed100")).toInt(-1);
-        if (loop.radius < 16 || loop.radius > 512 || loop.entrySpeed100 < 100 ||
+        // Maps saved before Stage 3.80 keep their original loop behaviour.
+        loop.downhillBoost100 = v.value(QStringLiteral("downhillBoost100")).toInt(0);
+        if (loop.downhillBoost100 < 0 || loop.downhillBoost100 > 200 ||
+            loop.radius < 16 || loop.radius > 512 || loop.entrySpeed100 < 100 ||
             loop.entrySpeed100 > 3200 || loop.centerX < loop.radius ||
             loop.centerY < loop.radius || loop.centerX + loop.radius >= w*tile ||
             loop.centerY + loop.radius >= h*tile) return false;

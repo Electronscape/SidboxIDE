@@ -55,6 +55,12 @@ public:
     bool saveDesign();
     bool tilemapBuildFilesMissing() const;
     bool exportTilemapForCompile();
+    // Safe generated-only preflight (legacy/manual use; does not overwrite helpers).
+    bool regenerateBuildFiles();
+    // The SAME full Update Project operation as the Game Designer button:
+    // ZIP backup, SDK helper refresh, exports, maingame.c.txt, managed main.c.
+    // False on confirmation cancel or failure; caller must stop the build.
+    bool updateGameProject();
     void setTheme(const IDETheme &theme);
 
 protected:
@@ -162,7 +168,7 @@ private:
     void importPngAsPpb(const QString &suggestedKind = QStringLiteral("tileatlas"));
     void exportSelectedC();
     void generateGameCode();
-    void updateGameProject();
+
     bool generateGameCodeCore(bool embedPixels, bool batchMode);
     void configureGameObject(int index);
     void refreshObjectHitbox();

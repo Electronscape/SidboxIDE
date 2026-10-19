@@ -75,6 +75,8 @@ private:
     void showApiCheatSheet();
     void showAboutIde();
     void compileActiveFile();
+    bool checkGameBuildGeneration();
+    bool gameBuildFilesOutdated(const QString &designPath) const;
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();
     void createProjectFile();
@@ -256,6 +258,11 @@ private:
     QStringList m_v2CompiledObjects;
     QStringList m_v2LinkArguments;
     int m_v2CompileIndex = 0;
+    // Deliberately NOT serialized into .proj or QSettings. Each project opening
+    // starts with one build reminder, regardless of the previous session.
+    bool m_gameBuildFirstCheckPending = true;
+    bool m_gameBuildAskBeforeBuild = true;
+    bool m_gameBuildAutoRegenerate = false; // effective only when asking disabled
     QString m_projectPath;
     QString m_projectFilePath;
     QStringList m_projectFilesInProject;

@@ -269,17 +269,17 @@ void gameBackupTrimArchives(const QDir &location)
 }
 }
 
-void SidboxGameDesigner::updateGameProject()
+bool SidboxGameDesigner::updateGameProject()
 {
     // This command deliberately operates on the currently opened .sbgm only.
     // An explicit confirmation and a timestamped backup precede every write.
-    if (m_filePath.isEmpty() || !m_valid) return;
+    if (m_filePath.isEmpty() || !m_valid) return false;
     const QDir project(QFileInfo(m_filePath).absolutePath());
     const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
     if (!templates.exists()) {
         QMessageBox::warning(this, tr("Update Game Project"),
             tr("Could not find the bundled game helper templates."));
-        return;
+        return false;
     }
 
     // Refresh installed helpers and add dependencies needed by this design.
@@ -314,7 +314,7 @@ void SidboxGameDesigner::updateGameProject()
             if (!QFileInfo::exists(templates.filePath(base + ext))) {
                 QMessageBox::warning(this, tr("Update Game Project"),
                     tr("Missing SDK helper template: %1").arg(templates.filePath(base + ext)));
-                return;
+                return false;
             }
         }
     }
@@ -394,7 +394,7 @@ void SidboxGameDesigner::updateGameProject()
     confirm.addButton(QMessageBox::Cancel);
     confirm.setDefaultButton(qobject_cast<QPushButton *>(confirm.button(QMessageBox::Cancel)));
     confirm.exec();
-    if (confirm.clickedButton() != proceed) return;
+    if (confirm.clickedButton() != proceed) return false;
 
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
     const QDir backupRoot(project.filePath(QStringLiteral(".codergirl-backups/updates")));
@@ -403,7 +403,7 @@ void SidboxGameDesigner::updateGameProject()
     QDir backup(backupFolder);
     if (!QDir().mkpath(backupFolder)) {
         QMessageBox::warning(this, tr("Update Game Project"), tr("Cannot create backup folder:\n%1").arg(backupFolder));
-        return;
+        return false;
     }
     for (const QString &relative : replacing) {
         const QString src = QDir::isAbsolutePath(relative) ? relative : project.filePath(relative);
@@ -414,13 +414,13 @@ void SidboxGameDesigner::updateGameProject()
             || QDir::isAbsolutePath(safeName)) {
             QMessageBox::warning(this, tr("Update Game Project"),
                 tr("Unsafe backup path: %1").arg(src));
-            return;
+            return false;
         }
         const QString dest = backup.filePath(safeName);
         if (!QDir().mkpath(QFileInfo(dest).absolutePath()) || !QFile::copy(src, dest)) {
             QMessageBox::warning(this, tr("Update Game Project"),
                 tr("Backup failed; project update was NOT started.\n%1").arg(src));
-            return;
+            return false;
         }
     }
 
@@ -431,7 +431,7 @@ void SidboxGameDesigner::updateGameProject()
         QMessageBox::warning(this, tr("Update Game Project"),
             tr("Could not create the ZIP backup; project update was NOT started.\n%1")
                 .arg(zipError));
-        return;
+        return false;
     }
 
     // Only the template-backed helper C/H files are deliberately replaced.
@@ -511,7 +511,7 @@ void SidboxGameDesigner::updateGameProject()
                .arg(error, recovery, archivePath));
         if (restoreFailures.isEmpty()) QDir(backupFolder).removeRecursively();
         if (assetFilesChanged) assetFilesChanged();
-        return;
+        return false;
     }
     // Only now is it safe to delete the temporary rollback copies, and trim
     // old ZIP archives after a fully successful project update.
@@ -523,5 +523,5 @@ void SidboxGameDesigner::updateGameProject()
            "main.c is updated only while still IDE-owned. User-owned source and existing beginner guides are untouched.\n\n"
            "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
                .arg(archivePath));
+    return true;
 }
-

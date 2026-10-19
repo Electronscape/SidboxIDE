@@ -66,6 +66,9 @@ public:
     void setStackUsageEnabled(bool enabled);
     QString extraCompilerFlags() const;
     void setExtraCompilerFlags(const QString &flags);
+    // IDE-session-only build reminder; never written to the .proj file.
+    bool askBeforeGameBuild() const;
+    void setAskBeforeGameBuild(bool ask);
 
 private:
     void updateDefaultLinkerLabel();
@@ -82,6 +85,7 @@ private:
     QCheckBox *m_dataSectionsCheck;
     QCheckBox *m_stackUsageCheck;
     QLineEdit *m_extraCompilerFlagsEdit;
+    QCheckBox *m_askBeforeGameBuildCheck;
     QSpinBox *m_modSizeSpinBox;
     QLabel *m_modSuggestionLabel;
     QPushButton *m_modUseSuggestedButton;

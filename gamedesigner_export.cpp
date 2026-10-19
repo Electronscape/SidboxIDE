@@ -965,7 +965,8 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
  *    The header uses the player_anim C symbol prefix automatically.
  *    Saving animation edits can update the header again on request.
  * 3. Set GAMERGIRL_PLAYER_ANIMATIONS to 1 below and rebuild the V1 game.
- *    The starter then selects Idle, Walk, Jump, Fall and X-flips for left.
+ *    The starter selects Idle, Walk, Jump, Fall and X-flips for left.
+ *    Animation is selected AFTER moving-platform/spring collision resolution.
  *    BOB frame indexing is 0..255 and requires the same atlas cell size.
  *    Use an indexed PPB atlas with palette index 0 transparent on SIDBOX.
  *
@@ -1333,11 +1334,22 @@ int main(int argc, char *argv[])
         if (hasPlayerAnimation) {
             out << R"CG(        const uint8_t player_buttons = getjoyport();
         game_tile_player_run(&player_physics, player_buttons, 1);
-#if GAMERGIRL_PLAYER_ANIMATIONS
-        /* Only change facing while pressing LEFT/RIGHT; idle retains facing.
-         * Select the animation AFTER physics, BEFORE drawing the player.
-         * If you override movement with game_tile_player_step(), retain this
-         * animation section after that physics call. */
+)CG";
+        } else {
+            out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
+        }
+        /* Moving platforms, conveyors and springs resolve AFTER tile physics.
+           Their final on_ground/vy100 are the values animation must see.
+           Keep this ahead of animation selection, even for an idle rider. */
+        if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
+        if (hasPlayerAnimation) {
+            out << R"CG(#if GAMERGIRL_PLAYER_ANIMATIONS
+        /* Stage 3.81: select animation AFTER world-object contacts resolve.
+         * A carried rider should use Idle, not Fall; a player walking along
+         * the platform should use Walk. Springs can launch Jump immediately.
+         * Only change facing while pressing LEFT/RIGHT; idle retains facing.
+         * If you use game_tile_player_step(), keep animation AFTER both the
+         * tile-player step and gameworlditems_after(). */
         if (player_buttons & BTN_LEFT)  player_anim_facing = PLAYER_ANIM_DIR_LEFT;
         if (player_buttons & BTN_RIGHT) player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
         uint8_t player_anim_state = PLAYER_ANIM_STATE_IDLE;
@@ -1351,10 +1363,7 @@ int main(int argc, char *argv[])
             out << "        player_anim_step(&player_anim, &" << playerName
                 << ", player_anim_state, player_anim_facing, 1);\n";
             out << "#endif\n";
-        } else {
-            out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
         }
-        if (worldObjects) out << "        gameworlditems_after(&world_player);\n";
         if (pickups) {
             out << "        gameworlditems_check(player_physics.x100 / 100 + player_physics.hitbox_x,\n"
                    "            player_physics.y100 / 100 + player_physics.hitbox_y, "
@@ -1478,6 +1487,31 @@ bool SidboxGameDesigner::syncManagedMain(QString *error)
     return true;
 }
 
+
+
+// Stage 3.79: the F5 reminder MUST NOT call Update Game Project, since that
+// command intentionally replaces installed SDK helper source. Preserve the
+// graphics embedding mode of an existing generated game; default to PPB files
+// for a never-before-generated project.
+bool SidboxGameDesigner::regenerateBuildFiles()
+{
+    if (m_filePath.isEmpty() || !m_valid) return false;
+    if (m_dirty && !saveDesign()) return false;
+
+    bool embedPixels = false;
+    const QString generatedSource = QDir(QFileInfo(m_filePath).absolutePath())
+        .filePath(QStringLiteral("gameassets/gameassets.c"));
+    QFile current(generatedSource);
+    if (current.open(QIODevice::ReadOnly)) {
+        // The embed writer marks each bitmap; the normal PPB loader does not.
+        // Read only enough of the generated source to find the first bitmap.
+        const QByteArray prefix = current.read(256 * 1024);
+        embedPixels = prefix.contains("/* Original PPB indexed pixels, unchanged;");
+    }
+    if (m_tilemapEnabled && tilemapBuildFilesMissing()
+        && !exportTilemap(false, true)) return false;
+    return generateGameCodeCore(embedPixels, true);
+}
 
 void SidboxGameDesigner::generateGameCode()
 {

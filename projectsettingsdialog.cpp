@@ -31,6 +31,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_dataSectionsCheck(new QCheckBox(tr("Data sections (-fdata-sections)"), this))
     , m_stackUsageCheck(new QCheckBox(tr("Generate stack usage files (-fstack-usage)"), this))
     , m_extraCompilerFlagsEdit(new QLineEdit(this))
+    , m_askBeforeGameBuildCheck(new QCheckBox(tr("Ask before running Update Project on build (F5)"), this))
     , m_modSizeSpinBox(new QSpinBox(this))
     , m_modSuggestionLabel(new QLabel(this))
     , m_modUseSuggestedButton(new QPushButton(tr("Use recommendation"), this))
@@ -173,6 +174,22 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     compilerForm->addRow(QString(), m_wallCheck);
     compilerForm->addRow(QString(), m_wextraCheck);
     compilerForm->addRow(tr("Extra compiler flags"), m_extraCompilerFlagsEdit);
+
+    m_askBeforeGameBuildCheck->setChecked(true);
+    m_askBeforeGameBuildCheck->setToolTip(tr(
+        "For V1 Game projects: ask before the full, backed-up Update Project "
+        "operation (including SDK helper C/H updates, level exports and maingame.c.txt). "
+        "A remembered answer lasts only for this project session. "
+        "Recheck to show the build question again."));
+    compilerForm->addRow(m_askBeforeGameBuildCheck);
+    auto *gameBuildNote = new QLabel(tr(
+        "Build reminder choices are session-only and NOT stored in the project "
+        "file. Reopening a project restores the prompt. Update and Compile "
+        "runs the full Update Project including ZIP backups and helper replacement; "
+        "Compile Without Updating skips it."),
+        compilerPage);
+    gameBuildNote->setWordWrap(true);
+    compilerForm->addRow(gameBuildNote);
 
     auto *compilerNote = new QLabel(
         tr("These settings are stored in this project's .proj file. "
@@ -441,4 +458,14 @@ QString ProjectSettingsDialog::extraCompilerFlags() const
 void ProjectSettingsDialog::setExtraCompilerFlags(const QString &flags)
 {
     m_extraCompilerFlagsEdit->setText(flags);
+}
+
+bool ProjectSettingsDialog::askBeforeGameBuild() const
+{
+    return m_askBeforeGameBuildCheck->isChecked();
+}
+
+void ProjectSettingsDialog::setAskBeforeGameBuild(bool ask)
+{
+    m_askBeforeGameBuildCheck->setChecked(ask);
 }

@@ -1339,10 +1339,28 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
         p->force_vx100=0; p->vy100=0;
     }
     const int32_t steer = ((buttons & BTN_RIGHT) != 0) - ((buttons & BTN_LEFT) != 0);
-    p->loop_speed100 += steer * 12 - (int32_t)p->gravity * s / 16384;
-    /* Limit friction on a track while honouring low-drag regions. */
-    const int32_t drag = p->force_drag_percent > 3 ? 3 : p->force_drag_percent;
-    p->loop_speed100 = p->loop_speed100 * (100 - drag) / 100;
+    p->loop_speed100 += steer * 12;
+    if (!loop->downhill_boost100) {
+        /* Existing loop behaviour is byte-for-byte equivalent when boost=0:
+         * climb slows, downhill accelerates, and friction is applied. */
+        p->loop_speed100 -= (int32_t)p->gravity * s / 16384;
+        const int32_t drag = p->force_drag_percent > 3 ? 3 : p->force_drag_percent;
+        p->loop_speed100 = p->loop_speed100 * (100 - drag) / 100;
+    } else {
+        /* Arcade boost: the first half of the track climbs without losing
+         * momentum. Starting at the TOP, apply gravity and configured extra
+         * speed only while descending. Works in either travel direction.
+         * Skip drag for boosted tracks so the exit is truly faster. */
+        const uint8_t downhill = p->loop_speed100 > 0
+            ? p->loop_phase >= 32768 : p->loop_phase <= -32768;
+        if (downhill) {
+            p->loop_speed100 -= (int32_t)p->gravity * s / 16384;
+            if (p->loop_speed100 > 0)
+                p->loop_speed100 += loop->downhill_boost100;
+            else if (p->loop_speed100 < 0)
+                p->loop_speed100 -= loop->downhill_boost100;
+        }
+    }
     if (p->loop_speed100 > 3200) p->loop_speed100 = 3200;
     if (p->loop_speed100 < -3200) p->loop_speed100 = -3200;
     /* Tangential motion is arc length. Circumference in hundredths of px. */
@@ -1363,13 +1381,19 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
     const int64_t speed_squared = (int64_t)p->loop_speed100*p->loop_speed100;
     const int64_t needed = (int64_t)(p->gravity > 0 ? p->gravity : 0) *
         loop->radius * 100 * (nc < 0 ? -nc : 0) / 16384;
-    const int32_t inset = (w < h ? w : h)/2;
     const int32_t footX100 = loop->center_x * 100 +
         (int32_t)((int64_t)loop->radius * 100 * ns / 16384);
     const int32_t footY100 = loop->center_y * 100 +
         (int32_t)((int64_t)loop->radius * 100 * nc / 16384);
-    p->x100 = footX100 - w*50 - inset*100*ns/16384 - p->hitbox_x*100;
-    p->y100 = footY100 - h*50 - inset*100*nc/16384 - p->hitbox_y*100;
+    /* Follow the loop with the PHYSICAL hitbox, not a single radius made
+       from min(width,height). That old radius put rectangular hitboxes
+       (e.g. 26x32) BELOW the track on entry by (height-width)/2 pixels.
+       Separate X/Y insets keep the bottom of the feet on the loop bottom,
+       agree with the exit snap, and preserve square-hitbox behaviour. */
+    p->x100 = footX100 - w*50 - (int32_t)((int64_t)w*50*ns/16384)
+        - p->hitbox_x*100;
+    p->y100 = footY100 - h*50 - (int32_t)((int64_t)h*50*nc/16384)
+        - p->hitbox_y*100;
     p->on_ground = 1; p->coyote = 0; p->jump_held = 0;
     if (speed_squared < needed || cg_loop_abs(p->loop_speed100) < 15) {
         cg_loop_detach(p, ns, nc);

@@ -134,6 +134,167 @@ constexpr int FileHistoryRetentionDays = 30;
 constexpr qsizetype MaxCompressedHistorySourceBytes = 128 * 1024 * 1024;
 const QByteArray HistoryCompressionHeader = QByteArrayLiteral("CGHISTORY-ZLIB-v1\n");
 
+
+class ProjectLoadArtworkPanel final : public QWidget
+{
+public:
+    explicit ProjectLoadArtworkPanel(const IDETheme &theme, QWidget *parent = nullptr)
+        : QWidget(parent)
+        , m_theme(theme)
+        , m_portrait(QStringLiteral(":/icons/nagelgirl.png"))
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.fillRect(rect(), m_theme.windowBackground);
+
+        if (!m_portrait.isNull()) {
+            const QSize imageBounds(qMax(1, width() * 40 / 100),
+                                    qMax(1, height() - 4));
+            const QPixmap portrait = m_portrait.scaled(imageBounds,
+                                                       Qt::KeepAspectRatio,
+                                                       Qt::SmoothTransformation);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            painter.drawPixmap(width() - portrait.width() - 2, 2, portrait);
+        }
+
+        painter.setPen(QPen(m_theme.accent, 2));
+        painter.drawRect(rect().adjusted(1, 1, -2, -2));
+    }
+
+private:
+    const IDETheme m_theme;
+    const QPixmap m_portrait;
+};
+
+class ProjectLoadProgressDialog final : public QDialog
+{
+public:
+    explicit ProjectLoadProgressDialog(const IDETheme &theme,
+                                       const QString &projectFileName,
+                                       QWidget *parent = nullptr)
+        : QDialog(parent)
+        , m_theme(theme)
+    {
+        setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::CustomizeWindowHint);
+        setWindowModality(Qt::ApplicationModal);
+        setAttribute(Qt::WA_DeleteOnClose, false);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setFixedSize(720, 320);
+
+        auto *rootLayout = new QVBoxLayout(this);
+        rootLayout->setContentsMargins(16, 16, 16, 16);
+
+        auto *panel = new ProjectLoadArtworkPanel(m_theme, this);
+        auto *panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(28, 24, 28, 24);
+        panelLayout->setSpacing(12);
+
+        m_titleLabel = new QLabel(QCoreApplication::translate("ProjectLoadProgressDialog", "Loading Project"), panel);
+        m_titleLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background: transparent; border: none; border-radius:0px; "
+            "font-size:28px; font-weight:bold; color:%1; }")
+            .arg(ideThemeColorName(m_theme.brightText)));
+
+        auto *subtitleLabel = new QLabel(projectFileName, panel);
+        subtitleLabel->setWordWrap(true);
+        subtitleLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background:transparent; border:none; border-radius:0px; "
+            "font-size:18px; color:%1; }")
+            .arg(ideThemeColorName(m_theme.text)));
+
+        auto *spacer = new QWidget(panel);
+        spacer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
+        auto *statusCaption = new QLabel(QCoreApplication::translate("ProjectLoadProgressDialog", "Current asset / task"), panel);
+        statusCaption->setStyleSheet(QStringLiteral(
+            "QLabel { background:transparent; border:none; border-radius:0px; "
+            "font-size:14px; font-weight:bold; color:%1; }")
+            .arg(ideThemeColorName(m_theme.accent)));
+
+        m_statusLabel = new QLabel(QCoreApplication::translate("ProjectLoadProgressDialog", "Preparing project load..."), panel);
+        m_statusLabel->setWordWrap(true);
+        m_statusLabel->setMinimumHeight(40);
+        m_statusLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background:transparent; border:none; border-radius:0px; "
+            "font-size:16px; color:%1; }")
+            .arg(ideThemeColorName(m_theme.text)));
+
+        m_progressBar = new QProgressBar(panel);
+        m_progressBar->setRange(0, 100);
+        m_progressBar->setValue(0);
+        m_progressBar->setTextVisible(true);
+        m_progressBar->setFormat(QStringLiteral("%p%%"));
+        m_progressBar->setMinimumHeight(26);
+        m_progressBar->setStyleSheet(QStringLiteral(
+            "QProgressBar { background:%1; color:%2; border:2px solid %3; "
+            "border-radius:0px; text-align:center; font-weight:bold; }"
+            "QProgressBar::chunk { background:%4; border-radius:0px; }")
+            .arg(ideThemeColorName(m_theme.panelBackground),
+                 ideThemeColorName(m_theme.brightText),
+                 ideThemeColorName(m_theme.accent),
+                 ideThemeColorName(m_theme.accent)));
+
+        m_hintLabel = new QLabel(QCoreApplication::translate("ProjectLoadProgressDialog", "Please wait while the project assets are loaded and parsed."), panel);
+        m_hintLabel->setWordWrap(true);
+        m_hintLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background:transparent; border:none; border-radius:0px; "
+            "font-size:13px; color:%1; }")
+            .arg(ideThemeColorName(m_theme.text)));
+
+        panelLayout->addWidget(m_titleLabel);
+        panelLayout->addWidget(subtitleLabel);
+        panelLayout->addWidget(spacer);
+        panelLayout->addWidget(statusCaption);
+        panelLayout->addWidget(m_statusLabel);
+        panelLayout->addWidget(m_progressBar);
+        panelLayout->addWidget(m_hintLabel);
+        rootLayout->addWidget(panel);
+
+        if (parent) {
+            const QRect parentRect = parent->frameGeometry();
+            move(parentRect.center() - rect().center());
+        }
+    }
+
+    void setProgress(int percent, const QString &statusText)
+    {
+        m_progressBar->setValue(qBound(0, percent, 100));
+        m_statusLabel->setText(statusText);
+        if (!isVisible()) {
+            show();
+            raise();
+        }
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
+
+    // Leave the complete 100% splash visible for two seconds. The window
+    // itself is not blocked: MainWindow schedules its dismissal with QTimer.
+    void showCompleted()
+    {
+        m_titleLabel->setText(QCoreApplication::translate(
+            "ProjectLoadProgressDialog", "Project Loaded!"));
+        m_statusLabel->setText(QCoreApplication::translate(
+            "ProjectLoadProgressDialog", "Finished loading — all project assets are ready."));
+        m_hintLabel->setText(QCoreApplication::translate(
+            "ProjectLoadProgressDialog", "Ready to create!"));
+        m_progressBar->setValue(100);
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
+
+private:
+    IDETheme m_theme;
+    QLabel *m_titleLabel = nullptr;
+    QLabel *m_statusLabel = nullptr;
+    QLabel *m_hintLabel = nullptr;
+    QProgressBar *m_progressBar = nullptr;
+};
+
 bool isHistoryTextFile(const QString &path)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();
@@ -7384,6 +7545,10 @@ void MainWindow::createNewProject()
     m_compilerStackUsage = true;
     m_extraCompilerFlags.clear();
 
+    // A new project always gets at least one build check in this session.
+    m_gameBuildFirstCheckPending = true;
+    m_gameBuildAskBeforeBuild = true;
+    m_gameBuildAutoRegenerate = false;
     m_projectFilePath = QFileInfo(projectFilePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
@@ -9339,6 +9504,7 @@ void MainWindow::showProjectSettings()
     dialog.setDataSectionsEnabled(m_compilerDataSections);
     dialog.setStackUsageEnabled(m_compilerStackUsage);
     dialog.setExtraCompilerFlags(m_extraCompilerFlags);
+    dialog.setAskBeforeGameBuild(m_gameBuildAskBeforeBuild);
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
@@ -9364,6 +9530,11 @@ void MainWindow::showProjectSettings()
     m_compilerDataSections = dialog.dataSectionsEnabled();
     m_compilerStackUsage = dialog.stackUsageEnabled();
     m_extraCompilerFlags = dialog.extraCompilerFlags();
+    const bool previousAsk = m_gameBuildAskBeforeBuild;
+    m_gameBuildAskBeforeBuild = dialog.askBeforeGameBuild();
+    // Re-enabling the prompt explicitly clears any remembered decision.
+    if (m_gameBuildAskBeforeBuild && !previousAsk)
+        m_gameBuildAutoRegenerate = false;
 
     if (!m_projectFilePath.isEmpty()) {
         saveProjectFile(m_projectFilePath);
@@ -9373,6 +9544,183 @@ void MainWindow::showProjectSettings()
         m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2"),
         m_appSizeKb, m_v2StackKb, m_v2HeapKb);
     statusBar()->showMessage(tr("Project settings saved"));
+}
+
+// Stage 3.79 — safe V1 Game pre-build generation reminder.
+// A saved .sbgm, its PPB assets and its animation definition can each change
+// without changing generated C. Compare their timestamps to gameassets.c.
+bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
+{
+    const QFileInfo design(designPath);
+    const QString output = design.dir().filePath(QStringLiteral("gameassets/gameassets.c"));
+    const QFileInfo generated(output);
+    if (!generated.isFile()
+        || !QFileInfo::exists(design.dir().filePath(QStringLiteral("gameassets/gameassets.h"))))
+        return true;
+    const QDateTime built = generated.lastModified();
+    if (design.lastModified() > built) return true;
+    QFile file(designPath);
+    if (!file.open(QIODevice::ReadOnly)) return true; // fail safely
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) return true;
+    const QJsonObject root = document.object();
+    auto newer = [&](const QString &relative) {
+        if (relative.isEmpty()) return false;
+        const QFileInfo info(QDir::isAbsolutePath(relative) ? relative
+                                                              : design.dir().filePath(relative));
+        return !info.isFile() || info.lastModified() > built;
+    };
+    const QJsonArray resources = root.value(QStringLiteral("resources")).toArray();
+    for (const QJsonValue &resource : resources) {
+        const QJsonObject asset = resource.toObject();
+        if (newer(asset.value(QStringLiteral("path")).toString())
+            || newer(asset.value(QStringLiteral("animationFile")).toString()))
+            return true;
+    }
+    const QJsonObject tilemap = root.value(QStringLiteral("tilemap")).toObject();
+    if (newer(tilemap.value(QStringLiteral("atlasPath")).toString())) return true;
+    return false;
+}
+
+bool MainWindow::checkGameBuildGeneration()
+{
+    if (normalizedProjectType(m_projectType) != GameProjectType) return true;
+
+    QStringList designs;
+    // Open documents and the project file list cover nested game designs.
+    for (const QString &entry : std::as_const(m_projectFilesInProject)) {
+        if (entry.endsWith(QStringLiteral(".sbgm"), Qt::CaseInsensitive)
+            && QFileInfo::exists(entry)) designs << QFileInfo(entry).absoluteFilePath();
+    }
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i)))
+            designs << QFileInfo(game->filePath()).absoluteFilePath();
+    }
+    // Also find root-level designs even if the project tree hasn't been rescanned.
+    QDir project(m_projectPath);
+    for (const QString &name : project.entryList({QStringLiteral("*.sbgm")}, QDir::Files))
+        designs << project.absoluteFilePath(name);
+    designs.removeDuplicates();
+    designs.sort(Qt::CaseInsensitive);
+    if (designs.isEmpty()) return true;
+
+    // Several game designs in the same folder can generate the SAME output
+    // filenames. Pick one explicitly; otherwise later designs would silently
+    // overwrite the files generated for the first design.
+    if (designs.size() > 1) {
+        QStringList names;
+        int initial = 0;
+        const auto *active = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
+        const QString activePath = active ? QFileInfo(active->filePath()).absoluteFilePath() : QString();
+        for (int i = 0; i < designs.size(); ++i) {
+            names << project.relativeFilePath(designs.at(i));
+            if (designs.at(i) == activePath) initial = i;
+        }
+        bool accepted = false;
+        const QString chosen = QInputDialog::getItem(this, tr("Choose Game Design"),
+            tr("Several .sbgm designs exist. Which world should F5 generate?"),
+            names, initial, false, &accepted);
+        if (!accepted) return false;
+        designs = { designs.at(names.indexOf(chosen)) };
+    }
+
+    // Each .sbgm exports gameassets into its own containing directory.
+    // For the common single-design project, show the first-build reminder even
+    // when generated files look up to date (requested safety behaviour).
+    QStringList outdated;
+    for (const QString &path : std::as_const(designs)) {
+        if (gameBuildFilesOutdated(path)) outdated << path;
+    }
+    if (!m_gameBuildFirstCheckPending && outdated.isEmpty()) return true;
+
+    bool shouldRegenerate = false;
+    bool rememberUpdateAfterSuccess = false;
+    if (!m_gameBuildAskBeforeBuild) {
+        shouldRegenerate = m_gameBuildAutoRegenerate;
+    } else {
+        QMessageBox question(this);
+        question.setIcon(QMessageBox::Question);
+        question.setWindowTitle(tr("Compile — Update Project?"));
+        question.setText(m_gameBuildFirstCheckPending
+            ? tr("Update the game project before compiling?")
+            : tr("Game resources have changed since the last update."));
+        question.setInformativeText(tr(
+            "Update and Compile runs the SAME full Update Project operation "
+            "as the Game Designer button:\n"
+            "- Create a ZIP backup BEFORE replacing files.\n"
+            "- Refresh installed gamehelpers C/H from the SDK.\n"
+            "- Export tilemaps and splines.\n"
+            "- Regenerate gameassets, world items and maingame.c.txt.\n\n"
+            "Existing helper edits WILL be replaced after confirmation. "
+            "Your user-owned main.c stays protected.\n\n"
+            "Update and Compile: Back up, update, then build.\n"
+            "Compile Without Updating: Build the current files unchanged.\n"
+            "Cancel: Stop building."));
+        question.setStyleSheet(QStringLiteral(
+            "QMessageBox, QPushButton, QCheckBox { border-radius: 0px; }"));
+        auto *remember = new QCheckBox(tr("Remember my choice for this project session"), &question);
+        question.setCheckBox(remember);
+        auto *yes = question.addButton(tr("Update and Compile"), QMessageBox::AcceptRole);
+        auto *no = question.addButton(tr("Compile Without Updating"), QMessageBox::DestructiveRole);
+        auto *cancel = question.addButton(QMessageBox::Cancel);
+        question.setDefaultButton(yes);
+        question.exec();
+        if (question.clickedButton() == cancel || question.clickedButton() == nullptr)
+            return false;
+        shouldRegenerate = question.clickedButton() == yes;
+        // Commit the session preference only after the selected update
+        // completes. Cancellation in the Update Project confirmation must
+        // not silently disable future prompts.
+        const bool rememberChoice = remember->isChecked();
+        if (!shouldRegenerate) {
+            if (rememberChoice) {
+                m_gameBuildAskBeforeBuild = false;
+                m_gameBuildAutoRegenerate = false;
+            }
+        } else {
+            // Remember later, only when the full update succeeds.
+            rememberUpdateAfterSuccess = rememberChoice;
+        }
+        Q_UNUSED(no)
+    }
+    if (shouldRegenerate) {
+        // If the first compile of a freshly opened project was requested,
+        // perform the full Update Project even when timestamps are in sync.
+        const QStringList targets = m_gameBuildFirstCheckPending ? designs : outdated;
+        for (const QString &path : targets) {
+            SidboxGameDesigner *game = nullptr;
+            for (int i = 0; i < m_editorTabs->count(); ++i) {
+                auto *open = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
+                if (open && QFileInfo(open->filePath()).absoluteFilePath() == path) {
+                    game = open; break;
+                }
+            }
+            // Use the normal Designer tab when the design wasn't open.
+            // Do NOT create/destroy a hidden temporary Designer on every F5:
+            // teardown of Game Designer tabs has a separately reported crash.
+            if (!game) {
+                const int previousTab = m_editorTabs->currentIndex();
+                if (!openGameDesigner(path)) return false;
+                game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
+                if (!game) return false;
+                if (previousTab >= 0 && previousTab < m_editorTabs->count())
+                    m_editorTabs->setCurrentIndex(previousTab);
+            }
+            // Reuse the SAME full, transactional operation as the
+            // Game Designer's Update Project button. It makes its ZIP backup,
+            // refreshes helpers, writes maingame.c.txt and applies the normal
+            // main.c ownership checks. Cancellation or failure stops F5.
+            if (!game->updateGameProject()) return false;
+        }
+        refreshProjectFiles();
+        if (rememberUpdateAfterSuccess) {
+            m_gameBuildAskBeforeBuild = false;
+            m_gameBuildAutoRegenerate = true;
+        }
+    }
+    m_gameBuildFirstCheckPending = false;
+    return true;
 }
 
 void MainWindow::compileActiveFile()
@@ -9430,26 +9778,13 @@ void MainWindow::compileActiveFile()
         }
     }
 
-    // Save V1 game designs before F5. Once a tilemap has been exported,
-    // saveDesign refreshes its C level automatically. On a new project the
-    // first export may be missing, so ask rather than compile stale data.
+    // Save modified V1 game designs, as F5 has always done. Do not also
+    // install missing helpers/export levels here: 'Compile Without Updating'
+    // must truly skip Update Project, and the full Update and Compile path
+    // handles all required helper/level exports after making its ZIP backup.
     for (int i = 0; i < m_editorTabs->count(); ++i) {
         if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i))) {
             if (game->isModified() && !game->saveDesign()) return;
-            if (game->tilemapBuildFilesMissing()) {
-                const auto answer = QMessageBox::question(this,
-                    tr("Compile: Tilemap Files Missing"),
-                    tr("The tilemap in %1 is missing exported C files or the tilemap helper.\n\n"
-                       "Yes: Export level1.c/.h and install any missing helper files "
-                       "without replacing existing helper code.\n"
-                       "No: Compile without exporting.\n"
-                       "Cancel: Stop compiling.")
-                        .arg(QFileInfo(game->filePath()).fileName()),
-                    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
-                    QMessageBox::Yes);
-                if (answer == QMessageBox::Cancel) return;
-                if (answer == QMessageBox::Yes && !game->exportTilemapForCompile()) return;
-            }
         }
     }
 
@@ -9457,6 +9792,8 @@ void MainWindow::compileActiveFile()
         QMessageBox::information(this, tr("Compile"), tr("A compile is already running."));
         return;
     }
+
+    if (!checkGameBuildGeneration()) return;
 
     const QStringList sourceFiles = projectFilesForCompile();
     if (sourceFiles.isEmpty()) {
@@ -11766,26 +12103,56 @@ bool MainWindow::saveModifiedWorkBeforeNewProject()
 
 bool MainWindow::loadProjectFile(const QString &filePath)
 {
+    // Heap-own the splash so it can remain visible briefly after loading
+    // returns, without a nested event loop or a blocking sleep.
+    auto *progress = new ProjectLoadProgressDialog(
+        currentTheme(), QFileInfo(filePath).fileName(), this);
+    progress->setProgress(0, tr("Opening project file..."));
+
+    auto dismissProgress = [progress]() {
+        progress->hide();
+        progress->deleteLater();
+    };
+
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        dismissProgress();
         QMessageBox::warning(this, tr("Open Project"), tr("Could not open %1.").arg(QDir::toNativeSeparators(filePath)));
         return false;
     }
 
+    progress->setProgress(3, tr("Reading project file..."));
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        dismissProgress();
         QMessageBox::warning(this, tr("Open Project"), tr("The project file is not valid JSON."));
         return false;
     }
 
     const QJsonObject root = document.object();
     const QJsonArray files = root.value(QStringLiteral("files")).toArray();
+    const QJsonArray openTabsArray = root.value(QStringLiteral("openTabs")).toArray();
+
+    const int totalUnits = qMax(1, 10 + files.size() + openTabsArray.size());
+    int currentUnit = 0;
+    auto step = [&](const QString &statusText) {
+        ++currentUnit;
+        const int percent = qBound(0, qRound((100.0 * currentUnit) / totalUnits), 99);
+        progress->setProgress(percent, statusText);
+    };
 
     // Tear down the previous project's tabs before changing the active
     // project directory. Old GUI/Game Designer instances must never run
     // their teardown against the next project's state.
+    step(tr("Clearing previous project tabs..."));
     clearEditorTabs();
+
+    step(tr("Reading project settings..."));
+    // Deliberately reset on every project open, NOT read from .proj/QSettings.
+    m_gameBuildFirstCheckPending = true;
+    m_gameBuildAskBeforeBuild = true;
+    m_gameBuildAutoRegenerate = false;
     m_projectFilePath = QFileInfo(filePath).absoluteFilePath();
     m_projectPath = QFileInfo(m_projectFilePath).absolutePath();
     m_projectFilesInProject.clear();
@@ -11842,11 +12209,6 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     m_extraCompilerFlags =
         compiler.value(QStringLiteral("extraFlags")).toString();
 
-    /*
-     * -w means warnings are suppressed, so warning-enabling switches have no
-     * effect. Keep the stored state internally consistent for older/hand-edited
-     * project files.
-     */
     if (m_compilerSuppressWarnings) {
         m_compilerWall = false;
         m_compilerWextra = false;
@@ -11855,35 +12217,37 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     const QString linkerScript = root.value(QStringLiteral("linkerScript")).toString();
     m_linkerScriptPath = linkerScript.isEmpty() ? QString() : fromProjectRelativePath(linkerScript);
 
+    int assetIndex = 0;
     for (const QJsonValue &value : files) {
         const QString projectFile = fromProjectRelativePath(value.toString());
         if (!projectFile.isEmpty()) {
+            ++assetIndex;
+            step(tr("Registering asset %1 of %2: %3")
+                     .arg(assetIndex)
+                     .arg(files.size())
+                     .arg(QFileInfo(projectFile).fileName()));
             addProjectFile(projectFile);
         }
     }
 
+    step(tr("Building project file tree..."));
     refreshProjectFiles();
 
-    const QJsonArray openTabsArray = root.value(QStringLiteral("openTabs")).toArray();
+    int tabIndex = 0;
     for (const QJsonValue &val : openTabsArray) {
         const QString tabPath = fromProjectRelativePath(val.toString());
         if (!tabPath.isEmpty() && QFileInfo::exists(tabPath)) {
+            ++tabIndex;
+            step(tr("Opening tab %1 of %2: %3")
+                     .arg(tabIndex)
+                     .arg(openTabsArray.size())
+                     .arg(QFileInfo(tabPath).fileName()));
             openFile(tabPath);
         }
     }
 
-    /*
-    for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
-        // open initially the main.c only
-        //openFile(projectFile);
-        if (projectFile.endsWith(QStringLiteral("/main.c"), Qt::CaseInsensitive) || projectFile == QStringLiteral("main.c")) {
-            openFile(projectFile);
-            break; // Stop looping once main.c is found and opened
-        }
-    }
-    */
-
     if (m_editorTabs->count() == 0) {
+        step(tr("Opening main source file..."));
         for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
             if (projectFile.endsWith(QStringLiteral("/main.c"), Qt::CaseInsensitive) || projectFile == QStringLiteral("main.c")) {
                 openFile(projectFile);
@@ -11893,6 +12257,7 @@ bool MainWindow::loadProjectFile(const QString &filePath)
     }
 
     if (m_editorTabs->count() == 0) {
+        step(tr("Creating a new source tab..."));
         createNewSourceFile();
     }
 
@@ -11900,9 +12265,12 @@ bool MainWindow::loadProjectFile(const QString &filePath)
      * Project load is a project-level event, so build the per-file caches once.
      * Normal typing after this point only refreshes the active tab.
      */
+    step(tr("Refreshing code completions..."));
     refreshFunctionCompletions();
+    step(tr("Refreshing symbol tree..."));
     refreshSymbolTree();
-    // Display existing build measurements on reopening, without compiling.
+
+    step(tr("Restoring build information..."));
     const bool v2Project = m_projectType == GuiProjectType && m_appletFormat == QStringLiteral("v2");
     const QString stem = QFileInfo(m_projectFilePath).completeBaseName();
     const QString existingElf = QDir(m_projectPath).filePath(
@@ -11914,8 +12282,16 @@ bool MainWindow::loadProjectFile(const QString &filePath)
         existingElf, existingApp, QFileInfo(existingElf).absolutePath(),
         m_projectType == GameProjectType);
 
+    step(tr("Finishing project load..."));
     setWindowTitle(tr("Sidbox IDE - %1").arg(QFileInfo(m_projectFilePath).fileName()));
     rememberRecentProject(m_projectFilePath);
+    progress->showCompleted();
+    // Exactly one two-second success hold. Qt's event loop remains responsive,
+    // and the parent MainWindow owns the dialog if the app closes early.
+    QTimer::singleShot(2000, progress, [progress]() {
+        progress->hide();
+        progress->deleteLater();
+    });
     return true;
 }
 

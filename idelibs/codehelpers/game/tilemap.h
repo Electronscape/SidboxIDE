@@ -117,6 +117,7 @@ typedef struct {
     int32_t center_x, center_y; /* world pixels */
     uint16_t radius; /* world pixels, >=16 */
     uint16_t entry_speed100; /* min horizontal speed in 1/100 pixel/frame */
+    uint16_t downhill_boost100; /* extra speed per DOWNHILL tick, 100 = 1 px/frame; 0 = old physics */
 } game_tile_loop_t;
 
 typedef struct {

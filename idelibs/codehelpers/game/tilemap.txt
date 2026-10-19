@@ -500,3 +500,19 @@ from player_physics when using moving platforms or springs.
 Without animation configuration or with GAMERGIRL_PLAYER_ANIMATIONS off,
 the helper keeps the legacy FULL sprite width and height automatically.
 To clear a custom box manually, call set_hitbox(&player_physics,0,0,0,0).
+
+STAGE 3.80 — LOOP TRACK DOWNHILL MOMENTUM
+----------------------------------------
+Each Loop Track in the Tilemap Editor now has a Momentum Add slider:
+  0.00: original loop physics (gravity slows the climb, drag applies).
+  0.01-2.00: arcade boost (px/frame gained per tick on the descending half).
+             Uphill speed is held unless the player steers or receives a force.
+             Downhill gravity and boost add speed in either travel direction.
+             Exit speed is limited to the existing 32 px/frame physics cap.
+The setting is saved in the .sbgm and exported to gamelevels/level1.c.
+Old saved maps default to 0.00.
+
+IMPORTANT: run Update Project (or F5 -> Update and Compile) so the
+installed gamehelpers/gametilemap.c AND gametilemap.h gain the new field,
+then regenerate gamelevels/level1.c. Backups happen in Update Project.
+The loop tracks are still design-time level metadata: no changes to .map.

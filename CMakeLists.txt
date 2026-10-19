@@ -34,6 +34,11 @@ qt_add_executable(SidboxIDE
     mainwindow_uiicons.h
     mainwindow.h
     guidesigner.cpp
+    guidesigner_graphics.cpp
+    guidesigner_detail.h
+    guidesigner_palette_widgets.inc
+    guidesigner_canvas.inc
+    guidesigner_propertygrid.inc
     guidesigner.h
     gamedesigner.cpp
     gamedesigner_export.cpp

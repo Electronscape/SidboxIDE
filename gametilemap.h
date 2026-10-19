@@ -67,6 +67,7 @@ struct SidboxLoopTrack {
     int centerY = 0;
     int radius = 64;
     int entrySpeed100 = 400; // 4 px/frame
+    int downhillBoost100 = 0; // Extra speed per downhill frame, 100 = +1 px/frame; zero = legacy physics
 };
 
 // Long levels are supported without changing the SD .map header: widths and

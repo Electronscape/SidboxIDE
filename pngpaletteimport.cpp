@@ -1,18 +1,30 @@
 #include "pngpaletteimport.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QGridLayout>
+#include <QFont>
+#include <QSplitter>
+#include <QSizePolicy>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QListView>
+#include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QHash>
+#include <QIcon>
+#include <QKeyEvent>
+#include <QVariant>
 #include <QFrame>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
@@ -54,6 +66,13 @@ void measure(Box &b, const QVector<Bin> &hist) {
     }
 }
 int clampByte(int v) { return std::max(0, std::min(255, v)); }
+bool isTransparentPixel(QRgb pixel, const Options &opt) {
+    if (qAlpha(pixel) < 128) return true;
+    if (!opt.keyColourEnabled) return false;
+    return qRed(pixel) == qRed(opt.keyColour)
+        && qGreen(pixel) == qGreen(opt.keyColour)
+        && qBlue(pixel) == qBlue(opt.keyColour);
+}
 int colourDistance(QRgb a, int r, int g, int b) {
     const int dr = r - qRed(a), dg = g - qGreen(a), db = b - qBlue(a);
     return 3 * dr * dr + 6 * dg * dg + 2 * db * db;
@@ -81,10 +100,38 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
     }
     const QImage img = source.convertToFormat(QImage::Format_ARGB32);
     const int paletteSlotCount = opt.last - opt.first + 1;
+    // Reserve exact source colours before automatic quantisation. Small accents
+    // (such as blue eyes) must not be averaged away by weighted median cut.
+    QVector<QRgb> protectedColours;
+    QHash<QRgb, bool> protectedSet;
+    for (QRgb raw : opt.protectedColours) {
+        const QRgb rgb = qRgb(qRed(raw), qGreen(raw), qBlue(raw));
+        if (protectedSet.contains(rgb)) continue;
+        if (opt.keyColourEnabled && isTransparentPixel(rgb, opt)) {
+            if (error) *error = QStringLiteral("A colour cannot be protected and transparent simultaneously.");
+            return false;
+        }
+        protectedSet.insert(rgb, true);
+        protectedColours.append(rgb);
+    }
+    if ((!opt.buildColours && !protectedColours.isEmpty()) || protectedColours.size() > paletteSlotCount) {
+        if (error) *error = QStringLiteral("Protected colours require Generate mode and must fit inside the selected palette range.");
+        return false;
+    }
+    const int automaticCapacity = paletteSlotCount - protectedColours.size();
     QVector<QRgb> palette = palette256(opt.startFresh ? QVector<QRgb>() : current);
     int builtColours = 0;
     QHash<QRgb, int> exactMapping;
+    QHash<QRgb, int> protectedMapping;
     if (opt.buildColours) {
+        // Protected entries occupy the beginning of the selected range; the
+        // automatic palette fills only the remaining entries.
+        for (QRgb rgb : protectedColours) {
+            const int index = opt.first + builtColours++;
+            palette[index] = rgb;
+            exactMapping.insert(rgb, index);
+            protectedMapping.insert(rgb, index);
+        }
         // Lossless when the PNG fits in the requested slot count, otherwise
         // weighted median cut on a bounded RGB555 histogram (32K bins).
         QHash<QRgb, int> exact;
@@ -93,26 +140,29 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
         for (int y = 0; y < img.height() && !tooMany; ++y) {
             const QRgb *row = reinterpret_cast<const QRgb *>(img.constScanLine(y));
             for (int x = 0; x < img.width(); ++x) {
-                if (qAlpha(row[x]) < 128) continue;
+                if (isTransparentPixel(row[x], opt)) continue;
                 const QRgb rgb = qRgb(qRed(row[x]), qGreen(row[x]), qBlue(row[x]));
-                if (exact.contains(rgb)) continue;
-                if (order.size() == paletteSlotCount) { tooMany = true; break; }
+                if (protectedSet.contains(rgb) || exact.contains(rgb)) continue;
+                if (order.size() == automaticCapacity) { tooMany = true; break; }
                 exact.insert(rgb, order.size());
                 order.append(rgb);
             }
         }
         if (!tooMany) {
-            builtColours = order.size();
-            for (int i = 0; i < builtColours; ++i) {
-                palette[opt.first + i] = order[i];
-                exactMapping.insert(order[i], opt.first + i);
+            const int offset = builtColours;
+            for (int i = 0; i < order.size(); ++i) {
+                palette[opt.first + offset + i] = order[i];
+                exactMapping.insert(order[i], opt.first + offset + i);
             }
+            builtColours += order.size();
         } else {
             QVector<Bin> histogram(32768);
             for (int y = 0; y < img.height(); ++y) {
                 const QRgb *row = reinterpret_cast<const QRgb *>(img.constScanLine(y));
                 for (int x = 0; x < img.width(); ++x) {
-                    if (qAlpha(row[x]) < 128) continue;
+                    if (isTransparentPixel(row[x], opt)) continue;
+                    const QRgb rgb = qRgb(qRed(row[x]), qGreen(row[x]), qBlue(row[x]));
+                    if (protectedSet.contains(rgb)) continue;
                     Bin &b = histogram[binOf(row[x])];
                     ++b.count;
                     b.red += qRed(row[x]); b.green += qGreen(row[x]); b.blue += qBlue(row[x]);
@@ -120,11 +170,11 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             }
             Box initial;
             for (int i = 0; i < 32768; ++i) if (histogram[i].count) initial.bins.append(i);
-            if (initial.bins.isEmpty()) { /* all transparent */ }
+            if (initial.bins.isEmpty() || automaticCapacity == 0) { /* no automatic palette entries */ }
             else {
                 measure(initial, histogram);
                 QVector<Box> boxes{initial};
-                while (boxes.size() < paletteSlotCount) {
+                while (boxes.size() < automaticCapacity) {
                     int best = -1, axis = 0;
                     quint64 score = 0;
                     for (int i = 0; i < boxes.size(); ++i) {
@@ -153,7 +203,7 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
                     measure(second, histogram);
                     boxes.append(second);
                 }
-                builtColours = boxes.size();
+                const int offset = builtColours;
                 for (int i = 0; i < boxes.size(); ++i) {
                     quint64 count = 0, r = 0, g = 0, b = 0;
                     for (int id : boxes[i].bins) {
@@ -161,8 +211,9 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
                         count += bin.count;
                         r += bin.red; g += bin.green; b += bin.blue;
                     }
-                    if (count) palette[opt.first + i] = qRgb(int(r / count), int(g / count), int(b / count));
+                    if (count) palette[opt.first + offset + i] = qRgb(int(r / count), int(g / count), int(b / count));
                 }
+                builtColours += boxes.size();
             }
         }
     } else {
@@ -195,7 +246,14 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             const QRgb *input = reinterpret_cast<const QRgb *>(img.constScanLine(y));
             uchar *target = output.scanLine(y);
             for (int x = 0; x < img.width(); ++x) {
-                if (qAlpha(input[x]) < 128) { target[x] = 0; continue; }
+                if (isTransparentPixel(input[x], opt)) { target[x] = 0; continue; }
+                // Preserve locked RGBs even when a dither mode is active.
+                const QRgb original = qRgb(qRed(input[x]), qGreen(input[x]), qBlue(input[x]));
+                const auto protectedPixel = protectedMapping.constFind(original);
+                if (protectedPixel != protectedMapping.constEnd()) {
+                    target[x] = uchar(protectedPixel.value());
+                    continue;
+                }
                 int r = qRed(input[x]), g = qGreen(input[x]), b = qBlue(input[x]);
                 if (opt.dither == Dither::Ordered) {
                     const int delta = (bayer[y & 3][x & 3] * 2 - 15) * 2;
@@ -284,8 +342,53 @@ public:
     double currentZoom() const { return transform().m11(); }
     std::function<void(double)> zoomRequested;
     std::function<void()> fittedScaleChanged;
+    std::function<void(QPoint, bool)> sourcePixelSelected;
+
+    // The original PNG is a pixel picker. Show a crosshair whenever Ctrl is
+    // held (Ctrl+click = transparency; Ctrl+Shift+click = protected colour).
+    // The output preview remains the normal hand/pan view.
+    void enableSourcePickCursor() {
+        m_sourcePickCursor = true;
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+        qApp->installEventFilter(this); // keyboard focus may be on another control
+        updateSourcePickCursor(QApplication::keyboardModifiers());
+    }
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (m_sourcePickCursor) {
+            if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)
+                updateSourcePickCursor(static_cast<QKeyEvent *>(event)->modifiers());
+            else if (event->type() == QEvent::ApplicationDeactivate
+                     || event->type() == QEvent::WindowDeactivate)
+                updateSourcePickCursor(Qt::NoModifier);
+            else if (watched == viewport() && event->type() == QEvent::Enter)
+                updateSourcePickCursor(QApplication::keyboardModifiers());
+        }
+        return QGraphicsView::eventFilter(watched, event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        QGraphicsView::mouseMoveEvent(event);
+        if (m_sourcePickCursor) updateSourcePickCursor(event->modifiers());
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        QGraphicsView::mouseReleaseEvent(event);
+        if (m_sourcePickCursor) updateSourcePickCursor(event->modifiers());
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        // Ctrl+click picks a precise source PNG RGB value; ordinary drag-to-pan remains intact.
+        if (sourcePixelSelected && event->button() == Qt::LeftButton
+            && (event->modifiers() & Qt::ControlModifier)) {
+            const QPoint at = mapToScene(event->position().toPoint()).toPoint();
+            if (sceneRect().contains(QPointF(at))) {
+                sourcePixelSelected(at, bool(event->modifiers() & Qt::ShiftModifier));
+                event->accept();
+                return;
+            }
+        }
+        QGraphicsView::mousePressEvent(event);
+    }
     void resizeEvent(QResizeEvent *event) override {
         QGraphicsView::resizeEvent(event);
         if (m_fitting) refit();
@@ -316,6 +419,17 @@ protected:
         painter->fillRect(inside, QBrush(checker));
     }
 private:
+    void updateSourcePickCursor(Qt::KeyboardModifiers modifiers) {
+        if (!m_sourcePickCursor) return;
+        // QGraphicsView uses an open/closed hand for panning. Preserve that
+        // feedback until Ctrl activates precise pixel picking.
+        const Qt::CursorShape shape = (modifiers & Qt::ControlModifier)
+            ? Qt::CrossCursor
+            : (QApplication::mouseButtons() & Qt::LeftButton)
+                ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
+        if (viewport()->cursor().shape() != shape)
+            viewport()->setCursor(shape);
+    }
     void refit() {
         resetTransform();
         if (!m_image->pixmap().isNull())
@@ -325,6 +439,7 @@ private:
     QGraphicsScene *m_scene;
     QGraphicsPixmapItem *m_image;
     bool m_fitting = true;
+    bool m_sourcePickCursor = false;
 };
 
 PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
@@ -334,45 +449,76 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     : QDialog(parent), m_source(source), m_dualPlane(dualPlane), m_front(foreground), m_back(background)
 {
     setWindowTitle(tr("Import PNG → SIDBOX Indexed PPB"));
-    setMinimumWidth(720);
-    resize(1060, 760);
+    setMinimumWidth(800);
+    resize(1180, 820);
     setStyleSheet(QStringLiteral("QDialog { border-radius: 0px; } QGroupBox, QPushButton, QComboBox, QSpinBox, QLabel { border-radius: 0px; }"));
     auto *layout = new QVBoxLayout(this);
-    auto *form = new QFormLayout();
+    // Compact three-column settings: give the image previews the height instead
+    // of stacking seven form rows in the upper-left corner of a wide dialog.
+    auto *settings = new QGridLayout();
+    settings->setContentsMargins(0, 0, 0, 0);
+    settings->setHorizontalSpacing(16);
+    settings->setVerticalSpacing(5);
+    settings->setColumnStretch(0, 1);
+    settings->setColumnStretch(1, 1);
+    settings->setColumnStretch(2, 2);
+
     m_destination = new QComboBox(this);
     m_destination->addItem(tr("Tile Atlases (resource only)"), QStringLiteral("tileatlas"));
     m_destination->addItem(tr("Sprites (on game canvas)"), QStringLiteral("sprite"));
     m_destination->addItem(tr("Backgrounds"), QStringLiteral("background"));
     const int initial = m_destination->findData(initialKind);
     if (initial >= 0) m_destination->setCurrentIndex(initial);
-    form->addRow(tr("Import into:"), m_destination);
+    settings->addWidget(new QLabel(tr("Import into:"), this), 0, 0);
+    settings->addWidget(m_destination, 1, 0);
+
     m_bank = new QComboBox(this);
     m_bank->addItem(tr("Foreground CLUT"), QStringLiteral("foreground"));
     m_bank->addItem(tr("Background CLUT"), QStringLiteral("background"));
-    form->addRow(tr("Palette bank:"), m_bank);
+    settings->addWidget(new QLabel(tr("Palette bank:"), this), 0, 1);
+    settings->addWidget(m_bank, 1, 1);
+
     m_mode = new QComboBox(this);
     m_mode->addItem(tr("Generate colours in selected range"), true);
     m_mode->addItem(tr("Match existing palette colours (do not modify)"), false);
-    form->addRow(tr("Palette mode:"), m_mode);
+    settings->addWidget(new QLabel(tr("Palette mode:"), this), 0, 2);
+    settings->addWidget(m_mode, 1, 2);
+
     auto *range = new QWidget(this);
     auto *rangeLayout = new QHBoxLayout(range);
-    rangeLayout->setContentsMargins(0,0,0,0);
-    m_first = new QSpinBox(this); m_first->setRange(1,255); m_first->setValue(1);
-    m_last = new QSpinBox(this); m_last->setRange(1,255); m_last->setValue(255);
+    rangeLayout->setContentsMargins(0, 0, 0, 0);
+    m_first = new QSpinBox(this); m_first->setRange(1, 255); m_first->setValue(1);
+    m_last = new QSpinBox(this); m_last->setRange(1, 255); m_last->setValue(255);
     rangeLayout->addWidget(m_first);
-    rangeLayout->addWidget(new QLabel(tr("through"), this));
+    rangeLayout->addWidget(new QLabel(tr("to"), this));
     rangeLayout->addWidget(m_last);
-    rangeLayout->addWidget(new QLabel(tr("(0 is always transparent)"), this));
-    form->addRow(tr("Palette index range:"), range);
-    m_fresh = new QCheckBox(tr("Start with a blank palette (otherwise preserve existing colours)"), this);
-    form->addRow(QString(), m_fresh);
+    rangeLayout->addStretch(1);
+    settings->addWidget(new QLabel(tr("Palette indices (0 is transparent):"), this), 2, 0);
+    settings->addWidget(range, 3, 0);
+
     m_dither = new QComboBox(this);
     m_dither->addItem(tr("None (pixel art / exact colours)"), int(SidboxPngImport::Dither::None));
     m_dither->addItem(tr("Floyd–Steinberg error diffusion"), int(SidboxPngImport::Dither::FloydSteinberg));
     m_dither->addItem(tr("Ordered 4×4 dither"), int(SidboxPngImport::Dither::Ordered));
     m_dither->addItem(tr("Noise dither (reproducible)"), int(SidboxPngImport::Dither::Noise));
-    form->addRow(tr("Dithering:"), m_dither);
-    layout->addLayout(form);
+    settings->addWidget(new QLabel(tr("Dithering:"), this), 2, 1);
+    settings->addWidget(m_dither, 3, 1);
+
+    auto *transparentRow = new QWidget(this);
+    auto *transparentLayout = new QHBoxLayout(transparentRow);
+    transparentLayout->setContentsMargins(0, 0, 0, 0);
+    m_transparentKey = new QCheckBox(tr("Map one PNG colour to index 0"), this);
+    m_transparentColourPreview = new QLabel(this);
+    m_transparentColourPreview->setMinimumWidth(100);
+    transparentLayout->addWidget(m_transparentKey);
+    transparentLayout->addStretch(1);
+    transparentLayout->addWidget(m_transparentColourPreview);
+    settings->addWidget(new QLabel(tr("Transparency key (choose from PNG colours):"), this), 2, 2);
+    settings->addWidget(transparentRow, 3, 2);
+
+    m_fresh = new QCheckBox(tr("Start with a blank palette (otherwise preserve existing colours)"), this);
+    settings->addWidget(m_fresh, 4, 0, 1, 3);
+    layout->addLayout(settings);
     // Both inspectors display actual source pixels, at any zoom. Drag one
     // picture to pan; the other follows for an exact before/after comparison.
     auto *viewTools = new QHBoxLayout();
@@ -390,10 +536,16 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     viewTools->addWidget(zoomIn);
     viewTools->addWidget(m_zoomReadout);
     viewTools->addStretch(1);
-    viewTools->addWidget(new QLabel(tr("Drag to pan  •  Wheel to zoom"), this));
+    viewTools->addWidget(new QLabel(tr("Drag: pan  •  Wheel: zoom  •  Ctrl+click: key  •  Ctrl+Shift+click: protect"), this));
     layout->addLayout(viewTools);
 
-    auto *previews = new QHBoxLayout();
+    // Resizable workspace: two large previews plus a source-colour inspector.
+    // A splitter lets the user choose how much room the palette receives.
+    auto *workspace = new QSplitter(Qt::Horizontal, this);
+    workspace->setChildrenCollapsible(false);
+    auto *previewArea = new QWidget(workspace);
+    auto *previews = new QHBoxLayout(previewArea);
+    previews->setContentsMargins(0, 0, 0, 0);
     auto *origColumn = new QVBoxLayout();
     auto *newColumn = new QVBoxLayout();
     origColumn->addWidget(new QLabel(tr("Original PNG (%1 × %2)").arg(source.width()).arg(source.height()), this));
@@ -405,7 +557,42 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     newColumn->addWidget(m_after, 1);
     previews->addLayout(origColumn, 1);
     previews->addLayout(newColumn, 1);
-    layout->addLayout(previews, 1);
+    workspace->addWidget(previewArea);
+
+    auto *paletteArea = new QFrame(workspace);
+    paletteArea->setFrameShape(QFrame::StyledPanel);
+    paletteArea->setMinimumWidth(245);
+    auto *paletteLayout = new QVBoxLayout(paletteArea);
+    paletteLayout->setContentsMargins(7, 7, 7, 7);
+    paletteLayout->setSpacing(6);
+    auto *sourceTitle = new QLabel(tr("Source PNG colours"), paletteArea);
+    QFont titleFont = sourceTitle->font();
+    titleFont.setBold(true);
+    sourceTitle->setFont(titleFont);
+    paletteLayout->addWidget(sourceTitle);
+    auto *sourceHelp = new QLabel(tr("Click: transparent (index 0). Shift+click: protect that exact colour from reduction; Shift+click again to release. Ctrl+Shift+click the original PNG works too."), paletteArea);
+    sourceHelp->setWordWrap(true);
+    paletteLayout->addWidget(sourceHelp);
+    m_sourceColours = new QListWidget(paletteArea);
+    m_sourceColours->setViewMode(QListView::IconMode);
+    m_sourceColours->setFlow(QListView::LeftToRight);
+    m_sourceColours->setWrapping(true);
+    m_sourceColours->setMovement(QListView::Static);
+    m_sourceColours->setResizeMode(QListView::Adjust);
+    m_sourceColours->setIconSize(QSize(26, 26));
+    m_sourceColours->setGridSize(QSize(76, 51));
+    m_sourceColours->setUniformItemSizes(true);
+    m_sourceColours->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_sourceColours->setStyleSheet(QStringLiteral("QListWidget { border-radius: 0px; }"));
+    paletteLayout->addWidget(m_sourceColours, 1);
+    m_sourceColourNote = new QLabel(paletteArea);
+    m_sourceColourNote->setWordWrap(true);
+    paletteLayout->addWidget(m_sourceColourNote);
+    workspace->addWidget(paletteArea);
+    workspace->setStretchFactor(0, 1);
+    workspace->setStretchFactor(1, 0);
+    workspace->setSizes({800, 325});
+    layout->addWidget(workspace, 1);
 
     connect(fitButton, &QPushButton::clicked, this, [this]() { fitPreviews(); });
     connect(oneToOne, &QPushButton::clicked, this, [this]() { setPreviewZoom(1.0); });
@@ -429,15 +616,19 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     connect(m_after->verticalScrollBar(), &QScrollBar::valueChanged,
             m_before->verticalScrollBar(), &QScrollBar::setValue);
 
+    // Compact output summary and the exact 32/256-entry destination CLUT strip.
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
     layout->addWidget(m_status);
+    auto *outputRow = new QHBoxLayout();
+    outputRow->addWidget(new QLabel(tr("Output CLUT:"), this));
     m_swatch = new QLabel(this);
     m_swatch->setMinimumHeight(26);
-    layout->addWidget(m_swatch);
-    auto *note = new QLabel(tr("Both previews show full-resolution pixels; changing palette settings may take longer for large PNGs. "
-        "Alpha below 50% becomes index 0; other pixels are opaque. "
-        "Saving a palette over a used range may recolour older graphics using those indices."), this);
+    outputRow->addWidget(m_swatch);
+    outputRow->addStretch(1);
+    layout->addLayout(outputRow);
+    auto *note = new QLabel(tr("Exact pixels, no smoothing. The selected transparency colour becomes index 0 and does not use a palette slot. "
+        "Changing an occupied CLUT range can recolour existing resources."), this);
     note->setWordWrap(true);
     layout->addWidget(note);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -457,7 +648,78 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     connect(m_first, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { queuePreview(); });
     connect(m_last, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { queuePreview(); });
     connect(m_fresh, &QCheckBox::toggled, this, [this]() { queuePreview(); });
+    connect(m_transparentKey, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled && m_protectedColours.removeAll(m_keyColour) > 0) updateProtectedColourUi();
+        updateTransparentColourUi();
+        queuePreview();
+    });
+    connect(m_sourceColours, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        const QRgb colour = item->data(Qt::UserRole).value<QRgb>();
+        if (QApplication::keyboardModifiers() & Qt::ShiftModifier) toggleProtectedColour(colour);
+        else selectTransparentColour(colour);
+    });
+    m_before->setObjectName(QStringLiteral("pngOriginalPreview"));
+    m_before->sourcePixelSelected = [this](QPoint at, bool protect) {
+        if (!m_source.valid(at)) return;
+        const QRgb pixel = m_source.pixel(at);
+        if (qAlpha(pixel) < 128) return; // already transparent from source alpha
+        if (protect) toggleProtectedColour(pixel);
+        else selectTransparentColour(pixel);
+    };
+    m_before->enableSourcePickCursor();
     m_before->setImage(m_source);
+    // Display USED colours from the original PNG, not approximations from the
+    // output CLUT. Indexed PNGs retain their source palette indices here.
+    if (m_source.format() == QImage::Format_Indexed8) {
+        const auto table = m_source.colorTable();
+        QVector<quint32> counts(table.size(), 0);
+        for (int y = 0; y < m_source.height(); ++y) {
+            const uchar *row = m_source.constScanLine(y);
+            for (int x = 0; x < m_source.width(); ++x)
+                if (row[x] < counts.size()) ++counts[row[x]];
+        }
+        for (int i = 0; i < table.size(); ++i) {
+            if (!counts[i] || qAlpha(table[i]) < 128) continue;
+            const QRgb colour = qRgb(qRed(table[i]), qGreen(table[i]), qBlue(table[i]));
+            QPixmap swatch(26, 26); swatch.fill(QColor::fromRgb(colour));
+            auto *item = new QListWidgetItem(QIcon(swatch), QStringLiteral("PNG %1").arg(i), m_sourceColours);
+            item->setData(Qt::UserRole, QVariant::fromValue(colour));
+            item->setData(Qt::UserRole + 1, item->text());
+            item->setToolTip(tr("Source PNG index %1\nRGB %2\n%3 pixels")
+                .arg(i).arg(QColor::fromRgb(colour).name(QColor::HexRgb).toUpper()).arg(counts[i]));
+        }
+        // Index-based swatches are complete: only used opaque PNG entries are listed.
+    } else {
+        const QImage rgba = m_source.convertToFormat(QImage::Format_ARGB32);
+        QHash<QRgb, int> positions;
+        struct Found { QRgb colour; quint32 count; };
+        QVector<Found> found;
+        bool limited = false;
+        for (int y = 0; y < rgba.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(rgba.constScanLine(y));
+            for (int x = 0; x < rgba.width(); ++x) {
+                const QRgb px = row[x];
+                if (qAlpha(px) < 128) continue;
+                const QRgb colour = qRgb(qRed(px), qGreen(px), qBlue(px));
+                const auto it = positions.constFind(colour);
+                if (it != positions.constEnd()) { ++found[it.value()].count; continue; }
+                if (found.size() >= 512) { limited = true; continue; }
+                positions.insert(colour, found.size());
+                found.append({colour, 1});
+            }
+        }
+        for (const Found &entry : found) {
+            const QColor c = QColor::fromRgb(entry.colour);
+            QPixmap swatch(26, 26); swatch.fill(c);
+            auto *item = new QListWidgetItem(QIcon(swatch), c.name(QColor::HexRgb).toUpper(), m_sourceColours);
+            item->setData(Qt::UserRole, QVariant::fromValue(entry.colour));
+            item->setData(Qt::UserRole + 1, item->text());
+            item->setToolTip(tr("Source RGB %1\n%2 pixels").arg(c.name(QColor::HexRgb).toUpper()).arg(entry.count));
+        }
+        m_sourceColoursLimited = limited;
+    }
+    updateTransparentColourUi();
+    updateProtectedColourUi();
     updateControls();
     updatePreview();
     fitPreviews();
@@ -497,6 +759,9 @@ SidboxPngImport::Options PngPaletteImportDialog::options() const {
     opt.first = m_first->value(); opt.last = m_last->value();
     opt.buildColours = m_mode->currentData().toBool();
     opt.startFresh = m_fresh->isChecked();
+    opt.keyColourEnabled = m_transparentKey && m_transparentKey->isChecked();
+    opt.keyColour = m_keyColour;
+    if (opt.buildColours) opt.protectedColours = m_protectedColours;
     opt.dither = SidboxPngImport::Dither(m_dither->currentData().toInt());
     return opt;
 }
@@ -506,6 +771,78 @@ QVector<QRgb> PngPaletteImportDialog::basePalette() const {
 QString PngPaletteImportDialog::destinationKind() const { return m_destination->currentData().toString(); }
 QString PngPaletteImportDialog::palettePlane() const { return m_bank->currentData().toString(); }
 
+void PngPaletteImportDialog::selectTransparentColour(QRgb colour) {
+    m_keyColour = qRgb(qRed(colour), qGreen(colour), qBlue(colour));
+    // A selected transparent colour must never also reserve an opaque slot.
+    m_protectedColours.removeAll(m_keyColour);
+    // Also highlight the swatch when the colour was picked from the preview.
+    if (m_sourceColours) {
+        for (int i = 0; i < m_sourceColours->count(); ++i) {
+            auto *item = m_sourceColours->item(i);
+            const QRgb source = item->data(Qt::UserRole).value<QRgb>();
+            if (qRed(source) == qRed(m_keyColour) && qGreen(source) == qGreen(m_keyColour)
+                && qBlue(source) == qBlue(m_keyColour)) {
+                m_sourceColours->setCurrentItem(item);
+                m_sourceColours->scrollToItem(item);
+                break;
+            }
+        }
+    }
+    // A source-swatch click enables the option immediately, no second step.
+    if (!m_transparentKey->isChecked()) m_transparentKey->setChecked(true);
+    updateTransparentColourUi();
+    updateProtectedColourUi();
+    queuePreview();
+}
+
+void PngPaletteImportDialog::toggleProtectedColour(QRgb colour) {
+    if (!m_mode->currentData().toBool()) {
+        QMessageBox::information(this, tr("Generate palette colours"),
+            tr("Switch Palette mode to Generate colours in selected range to protect exact source colours."));
+        return;
+    }
+    const QRgb rgb = qRgb(qRed(colour), qGreen(colour), qBlue(colour));
+    if (m_transparentKey->isChecked() && rgb == m_keyColour) {
+        QMessageBox::information(this, tr("Colour is transparent"),
+            tr("This colour is currently mapped to transparent index 0. Disable transparency or choose another key colour before protecting it."));
+        return;
+    }
+    const int at = m_protectedColours.indexOf(rgb);
+    if (at >= 0) m_protectedColours.removeAt(at);
+    else {
+        const int capacity = std::max(0, m_last->value() - m_first->value() + 1);
+        if (m_protectedColours.size() >= capacity) {
+            QMessageBox::information(this, tr("Palette range is full"),
+                tr("This destination range has only %1 entries. Release an existing protected colour or expand the range.").arg(capacity));
+            return;
+        }
+        m_protectedColours.append(rgb);
+    }
+    updateProtectedColourUi();
+    queuePreview();
+}
+
+void PngPaletteImportDialog::updateProtectedColourUi() {
+    if (!m_sourceColours) return;
+    for (int i = 0; i < m_sourceColours->count(); ++i) {
+        auto *item = m_sourceColours->item(i);
+        const QRgb rgb = item->data(Qt::UserRole).value<QRgb>();
+        const bool held = m_protectedColours.contains(rgb);
+        const QString basic = item->data(Qt::UserRole + 1).toString();
+        item->setText(held ? QStringLiteral("★ ") + basic : basic);
+    }
+}
+
+void PngPaletteImportDialog::updateTransparentColourUi() {
+    const QColor effective = QColor::fromRgb(m_keyColour);
+    if (m_transparentColourPreview) {
+        m_transparentColourPreview->setText(effective.name(QColor::HexRgb).toUpper());
+        m_transparentColourPreview->setAlignment(Qt::AlignCenter);
+        m_transparentColourPreview->setStyleSheet(QStringLiteral("QLabel { border: 1px solid palette(mid); border-radius: 0px; background: %1; color: %2; padding: 2px 6px; }")
+            .arg(effective.name(QColor::HexRgb), effective.lightness() < 128 ? QStringLiteral("white") : QStringLiteral("black")));
+    }
+}
+
 void PngPaletteImportDialog::updateControls() {
     const QString kind = destinationKind();
     const bool fixedBank = !m_dualPlane || kind == QStringLiteral("tileatlas")
@@ -514,6 +851,8 @@ void PngPaletteImportDialog::updateControls() {
     m_bank->setEnabled(!fixedBank);
     m_fresh->setEnabled(m_mode->currentData().toBool());
     if (!m_fresh->isEnabled()) m_fresh->setChecked(false);
+    updateTransparentColourUi();
+    updateProtectedColourUi();
     queuePreview();
 }
 void PngPaletteImportDialog::updatePreview() {
@@ -525,11 +864,38 @@ void PngPaletteImportDialog::updatePreview() {
     m_accept->setEnabled(ok);
     m_after->setImage(ok ? result.picture.indexed : QImage());
     updateZoomLabel();
-    m_status->setText(ok ? tr("Indices %1–%2: %3 available colours. %4")
+    const QString paletteNote = !opt.buildColours ? tr("Existing CLUT will not be changed.")
+        : opt.startFresh ? tr("Starting with a blank CLUT; other entries reset.")
+        : tr("All other palette indices are preserved from the selected CLUT.");
+    const QString keyNote = opt.keyColourEnabled
+        ? tr("The source colour %1 is mapped to transparent index 0 and excluded from the generated palette.")
+            .arg(QColor::fromRgb(opt.keyColour).name(QColor::HexRgb).toUpper())
+        : tr("Only source alpha controls transparency.");
+    const QString protectedNote = opt.buildColours
+        ? tr("%1 exact colours protected; up to %2 other palette entries available.")
+            .arg(opt.protectedColours.size()).arg(std::max(0, opt.last - opt.first + 1 - int(opt.protectedColours.size())))
+        : tr("Colour protection is inactive in Match existing mode.");
+    m_status->setText(ok ? tr("Output indices %1–%2: %3 palette entries generated. %4 %5 %6")
                         .arg(opt.first).arg(opt.last).arg(result.paletteColours)
-                        .arg(!opt.buildColours ? tr("Existing CLUT will not be changed.")
-                              : opt.startFresh ? tr("Starting with a blank CLUT; other entries reset.")
-                              : tr("All other palette indices are preserved from the selected CLUT.")) : error);
+                        .arg(paletteNote, keyNote, protectedNote) : error);
+    if (m_sourceColourNote && m_sourceColours) {
+        int removed = 0;
+        if (opt.keyColourEnabled) {
+            for (int i = 0; i < m_sourceColours->count(); ++i) {
+                const QRgb c = m_sourceColours->item(i)->data(Qt::UserRole).value<QRgb>();
+                if (qRed(c) == qRed(opt.keyColour) && qGreen(c) == qGreen(opt.keyColour)
+                    && qBlue(c) == qBlue(opt.keyColour)) ++removed;
+            }
+        }
+        const int shown = m_sourceColours->count();
+        const int destinationSlots = opt.last - opt.first + 1;
+        m_sourceColourNote->setText(m_sourceColoursLimited
+            ? tr("First 512 source colours shown. %1 exact colours protected; %2 destination entries. Ctrl+Shift+click the PNG to protect any hidden colour.")
+                .arg(m_protectedColours.size()).arg(destinationSlots)
+            : tr("Source entries: %1  •  transparency: %2  •  protected exact: %3  •  other colours: %4  •  output slots: %5")
+                .arg(shown).arg(removed).arg(m_protectedColours.size())
+                .arg(std::max(0, shown - removed - int(m_protectedColours.size()))).arg(destinationSlots));
+    }
     QPixmap strip(512, 22);
     strip.fill(Qt::transparent);
     if (ok) {

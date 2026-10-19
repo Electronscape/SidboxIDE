@@ -1,0 +1,26 @@
+{
+  "model": {
+    "sha256": "9d127aceed0a4c123ea5943c9fb2ad6b2560684caac23bee27cba72045a2609a",
+    "lines": 158
+  },
+  "graphics": {
+    "sha256": "e1a2f1824183397138c42b2fd01616046cbac9de8a863b55cfff6d043c0cdea7",
+    "lines": 910
+  },
+  "palette_widgets": {
+    "sha256": "81f3968910e78ce97e8e12ac9300e43b6c352061edd94efa734cf21623576068",
+    "lines": 484
+  },
+  "canvas": {
+    "sha256": "2a585588db605ba6dca97f91c9faf552f54b50d5077f4c06d87cae0d0d943784",
+    "lines": 3733
+  },
+  "propertygrid": {
+    "sha256": "01d96faa8a9a640d4fa29692dc34102f58eb99a824932b7d74350881c77564f0",
+    "lines": 116
+  },
+  "designer_controller": {
+    "sha256": "7ed4d30124c1971be8bbc01acfa8b71330abacda32a6b1eb8ed7d859a47f6f34",
+    "lines": 8562
+  }
+}

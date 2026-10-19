@@ -410,7 +410,20 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
     refreshColours();
 }
 
-SidboxGameDesigner::~SidboxGameDesigner() = default;
+SidboxGameDesigner::~SidboxGameDesigner()
+{
+    // Qt destroys child QObjects in QWidget::~QWidget(), AFTER this derived
+    // destructor has finished. Scene item removal during that teardown emits
+    // selectionChanged(), but the resource tree may already be destroyed.
+    // Disconnect callbacks into this Designer before either child is deleted.
+    // See crash on closing a .sbgm tab: selectionChanged -> syncCanvasSelection
+    // -> selectedIndex -> QTreeWidget::currentItem (dangling tree pointer).
+    if (m_scene)
+        QObject::disconnect(m_scene, nullptr, this, nullptr);
+    if (m_resourceTree)
+        QObject::disconnect(m_resourceTree, nullptr, this, nullptr);
+}
+
 void SidboxGameDesigner::setTheme(const IDETheme &theme)
 {
     m_theme = theme;
@@ -877,22 +890,19 @@ void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
 void SidboxGameDesigner::openTilemapEditor()
 {
     QVector<QPair<QString, QString>> atlases;
-    const QString chosenPath = QDir::cleanPath(resolvedPath(m_tilemap.atlasPath));
     for (const Resource &r : m_resources) {
-        // Dedicated PPB-only resource bank. These images are never canvas sprites.
-        // The existing atlas referenced by an older project stays selectable
-        // even if it still lives under Sprites (no forced migration).
-        if (r.kind != QStringLiteral("tileatlas")
-            && !(r.kind == QStringLiteral("sprite") && !m_tilemap.atlasPath.isEmpty()
-                 && QDir::cleanPath(resolvedPath(r.path)) == chosenPath)) continue;
-        if (r.path.isEmpty()) continue;
+        // Show ONLY Game Resources -> Tile Atlases here. Previously, a legacy
+        // Sprite using the map's PPB path could win the de-duplication check,
+        // hiding the real Tile Atlas name when both pointed at the same file.
+        // The editor itself handles old map references without inventing an
+        // extra Sprite entry in this resource list.
+        if (r.kind != QStringLiteral("tileatlas") || r.path.isEmpty()) continue;
         const QString path = resolvedPath(r.path);
         if (QFileInfo(path).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0)
             continue;
-        bool exists = false;
-        for (const auto &atlas : atlases)
-            if (QDir::cleanPath(atlas.second) == QDir::cleanPath(path)) { exists = true; break; }
-        if (!exists) atlases.append({r.name, path});
+        // Each Tile Atlases resource should appear under its own friendly
+        // name, even if multiple resources reference the same PPB file.
+        atlases.append({r.name, QDir::cleanPath(path)});
     }
     const QString directory = QFileInfo(m_filePath).absolutePath();
     SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
@@ -3453,10 +3463,72 @@ void SidboxGameDesigner::importPngAsPpb(const QString &suggestedKind)
         r.path = storedPath(destination);
         r.x = m_cameraX->value() + 40;
         r.y = m_cameraY->value() + 40;
+        // An imported PNG is upright/row-major. The SIDBOX direct background
+        // needs column-major pixels: code generation must transpose it.
+        // Treating it as an ordinary sprite, or as a pre-prepared PPB,
+        // produces a correct-looking editor preview but the wrong V1 output.
+        if (kind == QStringLiteral("background")) {
+            r.backgroundMode = QStringLiteral("direct_convert");
+            r.x = 0;
+            r.y = 0;
+            r.scale = 100;
+        }
         suggestSpriteCells(r);
+
+        // Overwriting a PPB already used by a background must update that
+        // SAME resource, rather than append a duplicate referring to the
+        // same path. Preserve its ID (and any active references to it).
+        int importedIndex = -1;
+        if (kind == QStringLiteral("background")) {
+            const QString importedPath = QDir::cleanPath(QFileInfo(destination).absoluteFilePath());
+            for (int i = 0; i < m_resources.size(); ++i) {
+                if (m_resources.at(i).kind == QStringLiteral("background")
+                    && QDir::cleanPath(resolvedPath(m_resources.at(i).path)) == importedPath) {
+                    importedIndex = i;
+                    break;
+                }
+            }
+            // A *new* PPB name is often intended to replace the sole old
+            // background. Ask, since Game Designer supports only one direct
+            // background and blindly adding another makes export fail.
+            if (importedIndex < 0) {
+                int soleBackground = -1;
+                for (int i = 0; i < m_resources.size(); ++i) {
+                    if (m_resources.at(i).kind != QStringLiteral("background")) continue;
+                    if (soleBackground >= 0) { soleBackground = -2; break; }
+                    soleBackground = i;
+                }
+                if (soleBackground >= 0) {
+                    const auto answer = QMessageBox::question(this,
+                        tr("Replace Existing Background?"),
+                        tr("A background is already in this world.\n\n"
+                           "Replace '%1' with the newly imported background?\n\n"
+                           "Yes: update that resource without creating a duplicate.\n"
+                           "No: keep both resources (only one may be direct at export).")
+                            .arg(m_resources.at(soleBackground).name),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+                    if (answer == QMessageBox::Yes)
+                        importedIndex = soleBackground;
+                }
+            }
+        }
         rememberResourceEdit();
-        m_resources.append(r);
-        const int importedIndex = m_resources.size() - 1;
+        if (importedIndex >= 0) {
+            Resource &existing = m_resources[importedIndex];
+            existing.name = r.name;
+            existing.path = r.path;
+            existing.plane = QStringLiteral("background");
+            existing.backgroundMode = QStringLiteral("direct_convert");
+            existing.x = 0;
+            existing.y = 0;
+            existing.scale = 100;
+            existing.frame = 0;
+            existing.cellWidth = r.cellWidth;
+            existing.cellHeight = r.cellHeight;
+        } else {
+            importedIndex = m_resources.size();
+            m_resources.append(r);
+        }
         if (!paletteDestination.isEmpty()) {
             bool found = false;
             for (Resource &resource : m_resources) {
@@ -3482,6 +3554,12 @@ void SidboxGameDesigner::importPngAsPpb(const QString &suggestedKind)
             m_paletteCache.clear(); // CLUT file is fixed-size; timestamp alone may not change!
         }
         if (kind == QStringLiteral("background")) suggestFirstBackgroundPalette(r);
+        // A PPB overwritten very quickly can have unchanged size and disk
+        // timestamp. Drop preview copies explicitly so the editor shows the
+        // freshly converted pixels instead of a stale cached image.
+        m_imageCache.clear();
+        m_imageCacheOrder.clear();
+        m_imageCacheBytes = 0;
         rebuildScene();
         refreshResources();
         selectResource(importedIndex);

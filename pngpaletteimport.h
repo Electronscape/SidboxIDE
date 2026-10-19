@@ -10,7 +10,9 @@ class QSpinBox;
 class QCheckBox;
 class QLabel;
 class QPushButton;
+class QListWidget;
 class QTimer;
+class QWidget;
 class PngPreviewView;
 
 // Host-only importer: 8-bit PPB indices are absolute CLUT positions. Index 0
@@ -22,6 +24,9 @@ struct Options {
     int last = 255;
     bool buildColours = true;     // false = reuse existing range unchanged
     bool startFresh = false;      // start with blank CLUT, not project palette
+    bool keyColourEnabled = false; // map this exact RGB colour to transparent index 0
+    QRgb keyColour = qRgb(255, 0, 255);
+    QVector<QRgb> protectedColours; // exact opaque RGB colours reserved in output CLUT
     Dither dither = Dither::None;
 };
 struct Result {
@@ -60,6 +65,13 @@ private:
     QSpinBox *m_first = nullptr;
     QSpinBox *m_last = nullptr;
     QCheckBox *m_fresh = nullptr;
+    QCheckBox *m_transparentKey = nullptr;
+    QLabel *m_transparentColourPreview = nullptr;
+    QListWidget *m_sourceColours = nullptr;
+    QLabel *m_sourceColourNote = nullptr;
+    QRgb m_keyColour = qRgb(255, 0, 255);
+    QVector<QRgb> m_protectedColours;
+    bool m_sourceColoursLimited = false;
     PngPreviewView *m_before = nullptr;
     PngPreviewView *m_after = nullptr;
     QLabel *m_zoomReadout = nullptr;
@@ -69,6 +81,11 @@ private:
     QLabel *m_status = nullptr;
     QLabel *m_swatch = nullptr;
     QPushButton *m_accept = nullptr;
+
+    void selectTransparentColour(QRgb colour);
+    void toggleProtectedColour(QRgb colour);
+    void updateProtectedColourUi();
+    void updateTransparentColourUi();
 };
 
 #endif
