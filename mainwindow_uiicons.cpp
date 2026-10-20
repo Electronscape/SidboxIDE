@@ -1,5 +1,6 @@
 // Stage 3.70: one mapping for file-type icons across MainWindow compilation units.
 #include "mainwindow_uiicons.h"
+#include "gameeditoricons.h"
 #include <QFileInfo>
 
 QIcon editorTabIconForFile(const QString &filePath,
@@ -26,37 +27,37 @@ QIcon editorTabIconForFile(const QString &filePath,
         || suffix == QStringLiteral("uis")
         || suffix == QStringLiteral("cc")
         || suffix == QStringLiteral("cpp")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_c.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_c.png"));
     }
 
     if (suffix == QStringLiteral("h")
         || suffix == QStringLiteral("hpp")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_h.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_h.png"));
     }
 
     if (suffix == QStringLiteral("inc")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_inc.png"));
     }
 
     if (suffix == QStringLiteral("res")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_res.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_res.png"));
     }
 
     if (suffix == QStringLiteral("txt")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_txt.png"));
     }
 
     if (suffix == QStringLiteral("sbui")) {
-        return QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
+        return gameEditorIcon(QStringLiteral("tree_guidesigner.png"));
     }
 
     if (suffix == QStringLiteral("sbgm")) {
-        return QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png"));
+        return gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
     }
 
     if (suffix == QStringLiteral("md")) {
-        return QIcon(QStringLiteral(":/icons/tree_file_md.png"));
+        return gameEditorIcon(QStringLiteral("tree_file_md.png"));
     }
 
-    return QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
+    return gameEditorIcon(QStringLiteral("tree_file_unknown.png"));
 }

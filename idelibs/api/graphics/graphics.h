@@ -177,6 +177,13 @@ typedef struct __attribute__((aligned(32))) {
     gfx_sprite_t*(*createSprite)    (uint8_t *img, int16_t width, int16_t height);
     int          (*submitSprite)    (const gfx_sprite_t *spr, int16_t x, int16_t y, const gfx_dstbitmap_t *dstbmp);
     void         (*popSprites)      (void);
+
+    // Added by dual-CLUT firmware: append-only, existing API offsets untouched.
+    void         (*palcycleonb)     (void);
+    void         (*palcycleoffb)    (void);
+    void         (*palcyclesetb)    (uint8_t enabled);
+    void         (*palcyclerangeb)  (uint8_t fromcol, uint8_t tocol);
+    void         (*palcyclerateb)   (uint8_t tick);
 } API_GFX_HARDWARE;
 
 typedef struct  {
@@ -307,6 +314,12 @@ typedef struct  {
 #define gfx_palcycleset(en)  (GFXHW->palcycleset(en))
 #define gfx_palcyclerange(fromcol, tocol) (GFXHW->palcyclerange(fromcol, tocol))
 #define gfx_palcyclerate(tick)            (GFXHW->palcyclerate(tick))
+// Requires SIDBOX firmware with the appended background-cycle API entries.
+#define gfx_palcycleonb()                 (GFXHW->palcycleonb())
+#define gfx_palcycleoffb()                (GFXHW->palcycleoffb())
+#define gfx_palcyclesetb(en)              (GFXHW->palcyclesetb(en))
+#define gfx_palcyclerangeb(first, last)   (GFXHW->palcyclerangeb(first, last))
+#define gfx_palcyclerateb(ticks)          (GFXHW->palcyclerateb(ticks))
 
 /// API KIT Function calls
 

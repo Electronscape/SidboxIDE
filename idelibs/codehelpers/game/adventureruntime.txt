@@ -1,0 +1,43 @@
+GamerGirl Adventure Runtime — Advanced Platformer Only
+
+The Adventure Editor generates gamehelpers/gameadventure.c/.h containing static
+inventory, NPC and dialogue tables. gameadventure.c uses the installed
+runtime gamehelpers/gameadventureruntime.c/.h (based on this template).
+
+Inventory: game_adventure_quantity(index), add(index, amount), remove(index, amount).
+Bridge collectables by calling game_adventure_collect(pickup->kind) ONCE in
+on_pickup(); the default advanced-platformer starter shows this callback.
+
+Dialogue: press FIRE2 near a configured NPC. UP/DOWN selects an answer;
+FIRE2 confirms. The selected answer briefly types over the player sprite.
+Away from NPC, UP+FIRE2 opens inventory. FIRE2 closes it.
+
+Text is rendered with SIDBOX's gfx_drawtext font; ASCII is recommended.
+Dialogue skin: supply a 3x3 arrangement of atlas cells using the Adventure
+Editor's skin settings. The nine positions are corners, repeated edges and
+repeated centre. Tile size is 8 by default.
+
+Every frame: call game_adventure_input before physics, pause physics when it
+returns true; draw game_adventure_draw() after world graphics.
+Existing hand-owned main.c will not be changed: copy these integration calls
+from maingame.c.txt if your main.c is user-owned.
+
+Stage 4.29 dialogue rendering and NPC animations
+-----------------------------------------------
+Adventure Editor > Dialogue Box Atlas now offers foreground palette index
+for text, optional four-direction text outline, and a separate outline index.
+Index 0 is transparent in the foreground CLUT, so use a visible entry.
+Dialogues automatically use a larger frame, additional paragraph/choice
+spacing, and 20-pixel text rows when outline is enabled.
+
+Adventure Editor > NPCs > select NPC > NPC Animations... configures one Idle
+and one Talking loop as contiguous Sprite Atlas frame ranges. Both are optional
+(count 0 disables an animation). They use existing Sprite BOBs, not duplicate
+sprites, and advance automatically inside game_adventure_input() each frame.
+
+NOTE: these simple NPC loops are separate from the full Player Animations
+.sbanim editor. For a more complex state machine, use the C animation helper.
+For hand-edited main.c, keep game_adventure_input() and the existing drawing
+call for each NPC as in Stage 4.28a. There are no additional frame-loop calls.
+Regenerate the game project to update generated gameadventure.c and copied
+runtime headers/sources in gamehelpers before compiling the platformer.

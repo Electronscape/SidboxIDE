@@ -493,6 +493,26 @@ Result generate(const Request &request)
     }
     if (!frontClut.isEmpty()) source << "    gfx_usefpalette(gameassets_front_clut);\n";
     if (!backClut.isEmpty() && request.dualPlane) source << "    gfx_usebpalette(gameassets_back_clut);\n";
+    // Configure cycles only after palettes are installed: enable captures the CLUT.
+    // Range is inclusive on the firmware, while the design stores a LENGTH.
+    if (request.foregroundCycle.enabled) {
+        const auto &cycle = request.foregroundCycle;
+        const int from = qBound(1, cycle.start, 254);
+        const int length = qBound(2, cycle.length, 256 - from);
+        source << "    gfx_palcycleoff();\n"
+               << "    gfx_palcyclerange(" << from << "u, " << from + length - 1 << "u);\n"
+               << "    gfx_palcyclerate(" << qBound(1, cycle.speed, 255) << "u);\n"
+               << "    gfx_palcycleon();\n";
+    }
+    if (request.dualPlane && request.backgroundCycle.enabled) {
+        const auto &cycle = request.backgroundCycle;
+        const int from = qBound(0, cycle.start, 254);
+        const int length = qBound(2, cycle.length, 256 - from);
+        source << "    gfx_palcycleoffb();\n"
+               << "    gfx_palcyclerangeb(" << from << "u, " << from + length - 1 << "u);\n"
+               << "    gfx_palcyclerateb(" << qBound(1, cycle.speed, 255) << "u);\n"
+               << "    gfx_palcycleonb();\n";
+    }
     for (const Group &g : groups) {
         const QString dst = g.symbol;
         source << "    memset(&" << dst << ", 0, sizeof(" << dst << "));\n";
@@ -516,6 +536,15 @@ Result generate(const Request &request)
                << cString(s.sdPath) << ", &gameassets_sfx_" << s.id << ");\n"
                << "    if (!gameassets_sfx_length_" << s.id << " || !gameassets_sfx_" << s.id << ") goto failed;\n";
     }
+    // Start music only after every resource has loaded successfully. This works
+    // with user-owned main.c files too, because those already call gameassets_init().
+    for (const Music &m : music) {
+        if (!m.asset.musicPlayOnStart) continue;
+        source << "    /* Music resource: Play on game start. */\n"
+               << "    music_play((char *)" << cString(m.sdPath) << ", "
+               << qBound(0, m.asset.subsong, 255) << ");\n";
+        break;
+    }
     source << "    return 1;\nfailed:\n    gameassets_shutdown();\n    return 0;\n}\n\n";
 
     source << "/* Borrow-only lookup. The returned memory belongs to gameassets.\n"
@@ -534,6 +563,8 @@ Result generate(const Request &request)
     source << "    return NULL;\n}\n\n";
 
     source << "void gameassets_shutdown(void)\n{\n";
+    if (request.foregroundCycle.enabled) source << "    gfx_palcycleoff();\n";
+    if (request.dualPlane && request.backgroundCycle.enabled) source << "    gfx_palcycleoffb();\n";
     if (!request.embedPixels) {
         for (const Bitmap &bm : bitmaps)
             source << "    free(" << bm.symbol << "); " << bm.symbol << " = NULL;\n";

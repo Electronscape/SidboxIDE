@@ -2,6 +2,12 @@
 #include "gamepalette.h"
 
 #include <QComboBox>
+#include <QCheckBox>
+#include <QGroupBox>
+#include <QSpinBox>
+#include <QSlider>
+#include <QTimer>
+#include <QSignalBlocker>
 #include <QColorDialog>
 #include <QFile>
 #include <QFileDialog>
@@ -50,15 +56,11 @@ SidboxGamePaletteEditor::SidboxGamePaletteEditor(QWidget *parent)
       m_back(256, qRgba(0, 0, 0, 255))
 {
     m_front[0] = qRgba(0, 0, 0, 0);
+    m_backCycle.start = 0;
     setWindowTitle(tr("SIDBOX Palette Editor"));
     setMinimumSize(460, 590);
-    resize(510, 650);
-    setStyleSheet(QStringLiteral(
-        "QPushButton, QToolButton, QComboBox, QLineEdit { border-radius:0px; } "
-        "QComboBox { border:1px solid palette(mid); background:palette(base); "
-        "color:palette(text); padding:3px 23px 3px 5px; } "
-        "QComboBox::drop-down { width:19px; border-left:1px solid palette(mid); "
-        "border-radius:0px; }"));
+    resize(550, 710);
+    // Standard palette-editor controls inherit the global IDE theme.
     auto *root = new QVBoxLayout(this);
     auto *heading = new QLabel(tr("Edit 256 colours per palette bank. "
                                    "Foreground colours may be transparent; background colours are always opaque. "
@@ -88,6 +90,60 @@ SidboxGamePaletteEditor::SidboxGamePaletteEditor(QWidget *parent)
         m_cells.append(cell);
     }
     root->addLayout(grid);
+
+    // These are DESIGN settings kept in .sbgm; Save .pal never serialises them.
+    auto *cycleBox = new QGroupBox(tr("Colour Cycle — Selected Bank"), this);
+    auto *cycleRoot = new QVBoxLayout(cycleBox);
+    auto *cycleRow = new QHBoxLayout;
+    m_cycleEnabled = new QCheckBox(tr("Enabled"), cycleBox);
+    cycleRow->addWidget(m_cycleEnabled);
+    cycleRow->addWidget(new QLabel(tr("Start:"), cycleBox));
+    m_cycleStart = new QSpinBox(cycleBox);
+    m_cycleStart->setRange(0, 254);
+    m_cycleStart->setToolTip(tr("First palette index. Foreground starts at 1; background may use 0."));
+    cycleRow->addWidget(m_cycleStart);
+    cycleRow->addWidget(new QLabel(tr("Length:"), cycleBox));
+    m_cycleLength = new QSpinBox(cycleBox);
+    m_cycleLength->setRange(2, 255);
+    cycleRow->addWidget(m_cycleLength);
+    cycleRow->addWidget(new QLabel(tr("Frames/step:"), cycleBox));
+    m_cycleSpeed = new QSpinBox(cycleBox);
+    m_cycleSpeed->setRange(1, 255);
+    m_cycleSpeed->setToolTip(tr("LCD update frames per palette step. At 50 FPS: 5 frames = 100 ms. Independent of monitor refresh rate."));
+    cycleRow->addWidget(m_cycleSpeed);
+    m_cyclePreview = new QCheckBox(tr("Preview"), cycleBox);
+    m_cyclePreview->setToolTip(tr("Animate the palette swatches without changing the actual .pal file."));
+    m_cyclePreview->setChecked(true);
+    cycleRow->addWidget(m_cyclePreview);
+    cycleRoot->addLayout(cycleRow);
+    auto *cycleNote = new QLabel(tr("Foreground and background have independent ranges, speeds and enable flags. "
+                                    "Select Bank above to edit each one. Preview uses the SIDBOX 50 FPS frame clock."), cycleBox);
+    cycleNote->setWordWrap(true);
+    cycleRoot->addWidget(cycleNote);
+    root->addWidget(cycleBox);
+    auto refreshCycle = [this]() { refreshCycleControls(); refreshGrid(); };
+    connect(m_cycleEnabled, &QCheckBox::toggled, this, [this, refreshCycle](bool checked) {
+        currentCycle().enabled = checked; refreshCycle();
+    });
+    connect(m_cycleStart, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this, refreshCycle](int start) { currentCycle().start = start; refreshCycle(); });
+    connect(m_cycleLength, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this, refreshCycle](int length) { currentCycle().length = length; refreshCycle(); });
+    connect(m_cycleSpeed, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this, refreshCycle](int speed) { currentCycle().speed = speed; refreshCycle(); });
+    connect(m_cyclePreview, &QCheckBox::toggled, this,
+            [this](bool) { m_cycleClock.restart(); m_cyclePreviewLastPhase = -1; refreshGrid(); });
+    m_cycleClock.start();
+    m_cycleTimer = new QTimer(this);
+    m_cycleTimer->setInterval(20);
+    connect(m_cycleTimer, &QTimer::timeout, this, [this]() {
+        const auto &cycle = currentCycle();
+        if (!isVisible() || !m_cyclePreview->isChecked() || !cycle.enabled) return;
+        const int phase = int((m_cycleClock.elapsed() / 20 / qMax(1, cycle.speed))
+                              % cycle.length);
+        if (phase != m_cyclePreviewLastPhase) refreshGrid();
+    });
+    m_cycleTimer->start();
     auto *colourRow = new QHBoxLayout;
     m_indexLabel = new QLabel(this);
     colourRow->addWidget(m_indexLabel);
@@ -100,6 +156,36 @@ SidboxGamePaletteEditor::SidboxGamePaletteEditor(QWidget *parent)
     colourRow->addWidget(pick);
     colourRow->addStretch();
     root->addLayout(colourRow);
+
+    // Foreground CLUT entries store their alpha in the high byte of 0xAARRGGBB.
+    // Background is always opaque; index 0 in front is reserved transparent.
+    auto *alphaRow = new QHBoxLayout;
+    auto *alphaLabel = new QLabel(tr("Alpha:"), this);
+    alphaRow->addWidget(alphaLabel);
+    m_alphaSlider = new QSlider(Qt::Horizontal, this);
+    m_alphaSlider->setRange(0, 255);
+    m_alphaSlider->setSingleStep(1);
+    m_alphaSlider->setPageStep(16);
+    m_alphaSlider->setToolTip(tr("Selected foreground colour alpha: 0 = transparent, 255 = opaque. "
+                                 "Foreground index 0 is reserved transparent."));
+    alphaRow->addWidget(m_alphaSlider, 1);
+    m_alphaValue = new QLabel(this);
+    m_alphaValue->setMinimumWidth(112);
+    alphaRow->addWidget(m_alphaValue);
+    m_alphaSwatch = new QLabel(this);
+    m_alphaSwatch->setFixedSize(48, 22);
+    m_alphaSwatch->setToolTip(tr("Selected colour over a checkerboard (alpha preview)."));
+    alphaRow->addWidget(m_alphaSwatch);
+    root->addLayout(alphaRow);
+    connect(m_alphaSlider, &QSlider::valueChanged, this, [this](int alpha) {
+        if (currentBankIsBackground() || m_index == 0) return;
+        QRgb &colour = currentBank()[m_index];
+        if (qAlpha(colour) == alpha) return;
+        colour = qRgba(qRed(colour), qGreen(colour), qBlue(colour), alpha);
+        m_modified = true;
+        refreshGrid(); // ARGB field, swatch and palette-cell preview follow the slider.
+    });
+
     m_status = new QLabel(tr("A full SIDBOX .pal contains both banks (2048 bytes)."), this);
     m_status->setWordWrap(true);
     root->addWidget(m_status);
@@ -123,11 +209,58 @@ SidboxGamePaletteEditor::SidboxGamePaletteEditor(QWidget *parent)
     connect(m_saveButton, &QPushButton::clicked, this, [this]() { savePalette(); });
     connect(close, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_bank, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            [this](int) { refreshGrid(); });
+            [this](int) { refreshCycleControls(); refreshGrid(); });
     connect(pick, &QPushButton::clicked, this, [this]() { chooseColour(); });
     connect(m_hex, &QLineEdit::returnPressed, this, [this]() { applyHexColour(); });
     connect(m_hex, &QLineEdit::editingFinished, this, [this]() { applyHexColour(); });
+    // Initialise after index/hex widgets exist: setColourCycle refreshes them.
+    setColourCycles(m_frontCycle, m_backCycle);
+}
+
+void SidboxGamePaletteEditor::setColourCycles(const SidboxGamePalette::ColourCycle &front,
+                                             const SidboxGamePalette::ColourCycle &back)
+{
+    m_frontCycle = front;
+    m_backCycle = back;
+    m_frontCycle.start = qBound(1, m_frontCycle.start, 254);
+    m_backCycle.start = qBound(0, m_backCycle.start, 254);
+    m_frontCycle.length = qBound(2, m_frontCycle.length, 256 - m_frontCycle.start);
+    m_backCycle.length = qBound(2, m_backCycle.length, 256 - m_backCycle.start);
+    m_frontCycle.speed = qBound(1, m_frontCycle.speed, 255);
+    m_backCycle.speed = qBound(1, m_backCycle.speed, 255);
+    refreshCycleControls();
     refreshGrid();
+}
+
+SidboxGamePalette::ColourCycle &SidboxGamePaletteEditor::currentCycle()
+{
+    return currentBankIsBackground() ? m_backCycle : m_frontCycle;
+}
+
+const SidboxGamePalette::ColourCycle &SidboxGamePaletteEditor::currentCycle() const
+{
+    return currentBankIsBackground() ? m_backCycle : m_frontCycle;
+}
+
+void SidboxGamePaletteEditor::refreshCycleControls()
+{
+    SidboxGamePalette::ColourCycle &cycle = currentCycle();
+    cycle.start = qBound(currentBankIsBackground() ? 0 : 1, cycle.start, 254);
+    cycle.length = qBound(2, cycle.length, 256 - cycle.start);
+    cycle.speed = qBound(1, cycle.speed, 255);
+    QSignalBlocker b1(m_cycleEnabled), b2(m_cycleStart), b3(m_cycleLength), b4(m_cycleSpeed);
+    m_cycleEnabled->setChecked(cycle.enabled);
+    m_cycleStart->setMinimum(currentBankIsBackground() ? 0 : 1);
+    m_cycleStart->setValue(cycle.start);
+    m_cycleLength->setMaximum(256 - cycle.start);
+    m_cycleLength->setValue(cycle.length);
+    m_cycleSpeed->setValue(cycle.speed);
+    m_cycleStart->setEnabled(cycle.enabled);
+    m_cycleLength->setEnabled(cycle.enabled);
+    m_cycleSpeed->setEnabled(cycle.enabled);
+    m_cyclePreview->setEnabled(cycle.enabled);
+    m_cyclePreviewLastPhase = -1;
+    m_cycleClock.restart();
 }
 
 void SidboxGamePaletteEditor::setBank(bool background)
@@ -301,6 +434,9 @@ void SidboxGamePaletteEditor::savePalette()
         .arg(QFileInfo(m_sourcePath).fileName())
         .arg(m_sourceIsSingleBank ? 1 : 2)
         .arg(m_sourceIsSingleBank ? QString() : QStringLiteral("s")));
+    // Save succeeded: return to the World Designer so it can refresh the
+    // palette resource and apply any colour-cycle settings from this dialog.
+    QDialog::accept();
 }
 
 void SidboxGamePaletteEditor::selectIndex(int index)
@@ -312,10 +448,17 @@ void SidboxGamePaletteEditor::selectIndex(int index)
 void SidboxGamePaletteEditor::refreshGrid()
 {
     const auto &colours = currentBank();
+    const auto &cycle = currentCycle();
+    const int steps = (m_cyclePreview && m_cyclePreview->isChecked() && cycle.enabled)
+        ? int((m_cycleClock.elapsed() / 20 / qMax(1, cycle.speed)) % cycle.length) : 0;
+    m_cyclePreviewLastPhase = steps;
+    const QVector<QRgb> shown = SidboxGamePalette::cyclePreview(
+        colours, cycle, steps, currentBankIsBackground());
     for (int i = 0; i < m_cells.size(); ++i) {
-        m_cells[i]->setIcon(colourIcon(colours.at(i)));
-        m_cells[i]->setToolTip(tr("Index %1 — %2").arg(i).arg(
-            currentBankIsBackground() ? rgbHex(colours.at(i)) : argbHex(colours.at(i))));
+        m_cells[i]->setIcon(colourIcon(shown.at(i)));
+        m_cells[i]->setToolTip(tr("Index %1 — %2%3").arg(i).arg(
+            currentBankIsBackground() ? rgbHex(colours.at(i)) : argbHex(colours.at(i)),
+            steps ? tr(" (animated preview)") : QString()));
     }
     refreshSelected();
 }
@@ -328,8 +471,32 @@ void SidboxGamePaletteEditor::refreshSelected()
     m_hex->setToolTip(currentBankIsBackground()
         ? tr("Background colour: 0xRRGGBB (all colours are opaque).")
         : tr("Foreground colour: 0xAARRGGBB (alpha controls transparency)."));
+    const QRgb selected = currentBank().at(m_index);
     m_hex->setText(currentBankIsBackground()
-        ? rgbHex(currentBank().at(m_index)) : argbHex(currentBank().at(m_index)));
+        ? rgbHex(selected) : argbHex(selected));
+    const bool editableAlpha = !currentBankIsBackground() && m_index != 0;
+    {
+        QSignalBlocker block(m_alphaSlider);
+        m_alphaSlider->setValue(currentBankIsBackground() ? 255 : qAlpha(selected));
+    }
+    m_alphaSlider->setEnabled(editableAlpha);
+    m_alphaValue->setText(currentBankIsBackground() ? tr("Opaque (255)")
+        : m_index == 0 ? tr("Index 0 reserved")
+        : tr("%1 / 255 (%2%)").arg(qAlpha(selected)).arg(qRound(qAlpha(selected) * 100.0 / 255.0)));
+    QPixmap preview(48, 22);
+    preview.fill(Qt::transparent);
+    {
+        QPainter painter(&preview);
+        painter.fillRect(preview.rect(), QColor(200, 200, 200));
+        for (int y = 0; y < 22; y += 11)
+            for (int x = 0; x < 48; x += 11)
+                if (((x / 11) + (y / 11)) % 2 == 0)
+                    painter.fillRect(x, y, 11, 11, QColor(240, 240, 240));
+        painter.fillRect(preview.rect(), QColor::fromRgba(selected));
+        painter.setPen(QColor(45, 45, 45));
+        painter.drawRect(0, 0, 47, 21);
+    }
+    m_alphaSwatch->setPixmap(preview);
     for (int i = 0; i < m_cells.size(); ++i)
         m_cells[i]->setStyleSheet(i == m_index
             ? QStringLiteral("QToolButton { border:2px solid palette(highlight); border-radius:0px; padding:0px; }")

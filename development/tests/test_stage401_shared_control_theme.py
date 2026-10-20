@@ -3,13 +3,14 @@
 from pathlib import Path
 import re
 ROOT = Path(__file__).resolve().parents[2]
-common = (ROOT/'gameeditorcontrolstyle.h').read_text()
+common = (ROOT/'ideglobaltheme.h').read_text()
 tile = (ROOT/'gametilemap.cpp').read_text()
 world = (ROOT/'gamedesigner.cpp').read_text()
 assert '#include "gameeditorcontrolstyle.h"' in tile
 assert '#include "gameeditorcontrolstyle.h"' in world
-assert 'gameEditorControlStyle(theme)' in tile
-assert 'setStyleSheet(gameEditorControlStyle(theme))' in world
+assert 'setStyleSheet(QString());' in tile
+assert 'setStyleSheet(QString());' in world
+assert 'qApp->setStyleSheet(ideGlobalControlStyle(m_theme))' in (ROOT/'mainwindow.cpp').read_text()
 # Theme tokens and style rules are reusable across both editors.
 for widget in ['QPushButton', 'QToolButton', 'QCheckBox::indicator:checked',
                'QComboBox::drop-down', 'QSpinBox', 'QDoubleSpinBox',
@@ -37,6 +38,8 @@ for token in tokens:
         css = css.replace(token, '#112233')
 for token in ('@hover', '@chosen', '@scroll'):
     css = css.replace(token, '#112233')
+css = css.replace('@untick', ':/icons/checkbox_unchecked.png')  # Stage 4.16 image for both states
+css = css.replace('@tick', ':/icons/checkbox_tick.png')  # Stage 4.13 optional icon URL
 assert '@' not in css
 assert not re.search(r'#[0-9a-fA-F]{6}[A-Za-z]', css)
 # All three Stage 4.00 stamp lists retain their own highlighted-card style.

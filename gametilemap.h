@@ -202,9 +202,16 @@ private:
     QTimer *m_animationTimer = nullptr;
     QElapsedTimer m_animationClock;
     QComboBox *m_graphicMode = nullptr;
+    QToolButton *m_graphicKeep = nullptr;
+    QToolButton *m_graphicEmpty = nullptr;
+    QToolButton *m_graphicAtlas = nullptr;
+    QToolButton *m_collisionKeep = nullptr;
+    QToolButton *m_collisionEmpty = nullptr;
     QComboBox *m_customZoneBrush = nullptr;
     void updateCustomZoneBrushLabels();
     QComboBox *m_flipMode = nullptr;
+    QToolButton *m_flagApply = nullptr;
+    QToolButton *m_flagKeep = nullptr;
     QToolButton *m_flipX = nullptr;
     QToolButton *m_flipY = nullptr;
     QToolButton *m_drawFront = nullptr;

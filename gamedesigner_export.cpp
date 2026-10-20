@@ -112,6 +112,7 @@ bool SidboxGameDesigner::installMissingWorldHelpers(QString *error, bool prompt)
     QStringList names;
     if (pickups) names << QStringLiteral("collectables");
     if (worlds) names << QStringLiteral("worldobjects");
+    if (hasAdventure()) names << QStringLiteral("adventureruntime");
     // Both new helpers include these headers whether attached or not.
     if (pickups || worlds) { names << QStringLiteral("animation") << QStringLiteral("spline"); }
     else if (splines) names << QStringLiteral("spline");
@@ -413,6 +414,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
          "void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y);\n";
     if (np) H << "uint16_t gameworlditems_check(int32_t player_x, int32_t player_y,\n"
              "    uint16_t player_w, uint16_t player_h, game_pickup_callback_t callback, void *user);\n";
+    if (nw) H << "void gameworlditems_set_active(uint16_t index, uint8_t state); /* 0 off, 1 on, 2 toggle */\n";
     if (nw) H << "void gameworlditems_before(game_world_player_t *player);\n"
              "void gameworlditems_after(game_world_player_t *player);\n";
     if (nt) H << "uint16_t gameworlditems_trigger(int32_t player_x, int32_t player_y,\n"
@@ -639,8 +641,12 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
             }
         }
     }
-    C << "    return 1;\n}\n\n"
-         "void gameworlditems_update(uint16_t frames)\n{\n";
+    C << "    return 1;\n}\n\n";
+    if (nw) C << "void gameworlditems_set_active(uint16_t index, uint8_t state)\n{\n"
+                   "    if (index >= GAMEWORLDITEMS_PLATFORM_COUNT) return;\n"
+                   "    platforms[index].active = state == 2 ? (uint8_t)!platforms[index].active : (uint8_t)(state != 0);\n"
+                   "}\n\n";
+    C << "void gameworlditems_update(uint16_t frames)\n{\n";
     if (nw) C << "    game_world_objects_update(platforms, " << nw << ", frames);\n";
     if (np && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << np
         << "; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;\n";
@@ -1107,6 +1113,12 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         else if (r.name.trimmed().compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0)
             player = &r;
     }
+    const bool adventureEnabled = hasAdventure();
+    QSet<QString> adventureNpcIds;
+    if (adventureEnabled) {
+        for (const QJsonValue &entry : m_adventure.value(QStringLiteral("npcs")).toArray())
+            adventureNpcIds.insert(entry.toObject().value(QStringLiteral("spriteId")).toString());
+    }
     const bool hasMap = m_tilemapEnabled;
     const bool hasPhysics = hasMap && player;
     const bool hasObjects = pickups || worldObjects;
@@ -1159,6 +1171,10 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
                " * Point-defined stamps use shared definitions and whole placements (SBMP v4).\n"
                " * Legacy Stage 3.35 painted slopes remain available as SBMP v3 data.\n"
                " * Update gametilemap.c/.h to the new shape-aware helpers before building.\n";
+    if (adventureEnabled) out << " * Adventure Editor: NPCs, inventory and dialogue enabled.\n"
+           " * FIRE2 near NPC = talk, UP/DOWN chooses, FIRE2 confirms.\n"
+           " * UP+FIRE2 away from NPC = inventory.\n"
+           " * User-owned main.c remains protected: copy integration from this guide.\n";
     if (hasMap && !m_tilemap.loops.isEmpty())
         out << " * Loop tracks: " << m_tilemap.loops.size() << " circular tracks.\n"
                " * These are generated into level1.c even for SD .map projects.\n"
@@ -1187,6 +1203,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
                "#include \"gamelevels/level1.h\"\n";
     if (hasObjects)
         out << "#include \"gamehelpers/gameworlditems.h\"\n";
+    if (adventureEnabled) out << "#include \"gamehelpers/gameadventure.h\"\n";
     if (hasSplines)
         out << "#include \"gamehelpers/gamespline.h\"\n"
                "#include \"gamehelpers/splinepaths.h\"\n";
@@ -1272,8 +1289,9 @@ static void on_pickup(game_collectable_t *item, void *user)
     uint32_t *points = (uint32_t *)user;
     if (!item || !points) return;
     *points += item->value;  /* Replace with your own key/health/score rules. */
-}
 )CG";
+        if (adventureEnabled) out << "    game_adventure_collect(item->kind); /* Pick up one matching inventory item. */\n";
+        out << "}\n";
     }
     if (hasMurderObjects) out << R"CG(
 /* The Game Designer's Hazard/Murder Objects fire ONE damage event per impact.
@@ -1510,6 +1528,7 @@ int main(int argc, char *argv[])
     game_tilemap_animation_reset();
 )CG";
     }
+    if (adventureEnabled) out << "    gameadventure_setup(); /* Inventory, NPCs and dialogue. */\n";
     if (hasObjects) {
         out << R"CG(    /* Configured objects, animations, switches, doors and sounds.
        ALSO calls start_spline() for each configured moving object. */
@@ -1580,7 +1599,8 @@ int main(int argc, char *argv[])
         }
     }
     if (hasMusic) out << R"CG(
-    /* To start a tune on launch, call playmusicNAME() from gameassets.h.
+    /* Music marked "Play on game start" begins in gameassets_init().
+       Other tunes can be started by their playmusicNAME() function;
        Music triggers configured on objects work automatically. */
 )CG";
     out << R"CG(
@@ -1588,6 +1608,13 @@ int main(int argc, char *argv[])
     while (1) {
         gfx_lcdwait();
 )CG";
+    if (adventureEnabled && hasPhysics)
+        out << "        const uint8_t adventure_buttons = getjoyport();\n"
+               "        game_adventure_input(adventure_buttons, player_physics.x100 / 100,\n"
+               "            player_physics.y100 / 100, player_physics.hitbox_w ? player_physics.hitbox_w : "
+            << playerName << ".width, player_physics.hitbox_h ? player_physics.hitbox_h : "
+            << playerName << ".height, 1);\n"
+               "        if (!game_adventure_open()) {\n";
     if (hasObjects) {
         if (!attachedSplineDescriptions.isEmpty())
             out << "        /* This ALSO advances every attached spline exactly once. */\n";
@@ -1669,6 +1696,7 @@ int main(int argc, char *argv[])
                 << "            player_physics.hitbox_h ? player_physics.hitbox_h : " << playerName << ".height, on_pickup, &score);\n";
         }
     }
+    if (adventureEnabled && hasPhysics) out << "        } /* Resume physics after conversation. */\n";
     out << "\n        int32_t camera_x = 0, camera_y = 0;\n";
     if (hasPhysics) {
         out << R"CG(        /* Follow the player in WORLD pixels, clamped to the level bounds. */
@@ -1713,7 +1741,7 @@ int main(int argc, char *argv[])
         for (const Resource &r : m_resources) {
             if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
                 r.objectType != QStringLiteral("decoration") || &r == player ||
-                r.plane == QStringLiteral("background") || !r.drawBehindTiles) continue;
+                r.plane == QStringLiteral("background") || !r.drawBehindTiles || adventureNpcIds.contains(r.id)) continue;
             const QString bob = spriteSymbol(r);
             if (r.objectFlipX || r.objectFlipY)
                 out << "        " << bob << ".flags = (uint8_t)((" << bob
@@ -1738,7 +1766,7 @@ int main(int argc, char *argv[])
         for (const Resource &r : m_resources) {
             if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
                 r.objectType != QStringLiteral("decoration") || &r == player ||
-                r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
+                r.plane == QStringLiteral("background") || r.drawBehindTiles || adventureNpcIds.contains(r.id)) continue;
             const QString bob = spriteSymbol(r);
             if (r.objectFlipX || r.objectFlipY)
                 out << "        " << bob << ".flags = (uint8_t)((" << bob
@@ -1749,6 +1777,8 @@ int main(int argc, char *argv[])
                 << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
                 << "        gfx_drawbob(&" << bob << ");\n";
         }
+        if (adventureEnabled)
+            out << "        game_adventure_draw_npcs(camera_x, camera_y); /* Placed NPC sprites. */\n";
         out << "        game_tile_player_screen(&player_physics, camera_x, camera_y);\n";
         if (hasMurderObjects) {
             out << R"CG(        /* PLAYER HURT FLASH — WHY MAKE A COPY OF THE SPRITE?
@@ -1788,7 +1818,7 @@ int main(int argc, char *argv[])
         for (const Resource &r : m_resources) {
             if (r.kind != QStringLiteral("sprite") || r.path.isEmpty() ||
                 r.objectType != QStringLiteral("decoration") ||
-                r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
+                r.plane == QStringLiteral("background") || r.drawBehindTiles || adventureNpcIds.contains(r.id)) continue;
             const QString bob = spriteSymbol(r);
             if (r.objectFlipX || r.objectFlipY)
                 out << "        " << bob << ".flags = (uint8_t)((" << bob
@@ -1808,6 +1838,9 @@ int main(int argc, char *argv[])
         out << "        /* Foreground tiles are deliberately drawn AFTER the player. */\n"
                "        game_tilemap_blit_view_front(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n";
     }
+
+    if (adventureEnabled && hasPhysics)
+        out << "        game_adventure_draw(camera_x, camera_y, player_physics.x100 / 100, player_physics.y100 / 100);\n";
     out << R"CG(
         /* YOUR GAME LOGIC: scoring UI, effects and custom HUD go here.
            To exit, add your input check with break; cleanup is below. */
@@ -1829,6 +1862,28 @@ cleanup:
     return result;
 }
 )CG";
+    // Stage 4.28a: the adventure-only pause guard wraps the existing physics
+    // code. Indent its body without rewriting individual generator fragments;
+    // otherwise the generated closing brace is nearly impossible to find.
+    // Keep preprocessor directives at column zero for readability.
+    out.flush();
+    if (adventureEnabled && hasPhysics) {
+        const QString opening = QStringLiteral("        if (!game_adventure_open()) {\n");
+        const QString closing = QStringLiteral("        } /* Resume physics after conversation. */\n");
+        const qsizetype openAt = program.indexOf(opening);
+        const qsizetype bodyAt = openAt < 0 ? -1 : openAt + opening.size();
+        const qsizetype closeAt = bodyAt < 0 ? -1 : program.indexOf(closing, bodyAt);
+        if (bodyAt < 0 || closeAt < 0) {
+            if (error) *error = tr("Cannot locate Adventure physics guard in generated main.");
+            return false;
+        }
+        QStringList lines = program.mid(bodyAt, closeAt - bodyAt).split(QLatin1Char('\n'));
+        for (QString &line : lines) {
+            if (!line.isEmpty() && !line.startsWith(QLatin1Char('#')))
+                line.prepend(QStringLiteral("    "));
+        }
+        program.replace(bodyAt, closeAt - bodyAt, lines.join(QLatin1Char('\n')));
+    }
     const QString path = QDir(QFileInfo(m_filePath).absolutePath())
                              .filePath(QStringLiteral("maingame.c.txt"));
     QSaveFile file(path);
@@ -1936,7 +1991,7 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         anyWorldObject = true;
     }
     QString integrationError;
-    if ((anyWorldObject || anySpline) && !installMissingWorldHelpers(&integrationError, !batchMode)) {
+    if ((anyWorldObject || anySpline || hasAdventure()) && !installMissingWorldHelpers(&integrationError, !batchMode)) {
         QMessageBox::warning(this, tr("Game Object Dependencies"), integrationError);
         return false;
     }
@@ -1948,12 +2003,17 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         .filePath(QStringLiteral("gameassets"));
     request.dualPlane = m_planeMode->currentData().toString() == QStringLiteral("dual");
     request.embedPixels = embedPixels;
+    request.foregroundCycle = {m_frontColourCycle.enabled, m_frontColourCycle.start,
+                               m_frontColourCycle.length, m_frontColourCycle.speed};
+    request.backgroundCycle = {m_backColourCycle.enabled, m_backColourCycle.start,
+                               m_backColourCycle.length, m_backColourCycle.speed};
+    const QString adventureSkinId = m_adventure.value(QStringLiteral("skinAtlasId")).toString();
     const QString activeAtlasPath = m_tilemapEnabled && !m_tilemap.atlasPath.isEmpty()
         ? QDir::cleanPath(resolvedPath(m_tilemap.atlasPath)) : QString();
     for (const Resource &r : m_resources) {
         // Tile Atlases are a library of possible sheets. Only the selected
         // tilemap atlas is loaded, avoiding unused SDRAM allocations.
-        if (r.kind == QStringLiteral("tileatlas") &&
+        if (r.kind == QStringLiteral("tileatlas") && r.id != adventureSkinId &&
             (activeAtlasPath.isEmpty() || r.path.isEmpty() ||
              QDir::cleanPath(resolvedPath(r.path)) != activeAtlasPath)) continue;
         SidboxGameCodeGen::Asset a;
@@ -1968,6 +2028,7 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         a.volume = r.audio.volume; a.pan = r.audio.pan;
         a.loop = r.audio.loop; a.loopStart = r.audio.loopStart;
         a.loopLength = r.audio.loopLength; a.subsong = r.audio.subsong;
+        a.musicPlayOnStart = r.kind == QStringLiteral("music") && r.musicPlayOnStart;
         request.assets.append(a);
         if (r.kind == QStringLiteral("palette")) {
             if (r.id == m_activeForegroundPalette) request.foregroundPalette = a.absolutePath;
@@ -1983,6 +2044,10 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
     if (!exportWorldItems(&integrationError)) {
         QMessageBox::warning(this, tr("Game World Object Generation"),
             tr("Game assets were generated, but world objects were not: %1").arg(integrationError));
+        return false;
+    }
+    if (!exportAdventure(&integrationError)) {
+        QMessageBox::warning(this, tr("Adventure Generation"), integrationError);
         return false;
     }
     if (!exportExampleMain(&integrationError)) {

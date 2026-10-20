@@ -8,6 +8,19 @@
 #include <QtGlobal>
 
 namespace SidboxGamePalette {
+QVector<QRgb> cyclePreview(const QVector<QRgb> &palette, const ColourCycle &cycle,
+                          int steps, bool backgroundBank)
+{
+    if (!cycle.enabled || palette.size() < 256 || cycle.length < 2) return palette;
+    const int first = qBound(backgroundBank ? 0 : 1, cycle.start, 254);
+    const int length = qBound(2, cycle.length, 256 - first);
+    const int shift = ((steps % length) + length) % length;
+    if (shift == 0) return palette;
+    QVector<QRgb> out = palette;
+    for (int i = 0; i < length; ++i)
+        out[first + (i + shift) % length] = palette.at(first + i);
+    return out;
+}
 namespace {
 QVector<QRgb> blankBank()
 {

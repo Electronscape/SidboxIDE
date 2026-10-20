@@ -1,6 +1,8 @@
 #include <QScrollArea>
 #include "mainwindow.h"
 #include "mainwindow_uiicons.h"
+#include "gameeditoricons.h"
+#include "ideglobaltheme.h"
 
 #include "codeeditor.h"
 #include "guidesigner.h"
@@ -1429,7 +1431,8 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("wav") || lower == QStringLiteral("mod")
         || lower == QStringLiteral("s3m") || lower == QStringLiteral("xm")
         || lower == QStringLiteral("med") || lower == QStringLiteral("tfmx")
-        || lower == QStringLiteral("sid") || lower == QStringLiteral("sba");
+        || lower == QStringLiteral("sid") || lower == QStringLiteral("sba")
+        || lower == QStringLiteral("spc");
 }
 
 // Stage 3.70: editorTabIconForFile moved to mainwindow_uiicons.cpp.
@@ -2074,29 +2077,17 @@ void populateSourceSymbolTree(
 
     tree->setUpdatesEnabled(false);
 
-    const QIcon functionIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_function.png"));
+    const QIcon functionIcon = gameEditorIcon(QStringLiteral("tree_scope_function.png"));
 
-    const QIcon globalIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_globals.png"));
+    const QIcon globalIcon = gameEditorIcon(QStringLiteral("tree_scope_globals.png"));
 
-    const QIcon typeIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_types.png"));
+    const QIcon typeIcon = gameEditorIcon(QStringLiteral("tree_scope_types.png"));
 
-    const QIcon defineIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_defines.png"));
+    const QIcon defineIcon = gameEditorIcon(QStringLiteral("tree_scope_defines.png"));
 
-    const QIcon parameterIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_params.png"));
+    const QIcon parameterIcon = gameEditorIcon(QStringLiteral("tree_scope_params.png"));
 
-    const QIcon localIcon(
-        QStringLiteral(
-            ":/icons/tree_scope_locals.png"));
+    const QIcon localIcon = gameEditorIcon(QStringLiteral("tree_scope_locals.png"));
 
     auto addNoneItem =
         [](QTreeWidgetItem *parent) {
@@ -5066,7 +5057,7 @@ void MainWindow::refreshRecentProjectsHome()
         const QFileInfo info(path);
         const bool available = info.isFile();
         auto *item = new QTreeWidgetItem(list);
-        item->setIcon(0, QIcon(QStringLiteral(":/icons/open_project.png")));
+        item->setIcon(0, gameEditorIcon(QStringLiteral("open_project.png")));
         item->setText(0, info.completeBaseName());
         // Give the folder its own wide column; the exact .proj path is kept
         // separately in UserRole so opening a row never depends on this text.
@@ -5218,11 +5209,11 @@ void MainWindow::showHomePage()
     auto *actions = new QHBoxLayout();
     actions->setSpacing(12);
     auto *openButton = new QPushButton(
-        QIcon(QStringLiteral(":/icons/open_project.png")), tr("Open Project..."), content);
+        gameEditorIcon(QStringLiteral("open_project.png")), tr("Open Project..."), content);
     openButton->setObjectName(QStringLiteral("sidboxHomeOpenProject"));
     openButton->setMinimumHeight(46);
     auto *newButton = new QPushButton(
-        QIcon(QStringLiteral(":/icons/new_project.png")), tr("New Project..."), content);
+        gameEditorIcon(QStringLiteral("new_project.png")), tr("New Project..."), content);
     newButton->setMinimumHeight(46);
     actions->addWidget(openButton);
     actions->addWidget(newButton);
@@ -5286,9 +5277,9 @@ void MainWindow::showHomePage()
     // Do NOT centre with an alignment flag: it prevents horizontal expansion.
     outer->addWidget(content, 1);
     scroll->setWidget(page);
-    QIcon homeTabIcon(QStringLiteral(":/icons/toolbar_home.png"));
+    QIcon homeTabIcon = gameEditorIcon(QStringLiteral("toolbar_home.png"));
     if (homeTabIcon.isNull())
-        homeTabIcon = QIcon(QStringLiteral(":/icons/icon.png"));
+        homeTabIcon = gameEditorIcon(QStringLiteral("icon.png"));
     const int index = m_editorTabs->addTab(scroll, homeTabIcon, tr("Home"));
     m_editorTabs->setCurrentIndex(index);
     refreshRecentProjectsHome();
@@ -5620,7 +5611,7 @@ public:
 
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 2, 0, 0);
-        layout->setSpacing(3);
+        layout->setSpacing(2);
 
         auto *heading = new QHBoxLayout();
         heading->setContentsMargins(0, 0, 0, 0);
@@ -5643,7 +5634,7 @@ public:
         auto *readouts = new QGridLayout();
         readouts->setContentsMargins(0, 0, 0, 0);
         readouts->setHorizontalSpacing(4);
-        readouts->setVerticalSpacing(2);
+        readouts->setVerticalSpacing(1);
         const QString labels[] = {tr("HEX"), tr("UDEC"), tr("SDEC")};
         for (int index = 0; index < 3; ++index) {
             auto *caption = new QLabel(labels[index], this);
@@ -5674,9 +5665,9 @@ public:
         readouts->setColumnStretch(1, 1);
         layout->addLayout(readouts);
 
-        // Each row covers up to 16 bits, from most significant on the left to
-        // least significant on the right. The LOWEST 16-bit chunk comes first:
-        // row 0 = bits 0-15, row 1 = bits 16-31, etc.
+        // Each row covers up to 16 bits, most significant bit at the left.
+        // Show the HIGHEST chunk first, so 32-bit mode reads 31-16, then
+        // 15-0. The visible range labels follow this same left-to-right order.
         auto *binaryHeading = new QHBoxLayout();
         binaryHeading->setContentsMargins(0, 0, 0, 0);
         auto *binaryTitle = new QLabel(tr("BIN  (click bits to toggle)"), this);
@@ -5684,6 +5675,7 @@ public:
         binaryHeading->addWidget(binaryTitle, 1);
         m_copyBinary = new QToolButton(this);
         m_copyBinary->setText(tr("COPY BIN"));
+        m_copyBinary->setFixedHeight(21);
         m_copyBinary->setFocusPolicy(Qt::NoFocus);
         m_copyBinary->setToolTip(tr("Copy all binary bits, most significant first, without spaces."));
         binaryHeading->addWidget(m_copyBinary);
@@ -5712,13 +5704,19 @@ public:
         auto *keypad = new QGridLayout();
         keypad->setContentsMargins(0, 0, 0, 0);
         keypad->setHorizontalSpacing(2);
-        keypad->setVerticalSpacing(2);
+        keypad->setVerticalSpacing(1);
         for (int row = 0; row < 7; ++row) {
             for (int col = 0; col < 5; ++col) {
                 const QString buttonText = rows[row][col];
                 auto *button = new QPushButton(buttonText, this);
-                button->setFixedHeight(23);
+                // The application theme's generic button padding/min-height
+                // is too large for a 7-row keypad. The central stylesheet
+                // gives buttons inside this calculator a compact override.
+                button->setFixedHeight(22);
                 button->setMinimumWidth(0);
+                // Equal-width columns even in a narrow project sidebar;
+                // never let button size hints crop the fifth column.
+                button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
                 button->setFocusPolicy(Qt::NoFocus); // Keep typing in the expression field.
                 if (buttonText == QStringLiteral("COPY"))
                     button->setToolTip(tr("Copy the hexadecimal result"));
@@ -5802,26 +5800,29 @@ private:
 
         const int rowCount = (bits + 15) / 16;
         for (int row = 0; row < rowCount; ++row) {
-            const int low = row * 16;
+            const int low = (rowCount - 1 - row) * 16;
             const int high = qMin(low + 15, bits - 1);
             auto *rowWidget = new QWidget(m_binaryArea);
             auto *line = new QHBoxLayout(rowWidget);
             line->setContentsMargins(0, 0, 0, 0);
             line->setSpacing(1);
-            auto *range = new QLabel(QStringLiteral("%1-%2").arg(low).arg(high), rowWidget);
-            range->setFixedWidth(39);
-            range->setToolTip(tr("Bit positions %1 to %2; bit %1 is the least significant in this row.").arg(low).arg(high));
+            auto *range = new QLabel(QStringLiteral("%1-%2").arg(high).arg(low), rowWidget);
+            range->setFixedWidth(41);
+            range->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            range->setToolTip(tr("Bits %1 to %2, shown left to right.").arg(high).arg(low));
             line->addWidget(range);
 
             for (int bit = high; bit >= low; --bit) {
-                if (bit != high && ((bit + 1) % 4) == 0) line->addSpacing(4);
+                if (bit != high && ((bit + 1) % 4) == 0) line->addSpacing(2);
                 auto *button = new QToolButton(rowWidget);
                 button->setObjectName(QStringLiteral("programmerCalculatorBit%1").arg(bit));
                 button->setText(QStringLiteral("0"));
                 button->setCheckable(true);
                 button->setFixedHeight(18);
-                button->setMinimumWidth(8);
-                button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+                // Fit all sixteen toggles inside the narrow project sidebar.
+                // The default QToolButton size hint is too wide here.
+                button->setMinimumWidth(0);
+                button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
                 button->setFocusPolicy(Qt::NoFocus);
                 QFont bitFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
                 bitFont.setPointSize(8);
@@ -6233,226 +6234,16 @@ void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
 void MainWindow::setupInterface()
 {
     setWindowTitle(tr("Sidbox IDE"));
-    QIcon icon = QApplication::windowIcon().isNull() ? QIcon(":/icons/icon.png") : QApplication::windowIcon();
+    QIcon icon = QApplication::windowIcon().isNull() ? gameEditorIcon("icon.png") : QApplication::windowIcon();
     setWindowIcon(icon);
     //resize(1600, 880);
     //maximumSize();
     showMaximized();
 
 
-    setStyleSheet(R"(
-        QMainWindow {
-            background-color: #101010;
-            color: #ffffff;
-        }
+    // Controls are styled by the application-level IDE theme in applyTheme().
+    // No hard-coded local stylesheet: it would override the shared theme.
 
-        QWidget {
-            background-color: #101010;
-            color: #d8d8d8;
-        }
-
-        QLabel {
-            background-color: #101010;
-            color: #ffffff;
-            border: none;
-        }
-
-        QToolBar {
-            background-color: #101010;
-            border: none;
-            spacing: 1px;
-            padding: 1px;
-        }
-
-        QToolButton {
-            background-color: #101010;
-            color: #ffffff;
-            border: none;
-            border-radius: 0px;
-            padding: 3px;
-        }
-
-        QToolButton:hover {
-            background-color: #202020;
-        }
-
-        QToolButton:pressed {
-            background-color: #2858A8;
-        }
-
-        QPushButton {
-            background-color: #101010;
-            color: #dddddd;
-            border: 1px solid #303030;
-            border-radius: 0px;
-            padding: 4px 8px;
-        }
-
-        QPushButton:hover {
-            background-color: #202020;
-            border: 1px solid #506090;
-        }
-
-        QPushButton:pressed {
-            background-color: #2858A8;
-            color: #ffffff;
-        }
-
-        QTreeWidget {
-            background-color: #050505;
-            color: #dddddd;
-            border: 1px solid #202840;
-            border-radius: 0px;
-            alternate-background-color: #0b0b0b;
-        }
-
-        QTreeWidget::item {
-            border-radius: 0px;
-            padding: 1px;
-        }
-
-        QTreeWidget::item:selected {
-            background-color: #2858A8;
-            color: #ffffff;
-        }
-
-        QTreeWidget::item:hover {
-            background-color: #161616;
-        }
-
-        QTabWidget::pane {
-            background-color: #101010;
-            border: 1px solid #202840;
-            border-radius: 0px;
-        }
-
-        QTabBar::tab {
-            background-color: #101010;
-            color: #aaaaaa;
-            border: 1px solid #282828;
-            border-bottom: none;
-            border-radius: 0px;
-            padding: 5px 10px;
-        }
-
-        QTabBar::tab:selected {
-            background-color: #2858A8;
-            color: #ffffff;
-        }
-
-        QTabBar::tab:hover:!selected {
-            background-color: #202020;
-        }
-
-        QStatusBar {
-            background-color: #101010;
-            color: #b0b0b0;
-            border-top: 1px solid #202020;
-        }
-
-        QProgressBar {
-            background-color: #050505;
-            color: #ffffff;
-            border: 1px solid #303030;
-            border-radius: 0px;
-            text-align: center;
-        }
-
-        QProgressBar::chunk {
-            background-color: #2858A8;
-            border-radius: 0px;
-            margin: 0px;
-        }
-
-        QProgressBar#compileProgress::chunk {
-            width: 18px;
-            margin: 1px;
-        }
-
-        QSplitter::handle {
-            background-color: #202020;
-        }
-
-        QSplitter::handle:hover {
-            background-color: #2858A8;
-        }
-
-        QMenu {
-            background-color: #080808;
-            color: #dddddd;
-            border: 1px solid #303030;
-        }
-
-        QMenu::item {
-            padding: 5px 24px 5px 8px;
-        }
-
-        QMenu::item:selected {
-            background-color: #2858A8;
-            color: #ffffff;
-        }
-
-        QScrollBar:vertical {
-            background: #080808;
-            width: 12px;
-            margin: 0px;
-        }
-
-        QScrollBar::handle:vertical {
-            background: #303030;
-            min-height: 20px;
-            border-radius: 0px;
-        }
-
-        QScrollBar::handle:vertical:hover {
-            background: #505050;
-        }
-
-        QScrollBar:add-line:vertical,
-        QScrollBar:sub-line:vertical {
-            height: 0px;
-        }
-
-        QScrollBar:horizontal {
-            background: #080808;
-            height: 12px;
-            margin: 0px;
-        }
-
-        QScrollBar::handle:horizontal {
-            background: #303030;
-            min-width: 20px;
-            border-radius: 0px;
-        }
-
-        QScrollBar::handle:horizontal:hover {
-            background: #505050;
-        }
-
-        QScrollBar:add-line:horizontal,
-        QScrollBar:sub-line:horizontal {
-            width: 0px;
-        }
-
-        QLineEdit,
-        QPlainTextEdit {
-            background-color: #050505;
-            color: #dddddd;
-            border: 1px solid #303030;
-            border-radius: 0px;
-            selection-background-color: #2858A8;
-            selection-color: #ffffff;
-        }
-
-        QToolTip {
-            background-color: #07090d;
-            color: #f2f2f2;
-            border: 2px solid #2858A8;
-            padding: 5px 5px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-    )");
 
 
     auto *toolBar = addToolBar(tr("Project"));
@@ -6460,7 +6251,7 @@ void MainWindow::setupInterface()
     toolBar->setIconSize(QSize(32, 32));
     toolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);    //
 
-    QAction *newAction = toolBar->addAction(QIcon(":/icons/new_project.png"), tr("New"));
+    QAction *newAction = toolBar->addAction(gameEditorIcon("new_project.png"), tr("New"));
     //auto *newMenu = new QMenu(this);
     //QAction *newProjectAction = newMenu->addAction(tr("New Project"));
     //QAction *newSourceAction = newMenu->addAction(tr("New C Source File"));
@@ -6470,22 +6261,22 @@ void MainWindow::setupInterface()
 
     // Prefer the user's Home toolbar artwork; keep the old icon as fallback
     // when the optional image has not yet been embedded in the resources.
-    QIcon homeToolbarIcon(QStringLiteral(":/icons/toolbar_home.png"));
+    QIcon homeToolbarIcon = gameEditorIcon(QStringLiteral("toolbar_home.png"));
     if (homeToolbarIcon.isNull())
-        homeToolbarIcon = QIcon(QStringLiteral(":/icons/icon.png"));
+        homeToolbarIcon = gameEditorIcon(QStringLiteral("icon.png"));
     QAction *homeAction = toolBar->addAction(homeToolbarIcon, tr("Home"));
     homeAction->setToolTip(tr("Show the Home page and recent projects"));
-    QAction *openProjectAction = toolBar->addAction(QIcon(":/icons/open_project.png"), tr("Open Project..."));
-    QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
-    QAction *viewPpbAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("View PPB..."));
+    QAction *openProjectAction = toolBar->addAction(gameEditorIcon("open_project.png"), tr("Open Project..."));
+    QAction *saveProjectAction = toolBar->addAction(gameEditorIcon("save_project.png"), tr("Save Project..."));
+    QAction *viewPpbAction = toolBar->addAction(gameEditorIcon("search_term.png"), tr("View PPB..."));
     viewPpbAction->setToolTip(tr("Open a SIDBOX PPB image without needing a Game Designer project"));
     toolBar->addSeparator();
-    QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
-    QAction *guiDesignerAction = toolBar->addAction(QIcon(":/icons/toolbar_guidesigner.png"), tr("GUI Designer"));
+    QAction *projectSettingsAction = toolBar->addAction(gameEditorIcon("project_settings.png"), tr("Project Settings"));
+    QAction *guiDesignerAction = toolBar->addAction(gameEditorIcon("toolbar_guidesigner.png"), tr("GUI Designer"));
     guiDesignerAction->setToolTip(tr("Create a visual CoderGirl 480x320 GUI design"));
-    QAction *gameDesignerAction = toolBar->addAction(QIcon(":/icons/toolbar_gamedesigner.png"), tr("Game Designer"));
+    QAction *gameDesignerAction = toolBar->addAction(gameEditorIcon("toolbar_gamedesigner.png"), tr("Game Designer"));
     gameDesignerAction->setToolTip(tr("Create a V1 game world, camera layout, and resource references"));
-    QAction *optionsAction = toolBar->addAction(QIcon(":/icons/options.png"), tr("Options"));
+    QAction *optionsAction = toolBar->addAction(gameEditorIcon("options.png"), tr("Options"));
 
 
     //QIcon findReplaceIcon = QIcon::fromTheme(QStringLiteral("edit-find-replace"));
@@ -6493,7 +6284,7 @@ void MainWindow::setupInterface()
         //findReplaceIcon = QIcon::fromTheme(QStringLiteral("edit-find"));
     //}
 
-    QAction *findReplaceAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("Find / Replace"));
+    QAction *findReplaceAction = toolBar->addAction(gameEditorIcon("search_term.png"), tr("Find / Replace"));
     findReplaceAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
 
 
@@ -6507,14 +6298,14 @@ void MainWindow::setupInterface()
     addAction(findNextAction);
 
     toolBar->addSeparator();
-    QAction *compileAction = toolBar->addAction(QIcon(":/icons/compile.png"), tr("Compile [F5]"));
+    QAction *compileAction = toolBar->addAction(gameEditorIcon("compile.png"), tr("Compile [F5]"));
 
     toolBar->addSeparator();
-    QAction *apiCheatSheetAction = toolBar->addAction(QIcon(":/icons/toolbar_cheatsheet.png"), tr("Cheat Sheet [F8]"));
+    QAction *apiCheatSheetAction = toolBar->addAction(gameEditorIcon("toolbar_cheatsheet.png"), tr("Cheat Sheet [F8]"));
     apiCheatSheetAction->setShortcut(Qt::Key_F8);
     apiCheatSheetAction->setToolTip(tr("Open searchable SDK and Game Engine guides"));
 
-    QAction *aboutIdeAction = toolBar->addAction(QIcon(":/icons/ide_icon_32x32.png"), tr("About IDE"));
+    QAction *aboutIdeAction = toolBar->addAction(gameEditorIcon("ide_icon_32x32.png"), tr("About IDE"));
 
     newAction->setShortcut(QKeySequence::New);
     openProjectAction->setShortcut(QKeySequence::Open);
@@ -7882,7 +7673,7 @@ bool MainWindow::openGameDesigner(const QString &filePath)
     game->setTheme(m_theme);
     if (!game->isValid()) { delete game; return false; }
     int index = m_editorTabs->addTab(game,
-        QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png")), game->displayName());
+        gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png")), game->displayName());
     m_editorTabs->setTabToolTip(index, tr("V1 Game design\n%1").arg(QDir::toNativeSeparators(absolute)));
     game->tabTitleChanged = [this, game]() {
         const int i = m_editorTabs->indexOf(game);
@@ -7967,7 +7758,7 @@ bool MainWindow::openGuiDesigner(const QString &filePath)
     auto *designer = createSidboxGuiDesigner(absolutePath, m_editorTabs);
     // Let the designer discover every .sbui in the project, including subfolders.
     designer->setProperty("sidboxProjectRoot", m_projectPath);
-    const int index = m_editorTabs->addTab(designer, QIcon(QStringLiteral(":/icons/toolbar_guidesigner.png")), designer->displayName());
+    const int index = m_editorTabs->addTab(designer, gameEditorIcon(QStringLiteral("toolbar_guidesigner.png")), designer->displayName());
     m_editorTabs->setTabToolTip(index, tr("CoderGirl visual design\n%1").arg(QDir::toNativeSeparators(absolutePath)));
 
     designer->tabTitleChanged = [this, designer]() {
@@ -11501,7 +11292,7 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
             "QComboBox QAbstractItemView { background: #192D50; "
             "color: #E5EEFF; selection-background-color: #2858A8; }"));
         auto *barLayout = new QHBoxLayout(bar);
-        barLayout->setContentsMargins(6, 2, 6, 2);
+        barLayout->setContentsMargins(6, 2, 6, 4);
         barLayout->setSpacing(7);
 
         auto *objects = new QComboBox(bar);
@@ -11520,7 +11311,7 @@ CodeEditor *MainWindow::createEditor(const QString &filePath)
         barLayout->addWidget(objects);
         barLayout->addWidget(events);
         barLayout->addStretch(1);
-        editor->setNavigationBar(bar, 30);
+        editor->setNavigationBar(bar, 32);
         editor->setProperty("sidboxNavigatorDirty", true);
 
         connect(objects, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -11794,7 +11585,8 @@ bool MainWindow::openFile(const QString &filePath)
                     QStringLiteral("jpeg"), QStringLiteral("gif"), QStringLiteral("wav"),
                     QStringLiteral("mod"), QStringLiteral("s3m"), QStringLiteral("xm"),
                     QStringLiteral("med"), QStringLiteral("tfmx"),
-                    QStringLiteral("sid"), QStringLiteral("sba")}.contains(assetSuffix)) {
+                    QStringLiteral("sid"), QStringLiteral("sba"),
+                    QStringLiteral("spc")}.contains(assetSuffix)) {
         QMessageBox::information(this, tr("Game Asset"),
             tr("%1 is a game resource, not source code.\n\n"
                "Open your .sbgm Game Designer to preview PPB/PNG assets and manage resources.")
@@ -12684,7 +12476,7 @@ void MainWindow::refreshProjectFiles()
             if (!folderItem) {
                 folderItem = new QTreeWidgetItem();
                 folderItem->setText(0, part);
-                folderItem->setIcon(0, QIcon(QStringLiteral(":/icons/tree_folder.png")));
+                folderItem->setIcon(0, gameEditorIcon(QStringLiteral("tree_folder.png")));
 
                 const QString absoluteFolderPath =
                     QFileInfo(QDir(m_projectPath).filePath(currentFolder)).absoluteFilePath();
@@ -12764,35 +12556,36 @@ void MainWindow::refreshProjectFiles()
 
         if (suffix == QStringLiteral("c") || suffix == QStringLiteral("cc")
             || suffix == QStringLiteral("cpp")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_c.png"));
         } else if (suffix == QStringLiteral("h") || suffix == QStringLiteral("hpp")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_h.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_h.png"));
         } else if (suffix == QStringLiteral("inc")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_inc.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_inc.png"));
         } else if (suffix == QStringLiteral("res")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_res.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_res.png"));
         } else if (suffix == QStringLiteral("txt")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_txt.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_txt.png"));
         } else if (suffix == QStringLiteral("uis")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_c.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_c.png"));
         } else if (suffix == QStringLiteral("sbui")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_guidesigner.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_guidesigner.png"));
         } else if (suffix == QStringLiteral("sbgm")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/toolbar_gamedesigner.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
         } else if (suffix == QStringLiteral("md")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_md.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_md.png"));
         } else if (suffix == QStringLiteral("ppb") || suffix == QStringLiteral("png")
                    || suffix == QStringLiteral("bmp") || suffix == QStringLiteral("jpg")
                    || suffix == QStringLiteral("jpeg") || suffix == QStringLiteral("gif")
                    || suffix == QStringLiteral("pal") || suffix == QStringLiteral("act")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_res.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_res.png"));
         } else if (suffix == QStringLiteral("wav") || suffix == QStringLiteral("mod")
                    || suffix == QStringLiteral("s3m") || suffix == QStringLiteral("xm")
                    || suffix == QStringLiteral("med") || suffix == QStringLiteral("tfmx")
-                   || suffix == QStringLiteral("sid") || suffix == QStringLiteral("sba")) {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
+                   || suffix == QStringLiteral("sid") || suffix == QStringLiteral("sba")
+                   || suffix == QStringLiteral("spc")) {
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_unknown.png"));
         } else {
-            fileIcon = QIcon(QStringLiteral(":/icons/tree_file_unknown.png"));
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_unknown.png"));
         }
 
         const QString absoluteFilePath =
@@ -14898,7 +14691,8 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.jpeg"), QStringLiteral("*.gif"),
         QStringLiteral("*.wav"), QStringLiteral("*.mod"), QStringLiteral("*.s3m"),
         QStringLiteral("*.xm"), QStringLiteral("*.med"), QStringLiteral("*.tfmx"),
-        QStringLiteral("*.sid"), QStringLiteral("*.sba")
+        QStringLiteral("*.sid"), QStringLiteral("*.sba"),
+        QStringLiteral("*.spc")
     };
 
     std::function<void(const QDir &)> visit;
@@ -15584,92 +15378,15 @@ void MainWindow::applyTheme()
         return ideThemeColorName(colour);
     };
 
-    const QString normalStyle = QStringLiteral(
-        "QMainWindow, QWidget { background-color:%1; color:%2; }"
-        "QLabel { background-color:%1; color:%3; border:none; }"
-
-        "QToolBar { background-color:%1; border:none; spacing:1px; padding:1px; }"
-        "QToolButton { background-color:%1; color:%3; border:none; border-radius:0px; padding:3px; }"
-        "QToolButton:hover { background-color:%4; }"
-        "QToolButton:pressed { background-color:%5; }"
-
-        "QPushButton { background-color:%1; color:%2; border:1px solid %6; border-radius:0px; padding:4px 8px; }"
-        "QPushButton:hover { background-color:%4; border:1px solid %5; }"
-        "QPushButton:pressed { background-color:%5; color:%3; }"
-
-        "QTreeWidget { background-color:%7; color:%2; border:1px solid %8; "
-        " alternate-background-color:%9; border-radius:0px; }"
-        "QTreeWidget::item { border-radius:0px; padding:1px; }"
-        "QTreeWidget::item:selected { background-color:%5; color:%3; }"
-        "QTreeWidget::item:hover { background-color:%4; }"
-
-        "QTabWidget::pane { background-color:%1; border:1px solid %8; border-radius:0px; }"
-        "QTabBar::tab { background-color:%1; color:%10; border:1px solid %6; "
-        " border-bottom:none; border-radius:0px; padding:5px 10px; }"
-        "QTabBar::tab:selected { background-color:%5; color:%3; }"
-        "QTabBar::tab:hover:!selected { background-color:%4; }"
-
-        "QStatusBar { background-color:%1; color:%10; border-top:1px solid %6; }"
-        "QProgressBar { background-color:%7; color:%3; border:1px solid %6; "
-        " border-radius:0px; text-align:center; }"
-        "QProgressBar::chunk { background-color:%5; border-radius:0px; margin:0px; }"
-        "QProgressBar#compileProgress::chunk { width:18px; margin:1px; }"
-        "QSplitter::handle { background-color:%4; }"
-        "QSplitter::handle:hover { background-color:%5; }"
-
-        "QMenu { background-color:%11; color:%2; border:1px solid %6; }"
-        "QMenu::item { padding:5px 24px 5px 8px; }"
-        "QMenu::item:selected { background-color:%5; color:%3; }"
-
-        "QScrollBar:vertical { background:%11; width:12px; margin:0px; }"
-        "QScrollBar:horizontal { background:%11; height:12px; margin:0px; }"
-        "QScrollBar::handle:vertical { background:%12; min-height:20px; border-radius:0px; }"
-        "QScrollBar::handle:horizontal { background:%12; min-width:20px; border-radius:0px; }"
-        "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background:%13; }"
-        "QScrollBar:add-line, QScrollBar:sub-line { width:0px; height:0px; }"
-
-        "QLineEdit, QPlainTextEdit, QSpinBox { background-color:%7; color:%2; "
-        " border:1px solid %6; border-radius:0px; "
-        " selection-background-color:%5; selection-color:%3; }"
-
-        "QToolTip { background-color:%14; color:%15; border:2px solid %5; "
-        " padding:5px 5px; font-size:12px; font-weight:500; }")
-        .arg(C(m_theme.windowBackground))      // 1
-        .arg(C(m_theme.text))                  // 2
-        .arg(C(m_theme.brightText))            // 3
-        .arg(C(m_theme.hover))                 // 4
-        .arg(C(m_theme.accent))                // 5
-        .arg(C(m_theme.border))                // 6
-        .arg(C(m_theme.inputBackground))       // 7
-        .arg(C(m_theme.treeBorder))            // 8
-        .arg(C(m_theme.alternateBackground))   // 9
-        .arg(C(m_theme.mutedText))             // 10
-        .arg(C(m_theme.menuBackground))        // 11
-        .arg(C(m_theme.scrollHandle))          // 12
-        .arg(C(m_theme.scrollHandleHover))     // 13
-        .arg(C(m_theme.tooltipBackground))     // 14
-        .arg(C(m_theme.tooltipText));          // 15
-
-    // Disabled widgets were still using their full-strength enabled colours.
-    // Apply explicit theme-derived disabled colours throughout the IDE, not
-    // merely to the Game Object Properties dialog. No rounded corners.
-    const QColor disabledText = QColor::fromRgbF(
-        m_theme.mutedText.redF() * 0.7 + m_theme.panelBackground.redF() * 0.3,
-        m_theme.mutedText.greenF() * 0.7 + m_theme.panelBackground.greenF() * 0.3,
-        m_theme.mutedText.blueF() * 0.7 + m_theme.panelBackground.blueF() * 0.3);
-    const QString disabledStyle = QStringLiteral(
-        "QPushButton:disabled, QToolButton:disabled, QComboBox:disabled, "
-        "QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled { "
-        "background-color:%1; color:%2; border:1px solid %3; "
-        "border-radius:0px; } "
-        "QComboBox::drop-down:disabled { background-color:%1; border-left:1px solid %3; } "
-        "QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled, "
-        "QGroupBox:disabled { color:%2; } "
-        "QMenu::item:disabled { color:%2; } "
-        "QTabBar::tab:disabled { background-color:%1; color:%2; } "
-        "QComboBox QAbstractItemView:disabled { background:%1; color:%2; }")
-        .arg(C(m_theme.panelBackground), C(disabledText), C(m_theme.panelBackground));
-    setStyleSheet(normalStyle + disabledStyle);
+    // Stage 4.14: QApplication stylesheet is the single source of truth for
+    // normal Qt controls in ALL windows, including newly opened dialogs.
+    // Avoid QWidget-local copies: they override parent/application rules.
+    // KDE-native popup views and alternating tree rows also inspect QPalette.
+    qApp->setPalette(ideGlobalControlPalette(m_theme));
+    qApp->setStyleSheet(ideGlobalControlStyle(m_theme));
+    // Qt/KDE creates combo popup lists in separate windows. Give those
+    // popup views the same IDE theme, including dialogs opened later.
+    ideApplyComboPopupTheme(m_theme);
 
     // The memory bars get the active IDE theme (including user colour edits).
     // These use a continuous fill, without the global build-progress stripes.
@@ -15721,7 +15438,7 @@ void MainWindow::applyTheme()
             " border-bottom:none; border-radius:0px; padding:6px 12px; margin-right:-6px; }"
             "QTabBar::tab:selected { background:%4; color:%5; border-radius:0px; }"
             "QTabBar::tab:hover:!selected { background:%6; border-radius:0px; }"
-            "QTabBar::close-button { image:url(:/icons/close_tab.png); border-radius:0px; "
+            "QTabBar::close-button { image:url(%8); border-radius:0px; "
             " subcontrol-position:right; subcontrol-origin:padding; width:14px; height:14px; background:transparent; }"
             "QTabBar::close-button:hover { background:%7; border-radius:0px; }")
             .arg(C(m_theme.treeBorder),
@@ -15730,7 +15447,8 @@ void MainWindow::applyTheme()
                  C(m_theme.accent),
                  C(m_theme.brightText),
                  C(m_theme.hover),
-                 C(m_theme.outputError)));
+                 C(m_theme.outputError),
+                 gameEditorIconUrl(QStringLiteral("close_tab.png"))));
     }
 
     updateHomePageTheme();

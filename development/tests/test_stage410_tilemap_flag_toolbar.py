@@ -4,7 +4,7 @@ from pathlib import Path
 r = Path(__file__).resolve().parents[2]
 cpp = (r/'gametilemap.cpp').read_text()
 hdr = (r/'gametilemap.h').read_text()
-common = (r/'gameeditorcontrolstyle.h').read_text()
+common = (r/'ideglobaltheme.h').read_text()
 assert 'class TilemapFlagButton final : public QToolButton' in cpp
 assert 'setIconSize(QSize(24, 24));' in cpp
 assert 'setCheckable(true);' in cpp

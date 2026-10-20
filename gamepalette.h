@@ -9,6 +9,16 @@
 // SIDBOX uses absolute 8-bit palette indices: foreground and background CLUTs
 // are independent, and forcing a palette must not modify the pixel index bytes.
 namespace SidboxGamePalette {
+// Independent firmware CLUT cycles. Stored only in .sbgm, not .pal.
+struct ColourCycle {
+    bool enabled = false;
+    int start = 1;     // Foreground index 0 is reserved; background may use index 0.
+    int length = 8;    // Number of entries, not final index.
+    int speed = 5;     // LCD update frames per palette rotation (50 FPS preview).
+};
+// Produce a temporary CLUT; original indices, image bytes and files are unchanged.
+QVector<QRgb> cyclePreview(const QVector<QRgb> &palette, const ColourCycle &cycle,
+                          int steps, bool backgroundBank = false);
 QVector<QRgb> readPalette(const QString &fileName, bool backgroundBank,
                          QString *error = nullptr);
 bool writePal(const QString &fileName, const QVector<QRgb> &front,

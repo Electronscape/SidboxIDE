@@ -5,9 +5,12 @@
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
+#include "gameadventureeditor.h"
+#include "gameadventuregen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
 #include "gameeditorcontrolstyle.h"
+#include "gameeditoricons.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -31,6 +34,7 @@
 #include <QIcon>
 #include <QDateTime>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -107,7 +111,7 @@ namespace {
 // rebuild; there are no runtime file lookups or external icon dependencies.
 QIcon gameResourceIcon(const QString &fileName)
 {
-    return QIcon(QStringLiteral(":/icons/") + fileName);
+    return gameEditorIcon(fileName);
 }
 
 using SidboxGameDesignerLimits::LCD_WIDTH;
@@ -120,7 +124,10 @@ using SidboxGameDesignerLimits::MAX_WORLD;
 class GameComboBox final : public QComboBox
 {
 public:
-    using QComboBox::QComboBox;
+    explicit GameComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        setProperty("customChevron", true);
+    }
 protected:
     void paintEvent(QPaintEvent *event) override
     {
@@ -133,6 +140,41 @@ protected:
         const int cy = height() / 2;
         p.drawLine(cx - 4, cy - 2, cx, cy + 2);
         p.drawLine(cx, cy + 2, cx + 4, cy - 2);
+    }
+};
+
+// World Editor names are editor overlays, not theme-coloured UI text.
+// Render the dark keyline FIRST, then the thick, bright lettering over it:
+// the dark stroke must never swallow the glyph on a busy background.
+class WorldObjectTag final : public QGraphicsSimpleTextItem
+{
+public:
+    explicit WorldObjectTag(const QString &name, QGraphicsItem *parent)
+        : QGraphicsSimpleTextItem(name, parent)
+    {
+        QFont tagFont = font();
+        tagFont.setWeight(QFont::Black);
+        tagFont.setPixelSize(14);
+        setFont(tagFont);
+        // Reserve paint bounds for the outline even though paint() draws it itself.
+        setPen(QPen(Qt::black, 3.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    }
+protected:
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        const QFontMetricsF fm(font());
+        QPainterPath glyph;
+        glyph.addText(QPointF(0, fm.ascent()), font(), text());
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(Qt::black, 3.4, Qt::SolidLine,
+                             Qt::RoundCap, Qt::RoundJoin));
+        painter->drawPath(glyph);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 255, 225)); // constant, never theme.text
+        painter->drawPath(glyph);
+        painter->restore();
     }
 };
 
@@ -167,11 +209,20 @@ class GameTilemapOverlay final : public QGraphicsItem
 {
 public:
     GameTilemapOverlay(const SidboxTilemap *map, const QImage &atlas)
-        : m_map(map), m_atlas(atlas)
+        : m_map(map), m_atlas(atlas), m_baseColours(atlas.colorTable())
     {
         setZValue(2); // Above background references, below movable sprites.
         setAcceptedMouseButtons(Qt::NoButton);
         setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
+    }
+
+    void setColourCycle(const SidboxGamePalette::ColourCycle &cycle, int phase, bool preview)
+    {
+        if (m_atlas.format() != QImage::Format_Indexed8 || m_baseColours.isEmpty()) return;
+        m_atlas.setColorTable(preview
+            ? SidboxGamePalette::cyclePreview(m_baseColours, cycle, phase)
+            : m_baseColours);
+        update(); // Repaint visible tiles; never reload atlas files during playback.
     }
 
     QRectF boundingRect() const override
@@ -222,6 +273,7 @@ public:
 private:
     const SidboxTilemap *m_map = nullptr;
     QImage m_atlas;
+    QVector<QRgb> m_baseColours;
 };
 
 // QGraphicsPixmapItem can be dragged in the scene. Notify the document after
@@ -362,20 +414,19 @@ QPixmap paletteSwatches(const QVector<QRgb> &table)
     return QPixmap::fromImage(image);
 }
 
-// Editor-only forced-CLUT colour preview. SIDBOX may use the ARGB alpha
-// byte for DMA2D blending, but some imported .pal files leave alpha = 0 for
-// many *nonzero* colour indices. Passing those bytes straight to QImage would
-// make sprites vanish instead of showing the selected indexed RGB colours.
-// Keep index 0 transparent on the foreground plane; show all remaining colour
-// indices as opaque for this COLOUR preview. The actual .pal and PPB bytes are
-// never changed. Properties warn when hardware alpha may differ.
-QVector<QRgb> colourPreviewBank(const QVector<QRgb> &bank, bool foreground)
+// Forced-CLUT previews leave the original palette and indexed pixel bytes
+// untouched. The default RGB-only preview keeps nonzero indices visible even
+// when an imported foreground .pal has accidental zero-alpha entries. An
+// opt-in ARGB preview reproduces the foreground alpha from the actual CLUT.
+// Index 0 remains transparent by convention; background is always opaque.
+QVector<QRgb> colourPreviewBank(const QVector<QRgb> &bank, bool foreground, bool previewAlpha)
 {
     QVector<QRgb> display = bank;
     for (int i = 0; i < display.size(); ++i) {
         const QRgb colour = display.at(i);
-        display[i] = qRgba(qRed(colour), qGreen(colour), qBlue(colour),
-                           foreground && i == 0 ? 0 : 255);
+        const int alpha = foreground && i == 0 ? 0
+            : foreground && previewAlpha ? qAlpha(colour) : 255;
+        display[i] = qRgba(qRed(colour), qGreen(colour), qBlue(colour), alpha);
     }
     return display;
 }
@@ -421,6 +472,21 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
     connect(m_objectPreviewTimer, &QTimer::timeout, this, [this]() {
         if (!m_scene || m_loading || !isVisible()) return;
         const qint64 ticks = m_objectPreviewClock.elapsed() / 20;
+        if (m_showColourCycles && m_showColourCycles->isChecked()) {
+            const auto &front = m_frontColourCycle;
+            const auto &back = m_backColourCycle;
+            const int frontPhase = front.enabled
+                ? int((ticks / qMax(1, front.speed)) % qMax(2, front.length)) : 0;
+            const int backPhase = back.enabled
+                ? int((ticks / qMax(1, back.speed)) % qMax(2, back.length)) : 0;
+            if (frontPhase != m_lastFrontCyclePhase || backPhase != m_lastBackCyclePhase) {
+                m_frontCyclePhase = frontPhase;
+                m_backCyclePhase = backPhase;
+                m_lastFrontCyclePhase = frontPhase;
+                m_lastBackCyclePhase = backPhase;
+                refreshColourCyclePreview();
+            }
+        }
         for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
             const Resource &r = m_resources.at(i);
             if (r.kind != QStringLiteral("sprite") || !r.objectAnimated || r.animCount <= 1)
@@ -478,44 +544,9 @@ void SidboxGameDesigner::setTheme(const IDETheme &theme)
         fill.setAlpha(38);
         m_marqueeRect->setBrush(fill);
     }
-    const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
-    // Share the Player Animation / Object Properties control treatment with
-    // the World Canvas without changing the canvas' painted level graphics.
-    setStyleSheet(gameEditorControlStyle(theme));
-
-    // QComboBox popups can be separate windows on some Qt styles. Colour their
-    // view explicitly so neither the desktop theme nor a default palette wins.
-    for (QComboBox *combo : findChildren<QComboBox *>()) {
-        QPalette colours = combo->palette();
-        colours.setColor(QPalette::Base, theme.inputBackground);
-        colours.setColor(QPalette::Text, theme.text);
-        colours.setColor(QPalette::Button, theme.inputBackground);
-        colours.setColor(QPalette::ButtonText, theme.text);
-        const QColor selectedBg = theme.accent.darker(230);
-        const QColor selectedFg = selectedBg.lightnessF() < 0.52
-            ? QColor(Qt::white) : QColor(Qt::black);
-        colours.setColor(QPalette::Highlight, selectedBg);
-        colours.setColor(QPalette::HighlightedText, selectedFg);
-        const QColor disabledText = QColor::fromRgbF(
-            theme.mutedText.redF() * 0.7 + theme.panelBackground.redF() * 0.3,
-            theme.mutedText.greenF() * 0.7 + theme.panelBackground.greenF() * 0.3,
-            theme.mutedText.blueF() * 0.7 + theme.panelBackground.blueF() * 0.3);
-        colours.setColor(QPalette::Disabled, QPalette::Text, disabledText);
-        colours.setColor(QPalette::Disabled, QPalette::ButtonText, disabledText);
-        colours.setColor(QPalette::Disabled, QPalette::Base, theme.panelBackground);
-        colours.setColor(QPalette::Disabled, QPalette::Button, theme.panelBackground);
-        combo->setPalette(colours);
-        if (auto *popup = combo->view()) {
-            popup->setPalette(colours);
-            popup->setStyleSheet(QStringLiteral(
-                "QAbstractItemView { background:%1; color:%2; border:1px solid %3; "
-                "border-radius:0px; selection-background-color:%4; selection-color:%5; "
-                "outline:0px; } "
-                "QAbstractItemView::item:selected { background:%4; color:%5; }")
-                .arg(C(theme.menuBackground), C(theme.text), C(theme.border),
-                     C(selectedBg), C(selectedFg)));
-        }
-    }
+    // The application-wide IDE palette and stylesheet now colour all normal
+    // controls and their popup lists. Keep only world-canvas art local.
+    setStyleSheet(QString());
     refreshColours();
     refreshObjectHitbox();
 }
@@ -566,12 +597,28 @@ void SidboxGameDesigner::openPaletteEditor(int resourceIndex)
     }
     SidboxGamePaletteEditor dialog(this);
     dialog.setBank(plane == QStringLiteral("background"));
+    dialog.setColourCycles(m_frontColourCycle, m_backColourCycle);
     if (!palettePath.isEmpty() && QFileInfo(palettePath).suffix().compare(
         QStringLiteral("pal"), Qt::CaseInsensitive) == 0) {
         // Respect Cancel (and failed imports) rather than opening an empty editor.
         if (!dialog.loadFromFile(palettePath)) return;
     }
     dialog.exec();
+    const auto foreground = dialog.foregroundColourCycle();
+    const auto background = dialog.backgroundColourCycle();
+    const auto changed = [](const SidboxGamePalette::ColourCycle &a,
+                            const SidboxGamePalette::ColourCycle &b) {
+        return a.enabled != b.enabled || a.start != b.start || a.length != b.length
+               || a.speed != b.speed;
+    };
+    if (changed(m_frontColourCycle, foreground) || changed(m_backColourCycle, background)) {
+        m_frontColourCycle = foreground;
+        m_backColourCycle = background;
+        m_frontCyclePhase = m_backCyclePhase = 0;
+        m_lastFrontCyclePhase = m_lastBackCyclePhase = -1;
+        setDirty();
+        refreshPlanePreview();
+    }
     const QString saved = dialog.savedPath();
     if (saved.isEmpty()) return;
     m_paletteCache.clear();
@@ -866,7 +913,7 @@ void SidboxGameDesigner::rebuildTilemapOverlay()
     if (m_forcePalette && m_forcePalette->isChecked()) {
         const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
         if (palette.size() == 256)
-            atlas.setColorTable(colourPreviewBank(palette, true));
+            atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
     }
     // Foreground palette index 0 is transparent on SIDBOX. Do this only
     // for the preview; the PPB file and palette assets are never modified.
@@ -876,8 +923,12 @@ void SidboxGameDesigner::rebuildTilemapOverlay()
         displayPalette[0] = qRgba(qRed(zero), qGreen(zero), qBlue(zero), 0);
         atlas.setColorTable(displayPalette);
     }
-    m_tilemapOverlayItem = new GameTilemapOverlay(&m_tilemap, atlas);
-    m_scene->addItem(m_tilemapOverlayItem);
+    auto *overlay = new GameTilemapOverlay(&m_tilemap, atlas);
+    m_tilemapOverlayItem = overlay;
+    m_scene->addItem(overlay);
+    overlay->setColourCycle(m_frontColourCycle, m_frontCyclePhase,
+                            m_showColourCycles && m_showColourCycles->isChecked()
+                            && m_frontColourCycle.enabled);
 }
 
 void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
@@ -1792,6 +1843,10 @@ void SidboxGameDesigner::buildUi()
     m_resourceTree->setIconSize(QSize(20, 20));
     m_resourceTree->setSelectionMode(QAbstractItemView::SingleSelection);
     resourcesLayout->addWidget(m_resourceTree, 1);
+    auto *adventureButton = new QPushButton(tr("Adventure Editor..."), resourcesPanel);
+    adventureButton->setToolTip(tr("Advanced Platformer: design inventory, NPC dialogue, choices and a nine-tile box frame."));
+    resourcesLayout->addWidget(adventureButton);
+    connect(adventureButton, &QPushButton::clicked, this, [this] { openAdventureEditor(); });
     auto *frontClutLabel = new QLabel(tr("Preview foreground CLUT"), resourcesPanel);
     frontClutLabel->setWordWrap(true);
     resourcesLayout->addWidget(frontClutLabel);
@@ -1827,6 +1882,12 @@ void SidboxGameDesigner::buildUi()
                                   "shows nonzero foreground indices opaque (index 0 stays transparent). "
                                   "Original CLUT alpha is unchanged and may affect real SIDBOX blending."));
     resourcesLayout->addWidget(m_forcePalette);
+    m_previewPaletteAlpha = new QCheckBox(tr("Preview palette alpha"), resourcesPanel);
+    m_previewPaletteAlpha->setChecked(false); // Preserve old opaque RGB preview by default.
+    m_previewPaletteAlpha->setToolTip(tr("Show actual foreground palette transparency in indexed previews. "
+        "Requires Force preview CLUTs. Background remains fully opaque; index 0 stays transparent. "
+        "This does not change .pal, PPB or game graphics."));
+    resourcesLayout->addWidget(m_previewPaletteAlpha);
     m_buildPaletteButton = new QPushButton(tr("Build Shared CLUT..."), resourcesPanel);
     m_buildPaletteButton->setToolTip(tr("Generates palette files only in gamepalettes/. "
         "Does not create or modify PPB images or change any resource paths."));
@@ -2014,6 +2075,7 @@ void SidboxGameDesigner::buildUi()
                 QSignalBlocker block(m_forcePalette);
                 m_forcePalette->setChecked(true);
             }
+            m_previewPaletteAlpha->setEnabled(true);
             refreshResources();
             refreshPlanePreview();
             setDirty();
@@ -2027,7 +2089,14 @@ void SidboxGameDesigner::buildUi()
             [this](QTreeWidgetItem *item, int) {
         if (!item) return;
         const QString group = item->data(0, Qt::UserRole + 1).toString();
-        if (group == QStringLiteral("gameobject") && item->data(0, Qt::UserRole).isValid()) {
+        if (group == QStringLiteral("sprite") && item->data(0, Qt::UserRole).isValid()) {
+            const int index = item->data(0, Qt::UserRole).toInt();
+            if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index) && m_view) {
+                m_view->centerOn(m_sceneItems.at(index)->sceneBoundingRect().center());
+                // Editor navigation only: actual game camera and sprite coordinates unchanged.
+                setDirty(); // World viewport centre is persisted in .sbgm.
+            }
+        } else if (group == QStringLiteral("gameobject") && item->data(0, Qt::UserRole).isValid()) {
             const int index = item->data(0, Qt::UserRole).toInt();
             if (index >= 0 && index < m_resources.size()
                 && m_resources.at(index).kind == QStringLiteral("sprite"))
@@ -2069,6 +2138,11 @@ void SidboxGameDesigner::buildUi()
     m_showTilemap->setChecked(false);
     m_showTilemap->setEnabled(false);
     previewControls->addWidget(m_showTilemap);
+    m_showColourCycles = new QCheckBox(tr("Colour cycles"), previewPanel);
+    m_showColourCycles->setToolTip(tr("Preview independent foreground/background palette cycles in the World Designer only. "
+                                      "Requires indexed graphics; the palette editor configures the range and speed. "
+                                      "Does not alter palette files or start cycling on SIDBOX."));
+    previewControls->addWidget(m_showColourCycles);
     m_grid = new QCheckBox(tr("Grid 32"), previewPanel);
     m_grid->setChecked(true);
     previewControls->addWidget(m_grid);
@@ -2157,6 +2231,10 @@ void SidboxGameDesigner::buildUi()
     m_propFrame = new QSpinBox(propertiesPanel);
     m_propFrame->setRange(0, 0);
     m_propLocked = new QCheckBox(tr("Lock position (no dragging)"), propertiesPanel);
+    m_musicPlayOnStart = new QCheckBox(tr("Play on game start"), propertiesPanel);
+    m_musicPlayOnStart->setToolTip(tr("Start this music automatically after gameassets_init() finishes loading. "
+                                    "Only one Music resource can be selected. "
+                                    "For another level, call its generated playmusic...() function when that level loads."));
     m_propPlane = new GameComboBox(propertiesPanel);
     m_propPlane->addItem(tr("Foreground"), QStringLiteral("foreground"));
     m_propPlane->addItem(tr("Background"), QStringLiteral("background"));
@@ -2197,6 +2275,7 @@ void SidboxGameDesigner::buildUi()
     form->addRow(tr("Cell height"), m_propCellHeight);
     form->addRow(tr("Frame"), m_propFrame);
     form->addRow(QString(), m_propLocked);
+    form->addRow(QString(), m_musicPlayOnStart);
     propertiesLayout->addLayout(form);
     propertiesLayout->addWidget(m_imageInfo);
     m_palettePreview = new QLabel(propertiesPanel);
@@ -2210,6 +2289,18 @@ void SidboxGameDesigner::buildUi()
     propertiesLayout->addWidget(m_editPaletteButton);
     connect(m_editPaletteButton, &QPushButton::clicked, this, [this]() {
         openPaletteEditor(selectedIndex());
+    });
+    connect(m_musicPlayOnStart, &QCheckBox::toggled, this, [this](bool enabled) {
+        const int index = selectedIndex();
+        if (m_loading || index < 0 || m_resources.at(index).kind != QStringLiteral("music")) return;
+        if (m_resources.at(index).musicPlayOnStart == enabled) return;
+        rememberResourceEdit();
+        if (enabled) {
+            for (Resource &other : m_resources)
+                if (other.kind == QStringLiteral("music")) other.musicPlayOnStart = false;
+        }
+        m_resources[index].musicPlayOnStart = enabled;
+        setDirty();
     });
     m_audioPanel = new SidboxGameAudioPanel(propertiesPanel);
     propertiesLayout->addWidget(m_audioPanel);
@@ -2290,7 +2381,12 @@ void SidboxGameDesigner::buildUi()
             refreshPlanePreview(); setDirty();
         });
     }
-    connect(m_forcePalette, &QCheckBox::toggled, this, [this](bool) {
+    connect(m_forcePalette, &QCheckBox::toggled, this, [this](bool checked) {
+        m_previewPaletteAlpha->setEnabled(checked);
+        refreshPlanePreview(); setDirty();
+    });
+    m_previewPaletteAlpha->setEnabled(m_forcePalette->isChecked());
+    connect(m_previewPaletteAlpha, &QCheckBox::toggled, this, [this](bool) {
         refreshPlanePreview(); setDirty();
     });
     connect(m_buildPaletteButton, &QPushButton::clicked, this, [this]() { buildSharedPalette(); });
@@ -2351,6 +2447,12 @@ void SidboxGameDesigner::buildUi()
     connect(m_showTilemap, &QCheckBox::toggled, this, [this](bool) {
         rebuildTilemapOverlay();
         refreshFrame();
+        setDirty();
+    });
+    connect(m_showColourCycles, &QCheckBox::toggled, this, [this](bool) {
+        m_frontCyclePhase = m_backCyclePhase = 0;
+        m_lastFrontCyclePhase = m_lastBackCyclePhase = -1;
+        refreshPlanePreview();
         setDirty();
     });
     connect(m_grid, &QCheckBox::toggled, this, [this](bool checked) {
@@ -2881,7 +2983,17 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
         const QVector<QRgb> bank = activePalette(plane);
         if (bank.size() == 256)
             frameImage.setColorTable(colourPreviewBank(bank,
-                plane == QStringLiteral("foreground")));
+                plane == QStringLiteral("foreground"),
+                m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
+    }
+    if (m_showColourCycles && m_showColourCycles->isChecked()
+        && frameImage.format() == QImage::Format_Indexed8) {
+        const bool background = resourcePlane(r) == QStringLiteral("background");
+        const auto &cycle = background ? m_backColourCycle : m_frontColourCycle;
+        const int phase = background ? m_backCyclePhase : m_frontCyclePhase;
+        if (cycle.enabled)
+            frameImage.setColorTable(SidboxGamePalette::cyclePreview(
+                frameImage.colorTable(), cycle, phase, background));
     }
     // Preview matches BLIT_FLAG_FLIP_X / Y without changing the source PPB.
     if (r.kind == QStringLiteral("sprite") && (r.objectFlipX || r.objectFlipY)) {
@@ -2891,6 +3003,27 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
         frameImage = frameImage.flipped(flipDirections);
     }
     return frameImage;
+}
+
+void SidboxGameDesigner::refreshColourCyclePreview()
+{
+    // Update pixmaps IN PLACE to avoid disturbing selection, dragging or world panning.
+    if (m_loading || !m_scene) return;
+    for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
+        const Resource &resource = m_resources.at(i);
+        if (!visualKind(resource.kind)) continue;
+        auto *item = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(i));
+        if (!item) continue;
+        Resource frame = resource;
+        frame.frame = item->data(1).toInt();
+        const QImage preview = resourcePreview(frame);
+        if (!preview.isNull()) item->setPixmap(QPixmap::fromImage(preview));
+    }
+    if (m_tilemapOverlayItem) {
+        static_cast<GameTilemapOverlay *>(m_tilemapOverlayItem)->setColourCycle(
+            m_frontColourCycle, m_frontCyclePhase,
+            m_showColourCycles && m_showColourCycles->isChecked() && m_frontColourCycle.enabled);
+    }
 }
 
 void SidboxGameDesigner::rebuildScene()
@@ -2941,8 +3074,7 @@ void SidboxGameDesigner::rebuildScene()
             item->setZValue(1.9); // Behind Tilemap Overlay (Z=2), still draggable.
         item->moved = [this](QGraphicsItem *which) { syncFromSceneItem(which); };
         m_scene->addItem(item);
-        auto *title = new QGraphicsSimpleTextItem(r.name, item);
-        title->setBrush(QColor(255, 241, 160));
+        auto *title = new WorldObjectTag(r.name, item);
         title->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
         title->setPos(0, -18);
         title->setVisible(m_showLabels->isChecked());
@@ -3043,6 +3175,7 @@ void SidboxGameDesigner::refreshProperties()
     if (QWidget *label = m_propertiesForm->labelForField(m_propBackgroundMode))
         label->setVisible(m_propBackgroundMode->isVisible());
     m_propLocked->setVisible(visualSelection);
+    m_musicPlayOnStart->setVisible(enabled && m_resources.at(index).kind == QStringLiteral("music"));
     if (QWidget *label = m_propertiesForm->labelForField(m_propLocked))
         label->setVisible(visualSelection);
     for (QWidget *widget : {static_cast<QWidget *>(m_propName), static_cast<QWidget *>(m_propX),
@@ -3053,6 +3186,7 @@ void SidboxGameDesigner::refreshProperties()
     QSignalBlocker block1(m_propName), block2(m_propX), block3(m_propY), block4(m_propScale);
     QSignalBlocker block5(m_propCellWidth), block6(m_propCellHeight), block7(m_propFrame);
     QSignalBlocker block8(m_propLocked), block9(m_propPlane), block10(m_propBackgroundMode);
+    QSignalBlocker blockMusicStart(m_musicPlayOnStart);
     if (!enabled) {
         m_propName->clear(); m_propFile->clear(); m_imageInfo->clear(); m_palettePreview->hide();
         m_editPaletteButton->hide();
@@ -3062,9 +3196,11 @@ void SidboxGameDesigner::refreshProperties()
         m_propCellWidth->setValue(0); m_propCellHeight->setValue(0);
         m_propFrame->setRange(0, 0);
         m_propLocked->setChecked(false);
+        m_musicPlayOnStart->setChecked(false);
         return;
     }
     const Resource &r = m_resources.at(index);
+    m_musicPlayOnStart->setChecked(r.kind == QStringLiteral("music") && r.musicPlayOnStart);
     if (r.kind == QStringLiteral("sound") || r.kind == QStringLiteral("music"))
         m_audioPanel->showAudio(r.kind, resolvedPath(r.path), r.audio);
     else m_audioPanel->clearAudio();
@@ -3133,7 +3269,9 @@ void SidboxGameDesigner::refreshProperties()
     if (!shownPalette.isEmpty()) {
         const QString plane = resourcePlane(r);
         paletteNote = tr("  |  Forced %1 CLUT (indices unchanged)").arg(plane);
-        if (extraPaletteTransparency(shownPalette, plane == QStringLiteral("foreground")))
+        if (plane == QStringLiteral("foreground") && m_previewPaletteAlpha->isChecked())
+            paletteNote += tr("  |  Previewing foreground CLUT alpha");
+        else if (extraPaletteTransparency(shownPalette, plane == QStringLiteral("foreground")))
             paletteNote += tr("  |  WARNING: CLUT alpha differs from colour preview; check on SIDBOX");
     } else if (m_forcePalette->isChecked() && image.format() != QImage::Format_Indexed8) {
         paletteNote = tr("  |  Convert to PPB to use indexed palettes");
@@ -3257,7 +3395,7 @@ void SidboxGameDesigner::addResource(const QString &kind, const QString &plane)
             : kind == QStringLiteral("sprite") || kind == QStringLiteral("background")
             ? tr("Graphics (*.ppb *.png *.bmp *.jpg *.jpeg *.gif);;All Files (*)")
             : kind == QStringLiteral("sound") ? tr("Sound (*.wav);;All Files (*)")
-            : kind == QStringLiteral("music") ? tr("Music (*.mod *.s3m *.xm *.med *.tfmx *.sid *.sba);;All Files (*)")
+            : kind == QStringLiteral("music") ? tr("Music (*.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc);;All Files (*)")
             : tr("Palettes / Graphics (*.ppb *.pal *.act *.png *.bmp);;All Files (*)"));
     if (path.isEmpty()) return;
     if (kind == QStringLiteral("tileatlas") &&
@@ -3783,30 +3921,18 @@ void SidboxGameDesigner::configureGameObject(int index)
           border-radius:0px; outline:0px; }
         QListWidget#GGObjectTypes::item { padding:8px; border:1px solid %4;
           border-radius:0px; margin-bottom:2px; }
-        QListWidget#GGObjectTypes::item:selected { background:%8; color:%11;
+        QListWidget#GGObjectTypes::item:selected { background:%8; color:%10;
           border:1px solid %6; border-left:3px solid %6; }
         QListWidget#GGObjectTypes::item:hover { border-color:%6; }
         QLabel#GGPreviewImage { background:%1; border:1px solid %4; }
         QLabel#GGHelper { color:%9; }
-        QSpinBox, QComboBox, QLineEdit { background:%10; color:%2;
-          border:1px solid %4; border-radius:0px; min-height:23px; }
-        QSpinBox:focus, QComboBox:focus { border:1px solid %6; }
-        QSlider::groove:horizontal { height:5px; background:%4; border-radius:0px; }
-        QSlider::handle:horizontal { width:11px; margin:-5px 0; background:%6;
-          border:1px solid %2; border-radius:0px; }
-        QCheckBox { spacing:7px; background:transparent; }
-        QCheckBox::indicator { width:16px; height:16px; border:1px solid %4;
-          border-radius:0px; background:%10; }
-        QCheckBox::indicator:checked { background:%6; border-color:%6; }
-        QCheckBox::indicator:disabled { background:%5; border-color:%4; }
-        QPushButton, QToolButton { border-radius:0px; }
+        /* Generic controls and checkboxes inherit the central IDE theme. */
     )GGSTYLE")
         .arg(colour(m_theme.windowBackground)).arg(colour(m_theme.text))
         .arg(colour(m_theme.panelBackground)).arg(colour(m_theme.border))
         .arg(colour(m_theme.alternateBackground)).arg(colour(m_theme.accent))
         .arg(colour(m_theme.hover)).arg(colour(m_theme.accent.darker(230)))
-        .arg(colour(m_theme.mutedText)).arg(colour(m_theme.inputBackground))
-        .arg(colour(objectSelectionFg)));
+        .arg(colour(m_theme.mutedText)).arg(colour(objectSelectionFg)));
 
     QVBoxLayout layout(&dialog);
     layout.setContentsMargins(10, 10, 10, 10);
@@ -3840,7 +3966,10 @@ void SidboxGameDesigner::configureGameObject(int index)
             painter.drawLine(11, 3, 5, 8);
             painter.drawLine(5, 8, 11, 13);
         }
-        return QIcon(pix);
+        const QIcon custom = gameEditorExternalIcon(right
+            ? QStringLiteral("game_object_next.png")
+            : QStringLiteral("game_object_previous.png"));
+        return custom.isNull() ? QIcon(pix) : custom;
     };
     auto *previousObject = new QToolButton(&dialog);
     auto *nextObject = new QToolButton(&dialog);
@@ -3865,11 +3994,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     nextObject->setEnabled(nextIndex >= 0);
     auto *objectName = new QLabel(old.name, &dialog);
     objectName->setMinimumWidth(90);
-    objectName->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    objectName->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    objectName->setMaximumWidth(285);
     objectName->setToolTip(old.name);
     objectHeading->addWidget(previousObject);
-    objectHeading->addWidget(objectName, 1);
+    objectHeading->addWidget(objectName);
     objectHeading->addWidget(nextObject);
+    objectHeading->addStretch(1);
     layout.addLayout(objectHeading);
 
     // Each card can be collapsed. Hidden cards are real layouts rather than
@@ -4590,7 +4721,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     if (atlas.format() == QImage::Format_Indexed8) {
         const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
         if (palette.size() == 256)
-            atlas.setColorTable(colourPreviewBank(palette, true));
+            atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
     }
     int previewFrame = 0;
     bool previewPlaying = true;
@@ -4796,31 +4927,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(musicAction, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
     enableFields();
-    // A late-created dialog is not part of setTheme()'s existing-combo pass.
-    // Colour its popup views explicitly to match Stage 2.5 theme rules.
-    const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
+    // These are created after the World Editor: the QApplication-wide
+    // palette/QSS also styles their popup lists without per-dialog copies.
     for (QComboBox *combo : dialog.findChildren<QComboBox *>()) {
         combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         combo->setMinimumContentsLength(14);
         combo->setMinimumWidth(0);
         combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        QPalette colours = combo->palette();
-        colours.setColor(QPalette::Base, m_theme.inputBackground);
-        colours.setColor(QPalette::Text, m_theme.text);
-        colours.setColor(QPalette::Button, m_theme.inputBackground);
-        colours.setColor(QPalette::ButtonText, m_theme.text);
-        colours.setColor(QPalette::Highlight, m_theme.accent);
-        colours.setColor(QPalette::HighlightedText, m_theme.brightText);
-        combo->setPalette(colours);
-        if (auto *popup = combo->view()) {
-            popup->setPalette(colours);
-            popup->setStyleSheet(QStringLiteral(
-                "QAbstractItemView { background:%1; color:%2; border:1px solid %3; "
-                "border-radius:0px; selection-background-color:%4; selection-color:%5; "
-                "outline:0px; } QAbstractItemView::item:selected { background:%4; color:%5; }")
-                .arg(C(m_theme.menuBackground), C(m_theme.text), C(m_theme.border),
-                     C(m_theme.accent), C(m_theme.brightText)));
-        }
     }
     const auto commitObject = [&]() -> bool {
     const QString newType = type->currentData().toString();
@@ -5021,7 +5134,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         if (atlas.format() == QImage::Format_Indexed8) {
             const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
             if (palette.size() == 256)
-                atlas.setColorTable(colourPreviewBank(palette, true));
+                atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
         }
         previewFrame = 0;
         previewPlaying = true;
@@ -5304,6 +5417,7 @@ void SidboxGameDesigner::buildSharedPalette()
             QSignalBlocker block(m_forcePalette);
             m_forcePalette->setChecked(true);
         }
+        m_previewPaletteAlpha->setEnabled(true);
         rebuildScene();
         refreshResources();
         if (selectedPalette >= 0) selectResource(selectedPalette);
@@ -5694,4 +5808,84 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QWidget::eventFilter(watched, event);
+}
+
+
+// Advanced Platformer adventure definitions are stored only in .sbgm.
+// Ordinary placed Sprite resources become NPCs by stable resource ID.
+bool SidboxGameDesigner::hasAdventure() const
+{
+    return !m_adventure.value(QStringLiteral("items")).toArray().isEmpty()
+        || !m_adventure.value(QStringLiteral("nodes")).toArray().isEmpty()
+        || !m_adventure.value(QStringLiteral("npcs")).toArray().isEmpty();
+}
+void SidboxGameDesigner::openAdventureEditor()
+{
+    QVector<GameAdventureAsset> sprites, atlases;
+    for (const Resource &r : m_resources) {
+        if (r.path.isEmpty()) continue;
+        if (r.kind != QStringLiteral("sprite") && r.kind != QStringLiteral("tileatlas")) continue;
+        GameAdventureAsset a; a.id = r.id; a.name = r.name; a.path = resolvedPath(r.path);
+        a.x = r.x; a.y = r.y;
+        const QImage image = cachedImage(a.path);
+        a.width = r.cellWidth > 0 ? r.cellWidth : image.width();
+        a.height = r.cellHeight > 0 ? r.cellHeight : image.height();
+        a.symbol = spriteSymbol(r);
+        a.atlasFrames = (a.width > 0 && a.height > 0)
+            ? qBound(1, (image.width() / a.width) * (image.height() / a.height), 256) : 1;
+        if (r.kind == QStringLiteral("sprite") && r.objectType == QStringLiteral("decoration")
+            && r.plane == QStringLiteral("foreground") && r.name.compare(QStringLiteral("player"),Qt::CaseInsensitive))
+            sprites.append(a);
+        else if (r.kind == QStringLiteral("tileatlas")) atlases.append(a);
+    }
+    QVector<GameAdventureAsset> worldObjects;
+    int slot = 0;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")
+            || r.objectType == QStringLiteral("collectable")) continue;
+        GameAdventureAsset object; object.id = r.id; object.name = r.name;
+        object.worldSlot = slot++; worldObjects.append(object);
+    }
+    QJsonObject edited = m_adventure;
+    QVector<GameAdventureAsset> collectables;
+    for (const Resource &r : m_resources) {
+        if (r.kind == QStringLiteral("sprite") && r.objectType == QStringLiteral("collectable")) {
+            GameAdventureAsset a;
+            a.id = r.id; a.name = r.name; a.pickupKind = r.pickupKind;
+            collectables.append(a);
+        }
+    }
+    if (!editGameAdventure(this, &edited, sprites, atlases, worldObjects, collectables,
+                           activePalette(QStringLiteral("foreground")))) return;
+    m_adventure = edited;
+    setDirty(true);
+}
+bool SidboxGameDesigner::exportAdventure(QString *error)
+{
+    if (!hasAdventure()) return true;
+    QVector<GameAdventureAsset> sprites, atlases;
+    for (const Resource &r : m_resources) {
+        if (r.path.isEmpty() || (r.kind != QStringLiteral("sprite") && r.kind != QStringLiteral("tileatlas"))) continue;
+        GameAdventureAsset a; a.id = r.id; a.name = r.name; a.path = resolvedPath(r.path);
+        a.x = r.x; a.y = r.y;
+        const QImage image = cachedImage(a.path);
+        a.width = r.cellWidth > 0 ? r.cellWidth : image.width();
+        a.height = r.cellHeight > 0 ? r.cellHeight : image.height();
+        a.symbol = spriteSymbol(r);
+        a.atlasFrames = (a.width > 0 && a.height > 0)
+            ? qBound(1, (image.width() / a.width) * (image.height() / a.height), 256) : 1;
+        if (r.kind == QStringLiteral("sprite") && r.objectType == QStringLiteral("decoration")
+            && r.plane == QStringLiteral("foreground")) sprites.append(a);
+        else if (r.kind == QStringLiteral("tileatlas")) atlases.append(a);
+    }
+    QVector<GameAdventureAsset> worldObjects;
+    int slot = 0;
+    for (const Resource &r : m_resources) {
+        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")
+            || r.objectType == QStringLiteral("collectable")) continue;
+        GameAdventureAsset object; object.id = r.id; object.name = r.name;
+        object.worldSlot = slot++; worldObjects.append(object);
+    }
+    return generateGameAdventure(m_adventure, QFileInfo(m_filePath).absolutePath(), sprites,
+                                 atlases, worldObjects, error);
 }

@@ -23,17 +23,17 @@ QIcon loadSidboxIcon()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QStringList candidates = {
-        QStringLiteral(":/icons/icon.png"),
         QDir(appDir).filePath(QStringLiteral("icons/icon.png")),
         QDir(appDir).filePath(QStringLiteral("../icons/icon.png")),
         QDir(appDir).filePath(QStringLiteral("../../icons/icon.png")),
         QDir::current().filePath(QStringLiteral("icons/icon.png")),
         QDir::current().filePath(QStringLiteral("SidboxIDE/icons/icon.png")),
-        QStringLiteral(":/icons/icon.ico"),
+        QStringLiteral(":/icons/icon.png"),
         QDir(appDir).filePath(QStringLiteral("icons/icon.ico")),
         QDir(appDir).filePath(QStringLiteral("../icons/icon.ico")),
         QDir::current().filePath(QStringLiteral("icons/icon.ico")),
-        QDir::current().filePath(QStringLiteral("SidboxIDE/icons/icon.ico"))
+        QDir::current().filePath(QStringLiteral("SidboxIDE/icons/icon.ico")),
+        QStringLiteral(":/icons/icon.ico")
     };
 
     for (const QString &candidate : candidates) {
@@ -68,6 +68,10 @@ void applySidboxIcon(QWidget *window, const QIcon &icon)
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+    // One predictable Qt widget base on Linux/Windows. KDE's native
+    // QComboBox menu painting can ignore application-wide Qt stylesheets.
+    // Fusion still receives the user's actual IDE palette and central QSS.
+    QApplication::setStyle(QStringLiteral("Fusion"));
     QCoreApplication::setApplicationName(QStringLiteral("Sidbox IDE"));
     QGuiApplication::setDesktopFileName(QStringLiteral("SidboxIDE"));
 

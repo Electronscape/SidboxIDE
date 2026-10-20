@@ -1,3 +1,92 @@
+The Inventory Items, is a little tricky to understand.
+Item Name: is that a list of all the possible items the level expects to see?
+also, Icon index? not sure what that is.. i think a lot of this needs to be visual so it makes it idiot proof (remember am tryna be the "wtf do id o here") END user xD
+IF the adventure system is bein used, then the gametilemap.c pressin up should be ignored for jumping, currently it jumps as well as pressing fire1.
+The Inventory i see how it is, so its like a list of everything the level expects, with a number next to it, I DID select Collectable kind 2- Kim, Kim_copy[1], kim_copy[2], capacity 1, start qty, icon index, BUT in the game i collected those but the inventory didnt go up?
+THIS adventure system deff needs hand holdin a little more
+
+The NPCs tab, it says start node, but its just a number, could we have that as a list of known dialogue choices? (LOVE the talk radius btw!)
+
+I did notice the NPCs dont respect the XFLIP, YFLIPS either
+
+the Dialogue box atlas also needs xflip an yflip flags too.
+BUT the rest of it was great!!
+
+The NPC Animation Designer, is there a way to add a preview anim frames? an have em like the way we did it in the player animations, we can reorg the frames, set per frame delays?
+
+
+
+
+[done]
+the adventure system editor: deffo needs to be made easier to use
+the NPC animation editor, deffo needs something much like the player animation style window and selections!! but limited to the Idle and Talking!
+using just number boxes are hard to use
+
+the dialog box atlas editor, instead of boxes to type numbers in, DEFF needs the atlas grid to select from, and remember we have atlases that can have more than 256 items in it ;)
+Tile size (Px) should remain the same
+Text colour (foreground palette index) should be a "pick colour" from the palette
+same with the outline (foreground palette index).
+Event IDs should be able to be selectable from items found in the games resources.
+Next : close conversation, should be a drop down menu of existing nodes?
+
+Need something for inventory collection?
+such as game objects, might be nice to have something that automates "i collected this, it goes into the inventory"
+
+THE run time NPCs i think should be a simple function to draw them. I made the mistake of movin gthe guardian and not updating the location in the main.c
+
+
+
+
+
+[done]
+adventure system: dialog box text, colour index, and option for outline (with another colour index)
+outline can just use the same draw text at y+1, y-1, x-1, x+1 should do the job fine!
+also the text is while PURFECT as it is, for the outline it might need say like instead of +16 on the Y coords, say +20 to allow for the gap?
+the dialogs for the answers, should have a spacer line too
+ALSO since guardian is just a sprite, there is no "animation" system , only the "player animation..." i might need something like this for NPCs....... UNLESS the Adventure editor has this an i missed it?
+
+
+
+4: the tick boxes in the themes, they're all solid squares (we themed it like this) BUUT could we add a tick in the box too?
+
+
+1: tile map editor the black outline, is a little too thick, and the white text is also a little too thick.. otherwise perfect!!
+the world editor object tag names... perfect!
+2: the Game Object Properties: the arrows next to the name of the object, [<] name of object [>] RIGHT now the [>] is comically all the way at the right of the window xD
+3: is it possible to get the icons replaceable from the icons/ directory? eventually i would be making my own icons for the toolbars,buttons, selections later.
+i realise this might break the "theme aware" BUUUT my icons will have their own outlines to mitigate contrast issues later.
+5: The Player Animation editor: the Live preview while it IS themed, some graphics are dark so hard to see where things are... it might be worth using the current pallete zero (or the option to use another colour for the background)
+
+
+
+[done]
+tweaks:
+1: the text on the world map have the black outline, but the theme can turn the text black too, hard to see. these texts object tags, should always use a bright text, and a black outline, the white text is too thin also so might need to thicken those
+its the same for the tile editor too, this needs to have the same colour contrast respect also for the front flag text.
+
+2: toolbar in the tile editor... ALMOST perfect!!
+could we Apply tile flags, and dont apply tile flags, in their own 24x24 icon too?
+could we have also a spacer between the types too?
+[tile flags] | collisions | show player ref and hit box options?
+LOVE the tile atlas icon set!!
+
+
+
+
+
+
+[done]
+1: World editor, the game object tags, are hard to read, could we have a black outline around the text?
+2: tile editor, items that are flagged "front render" could we have a black outline around that text too (hard to see on complex graphics)
+the tile editor tool bar: the pain grapics: instead of a drop down menu, could we move the 3 items into a small 16x16 icon set above the Tile Atlas?
+[no change][paint nothing][atlas] (which is selected later anyway).
+move the pain collisions to the same one as apply tile flags, x flip, y flip....
+might be worth a 24x24 icon before paint collisions to have a no entry sign for no collision, and another icon for empty collision
+
+
+
+
+[done]
 1: compile time, as you know it has the feature that if something was changed, it asks to update the game (or remembered not to remind)
 in pressing the compile time, the confirm and the Update Game projects - confirm, and the "game updated" info box should be surpressed, AS the user would have ticked the box to stop pestering this session.
 

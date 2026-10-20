@@ -663,10 +663,10 @@
       "summary": "Set front/back layer palette pointers."
     },
     "gfx_palcycleon": {
-      "summary": "Enable display palette cycling."
+      "summary": "Enable FOREGROUND palette cycling (captures the front CLUT)."
     },
     "gfx_palcycleoff": {
-      "summary": "Disable display palette cycling."
+      "summary": "Disable FOREGROUND cycling and restore its original colours."
     },
     "gfx_palcycleset": {
       "summary": "Turn palette cycling on or off."
@@ -675,7 +675,22 @@
       "summary": "Set first and last palette indices that cycle."
     },
     "gfx_palcyclerate": {
-      "summary": "Set palette cycle rate/tick interval."
+      "summary": "Foreground: number of LCD update frames between colour rotations (1 = every frame)."
+    },
+    "gfx_palcycleonb": {
+      "summary": "Enable BACKGROUND palette cycling independently of foreground (requires dual-cycle firmware)."
+    },
+    "gfx_palcycleoffb": {
+      "summary": "Disable BACKGROUND cycling and restore its original background CLUT."
+    },
+    "gfx_palcyclesetb": {
+      "summary": "Background: enable or disable cycle (0 or 1)."
+    },
+    "gfx_palcyclerangeb": {
+      "summary": "Background: inclusive first and last palette indices; index 0 is allowed."
+    },
+    "gfx_palcyclerateb": {
+      "summary": "Background: number of LCD update frames between rotations."
     },
     "gfx_bitmap_t": {
       "summary": "Bitmap descriptor containing base address, dimensions, stride and buffer size."

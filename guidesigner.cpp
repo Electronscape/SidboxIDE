@@ -1,4 +1,5 @@
 #include "guidesigner.h"
+#include "gameeditoricons.h"
 #include "guidesigner_detail.h"
 
 #include <algorithm>
@@ -117,144 +118,16 @@ public:
         setProperty("sidboxGuiDesigner", true);
         setProperty("sidboxGuiDesignerPath", m_filePath);
 
-        // Scoped designer theme: match the main IDE without overriding the
-        // native checkbox indicators or the custom-painted SIDBOX canvas.
+        // Stage 4.14: inherit normal controls from QApplication's central
+        // theme. Only the gadget-image palette needs a distinct grey surface.
         setStyleSheet(QStringLiteral(R"QSS(
-            QToolBar {
-                background-color: #101010;
-                border: none;
-                spacing: 1px;
-                padding: 1px;
-            }
-            QToolButton {
-                background-color: #101010;
-                color: #ffffff;
-                border: none;
-                border-radius: 0px;
-                padding: 3px;
-            }
-            QToolButton:hover { background-color: #202020; }
-            QToolButton:pressed { background-color: #2858A8; }
-            QPushButton {
-                background-color: #101010;
-                color: #dddddd;
-                border: 1px solid #303030;
-                border-radius: 0px;
-                padding: 4px 8px;
-            }
-            QPushButton:hover {
-                background-color: #202020;
-                border: 1px solid #506090;
-            }
-            QPushButton:pressed {
-                background-color: #2858A8;
-                color: #ffffff;
-            }
-            QListWidget, QTreeWidget, QTableWidget {
-                background-color: #050505;
-                color: #dddddd;
-                border: 1px solid #102048;
-                border-radius: 0px;
-                alternate-background-color: #0b0b0b;
-            }
-            /* Gadget artwork sits on a medium-grey palette background. */
             QListWidget#coderGirlGadgetPalette {
-                background-color: #7B7B7B;
-                alternate-background-color: #7B7B7B;
+                background-color:#7B7B7B;
+                alternate-background-color:#7B7B7B;
             }
             QTabWidget#coderGirlGadgetPaletteTabs::pane {
-                border: 1px solid #303030;
-                border-radius: 0px;
-                background-color: #7B7B7B;
+                background-color:#7B7B7B;
             }
-            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab {
-                background: #101010;
-                color: #dddddd;
-                border: 1px solid #303030;
-                border-radius: 0px;
-                padding: 5px 4px;
-                margin-right: 1px;
-            }
-            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab:selected {
-                background: #2858A8;
-                color: #ffffff;
-            }
-            QTabWidget#coderGirlGadgetPaletteTabs QTabBar::tab:hover:!selected {
-                background: #202020;
-            }
-            QListWidget::item, QTreeWidget::item, QTableWidget::item {
-                border-radius: 0px;
-                margin: 0px;
-            }
-            QListWidget::item:selected, QTreeWidget::item:selected,
-            QTableWidget::item:selected {
-                background-color: #2858A8;
-                color: #ffffff;
-                border-radius: 0px;
-            }
-            QTreeWidget::item:hover:!selected { background-color: #161616; }
-            QCheckBox {
-                color: #dddddd;
-                background-color: transparent;
-                spacing: 6px;
-            }
-            QComboBox, QSpinBox {
-                background-color: #101010;
-                color: #dddddd;
-                border: 1px solid #303030;
-                border-radius: 0px;
-                padding: 4px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #050505;
-                color: #dddddd;
-                selection-background-color: #2858A8;
-                selection-color: #ffffff;
-            }
-            QLineEdit, QPlainTextEdit {
-                background-color: #050505;
-                color: #dddddd;
-                border: 1px solid #303030;
-                border-radius: 0px;
-                selection-background-color: #2858A8;
-                selection-color: #ffffff;
-            }
-            QSplitter::handle { background-color: #202020; }
-            QSplitter::handle:hover { background-color: #2858A8; }
-            QMenu {
-                background-color: #080808;
-                color: #dddddd;
-                border: 1px solid #303030;
-            }
-            QMenu::item { padding: 5px 24px 5px 8px; }
-            QMenu::item:selected {
-                background-color: #2858A8;
-                color: #ffffff;
-            }
-            QScrollBar:vertical {
-                background: #080808;
-                width: 12px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #303030;
-                min-height: 20px;
-                border-radius: 0px;
-            }
-            QScrollBar::handle:vertical:hover { background: #505050; }
-            QScrollBar:add-line:vertical, QScrollBar:sub-line:vertical { height: 0px; }
-            QScrollBar:horizontal {
-                background: #080808;
-                height: 12px;
-                margin: 0px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #303030;
-                min-width: 20px;
-                border-radius: 0px;
-            }
-            QScrollBar::handle:horizontal:hover { background: #505050; }
-            QScrollBar:add-line:horizontal, QScrollBar:sub-line:horizontal { width: 0px; }
         )QSS"));
 
         auto *outer = new QVBoxLayout(this);
@@ -432,9 +305,11 @@ public:
             for (const QString &type : sortedGadgets) {
                 // Each palette keeps the original 64x24 artwork, tooltips,
                 // drag-out behaviour and double-click to create a gadget.
-                const QString resourcePath =
-                    QStringLiteral(":/icons/gadget_%1.png").arg(type.toLower());
-                QPixmap tile(resourcePath);
+                const QString gadgetIconName =
+                    QStringLiteral("gadget_%1.png").arg(type.toLower());
+                const QString external = gameEditorIconOverride(gadgetIconName);
+                QPixmap tile(external.isEmpty()
+                    ? QStringLiteral(":/icons/") + gadgetIconName : external);
                 if (tile.isNull()) {
                     tile = QPixmap(64, 24);
                     tile.fill(QColor(QStringLiteral("#111824")));

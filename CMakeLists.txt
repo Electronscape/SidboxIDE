@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(SidboxIDE LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(GNUInstallDirs)
 
@@ -33,6 +35,7 @@ qt_add_executable(SidboxIDE
     mainwindow_uiicons.cpp
     mainwindow_uiicons.h
     mainwindow.h
+    ideglobaltheme.h
     guidesigner.cpp
     guidesigner_graphics.cpp
     guidesigner_detail.h
@@ -43,6 +46,8 @@ qt_add_executable(SidboxIDE
     gamedesigner.cpp
     gamedesigner_export.cpp
     gamedesigner_project.cpp
+    gameadventureeditor.cpp
+    gameadventuregen.cpp
     gamedesigner_update.cpp
     gamedesigner.h
     gamedesigner_limits.h
@@ -76,6 +81,7 @@ qt_add_resources(SidboxIDE "app_icons"
     BASE icons
     FILES
         icons/icon_save.png
+        icons/checkbox_tick.png
         icons/new_project.png
         icons/open_project.png
         icons/save_project.png

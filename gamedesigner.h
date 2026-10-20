@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QVector>
+#include <QJsonObject>
 #include <QString>
 #include <QHash>
 #include <QDateTime>
@@ -81,6 +82,7 @@ private:
         QString plane = QStringLiteral("foreground");
         QString kind;
         QString path;
+        bool musicPlayOnStart = false; // Only one Music resource can auto-start.
         int x = 0;
         int y = 0;
         int scale = 100;
@@ -157,6 +159,9 @@ private:
     void rebuildSplineOverlay();
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
+    void openAdventureEditor();
+    bool exportAdventure(QString *error);
+    bool hasAdventure() const;
     void openTilemapEditor();
     void openPlayerAnimationEditor(int resourceIndex = -1);
     void rebuildTilemapOverlay();
@@ -173,6 +178,7 @@ private:
     void setDirty(bool dirty = true);
     void refreshResources();
     void rebuildScene();
+    void refreshColourCyclePreview();
     void refreshFrame();
     void refreshProperties();
     void selectResource(int index);
@@ -223,6 +229,7 @@ private:
     IDETheme m_theme = defaultIDETheme();
     QString m_filePath;
     QVector<Resource> m_resources;
+    QJsonObject m_adventure; // Advanced Platformer dialogue/inventory data (in .sbgm)
     bool m_dirty = false;
     bool m_valid = true;
     bool m_loading = false;
@@ -263,12 +270,21 @@ private:
     QSpinBox *m_propCellHeight = nullptr;
     QSpinBox *m_propFrame = nullptr;
     QCheckBox *m_propLocked = nullptr;
+    QCheckBox *m_musicPlayOnStart = nullptr;
     QComboBox *m_propPlane = nullptr;
     QComboBox *m_propBackgroundMode = nullptr;
     QComboBox *m_planeMode = nullptr;
     QCheckBox *m_showLabels = nullptr;
     QCheckBox *m_showTilemap = nullptr;
+    QCheckBox *m_showColourCycles = nullptr;
+    SidboxGamePalette::ColourCycle m_frontColourCycle;
+    SidboxGamePalette::ColourCycle m_backColourCycle;
+    int m_frontCyclePhase = 0;
+    int m_backCyclePhase = 0;
+    int m_lastFrontCyclePhase = -1;
+    int m_lastBackCyclePhase = -1;
     QCheckBox *m_forcePalette = nullptr;
+    QCheckBox *m_previewPaletteAlpha = nullptr;
     QComboBox *m_frontPalette = nullptr;
     QComboBox *m_backPalette = nullptr;
     QPushButton *m_buildPaletteButton = nullptr;

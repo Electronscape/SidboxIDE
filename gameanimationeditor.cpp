@@ -1,4 +1,5 @@
 #include "gameanimationeditor.h"
+#include "gameeditoricons.h"
 #include "ppbcodec.h"
 
 #include <QAbstractItemView>
@@ -21,6 +22,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
+#include <QColorDialog>
+#include <QSettings>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -69,6 +72,9 @@ QStringList directionsFor(int count)
 // resources or runtime asset dependencies.
 QIcon animationStateIcon(const QString &state, const IDETheme &theme)
 {
+    const QIcon custom = gameEditorExternalIcon(
+        QStringLiteral("animation_state_%1.png").arg(state.toLower()));
+    if (!custom.isNull()) return custom;
     QPixmap pix(20, 20);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
@@ -483,6 +489,10 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
             // this Qt preview; all other indices are fully opaque.
             QImage indexed = pic.indexed;
             QVector<QRgb> palette = indexed.colorTable();
+            if (!palette.isEmpty()) {
+                m_paletteZeroBackground = QColor::fromRgb(palette.at(0));
+                m_hasPaletteZeroBackground = true;
+            }
             for (int i = 0; i < palette.size(); ++i)
                 palette[i] = i == 0 ? qRgba(0, 0, 0, 0)
                                   : qRgba(qRed(palette[i]), qGreen(palette[i]), qBlue(palette[i]), 255);
@@ -492,60 +502,26 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
     } else {
         QImageReader reader(atlasFile);
         reader.setAutoTransform(true);
-        m_atlas = reader.read().convertToFormat(QImage::Format_ARGB32);
+        QImage decoded = reader.read();
+        if (decoded.format() == QImage::Format_Indexed8 && !decoded.colorTable().isEmpty()) {
+            m_paletteZeroBackground = QColor::fromRgb(decoded.colorTable().at(0));
+            m_hasPaletteZeroBackground = true;
+        }
+        m_atlas = decoded.convertToFormat(QImage::Format_ARGB32);
     }
+    QSettings previewSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    m_previewBackgroundMode = qBound(0, previewSettings.value(
+        QStringLiteral("PlayerAnimation/previewBackgroundMode"), 0).toInt(), 2);
+    m_customPreviewBackground = previewSettings.value(
+        QStringLiteral("PlayerAnimation/previewBackgroundColour"),
+        QColor(145, 150, 160)).value<QColor>();
+    if (!m_customPreviewBackground.isValid())
+        m_customPreviewBackground = QColor(145, 150, 160);
     setWindowTitle(tr("Player Animation Editor — %1").arg(QFileInfo(atlasFile).fileName()));
     setMinimumSize(1080, 690);
     resize(1370, 860);
-    // Keep the existing compact toolkit layout, but use ONLY the selected
-    // IDE theme for widget colours. Light themes must not inherit dark cards,
-    // buttons, popup lists, scrollbars or labels from the original mock-up.
-    const QColor selectedText = (m_theme.accent.lightness() < 128)
-        ? QColor(Qt::white) : QColor(Qt::black);
-    QString sheet = QStringLiteral(R"CSS(
-        QDialog { background:@window; color:@text; }
-        QWidget { color:@text; font-size:13px; }
-        QLabel { background:transparent; }
-        QSplitter::handle { background:@border; width:2px; }
-        QListWidget, QScrollArea { background:@panel; border:1px solid @border; border-radius:0px; }
-        QListWidget::item { padding:3px; }
-        QListWidget::item:selected { background:@accent; color:@selected; border-left:3px solid @accent; }
-        QListWidget::item:hover:!selected { background:@hover; }
-        QPushButton { background:@panel; color:@text; border:1px solid @border;
-                      border-radius:0px; padding:6px 10px; min-height:22px; }
-        QPushButton:hover { border-color:@accent; background:@hover; }
-        QPushButton:pressed { background:@accent; color:@selected; }
-        QComboBox, QSpinBox, QLineEdit { background:@input; color:@text;
-                       border:1px solid @border; border-radius:0px; padding:4px; min-height:22px; }
-        QComboBox::drop-down { border:0; }
-        QComboBox QAbstractItemView { background:@input; color:@text;
-                         selection-background-color:@accent; selection-color:@selected; }
-        QCheckBox { spacing:7px; }
-        QCheckBox::indicator { width:16px; height:16px; border:1px solid @border;
-                              border-radius:0px; background:@input; }
-        QCheckBox::indicator:checked { background:@accent; border-color:@accent; }
-        QRadioButton::indicator { width:14px; height:14px; }
-        QRadioButton::indicator:checked { background:@accent; border:2px solid @border; }
-        QRadioButton::indicator:unchecked { background:@input; border:2px solid @border; }
-        QScrollBar:horizontal, QScrollBar:vertical { background:@panel; border:0; }
-        QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
-                        background:@scroll; border-radius:0px; min-width:18px; min-height:18px; }
-        QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
-    )CSS");
-    const QVector<QPair<QString, QColor>> colours = {
-        {QStringLiteral("@window"), m_theme.windowBackground},
-        {QStringLiteral("@panel"), m_theme.panelBackground},
-        {QStringLiteral("@input"), m_theme.inputBackground},
-        {QStringLiteral("@text"), m_theme.text},
-        {QStringLiteral("@border"), m_theme.border},
-        {QStringLiteral("@accent"), m_theme.accent},
-        {QStringLiteral("@selected"), selectedText},
-        {QStringLiteral("@hover"), m_theme.hover},
-        {QStringLiteral("@scroll"), m_theme.scrollHandle}
-    };
-    for (const auto &entry : colours)
-        sheet.replace(entry.first, ideThemeColorName(entry.second));
-    setStyleSheet(sheet);
+    // Stage 4.14: global theme controls the entire dialog, including checks.
+    // Only artwork/preview sections retain their own scoped styles below.
     m_states = {"Idle", "Walk", "Run", "Push", "Jump", "Fall", "Slide", "Balance", "Hurt", "Land"};
     if (!m_atlas.isNull()) readDocument();
     createUi();
@@ -755,7 +731,39 @@ void SidboxPlayerAnimationEditor::createUi()
 
     auto *right = new QWidget(split);
     auto *rightLayout = new QVBoxLayout(right);
-    rightLayout->addWidget(new QLabel(tr("Live Preview"), right));
+    auto *previewHeading = new QHBoxLayout;
+    previewHeading->addWidget(new QLabel(tr("Live Preview"), right));
+    previewHeading->addStretch(1);
+    m_previewBackgroundChoice = new QComboBox(right);
+    m_previewBackgroundChoice->addItem(tr("Palette 0"), 0);
+    m_previewBackgroundChoice->addItem(tr("Theme"), 1);
+    m_previewBackgroundChoice->addItem(tr("Custom"), 2);
+    m_previewBackgroundChoice->setToolTip(tr("Preview background only. Does not change sprite art or exported data."));
+    m_previewBackgroundChoice->setCurrentIndex(m_previewBackgroundMode);
+    m_previewBackgroundChoice->setMaximumWidth(120);
+    previewHeading->addWidget(m_previewBackgroundChoice);
+    m_previewColourButton = new QPushButton(tr("Colour…"), right);
+    m_previewColourButton->setToolTip(tr("Choose a solid preview background colour."));
+    m_previewColourButton->setEnabled(m_previewBackgroundMode == 2);
+    previewHeading->addWidget(m_previewColourButton);
+    rightLayout->addLayout(previewHeading);
+    connect(m_previewBackgroundChoice, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this](int mode) {
+        m_previewBackgroundMode = mode;
+        m_previewColourButton->setEnabled(mode == 2);
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/previewBackgroundMode"), mode);
+        refreshPreview();
+    });
+    connect(m_previewColourButton, &QPushButton::clicked, this, [this]() {
+        const QColor colour = QColorDialog::getColor(m_customPreviewBackground, this,
+            tr("Player Preview Background"), QColorDialog::DontUseNativeDialog);
+        if (!colour.isValid()) return;
+        m_customPreviewBackground = colour;
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/previewBackgroundColour"), colour);
+        refreshPreview();
+    });
     m_preview = new QLabel(right);
     m_preview->setAlignment(Qt::AlignCenter);
     m_preview->setMinimumSize(210, 220);
@@ -1017,10 +1025,15 @@ void SidboxPlayerAnimationEditor::refreshPreview()
 {
     const Clip *clip = effectiveClip();
     QImage preview(256, 256, QImage::Format_ARGB32);
-    preview.fill(m_theme.panelBackground);
+    const QColor background = m_previewBackgroundMode == 2 ? m_customPreviewBackground
+        : (m_previewBackgroundMode == 0 && m_hasPaletteZeroBackground
+           ? m_paletteZeroBackground : m_theme.alternateBackground);
+    preview.fill(background);
     QPainter painter(&preview);
-    painter.fillRect(QRect(0, 0, 256, 256), m_theme.alternateBackground);
-    painter.setPen(QPen(m_theme.border, 1));
+    QColor grid = background.lightnessF() < 0.5
+        ? background.lighter(160) : background.darker(140);
+    grid.setAlpha(125);
+    painter.setPen(QPen(grid, 1));
     const QPoint horizon(128, 164);
     for (int x = -128; x <= 384; x += 48)
         painter.drawLine(horizon, QPoint(x, 255));

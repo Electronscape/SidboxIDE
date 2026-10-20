@@ -1,0 +1,82 @@
+/* GamerGirl V1 Advanced Platformer - Inventory, NPC Conversations, Choices.
+   Runtime is self-contained. All dialogue/items/NPCs are generated as static
+   tables by the IDE. No firmware changes or dynamic allocations. */
+#ifndef GAMERGIRL_ADVENTURERUNTIME_H
+#define GAMERGIRL_ADVENTURERUNTIME_H
+#include <stdint.h>
+#include "apis.h"
+
+typedef struct {
+    const char *name;
+    uint8_t pickup_kind; /* 0 = manual only; 1..4 = existing Collectable kind */
+    uint8_t icon;        /* Optional tile atlas index for inventory icon */
+    uint16_t capacity, initial;
+} game_adventure_item_t;
+
+typedef struct {
+    const char *label;
+    const char *reply; /* Player's response above their head */
+    int16_t next;      /* Next dialogue node, -1 = close */
+    int16_t requires;  /* Required inventory item index, -1 = no requirement */
+    int16_t give;      /* Item index to grant on selection, -1 = none */
+    int16_t take;      /* Item index to consume on selection, -1 = none */
+    int16_t action;    /* User action ID, -1 = none */
+} game_adventure_choice_t;
+
+typedef struct {
+    const char *speaker;
+    const char *text;
+    game_adventure_choice_t choices[3];
+} game_adventure_node_t;
+
+typedef struct {
+    int32_t x, y;      /* Sprite position in WORLD coordinates */
+    uint16_t width, height, radius;
+    uint16_t first_node;
+} game_adventure_npc_t;
+
+typedef struct {
+    gfxbob_t *sprite;         /* Existing placed Sprite BOB (not owned here). */
+    uint8_t idle_first, idle_count, idle_speed;
+    uint8_t talk_first, talk_count, talk_speed;
+} game_adventure_npc_animation_t;
+
+typedef void (*game_adventure_action_t)(uint16_t action, void *user);
+
+/* Call after gameassets_init(). skin_pixels is optional; cells are a 3x3
+   arrangement at the given atlas indices. Nine 8x8 cells are typical.
+   Atlas memory belongs to gameassets and must remain alive. */
+void game_adventure_start(const game_adventure_item_t *items, uint16_t item_count,
+                          const game_adventure_node_t *nodes, uint16_t node_count,
+                          const game_adventure_npc_t *npcs, uint16_t npc_count,
+                          const uint8_t *skin_pixels, uint16_t atlas_width,
+                          uint16_t atlas_height, uint8_t tile_size,
+                          const uint16_t skin_indices[9], uint8_t frames_per_char,
+                          game_adventure_action_t action, void *user);
+/* Uses BTN_FIRE2 to talk/choose; BTN_UP/DOWN to change choice;
+   BTN_UP + BTN_FIRE2 away from NPC toggles the inventory screen.
+   Input edge-latched, so holding FIRE2 never chooses multiple responses.
+   Return 1 while gameplay must be paused. */
+uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
+                             uint16_t player_w, uint16_t player_h, uint16_t frames);
+/* Appearance settings (foreground CLUT indices). Defaults: text 15, no outline. */
+void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
+                               uint8_t outline_index);
+/* Optional NPC idle/talking atlas sequences. Called AFTER game_adventure_start.
+   Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
+void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,
+                                   uint16_t count);
+uint8_t game_adventure_open(void);
+/* Draw all configured NPC sprite BOBs at their CURRENT generated world positions.
+   Call once after world tiles and before the player; no manual Guardian coordinates. */
+void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y);
+void game_adventure_draw(int32_t camera_x, int32_t camera_y,
+                          int32_t player_x, int32_t player_y);
+/* Inventory API: indexes are zero-based in the Adventure Editor Items list. */
+uint16_t game_adventure_quantity(uint16_t index);
+uint16_t game_adventure_add(uint16_t index, uint16_t amount);
+uint8_t game_adventure_remove(uint16_t index, uint16_t amount);
+/* Bridge existing Collectable callback: matching pickup_kind gains ONE item.
+   Returns number of inventory definitions matched, 0 if none. */
+uint16_t game_adventure_collect(uint16_t pickup_kind);
+#endif

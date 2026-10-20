@@ -61,6 +61,10 @@ private:
     int m_previewPosition = 0;
     int m_previewElapsed = 0;
     bool m_playing = true;
+    QColor m_paletteZeroBackground;
+    bool m_hasPaletteZeroBackground = false;
+    QColor m_customPreviewBackground = QColor(145, 150, 160);
+    int m_previewBackgroundMode = 0; // 0: palette 0, 1: theme, 2: custom
 
     QListWidget *m_stateList = nullptr;
     QComboBox *m_directions = nullptr;
@@ -73,7 +77,8 @@ private:
     QCheckBox *m_loop = nullptr, *m_mirrorCheck = nullptr, *m_autoCheck = nullptr;
     QCheckBox *m_showFoot = nullptr, *m_showBox = nullptr;
     QLabel *m_preview = nullptr, *m_status = nullptr, *m_atlasInfo = nullptr;
-    QPushButton *m_play = nullptr;
+    QPushButton *m_play = nullptr, *m_previewColourButton = nullptr;
+    QComboBox *m_previewBackgroundChoice = nullptr;
     QWidget *m_atlasView = nullptr;
     QTimer *m_timer = nullptr;
 

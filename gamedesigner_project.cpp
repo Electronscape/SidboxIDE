@@ -141,15 +141,39 @@ bool SidboxGameDesigner::loadDesign()
     }
     {
         QSignalBlocker b1(m_planeMode), b2(m_showLabels), b3(m_forcePalette), b4(m_showTilemap);
+        QSignalBlocker alphaBlock(m_previewPaletteAlpha);
         m_showTilemap->setChecked(obj.value(QStringLiteral("showTilemapOverlay")).toBool(false));
+        QSignalBlocker cycleBlock(m_showColourCycles);
+        m_showColourCycles->setChecked(obj.value(QStringLiteral("showColourCycles")).toBool(false));
         m_planeMode->setCurrentIndex(obj.value(QStringLiteral("planeMode")).toString() == QStringLiteral("dual") ? 1 : 0);
         m_showLabels->setChecked(obj.value(QStringLiteral("showAssetLabels")).toBool(true));
         m_forcePalette->setChecked(obj.value(QStringLiteral("forcePalette")).toBool(false));
+        m_previewPaletteAlpha->setChecked(obj.value(QStringLiteral("previewPaletteAlpha")).toBool(false));
+        m_previewPaletteAlpha->setEnabled(m_forcePalette->isChecked());
         m_activeForegroundPalette = obj.value(QStringLiteral("activeForegroundPalette")).toString();
         m_activeBackgroundPalette = obj.value(QStringLiteral("activeBackgroundPalette")).toString();
     }
+    // Stage 4.22 single-bank projects migrate to FOREGROUND only.
+    // New designs save two independently configurable cycles.
+    const auto readCycle = [](const QJsonObject &obj, bool background) {
+        SidboxGamePalette::ColourCycle c;
+        c.enabled = obj.value(QStringLiteral("enabled")).toBool(false);
+        c.start = qBound(background ? 0 : 1,
+            obj.value(QStringLiteral("start")).toInt(background ? 0 : 1), 254);
+        c.length = qBound(2, obj.value(QStringLiteral("length")).toInt(8), 256 - c.start);
+        c.speed = qBound(1, obj.value(QStringLiteral("speed")).toInt(5), 255);
+        return c;
+    };
+    m_frontColourCycle = readCycle(obj.value(QStringLiteral("foregroundColourCycle")).isObject()
+        ? obj.value(QStringLiteral("foregroundColourCycle")).toObject()
+        : obj.value(QStringLiteral("colourCycle")).toObject(), false);
+    m_backColourCycle = readCycle(obj.value(QStringLiteral("backgroundColourCycle")).toObject(), true);
+    m_frontCyclePhase = m_backCyclePhase = 0;
+    m_lastFrontCyclePhase = m_lastBackCyclePhase = -1;
     m_backPalette->setEnabled(m_planeMode->currentIndex() == 1);
+    m_adventure = obj.value(QStringLiteral("adventure")).toObject();
     m_resources.clear();
+    bool startupMusicAssigned = false; // Older projects default to no automatic music.
     const QJsonArray assets = obj.value(QStringLiteral("resources")).toArray();
     for (const QJsonValue &value : assets) {
         if (!value.isObject()) continue;
@@ -167,6 +191,9 @@ bool SidboxGameDesigner::loadDesign()
             r.kind == QStringLiteral("background") ? QStringLiteral("background") : QStringLiteral("foreground"));
         if (r.plane != QStringLiteral("background")) r.plane = QStringLiteral("foreground");
         r.path = a.value(QStringLiteral("path")).toString();
+        r.musicPlayOnStart = r.kind == QStringLiteral("music") && !startupMusicAssigned
+            && a.value(QStringLiteral("musicPlayOnStart")).toBool(false);
+        if (r.musicPlayOnStart) startupMusicAssigned = true;
         r.x = qBound(-MAX_WORLD, a.value(QStringLiteral("x")).toInt(), MAX_WORLD);
         r.y = qBound(-MAX_WORLD, a.value(QStringLiteral("y")).toInt(), MAX_WORLD);
         r.scale = qBound(1, a.value(QStringLiteral("scale")).toInt(100), 800);
@@ -371,10 +398,23 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("worldViewCenterY"), worldViewCenter.y());
     obj.insert(QStringLiteral("showAssetLabels"), m_showLabels->isChecked());
     obj.insert(QStringLiteral("showTilemapOverlay"), m_showTilemap->isChecked());
+    obj.insert(QStringLiteral("showColourCycles"), m_showColourCycles->isChecked());
+    const auto writeCycle = [](const SidboxGamePalette::ColourCycle &c) {
+        QJsonObject o;
+        o.insert(QStringLiteral("enabled"), c.enabled);
+        o.insert(QStringLiteral("start"), c.start);
+        o.insert(QStringLiteral("length"), c.length);
+        o.insert(QStringLiteral("speed"), c.speed);
+        return o;
+    };
+    obj.insert(QStringLiteral("foregroundColourCycle"), writeCycle(m_frontColourCycle));
+    obj.insert(QStringLiteral("backgroundColourCycle"), writeCycle(m_backColourCycle));
     obj.insert(QStringLiteral("planeMode"), m_planeMode->currentData().toString());
     obj.insert(QStringLiteral("forcePalette"), m_forcePalette->isChecked());
+    obj.insert(QStringLiteral("previewPaletteAlpha"), m_previewPaletteAlpha->isChecked());
     obj.insert(QStringLiteral("activeForegroundPalette"), m_activeForegroundPalette);
     obj.insert(QStringLiteral("activeBackgroundPalette"), m_activeBackgroundPalette);
+    obj.insert(QStringLiteral("adventure"), m_adventure);
     QJsonArray assets;
     for (const Resource &r : m_resources) {
         QJsonObject a;
@@ -383,6 +423,8 @@ bool SidboxGameDesigner::saveDesign()
         a.insert(QStringLiteral("id"), r.id);
         a.insert(QStringLiteral("plane"), r.plane);
         a.insert(QStringLiteral("path"), r.path);
+        if (r.kind == QStringLiteral("music"))
+            a.insert(QStringLiteral("musicPlayOnStart"), r.musicPlayOnStart);
         a.insert(QStringLiteral("x"), r.x);
         a.insert(QStringLiteral("y"), r.y);
         a.insert(QStringLiteral("scale"), r.scale);

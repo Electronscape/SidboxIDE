@@ -288,6 +288,7 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     // No unrelated helper is added, and .txt guides are never replaced.
     QSet<QString> needed;
     if (m_tilemapEnabled) needed.insert(QStringLiteral("tilemap"));
+    if (hasAdventure()) needed.insert(QStringLiteral("adventureruntime"));
     bool hasSpline = false;
     for (const SplinePath &path : m_splinePaths)
         if (path.points.size() >= 2) hasSpline = true;
@@ -330,6 +331,10 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.c"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.txt"));
+    if (hasAdventure()) {
+        outputs.insert(QStringLiteral("gamehelpers/gameadventure.c"));
+        outputs.insert(QStringLiteral("gamehelpers/gameadventure.h"));
+    }
     outputs.insert(QStringLiteral("maingame.c.txt"));
     // Main generation may create a missing file or transfer a dirty external
     // file. Back up/track BOTH source and metadata for full rollback. User

@@ -2,6 +2,7 @@
 #include "gametilemapinternal.h"
 #include "ppbcodec.h"
 #include "gameeditorcontrolstyle.h"
+#include "gameeditoricons.h"
 
 #include <QAbstractScrollArea>
 #include <QAbstractItemView>
@@ -36,6 +37,8 @@
 #include <QKeyEvent>
 #include <QWheelEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QFontMetrics>
 #include <QSaveFile>
 #include <QShortcut>
 #include <QPushButton>
@@ -199,7 +202,10 @@ static const SidboxTileAnimation *findTileAnimation(const SidboxTilemap &map, in
 class TilemapComboBox final : public QComboBox
 {
 public:
-    using QComboBox::QComboBox;
+    explicit TilemapComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        setProperty("customChevron", true);
+    }
 protected:
     void paintEvent(QPaintEvent *event) override
     {
@@ -232,6 +238,17 @@ public:
         setFixedSize(38, 36);
         setIconSize(QSize(24, 24));
         setAccessibleName(accessibleName);
+        const QStringList filenames = {
+            QStringLiteral("tilemap_cell_flip_x.png"),
+            QStringLiteral("tilemap_cell_flip_y.png"),
+            QStringLiteral("tilemap_stamp_flip_x.png"),
+            QStringLiteral("tilemap_stamp_flip_y.png"),
+            QStringLiteral("tilemap_draw_front.png"),
+            QStringLiteral("tilemap_stamp_front.png"),
+            QStringLiteral("tilemap_player_reference.png"),
+            QStringLiteral("tilemap_player_hitbox.png")
+        };
+        setIcon(gameEditorExternalIcon(filenames.at(int(glyph))));
         setFocusPolicy(Qt::TabFocus); // Clicking does not steal the map Space shortcut.
     }
 
@@ -246,6 +263,7 @@ protected:
     void paintEvent(QPaintEvent *event) override
     {
         QToolButton::paintEvent(event);
+        if (!icon().isNull()) return; // User PNG replaces the themed fallback glyph.
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.translate((width() - 24) / 2.0, (height() - 24) / 2.0);
@@ -315,6 +333,95 @@ private:
     Glyph m_glyph;
     QColor m_normal = Qt::white;
     QColor m_checked = Qt::white;
+};
+
+// Dedicated paint-mode buttons: 16x16 above the Tile Atlas and 24x24
+// collision shortcuts beside the collision brush. The current brush values
+// remain in the existing QComboBoxes, so saving/painting logic is unchanged.
+class TilemapPaintButton final : public QToolButton
+{
+public:
+    enum Glyph { KeepGraphic, EmptyGraphic, AtlasGraphic, KeepCollision, EmptyCollision,
+                 ApplyFlags, KeepFlags };
+    TilemapPaintButton(Glyph glyph, const QString &name, QWidget *parent)
+        : QToolButton(parent), m_glyph(glyph)
+    {
+        setCheckable(true);
+        setAutoRaise(false);
+        const bool small = glyph == KeepGraphic || glyph == EmptyGraphic || glyph == AtlasGraphic;
+        setFixedSize(small ? QSize(28, 28) : QSize(38, 36));
+        setIconSize(small ? QSize(16, 16) : QSize(24, 24));
+        setAccessibleName(name);
+        const QStringList filenames = {
+            QStringLiteral("tilemap_graphic_keep.png"),
+            QStringLiteral("tilemap_graphic_empty.png"),
+            QStringLiteral("tilemap_graphic_atlas.png"),
+            QStringLiteral("tilemap_collision_keep.png"),
+            QStringLiteral("tilemap_collision_empty.png"),
+            QStringLiteral("tilemap_flags_apply.png"),
+            QStringLiteral("tilemap_flags_keep.png")
+        };
+        setIcon(gameEditorExternalIcon(filenames.at(int(glyph))));
+        setFocusPolicy(Qt::TabFocus);
+    }
+    void setGlyphColours(const QColor &normal, const QColor &selected)
+    {
+        m_normal = normal;
+        m_selected = selected;
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        if (!icon().isNull()) return; // User PNG replaces the themed fallback glyph.
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const int side = iconSize().width();
+        p.translate((width()-side)/2.0, (height()-side)/2.0);
+        p.scale(side / 24.0, side / 24.0);
+        QColor ink = isChecked() ? m_selected : m_normal;
+        if (!isEnabled()) ink.setAlpha(110);
+        p.setPen(QPen(ink, 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+        p.setBrush(Qt::NoBrush);
+        switch (m_glyph) {
+        case ApplyFlags:
+            // Apply the selected X/Y/front tile flags: tick in a square.
+            p.drawRect(QRectF(3, 3, 18, 18));
+            p.drawPolyline(QPolygonF({QPointF(6, 12), QPointF(10, 17), QPointF(19, 7)}));
+            break;
+        case KeepFlags:
+            // Preserve all existing flags: a minus sign in the same square.
+            p.drawRect(QRectF(3, 3, 18, 18));
+            p.drawLine(QPointF(6, 12), QPointF(18, 12));
+            break;
+        case KeepGraphic:
+        case KeepCollision:
+            // No-entry: leave the existing graphic/collision untouched.
+            p.drawEllipse(QRectF(3, 3, 18, 18));
+            p.drawLine(QPointF(6, 6), QPointF(18, 18));
+            break;
+        case EmptyGraphic:
+        case EmptyCollision:
+            // Empty square with eraser stroke: explicitly clear the layer.
+            p.drawRect(QRectF(3, 3, 18, 18));
+            p.drawLine(QPointF(5, 19), QPointF(19, 5));
+            p.drawLine(QPointF(14, 19), QPointF(19, 19));
+            break;
+        case AtlasGraphic:
+            // Four atlas cells, one selected.
+            p.drawRect(QRectF(3, 3, 8, 8));
+            p.drawRect(QRectF(13, 3, 8, 8));
+            p.drawRect(QRectF(3, 13, 8, 8));
+            p.setBrush(ink);
+            p.drawRect(QRectF(13, 13, 8, 8));
+            break;
+        }
+    }
+private:
+    Glyph m_glyph;
+    QColor m_normal = Qt::white;
+    QColor m_selected = Qt::white;
 };
 
 class SidboxTilemapEditor::Canvas final : public QAbstractScrollArea
@@ -1186,9 +1293,25 @@ protected:
                 painter.drawText(dest, Qt::AlignCenter, QString::number(tile));
             }
             if ((quint8(map->flips.at(i)) & 4u) && tile) {
-                painter.setPen(QColor(255, 207, 84));
-                painter.drawText(dest.adjusted(1, 0, 0, 0),
-                                 Qt::AlignTop | Qt::AlignLeft, QStringLiteral("F"));
+                // Outline the front-render marker for legibility over detailed tiles.
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                QFont markerFont = painter.font();
+                markerFont.setWeight(QFont::DemiBold);
+                markerFont.setPixelSize(qBound(8, qMin(dest.width(), dest.height()) - 2, 16));
+                const QFontMetricsF fm(markerFont);
+                QPainterPath letter;
+                letter.addText(QPointF(dest.left() + 1, dest.top() + 1 + fm.ascent()),
+                               markerFont, QStringLiteral("F"));
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(Qt::black, dest.width() < 12 ? 1.0 : 1.6,
+                                    Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(letter);
+                // Bright fill AFTER the outline remains legible on any IDE theme.
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(255, 255, 225));
+                painter.drawPath(letter);
+                painter.restore();
             }
             if (showCollisions) {
                 const unsigned type = quint8(map->collisions.at(i));
@@ -1702,9 +1825,23 @@ protected:
                     painter.drawText(cell, Qt::AlignCenter, QString::number(tile));
                 }
                 if (quint8(stamp.flips.at(i)) & 4u) {
-                    painter.setPen(QColor(255, 207, 84));
-                    painter.drawText(cell.adjusted(1, 0, 0, 0),
-                        Qt::AlignLeft | Qt::AlignTop, QStringLiteral("F"));
+                    painter.save();
+                    painter.setRenderHint(QPainter::Antialiasing, true);
+                    QFont markerFont = painter.font();
+                    markerFont.setWeight(QFont::DemiBold);
+                    markerFont.setPixelSize(qBound(8, qMin(cell.width(), cell.height()) - 2, 16));
+                    const QFontMetricsF fm(markerFont);
+                    QPainterPath letter;
+                    letter.addText(QPointF(cell.left() + 1, cell.top() + 1 + fm.ascent()),
+                                   markerFont, QStringLiteral("F"));
+                    painter.setBrush(Qt::NoBrush);
+                    painter.setPen(QPen(Qt::black, cell.width() < 12 ? 1.0 : 1.6,
+                                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                    painter.drawPath(letter);
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(QColor(255, 255, 225));
+                    painter.drawPath(letter);
+                    painter.restore();
                 }
                 const quint8 collision = quint8(stamp.collisions.at(i));
                 if (collision) {
@@ -2212,11 +2349,8 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
     // This theme pass is presentation-only: the canvas and stamp previews
     // continue painting their own graphics and retain their input handling.
     // The editor dialog needs its own colours on KDE / Wayland.
-    setStyleSheet(QStringLiteral(
-        "QDialog, QWidget { background-color:%1; color:%2; } "
-        "QLabel { background:transparent; color:%2; border:none; } ")
-        .arg(C(theme.windowBackground), C(theme.text))
-        + gameEditorControlStyle(theme));
+    // All standard controls use the application-level IDE stylesheet.
+    setStyleSheet(QString());
     QPalette dialogPalette = palette();
     dialogPalette.setColor(QPalette::Window, theme.windowBackground);
     dialogPalette.setColor(QPalette::WindowText, theme.text);
@@ -2241,6 +2375,12 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
         if (!tool) continue;
         TilemapFlagButton *button = static_cast<TilemapFlagButton *>(tool);
         button->setGlyphColours(theme.text, selectedText);
+    }
+    for (QToolButton *tool : {m_graphicKeep, m_graphicEmpty, m_graphicAtlas,
+                              m_collisionKeep, m_collisionEmpty,
+                              m_flagApply, m_flagKeep}) {
+        if (!tool) continue;
+        static_cast<TilemapPaintButton *>(tool)->setGlyphColours(theme.text, selectedText);
     }
 
     // Stage 4.00: the three tilemap selection banks use the same bordered,
@@ -2279,21 +2419,9 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
         bank->setStyleSheet(selectionStyle);
     }
 
-    // Popup lists have their own viewport palette; don't let the OS theme
-    // replace the colours chosen in CoderGirl's Theme Options.
-    for (QComboBox *combo : findChildren<QComboBox *>()) {
-        combo->setPalette(dialogPalette);
-        if (auto *popup = combo->view()) {
-            popup->setPalette(dialogPalette);
-            popup->setStyleSheet(QStringLiteral(
-                "QAbstractItemView { background:%1; color:%2; border:1px solid %3; "
-                "border-radius:0px; selection-background-color:%4; selection-color:%5; "
-                "outline:0px; } "
-                "QAbstractItemView::item:selected { background:%4; color:%5; }")
-                .arg(C(theme.menuBackground), C(theme.text), C(theme.border),
-                     C(selectedBase), C(selectedText)));
-        }
-    }
+    // Popup lists inherit the application-wide palette and QSS. Do not
+    // maintain a second KDE-specific per-dialog copy of those rules.
+
 }
 
 SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
@@ -2344,8 +2472,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionOverlay->setChecked(true);
     collisionOverlay->setToolTip(tr("Show or hide the collision overlay while editing either layer."));
 
-    // Compact editing toolbar: dimensions/zoom on the first row,
-    // the two independent brush choices on the second row.
+    // Map dimensions and zoom occupy the first row; paint flags and
+    // collision settings share the next row, graphics live above the atlas.
     auto *form = new QHBoxLayout;
     form->addWidget(new QLabel(tr("Tiles X"), this)); form->addWidget(sizeX);
     form->addWidget(new QLabel(tr("Y"), this)); form->addWidget(sizeY);
@@ -2376,7 +2504,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     }
     updateHistoryActions();
 
-    // Both layers are painted with one drag. Either dropdown can opt out.
+    // Both layers are painted with one drag. Either brush can opt out.
     auto *brushC = new TilemapComboBox(this);
     m_customZoneBrush = brushC;
     for (const QPair<QString, int> &type : QVector<QPair<QString,int>>{
@@ -2402,29 +2530,34 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     brushG->setCurrentIndex(qMax(0, brushG->findData(
         windowSettings.value(QStringLiteral("GameTilemapEditor/graphicMode"), 1).toInt())));
     m_graphicMode = brushG;
+    brushG->hide(); // Internal state only: the three atlas toolbar buttons replace this dropdown.
     brushG->setToolTip(tr("Click a tile in the atlas on the left to select it. "
         "Choose Don't change graphic to paint collisions only."));
     brushC->setToolTip(tr("Choose Don't change collision to paint graphics only. "
         "Otherwise both layers are painted with one stroke."));
-    auto *paintRow = new QHBoxLayout;
-    paintRow->addWidget(new QLabel(tr("Paint collision:"), this));
-    paintRow->addWidget(brushC);
+    // Collision brush moves into the same toolbar as the cell/stamp flags.
+    // The graphics brush moves above the atlas, as an icon-only mode strip.
     auto *renameZone = new QPushButton(tr("Name Zone"), this);
     renameZone->setToolTip(tr("Name Custom 1–8. Export creates GAME_ZONE_ID_NAME macros in gamelevels/level1.h; callback IDs stay 1–8."));
-    paintRow->addWidget(renameZone);
     auto *customSolid = new QCheckBox(tr("Custom is solid"), this);
     customSolid->setToolTip(tr("Blocking custom zones stop the player, but still report touch events. Pass-through zones do not block."));
-    paintRow->addWidget(customSolid);
     connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [brushC, renameZone, customSolid](int) {
             const int id = brushC->currentData().toInt();
-            renameZone->setEnabled(id >= 9 && id <= 24);
-            customSolid->setEnabled(id >= 9 && id <= 24);
+            const bool isCustom = id >= 9 && id <= 24;
+            renameZone->setVisible(isCustom);
+            customSolid->setVisible(isCustom);
+            renameZone->setEnabled(isCustom);
+            customSolid->setEnabled(isCustom);
             const QSignalBlocker guard(customSolid);
             customSolid->setChecked(id >= 17 && id <= 24);
         });
-    renameZone->setEnabled(brushC->currentData().toInt() >= 9 && brushC->currentData().toInt() <= 24);
-    customSolid->setEnabled(renameZone->isEnabled());
+    const bool hasCustomZone = brushC->currentData().toInt() >= 9 &&
+                               brushC->currentData().toInt() <= 24;
+    renameZone->setVisible(hasCustomZone);
+    customSolid->setVisible(hasCustomZone);
+    renameZone->setEnabled(hasCustomZone);
+    customSolid->setEnabled(hasCustomZone);
     customSolid->setChecked(brushC->currentData().toInt() >= 17 && brushC->currentData().toInt() <= 24);
     connect(customSolid, &QCheckBox::toggled, this, [brushC](bool solid) {
         const int type = brushC->currentData().toInt();
@@ -2449,10 +2582,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         updateCustomZoneBrushLabels();
         recordChange(before);
     });
-    paintRow->addSpacing(8);
-    paintRow->addWidget(new QLabel(tr("Paint graphic:"), this));
-    paintRow->addWidget(brushG, 1);
-    layout->addLayout(paintRow);
+    // Keep brushG as the internal source of truth for the existing paint,
+    // atlas-click and QSettings code. It is intentionally not shown.
     // Stage 4.10: the flags and overlays are one compact, themed toolbar.
     // Buttons remain the very same bool switches used by the paint routines.
     auto *flipRow = new QHBoxLayout;
@@ -2464,7 +2595,19 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         windowSettings.value(QStringLiteral("GameTilemapEditor/flipMode"), 1).toInt())));
     m_flipMode->setToolTip(tr("Apply cell flip and front-layer flags while painting, or preserve "
         "the flags already stored in each cell when painting collision data."));
-    flipRow->addWidget(m_flipMode);
+    // Keep the original combo as the source of truth for painting and QSettings.
+    // These two exclusive icon buttons are its visible toolbar controls.
+    m_flipMode->hide();
+    m_flagApply = new TilemapPaintButton(TilemapPaintButton::ApplyFlags,
+        tr("Apply tile flags"), this);
+    m_flagKeep = new TilemapPaintButton(TilemapPaintButton::KeepFlags,
+        tr("Don't change tile flags"), this);
+    m_flagApply->setToolTip(tr("Apply tile flags: use the selected cell X/Y and draw-front "
+        "settings while painting."));
+    m_flagKeep->setToolTip(tr("Don't change tile flags: keep the existing cell X/Y "
+        "and front-render flags while painting."));
+    flipRow->addWidget(m_flagApply);
+    flipRow->addWidget(m_flagKeep);
 
     m_flipX = new TilemapFlagButton(TilemapFlagButton::CellX, tr("Cell Flip X"), this);
     m_flipY = new TilemapFlagButton(TilemapFlagButton::CellY, tr("Cell Flip Y"), this);
@@ -2484,12 +2627,6 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     flipRow->addWidget(m_stampMirrorX);
     flipRow->addWidget(m_stampMirrorY);
 
-    auto *frontDivider = new QFrame(this);
-    frontDivider->setFrameShape(QFrame::VLine);
-    frontDivider->setFrameShadow(QFrame::Sunken);
-    frontDivider->setFixedHeight(30);
-    flipRow->addWidget(frontDivider);
-
     m_drawFront = new TilemapFlagButton(TilemapFlagButton::Front, tr("Draw in front of player"), this);
     m_stampUseFront = new TilemapFlagButton(TilemapFlagButton::StampFront,
                                            tr("Stamp: use draw front setting"), this);
@@ -2504,12 +2641,37 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     flipRow->addWidget(m_drawFront);
     flipRow->addWidget(m_stampUseFront);
 
+    auto *collisionDivider = new QFrame(this);
+    collisionDivider->setFrameShape(QFrame::VLine);
+    collisionDivider->setFrameShadow(QFrame::Sunken);
+    collisionDivider->setFixedHeight(30);
+    flipRow->addSpacing(7);
+    flipRow->addWidget(collisionDivider);
+    flipRow->addSpacing(7);
+    m_collisionKeep = new TilemapPaintButton(TilemapPaintButton::KeepCollision,
+        tr("Keep collision unchanged"), this);
+    m_collisionEmpty = new TilemapPaintButton(TilemapPaintButton::EmptyCollision,
+        tr("Erase collision (make empty)"), this);
+    m_collisionKeep->setToolTip(tr("No-entry: leave existing collision cells unchanged while painting graphics."));
+    m_collisionEmpty->setToolTip(tr("Empty collision: paint collision type 0, removing collision from painted cells."));
+    flipRow->addWidget(m_collisionKeep);
+    flipRow->addWidget(m_collisionEmpty);
+    brushC->setMinimumWidth(135);
+    brushC->setMaximumWidth(205);
+    brushC->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    flipRow->addWidget(brushC);
+    renameZone->setToolTip(tr("Rename the selected custom collision zone."));
+    flipRow->addWidget(renameZone);
+    flipRow->addWidget(customSolid);
+
     m_playerToolsDivider = new QFrame(this);
     m_playerToolsDivider->setFrameShape(QFrame::VLine);
     m_playerToolsDivider->setFrameShadow(QFrame::Sunken);
     m_playerToolsDivider->setFixedHeight(30);
     m_playerToolsDivider->hide();
+    flipRow->addSpacing(7);
     flipRow->addWidget(m_playerToolsDivider);
+    flipRow->addSpacing(7);
     m_playerReferenceToggle = new TilemapFlagButton(TilemapFlagButton::Player,
         tr("Show player reference (drag to check gaps)"), this);
     m_playerReferenceToggle->setToolTip(tr("Show player reference: editor-only sprite named 'player'. "
@@ -2585,6 +2747,24 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         atlasChoice->setCurrentIndex(atlasChoice->count() - 1);
     }
     sideLayout->addWidget(atlasChoice);
+
+    auto *graphicModes = new QHBoxLayout;
+    graphicModes->setSpacing(3);
+    graphicModes->addWidget(new QLabel(tr("Paint graphics:"), sidebar));
+    m_graphicKeep = new TilemapPaintButton(TilemapPaintButton::KeepGraphic,
+        tr("Don't change graphics"), sidebar);
+    m_graphicEmpty = new TilemapPaintButton(TilemapPaintButton::EmptyGraphic,
+        tr("Erase graphics"), sidebar);
+    m_graphicAtlas = new TilemapPaintButton(TilemapPaintButton::AtlasGraphic,
+        tr("Paint selected atlas tile"), sidebar);
+    m_graphicKeep->setToolTip(tr("No change: preserve graphics and edit collisions only."));
+    m_graphicEmpty->setToolTip(tr("Paint nothing: erase the graphics (ID 0) in painted cells."));
+    m_graphicAtlas->setToolTip(tr("Atlas: paint the selected atlas tile. Clicking an atlas tile also selects this mode."));
+    graphicModes->addWidget(m_graphicKeep);
+    graphicModes->addWidget(m_graphicEmpty);
+    graphicModes->addWidget(m_graphicAtlas);
+    graphicModes->addStretch(1);
+    sideLayout->addLayout(graphicModes);
 
     // The atlas receives the spare vertical space. Even very long sheets
     // remain scrollable without shrinking the game canvas to a thin strip.
@@ -3764,6 +3944,45 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             setAtlas(atlasChoice->currentData().toString());
             recordChange(before);
         });
+    // Icon strips mirror their original combo values, including when an
+    // atlas click or a custom-zone selection changes the brush indirectly.
+    auto syncGraphicModes = [this, brushG]() {
+        const int mode = brushG->currentData().toInt();
+        for (auto pair : {std::pair<QToolButton*, int>{m_graphicKeep, -1},
+                          {m_graphicEmpty, 0}, {m_graphicAtlas, 1}}) {
+            const QSignalBlocker blocked(pair.first);
+            pair.first->setChecked(mode == pair.second);
+        }
+    };
+    auto syncCollisionModes = [this, brushC]() {
+        const int type = brushC->currentData().toInt();
+        for (auto pair : {std::pair<QToolButton*, int>{m_collisionKeep, -1},
+                          {m_collisionEmpty, 0}}) {
+            const QSignalBlocker blocked(pair.first);
+            pair.first->setChecked(type == pair.second);
+        }
+    };
+    connect(m_graphicKeep, &QToolButton::clicked, this, [brushG, syncGraphicModes]() {
+        brushG->setCurrentIndex(brushG->findData(-1)); syncGraphicModes();
+    });
+    connect(m_graphicEmpty, &QToolButton::clicked, this, [brushG, syncGraphicModes]() {
+        brushG->setCurrentIndex(brushG->findData(0)); syncGraphicModes();
+    });
+    connect(m_graphicAtlas, &QToolButton::clicked, this, [brushG, syncGraphicModes]() {
+        brushG->setCurrentIndex(brushG->findData(1)); syncGraphicModes();
+    });
+    connect(m_collisionKeep, &QToolButton::clicked, this, [brushC, syncCollisionModes]() {
+        brushC->setCurrentIndex(brushC->findData(-1)); syncCollisionModes();
+    });
+    connect(m_collisionEmpty, &QToolButton::clicked, this, [brushC, syncCollisionModes]() {
+        brushC->setCurrentIndex(brushC->findData(0)); syncCollisionModes();
+    });
+    connect(brushG, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [syncGraphicModes](int) { syncGraphicModes(); });
+    connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [syncCollisionModes](int) { syncCollisionModes(); });
+    syncGraphicModes();
+    syncCollisionModes();
     connect(brushG, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, brushG](int) {
             m_canvas->graphicMode = brushG->currentData().toInt();
@@ -3771,14 +3990,31 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             m_canvas->viewport()->update();
             m_stampCanvas->update();
         });
+    const auto syncFlagModes = [this]() {
+        const int mode = m_flipMode->currentData().toInt();
+        const QSignalBlocker applyBlocked(m_flagApply);
+        const QSignalBlocker keepBlocked(m_flagKeep);
+        m_flagApply->setChecked(mode == 1);
+        m_flagKeep->setChecked(mode == -1);
+    };
+    connect(m_flagApply, &QToolButton::clicked, this, [this, syncFlagModes]() {
+        m_flipMode->setCurrentIndex(m_flipMode->findData(1));
+        syncFlagModes();
+    });
+    connect(m_flagKeep, &QToolButton::clicked, this, [this, syncFlagModes]() {
+        m_flipMode->setCurrentIndex(m_flipMode->findData(-1));
+        syncFlagModes();
+    });
     connect(m_flipMode, qOverload<int>(&QComboBox::currentIndexChanged), this,
-        [this](int) {
+        [this, syncFlagModes](int) {
+            syncFlagModes();
             const int mode = m_flipMode->currentData().toInt();
             m_canvas->flipMode = mode;
             m_stampCanvas->flipMode = mode;
             m_canvas->viewport()->update();
             m_stampCanvas->update();
         });
+    syncFlagModes();
     auto updateFlipBrush = [this]() {
         const quint8 flags = quint8((m_flipX->isChecked() ? 1 : 0) |
                                    (m_flipY->isChecked() ? 2 : 0) |
