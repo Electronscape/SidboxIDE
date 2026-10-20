@@ -8,7 +8,7 @@
 
 typedef struct {
     const char *name;
-    uint8_t pickup_kind; /* 0 = manual only; 1..4 = existing Collectable kind */
+    uint8_t pickup_kind; /* 0 = manual; 1..4 classic; 5..255 custom named pickup kinds */
     uint16_t icon;       /* Tile atlas cell; 65535 = no icon; >255 supported */
     uint16_t capacity, initial;
 } game_adventure_item_t;
@@ -76,6 +76,10 @@ void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
    If it would run off the bottom, its Y is raised to keep the frame visible.
    Existing designs retain their saved minimum and position. */
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height);
+/* Optional per-node flags: 1 = once-only, 2 = mark talking NPC completed.
+   These separate tables preserve compatibility with older dialogue structs. */
+void game_adventure_story_flags(const uint8_t *choice_flags,
+                                const uint16_t *completed_nodes);
 /* Optional NPC idle/talking atlas sequences. Called AFTER game_adventure_start.
    Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,

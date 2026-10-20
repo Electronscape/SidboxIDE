@@ -4211,7 +4211,85 @@ void SidboxGameDesigner::configureGameObject(int index)
     pickup->addItem(pickupIcon(2), tr("Health"), 2);
     pickup->addItem(pickupIcon(3), tr("Key"), 3);
     pickup->addItem(pickupIcon(4), tr("Gem"), 4);
-    pickup->setCurrentIndex(qMax(0, pickup->findData(old.pickupKind)));
+    // Project-wide named kinds, stored in Adventure .sbgm data; their numeric
+    // IDs are stable even if a name is edited (and the SDK supports uint16_t).
+    QJsonArray customPickupTypes=m_adventure.value(QStringLiteral("pickupTypes")).toArray();
+    const auto refillPickup = [&] (int selected) {
+        while(pickup->count()>4) pickup->removeItem(pickup->count()-1);
+        for(const QJsonValue &v:customPickupTypes){
+            const QJsonObject def=v.toObject();const int k=def.value(QStringLiteral("id")).toInt();
+            if(k>=5 && k<=255)pickup->addItem(tr("%1: %2").arg(k)
+                .arg(def.value(QStringLiteral("name")).toString()),k);
+        }
+        pickup->setCurrentIndex(qMax(0,pickup->findData(selected)));
+    };
+    refillPickup(old.pickupKind);
+    auto *addPickupType=new QPushButton(tr("+ New type..."),&dialog);
+    auto *managePickupTypes=new QPushButton(tr("Rename / Remove..."),&dialog);
+    addPickupType->setToolTip(tr("Create a named project-wide pickup type (5–255). "
+        "Link it to an Inventory Item in Adventure Editor → Inventory Items."));
+    managePickupTypes->setToolTip(tr("Rename a custom type, or remove one only when no Game Object or Inventory Item uses it."));
+    connect(addPickupType,&QPushButton::clicked,&dialog,[&]{
+        int id=5;
+        for(;id<=255;++id){
+            bool exists=false;
+            for(const QJsonValue &v:customPickupTypes)
+                if(v.toObject().value(QStringLiteral("id")).toInt()==id){exists=true;break;}
+            if(!exists)break;
+        }
+        if(id>255){QMessageBox::warning(&dialog,tr("Pickup types"),tr("All 251 custom pickup IDs are in use."));return;}
+        bool ok=false;
+        const QString name=QInputDialog::getText(&dialog,tr("Add pickup type"),
+            tr("Name for pickup type %1:").arg(id),QLineEdit::Normal,
+            tr("Puzzle item %1").arg(id),&ok).trimmed().left(36);
+        if(!ok || name.isEmpty())return;
+        QJsonObject def;def.insert(QStringLiteral("id"),id);def.insert(QStringLiteral("name"),name);
+        customPickupTypes.append(def);refillPickup(id);
+    });
+    connect(managePickupTypes,&QPushButton::clicked,&dialog,[&]{
+        if(customPickupTypes.isEmpty()){
+            QMessageBox::information(&dialog,tr("Pickup types"),tr("No custom types yet. Use + New type to create one."));return;
+        }
+        QStringList labels;
+        for(const QJsonValue &v:customPickupTypes){const auto d=v.toObject();
+            labels<<tr("%1: %2").arg(d.value(QStringLiteral("id")).toInt())
+                .arg(d.value(QStringLiteral("name")).toString());}
+        bool ok=false;
+        const QString chosen=QInputDialog::getItem(&dialog,tr("Manage pickup types"),
+            tr("Select a named type:"),labels,0,false,&ok);
+        if(!ok || chosen.isEmpty())return;
+        const int row=labels.indexOf(chosen);
+        if(row<0)return;
+        QJsonObject def=customPickupTypes[row].toObject();
+        const int id=def.value(QStringLiteral("id")).toInt();
+        const auto action=QMessageBox::question(&dialog,tr("Edit pickup type"),
+            tr("Rename %1? Choose Yes to rename, No to try removing it, or Cancel.").arg(chosen),
+            QMessageBox::Yes|QMessageBox::No|QMessageBox::Cancel,QMessageBox::Yes);
+        if(action==QMessageBox::Cancel)return;
+        if(action==QMessageBox::Yes){
+            bool renamed=false;
+            const QString name=QInputDialog::getText(&dialog,tr("Rename pickup type"),
+                tr("Name for ID %1:").arg(id),QLineEdit::Normal,
+                def.value(QStringLiteral("name")).toString(),&renamed).trimmed().left(36);
+            if(!renamed||name.isEmpty())return;
+            def.insert(QStringLiteral("name"),name);customPickupTypes[row]=def;
+            refillPickup(pickup->currentData().toInt());return;
+        }
+        // Deletion must never make a placed collectable or inventory entry silently
+        // change its meaning. Include the currently edited, not yet saved row.
+        bool referenced=(pickup->currentData().toInt()==id);
+        for(const Resource &r:m_resources)
+            if(r.objectType==QStringLiteral("collectable") && r.pickupKind==id)referenced=true;
+        for(const QJsonValue &v:m_adventure.value(QStringLiteral("items")).toArray())
+            if(v.toObject().value(QStringLiteral("pickupKind")).toInt()==id)referenced=true;
+        if(referenced){QMessageBox::warning(&dialog,tr("Pickup type is in use"),
+            tr("Type %1 is assigned to a placed collectable or an Adventure Inventory Item. "
+               "Reassign those objects/items and save first; then remove the type.").arg(id));return;}
+        if(QMessageBox::question(&dialog,tr("Remove pickup type"),
+            tr("Remove type %1 (%2)?").arg(id).arg(def.value(QStringLiteral("name")).toString()),
+            QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
+        customPickupTypes.removeAt(row);refillPickup(pickup->currentData().toInt());
+    });
     auto spin = [&dialog](int lo, int hi, int val) {
         auto *s = new QSpinBox(&dialog);
         s->setRange(lo, hi); s->setValue(val); return s;
@@ -4220,6 +4298,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     value->setMaximumWidth(110);
     pickup->setMinimumWidth(120);
     form->addRow(pairFields(tr("Pickup Type"), pickup, tr("Pickup Value"), value));
+    auto *pickupActions=new QWidget(&dialog);auto *pickupActionsRow=new QHBoxLayout(pickupActions);
+    pickupActionsRow->setContentsMargins(0,0,0,0);
+    pickupActionsRow->addWidget(addPickupType);pickupActionsRow->addWidget(managePickupTypes);
+    form->addRow(tr("Custom pickup types"),pickupActions);
     form = generalCard.form;
     auto *initiallyActive = new QCheckBox(tr("Active when the level starts"), &dialog);
     initiallyActive->setChecked(old.objectInitiallyActive);
@@ -4294,7 +4376,16 @@ void SidboxGameDesigner::configureGameObject(int index)
 
     form = collectCard.form;
     auto *respawn = spin(0, 65535, old.respawnFrames);
+    auto *collectOnce = new QCheckBox(tr("One-time collectable (never respawn)"), &dialog);
+    collectOnce->setChecked(old.respawnFrames == 0);
+    collectOnce->setToolTip(tr("When collected, it stays gone until the level or game restarts. "
+        "Untick to set a respawn delay in 50 FPS game frames."));
+    form->addRow(QString(),collectOnce);
     form->addRow(tr("Respawn frames"), quickValue(respawn));
+    connect(collectOnce,&QCheckBox::toggled,&dialog,[&](bool oneTime){
+        if(!oneTime && respawn->value()==0)respawn->setValue(250);
+        respawn->setEnabled(!oneTime && type->currentData().toString()==QStringLiteral("collectable"));
+    });
     form = collisionCard.form;
     auto *hitW = spin(1, 1024, old.hitWidth);
     auto *hitH = spin(1, 1024, old.hitHeight);
@@ -4859,7 +4950,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         springJumpBoost->setEnabled(behaviour == QStringLiteral("spring"));
         sfxPickup->setEnabled(behaviour == QStringLiteral("collectable"));
         sfxRespawn->setEnabled(behaviour == QStringLiteral("collectable"));
-        respawn->setEnabled(behaviour == QStringLiteral("collectable"));
+        collectOnce->setEnabled(behaviour == QStringLiteral("collectable"));
+        respawn->setEnabled(behaviour == QStringLiteral("collectable") && !collectOnce->isChecked());
         sfxStart->setEnabled(behaviour == QStringLiteral("lift"));
         sfxMove->setEnabled(behaviour == QStringLiteral("lift"));
         sfxStop->setEnabled(behaviour == QStringLiteral("lift"));
@@ -4952,6 +5044,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         return false;
     }
     rememberResourceEdit();
+    m_adventure.insert(QStringLiteral("pickupTypes"),customPickupTypes);
     Resource &r = m_resources[index];
     r.objectType = newType;
     r.pickupKind = pickup->currentData().toInt();
@@ -5006,7 +5099,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.sfxHazardHit = sfxHazardHit->currentData().toString();
     r.sfxHazardBounce = sfxHazardBounce->currentData().toString();
     r.sfxHazardAmbient = sfxHazardAmbient->currentData().toString();
-    r.respawnFrames = respawn->value();
+    r.respawnFrames = collectOnce->isChecked() ? 0 : respawn->value();
     r.audioRadius = radius->value();
     r.audioFadeFrames = fade->value();
     r.objectSplineId = spline->currentData().toString();
@@ -5031,7 +5124,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         objectName->setToolTip(old.name);
         resourceName->setText(old.name);
         type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
-        pickup->setCurrentIndex(qMax(0, pickup->findData(old.pickupKind)));
+        refillPickup(old.pickupKind);
         value->setValue(old.objectValue);
         initiallyActive->setChecked(old.objectInitiallyActive);
         hiddenCollectable->setChecked(!old.objectInitiallyActive ||
@@ -5056,6 +5149,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         musicAction->setCurrentIndex(qMax(0, musicAction->findData(old.triggerMusicAction)));
         musicTrack->setCurrentIndex(qMax(0, musicTrack->findData(old.triggerMusicId)));
         respawn->setValue(old.respawnFrames);
+        collectOnce->setChecked(old.respawnFrames==0);
         hitW->setValue(old.hitWidth); hitH->setValue(old.hitHeight);
         conveyor->setValue(old.conveyorSpeed);
         spring->setValue(old.springStrength);

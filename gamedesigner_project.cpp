@@ -209,7 +209,7 @@ bool SidboxGameDesigner::loadDesign()
                 QStringLiteral("trigger"), QStringLiteral("door"),
                 QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
-        r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 4);
+        r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
         r.hitWidth = qBound(1, object.value(QStringLiteral("hitWidth")).toInt(16), 1024);
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);

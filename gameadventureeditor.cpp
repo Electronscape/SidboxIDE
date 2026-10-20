@@ -17,6 +17,12 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListView>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
+#include <QInputDialog>
+#include <QHash>
+#include <QSet>
+#include <QUuid>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPainter>
@@ -282,7 +288,7 @@ QJsonArray tableItems(QTableWidget *table)
         item.insert("name", table->item(r,0) ? table->item(r,0)->text().trimmed().left(36) : QString());
         if (item.value("name").toString().isEmpty()) continue;
         auto *kind= qobject_cast<QComboBox *>(table->cellWidget(r,1));
-        item.insert("pickupKind",kind?kind->currentData().toInt():std::clamp(intAt(table,r,1,0),0,4));
+        item.insert("pickupKind",kind?kind->currentData().toInt():std::clamp(intAt(table,r,1,0),0,255));
         item.insert("capacity", std::clamp(intAt(table,r,2,1),1,65535));
         item.insert("initial", std::clamp(intAt(table,r,3,0),0,65535));
         item.insert("icon",table->item(r,4)
@@ -309,7 +315,7 @@ QString dialogueTitle(const QJsonObject &node, int index)
         .arg(node.value("speaker").toString().left(24), node.value("text").toString().left(35));
 }
 void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &items,
-              const QVector<GameAdventureAsset> &objects)
+              const QVector<GameAdventureAsset> &objects, QTableWidget *npcTable)
 {
     if (row < 0 || row >= nodes.size()) return;
     QJsonObject node = nodes[row].toObject();
@@ -335,6 +341,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QComboBox *next, *event, *mode;
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
+        QCheckBox *once, *completeNpc;
     } fields[3];
     for (int i=0;i<3;++i) {
         const QJsonObject choice = choices[i].toObject();
@@ -406,8 +413,59 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].mode->setCurrentIndex(std::max(0,fields[i].mode->findData(choice.value("targetAction").toString("enable"))));
         grid->addWidget(new QLabel(QObject::tr("Game Object action"),box),5,0);
         grid->addWidget(fields[i].mode,5,1,1,3);
+        fields[i].once = new QCheckBox(QObject::tr("Only show this answer until successfully used"),box);
+        fields[i].once->setChecked(choice.value("once").toBool(false));
+        grid->addWidget(fields[i].once,6,0,1,4);
+        fields[i].completeNpc = new QCheckBox(QObject::tr("Mark this NPC as helped (use its completed dialogue next visit)"),box);
+        fields[i].completeNpc->setChecked(choice.value("completeNpc").toBool(false));
+        grid->addWidget(fields[i].completeNpc,7,0,1,4);
         detail->addWidget(box);
     }
+
+    // The completed dialogue is an NPC setting, not a property of a shared
+    // dialogue node. Offer an intuitive shortcut from the NPC's opening node,
+    // and update the same NPC table control used by the NPCs tab.
+    auto *afterHelp = new QGroupBox(QObject::tr("Already helped — on a FUTURE visit"), &dialog);
+    auto *afterHelpForm = new QFormLayout(afterHelp);
+    auto *helpText = new QLabel(QObject::tr(
+        "When a choice above successfully marks this NPC as helped, the next time "
+        "the player talks to them, use the following conversation. "
+        "The choice's Next dropdown is different: it continues IMMEDIATELY."), afterHelp);
+    helpText->setWordWrap(true);
+    afterHelpForm->addRow(helpText);
+    auto *linkedNpc = new QComboBox(afterHelp);
+    auto *nextVisit = new QComboBox(afterHelp);
+    if (npcTable) {
+        for (int r = 0; r < npcTable->rowCount(); ++r) {
+            auto *start = qobject_cast<QComboBox*>(npcTable->cellWidget(r,1));
+            if (!start || start->currentData().toInt() != row) continue;
+            auto *nameItem = npcTable->item(r,0);
+            const QString npcName = nameItem ? nameItem->text() : QObject::tr("NPC %1").arg(r+1);
+            linkedNpc->addItem(npcName,r);
+        }
+    }
+    nextVisit->addItem(QObject::tr("Keep normal opening dialogue"),-1);
+    for (int target=0; target<nodes.size(); ++target)
+        nextVisit->addItem(dialogueTitle(nodes[target].toObject(),target),target);
+    const auto loadNpc = [&]() {
+        const int npcRow=linkedNpc->currentData().toInt();
+        auto *saved=npcTable ? qobject_cast<QComboBox*>(npcTable->cellWidget(npcRow,3)) : nullptr;
+        nextVisit->setCurrentIndex(std::max(0,nextVisit->findData(saved ? saved->currentData().toInt() : -1)));
+    };
+    if (linkedNpc->count()) {
+        afterHelpForm->addRow(QObject::tr("NPC using this opening"),linkedNpc);
+        afterHelpForm->addRow(QObject::tr("Conversation NEXT visit"),nextVisit);
+        QObject::connect(linkedNpc,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         afterHelp, [&,nextVisit](int){ loadNpc(); });
+        loadNpc();
+    } else {
+        auto *noNpc=new QLabel(QObject::tr(
+            "No NPC starts at this dialogue node yet. Under NPCs, select this node "
+            "as an NPC's Start node to configure its future-visit response here."),afterHelp);
+        noNpc->setWordWrap(true);
+        afterHelpForm->addRow(noNpc);
+    }
+    detail->addWidget(afterHelp);
     auto *note = new QLabel(QObject::tr("Choose an existing Game Object to activate, deactivate or toggle it. "
                                        "Custom event IDs call gameadventure_on_event() in the generated game."), &dialog);
     note->setWordWrap(true); detail->addWidget(note);
@@ -428,12 +486,19 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         c.insert("requires",fields[i].requires->currentData().toInt());
         c.insert("give",fields[i].give->currentData().toInt());
         c.insert("take",fields[i].take->currentData().toInt());
+        c.insert("once",fields[i].once->isChecked());
+        c.insert("completeNpc",fields[i].completeNpc->isChecked());
         c.insert("targetObjectId",(eventSelection!=QStringLiteral("none") && eventSelection!=QStringLiteral("custom"))
             ?eventSelection:QString());
         c.insert("targetAction",fields[i].mode->currentData().toString());
         updated.append(c);
     }
     node.insert("choices",updated); nodes[row] = node;
+    if (npcTable && linkedNpc->count()) {
+        const int npcRow=linkedNpc->currentData().toInt();
+        auto *saved=qobject_cast<QComboBox*>(npcTable->cellWidget(npcRow,3));
+        if (saved) saved->setCurrentIndex(std::max(0,saved->findData(nextVisit->currentData().toInt())));
+    }
 }
 } // namespace
 
@@ -447,8 +512,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     if (!payload) return false;
     const QJsonObject old = *payload;
     QJsonArray nodes=old.value("nodes").toArray();
+    // Editor-only grouping. Never reorder the nodes array when moving folders.
+    QJsonArray dialogueFolders=old.value("dialogueFolders").toArray();
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Advanced Platformer — Adventure Editor"));
-    dialog.setMinimumSize(890,670); dialog.resize(1060,800);
+    dialog.setMinimumSize(890,670); dialog.resize(1230,800);
     auto *main = new QVBoxLayout(&dialog);
     auto *tabs = new QTabWidget(&dialog); main->addWidget(tabs,1);
 
@@ -467,7 +534,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     auto *collectionHelp=new QLabel(QObject::tr(
         "INVENTORY GUIDE: Each row is an item your game can recognise (for example, Brass Key). "
         "'Max owned' is how many can be carried; 'Start with' is how many the player begins with. "
-        "Pick up from... matches the collectable TYPE in World Designer (Coin=1, Health=2, Key=3, Gem=4). "
+        "Pick up from... matches the named collectable TYPE in World Designer (classic kinds 1–4, or your custom kinds 5–255). "
         "A name like Kim_copy[1] is the placed object's name, NOT an inventory item. "
         "Choosing type 2 means EVERY Health-type collectable adds this row's item. "
         "Important for custom main.c: in on_pickup(), add game_adventure_collect(item->kind); "
@@ -476,6 +543,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     collectionHelp->setWordWrap(true);itemsLayout->addWidget(collectionHelp);
     itemsLayout->addWidget(items,1);
     const QJsonArray oldItems = old.value("items").toArray();
+    const QJsonArray customKinds = old.value("pickupTypes").toArray();
     auto appendItem = [&](const QJsonObject &o) {
         const int row=items->rowCount(); items->insertRow(row);
         const QStringList v{ o.value("name").toString("New Item"),
@@ -500,7 +568,20 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             kind->addItem(QObject::tr("%1: %2 — %3").arg(k).arg(typeName)
                 .arg(names.isEmpty()?QObject::tr("no matching objects placed"):names.join(QStringLiteral(", "))),k);
         }
-        kind->setCurrentIndex(std::max(0,kind->findData(o.value("pickupKind").toInt(0))));
+        for(const QJsonValue &kv:customKinds){
+            const QJsonObject def=kv.toObject();
+            const int k=def.value("id").toInt();
+            if(k<5 || k>255) continue;
+            QStringList names;
+            for(const auto &object:collectables) if(object.pickupKind==k) names<<object.name;
+            kind->addItem(QObject::tr("%1: %2 — %3").arg(k)
+                .arg(def.value("name").toString())
+                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):names.join(QStringLiteral(", "))),k);
+        }
+        const int requested=o.value("pickupKind").toInt(0);
+        if (kind->findData(requested)<0 && requested>4 && requested<=255)
+            kind->addItem(QObject::tr("%1: missing custom pickup definition").arg(requested),requested);
+        kind->setCurrentIndex(std::max(0,kind->findData(requested)));
         items->setCellWidget(row,1,kind);
     };
     for (const auto &v:oldItems) appendItem(v.toObject());
@@ -559,11 +640,37 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
 
     auto *npcPage = new QWidget(tabs); auto *npcLayout = new QVBoxLayout(npcPage);
     npcLayout->addWidget(new QLabel(QObject::tr("NPCs use existing placed Sprite resources. Move their sprites in the World Editor."),npcPage));
-    auto *npcs = new QTableWidget(0,3,npcPage);
-    npcs->setHorizontalHeaderLabels({QObject::tr("Sprite"),QObject::tr("Start node"),QObject::tr("Talk radius (px)")});
+    auto *npcs = new QTableWidget(0,4,npcPage);
+    npcs->setHorizontalHeaderLabels({QObject::tr("Sprite"),QObject::tr("Start node"),
+        QObject::tr("Talk radius (px)"),QObject::tr("After helped (optional)")});
+    // Give the two dialogue selectors their full selected titles. Sprite uses
+    // the space left over; horizontal scrolling remains available on small screens.
     npcs->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
+    npcs->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Interactive);
+    npcs->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Interactive);
+    npcs->horizontalHeader()->setSectionResizeMode(3,QHeaderView::Interactive);
+    npcs->horizontalHeader()->setMinimumSectionSize(100);
+    npcs->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     npcLayout->addWidget(npcs,1);
-    auto appendNpc = [&](const QString &id,int node,int radius, const QJsonObject &animation = QJsonObject()) {
+    auto sizeNpcColumns = [&] {
+        int startWidth = npcs->fontMetrics().horizontalAdvance(QObject::tr("Start node"))+36;
+        int helpedWidth = npcs->fontMetrics().horizontalAdvance(QObject::tr("After helped (optional)"))+36;
+        for (int row=0; row<npcs->rowCount(); ++row) {
+            for (int column : {1,3}) {
+                auto *combo=qobject_cast<QComboBox*>(npcs->cellWidget(row,column));
+                if (!combo) continue;
+                combo->setToolTip(combo->currentText());
+                // Use the selected title, not the longest title in *every* node.
+                const int needed=combo->fontMetrics().horizontalAdvance(combo->currentText())+54;
+                if (column==1) startWidth=std::max(startWidth,needed);
+                else helpedWidth=std::max(helpedWidth,needed);
+            }
+        }
+        npcs->setColumnWidth(1,std::max(220,startWidth));
+        npcs->setColumnWidth(2,145);
+        npcs->setColumnWidth(3,std::max(250,helpedWidth));
+    };
+    auto appendNpc = [&](const QString &id,int node,int radius, const QJsonObject &animation = QJsonObject(), int doneNode = -1) {
         const int row=npcs->rowCount(); npcs->insertRow(row);
         auto it=std::find_if(sprites.begin(),sprites.end(),[&](const auto &s){return s.id==id;});
         auto *name=cell(it==sprites.end() ? QObject::tr("Missing Sprite") : it->name);
@@ -576,9 +683,21 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         startNode->setCurrentIndex(std::max(0,startNode->findData(node)));
         npcs->setCellWidget(row,1,startNode);
         npcs->setItem(row,2,cell(QString::number(radius)));
+        auto *completed = new QComboBox(npcs);
+        completed->addItem(QObject::tr("Use normal opening dialogue"),-1);
+        for(int i=0;i<nodes.size();++i) completed->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+        completed->setCurrentIndex(std::max(0,completed->findData(doneNode)));
+        npcs->setCellWidget(row,3,completed);
+        QObject::connect(startNode,QOverload<int>::of(&QComboBox::currentIndexChanged),npcs,[&,startNode](int){
+            startNode->setToolTip(startNode->currentText());sizeNpcColumns();
+        });
+        QObject::connect(completed,QOverload<int>::of(&QComboBox::currentIndexChanged),npcs,[&,completed](int){
+            completed->setToolTip(completed->currentText());sizeNpcColumns();
+        });
+        sizeNpcColumns();
     };
     for(const auto &v: old.value("npcs").toArray()) {
-        const QJsonObject o=v.toObject(); appendNpc(o.value("spriteId").toString(),o.value("node").toInt(),o.value("radius").toInt(48),o.value("animation").toObject());
+        const QJsonObject o=v.toObject(); appendNpc(o.value("spriteId").toString(),o.value("node").toInt(),o.value("radius").toInt(48),o.value("animation").toObject(),o.value("doneNode").toInt(-1));
     }
     auto refreshNpcNodes=[&] {
         for(int r=0;r<npcs->rowCount();++r){
@@ -587,6 +706,12 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             for(int i=0;i<nodes.size();++i)cb->addItem(dialogueTitle(nodes[i].toObject(),i),i);
             if(cb->count()==0)cb->addItem(QObject::tr("Create a dialogue node first"),0);
             cb->setCurrentIndex(std::max(0,cb->findData(previous)));
+            auto *done=qobject_cast<QComboBox*>(npcs->cellWidget(r,3));
+            if (!done) continue;
+            const int donePrevious=done->currentData().toInt();
+            done->clear();done->addItem(QObject::tr("Use normal opening dialogue"),-1);
+            for(int i=0;i<nodes.size();++i)done->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+            done->setCurrentIndex(std::max(0,done->findData(donePrevious)));
         }
     };
     auto *npcButtons = new QHBoxLayout;
@@ -817,45 +942,254 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         npcs->removeRow(row);
     });
     tabs->addTab(npcPage,QObject::tr("NPCs"));
+    QObject::connect(tabs,&QTabWidget::currentChanged,npcs,[&](int){sizeNpcColumns();});
 
     auto *dialoguePage = new QWidget(tabs); auto *dialogueLayout = new QVBoxLayout(dialoguePage);
-    dialogueLayout->addWidget(new QLabel(QObject::tr("Double-click a node to edit the speaker, wrapped dialogue and its three choices."),dialoguePage));
-    auto *nodeList = new QListWidget(dialoguePage); dialogueLayout->addWidget(nodeList,1);
-    auto redrawNodes = [&] {
-        const int row=nodeList->currentRow(); nodeList->clear();
-        for(int i=0;i<nodes.size();++i) nodeList->addItem(dialogueTitle(nodes[i].toObject(),i));
-        if(!nodes.isEmpty()) nodeList->setCurrentRow(std::clamp(row,0,int(nodes.size())-1));
+    auto *treeHelp=new QLabel(QObject::tr(
+        "Organise dialogues into folders for each NPC or part of your story. "
+        "Folders change only the editor view: dialogue IDs and game links stay exactly the same. "
+        "Double-click a dialogue to edit it."),dialoguePage);
+    treeHelp->setWordWrap(true);dialogueLayout->addWidget(treeHelp);
+    auto *nodeTree=new QTreeWidget(dialoguePage);
+    nodeTree->setHeaderLabels({QObject::tr("Dialogue folders and nodes")});
+    nodeTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    nodeTree->setUniformRowHeights(true);
+    dialogueLayout->addWidget(nodeTree,1);
+    auto selectedNode=[&]() -> int {
+        auto *entry=nodeTree->currentItem();
+        return entry && entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("node")
+            ?entry->data(0,Qt::UserRole).toInt():-1;
+    };
+    auto selectedFolder=[&]() -> QString {
+        auto *entry=nodeTree->currentItem();
+        if (!entry) return QString();
+        if(entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder"))
+            return entry->data(0,Qt::UserRole+2).toString();
+        if(entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("node")) {
+            const int row=entry->data(0,Qt::UserRole).toInt();
+            return row>=0 && row<nodes.size()?nodes[row].toObject().value("folderId").toString():QString();
+        }
+        return QString();
+    };
+    auto redrawNodes=[&](int chooseNode=-2, const QString &chooseFolder=QString()) {
+        if(chooseNode==-2)chooseNode=selectedNode();
+        const QString oldFolder=chooseFolder.isNull()?selectedFolder():chooseFolder;
+        // Preserve collapsed folders when a dialogue is edited or moved.
+        QSet<QString> collapsed;
+        bool unfiledExpanded=true;
+        for(QTreeWidgetItemIterator it(nodeTree); *it; ++it){
+            auto *entry=*it;
+            if(entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder") && !entry->isExpanded())
+                collapsed.insert(entry->data(0,Qt::UserRole+2).toString());
+            if(entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("unfiled"))
+                unfiledExpanded=entry->isExpanded();
+        }
+        nodeTree->clear();
+        QHash<QString,QTreeWidgetItem*> folderItems;
+        // Resolve parents before children, even when folders are stored out of order.
+        QSet<QString> processed;
+        for(int pass=0;pass<=dialogueFolders.size();++pass){
+            bool changed=false;
+            for(const auto &record:dialogueFolders){
+                const QJsonObject folder=record.toObject();
+                const QString id=folder.value("id").toString();
+                const QString parentId=folder.value("parentId").toString();
+                if(id.isEmpty() || processed.contains(id)) continue;
+                // Invalid/cyclic parents are shown at root, without editing saved data.
+                const bool atRoot=parentId.isEmpty() || pass==dialogueFolders.size();
+                if(!atRoot && !folderItems.contains(parentId)) continue;
+                auto *parent=folderItems.value(parentId,nullptr);
+                auto *entry=parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(nodeTree);
+                entry->setText(0,folder.value("name").toString(QObject::tr("Unnamed folder")));
+                entry->setIcon(0,QIcon::fromTheme(QStringLiteral("folder")));
+                entry->setData(0,Qt::UserRole+1,QStringLiteral("folder"));
+                entry->setData(0,Qt::UserRole+2,id);
+                folderItems.insert(id,entry);processed.insert(id);changed=true;
+            }
+            if(processed.size()==dialogueFolders.size()) break;
+            // On the final pass, attach invalid/cyclic folder parents at root.
+            // Their saved IDs remain unchanged.
+            if(!changed && pass==dialogueFolders.size()) break;
+        }
+        auto *unfiled=new QTreeWidgetItem(nodeTree);
+        unfiled->setText(0,QObject::tr("Unfiled dialogues"));
+        unfiled->setIcon(0,QIcon::fromTheme(QStringLiteral("folder-open")));
+        unfiled->setData(0,Qt::UserRole+1,QStringLiteral("unfiled"));
+        QTreeWidgetItem *desired=nullptr;
+        for(int i=0;i<nodes.size();++i){
+            const QJsonObject node=nodes[i].toObject();
+            const QString folder=node.value("folderId").toString();
+            auto *parent=folderItems.value(folder,unfiled);
+            auto *entry=new QTreeWidgetItem(parent);
+            entry->setText(0,dialogueTitle(node,i));
+            entry->setData(0,Qt::UserRole,i);
+            entry->setData(0,Qt::UserRole+1,QStringLiteral("node"));
+            entry->setToolTip(0,QObject::tr("Dialogue ID %1 (does not change when you move folders)").arg(i));
+            if(i==chooseNode)desired=entry;
+        }
+        if(!desired && !oldFolder.isEmpty())desired=folderItems.value(oldFolder,nullptr);
+        if(!desired)desired=unfiled;
+        nodeTree->expandAll();
+        for(auto it=folderItems.constBegin();it!=folderItems.constEnd();++it)
+            if(collapsed.contains(it.key()))it.value()->setExpanded(false);
+        unfiled->setExpanded(unfiledExpanded);
+        // Reveal the edited node even if its former parent was collapsed.
+        for(auto *parent=desired->parent();parent;parent=parent->parent())parent->setExpanded(true);
+        nodeTree->setCurrentItem(desired);
     };
     redrawNodes();
+    auto *folderButtons=new QHBoxLayout;
+    auto *folderAdd=new QPushButton(QObject::tr("+ Folder / Subfolder"),dialoguePage);
+    auto *folderRename=new QPushButton(QObject::tr("Rename Folder..."),dialoguePage);
+    auto *folderDelete=new QPushButton(QObject::tr("Delete Folder..."),dialoguePage);
+    auto *nodeMove=new QPushButton(QObject::tr("Move Dialogue To..."),dialoguePage);
+    folderButtons->addWidget(folderAdd);
+    folderButtons->addWidget(folderRename);
+    folderButtons->addWidget(folderDelete);
+    folderButtons->addWidget(nodeMove);
+    folderButtons->addStretch();dialogueLayout->addLayout(folderButtons);
     auto *nodeButtons=new QHBoxLayout;
     auto *nodeAdd=new QPushButton(QObject::tr("+ Dialogue Node"),dialoguePage);
-    auto *nodeEdit=new QPushButton(QObject::tr("Edit Node..."),dialoguePage);
-    auto *nodeDel=new QPushButton(QObject::tr("Delete Node"),dialoguePage);
-    nodeButtons->addWidget(nodeAdd);nodeButtons->addWidget(nodeEdit);nodeButtons->addWidget(nodeDel);nodeButtons->addStretch();
-    dialogueLayout->addLayout(nodeButtons);
+    auto *nodeEdit=new QPushButton(QObject::tr("Edit Dialogue..."),dialoguePage);
+    auto *nodeDel=new QPushButton(QObject::tr("Delete Dialogue..."),dialoguePage);
+    nodeButtons->addWidget(nodeAdd);nodeButtons->addWidget(nodeEdit);nodeButtons->addWidget(nodeDel);
+    nodeButtons->addStretch();dialogueLayout->addLayout(nodeButtons);
+    QObject::connect(folderAdd,&QPushButton::clicked,&dialog,[&] {
+        // Selecting a folder creates a child folder; otherwise make a root folder.
+        QString parentId;
+        auto *entry=nodeTree->currentItem();
+        if(entry && entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder"))
+            parentId=entry->data(0,Qt::UserRole+2).toString();
+        bool ok=false;
+        const QString name=QInputDialog::getText(&dialog,QObject::tr("New Dialogue Folder"),
+            parentId.isEmpty()?QObject::tr("Folder name:"):QObject::tr("Subfolder name:"),
+            QLineEdit::Normal,QString(),&ok).trimmed().left(80);
+        if(!ok || name.isEmpty())return;
+        QJsonObject folder;
+        const QString id=QUuid::createUuid().toString(QUuid::WithoutBraces);
+        folder.insert("id",id);folder.insert("name",name);folder.insert("parentId",parentId);
+        dialogueFolders.append(folder);
+        redrawNodes(-1,id);
+    });
+    QObject::connect(folderRename,&QPushButton::clicked,&dialog,[&] {
+        auto *entry=nodeTree->currentItem();
+        if(!entry || entry->data(0,Qt::UserRole+1).toString()!=QStringLiteral("folder")){
+            QMessageBox::information(&dialog,QObject::tr("Rename Folder"),QObject::tr("Select a folder first."));return;
+        }
+        const QString id=entry->data(0,Qt::UserRole+2).toString();
+        for(int i=0;i<dialogueFolders.size();++i){
+            QJsonObject folder=dialogueFolders[i].toObject();
+            if(folder.value("id").toString()!=id)continue;
+            bool ok=false;
+            const QString name=QInputDialog::getText(&dialog,QObject::tr("Rename Dialogue Folder"),
+                QObject::tr("Folder name:"),QLineEdit::Normal,folder.value("name").toString(),&ok).trimmed().left(80);
+            if(ok && !name.isEmpty()){
+                folder.insert("name",name);dialogueFolders[i]=folder;redrawNodes(-1,id);
+            }
+            break;
+        }
+    });
+    QObject::connect(folderDelete,&QPushButton::clicked,&dialog,[&] {
+        auto *entry=nodeTree->currentItem();
+        if(!entry || entry->data(0,Qt::UserRole+1).toString()!=QStringLiteral("folder")){
+            QMessageBox::information(&dialog,QObject::tr("Delete Folder"),QObject::tr("Select a folder first."));return;
+        }
+        const QString id=entry->data(0,Qt::UserRole+2).toString();
+        for(int i=0;i<dialogueFolders.size();++i){
+            const QJsonObject folder=dialogueFolders[i].toObject();
+            if(folder.value("id").toString()!=id)continue;
+            if(QMessageBox::question(&dialog,QObject::tr("Delete Dialogue Folder?"),
+                QObject::tr("Delete folder '%1'? Dialogues will be moved to its parent folder, "
+                            "and subfolders will be kept. No dialogue IDs or links will be changed.")
+                    .arg(folder.value("name").toString()),
+                QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
+            const QString parentId=folder.value("parentId").toString();
+            dialogueFolders.removeAt(i);
+            for(int j=0;j<dialogueFolders.size();++j){
+                QJsonObject child=dialogueFolders[j].toObject();
+                if(child.value("parentId").toString()==id){
+                    child.insert("parentId",parentId);dialogueFolders[j]=child;
+                }
+            }
+            for(int j=0;j<nodes.size();++j){
+                QJsonObject node=nodes[j].toObject();
+                if(node.value("folderId").toString()==id){
+                    node.insert("folderId",parentId);nodes[j]=node;
+                }
+            }
+            redrawNodes(-1,parentId);break;
+        }
+    });
+    QObject::connect(nodeMove,&QPushButton::clicked,&dialog,[&] {
+        const int row=selectedNode();
+        if(row<0){
+            QMessageBox::information(&dialog,QObject::tr("Move Dialogue"),QObject::tr("Select a dialogue node first."));return;
+        }
+        QDialog picker(&dialog);picker.setWindowTitle(QObject::tr("Move Dialogue %1 to Folder").arg(row));
+        auto *layout=new QVBoxLayout(&picker);
+        layout->addWidget(new QLabel(QObject::tr("Choose a folder. This does not change the dialogue ID."),&picker));
+        auto *dest=new QComboBox(&picker);
+        dest->addItem(QObject::tr("Unfiled dialogues"),QString());
+        QHash<QString,QJsonObject> byId;
+        for(const auto &record:dialogueFolders){
+            QJsonObject folder=record.toObject();byId.insert(folder.value("id").toString(),folder);
+        }
+        for(const auto &record:dialogueFolders){
+            const QJsonObject folder=record.toObject();
+            QString path=folder.value("name").toString();
+            QString id=folder.value("parentId").toString();QSet<QString> seen;
+            while(!id.isEmpty() && byId.contains(id) && !seen.contains(id)){
+                seen.insert(id); const QJsonObject parent=byId.value(id);
+                path=parent.value("name").toString()+QStringLiteral(" / ")+path;
+                id=parent.value("parentId").toString();
+            }
+            dest->addItem(path,folder.value("id").toString());
+        }
+        dest->setCurrentIndex(std::max(0,dest->findData(nodes[row].toObject().value("folderId").toString())));
+        layout->addWidget(dest);
+        auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&picker);
+        layout->addWidget(buttons);
+        QObject::connect(buttons,&QDialogButtonBox::accepted,&picker,&QDialog::accept);
+        QObject::connect(buttons,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
+        if(picker.exec()!=QDialog::Accepted)return;
+        QJsonObject node=nodes[row].toObject();
+        node.insert("folderId",dest->currentData().toString());nodes[row]=node;
+        redrawNodes(row);
+    });
     QObject::connect(nodeAdd,&QPushButton::clicked,&dialog,[&] {
-        if(nodes.size()>=256) return;
-        QJsonObject node; node.insert("speaker","NPC"); node.insert("text","Hello!");
-        node.insert("choices",defaultChoices()); nodes.append(node);
-        redrawNodes(); nodeList->setCurrentRow(nodes.size()-1);refreshNpcNodes();
+        if(nodes.size()>=256)return;
+        const QString folder=selectedFolder();
+        QJsonObject node;node.insert("speaker","NPC");node.insert("text","Hello!");
+        node.insert("choices",defaultChoices());
+        if(!folder.isEmpty())node.insert("folderId",folder);
+        nodes.append(node);
+        redrawNodes(nodes.size()-1);refreshNpcNodes();
     });
     auto doNodeEdit=[&] {
-        editNode(&dialog,nodes,nodeList->currentRow(),tableItems(items),worldObjects);
-        redrawNodes();refreshNpcNodes();
+        const int row=selectedNode();
+        if(row<0){
+            QMessageBox::information(&dialog,QObject::tr("Edit Dialogue"),QObject::tr("Select a dialogue node first."));return;
+        }
+        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs);
+        redrawNodes(row);refreshNpcNodes();sizeNpcColumns();
     };
     QObject::connect(nodeEdit,&QPushButton::clicked,&dialog,doNodeEdit);
-    QObject::connect(nodeList,&QListWidget::itemDoubleClicked,&dialog,[&](QListWidgetItem*){doNodeEdit();});
+    QObject::connect(nodeTree,&QTreeWidget::itemDoubleClicked,&dialog,[&](QTreeWidgetItem *entry,int){
+        if(entry && entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("node"))doNodeEdit();
+    });
     QObject::connect(nodeDel,&QPushButton::clicked,&dialog,[&] {
-        const int row=nodeList->currentRow(); if(row<0) return;
+        const int row=selectedNode();if(row<0)return;
         if(QMessageBox::question(&dialog,QObject::tr("Delete Dialogue"),
-                                 QObject::tr("Remove node %1 and fix node references?").arg(row))!=QMessageBox::Yes) return;
+            QObject::tr("Remove dialogue ID %1 and update numeric references? "
+                        "Deleting a dialogue is different from moving it between folders.").arg(row),
+            QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
         nodes.removeAt(row);
         for(int i=0;i<nodes.size();++i){
-            QJsonObject node=nodes[i].toObject(); QJsonArray cs=node.value("choices").toArray();
-            for(int c=0;c<cs.size();++c){ QJsonObject choice=cs[c].toObject();
-                const int next=choice.value("next").toInt(-1);
-                if(next==row) choice.insert("next",-1);
-                else if(next>row) choice.insert("next",next-1);
+            QJsonObject node=nodes[i].toObject();QJsonArray cs=node.value("choices").toArray();
+            for(int c=0;c<cs.size();++c){
+                QJsonObject choice=cs[c].toObject();const int next=choice.value("next").toInt(-1);
+                if(next==row)choice.insert("next",-1);
+                else if(next>row)choice.insert("next",next-1);
                 cs[c]=choice;
             }
             node.insert("choices",cs);nodes[i]=node;
@@ -864,8 +1198,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             auto *cb=qobject_cast<QComboBox*>(npcs->cellWidget(r,1));if(!cb)continue;
             int next=cb->currentData().toInt();
             if(next>=row)cb->setCurrentIndex(std::max(0,cb->findData(next==row?0:next-1)));
+            auto *done=qobject_cast<QComboBox*>(npcs->cellWidget(r,3));
+            if(done){
+                const int d=done->currentData().toInt();
+                if(d>=row)done->setCurrentIndex(std::max(0,done->findData(d==row?-1:d-1)));
+            }
         }
-        redrawNodes();refreshNpcNodes();
+        redrawNodes();refreshNpcNodes();sizeNpcColumns();
     });
     tabs->addTab(dialoguePage,QObject::tr("Dialogues & Choices"));
 
@@ -1180,10 +1519,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         auto *chosen=qobject_cast<QComboBox*>(npcs->cellWidget(row,1));
         o.insert("node",std::clamp(chosen?chosen->currentData().toInt():0,0,std::max(0,int(nodes.size())-1)));
         o.insert("radius",std::clamp(intAt(npcs,row,2,48),8,512));
+        auto *done=qobject_cast<QComboBox*>(npcs->cellWidget(row,3));
+        o.insert("doneNode",done?done->currentData().toInt():-1);
         o.insert("animation",npcs->item(row,0)->data(Qt::UserRole + 1).toJsonObject());
         outNpcs.append(o);
     }
     result.insert("npcs",outNpcs);result.insert("nodes",nodes);
+    result.insert("dialogueFolders",dialogueFolders);
     result.insert("dialogX",dialogX->value());
     result.insert("dialogY",dialogY->value());
     result.insert("dialogWidth",dialogW->value());

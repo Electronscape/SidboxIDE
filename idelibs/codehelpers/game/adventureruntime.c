@@ -11,6 +11,18 @@ static const game_adventure_node_t *ga_nodes;
 static const game_adventure_npc_t *ga_npcs;
 static uint16_t ga_item_count, ga_node_count, ga_npc_count;
 static uint16_t ga_counts[GA_MAX_ITEMS];
+/* 256 nodes x 3 choices: 96 bytes for once-only flags. One bit per choice. */
+static uint8_t ga_used_choices[(256u * 3u + 7u) / 8u];
+static uint8_t ga_completed_npcs[256];
+static const uint8_t *ga_choice_flags; /* node * 3 + answer */
+static const uint16_t *ga_completed_nodes; /* NPC index; UINT16_MAX => no alternate */
+void game_adventure_story_flags(const uint8_t *choice_flags,
+                                const uint16_t *completed_nodes)
+{
+    ga_choice_flags = choice_flags;
+    ga_completed_nodes = completed_nodes;
+}
+
 static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply */
 static uint8_t ga_prev_buttons, ga_choice, ga_inventory_offset;
 static uint16_t ga_node, ga_typed, ga_ticks, ga_reply_typed, ga_reply_ticks;
@@ -166,6 +178,10 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_nodes = nodes; ga_node_count = node_count;
     ga_npcs = npcs; ga_npc_count = npc_count;
     memset(ga_counts, 0, sizeof(ga_counts));
+    memset(ga_used_choices, 0, sizeof(ga_used_choices));
+    memset(ga_completed_npcs, 0, sizeof(ga_completed_npcs));
+    ga_choice_flags = 0;
+    ga_completed_nodes = 0;
     for (uint16_t i = 0; i < ga_item_count; ++i)
         ga_counts[i] = ga_items[i].initial > ga_items[i].capacity
             ? ga_items[i].capacity : ga_items[i].initial;
@@ -183,12 +199,27 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_action = action; ga_user = user;
     game_adventure_dialogue_box(20, 148, 440, 162);
 }
+static uint8_t ga_choice_visible(uint16_t node, uint8_t choice)
+{
+    if (node >= ga_node_count || choice >= 3u) return 0;
+    const game_adventure_choice_t *c = &ga_nodes[node].choices[choice];
+    if (!c->label || !c->label[0]) return 0;
+    const uint16_t bit = (uint16_t)(node * 3u + choice);
+    if (!ga_choice_flags || !(ga_choice_flags[bit] & 1u)) return 1;
+    return !(ga_used_choices[bit / 8u] & (uint8_t)(1u << (bit % 8u)));
+}
+static void ga_mark_choice_used(uint16_t node, uint8_t choice)
+{
+    if (node >= 256u || choice >= 3u) return;
+    const uint16_t bit = (uint16_t)(node * 3u + choice);
+    ga_used_choices[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+}
 static uint8_t ga_has_choices(void)
 {
     if (ga_node >= ga_node_count) return 0;
     uint8_t n = 0;
     for (uint8_t i = 0; i < 3; ++i)
-        if (ga_nodes[ga_node].choices[i].label && ga_nodes[ga_node].choices[i].label[0]) ++n;
+        if (ga_choice_visible(ga_node,i)) ++n;
     return n;
 }
 static uint8_t ga_allowed(const game_adventure_choice_t *c)
@@ -200,9 +231,8 @@ static void ga_next_node(int16_t node)
     if (node < 0 || node >= ga_node_count) { ga_state = 0; return; }
     ga_node = (uint16_t)node; ga_state = 1;
     ga_choice = 0; ga_typed = 0; ga_ticks = 0;
-    const game_adventure_choice_t *options = ga_nodes[ga_node].choices;
     for (uint8_t i=0;i<3;++i)
-        if (options[i].label && options[i].label[0]) { ga_choice=i; break; }
+        if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
 }
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames)
@@ -224,7 +254,10 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
             if (dx >= -(int32_t)npc->radius && dx <= npc->radius &&
                 dy >= -(int32_t)npc->radius && dy <= npc->radius && npc->first_node < ga_node_count) {
                 ga_active_npc = i;
-                ga_next_node((int16_t)npc->first_node);
+                const uint16_t after = ga_completed_nodes ? ga_completed_nodes[i] : UINT16_MAX;
+                const uint16_t start = ga_completed_npcs[i] && after < ga_node_count
+                    ? after : npc->first_node;
+                ga_next_node((int16_t)start);
                 return 1;
             }
         }
@@ -259,20 +292,27 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     const uint8_t count = ga_has_choices();
     if (count && up) {
         do { ga_choice = (uint8_t)((ga_choice + 2) % 3); }
-        while (!n->choices[ga_choice].label || !n->choices[ga_choice].label[0]);
+        while (!ga_choice_visible(ga_node,ga_choice));
     }
     if (count && down) {
         do { ga_choice = (uint8_t)((ga_choice + 1) % 3); }
-        while (!n->choices[ga_choice].label || !n->choices[ga_choice].label[0]);
+        while (!ga_choice_visible(ga_node,ga_choice));
     }
     if (press) {
         if (ga_typed < text_len) { ga_typed = text_len; return 1; }
         if (!count) { ga_state = 0; return 0; }
+        if (!ga_choice_visible(ga_node,ga_choice)) { ga_next_node((int16_t)ga_node); return 1; }
         const game_adventure_choice_t *c = &n->choices[ga_choice];
         if (!ga_allowed(c)) return 1;
         if (c->take >= 0 && !game_adventure_remove((uint16_t)c->take, 1)) return 1;
         if (c->give >= 0) game_adventure_add((uint16_t)c->give, 1);
         if (c->action >= 0 && ga_action) ga_action((uint16_t)c->action, ga_user);
+        /* Only mark successful actions. Missing requirements / items never consume the flag. */
+        const uint16_t flag_index = (uint16_t)(ga_node * 3u + ga_choice);
+        const uint8_t flags = ga_choice_flags ? ga_choice_flags[flag_index] : 0u;
+        if (flags & 1u) ga_mark_choice_used(ga_node,ga_choice);
+        if ((flags & 2u) && ga_active_npc < ga_npc_count && ga_active_npc < 256u)
+            ga_completed_npcs[ga_active_npc] = 1u;
         ga_reply = c->reply && c->reply[0] ? c->reply : c->label;
         ga_reply_typed = 0;
         if (ga_reply && ga_reply[0]) {
@@ -392,7 +432,7 @@ static int ga_two_choice_height(const game_adventure_node_t *node,
 {
     uint8_t rows[3]={0,0,0}, count=0;
     for (uint8_t i=0;i<3;++i) {
-        if (node->choices[i].label && node->choices[i].label[0])
+        if (ga_choice_visible(ga_node,i))
             rows[count++]=ga_answer_rows(node->choices[i].label,answer_columns,32);
     }
     if (!count) return 0;
@@ -521,7 +561,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
 
     uint8_t indexes[3], count=0;
     for (uint8_t i=0;i<3;++i)
-        if (node->choices[i].label && node->choices[i].label[0]) indexes[count++]=i;
+        if (ga_choice_visible(ga_node,i)) indexes[count++]=i;
     if (!count) return;
     uint8_t selected=0;
     for (uint8_t i=0;i<count;++i) if (indexes[i]==ga_choice) selected=i;

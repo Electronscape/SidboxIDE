@@ -58,12 +58,13 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     for (const QJsonValue &v:itemList) {
         const QJsonObject o=v.toObject();
         c << "    {" << quoted(o.value("name").toString().left(36)) << ","
-          << clampInt(o,"pickupKind",0,4,0) << "u," << clampInt(o,"icon",0,65535,65535) << "u,"
+          << clampInt(o,"pickupKind",0,255,0) << "u," << clampInt(o,"icon",0,65535,65535) << "u,"
           << clampInt(o,"capacity",1,65535,1) << "u," << clampInt(o,"initial",0,65535,0) << "u},\n";
     }
     c << "};\nstatic const game_adventure_node_t nodes[] = {\n";
     if(nodes.isEmpty())c << "    {0,0,{{0,0,-1,-1,-1,-1,-1}}},\n";
     QVector<QString> linkedActions;
+    QStringList storyFlags;
     int nodeIndex = 0;
     for(const QJsonValue &v:nodes) {
         const QJsonObject o=v.toObject(); const QJsonArray choices=o.value("choices").toArray();
@@ -94,11 +95,17 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
               << clampInt(choice,"give",-1,itemList.size()-1,-1) << ","
               << clampInt(choice,"take",-1,itemList.size()-1,-1) << ","
               << action << "},\n";
+            const int flag = (choice.value("once").toBool(false)?1:0)
+                | (choice.value("completeNpc").toBool(false)?2:0);
+            storyFlags.append(QString::number(flag));
         }
         c << "    }},\n";
         ++nodeIndex;
     }
+    c << "};\nstatic const uint8_t story_choice_flags[] = {";
+    c << (storyFlags.isEmpty()?QStringLiteral("0"):storyFlags.join(QLatin1Char(',')));
     c << "};\nstatic const game_adventure_npc_t npcs[] = {\n";
+    QStringList completedNodeIds;
     int validNpcCount=0;
     QStringList animations,animationArrays;
     for (const QJsonValue &v:npcList) {
@@ -117,6 +124,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
           << std::clamp(it->width,1,1024) << "u," << std::clamp(it->height,1,1024) << "u,"
           << clampInt(npc,"radius",8,512,48) << "u,"
           << clampInt(npc,"node",0,nodes.size()-1,0) << "u},\n";
+        completedNodeIds.append(npc.value("doneNode").toInt(-1)>=0
+            ? QStringLiteral("%1u").arg(clampInt(npc,"doneNode",0,nodes.size()-1,0))
+            : QStringLiteral("65535u"));
         /* Animation pointer binds to the same exported BOB used by main.c. */
         if (it->symbol.isEmpty()) {
             if (error) *error = QStringLiteral("NPC '%1' has no exported sprite symbol.").arg(it->name);
@@ -157,6 +167,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         ++validNpcCount;
     }
     if (!validNpcCount) c << "    {0,0,0,0,0,0},\n";
+    c << "};\nstatic const uint16_t npc_completed_nodes[] = {";
+    c << (completedNodeIds.isEmpty()?QStringLiteral("65535u"):completedNodeIds.join(QLatin1Char(',')));
     c << "};\n";
     for (const QString &data:animationArrays) c << data;
     c << "static const game_adventure_npc_animation_t npc_animations[] = {\n";
@@ -211,6 +223,7 @@ void gameadventure_setup(void)
       << clampInt(payload,"textColourIndex",0,255,15) << "u,"
       << (payload.value("textOutline").toBool(false) ? "1u" : "0u") << ","
       << clampInt(payload,"outlineColourIndex",0,255,1) << "u);\n"
+      << "    game_adventure_story_flags(story_choice_flags,npc_completed_nodes);\n"
       << "    game_adventure_skin_flips(skin_flips);\n"
       << "    game_adventure_dialogue_box("
       << clampInt(payload,"dialogX",0,479,20) << ","

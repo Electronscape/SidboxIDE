@@ -533,9 +533,11 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
           << QString(r.name).replace(QLatin1Char('\n'), QLatin1Char(' '))
                .replace(QStringLiteral("*/"), QStringLiteral("* /")) << " */\n";
         if (collect) {
-            const QString pickConst = QStringList{QString(), QStringLiteral("GAME_PICKUP_COIN"),
-                QStringLiteral("GAME_PICKUP_HEALTH"), QStringLiteral("GAME_PICKUP_KEY"),
-                QStringLiteral("GAME_PICKUP_GEM")}.at(qBound(1,r.pickupKind,4));
+            const QString pickConst = r.pickupKind <= 4
+                ? QStringList{QString(), QStringLiteral("GAME_PICKUP_COIN"),
+                    QStringLiteral("GAME_PICKUP_HEALTH"), QStringLiteral("GAME_PICKUP_KEY"),
+                    QStringLiteral("GAME_PICKUP_GEM")}.at(qBound(1,r.pickupKind,4))
+                : QStringLiteral("%1u").arg(qBound(5,r.pickupKind,255));
             C << "    if (!game_collectable_start(" << target << ", " << sprite << ", "
               << pickConst << ", " << r.objectValue << ")) return 0;\n"
               << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
