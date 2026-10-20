@@ -11,6 +11,7 @@ struct GameAdventureAsset {
     int x = 0, y = 0, width = 16, height = 16;
     int worldSlot = -1;
     int pickupKind = 0;
+    bool flipX = false, flipY = false;
 };
 /* Returns true only after pressing OK. In/out payload belongs to .sbgm. */
 bool editGameAdventure(QWidget *parent, QJsonObject *payload,

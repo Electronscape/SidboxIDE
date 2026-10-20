@@ -26,7 +26,7 @@ int main(void){
     game_adventure_item_t items[]={ {"Key",1,0,1,0} };
     game_adventure_node_t nodes[]={ {"Guardian",message,{{"Bye","",-1,-1,-1,-1,-1}}} };
     game_adventure_npc_t npcs[]={ {100,100,16,16,48,0} };
-    game_adventure_npc_animation_t animations[]={ {&guardian,0,0,1,0,0,1} };
+    game_adventure_npc_animation_t animations[]={ {&guardian,0,0,1,0,0,1,0,0,0} };
     uint16_t cells[9]={300,301,302,303,304,305,306,307,308};
     game_adventure_start(items,1,nodes,1,npcs,1,skin,640,80,8,cells,1,0,0);
     game_adventure_text_style(15,0,1);

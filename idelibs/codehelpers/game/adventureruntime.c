@@ -21,7 +21,26 @@ static const uint8_t *ga_skin_pixels;
 static uint16_t ga_skin_w, ga_skin_h;
 static uint8_t ga_tile, ga_frames_per_char;
 static uint16_t ga_skin_indices[9];
+static uint8_t ga_skin_flips[9];
 static uint8_t ga_text_colour=15, ga_outline_enabled, ga_outline_colour;
+/* Dialogue height is a MINIMUM: expanded at draw time for the current node. */
+static int16_t ga_dialog_x=20, ga_dialog_y=148;
+static uint16_t ga_dialog_w=440, ga_dialog_h=162;
+
+void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height)
+{
+    /* Never let a text window extend outside the 480x320 LCD. */
+    if (width < 128u) width = 128u;
+    if (height < 96u) height = 96u;
+    if (width > 480u) width = 480u;
+    if (height > 320u) height = 320u;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > 480 - (int)width) x = (int16_t)(480 - width);
+    if (y > 320 - (int)height) y = (int16_t)(320 - height);
+    ga_dialog_x = x; ga_dialog_y = y;
+    ga_dialog_w = width; ga_dialog_h = height;
+}
 static const game_adventure_npc_animation_t *ga_animations;
 static uint16_t ga_animation_count, ga_active_npc;
 static uint16_t ga_animation_ticks[256];
@@ -29,6 +48,11 @@ static uint8_t ga_animation_frames[256], ga_animation_mode[256];
 static uint8_t ga_animation_original_index[256];
 static game_adventure_action_t ga_action;
 static void *ga_user;
+
+void game_adventure_skin_flips(const uint8_t flips[9])
+{
+    for (uint8_t i=0;i<9;++i) ga_skin_flips[i] = flips ? flips[i] : 0;
+}
 
 void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
                                uint8_t outline_index)
@@ -54,35 +78,53 @@ void game_adventure_npc_animations(const game_adventure_npc_animation_t *animati
    game_adventure_input(), so custom main.c needs no new frame-loop hook. */
 static void ga_tick_animations(uint16_t frames)
 {
-    for (uint16_t i=0; i<ga_animation_count; ++i) {
+    for (uint16_t i = 0; i < ga_animation_count; ++i) {
         const game_adventure_npc_animation_t *a = &ga_animations[i];
         if (!a->sprite || !a->sprite->imgdat) continue;
         const uint8_t speaking = (ga_state == 1u && ga_active_npc == i) ? 1u : 0u;
-        uint16_t first = speaking && a->talk_count ? a->talk_first : a->idle_first;
-        uint16_t count = speaking && a->talk_count ? a->talk_count : a->idle_count;
-        uint16_t rate = speaking && a->talk_count ? a->talk_speed : a->idle_speed;
+        const uint16_t first = speaking && a->talk_count ? a->talk_first : a->idle_first;
+        const uint16_t count = speaking && a->talk_count ? a->talk_count : a->idle_count;
+        const uint16_t rate = speaking && a->talk_count ? a->talk_speed : a->idle_speed;
+        const game_adventure_npc_frame_t *sequence = speaking && a->talk_count
+            ? a->talk_frames : a->idle_frames;
         if (!count) {
-            if (ga_animation_mode[i] != 0xFFu && ga_animation_mode[i] != 0u) {
+            if (ga_animation_mode[i] != 0xFFu) {
                 a->sprite->index = ga_animation_original_index[i];
-                ga_animation_mode[i] = 0u;
+                ga_animation_mode[i] = 0xFFu;
             }
             continue;
         }
-        if (!rate) rate = 1;
         const uint16_t max_cells = (a->sprite->width && a->sprite->height)
             ? (uint16_t)((a->sprite->atlas_stride / a->sprite->width) *
                          (a->sprite->atlas_height / a->sprite->height)) : 0;
-        if (first + count > max_cells || first + count > 256u) continue;
+        if (!sequence && (first + count > max_cells || first + count > 256u)) continue;
         if (ga_animation_mode[i] != speaking) {
             ga_animation_mode[i] = speaking;
             ga_animation_ticks[i] = 0;
             ga_animation_frames[i] = 0;
         } else {
-            const uint32_t total = (uint32_t)ga_animation_ticks[i] + frames;
-            ga_animation_frames[i] = (uint8_t)((ga_animation_frames[i] + total / rate) % count);
-            ga_animation_ticks[i] = (uint16_t)(total % rate);
+            uint32_t remaining = (uint32_t)ga_animation_ticks[i] + frames;
+            /* Each frame has its own delay (the older contiguous format uses
+               a constant speed). Bound each update to avoid heavy work after
+               a pause, even if the game reports an unusually large delta. */
+            const uint32_t bounded = remaining > 65535u ? 65535u : remaining;
+            remaining = bounded;
+            uint16_t steps = 0;
+            while (steps < 256u) {
+                uint16_t current = ga_animation_frames[i];
+                uint16_t delay = sequence ? sequence[current].delay : rate;
+                if (!delay) delay = 1;
+                if (remaining < delay) break;
+                remaining -= delay;
+                ga_animation_frames[i] = (uint8_t)((current + 1u) % count);
+                ++steps;
+            }
+            ga_animation_ticks[i] = (uint16_t)remaining;
         }
-        a->sprite->index = (uint8_t)(first + ga_animation_frames[i]);
+        const uint16_t chosen = sequence ? sequence[ga_animation_frames[i]].index
+                                         : first + ga_animation_frames[i];
+        if (chosen < max_cells && chosen < 256u)
+            a->sprite->index = (uint8_t)chosen;
     }
 }
 
@@ -136,8 +178,10 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_skin_pixels = skin_pixels; ga_skin_w = atlas_width; ga_skin_h = atlas_height;
     ga_tile = tile_size >= 4 && tile_size <= 32 ? tile_size : 8;
     for (uint8_t i = 0; i < 9; ++i) ga_skin_indices[i] = skin_indices ? skin_indices[i] : i;
+    game_adventure_skin_flips(0);
     ga_frames_per_char = frames_per_char ? frames_per_char : 2;
     ga_action = action; ga_user = user;
+    game_adventure_dialogue_box(20, 148, 440, 162);
 }
 static uint8_t ga_has_choices(void)
 {
@@ -266,6 +310,7 @@ static void ga_frame(int16_t x, int16_t y, uint16_t width, uint16_t height)
             tile.atlas_height = ga_tile; tile.width = ga_tile; tile.height = ga_tile;
             tile.drawx = x + ix; tile.drawy = y + iy;
             tile.scale = 100; tile.index = 0;
+            tile.flags = ga_skin_flips[pos];
             gfx_drawbob(&tile);
         }
     }
@@ -283,16 +328,20 @@ static void ga_text(int x, int y, const char *text)
     gfx_setcolour(ga_text_colour);
     gfx_drawtext(x,y,text);
 }
-static void ga_wrapped(const char *text, uint16_t visible, int x, int y,
-                       uint8_t max_columns, uint8_t max_lines)
+/* The font is 8x16. This routine is shared by NPC text and answer choices.
+   It returns the number of displayed lines and never prints outside the
+   caller's vertical budget. Word boundaries are retained where possible. */
+static uint8_t ga_wrapped(const char *text, uint16_t visible, int x, int y,
+                          uint8_t max_columns, uint8_t max_lines)
 {
-    if (!text) return;
+    if (!text || !max_lines || !max_columns) return 0;
     char line[GA_COLS + 1]; uint16_t pos = 0; uint8_t lines = 0;
+    const int row_height = ga_outline_enabled ? 20 : 16;
+    if (max_columns > GA_COLS) max_columns = GA_COLS;
     while (text[pos] && pos < visible && lines < max_lines) {
         uint8_t n = 0;
         while (text[pos] && pos < visible && text[pos] != '\n' &&
-               n < max_columns && n < GA_COLS)
-            line[n++] = text[pos++];
+               n < max_columns) line[n++] = text[pos++];
         if (n == max_columns && text[pos] && pos < visible &&
             text[pos] != ' ' && text[pos] != '\n') {
             uint8_t last_space = n;
@@ -306,9 +355,65 @@ static void ga_wrapped(const char *text, uint16_t visible, int x, int y,
         line[n] = 0;
         if (text[pos] == '\n' && pos < visible) ++pos;
         while (text[pos] == ' ' && pos < visible) ++pos;
-        ga_text(x, y + lines * (ga_outline_enabled ? 20 : 16), line);
+        ga_text(x, y + lines * row_height, line);
         ++lines;
     }
+    return lines;
+}
+
+/* Count rows for a full answer, up to max_rows. Text may contain explicit
+   newlines and long words. The estimate is used for scrolling the answers. */
+static uint8_t ga_answer_rows(const char *text, uint8_t columns, uint8_t max_rows)
+{
+    if (!text || !text[0]) return 0;
+    if (!columns) return 1;
+    uint16_t at=0; uint8_t rows=0;
+    while (text[at] && rows < max_rows) {
+        uint8_t taken=0;
+        while (text[at] && text[at]!='\n' && taken<columns) { ++at; ++taken; }
+        if (taken==columns && text[at] && text[at]!='\n' && text[at]!=' ') {
+            /* Match the renderer's wrap-at-space behaviour. */
+            uint8_t rewind=taken;
+            while (rewind && text[at-(taken-rewind)-1]!=' ') --rewind;
+            if (rewind) at -= taken-rewind+1;
+        }
+        if (text[at]=='\n') ++at;
+        while (text[at]==' ') ++at;
+        ++rows;
+    }
+    return rows;
+}
+
+/* Count the largest adjacent pair of choices, not all three. A dialogue only
+   shows two choices at once. Using the largest pair keeps the box height
+   steady while the player navigates between them. */
+static int ga_two_choice_height(const game_adventure_node_t *node,
+                                uint8_t answer_columns, int row)
+{
+    uint8_t rows[3]={0,0,0}, count=0;
+    for (uint8_t i=0;i<3;++i) {
+        if (node->choices[i].label && node->choices[i].label[0])
+            rows[count++]=ga_answer_rows(node->choices[i].label,answer_columns,32);
+    }
+    if (!count) return 0;
+    int largest=(int)rows[0]*row;
+    if (count>1) {
+        largest=0;
+        for (uint8_t i=0;i+1<count;++i) {
+            const int pair=((int)rows[i]+rows[i+1])*row+4;
+            if (pair>largest) largest=pair;
+        }
+    }
+    return largest;
+}
+static int ga_dialogue_required_height(const game_adventure_node_t *node,
+                                       uint8_t body_columns, uint8_t answer_columns,
+                                       int row)
+{
+    const uint8_t body_rows=ga_answer_rows(node->text,body_columns,64);
+    const int choice_height=ga_two_choice_height(node,answer_columns,row);
+    /* Name at y+9, body at y+32, answers after body+9, bottom 12px. */
+    return 32 + (int)body_rows*row + (choice_height?9+choice_height:0) + 12;
 }
 
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
@@ -324,6 +429,8 @@ void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
             || x >= 480 || y >= 320) continue;
         sprite->drawx = (int16_t)x;
         sprite->drawy = (int16_t)y;
+        sprite->flags = (uint8_t)((sprite->flags & (uint8_t)~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y))
+            | (ga_animations[i].flip_flags & (BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)));
         gfx_drawbob(sprite);
     }
 }
@@ -349,9 +456,13 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             line[n] = 0;
             if (ga_skin_pixels && ga_items[id].icon < (ga_skin_w/ga_tile)*(ga_skin_h/ga_tile)) {
                 gfxbob_t icon; memset(&icon,0,sizeof(icon));
-                icon.imgdat=ga_skin_pixels; icon.atlas_stride=ga_skin_w;
-                icon.atlas_height=ga_skin_h; icon.width=ga_tile;
-                icon.height=ga_tile; icon.scale=100; icon.index=ga_items[id].icon;
+                const uint16_t columns=ga_skin_w/ga_tile;
+                const uint16_t cell=ga_items[id].icon;
+                icon.imgdat=ga_skin_pixels + (uint32_t)(cell/columns)*ga_tile*ga_skin_w
+                            + (uint32_t)(cell%columns)*ga_tile;
+                icon.atlas_stride=ga_skin_w;
+                icon.atlas_height=ga_tile; icon.width=ga_tile;
+                icon.height=ga_tile; icon.scale=100; icon.index=0;
                 icon.drawx=56; icon.drawy=68+i*22;
                 gfx_drawbob(&icon);
             }
@@ -362,25 +473,77 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     if (ga_state == 3) {
         /* Player's selected reply types out above their own head. */
         const int screen_x = player_x - camera_x, screen_y = player_y - camera_y;
-        const int bubble_x = screen_x > 360 ? 275 : screen_x < 20 ? 10 : screen_x - 8;
-        const int bubble_y = screen_y < 62 ? screen_y + 26 : screen_y - (ga_outline_enabled ? 58 : 52);
-        ga_frame(bubble_x, bubble_y, 185, ga_outline_enabled ? 54 : 48);
-        ga_wrapped(ga_reply, ga_reply_typed, bubble_x + 8, bubble_y + 9, 20, 2);
+        const uint16_t letters=ga_reply ? (uint16_t)strlen(ga_reply) : 0;
+        const int bubble_w=letters > 23u ? 280 : 205;
+        const uint8_t columns=(uint8_t)((bubble_w-20)/8);
+        const uint8_t rows=ga_answer_rows(ga_reply,columns,5);
+        const int line_h=ga_outline_enabled ? 20 : 16;
+        const int bubble_h=18+(rows ? rows : 1)*line_h;
+        const int bubble_x=screen_x-10<4 ? 4 : screen_x-10>480-bubble_w-4
+            ? 480-bubble_w-4 : screen_x-10;
+        const int tentative_y=screen_y-bubble_h-8;
+        const int bubble_y=tentative_y >= 4 ? tentative_y
+            : (screen_y+28+bubble_h < 316 ? screen_y+28 : 4);
+        ga_frame((int16_t)bubble_x,(int16_t)bubble_y,(uint16_t)bubble_w,(uint16_t)bubble_h);
+        ga_wrapped(ga_reply,ga_reply_typed,bubble_x+10,bubble_y+9,columns,5);
         return;
     }
     if (ga_node >= ga_node_count) return;
     const game_adventure_node_t *node = &ga_nodes[ga_node];
-    /* Three wrapped dialogue lines, a breathing-space row, then choices.
-       20px text rows when outlined avoids adjacent 1px borders touching. */
-    ga_frame(20, 148, 440, 162);
-    ga_text(32, 158, node->speaker ? node->speaker : "");
-    ga_wrapped(node->text, ga_typed, 32, 180, 50, 3); /* 50 x 8px fits 416px text area. */
-    for (uint8_t i = 0; i < 3; ++i) {
-        const game_adventure_choice_t *c = &node->choices[i];
-        if (!c->label || !c->label[0]) continue;
-        const int y = 249 + i * 20; /* spacer after NPC text and between answers */
-        ga_text(32, y, i == ga_choice ? ">" : " ");
-        ga_text(44, y, c->label);
-        if (!ga_allowed(c)) ga_text(422, y, "X");
+    /* Height is the MINIMUM from the designer. On each conversation node
+       automatically grow to fit the speaker, all dialogue lines and TWO
+       choices. If growth reaches the LCD bottom, move the frame up rather
+       than cutting off the choices. No heap allocations or text clipping. */
+    const int bx=ga_dialog_x, bw=ga_dialog_w;
+    const int row=ga_outline_enabled ? 20 : 16;
+    const int pad=12;
+    const int inner_width=bw-2*pad;
+    const uint8_t body_columns=(uint8_t)((inner_width/8)>50?50:inner_width/8);
+    /* Right gutter is reserved for unavailable-X and MORE arrows. */
+    const uint8_t answer_columns=(uint8_t)(((inner_width-34)/8)>GA_COLS?GA_COLS:(inner_width-34)/8);
+    const int needed=ga_dialogue_required_height(node,body_columns,answer_columns,row);
+    const int bh=needed>(int)ga_dialog_h? (needed>320?320:needed) : ga_dialog_h;
+    const int by=ga_dialog_y+bh>320?320-bh:ga_dialog_y;
+    const int bottom=by+bh-pad;
+    const int text_y=by+32;
+    const int choice_height=ga_two_choice_height(node,answer_columns,row);
+    const uint8_t desired_body=ga_answer_rows(node->text,body_columns,64);
+    int body_budget=bottom-text_y-(choice_height?9+choice_height:0);
+    int body_rows=body_budget>0?body_budget/row:0;
+    if (body_rows>desired_body) body_rows=desired_body;
+    if (body_rows<0) body_rows=0;
+
+    ga_frame((int16_t)bx,(int16_t)by,(uint16_t)bw,(uint16_t)bh);
+    ga_text(bx+pad,by+9,node->speaker ? node->speaker : "");
+    ga_wrapped(node->text,ga_typed,bx+pad,text_y,body_columns,(uint8_t)body_rows);
+    if (!choice_height) return;
+    const int answers_y=text_y+body_rows*row+9;
+
+    uint8_t indexes[3], count=0;
+    for (uint8_t i=0;i<3;++i)
+        if (node->choices[i].label && node->choices[i].label[0]) indexes[count++]=i;
+    if (!count) return;
+    uint8_t selected=0;
+    for (uint8_t i=0;i<count;++i) if (indexes[i]==ga_choice) selected=i;
+    const uint8_t first=(count>2 && selected>1) ? (uint8_t)(selected-1) : 0u;
+    const uint8_t shown=(uint8_t)((count-first)>2?2:(count-first));
+    int cy=answers_y;
+    for (uint8_t i=0;i<shown;++i) {
+        const uint8_t choice_index=indexes[first+i];
+        const game_adventure_choice_t *c=&node->choices[choice_index];
+        const int rows=ga_answer_rows(c->label,answer_columns,32);
+        const int room=(bottom-cy)/row;
+        if (room<1) break;
+        const uint8_t draw_rows=(uint8_t)(rows<room?rows:room);
+        ga_text(bx+pad,cy,choice_index==ga_choice?">":" ");
+        ga_wrapped(c->label,(uint16_t)strlen(c->label),bx+pad+14,cy,
+                   answer_columns,draw_rows);
+        if (!ga_allowed(c)) ga_text(bx+bw-pad-24,cy,"X");
+        /* The arrow gutter stays outside the wrapped answer's text area. */
+        if (i==0 && first>0) ga_text(bx+bw-pad-8,cy,"^");
+        if (i+1==shown && first+shown<count)
+            ga_text(bx+bw-pad-8,cy+(draw_rows-1)*row,"v");
+        cy+=(int)draw_rows*row+4;
     }
+
 }

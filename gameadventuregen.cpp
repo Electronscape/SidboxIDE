@@ -58,7 +58,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     for (const QJsonValue &v:itemList) {
         const QJsonObject o=v.toObject();
         c << "    {" << quoted(o.value("name").toString().left(36)) << ","
-          << clampInt(o,"pickupKind",0,4,0) << "u," << clampInt(o,"icon",0,255,0) << "u,"
+          << clampInt(o,"pickupKind",0,4,0) << "u," << clampInt(o,"icon",0,65535,65535) << "u,"
           << clampInt(o,"capacity",1,65535,1) << "u," << clampInt(o,"initial",0,65535,0) << "u},\n";
     }
     c << "};\nstatic const game_adventure_node_t nodes[] = {\n";
@@ -87,8 +87,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 linkedActions.append(QStringLiteral("    case %1: gameworlditems_set_active(%2u, %3u); break;\n")
                                      .arg(action).arg(target->worldSlot).arg(modeNumber));
             }
-            c << "        {" << quoted(choice.value("text").toString().left(75)) << ","
-              << quoted(choice.value("reply").toString().left(75)) << ","
+            c << "        {" << quoted(choice.value("text").toString().left(180)) << ","
+              << quoted(choice.value("reply").toString().left(150)) << ","
               << clampInt(choice,"next",-1,nodes.size()-1,-1) << ","
               << clampInt(choice,"requires",-1,itemList.size()-1,-1) << ","
               << clampInt(choice,"give",-1,itemList.size()-1,-1) << ","
@@ -100,7 +100,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     }
     c << "};\nstatic const game_adventure_npc_t npcs[] = {\n";
     int validNpcCount=0;
-    QStringList animations;
+    QStringList animations,animationArrays;
     for (const QJsonValue &v:npcList) {
         const QJsonObject npc=v.toObject();
         const QString id=npc.value("spriteId").toString();
@@ -127,23 +127,48 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         auto first = [&](const char *key){return clampInt(animation,key,0,cells-1,0);};
         auto count = [&](const char *key,int base){return clampInt(animation,key,0,cells-base,0);};
         const int idleFirst = first("idleFirst"), talkFirst = first("talkFirst");
-        animations.append(QStringLiteral("    {&%1,%2u,%3u,%4u,%5u,%6u,%7u},\n")
+        QString frameNames[2];
+        int frameCounts[2] = {count("idleCount",idleFirst),count("talkCount",talkFirst)};
+        for (int state=0;state<2;++state) {
+            const QJsonArray frames=animation.value(state?"talkFrames":"idleFrames").toArray();
+            if (frames.isEmpty()) continue;
+            const QString name=QStringLiteral("npc_%1_%2_frames").arg(validNpcCount).arg(state?"talk":"idle");
+            frameNames[state]=name;
+            frameCounts[state]=static_cast<int>(std::min<qsizetype>(255, frames.size()));
+            QString data=QStringLiteral("static const game_adventure_npc_frame_t %1[] = {\n").arg(name);
+            for(int k=0;k<frameCounts[state];++k) {
+                const QJsonObject frame=frames[k].toObject();
+                data+=QStringLiteral("    {%1u,%2u},\n")
+                    .arg(std::clamp(frame.value("index").toInt(),0,cells-1))
+                    .arg(std::clamp(frame.value("delay").toInt(6),1,255));
+            }
+            data+=QStringLiteral("};\n");
+            animationArrays.append(data);
+        }
+        animations.append(QStringLiteral("    {&%1,%2u,%3u,%4u,%5u,%6u,%7u,%8,%9,%10u},\n")
             .arg(it->symbol)
-            .arg(idleFirst).arg(count("idleCount",idleFirst))
+            .arg(idleFirst).arg(frameCounts[0])
             .arg(clampInt(animation,"idleSpeed",1,60,6))
-            .arg(talkFirst).arg(count("talkCount",talkFirst))
-            .arg(clampInt(animation,"talkSpeed",1,60,5)));
+            .arg(talkFirst).arg(frameCounts[1])
+            .arg(clampInt(animation,"talkSpeed",1,60,5))
+            .arg(frameNames[0].isEmpty()?QStringLiteral("0"):frameNames[0])
+            .arg(frameNames[1].isEmpty()?QStringLiteral("0"):frameNames[1])
+            .arg((it->flipX?4:0)|(it->flipY?8:0)));
         ++validNpcCount;
     }
     if (!validNpcCount) c << "    {0,0,0,0,0,0},\n";
     c << "};\n";
+    for (const QString &data:animationArrays) c << data;
     c << "static const game_adventure_npc_animation_t npc_animations[] = {\n";
-    if (animations.isEmpty()) c << "    {0,0,0,0,0,0,0},\n";
+    if (animations.isEmpty()) c << "    {0},\n";
     else for (const QString &animation : animations) c << animation;
     c << "};\n";
     QJsonArray indices=payload.value("skinIndices").toArray();
     c << "static const uint16_t skin_cells[9] = {";
     for(int i=0;i<9;++i) c << (i?",":"") << std::clamp(i<indices.size()?indices[i].toInt(i):i,0,65535);
+    c << "};\nstatic const uint8_t skin_flips[9] = {";
+    const QJsonArray flipValues=payload.value("skinFlips").toArray();
+    for(int i=0;i<9;++i) c << (i?",":"") << (i<flipValues.size() ? (flipValues[i].toInt() & 12) : 0);
     c << "};\n";
     const QString skinId=payload.value("skinAtlasId").toString();
     auto atlas=std::find_if(atlases.begin(),atlases.end(),[&](const auto&s){return s.id==skinId;});
@@ -186,6 +211,12 @@ void gameadventure_setup(void)
       << clampInt(payload,"textColourIndex",0,255,15) << "u,"
       << (payload.value("textOutline").toBool(false) ? "1u" : "0u") << ","
       << clampInt(payload,"outlineColourIndex",0,255,1) << "u);\n"
+      << "    game_adventure_skin_flips(skin_flips);\n"
+      << "    game_adventure_dialogue_box("
+      << clampInt(payload,"dialogX",0,479,20) << ","
+      << clampInt(payload,"dialogY",0,319,148) << ","
+      << clampInt(payload,"dialogWidth",128,480,440) << "u,"
+      << clampInt(payload,"dialogHeight",96,320,162) << "u);\n"
       << "    game_adventure_npc_animations(npc_animations," << validNpcCount << "u);\n}\n";
     const QString header=QStringLiteral(
         "/* GENERATED by GamerGirl. Do not edit. */\n"

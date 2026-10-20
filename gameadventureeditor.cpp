@@ -6,6 +6,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFont>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -15,6 +16,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListView>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPainter>
@@ -31,13 +33,26 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSlider>
+#include <QTimer>
 #include <QIcon>
 #include <QSize>
+#include <QStringList>
+#include <QVector>
 #include <functional>
 #include <array>
 #include <algorithm>
 
 namespace {
+// Qt 6.9+ replacement for QImage::mirrored(horizontal, vertical).
+// Keep the original X/Y flip semantics for dialogue atlas cells.
+QImage adventureFlippedCell(const QImage &image, bool flipX, bool flipY)
+{
+    Qt::Orientations orientations;
+    if (flipX) orientations |= Qt::Horizontal;
+    if (flipY) orientations |= Qt::Vertical;
+    return orientations == Qt::Orientations{} ? image : image.flipped(orientations);
+}
+
 // Stage 4.30: visual selection works with full atlas coordinates, not an
 // 8-bit index; the runtime handles 16-bit dialogue tile indices.
 class AdventureAtlasGrid : public QWidget {
@@ -83,6 +98,98 @@ protected:
         selectedIndex = y*columns+x;
         update();
         if(changed) changed(selectedIndex);
+    }
+};
+
+// SIDBOX uses an 8x16 monospace font. Keep this estimator in step with
+// game/adventureruntime.c: the dialogue box fits the speaker, body and the
+// largest adjacent pair of answer labels (not all three at once).
+QStringList adventurePreviewRows(const QString &text, int width, int limit=64)
+{
+    QStringList result;
+    if (width < 1 || text.isEmpty()) return result;
+    const QString source=text.left(512);
+    int pos=0;
+    width=std::min(width,54);
+    while (pos<source.size() && result.size()<limit) {
+        QString line;
+        while (pos<source.size() && source[pos]!=QLatin1Char('\n') && line.size()<width)
+            line+=source[pos++];
+        if(line.size()==width && pos<source.size() &&
+           source[pos]!=QLatin1Char(' ') && source[pos]!=QLatin1Char('\n')) {
+            const int space=line.lastIndexOf(QLatin1Char(' '));
+            if(space>=0) {
+                pos-=line.size()-space;
+                line=line.left(space);
+            }
+        }
+        while(line.endsWith(QLatin1Char(' ')))line.chop(1);
+        if(pos<source.size() && source[pos]==QLatin1Char('\n'))++pos;
+        while(pos<source.size() && source[pos]==QLatin1Char(' '))++pos;
+        result.append(line);
+    }
+    return result;
+}
+struct AdventurePreviewMetrics {
+    int rows=0, answerHeight=0, needed=96, height=96;
+    int bodyColumns=0, answerColumns=0, lineHeight=16;
+    bool overflow=false;
+};
+AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
+                                        int minimumHeight, bool outlined)
+{
+    AdventurePreviewMetrics m;
+    m.lineHeight=outlined?20:16;
+    m.bodyColumns=std::min(50,(width-24)/8);
+    m.answerColumns=std::min(54,(width-24-34)/8);
+    m.rows=adventurePreviewRows(node.value("text").toString().left(512),m.bodyColumns).size();
+    const QJsonArray answers=node.value("choices").toArray();
+    QVector<int> lengths;
+    for (const QJsonValue &v:answers) {
+        const QString text=v.toObject().value("text").toString().left(180);
+        if(!text.isEmpty())lengths.append(adventurePreviewRows(text,m.answerColumns,32).size());
+    }
+    if(lengths.size()==1)m.answerHeight=lengths[0]*m.lineHeight;
+    for(int i=0;i+1<lengths.size();++i)
+        m.answerHeight=std::max(m.answerHeight,(lengths[i]+lengths[i+1])*m.lineHeight+4);
+    m.needed=32+m.rows*m.lineHeight+(m.answerHeight?9+m.answerHeight:0)+12;
+    m.height=std::min(320,std::max(minimumHeight,m.needed));
+    m.overflow=m.needed>320;
+    return m;
+}
+
+// Drag the yellow dialogue window directly on the SIDBOX 480x320 preview.
+// No Q_OBJECT needed; parent updates the X/Y spinboxes through this callback.
+class AdventureDialoguePositionPreview : public QLabel {
+public:
+    int frameX=20, frameY=148, frameW=440, frameH=162;
+    std::function<void(int,int)> moved;
+    explicit AdventureDialoguePositionPreview(QWidget *parent=nullptr) : QLabel(parent) {
+        setFixedSize(480,320);
+        setCursor(Qt::OpenHandCursor);
+    }
+protected:
+    bool dragging=false;
+    int gripX=0,gripY=0;
+    void reposition(const QPointF &point) {
+        const int nx=std::clamp(int(point.x())-gripX,0,480-frameW);
+        const int ny=std::clamp(int(point.y())-gripY,0,320-frameH);
+        if(moved)moved(nx,ny);
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        if(event->button()!=Qt::LeftButton)return;
+        const int x=int(event->position().x()),y=int(event->position().y());
+        if(x>=frameX && y>=frameY && x<frameX+frameW && y<frameY+frameH){
+            gripX=x-frameX;gripY=y-frameY;
+        }else{gripX=frameW/2;gripY=frameH/2;}
+        dragging=true;setCursor(Qt::ClosedHandCursor);
+        reposition(event->position());
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if(dragging)reposition(event->position());
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if(event->button()==Qt::LeftButton){dragging=false;setCursor(Qt::OpenHandCursor);}
     }
 };
 
@@ -178,7 +285,9 @@ QJsonArray tableItems(QTableWidget *table)
         item.insert("pickupKind",kind?kind->currentData().toInt():std::clamp(intAt(table,r,1,0),0,4));
         item.insert("capacity", std::clamp(intAt(table,r,2,1),1,65535));
         item.insert("initial", std::clamp(intAt(table,r,3,0),0,65535));
-        item.insert("icon", std::clamp(intAt(table,r,4,0),0,255));
+        item.insert("icon",table->item(r,4)
+            ? std::clamp(table->item(r,4)->data(Qt::UserRole).toInt(),0,65535)
+            : 65535);
         result.append(item);
     }
     return result;
@@ -205,7 +314,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     if (row < 0 || row >= nodes.size()) return;
     QJsonObject node = nodes[row].toObject();
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Dialogue Node %1").arg(row));
-    dialog.resize(730, 640);
+    dialog.setMinimumSize(820, 680); dialog.resize(1010, 815);
     auto *main = new QVBoxLayout(&dialog);
     auto *scroll = new QScrollArea(&dialog);
     scroll->setWidgetResizable(true);
@@ -222,7 +331,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     QJsonArray choices = node.value("choices").toArray();
     while (choices.size() < 3) choices.append(defaultChoices().at(choices.size()));
     struct EditorFields {
-        QLineEdit *label, *reply;
+        QTextEdit *label, *reply;
         QComboBox *next, *event, *mode;
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
@@ -231,8 +340,18 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         const QJsonObject choice = choices[i].toObject();
         auto *box = new QGroupBox(QObject::tr("Choice %1").arg(i+1), &dialog);
         auto *grid = new QGridLayout(box);
-        fields[i].label = new QLineEdit(choice.value("text").toString(), box);
-        fields[i].reply = new QLineEdit(choice.value("reply").toString(), box);
+        fields[i].label = new QTextEdit(box);
+        fields[i].label->setAcceptRichText(false);
+        fields[i].label->setTabChangesFocus(true);
+        fields[i].label->setPlainText(choice.value("text").toString());
+        fields[i].label->setMaximumHeight(65);
+        fields[i].label->setToolTip(QObject::tr("Answers can span multiple wrapped 8x16 text rows in the game. The dialogue box grows automatically to fit the text, up to the LCD height."));
+        fields[i].reply = new QTextEdit(box);
+        fields[i].reply->setAcceptRichText(false);
+        fields[i].reply->setTabChangesFocus(true);
+        fields[i].reply->setPlainText(choice.value("reply").toString());
+        fields[i].reply->setMaximumHeight(65);
+        fields[i].reply->setToolTip(QObject::tr("The selected player reply appears above the player's head. Up to five wrapped rows are supported."));
         fields[i].next=new QComboBox(box);
         fields[i].next->addItem(QObject::tr("Close conversation"),-1);
         for(int target=0;target<nodes.size();++target)
@@ -301,8 +420,8 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     node.insert("text",text->toPlainText().left(512));
     QJsonArray updated;
     for (int i=0;i<3;++i) {
-        QJsonObject c; c.insert("text",fields[i].label->text().left(75));
-        c.insert("reply",fields[i].reply->text().left(75));
+        QJsonObject c; c.insert("text",fields[i].label->toPlainText().left(180));
+        c.insert("reply",fields[i].reply->toPlainText().left(150));
         c.insert("next",fields[i].next->currentData().toInt());
         const QString eventSelection=fields[i].event->currentData().toString();
         c.insert("action",eventSelection==QStringLiteral("custom")?fields[i].customId->value():-1);
@@ -329,23 +448,31 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     const QJsonObject old = *payload;
     QJsonArray nodes=old.value("nodes").toArray();
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Advanced Platformer — Adventure Editor"));
-    dialog.resize(810,630);
+    dialog.setMinimumSize(890,670); dialog.resize(1060,800);
     auto *main = new QVBoxLayout(&dialog);
     auto *tabs = new QTabWidget(&dialog); main->addWidget(tabs,1);
 
+    // Both inventory icons and dialogue frame tiles use the selected atlas.
+    QComboBox *skinAtlas = nullptr;
+    QSpinBox *tileSize = nullptr;
     auto *itemsPage = new QWidget(tabs); auto *itemsLayout = new QVBoxLayout(itemsPage);
     auto *items = new QTableWidget(0,5,itemsPage);
-    items->setHorizontalHeaderLabels({QObject::tr("Item name"),QObject::tr("Collectable kind (0–4)"),
-                                      QObject::tr("Capacity"),QObject::tr("Start qty"),QObject::tr("Icon index")});
+    items->setHorizontalHeaderLabels({QObject::tr("Item name (e.g. Brass Key)"),QObject::tr("Pick up from..."),
+                                      QObject::tr("Max owned"),QObject::tr("Start with"),QObject::tr("Icon artwork")});
     items->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     items->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(2,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(3,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(4,QHeaderView::ResizeToContents);
-    auto *collectionHelp=new QLabel(QObject::tr("Automatic pickup: select the SAME Collectable kind used by your placed Game Object. "
-        "When the generated on_pickup callback calls game_adventure_collect(item->kind), "
-        "it adds one matching item. Kind 0 is manual/dialogue only. "
-        "If your main.c is hand-edited, retain that bridge call."),itemsPage);
+    auto *collectionHelp=new QLabel(QObject::tr(
+        "INVENTORY GUIDE: Each row is an item your game can recognise (for example, Brass Key). "
+        "'Max owned' is how many can be carried; 'Start with' is how many the player begins with. "
+        "Pick up from... matches the collectable TYPE in World Designer (Coin=1, Health=2, Key=3, Gem=4). "
+        "A name like Kim_copy[1] is the placed object's name, NOT an inventory item. "
+        "Choosing type 2 means EVERY Health-type collectable adds this row's item. "
+        "Important for custom main.c: in on_pickup(), add game_adventure_collect(item->kind); "
+        "after your existing score logic. Without that line, pickups will NOT enter inventory. "
+        "Icon artwork comes from the Dialogue Box Tile Atlas; select one there first, or leave it empty."),itemsPage);
     collectionHelp->setWordWrap(true);itemsLayout->addWidget(collectionHelp);
     itemsLayout->addWidget(items,1);
     const QJsonArray oldItems = old.value("items").toArray();
@@ -355,20 +482,49 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             QString::number(o.value("pickupKind").toInt(0)),
             QString::number(o.value("capacity").toInt(1)),
             QString::number(o.value("initial").toInt(0)),
-            QString::number(o.value("icon").toInt(0)) };
+            QString::number(o.value("icon").toInt(65535)) };
         for(int c=0;c<5;++c) if(c!=1)items->setItem(row,c,cell(v[c]));
+        const int iconIndex=std::clamp(o.value("icon").toInt(65535),0,65535);
+        auto *iconCell=items->item(row,4);
+        iconCell->setData(Qt::UserRole,iconIndex);
+        iconCell->setText(iconIndex==65535?QObject::tr("No icon — double-click to pick")
+            :QObject::tr("Cell %1 — double-click to change").arg(iconIndex));
+        iconCell->setFlags(iconCell->flags() & ~Qt::ItemIsEditable);
         auto *kind=new QComboBox(items);
-        kind->addItem(QObject::tr("0 — Manual / dialogue"),0);
+        kind->addItem(QObject::tr("Manual / NPC dialogue (no automatic pickup)"),0);
         for(int k=1;k<=4;++k) {
             QStringList names;
             for(const auto &object:collectables) if(object.pickupKind==k) names<<object.name;
-            kind->addItem(QObject::tr("%1 — %2").arg(k)
-                .arg(names.isEmpty()?QObject::tr("No placed collectables"):names.join(QStringLiteral(", "))),k);
+            const QString typeName=QStringList{QString(),QObject::tr("Coin"),QObject::tr("Health"),
+                QObject::tr("Key"),QObject::tr("Gem")}.at(k);
+            kind->addItem(QObject::tr("%1: %2 — %3").arg(k).arg(typeName)
+                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):names.join(QStringLiteral(", "))),k);
         }
         kind->setCurrentIndex(std::max(0,kind->findData(o.value("pickupKind").toInt(0))));
         items->setCellWidget(row,1,kind);
     };
     for (const auto &v:oldItems) appendItem(v.toObject());
+    QObject::connect(items,&QTableWidget::cellDoubleClicked,&dialog,[&](int row,int column){
+        if(column!=4 || row<0 || !items->item(row,4)) return;
+        const QString id=skinAtlas?skinAtlas->currentData().toString():old.value("skinAtlasId").toString();
+        const auto at=std::find_if(atlases.begin(),atlases.end(),[&](const auto &a){return a.id==id;});
+        if(at==atlases.end()){
+            QMessageBox::information(&dialog,QObject::tr("Choose inventory artwork"),
+                QObject::tr("First select a Dialogue Tile Atlas in the 'Dialogue Box Atlas' tab. "
+                            "Inventory icons currently use that same atlas."));
+            return;
+        }
+        const QImage image=indexedPreview(at->path,foregroundPalette);
+        const int size=tileSize?tileSize->value():old.value("tileSize").toInt(8);
+        const int previous=items->item(row,4)->data(Qt::UserRole).toInt();
+        const int chosen=chooseAdventureAtlasCell(&dialog,image,size,previous==65535?0:previous);
+        if(chosen<0)return;
+        auto *cell=items->item(row,4);
+        cell->setData(Qt::UserRole,chosen);
+        cell->setText(QObject::tr("Cell %1 — double-click to change").arg(chosen));
+        QImage crop=image.copy((chosen%(image.width()/size))*size,(chosen/(image.width()/size))*size,size,size);
+        cell->setIcon(QIcon(QPixmap::fromImage(crop.scaled(28,28,Qt::KeepAspectRatio,Qt::FastTransformation))));
+    });
     auto *itemButtons = new QHBoxLayout;
     auto *itemAdd = new QPushButton(QObject::tr("+ Item"), itemsPage);
     auto *itemDel = new QPushButton(QObject::tr("Delete Item"), itemsPage);
@@ -413,12 +569,26 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         auto *name=cell(it==sprites.end() ? QObject::tr("Missing Sprite") : it->name);
         name->setData(Qt::UserRole,id);
         name->setData(Qt::UserRole + 1,animation); name->setFlags(name->flags() & ~Qt::ItemIsEditable);
-        npcs->setItem(row,0,name); npcs->setItem(row,1,cell(QString::number(node)));
+        npcs->setItem(row,0,name);
+        auto *startNode=new QComboBox(npcs);
+        for(int i=0;i<nodes.size();++i) startNode->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+        if(startNode->count()==0)startNode->addItem(QObject::tr("Create a dialogue node first"),0);
+        startNode->setCurrentIndex(std::max(0,startNode->findData(node)));
+        npcs->setCellWidget(row,1,startNode);
         npcs->setItem(row,2,cell(QString::number(radius)));
     };
     for(const auto &v: old.value("npcs").toArray()) {
         const QJsonObject o=v.toObject(); appendNpc(o.value("spriteId").toString(),o.value("node").toInt(),o.value("radius").toInt(48),o.value("animation").toObject());
     }
+    auto refreshNpcNodes=[&] {
+        for(int r=0;r<npcs->rowCount();++r){
+            auto *cb=qobject_cast<QComboBox*>(npcs->cellWidget(r,1)); if(!cb)continue;
+            const int previous=cb->currentData().toInt();cb->clear();
+            for(int i=0;i<nodes.size();++i)cb->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+            if(cb->count()==0)cb->addItem(QObject::tr("Create a dialogue node first"),0);
+            cb->setCurrentIndex(std::max(0,cb->findData(previous)));
+        }
+    };
     auto *npcButtons = new QHBoxLayout;
     auto *npcAdd = new QPushButton(QObject::tr("+ NPC"),npcPage);
     auto *npcDel = new QPushButton(QObject::tr("Delete NPC"),npcPage);
@@ -459,88 +629,159 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(frames<1){QMessageBox::warning(&dialog,QObject::tr("NPC Animations"),QObject::tr("No sprite atlas cells."));return;}
         const QJsonObject saved=name->data(Qt::UserRole+1).toJsonObject();
         QDialog anim(&dialog);anim.setWindowTitle(QObject::tr("NPC Animation Designer — %1").arg(it->name));
-        anim.resize(710,485);
+        anim.setMinimumSize(1040,690); anim.resize(1230,820);
         auto *layout=new QVBoxLayout(&anim);
-        auto *help=new QLabel(QObject::tr("Select an Idle or Talking state, choose its first and last frame from the sprite atlas, then set the speed. "
-            "NPC animations use consecutive cells. The SIDBOX Sprite BOB supports cells 0–255."),&anim);
+        auto *help=new QLabel(QObject::tr(
+            "Build Idle and Talking animations one frame at a time. Choose any sprite-sheet cell, "
+            "reorder frames with Up/Down, and set a DIFFERENT delay on each picture. "
+            "Press Play for a live preview. Sprite BOB cells are 0–255."),&anim);
         help->setWordWrap(true);layout->addWidget(help);
         auto *stateTabs=new QTabWidget(&anim);layout->addWidget(stateTabs,1);
         struct AnimUi {
-            int first=0,last=0;
-            QCheckBox *enabled=nullptr;
-            QLabel *range=nullptr,*strip=nullptr,*speedText=nullptr;
-            QPushButton *firstButton=nullptr,*lastButton=nullptr;
-            QSlider *speed=nullptr;
+            QListWidget *list=nullptr;
+            QLabel *preview=nullptr;
+            QSpinBox *delay=nullptr;
+            QTimer *timer=nullptr;
+            QPushButton *play=nullptr;
+            int previewIndex=0;
         } states[2];
         const char *firstKeys[]={"idleFirst","talkFirst"};
         const char *countKeys[]={"idleCount","talkCount"};
         const char *speedKeys[]={"idleSpeed","talkSpeed"};
-        auto previewState=[&](int s) {
-            AnimUi &ui=states[s];
-            ui.first=std::clamp(ui.first,0,frames-1);
-            ui.last=std::clamp(ui.last,ui.first,frames-1);
-            const int total=ui.enabled->isChecked()?ui.last-ui.first+1:0;
-            ui.range->setText(total?QObject::tr("Frames %1–%2 (%3 pictures)").arg(ui.first).arg(ui.last).arg(total)
-                :QObject::tr("Disabled — keep this sprite static in this state"));
-            ui.firstButton->setText(QObject::tr("First: %1 — choose...").arg(ui.first));
-            ui.lastButton->setText(QObject::tr("Last: %1 — choose...").arg(ui.last));
-            ui.firstButton->setEnabled(ui.enabled->isChecked());
-            ui.lastButton->setEnabled(ui.enabled->isChecked());
-            ui.speed->setEnabled(ui.enabled->isChecked());
-            ui.speedText->setText(QObject::tr("%1 game frames / picture").arg(ui.speed->value()));
-            const int thumbnails=std::min(total,10);
-            if(!thumbnails){ui.strip->setPixmap(QPixmap());ui.strip->setText(QObject::tr("No animation frames"));return;}
-            const int scale=std::min(4,std::max(1,560/(std::max(1,thumbnails)*tileW)));
-            QImage output(thumbnails*tileW*scale,tileH*scale,QImage::Format_ARGB32);
-            output.fill(Qt::transparent);QPainter painter(&output);
-            painter.setRenderHint(QPainter::SmoothPixmapTransform,false);
-            for(int i=0;i<thumbnails;++i){
-                int idx=ui.first+i;
-                painter.drawImage(QRect(i*tileW*scale,0,tileW*scale,tileH*scale),atlas,
-                    QRect((idx%cols)*tileW,(idx/cols)*tileH,tileW,tileH));
-            }
-            painter.end();ui.strip->setText(QString());ui.strip->setPixmap(QPixmap::fromImage(output));
+        const char *framesKeys[]={"idleFrames","talkFrames"};
+        auto previewFrame=[&](int state,int chosen){
+            AnimUi &ui=states[state];
+            if(ui.list->count()==0){ui.preview->setText(QObject::tr("No frames — use Add frame..."));return;}
+            chosen=(chosen%ui.list->count()+ui.list->count())%ui.list->count();
+            const int idx=ui.list->item(chosen)->data(Qt::UserRole).toInt();
+            QImage pic=atlas.copy((idx%cols)*tileW,(idx/cols)*tileH,tileW,tileH);
+            ui.preview->setPixmap(QPixmap::fromImage(pic.scaled(
+                pic.size()*std::min(5,std::max(1,300/std::max(tileW,tileH))),
+                Qt::KeepAspectRatio,Qt::FastTransformation)));
         };
-        for (int s=0;s<2;++s) {
-            AnimUi &ui=states[s];
-            ui.first=std::clamp(saved.value(firstKeys[s]).toInt(0),0,frames-1);
-            const int count=saved.value(countKeys[s]).toInt(0);
-            ui.last=std::min(frames-1,ui.first+std::max(0,count-1));
-            QWidget *page=new QWidget(stateTabs);auto *v=new QVBoxLayout(page);
-            ui.enabled=new QCheckBox(QObject::tr("Enable %1 animation").arg(s==0?QObject::tr("Idle"):QObject::tr("Talking")),page);
-            ui.enabled->setChecked(count>0);v->addWidget(ui.enabled);
-            auto *rangeButtons=new QHBoxLayout;
-            ui.firstButton=new QPushButton(page);ui.lastButton=new QPushButton(page);
-            rangeButtons->addWidget(ui.firstButton);rangeButtons->addWidget(ui.lastButton);
-            v->addLayout(rangeButtons);
-            ui.range=new QLabel(page);v->addWidget(ui.range);
-            ui.strip=new QLabel(page);ui.strip->setAlignment(Qt::AlignCenter);
-            ui.strip->setMinimumHeight(std::max(80,tileH*4+10));v->addWidget(ui.strip,1);
-            auto *speedRow=new QHBoxLayout;speedRow->addWidget(new QLabel(QObject::tr("Speed"),page));
-            ui.speed=new QSlider(Qt::Horizontal,page);ui.speed->setRange(1,60);
-            ui.speed->setValue(std::clamp(saved.value(speedKeys[s]).toInt(s?5:6),1,60));
-            speedRow->addWidget(ui.speed,1);
-            ui.speedText=new QLabel(page);speedRow->addWidget(ui.speedText);v->addLayout(speedRow);
-            stateTabs->addTab(page,s?QObject::tr("Talking"):QObject::tr("Idle"));
-            QObject::connect(ui.firstButton,&QPushButton::clicked,&anim,[&,s] {
-                AnimUi &a=states[s];
-                const int next=chooseAdventureAtlasCell(&anim,atlas,tileW,a.first,frames,tileH);
-                if(next<0)return;
-                a.first=next;
-                if(a.last<a.first)a.last=a.first;
-                previewState(s);
+        auto insertFrame=[&](int state,int position,int idx,int delay){
+            AnimUi &ui=states[state];
+            auto *entry=new QListWidgetItem(ui.list);
+            entry->setData(Qt::UserRole,idx);
+            entry->setData(Qt::UserRole+1,std::clamp(delay,1,255));
+            entry->setText(QObject::tr("Cell %1   —   %2 game frames").arg(idx).arg(delay));
+            const QImage pic=atlas.copy((idx%cols)*tileW,(idx/cols)*tileH,tileW,tileH);
+            entry->setIcon(QIcon(QPixmap::fromImage(pic.scaled(40,40,Qt::KeepAspectRatio,Qt::FastTransformation))));
+            // QListWidgetItem(list) initially appends itself.
+            if(position>=0 && position<ui.list->count()-1){
+                auto *moved=ui.list->takeItem(ui.list->count()-1);
+                ui.list->insertItem(position,moved);
+            }
+            ui.list->setCurrentItem(entry);
+        };
+        for(int st=0;st<2;++st){
+            const int state=st;
+            auto *page=new QWidget(stateTabs);
+            auto *v=new QVBoxLayout(page);
+            v->addWidget(new QLabel(state?QObject::tr("TALKING — plays during this NPC's conversation")
+                :QObject::tr("IDLE — plays when the NPC is not talking"),page));
+            AnimUi &ui=states[state];
+            ui.list=new QListWidget(page);
+            ui.list->setViewMode(QListView::IconMode);
+            ui.list->setFlow(QListView::LeftToRight);
+            ui.list->setWrapping(true);
+            ui.list->setMovement(QListView::Static);
+            ui.list->setGridSize(QSize(144,92));
+            ui.list->setSpacing(5);
+            ui.list->setIconSize(QSize(55,55));
+            ui.list->setSelectionMode(QAbstractItemView::SingleSelection);
+            auto *workspace=new QHBoxLayout;
+            v->addLayout(workspace,1);
+            auto *timelinePanel=new QVBoxLayout;
+            workspace->addLayout(timelinePanel,3);
+            timelinePanel->addWidget(new QLabel(QObject::tr("ANIMATION TIMELINE — select, arrange, and set each frame's delay"),page));
+            timelinePanel->addWidget(ui.list,1);
+            auto *buttons=new QHBoxLayout;
+            auto *add=new QPushButton(QObject::tr("+ Add frame..."),page);
+            auto *remove=new QPushButton(QObject::tr("Remove"),page);
+            auto *up=new QPushButton(QObject::tr("Move Up"),page);
+            auto *down=new QPushButton(QObject::tr("Move Down"),page);
+            buttons->addWidget(add);buttons->addWidget(remove);buttons->addWidget(up);buttons->addWidget(down);
+            timelinePanel->addLayout(buttons);
+            auto *delayLine=new QHBoxLayout;
+            delayLine->addWidget(new QLabel(QObject::tr("Selected frame delay (50FPS ticks)"),page));
+            ui.delay=new QSpinBox(page);ui.delay->setRange(1,255);ui.delay->setValue(6);
+            delayLine->addWidget(ui.delay);delayLine->addStretch();timelinePanel->addLayout(delayLine);
+            auto *previewPanel=new QVBoxLayout;
+            workspace->addLayout(previewPanel,2);
+            previewPanel->addWidget(new QLabel(QObject::tr("LIVE PREVIEW (50 FPS GAME TIMING)"),page));
+            ui.preview=new QLabel(page);ui.preview->setMinimumHeight(260);
+            ui.preview->setAlignment(Qt::AlignCenter);
+            ui.preview->setFrameShape(QFrame::StyledPanel);
+            previewPanel->addWidget(ui.preview,1);
+            ui.play=new QPushButton(QObject::tr("Play / Stop preview"),page);
+            previewPanel->addWidget(ui.play);
+            previewPanel->addWidget(new QLabel(QObject::tr("The same frames and delays will be exported to SIDBOX."),page));
+            ui.timer=new QTimer(page);
+            const QJsonArray savedFrames=saved.value(framesKeys[state]).toArray();
+            if(!savedFrames.isEmpty()){
+                for(const auto &fv:savedFrames){
+                    if(ui.list->count()>=255)break;
+                    const QJsonObject o=fv.toObject();
+                    insertFrame(state,-1,std::clamp(o.value("index").toInt(),0,frames-1),
+                        std::clamp(o.value("delay").toInt(6),1,255));
+                }
+            } else {
+                const int first=std::clamp(saved.value(firstKeys[state]).toInt(0),0,frames-1);
+                const int count=std::clamp(saved.value(countKeys[state]).toInt(0),0,frames-first);
+                const int oldDelay=std::clamp(saved.value(speedKeys[state]).toInt(state?5:6),1,255);
+                for(int k=0;k<count;++k)insertFrame(state,-1,first+k,oldDelay);
+            }
+            QObject::connect(ui.list,&QListWidget::currentRowChanged,page,[&,state](int row){
+                auto &a=states[state];if(row<0){a.preview->setText(QObject::tr("No frame selected"));return;}
+                a.delay->blockSignals(true);
+                a.delay->setValue(a.list->item(row)->data(Qt::UserRole+1).toInt());
+                a.delay->blockSignals(false);
+                previewFrame(state,row);
             });
-            QObject::connect(ui.lastButton,&QPushButton::clicked,&anim,[&,s] {
-                AnimUi &a=states[s];
-                const int next=chooseAdventureAtlasCell(&anim,atlas,tileW,a.last,frames,tileH);
-                if(next<0)return;
-                a.last=next;
-                if(a.first>a.last)a.first=a.last;
-                previewState(s);
+            QObject::connect(ui.delay,QOverload<int>::of(&QSpinBox::valueChanged),page,[&,state](int d){
+                auto *item=states[state].list->currentItem();if(!item)return;
+                item->setData(Qt::UserRole+1,d);
+                item->setText(QObject::tr("Cell %1   —   %2 game frames").arg(item->data(Qt::UserRole).toInt()).arg(d));
             });
-            QObject::connect(ui.enabled,&QCheckBox::toggled,&anim,[&,s](bool){previewState(s);});
-            QObject::connect(ui.speed,&QSlider::valueChanged,&anim,[&,s](int){previewState(s);});
-            previewState(s);
+            QObject::connect(add,&QPushButton::clicked,page,[&,state]{
+                auto *list=states[state].list;if(list->count()>=255)return;
+                const int chosen=chooseAdventureAtlasCell(&anim,atlas,tileW,0,frames,tileH);
+                if(chosen<0)return;
+                insertFrame(state,list->currentRow()+1,chosen,6);
+            });
+            QObject::connect(remove,&QPushButton::clicked,page,[&,state]{
+                auto *list=states[state].list;
+                const int row=list->currentRow();if(row<0)return;
+                delete list->takeItem(row);
+                if(list->count())list->setCurrentRow(std::min(row,list->count()-1));
+                else states[state].preview->setText(QObject::tr("No frames"));
+            });
+            auto move=[&](int state,int step){
+                auto *list=states[state].list;const int old=list->currentRow();
+                const int next=old+step;if(old<0 || next<0 || next>=list->count())return;
+                QListWidgetItem *item=list->takeItem(old);list->insertItem(next,item);list->setCurrentRow(next);
+            };
+            QObject::connect(up,&QPushButton::clicked,page,[&,state,move]{move(state,-1);});
+            QObject::connect(down,&QPushButton::clicked,page,[&,state,move]{move(state,+1);});
+            QObject::connect(ui.play,&QPushButton::clicked,page,[&,state]{
+                auto &a=states[state];
+                if(a.timer->isActive()) {a.timer->stop();a.play->setText(QObject::tr("Play preview"));return;}
+                if(a.list->count()==0)return;
+                a.previewIndex=0;
+                previewFrame(state,0);
+                a.timer->start(20*a.list->item(0)->data(Qt::UserRole+1).toInt());
+                a.play->setText(QObject::tr("Stop preview"));
+            });
+            QObject::connect(ui.timer,&QTimer::timeout,page,[&,state]{
+                auto &a=states[state];if(!a.list->count()){a.timer->stop();return;}
+                a.previewIndex=(a.previewIndex+1)%a.list->count();
+                previewFrame(state,a.previewIndex);
+                a.timer->setInterval(20*a.list->item(a.previewIndex)->data(Qt::UserRole+1).toInt());
+            });
+            stateTabs->addTab(page,state?QObject::tr("Talking"):QObject::tr("Idle"));
+            if(ui.list->count())ui.list->setCurrentRow(0);
+            else ui.preview->setText(QObject::tr("No animation yet — press Add frame..."));
         }
         auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&anim);
         layout->addWidget(buttons);
@@ -548,16 +789,32 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         QObject::connect(buttons,&QDialogButtonBox::rejected,&anim,&QDialog::reject);
         if(anim.exec()!=QDialog::Accepted)return;
         QJsonObject result;
-        for(int s=0;s<2;++s) {
-            const AnimUi &ui=states[s];
-            result.insert(firstKeys[s],ui.first);
-            result.insert(countKeys[s],ui.enabled->isChecked()?ui.last-ui.first+1:0);
-            result.insert(speedKeys[s],ui.speed->value());
+        for(int state=0;state<2;++state){
+            const auto *list=states[state].list;
+            QJsonArray framesOut;
+            for(int k=0;k<list->count();++k){
+                const auto *entry=list->item(k);
+                QJsonObject frame;
+                frame.insert("index",entry->data(Qt::UserRole).toInt());
+                frame.insert("delay",entry->data(Qt::UserRole+1).toInt());
+                framesOut.append(frame);
+            }
+            result.insert(framesKeys[state],framesOut);
+            // Legacy fields remain for older tools reading existing .sbgm.
+            result.insert(firstKeys[state],list->count()?list->item(0)->data(Qt::UserRole).toInt():0);
+            result.insert(countKeys[state],list->count());
+            result.insert(speedKeys[state],list->count()?list->item(0)->data(Qt::UserRole+1).toInt():6);
         }
         name->setData(Qt::UserRole+1,result);
     });
     QObject::connect(npcDel,&QPushButton::clicked,&dialog,[&] {
-        if(npcs->currentRow()>=0) npcs->removeRow(npcs->currentRow());
+        const int row=npcs->currentRow();
+        if(row<0 || !npcs->item(row,0)) return;
+        const QString name=npcs->item(row,0)->text();
+        if(QMessageBox::question(&dialog,QObject::tr("Delete NPC?"),
+              QObject::tr("Remove '%1' from Adventure NPCs?\n\nIts placed sprite and any dialogue nodes will be kept.").arg(name),
+              QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes) return;
+        npcs->removeRow(row);
     });
     tabs->addTab(npcPage,QObject::tr("NPCs"));
 
@@ -580,10 +837,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(nodes.size()>=256) return;
         QJsonObject node; node.insert("speaker","NPC"); node.insert("text","Hello!");
         node.insert("choices",defaultChoices()); nodes.append(node);
-        redrawNodes(); nodeList->setCurrentRow(nodes.size()-1);
+        redrawNodes(); nodeList->setCurrentRow(nodes.size()-1);refreshNpcNodes();
     });
     auto doNodeEdit=[&] {
-        editNode(&dialog,nodes,nodeList->currentRow(),tableItems(items),worldObjects); redrawNodes();
+        editNode(&dialog,nodes,nodeList->currentRow(),tableItems(items),worldObjects);
+        redrawNodes();refreshNpcNodes();
     };
     QObject::connect(nodeEdit,&QPushButton::clicked,&dialog,doNodeEdit);
     QObject::connect(nodeList,&QListWidget::itemDoubleClicked,&dialog,[&](QListWidgetItem*){doNodeEdit();});
@@ -602,19 +860,21 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             }
             node.insert("choices",cs);nodes[i]=node;
         }
-        for(int r=0;r<npcs->rowCount();++r){ int next=intAt(npcs,r,1,0);
-            if(next>=row) npcs->item(r,1)->setText(QString::number(next==row?0:next-1));
+        for(int r=0;r<npcs->rowCount();++r){
+            auto *cb=qobject_cast<QComboBox*>(npcs->cellWidget(r,1));if(!cb)continue;
+            int next=cb->currentData().toInt();
+            if(next>=row)cb->setCurrentIndex(std::max(0,cb->findData(next==row?0:next-1)));
         }
-        redrawNodes();
+        redrawNodes();refreshNpcNodes();
     });
     tabs->addTab(dialoguePage,QObject::tr("Dialogues & Choices"));
 
     auto *skinPage=new QWidget(tabs);auto *skinLayout=new QVBoxLayout(skinPage);
     auto *skinForm=new QFormLayout;
-    auto *skinAtlas=new QComboBox(skinPage); skinAtlas->addItem(QObject::tr("No atlas (simple box)"),QString());
+    skinAtlas=new QComboBox(skinPage); skinAtlas->addItem(QObject::tr("No atlas (simple box)"),QString());
     for(const auto &atlas:atlases) skinAtlas->addItem(atlas.name,atlas.id);
     skinAtlas->setCurrentIndex(std::max(0,skinAtlas->findData(old.value("skinAtlasId").toString())));
-    auto *tileSize=new QSpinBox(skinPage);tileSize->setRange(4,32);tileSize->setValue(old.value("tileSize").toInt(8));
+    tileSize=new QSpinBox(skinPage);tileSize->setRange(4,32);tileSize->setValue(old.value("tileSize").toInt(8));
     auto *speed=new QSpinBox(skinPage);speed->setRange(1,30);speed->setValue(old.value("framesPerChar").toInt(2));
     skinForm->addRow(QObject::tr("Dialogue Tile Atlas"),skinAtlas);
     skinForm->addRow(QObject::tr("Tile size (px)"),tileSize);
@@ -642,21 +902,41 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(idx>=0){chosenOutline=idx;decorateColour(outlineColour,chosenOutline);}
     });
     QObject::connect(outline,&QCheckBox::toggled,outlineColour,&QWidget::setEnabled);
-    skinForm->addRow(QObject::tr("Text colour (foreground palette)"),textColour);
+    auto *colours=new QWidget(skinPage);auto *colourRow=new QHBoxLayout(colours);
+    colourRow->setContentsMargins(0,0,0,0);
+    colourRow->addWidget(new QLabel(QObject::tr("Text:"),colours));
+    colourRow->addWidget(textColour,1);
+    colourRow->addWidget(new QLabel(QObject::tr("Outline:"),colours));
+    colourRow->addWidget(outlineColour,1);
+    skinForm->addRow(QObject::tr("Foreground colours"),colours);
     skinForm->addRow(QString(),outline);
-    skinForm->addRow(QObject::tr("Outline colour (foreground palette)"),outlineColour);
     skinForm->addRow(QObject::tr("Frames per typed character"),speed);
     skinLayout->addLayout(skinForm);
     auto *instruction=new QLabel(QObject::tr("Select an atlas then click any of the nine frame parts below to pick its tile visually. "
         "Tile Atlas selections can exceed cell 255. Cell size (px) is unchanged."),skinPage);
     instruction->setWordWrap(true);skinLayout->addWidget(instruction);
     auto *tiles=new QGridLayout;QPushButton *tilePick[9];int chosenTiles[9];
+    QCheckBox *tileFlipX[9],*tileFlipY[9];
     const QJsonArray indices=old.value("skinIndices").toArray();
+    const QJsonArray savedFlips=old.value("skinFlips").toArray();
     for(int i=0;i<9;++i){
         chosenTiles[i]=std::clamp(i<indices.size()?indices[i].toInt(i):i,0,65535);
         tilePick[i]=new QPushButton(skinPage);
-        tilePick[i]->setFixedSize(120,54);
-        tiles->addWidget(tilePick[i],i/3,i%3);
+        tilePick[i]->setMinimumSize(94,58);
+        auto *slot=new QWidget(skinPage);auto *horizontal=new QHBoxLayout(slot);
+        horizontal->setContentsMargins(2,2,2,2);
+        horizontal->setSpacing(5);
+        horizontal->addWidget(tilePick[i]);
+        auto *flipRow=new QVBoxLayout;
+        flipRow->setSpacing(0);
+        tileFlipX[i]=new QCheckBox(QObject::tr("X Flip"),slot);
+        tileFlipY[i]=new QCheckBox(QObject::tr("Y Flip"),slot);
+        const int flags=i<savedFlips.size()?savedFlips[i].toInt():0;
+        tileFlipX[i]->setChecked((flags&4)!=0);
+        tileFlipY[i]->setChecked((flags&8)!=0);
+        flipRow->addWidget(tileFlipX[i]);flipRow->addWidget(tileFlipY[i]);
+        horizontal->addLayout(flipRow);
+        tiles->addWidget(slot,i/3,i%3);
     }
     skinLayout->addLayout(tiles);
     auto *preview=new QLabel(skinPage);preview->setMinimumHeight(112);
@@ -677,7 +957,9 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         for(int i=0;i<9;++i){
             tilePick[i]->setText(QObject::tr("Cell %1").arg(chosenTiles[i]));
             if(chosenTiles[i]<cols*rows){
-                const QImage cellImage=atlas.copy((chosenTiles[i]%cols)*t,(chosenTiles[i]/cols)*t,t,t);
+                const QImage cellImage=adventureFlippedCell(
+                    atlas.copy((chosenTiles[i]%cols)*t,(chosenTiles[i]/cols)*t,t,t),
+                    tileFlipX[i]->isChecked(), tileFlipY[i]->isChecked());
                 tilePick[i]->setIcon(QIcon(QPixmap::fromImage(cellImage.scaled(40,40,Qt::KeepAspectRatio,Qt::FastTransformation))));
                 tilePick[i]->setIconSize(QSize(40,40));
             } else tilePick[i]->setIcon(QIcon());
@@ -688,7 +970,9 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             const int slot=(y==0?0:y==4?2:1)*3+(x==0?0:x==8?2:1);
             const int idx=chosenTiles[slot];
             if(idx>=cols*rows)continue;
-            painter.drawImage(QRect(x*t,y*t,t,t),atlas,QRect((idx%cols)*t,(idx/cols)*t,t,t));
+            painter.drawImage(QRect(x*t,y*t,t,t), adventureFlippedCell(
+                atlas.copy((idx%cols)*t,(idx/cols)*t,t,t),
+                tileFlipX[slot]->isChecked(), tileFlipY[slot]->isChecked()));
         }
         painter.end();preview->setPixmap(QPixmap::fromImage(result.scaled(result.size()*2,Qt::KeepAspectRatio,Qt::FastTransformation)));
     };
@@ -701,10 +985,187 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             if(idx>=0){chosenTiles[i]=idx;updatePreview();}
         });
     }
+    for(int i=0;i<9;++i){
+        QObject::connect(tileFlipX[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
+        QObject::connect(tileFlipY[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
+    }
     QObject::connect(skinAtlas,QOverload<int>::of(&QComboBox::currentIndexChanged),&dialog,[&](int){updatePreview();});
     QObject::connect(tileSize,QOverload<int>::of(&QSpinBox::valueChanged),&dialog,[&](int){updatePreview();});
     updatePreview();
     tabs->addTab(skinPage,QObject::tr("Dialogue Box Atlas"));
+
+    // Stage 4.33: Height is a minimum, not a fixed text budget. The preview
+    // uses REAL conversation nodes and the runtime's 8x16 row/choice formula.
+    auto *positionPage=new QWidget(tabs);
+    auto *positionLayout=new QVBoxLayout(positionPage);
+    auto *positionHelp=new QLabel(QObject::tr(
+        "Choose a conversation below to preview its actual name, wrapped text, "
+        "and TWO visible answers. Height is a minimum: the box grows for longer "
+        "dialogue and rises on screen when needed. Use Up/Down to reach other answers."),positionPage);
+    positionHelp->setWordWrap(true);positionLayout->addWidget(positionHelp);
+    auto *previewSelectors=new QHBoxLayout;
+    auto *previewNode=new QComboBox(positionPage);
+    auto *previewAnswer=new QComboBox(positionPage);
+    previewSelectors->addWidget(new QLabel(QObject::tr("Preview dialogue"),positionPage));
+    previewSelectors->addWidget(previewNode,2);
+    previewSelectors->addWidget(new QLabel(QObject::tr("Selected answer"),positionPage));
+    previewSelectors->addWidget(previewAnswer,1);
+    positionLayout->addLayout(previewSelectors);
+    auto *positionFields=new QGridLayout;
+    auto *placement=new QComboBox(positionPage);
+    placement->addItems({QObject::tr("Custom position"),QObject::tr("Top centre"),
+         QObject::tr("Bottom centre"),QObject::tr("Top left"),QObject::tr("Top right"),
+         QObject::tr("Bottom left"),QObject::tr("Bottom right")});
+    auto makeCoord=[&](int lo,int hi,int value){
+        auto *field=new QSpinBox(positionPage);field->setRange(lo,hi);
+        field->setValue(std::clamp(value,lo,hi));return field;
+    };
+    auto *dialogX=makeCoord(0,479,old.value("dialogX").toInt(20));
+    auto *dialogY=makeCoord(0,319,old.value("dialogY").toInt(148));
+    auto *dialogW=makeCoord(128,480,old.value("dialogWidth").toInt(440));
+    auto *dialogH=makeCoord(96,320,old.value("dialogHeight").toInt(96));
+    positionFields->addWidget(new QLabel(QObject::tr("Placement preset"),positionPage),0,0);
+    positionFields->addWidget(placement,0,1,1,3);
+    positionFields->addWidget(new QLabel(QObject::tr("X (pixels)"),positionPage),1,0);
+    positionFields->addWidget(dialogX,1,1);
+    positionFields->addWidget(new QLabel(QObject::tr("Y (pixels)"),positionPage),1,2);
+    positionFields->addWidget(dialogY,1,3);
+    positionFields->addWidget(new QLabel(QObject::tr("Width (pixels)"),positionPage),2,0);
+    positionFields->addWidget(dialogW,2,1);
+    positionFields->addWidget(new QLabel(QObject::tr("Minimum height"),positionPage),2,2);
+    positionFields->addWidget(dialogH,2,3);
+    positionLayout->addLayout(positionFields);
+    auto *screenPreview=new AdventureDialoguePositionPreview(positionPage);
+    screenPreview->setAlignment(Qt::AlignCenter);
+    auto *previewRow=new QHBoxLayout;
+    previewRow->addStretch();previewRow->addWidget(screenPreview);previewRow->addStretch();
+    positionLayout->addLayout(previewRow,1);
+    auto *positionStatus=new QLabel(positionPage);
+    positionStatus->setWordWrap(true);positionLayout->addWidget(positionStatus);
+    auto chosenNode=[&]() -> QJsonObject {
+        const int index=previewNode->currentData().toInt();
+        return (index>=0 && index<nodes.size())?nodes[index].toObject():QJsonObject();
+    };
+    auto refreshAnswers=[&]{
+        const int prev=previewAnswer->currentData().toInt();
+        previewAnswer->blockSignals(true);previewAnswer->clear();
+        const QJsonArray options=chosenNode().value("choices").toArray();
+        for(int i=0;i<options.size();++i) {
+            const QString label=options[i].toObject().value("text").toString();
+            if(!label.isEmpty())
+                previewAnswer->addItem(QObject::tr("%1: %2").arg(i+1).arg(label.left(26)),i);
+        }
+        if(previewAnswer->count()==0)previewAnswer->addItem(QObject::tr("No answers"),-1);
+        previewAnswer->setCurrentIndex(std::max(0,previewAnswer->findData(prev)));
+        previewAnswer->blockSignals(false);
+    };
+    auto refreshNodes=[&]{
+        const int prev=previewNode->currentData().toInt();
+        previewNode->blockSignals(true);previewNode->clear();
+        for(int i=0;i<nodes.size();++i)
+            previewNode->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+        if(previewNode->count()==0)previewNode->addItem(QObject::tr("Create a dialogue node first"),-1);
+        previewNode->setCurrentIndex(std::max(0,previewNode->findData(prev)));
+        previewNode->blockSignals(false);
+        refreshAnswers();
+    };
+    auto refreshPosition=[&] {
+        const QJsonObject node=chosenNode();
+        const AdventurePreviewMetrics metrics=adventureMeasure(node,dialogW->value(),dialogH->value(),outline->isChecked());
+        const int w=dialogW->value(), h=metrics.height;
+        if(dialogX->value()>480-w){
+            dialogX->blockSignals(true);dialogX->setValue(480-w);dialogX->blockSignals(false);
+        }
+        const int actualY=std::min(dialogY->value(),320-h);
+        const int x=dialogX->value();
+        screenPreview->frameW=w;screenPreview->frameH=h;
+        screenPreview->frameX=x;screenPreview->frameY=actualY;
+        QImage screen(480,320,QImage::Format_ARGB32);
+        screen.fill(QColor(35,40,52));
+        QPainter painter(&screen);
+        painter.setPen(QColor(78,91,113));
+        painter.drawRect(0,0,479,319);
+        for(int gx=80;gx<480;gx+=80)painter.drawLine(gx,0,gx,320);
+        for(int gy=80;gy<320;gy+=80)painter.drawLine(0,gy,480,gy);
+        painter.fillRect(QRect(x,actualY,w,h),QColor(8,14,29,223));
+        painter.setPen(QPen(metrics.overflow?QColor(255,83,83):QColor(255,212,71),2));
+        painter.drawRect(QRect(x,actualY,w,h).adjusted(1,1,-2,-2));
+        QFont font=QFont(QStringLiteral("Monospace"));font.setStyleHint(QFont::TypeWriter);
+        font.setPixelSize(13);painter.setFont(font);
+        painter.setClipRect(QRect(x+2,actualY+2,w-4,h-4));
+        painter.setPen(QColor(234,240,250));
+        painter.drawText(x+12,actualY+20,node.value("speaker").toString().left(36));
+        const auto body=adventurePreviewRows(node.value("text").toString().left(512),metrics.bodyColumns);
+        const int bodyY=actualY+32;
+        const int choiceSpace=metrics.answerHeight?metrics.answerHeight+9:0;
+        const int bottom=actualY+h-12;
+        const int visibleRows=std::clamp((bottom-bodyY-choiceSpace)/metrics.lineHeight,0,int(body.size()));
+        for(int i=0;i<visibleRows;++i)
+            painter.drawText(x+12,bodyY+i*metrics.lineHeight+12,body[i]);
+        const QJsonArray options=node.value("choices").toArray();
+        QVector<QPair<int,QString>> labels;
+        for(int i=0;i<options.size();++i) {
+            const QString label=options[i].toObject().value("text").toString().left(180);
+            if(!label.isEmpty())labels.append(qMakePair(i,label));
+        }
+        int selectedPos=0;
+        for(int i=0;i<labels.size();++i)
+            if(labels[i].first==previewAnswer->currentData().toInt())selectedPos=i;
+        const int first=(labels.size()>2 && selectedPos>1)?selectedPos-1:0;
+        int cy=bodyY+visibleRows*metrics.lineHeight+9;
+        for(int i=first;i<std::min(first+2,int(labels.size()));++i) {
+            const auto rows=adventurePreviewRows(labels[i].second,metrics.answerColumns,32);
+            const int lines=std::min(int(rows.size()),std::max(0,(bottom-cy)/metrics.lineHeight));
+            if(!lines)break;
+            painter.drawText(x+12,cy+12,i==selectedPos?QStringLiteral(">") : QStringLiteral(" "));
+            for(int k=0;k<lines;++k)
+                painter.drawText(x+26,cy+k*metrics.lineHeight+12,rows[k]);
+            if(i==first && first>0)painter.drawText(x+w-20,cy+12,QStringLiteral("^"));
+            if(i==std::min(first+2,int(labels.size()))-1 && first+2<int(labels.size()))
+                painter.drawText(x+w-20,cy+(lines-1)*metrics.lineHeight+12,QStringLiteral("v"));
+            cy+=lines*metrics.lineHeight+4;
+        }
+        painter.setClipping(false);
+        // Dashed line makes the interior text budget visible independently of the frame.
+        painter.setPen(QPen(metrics.overflow?QColor(255,83,83):QColor(96,190,128),1,Qt::DashLine));
+        painter.drawRect(QRect(x+8,actualY+27,w-16,h-36));
+        painter.end();
+        screenPreview->setPixmap(QPixmap::fromImage(screen));
+        QString status=QObject::tr("Needed: %1 px  |  Box: %2 px (min %3)  |  %4 NPC text rows; at most 2 choices")
+            .arg(metrics.needed).arg(h).arg(dialogH->value()).arg(metrics.rows);
+        if (actualY!=dialogY->value())
+            status+=QObject::tr("  |  Auto-raised to Y=%1 to stay on screen").arg(actualY);
+        if(metrics.overflow)
+            status+=QObject::tr("  |  WARNING: Too much text for 320px. Widen the box or shorten the conversation.");
+        positionStatus->setText(status);
+    };
+    QObject::connect(placement,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int choice){
+        if(!choice)return;
+        const int w=dialogW->value();
+        const int h=adventureMeasure(chosenNode(),w,dialogH->value(),outline->isChecked()).height;
+        int x=(480-w)/2,y=(choice==1 || choice==3 || choice==4)?8:320-h-8;
+        if(choice==3 || choice==5)x=8;
+        if(choice==4 || choice==6)x=480-w-8;
+        dialogX->setValue(std::max(0,x));dialogY->setValue(std::max(0,y));
+        refreshPosition();
+    });
+    for(QSpinBox *field:{dialogX,dialogY,dialogW,dialogH})
+        QObject::connect(field,QOverload<int>::of(&QSpinBox::valueChanged),positionPage,[&](int){refreshPosition();});
+    QObject::connect(previewNode,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshAnswers();refreshPosition();});
+    QObject::connect(previewAnswer,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshPosition();});
+    QObject::connect(outline,&QCheckBox::toggled,positionPage,[&](bool){refreshPosition();});
+    screenPreview->moved=[&](int x,int y){
+        dialogX->setValue(x);dialogY->setValue(y);refreshPosition();
+    };
+    const int positionTabIndex=tabs->addTab(positionPage,QObject::tr("Dialogue Position"));
+    QObject::connect(tabs,&QTabWidget::currentChanged,positionPage,[&](int index){
+        if(index==positionTabIndex){refreshNodes();refreshPosition();}
+    });
+    refreshNodes();refreshPosition();
+    positionLayout->addWidget(new QLabel(QObject::tr(
+        "DRAG the yellow box to move it. The green dashed guide marks its text area; "
+        "red means the conversation exceeds the LCD height. Only two answers are shown at a time."),positionPage));
+
 
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,&dialog);
     main->addWidget(buttons);
@@ -716,12 +1177,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QJsonArray outNpcs;
     for(int row=0;row<npcs->rowCount();++row){
         QJsonObject o; o.insert("spriteId",npcs->item(row,0)->data(Qt::UserRole).toString());
-        o.insert("node",std::clamp(intAt(npcs,row,1,0),0,std::max(0,int(nodes.size())-1)));
+        auto *chosen=qobject_cast<QComboBox*>(npcs->cellWidget(row,1));
+        o.insert("node",std::clamp(chosen?chosen->currentData().toInt():0,0,std::max(0,int(nodes.size())-1)));
         o.insert("radius",std::clamp(intAt(npcs,row,2,48),8,512));
         o.insert("animation",npcs->item(row,0)->data(Qt::UserRole + 1).toJsonObject());
         outNpcs.append(o);
     }
     result.insert("npcs",outNpcs);result.insert("nodes",nodes);
+    result.insert("dialogX",dialogX->value());
+    result.insert("dialogY",dialogY->value());
+    result.insert("dialogWidth",dialogW->value());
+    result.insert("dialogHeight",dialogH->value());
     result.insert("skinAtlasId",skinAtlas->currentData().toString());
     result.insert("tileSize",tileSize->value());result.insert("framesPerChar",speed->value());
     result.insert("textColourIndex",chosenText);
@@ -729,5 +1195,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     result.insert("outlineColourIndex",chosenOutline);
     QJsonArray cells;for(int i=0;i<9;++i)cells.append(chosenTiles[i]);
     result.insert("skinIndices",cells);
+    QJsonArray flipFlags;
+    for(int i=0;i<9;++i)flipFlags.append((tileFlipX[i]->isChecked()?4:0)|(tileFlipY[i]->isChecked()?8:0));
+    result.insert("skinFlips",flipFlags);
     *payload=result;return true;
 }

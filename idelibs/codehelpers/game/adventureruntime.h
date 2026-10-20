@@ -9,7 +9,7 @@
 typedef struct {
     const char *name;
     uint8_t pickup_kind; /* 0 = manual only; 1..4 = existing Collectable kind */
-    uint8_t icon;        /* Optional tile atlas index for inventory icon */
+    uint16_t icon;       /* Tile atlas cell; 65535 = no icon; >255 supported */
     uint16_t capacity, initial;
 } game_adventure_item_t;
 
@@ -36,9 +36,17 @@ typedef struct {
 } game_adventure_npc_t;
 
 typedef struct {
+    uint8_t index;
+    uint8_t delay; /* Frames before moving to next animation cell */
+} game_adventure_npc_frame_t;
+
+typedef struct {
     gfxbob_t *sprite;         /* Existing placed Sprite BOB (not owned here). */
     uint8_t idle_first, idle_count, idle_speed;
     uint8_t talk_first, talk_count, talk_speed;
+    const game_adventure_npc_frame_t *idle_frames;
+    const game_adventure_npc_frame_t *talk_frames;
+    uint8_t flip_flags; /* BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y */
 } game_adventure_npc_animation_t;
 
 typedef void (*game_adventure_action_t)(uint16_t action, void *user);
@@ -60,8 +68,14 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames);
 /* Appearance settings (foreground CLUT indices). Defaults: text 15, no outline. */
+void game_adventure_skin_flips(const uint8_t flips[9]);
 void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
                                uint8_t outline_index);
+/* Optional per-game dialogue box position/width and MINIMUM height on the
+   480x320 LCD. A dialogue grows to fit its text and two visible choices.
+   If it would run off the bottom, its Y is raised to keep the frame visible.
+   Existing designs retain their saved minimum and position. */
+void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height);
 /* Optional NPC idle/talking atlas sequences. Called AFTER game_adventure_start.
    Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,

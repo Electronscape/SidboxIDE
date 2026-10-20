@@ -14,7 +14,7 @@ int main(void){
  gfxbob_t sprite={.imgdat=pixels,.atlas_stride=64,.atlas_height=16,.width=16,.height=16};
  game_adventure_npc_t npc[]={ {100,100,16,16,48,0} };
  game_adventure_node_t node[]={ {"Guardian","Hello there!",{{"Bye","Bye!",-1,-1,-1,-1,-1}}} };
- game_adventure_npc_animation_t anim[]={ {&sprite,0,2,2,2,2,1} };
+ game_adventure_npc_animation_t anim[]={ {&sprite,0,2,2,2,2,1,0,0,0} };
  game_adventure_start(0,0,node,1,npc,1,0,0,0,8,0,2,0,0);
  game_adventure_text_style(15,1,3);
  game_adventure_npc_animations(anim,1);

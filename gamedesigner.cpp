@@ -5826,7 +5826,7 @@ void SidboxGameDesigner::openAdventureEditor()
         if (r.path.isEmpty()) continue;
         if (r.kind != QStringLiteral("sprite") && r.kind != QStringLiteral("tileatlas")) continue;
         GameAdventureAsset a; a.id = r.id; a.name = r.name; a.path = resolvedPath(r.path);
-        a.x = r.x; a.y = r.y;
+        a.x = r.x; a.y = r.y; a.flipX = r.objectFlipX; a.flipY = r.objectFlipY;
         const QImage image = cachedImage(a.path);
         a.width = r.cellWidth > 0 ? r.cellWidth : image.width();
         a.height = r.cellHeight > 0 ? r.cellHeight : image.height();
@@ -5867,7 +5867,7 @@ bool SidboxGameDesigner::exportAdventure(QString *error)
     for (const Resource &r : m_resources) {
         if (r.path.isEmpty() || (r.kind != QStringLiteral("sprite") && r.kind != QStringLiteral("tileatlas"))) continue;
         GameAdventureAsset a; a.id = r.id; a.name = r.name; a.path = resolvedPath(r.path);
-        a.x = r.x; a.y = r.y;
+        a.x = r.x; a.y = r.y; a.flipX = r.objectFlipX; a.flipY = r.objectFlipY;
         const QImage image = cachedImage(a.path);
         a.width = r.cellWidth > 0 ? r.cellWidth : image.width();
         a.height = r.cellHeight > 0 ? r.cellHeight : image.height();

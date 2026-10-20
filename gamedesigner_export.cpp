@@ -1625,11 +1625,16 @@ int main(int argc, char *argv[])
         out << "        /* OPTIONAL THRUSTERS: replace the next line with the in_space\n"
                "         * example above, and still step physics every frame. */\n";
         if (hasPlayerAnimation) {
-            out << R"CG(        const uint8_t player_buttons = getjoyport();
-        game_tile_player_run(&player_physics, player_buttons, 1);
-)CG";
+            out << "        const uint8_t player_buttons = getjoyport();\n";
+            if (adventureEnabled)
+                out << "        /* Adventure uses UP for menus; only FIRE1 jumps. */\n"
+                       "        game_tile_player_run(&player_physics, player_buttons & (uint8_t)~BTN_UP, 1);\n";
+            else
+                out << "        game_tile_player_run(&player_physics, player_buttons, 1);\n";
         } else {
-            out << "        game_tile_player_run(&player_physics, getjoyport(), 1);\n";
+            out << (adventureEnabled
+                ? "        game_tile_player_run(&player_physics, getjoyport() & (uint8_t)~BTN_UP, 1);\n"
+                : "        game_tile_player_run(&player_physics, getjoyport(), 1);\n");
         }
         /* Moving platforms, conveyors and springs resolve AFTER tile physics.
            Their final on_ground/vy100 are the values animation must see.
