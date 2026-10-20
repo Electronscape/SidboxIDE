@@ -1,13 +1,15 @@
 #include "gametilemap.h"
 #include "gametilemapinternal.h"
 #include "ppbcodec.h"
+#include "gameeditorcontrolstyle.h"
 
 #include <QAbstractScrollArea>
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QToolButton>
+#include <QFrame>
 #include <QSettings>
-#include <QCryptographicHash>
 #include <QCursor>
 #include <QPalette>
 #include <QPen>
@@ -45,9 +47,12 @@
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QPolygonF>
 #include <QFont>
+#include <QFontMetrics>
 #include <QPixmap>
 #include <QEvent>
 #include <QSpinBox>
@@ -211,6 +216,107 @@ protected:
     }
 };
 
+// Small, genuinely checkable 24x24 toolbar glyphs. Drawn using the active
+// IDE colours so both dark and light themes work without external icon files.
+// The shared gameEditorControlStyle supplies the square checked/hover frames.
+class TilemapFlagButton final : public QToolButton
+{
+public:
+    enum Glyph { CellX, CellY, StampX, StampY, Front, StampFront, Player, Hitbox };
+
+    explicit TilemapFlagButton(Glyph glyph, const QString &accessibleName, QWidget *parent)
+        : QToolButton(parent), m_glyph(glyph)
+    {
+        setCheckable(true);
+        setAutoRaise(false);
+        setFixedSize(38, 36);
+        setIconSize(QSize(24, 24));
+        setAccessibleName(accessibleName);
+        setFocusPolicy(Qt::TabFocus); // Clicking does not steal the map Space shortcut.
+    }
+
+    void setGlyphColours(const QColor &normal, const QColor &checked)
+    {
+        m_normal = normal;
+        m_checked = checked;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.translate((width() - 24) / 2.0, (height() - 24) / 2.0);
+        QColor ink = isChecked() ? m_checked : m_normal;
+        if (!isEnabled()) ink.setAlpha(100);
+        p.setPen(QPen(ink, 1.8, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+        p.setBrush(Qt::NoBrush);
+        switch (m_glyph) {
+        case CellX:
+            p.drawLine(12, 3, 12, 21);
+            p.drawPolyline(QPolygonF({QPointF(9, 5), QPointF(3, 12), QPointF(9, 19)}));
+            p.drawPolyline(QPolygonF({QPointF(15, 5), QPointF(21, 12), QPointF(15, 19)}));
+            break;
+        case CellY:
+            p.drawLine(3, 12, 21, 12);
+            p.drawPolyline(QPolygonF({QPointF(5, 9), QPointF(12, 3), QPointF(19, 9)}));
+            p.drawPolyline(QPolygonF({QPointF(5, 15), QPointF(12, 21), QPointF(19, 15)}));
+            break;
+        case StampX:
+        case StampY:
+            // Four cells distinguish whole-stamp mirroring from cell flip.
+            for (int y : {3, 13}) for (int x : {3, 13})
+                p.drawRect(QRectF(x, y, 8, 8));
+            if (m_glyph == StampX) {
+                p.drawLine(5, 12, 19, 12);
+                p.drawLine(5, 12, 8, 9); p.drawLine(5, 12, 8, 15);
+                p.drawLine(19, 12, 16, 9); p.drawLine(19, 12, 16, 15);
+            } else {
+                p.drawLine(12, 5, 12, 19);
+                p.drawLine(12, 5, 9, 8); p.drawLine(12, 5, 15, 8);
+                p.drawLine(12, 19, 9, 16); p.drawLine(12, 19, 15, 16);
+            }
+            break;
+        case Front:
+            p.drawRect(QRectF(3, 9, 12, 12));
+            p.drawRect(QRectF(9, 3, 12, 12));
+            p.drawLine(18, 6, 18, 12);
+            p.drawLine(15, 9, 18, 6); p.drawLine(21, 9, 18, 6);
+            break;
+        case StampFront:
+            for (int y : {3, 12}) for (int x : {3, 12})
+                p.drawRect(QRectF(x, y, 8, 8));
+            p.drawRect(QRectF(8, 8, 12, 12));
+            p.drawLine(14, 10, 14, 17);
+            p.drawLine(11, 13, 14, 10); p.drawLine(17, 13, 14, 10);
+            break;
+        case Player:
+            // A figure inside its design-time placement outline.
+            p.setPen(QPen(ink, 1.4, Qt::DashLine));
+            p.drawRect(QRectF(2, 2, 20, 20));
+            p.setPen(QPen(ink, 1.8));
+            p.drawRect(QRectF(9, 4, 6, 6));
+            p.drawLine(12, 10, 12, 17);
+            p.drawLine(12, 12, 6, 15); p.drawLine(12, 12, 18, 15);
+            p.drawLine(12, 17, 8, 20); p.drawLine(12, 17, 16, 20);
+            break;
+        case Hitbox:
+            p.drawRect(QRectF(3, 3, 18, 18));
+            p.drawLine(3, 8, 3, 3); p.drawLine(3, 3, 8, 3);
+            p.drawLine(16, 21, 21, 21); p.drawLine(21, 21, 21, 16);
+            p.drawLine(12, 6, 12, 18); p.drawLine(6, 12, 18, 12);
+            p.drawRect(QRectF(9, 9, 6, 6));
+            break;
+        }
+    }
+private:
+    Glyph m_glyph;
+    QColor m_normal = Qt::white;
+    QColor m_checked = Qt::white;
+};
+
 class SidboxTilemapEditor::Canvas final : public QAbstractScrollArea
 {
 public:
@@ -220,6 +326,123 @@ public:
     static constexpr int maxZoom = 16;
     std::function<void(int)> zoomChanged;
     bool showCollisions = true;
+    QImage playerReference;
+    QRect playerHitbox; // unscaled local sprite pixels; empty = full sprite
+    bool showPlayerCollision = true;
+    int playerReferenceScale = 100;
+    QPoint playerReferenceInitialPosition;
+    bool showPlayerReference = false;
+    bool draggingPlayerReference = false;
+    QPoint playerReferenceDragOffset; // offset from sprite corner, in world pixels
+    QSize playerReferenceWorldSize() const
+    {
+        return QSize(qMax(1, qRound(playerReference.width() * playerReferenceScale / 100.0)),
+                     qMax(1, qRound(playerReference.height() * playerReferenceScale / 100.0)));
+    }
+    QPoint playerReferencePosition() const
+    {
+        if (!map) return {};
+        const QSize size = playerReferenceWorldSize();
+        const QPoint p = map->referencePlayerPositionSet
+            ? QPoint(map->referencePlayerX, map->referencePlayerY)
+            : playerReferenceInitialPosition;
+        return QPoint(qBound(0, p.x(), qMax(0, map->width * map->tileSize - size.width())),
+                      qBound(0, p.y(), qMax(0, map->height * map->tileSize - size.height())));
+    }
+    QRect playerReferenceRect() const
+    {
+        if (!map || !showPlayerReference || playerReference.isNull()) return {};
+        const QPoint p = playerReferencePosition();
+        const QSize size = playerReferenceWorldSize();
+        return QRect(p.x() * zoom - horizontalScrollBar()->value(),
+                     p.y() * zoom - verticalScrollBar()->value(),
+                     size.width() * zoom, size.height() * zoom);
+    }
+    QRect playerHitboxWorldRect() const
+    {
+        if (!map || playerReference.isNull()) return {};
+        const QRect box = playerHitbox.isEmpty()
+            ? QRect(0, 0, playerReference.width(), playerReference.height()) : playerHitbox;
+        const QSize size = playerReferenceWorldSize();
+        const QPoint p = playerReferencePosition();
+        // Scale BOTH edges to avoid a 1px box disappearing at small sizes.
+        const int x1 = qRound(double(box.left()) * size.width() / playerReference.width());
+        const int y1 = qRound(double(box.top()) * size.height() / playerReference.height());
+        const int x2 = qRound(double(box.left() + box.width()) * size.width() / playerReference.width());
+        const int y2 = qRound(double(box.top() + box.height()) * size.height() / playerReference.height());
+        return QRect(p.x() + x1, p.y() + y1, qMax(1, x2 - x1), qMax(1, y2 - y1));
+    }
+    // Editor-only, stationary clearance probe (NOT a physics simulation).
+    // 0=clear, 1=blocking solid/slope, 2=hazard, 3=one-way,
+    // 4=nonblocking zone/door. A point shape occupies everything BELOW its curve.
+    int playerCellContact(int tx, int ty, const QRect &box) const
+    {
+        if (!map || tx < 0 || ty < 0 || tx >= map->width || ty >= map->height) return 0;
+        const int tile = map->tileSize;
+        const QRect cell(tx * tile, ty * tile, tile, tile);
+        const QRect overlap = box.intersected(cell);
+        if (overlap.isEmpty()) return 0;
+        const int index = ty * map->width + tx;
+        const unsigned type = quint8(map->collisions.at(index));
+        if (type == 1 || (type >= 17 && type <= 24)) return 1;
+        if (type == 5) return 2;
+        if (type == 2) return 3; // one-way: descent only; not a solid wall
+        if (type == 6 || (type >= 9 && type <= 16)) return 4;
+        if (type < 3 || (type > 4 && type != 7 && type != 8)) return 0;
+        const SidboxCollisionStamp *shape = nullptr;
+        SidboxCollisionPlacement place;
+        if (type == 8) {
+            const int owner = collisionPlacementAt(*map, tx, ty);
+            if (owner < 0) return 0;
+            place = map->collisionPlacements.at(owner);
+            if (place.stamp < 0 || place.stamp >= map->collisionStamps.size()) return 0;
+            shape = &map->collisionStamps.at(place.stamp);
+        }
+        // A pixel of the player's hitbox BELOW the surface = embedded in
+        // the solid interior; merely touching the curve is marked as contact.
+        for (int x = overlap.left(); x <= overlap.right(); ++x) {
+            int surface = cell.top() + tile;
+            if (type == 3) surface = cell.top() + tile - 1 - (x - cell.left());
+            else if (type == 4) surface = cell.top() + (x - cell.left());
+            else if (type == 7) {
+                const int slopeIndex = index * tile + x - cell.left();
+                if (slopeIndex >= map->slopes.size()) continue;
+                surface = cell.top() + quint8(map->slopes.at(slopeIndex));
+            } else if (shape) {
+                const int localX = x - place.x * tile;
+                // Match the V1 collision loader: mirror columns 0..width-1,
+                // rather than mirroring the outer width boundary coordinate.
+                const int shapeX = place.mirrorX
+                    ? shape->width * tile - 1 - localX : localX;
+                surface = place.y * tile + slopeY(*shape, shapeX, false);
+            }
+            if (overlap.bottom() >= surface) return 1;
+        }
+        return 0;
+    }
+    bool movePlayerReferenceToMouse()
+    {
+        if (!map || !showPlayerReference || playerReference.isNull() ||
+            draggingPlayerReference || painting || selectingRegion || panning ||
+            temporaryActive || loopDragKind) return false;
+        const QPoint mouse = viewport()->mapFromGlobal(QCursor::pos());
+        if (!viewport()->rect().contains(mouse)) return false;
+        const QPoint world((mouse.x() + horizontalScrollBar()->value()) / zoom,
+                           (mouse.y() + verticalScrollBar()->value()) / zoom);
+        const QSize size = playerReferenceWorldSize();
+        const int x = qBound(0, world.x() - size.width() / 2,
+                             qMax(0, map->width * map->tileSize - size.width()));
+        const int y = qBound(0, world.y() - size.height() / 2,
+                             qMax(0, map->height * map->tileSize - size.height()));
+        if (playerReferencePosition() == QPoint(x, y)) return true;
+        if (strokeStarted) strokeStarted();
+        map->referencePlayerPositionSet = true;
+        map->referencePlayerX = x;
+        map->referencePlayerY = y;
+        if (strokeFinished) strokeFinished();
+        viewport()->update();
+        return true;
+    }
     // -1 = preserve existing value, 0 = erase, 1 = selected atlas tile.
     int graphicMode = 1;
     int graphicBrush = 1;
@@ -1058,6 +1281,79 @@ protected:
             painter.drawEllipse(edge,6,6);
         }
         paintBrushPreview(painter);
+        // Draw last: the translucent reference sits above graphics/collision
+        // previews but is NEVER written to the map and has no game-world state.
+        const QRect playerRect = playerReferenceRect();
+        if (!playerRect.isEmpty() && playerRect.intersects(dirty)) {
+            painter.save();
+            painter.setClipRect(viewport()->rect());
+            painter.setOpacity(0.85);
+            painter.drawImage(playerRect, playerReference);
+            painter.setOpacity(1.0);
+            if (showPlayerCollision) {
+                const QRect box = playerHitboxWorldRect();
+                const int tile = map->tileSize;
+                const int firstX = qMax(0, box.left() / tile);
+                const int firstY = qMax(0, box.top() / tile);
+                const int lastX = qMin(map->width - 1, box.right() / tile);
+                const int lastY = qMin(map->height - 1, box.bottom() / tile);
+                int status = 0;
+                for (int ty = firstY; ty <= lastY; ++ty)
+                    for (int tx = firstX; tx <= lastX; ++tx) {
+                        const int contact = playerCellContact(tx, ty, box);
+                        if (!contact) continue;
+                        // Blocking takes priority, then hazard, then one-way.
+                        if (contact == 1 || !status || (contact == 2 && status != 1) ||
+                            (contact == 3 && status == 4)) status = contact;
+                        const QRect tileWorld(tx * tile, ty * tile, tile, tile);
+                        const QRect area = box.intersected(tileWorld);
+                        const QRect visible(area.x() * zoom - scrollX,
+                                            area.y() * zoom - scrollY,
+                                            area.width() * zoom, area.height() * zoom);
+                        const QColor mark = contact == 1 ? QColor(255, 74, 83)
+                            : contact == 2 ? QColor(255, 149, 35)
+                            : contact == 3 ? QColor(255, 224, 75)
+                            : QColor(99, 180, 255);
+                        painter.fillRect(visible, QColor(mark.red(), mark.green(), mark.blue(), 95));
+                        painter.setPen(QPen(mark, 2));
+                        painter.setBrush(Qt::NoBrush);
+                        painter.drawRect(visible.adjusted(0, 0, -1, -1));
+                    }
+                const QColor border = status == 1 ? QColor(255, 74, 83)
+                    : status == 2 ? QColor(255, 149, 35)
+                    : status == 3 ? QColor(255, 224, 75)
+                    : status == 4 ? QColor(99, 180, 255)
+                    : QColor(64, 240, 142);
+                const QRect hitView(box.x() * zoom - scrollX, box.y() * zoom - scrollY,
+                                    box.width() * zoom, box.height() * zoom);
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(border, 2));
+                painter.drawRect(hitView.adjusted(0, 0, -1, -1));
+                const QString info = status == 1 ? QStringLiteral("BLOCKED")
+                    : status == 2 ? QStringLiteral("HAZARD")
+                    : status == 3 ? QStringLiteral("ONE-WAY")
+                    : status == 4 ? QStringLiteral("ZONE / DOOR")
+                    : QStringLiteral("CLEAR");
+                const QFontMetrics hitFont(painter.font());
+                const QRect infoRect(playerRect.left(),
+                    qMin(viewport()->height() - hitFont.height() - 4, playerRect.bottom() + 3),
+                    hitFont.horizontalAdvance(info) + 10, hitFont.height() + 3);
+                painter.fillRect(infoRect, palette().color(QPalette::Base));
+                painter.setPen(border);
+                painter.drawText(infoRect.adjusted(5, 0, 0, 0), Qt::AlignVCenter, info);
+            }
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(palette().color(QPalette::Highlight), 2, Qt::DashLine));
+            painter.drawRect(playerRect.adjusted(0, 0, -1, -1));
+            const QString label = QStringLiteral("PLAYER REFERENCE");
+            QFontMetrics fm(painter.font());
+            const QRect textRect(playerRect.left(), qMax(0, playerRect.top() - fm.height() - 2),
+                                 fm.horizontalAdvance(label) + 8, fm.height() + 2);
+            painter.fillRect(textRect, palette().color(QPalette::Base));
+            painter.setPen(palette().color(QPalette::Text));
+            painter.drawText(textRect.adjusted(4, 0, 0, 0), Qt::AlignVCenter, label);
+            painter.restore();
+        }
         if (selectingRegion) {
             const QRect selected = regionRect();
             const QRect outline(selected.x() * px - scrollX,
@@ -1081,6 +1377,8 @@ protected:
     bool viewportEvent(QEvent *event) override
     {
         if (event->type() == QEvent::Leave) {
+            if (!draggingPlayerReference && !panning)
+                viewport()->setCursor(loopEditMode ? Qt::ArrowCursor : Qt::CrossCursor);
             const QRect previous = previewBounds();
             hoverValid = false;
             if (!previous.isEmpty()) viewport()->update(previous);
@@ -1094,6 +1392,18 @@ protected:
         // Focus the canvas even when clicking loop anchors or empty map space.
         if (e->button() == Qt::LeftButton || e->button() == Qt::MiddleButton ||
             e->button() == Qt::RightButton) setFocus(Qt::MouseFocusReason);
+        if (e->button() == Qt::LeftButton && !temporaryActive &&
+            !(e->modifiers() & (Qt::ShiftModifier | Qt::AltModifier)) &&
+            playerReferenceRect().contains(e->position().toPoint())) {
+            draggingPlayerReference = true;
+            const QPoint pos = e->position().toPoint();
+            playerReferenceDragOffset = QPoint(
+                (pos.x() + horizontalScrollBar()->value()) / zoom,
+                (pos.y() + verticalScrollBar()->value()) / zoom) - playerReferencePosition();
+            if (strokeStarted) strokeStarted();
+            viewport()->setCursor(Qt::ClosedHandCursor);
+            e->accept(); return; // never paint when grabbing the reference
+        }
         if (loopEditMode && e->button() == Qt::LeftButton &&
             selectedLoop >= 0 && selectedLoop < map->loops.size()) {
             const auto &l=map->loops.at(selectedLoop);
@@ -1160,6 +1470,24 @@ protected:
     }
     void mouseMoveEvent(QMouseEvent *e) override
     {
+        if (draggingPlayerReference && map) {
+            const QPoint pos = e->position().toPoint();
+            const QSize size = playerReferenceWorldSize();
+            const int x = (pos.x() + horizontalScrollBar()->value()) / zoom
+                - playerReferenceDragOffset.x();
+            const int y = (pos.y() + verticalScrollBar()->value()) / zoom
+                - playerReferenceDragOffset.y();
+            map->referencePlayerPositionSet = true;
+            map->referencePlayerX = qBound(0, x, qMax(0, map->width * map->tileSize - size.width()));
+            map->referencePlayerY = qBound(0, y, qMax(0, map->height * map->tileSize - size.height()));
+            viewport()->update();
+            e->accept(); return;
+        }
+        if (!panning && !painting && !selectingRegion && !temporaryActive && !loopDragKind &&
+            playerReferenceRect().contains(e->position().toPoint())) {
+            viewport()->setCursor(Qt::OpenHandCursor);
+            e->accept(); return;
+        }
         if (loopDragKind && selectedLoop >= 0 && selectedLoop < map->loops.size()) {
             auto &l=map->loops[selectedLoop];
             const QPoint pos=e->position().toPoint();
@@ -1213,11 +1541,18 @@ protected:
             viewport()->update(previous);
             viewport()->update(previewBounds());
         } else if (!panning) {
+            viewport()->setCursor(Qt::CrossCursor);
             updateHover(e->position().toPoint());
         }
     }
     void mouseReleaseEvent(QMouseEvent *e) override
     {
+        if (draggingPlayerReference && e->button() == Qt::LeftButton) {
+            draggingPlayerReference = false;
+            viewport()->setCursor(Qt::OpenHandCursor);
+            if (strokeFinished) strokeFinished();
+            e->accept(); return;
+        }
         if (loopDragKind && e->button() == Qt::LeftButton) {
             loopDragKind=0;
             viewport()->setCursor(Qt::OpenHandCursor);
@@ -1504,27 +1839,30 @@ public:
     bool dragging = false;
     bool changed = false;
     int active = -1;
+    // Collision editing has its own full-height workspace. The larger grid
+    // makes dragging control points practical even for small 2x2 stamps.
+    static constexpr int gridUnit = 96;
     std::function<void()> strokeStarted;
     std::function<void()> modified;
     std::function<void()> pointSelected;
     explicit CollisionCanvas(QWidget *parent = nullptr) : QWidget(parent) {
         setCursor(Qt::CrossCursor);
         setMouseTracking(true);
-        setMinimumSize(210, 150);
+        setMinimumSize(220, 220);
     }
     void refresh() {
         if (!map || selected < 0 || selected >= map->collisionStamps.size())
-            setFixedSize(210, 150);
+            setFixedSize(220, 220);
         else {
             const auto &s = map->collisionStamps.at(selected);
-            setFixedSize(qMax(210, s.width * 32 + 1),
-                         qMax(150, s.height * 32 + 1));
+            setFixedSize(qMax(220, s.width * gridUnit + 1),
+                         qMax(220, s.height * gridUnit + 1));
         }
         update();
     }
     QPoint pixelPoint(const QPoint &p, const SidboxCollisionStamp &s) const {
-        return QPoint(qBound(0, qRound(double(p.x()) * s.tileSize / 32), s.width * s.tileSize),
-                      qBound(0, qRound(double(p.y()) * s.tileSize / 32), s.height * s.tileSize));
+        return QPoint(qBound(0, qRound(double(p.x()) * s.tileSize / gridUnit), s.width * s.tileSize),
+                      qBound(0, qRound(double(p.y()) * s.tileSize / gridUnit), s.height * s.tileSize));
     }
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
@@ -1535,7 +1873,7 @@ public:
             return;
         }
         const auto &s = map->collisionStamps.at(selected);
-        const int unit = 32, size = s.tileSize;
+        const int unit = gridUnit, size = s.tileSize;
         const int cols = atlas && !atlas->isNull() ? atlas->width() / size : 0;
         const int rows = atlas && !atlas->isNull() ? atlas->height() / size : 0;
         if (referenceStamp >= 0 && referenceStamp < map->stamps.size() &&
@@ -1609,7 +1947,7 @@ public:
         int nearest = -1, closest = 7 * 7;
         for (int i = 0; i < s.points.size(); ++i) {
             const QPoint delta = s.points.at(i) - pt;
-            const int distance = (delta.x()*delta.x()+delta.y()*delta.y()) * 32 * 32 /
+            const int distance = (delta.x()*delta.x()+delta.y()*delta.y()) * gridUnit * gridUnit /
                                  (s.tileSize*s.tileSize);
             if (distance <= closest) { nearest = i; closest = distance; }
         }
@@ -1624,6 +1962,7 @@ public:
             return;
         }
         if (event->button() != Qt::LeftButton) return;
+        setFocus(Qt::MouseFocusReason);
         if (strokeStarted) strokeStarted();
         changed = false;
         if (nearest < 0 && s.points.size() < 128) {
@@ -1666,7 +2005,10 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         || a.stamps.size() != b.stamps.size() || a.flips != b.flips
         || a.slopes != b.slopes || a.collisionStamps.size() != b.collisionStamps.size()
         || a.collisionPlacements.size() != b.collisionPlacements.size()
-        || a.loops.size() != b.loops.size())
+        || a.loops.size() != b.loops.size()
+        || a.referencePlayerPositionSet != b.referencePlayerPositionSet
+        || (a.referencePlayerPositionSet &&
+            (a.referencePlayerX != b.referencePlayerX || a.referencePlayerY != b.referencePlayerY)))
         return false;
     for (int i = 0; i < a.animations.size(); ++i) {
         const auto &left = a.animations.at(i);
@@ -1843,28 +2185,38 @@ void SidboxTilemapEditor::setSaveCallback(
     if (m_saveButton) m_saveButton->setEnabled(bool(m_saveCallback));
 }
 
+void SidboxTilemapEditor::setPlayerReference(const QImage &spriteFrame,
+    int scalePercent, const QPoint &worldPosition, const QRect &hitbox)
+{
+    if (!m_canvas || !m_playerReferenceToggle) return;
+    m_canvas->playerReference = spriteFrame;
+    m_canvas->playerHitbox = hitbox;
+    m_canvas->playerReferenceScale = qBound(1, scalePercent, 1000);
+    m_canvas->playerReferenceInitialPosition = worldPosition;
+    const bool available = !spriteFrame.isNull();
+    if (m_playerToolsDivider) m_playerToolsDivider->setVisible(available);
+    m_playerReferenceToggle->setVisible(available);
+    m_playerReferenceToggle->setChecked(available);
+    if (m_playerCollisionToggle) {
+        m_playerCollisionToggle->setVisible(available);
+        m_canvas->showPlayerCollision = m_playerCollisionToggle->isChecked();
+    }
+    m_canvas->showPlayerReference = available;
+    m_canvas->viewport()->update();
+}
+
 void SidboxTilemapEditor::setTheme(const IDETheme &theme)
 {
     const auto C = [](const QColor &colour) { return ideThemeColorName(colour); };
-    // The editor is a dialog, so the parent MainWindow stylesheet alone isn't
-    // reliable (especially for combo popup windows on KDE / Wayland).
+    // Consistent, reusable editor controls shared with the World Designer.
+    // This theme pass is presentation-only: the canvas and stamp previews
+    // continue painting their own graphics and retain their input handling.
+    // The editor dialog needs its own colours on KDE / Wayland.
     setStyleSheet(QStringLiteral(
         "QDialog, QWidget { background-color:%1; color:%2; } "
-        "QLabel { background:transparent; color:%2; border:none; } "
-        "QPushButton, QToolButton, QSpinBox, QLineEdit, QCheckBox, "
-        "QScrollArea, QListWidget, QSplitter, QFrame { border-radius:0px; } "
-        "QComboBox { border:1px solid %3; border-radius:0px; "
-        "background-color:%4; color:%2; padding:3px 24px 3px 5px; } "
-        "QComboBox::drop-down { width:20px; border-left:1px solid %3; "
-        "border-radius:0px; background-color:%4; } "
-        "QComboBox::down-arrow { image:none; width:0px; height:0px; } "
-        "QComboBox QAbstractItemView { border:1px solid %3; border-radius:0px; "
-        "background-color:%5; color:%2; selection-background-color:%6; "
-        "selection-color:%7; outline:0px; } "
-        "QComboBox QAbstractItemView::item:selected { background:%6; color:%7; }")
-        .arg(C(theme.windowBackground), C(theme.text), C(theme.border),
-             C(theme.inputBackground), C(theme.menuBackground),
-             C(theme.accent), C(theme.brightText)));
+        "QLabel { background:transparent; color:%2; border:none; } ")
+        .arg(C(theme.windowBackground), C(theme.text))
+        + gameEditorControlStyle(theme));
     QPalette dialogPalette = palette();
     dialogPalette.setColor(QPalette::Window, theme.windowBackground);
     dialogPalette.setColor(QPalette::WindowText, theme.text);
@@ -1872,9 +2224,60 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
     dialogPalette.setColor(QPalette::Text, theme.text);
     dialogPalette.setColor(QPalette::Button, theme.panelBackground);
     dialogPalette.setColor(QPalette::ButtonText, theme.text);
-    dialogPalette.setColor(QPalette::Highlight, theme.accent);
-    dialogPalette.setColor(QPalette::HighlightedText, theme.brightText);
+    const QColor selectedBase = theme.accent.darker(230);
+    const QColor selectedText = selectedBase.lightnessF() < 0.52
+        ? QColor(Qt::white) : QColor(Qt::black);
+    dialogPalette.setColor(QPalette::Highlight, selectedBase);
+    dialogPalette.setColor(QPalette::HighlightedText, selectedText);
     setPalette(dialogPalette);
+    // Checked buttons have a dark accent base; use its contrasting text
+    // colour, not the ordinary (possibly dark-on-dark) glyph colour.
+    // TilemapFlagButton deliberately has no Q_OBJECT macro: QObject::findChildren
+    // cannot search for that subclass. The eight toolbar buttons are already
+    // held by the editor, so apply their theme colours directly.
+    for (QToolButton *tool : {m_flipX, m_flipY, m_stampMirrorX, m_stampMirrorY,
+                              m_drawFront, m_stampUseFront,
+                              m_playerReferenceToggle, m_playerCollisionToggle}) {
+        if (!tool) continue;
+        TilemapFlagButton *button = static_cast<TilemapFlagButton *>(tool);
+        button->setGlyphColours(theme.text, selectedText);
+    }
+
+    // Stage 4.00: the three tilemap selection banks use the same bordered,
+    // theme-accent cards as Game Object Properties. The item stylesheet is
+    // applied to the LIST (rather than a generic QDialog rule), so native
+    // icon-mode thumbnail painting and the selected row remain readable on
+    // both light and dark IDE themes. No stamp/loop selection logic changes.
+    const QColor selectionBackground = theme.accent.darker(230);
+    const QColor selectionForeground = selectionBackground.lightnessF() < 0.52
+        ? QColor(Qt::white) : QColor(Qt::black);
+    const QString selectionStyle = QStringLiteral(R"GGSTAMP(
+        QListWidget {
+            background:%1; color:%2; border:1px solid %3;
+            border-radius:0px; outline:0px;
+        }
+        QListWidget::item {
+            background:%4; color:%2; border:1px solid %3;
+            border-radius:0px; margin:2px; padding:4px;
+        }
+        QListWidget::item:selected {
+            background:%5; color:%6; border:2px solid %7;
+            border-left:3px solid %7; border-radius:0px;
+        }
+        QListWidget::item:hover:!selected {
+            background:%8; border:1px solid %7;
+            border-radius:0px;
+        }
+    )GGSTAMP")
+        .arg(C(theme.panelBackground), C(theme.text), C(theme.border),
+             C(theme.alternateBackground), C(selectionBackground),
+             C(selectionForeground), C(theme.accent), C(theme.hover));
+    for (QListWidget *bank : {m_stampList, m_collisionList,
+                             findChild<QListWidget *>(QStringLiteral("GGLoopTrackBank"))}) {
+        if (!bank) continue;
+        bank->setPalette(dialogPalette);
+        bank->setStyleSheet(selectionStyle);
+    }
 
     // Popup lists have their own viewport palette; don't let the OS theme
     // replace the colours chosen in CoderGirl's Theme Options.
@@ -1888,7 +2291,7 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
                 "outline:0px; } "
                 "QAbstractItemView::item:selected { background:%4; color:%5; }")
                 .arg(C(theme.menuBackground), C(theme.text), C(theme.border),
-                     C(theme.accent), C(theme.brightText)));
+                     C(selectedBase), C(selectedText)));
         }
     }
 }
@@ -2050,48 +2453,94 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     paintRow->addWidget(new QLabel(tr("Paint graphic:"), this));
     paintRow->addWidget(brushG, 1);
     layout->addLayout(paintRow);
+    // Stage 4.10: the flags and overlays are one compact, themed toolbar.
+    // Buttons remain the very same bool switches used by the paint routines.
     auto *flipRow = new QHBoxLayout;
+    flipRow->setSpacing(5);
     m_flipMode = new TilemapComboBox(this);
     m_flipMode->addItem(tr("Apply tile flags"), 1);
     m_flipMode->addItem(tr("Don't change tile flags"), -1);
     m_flipMode->setCurrentIndex(qMax(0, m_flipMode->findData(
         windowSettings.value(QStringLiteral("GameTilemapEditor/flipMode"), 1).toInt())));
-    m_flipX = new QCheckBox(tr("Cell Flip X"), this);
-    m_flipY = new QCheckBox(tr("Cell Flip Y"), this);
-    m_drawFront = new QCheckBox(tr("Draw in front of player"), this);
-    m_drawFront->setToolTip(tr("Draw this tile after the player. It still has its normal collision properties."));
-    m_stampUseFront = new QCheckBox(tr("Stamp: use Draw Front setting"), this);
-    m_stampUseFront->setToolTip(tr("When checked, the Draw in front of player checkbox sets front/back for all painted stamp cells. "
-                                   "When unchecked, each stamp cell uses its own saved front/back flag. "
-                                   "Individual cell X/Y flips and stamp mirroring are always preserved."));
-    m_stampUseFront->setChecked(windowSettings.value(
-        QStringLiteral("GameTilemapEditor/stampUseFront"), false).toBool());
-    m_stampMirrorX = new QCheckBox(tr("Mirror stamp X"), this);
-    m_stampMirrorY = new QCheckBox(tr("Mirror stamp Y"), this);
-    m_flipMode->setToolTip(tr("Apply X/Y flip and Draw Front flags, or preserve all three while painting collisions."));
-    m_flipX->setToolTip(tr("Set horizontal flip on individual cells painted into the map or stamp editor."));
-    m_flipY->setToolTip(tr("Set vertical flip on individual cells painted into the map or stamp editor."));
+    m_flipMode->setToolTip(tr("Apply cell flip and front-layer flags while painting, or preserve "
+        "the flags already stored in each cell when painting collision data."));
+    flipRow->addWidget(m_flipMode);
+
+    m_flipX = new TilemapFlagButton(TilemapFlagButton::CellX, tr("Cell Flip X"), this);
+    m_flipY = new TilemapFlagButton(TilemapFlagButton::CellY, tr("Cell Flip Y"), this);
+    m_stampMirrorX = new TilemapFlagButton(TilemapFlagButton::StampX, tr("Stamp Flip X"), this);
+    m_stampMirrorY = new TilemapFlagButton(TilemapFlagButton::StampY, tr("Stamp Flip Y"), this);
+    m_flipX->setToolTip(tr("Cell Flip X: mirror each painted tile horizontally (individual cell X flag)."));
+    m_flipY->setToolTip(tr("Cell Flip Y: mirror each painted tile vertically (individual cell Y flag)."));
+    m_stampMirrorX->setToolTip(tr("Stamp Flip X: mirror the entire stamp horizontally when placing it. "
+        "Reverses cell order and combines each cell's X flip correctly."));
+    m_stampMirrorY->setToolTip(tr("Stamp Flip Y: mirror the entire stamp vertically when placing it. "
+        "Reverses cell order and combines each cell's Y flip correctly."));
     const int lastFlags = windowSettings.value(QStringLiteral("GameTilemapEditor/brushFlags"), 0).toInt();
     m_flipX->setChecked((lastFlags & 1) != 0);
     m_flipY->setChecked((lastFlags & 2) != 0);
-    m_drawFront->setChecked((lastFlags & 4) != 0);
-    m_stampMirrorX->setToolTip(tr("Mirror the entire stamp when painting: reverses cell order and toggles each cell's X flip flag."));
-    m_stampMirrorY->setToolTip(tr("Mirror the entire stamp when painting: reverses cell order and toggles each cell's Y flip flag."));
-    flipRow->addWidget(m_flipMode);
     flipRow->addWidget(m_flipX);
     flipRow->addWidget(m_flipY);
-    flipRow->addWidget(m_drawFront);
-    flipRow->addSpacing(10);
     flipRow->addWidget(m_stampMirrorX);
     flipRow->addWidget(m_stampMirrorY);
-    flipRow->addStretch();
+
+    auto *frontDivider = new QFrame(this);
+    frontDivider->setFrameShape(QFrame::VLine);
+    frontDivider->setFrameShadow(QFrame::Sunken);
+    frontDivider->setFixedHeight(30);
+    flipRow->addWidget(frontDivider);
+
+    m_drawFront = new TilemapFlagButton(TilemapFlagButton::Front, tr("Draw in front of player"), this);
+    m_stampUseFront = new TilemapFlagButton(TilemapFlagButton::StampFront,
+                                           tr("Stamp: use draw front setting"), this);
+    m_drawFront->setToolTip(tr("Draw in front of player: paint this tile in front of the player sprite. "
+        "Collision is unchanged."));
+    m_stampUseFront->setToolTip(tr("Stamp: use draw front setting. When on, the Draw in front of player "
+        "button overrides front/back for every stamp cell. When off, each stamp cell "
+        "uses its saved front/back flag. Individual X/Y flips are preserved."));
+    m_drawFront->setChecked((lastFlags & 4) != 0);
+    m_stampUseFront->setChecked(windowSettings.value(
+        QStringLiteral("GameTilemapEditor/stampUseFront"), false).toBool());
+    flipRow->addWidget(m_drawFront);
+    flipRow->addWidget(m_stampUseFront);
+
+    m_playerToolsDivider = new QFrame(this);
+    m_playerToolsDivider->setFrameShape(QFrame::VLine);
+    m_playerToolsDivider->setFrameShadow(QFrame::Sunken);
+    m_playerToolsDivider->setFixedHeight(30);
+    m_playerToolsDivider->hide();
+    flipRow->addWidget(m_playerToolsDivider);
+    m_playerReferenceToggle = new TilemapFlagButton(TilemapFlagButton::Player,
+        tr("Show player reference (drag to check gaps)"), this);
+    m_playerReferenceToggle->setToolTip(tr("Show player reference: editor-only sprite named 'player'. "
+        "Drag it, or point at the map and press Space to position it there. "
+        "The World Editor spawn position is never changed. Turn off to paint behind it."));
+    m_playerReferenceToggle->hide();
+    flipRow->addWidget(m_playerReferenceToggle);
+    connect(m_playerReferenceToggle, &QToolButton::toggled, this, [this](bool visible) {
+        if (m_canvas) {
+            m_canvas->showPlayerReference = visible;
+            m_canvas->viewport()->update();
+        }
+    });
+    m_playerCollisionToggle = new TilemapFlagButton(TilemapFlagButton::Hitbox,
+        tr("Show player hitbox / collision clearance"), this);
+    m_playerCollisionToggle->setToolTip(tr("Show player hitbox / collision clearance. "
+        "Green: clear. Red: blocked by solids or slope interiors. "
+        "Orange: hazard. Yellow: one-way platform. Blue: pass-through zone/door. "
+        "Uses the saved Player Animation Editor hitbox where valid (otherwise full sprite). "
+        "This is a stationary design-time clearance check, not a motion simulation."));
+    m_playerCollisionToggle->setChecked(true);
+    m_playerCollisionToggle->hide();
+    flipRow->addWidget(m_playerCollisionToggle);
+    connect(m_playerCollisionToggle, &QToolButton::toggled, this, [this](bool enabled) {
+        if (m_canvas) {
+            m_canvas->showPlayerCollision = enabled;
+            m_canvas->viewport()->update();
+        }
+    });
+    flipRow->addStretch(1);
     layout->addLayout(flipRow);
-    // Keep the already-busy tile flag row compact; the override is a
-    // separate, small option below it and affects graphical STAMP placement.
-    auto *stampFlagRow = new QHBoxLayout;
-    stampFlagRow->addWidget(m_stampUseFront);
-    stampFlagRow->addStretch();
-    layout->addLayout(stampFlagRow);
 
     // Adjustable atlas/animation sidebar on the left, map canvas on the right.
     m_splitter = new QSplitter(Qt::Horizontal, this);
@@ -2209,6 +2658,12 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_canvas->setMinimumWidth(300);
     m_canvas->map = &m_map;
     m_canvas->atlas = &m_atlas;
+    auto *placePlayerShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
+    placePlayerShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    placePlayerShortcut->setAutoRepeat(false);
+    connect(placePlayerShortcut, &QShortcut::activated, this, [this]() {
+        if (m_canvas) m_canvas->movePlayerReferenceToMouse();
+    });
     m_canvas->strokeStarted = [this]() { m_strokeStart = m_map; };
     m_canvas->strokeFinished = [this]() { recordChange(m_strokeStart); };
     m_canvas->temporaryStatus = [this](const QString &status) {
@@ -2219,8 +2674,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_canvas->editPlacedCollision = [this](int shapeIndex) {
         if (shapeIndex < 0 || shapeIndex >= m_map.collisionStamps.size()) return;
         m_stampTabs->setCurrentIndex(1);
-        m_collisionList->setCurrentRow(shapeIndex);
-        selectCollisionStamp(shapeIndex);
+        openCollisionStampEditor(shapeIndex);
         if (m_stampStatus)
             m_stampStatus->setText(tr("Editing collision stamp '%1' — changes affect every copy")
                                     .arg(m_map.collisionStamps.at(shapeIndex).name));
@@ -2232,6 +2686,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     // forcing the centre canvas into an unnecessarily narrow column.
     m_stampTabs->setMinimumWidth(250);
     m_stampTabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    // The polished tab padding must not widen the resizable right pane.
+    // Narrow panes use the tab bar's scroll arrows rather than forcing a
+    // larger minimum width and squeezing the world canvas.
+    if (auto *tabBar = m_stampTabs->findChild<QTabBar *>()) {
+        tabBar->setUsesScrollButtons(true);
+        tabBar->setElideMode(Qt::ElideRight);
+    }
     auto *stampSidebar = new QSplitter(Qt::Vertical, m_stampTabs);
     stampSidebar->setChildrenCollapsible(false);
     stampSidebar->setMinimumWidth(250);
@@ -2242,6 +2703,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     bankTitle->setFont(sectionFont);
     bankLayout->addWidget(bankTitle);
     m_stampList = new QListWidget(bankPane);
+    m_stampList->setObjectName(QStringLiteral("GGTileStampBank"));
     m_stampList->setViewMode(QListView::IconMode);
     m_stampList->setResizeMode(QListView::Adjust);
     m_stampList->setMovement(QListView::Static);
@@ -2302,15 +2764,24 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     stampSidebar->setSizes({300, 300});
     m_stampTabs->addTab(stampSidebar, tr("Tile Stamps"));
 
-    // Independent collision-only stamp workspace. The graphical stamp last
-    // selected in the first tab is used as a FADED visual reference here.
-    auto *collisionSidebar = new QSplitter(Qt::Vertical, m_stampTabs);
-    collisionSidebar->setChildrenCollapsible(false);
+    // Collision Stamps: switch between a full-height bank and a full-height
+    // point editor, rather than squeezing both into half the sidebar.
+    // Edits still modify the selected shared definition and are undoable.
+    auto *collisionSidebar = new QStackedWidget(m_stampTabs);
+    m_collisionViews = collisionSidebar;
+    collisionSidebar->setMinimumWidth(0);
+    collisionSidebar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     auto *collisionBankPane = new QWidget(collisionSidebar);
     auto *collisionBankLayout = new QVBoxLayout(collisionBankPane);
     collisionBankLayout->setContentsMargins(4, 4, 4, 4);
-    collisionBankLayout->addWidget(new QLabel(tr("Collision Stamp Bank"), collisionBankPane));
+    auto *collisionBankTitle = new QLabel(tr("Collision Stamp Bank"), collisionBankPane);
+    collisionBankLayout->addWidget(collisionBankTitle);
+    auto *collisionBankHelp = new QLabel(
+        tr("Double-click a stamp to edit its collision surface."), collisionBankPane);
+    collisionBankHelp->setWordWrap(true);
+    collisionBankLayout->addWidget(collisionBankHelp);
     m_collisionList = new QListWidget(collisionBankPane);
+    m_collisionList->setObjectName(QStringLiteral("GGCollisionStampBank"));
     m_collisionList->setViewMode(QListView::IconMode);
     m_collisionList->setResizeMode(QListView::Adjust);
     m_collisionList->setMovement(QListView::Static);
@@ -2326,8 +2797,47 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionBankLayout->addLayout(collisionActions);
     auto *collisionEditPane = new QWidget(collisionSidebar);
     auto *collisionEditLayout = new QVBoxLayout(collisionEditPane);
-    collisionEditLayout->setContentsMargins(4, 4, 4, 4);
-    collisionEditLayout->addWidget(new QLabel(tr("Draw ground surface — solid below"), collisionEditPane));
+    collisionEditLayout->setContentsMargins(6, 6, 6, 6);
+    collisionEditLayout->setSpacing(6);
+    auto *collisionEditorHeader = new QHBoxLayout;
+    auto *collisionEditorTitle = new QLabel(tr("Edit Collision Stamp"), collisionEditPane);
+    collisionEditorHeader->addWidget(collisionEditorTitle, 1);
+    // A pair of crisp, theme-text-coloured 24x24 action icons. No rounded corners.
+    const auto slopeActionIcon = [this](bool accept) {
+        QPixmap image(24, 24);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.setPen(QPen(palette().color(QPalette::Text), 3,
+                            Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+        if (accept) {
+            painter.drawLine(4, 12, 10, 18);
+            painter.drawLine(10, 18, 21, 5);
+        } else {
+            painter.drawLine(5, 5, 19, 19);
+            painter.drawLine(19, 5, 5, 19);
+        }
+        return QIcon(image);
+    };
+    auto *cancelCollisionEdit = new QPushButton(collisionEditPane);
+    auto *acceptCollisionEdit = new QPushButton(collisionEditPane);
+    cancelCollisionEdit->setObjectName(QStringLiteral("GGCollisionEditorCancel"));
+    acceptCollisionEdit->setObjectName(QStringLiteral("GGCollisionEditorAccept"));
+    cancelCollisionEdit->setIcon(slopeActionIcon(false));
+    acceptCollisionEdit->setIcon(slopeActionIcon(true));
+    for (QPushButton *button : {cancelCollisionEdit, acceptCollisionEdit}) {
+        button->setIconSize(QSize(24, 24));
+        button->setFixedSize(36, 34);
+        button->setStyleSheet(QStringLiteral("QPushButton { border-radius:0px; }"));
+    }
+    cancelCollisionEdit->setToolTip(tr("Cancel slope edits and return to Collision Stamps (Esc)"));
+    acceptCollisionEdit->setToolTip(tr("Keep slope edits and return to Collision Stamps"));
+    collisionEditorHeader->addWidget(cancelCollisionEdit);
+    collisionEditorHeader->addWidget(acceptCollisionEdit);
+    collisionEditLayout->addLayout(collisionEditorHeader);
+    auto *collisionEditorHelp = new QLabel(tr("Draw the ground surface (solid below the line)."), collisionEditPane);
+    collisionEditorHelp->setWordWrap(true);
+    collisionEditLayout->addWidget(collisionEditorHelp);
     m_collisionName = new QLineEdit(collisionEditPane);
     m_collisionName->setMaxLength(80);
     m_collisionName->setPlaceholderText(tr("Collision stamp name"));
@@ -2360,6 +2870,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     dampingRow->addWidget(m_collisionDamping);
     collisionEditLayout->addLayout(dampingRow);
     auto *collisionScroll = new QScrollArea(collisionEditPane);
+    collisionScroll->setWidgetResizable(false);
+    collisionScroll->setAlignment(Qt::AlignCenter);
+    collisionScroll->setMinimumHeight(180);
     m_collisionCanvas = new CollisionCanvas(collisionScroll);
     m_collisionCanvas->map = &m_map;
     m_collisionCanvas->atlas = &m_atlas;
@@ -2377,8 +2890,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionPointRow->addWidget(new QLabel(tr("Y"), collisionEditPane));
     collisionPointRow->addWidget(m_collisionPointY);
     collisionEditLayout->addLayout(collisionPointRow);
-    // The cubic is baked into ordinary editable v4 points. Both ends are the
-    // stamp's existing end points; the two adjustable handles shape the curve.
+    // The cubic is baked into ordinary editable v4 points. The two outer
+    // endpoints have independently editable Y positions; their X positions
+    // must span the stamp (0..width) for the existing collision format.
     // Keeping it a tool rather than a new collision type preserves old maps.
     auto *generateCurve = new QPushButton(tr("Generate Bezier Curve..."), collisionEditPane);
     generateCurve->setToolTip(tr("Shape a smooth ramp or bowl with two Bezier handles. "
@@ -2415,12 +2929,14 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                              slider, &QSlider::setValue);
             return std::pair<QSpinBox *, QSlider *>(spin, slider);
         };
-        const int firstY = shape.points.first().y();
-        const int lastY = shape.points.last().y();
+        // Previously these Y coordinates were read once and could never move
+        // in the Bezier popup, even though the point-slope format permits it.
+        auto *startY = make(tr("Left endpoint Y"), 0, h, shape.points.first().y()).first;
         auto [x1, sliderAX] = make(tr("Handle A X"), 0, w, w/3);
-        auto [y1, sliderAY] = make(tr("Handle A Y"), 0, h, firstY);
+        auto [y1, sliderAY] = make(tr("Handle A Y"), 0, h, startY->value());
         auto [x2, sliderBX] = make(tr("Handle B X"), 0, w, w*2/3);
-        auto [y2, sliderBY] = make(tr("Handle B Y"), 0, h, lastY);
+        auto [y2, sliderBY] = make(tr("Handle B Y"), 0, h, shape.points.last().y());
+        auto *endY = make(tr("Right endpoint Y"), 0, h, shape.points.last().y()).first;
 
         // A<=B is required by the existing single-valued-X slope sampler.
         // Restrict both X controls in either editing direction, including drags.
@@ -2437,12 +2953,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 [limitHandleX](int) { limitHandleX(); });
         limitHandleX();
 
-        // Interactive preview: move A or B directly on the graph. This local
-        // widget needs no Q_OBJECT/moc and never changes the stamp before OK.
+        // Interactive preview: move either outer endpoint vertically, or
+        // drag A/B in both directions. No Q_OBJECT/moc is required and the
+        // actual collision stamp remains untouched until OK.
         class BezierPreview final : public QWidget {
         public:
             BezierPreview(QWidget *parent, int curveW, int curveH,
-                          int startY, int endY,
+                          QSpinBox *startY, QSpinBox *endY,
                           QSpinBox *ax, QSpinBox *ay, QSpinBox *bx, QSpinBox *by)
                 : QWidget(parent), m_w(curveW), m_h(curveH),
                   m_startY(startY), m_endY(endY),
@@ -2451,7 +2968,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 setMinimumSize(420, 260);
                 setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
                 setMouseTracking(true);
-                setToolTip(tr("Drag the orange A or pink B point to shape the curve"));
+                setToolTip(tr("Drag the blue endpoints up/down, or orange A and pink B in any direction"));
             }
 
         protected:
@@ -2465,12 +2982,12 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 painter.setBrush(Qt::NoBrush);
                 painter.drawRect(plot);
 
-                const QPointF start = toScreen(QPoint(0, m_startY));
-                const QPointF finish = toScreen(QPoint(m_w, m_endY));
+                const QPointF start = toScreen(QPoint(0, m_startY->value()));
+                const QPointF finish = toScreen(QPoint(m_w, m_endY->value()));
                 const QPointF a = toScreen(QPoint(m_ax->value(), m_ay->value()));
                 const QPointF b = toScreen(QPoint(m_bx->value(), m_by->value()));
 
-                const auto pts = sampledCubicSlope(m_w, m_h, m_startY, m_endY,
+                const auto pts = sampledCubicSlope(m_w, m_h, m_startY->value(), m_endY->value(),
                     QPoint(m_ax->value(), m_ay->value()),
                     QPoint(m_bx->value(), m_by->value()));
                 if (!pts.isEmpty()) {
@@ -2491,15 +3008,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 painter.drawLine(start, a);
                 painter.drawLine(a, b);
                 painter.drawLine(b, finish);
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(109, 212, 255));
-                painter.drawEllipse(start, 4, 4);
-                painter.drawEllipse(finish, 4, 4);
+                drawHandle(painter, start, QColor(109, 212, 255), QStringLiteral("L"));
+                drawHandle(painter, finish, QColor(109, 212, 255), QStringLiteral("R"));
                 drawHandle(painter, a, QColor(255, 180, 65), QStringLiteral("A"));
                 drawHandle(painter, b, QColor(255, 107, 167), QStringLiteral("B"));
                 painter.setPen(QColor(191, 202, 213));
                 painter.drawText(QRectF(0, height() - 27, width(), 24),
-                                 Qt::AlignCenter, tr("Drag A (orange) or B (pink)  •  Blue dots = fixed endpoints"));
+                                 Qt::AlignCenter, tr("Drag blue L/R vertically  •  Drag orange A / pink B freely"));
             }
 
             void mousePressEvent(QMouseEvent *event) override
@@ -2507,15 +3022,10 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 if (event->button() != Qt::LeftButton) {
                     QWidget::mousePressEvent(event); return;
                 }
-                const QPointF p = event->position();
-                const QPointF a = toScreen(QPoint(m_ax->value(), m_ay->value()));
-                const QPointF b = toScreen(QPoint(m_bx->value(), m_by->value()));
-                const qreal da = QLineF(p, a).length();
-                const qreal db = QLineF(p, b).length();
-                if (qMin(da, db) > 16.0) {
+                m_dragging = hitHandle(event->position());
+                if (m_dragging == 0) {
                     QWidget::mousePressEvent(event); return;
                 }
-                m_dragging = (da <= db) ? 1 : 2;
                 setCursor(Qt::ClosedHandCursor);
                 event->accept();
             }
@@ -2527,19 +3037,20 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                     int x = qBound(0, qRound((event->position().x() - plot.left()) * m_w / plot.width()), m_w);
                     const int y = qBound(0, qRound((event->position().y() - plot.top()) * m_h / plot.height()), m_h);
                     if (m_dragging == 1) {
+                        m_startY->setValue(y); // Left X remains exactly zero.
+                    } else if (m_dragging == 2) {
                         x = qMin(x, m_bx->value());
                         m_ax->setValue(x); m_ay->setValue(y);
-                    } else {
+                    } else if (m_dragging == 3) {
                         x = qMax(x, m_ax->value());
                         m_bx->setValue(x); m_by->setValue(y);
+                    } else if (m_dragging == 4) {
+                        m_endY->setValue(y); // Right X remains exactly width.
                     }
                     update();
                     event->accept(); return;
                 }
-                const QPointF p = event->position();
-                const bool hover = QLineF(p, toScreen(QPoint(m_ax->value(), m_ay->value()))).length() <= 16.0 ||
-                                   QLineF(p, toScreen(QPoint(m_bx->value(), m_by->value()))).length() <= 16.0;
-                setCursor(hover ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                setCursor(hitHandle(event->position()) ? Qt::OpenHandCursor : Qt::ArrowCursor);
                 QWidget::mouseMoveEvent(event);
             }
 
@@ -2554,6 +3065,26 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             }
 
         private:
+            // 1=left, 2=A, 3=B, 4=right. Find the closest handle so
+            // endpoints remain selectable even if a Bezier handle overlaps.
+            int hitHandle(const QPointF &p) const
+            {
+                const QPointF handles[4] = {
+                    toScreen(QPoint(0, m_startY->value())),
+                    toScreen(QPoint(m_ax->value(), m_ay->value())),
+                    toScreen(QPoint(m_bx->value(), m_by->value())),
+                    toScreen(QPoint(m_w, m_endY->value()))
+                };
+                int hit = 0;
+                qreal closest = 18.01;
+                // Prefer the outer endpoints when two handles sit on top
+                // of each other; the other handle has precise spinboxes.
+                for (int i : {0, 3, 1, 2}) {
+                    const qreal distance = QLineF(p, handles[i]).length();
+                    if (distance < closest) { closest = distance; hit = i + 1; }
+                }
+                return hit;
+            }
             QRectF plotRect() const
             {
                 return QRectF(28, 22, qMax(1, width() - 56), qMax(1, height() - 64));
@@ -2572,25 +3103,28 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 p.setPen(QColor(24, 28, 39));
                 p.drawText(QRectF(pos.x()-11, pos.y()-11, 22, 22), Qt::AlignCenter, letter);
             }
-            int m_w, m_h, m_startY, m_endY;
+            int m_w, m_h;
+            QSpinBox *m_startY, *m_endY;
             QSpinBox *m_ax, *m_ay, *m_bx, *m_by;
             int m_dragging = 0;
         };
 
-        auto *preview = new BezierPreview(&dialog, w, h, firstY, lastY, x1, y1, x2, y2);
+        auto *preview = new BezierPreview(&dialog, w, h, startY, endY, x1, y1, x2, y2);
         form->addRow(preview);
-        for (QSpinBox *spin : {x1, y1, x2, y2})
+        for (QSpinBox *spin : {startY, x1, y1, x2, y2, endY})
             connect(spin, qOverload<int>(&QSpinBox::valueChanged), preview,
                     [preview](int) { preview->update(); });
-        auto *hint = new QLabel(tr("The blue endpoints stay fixed. Use the sliders, exact pixel boxes, "
-            "or drag A/B directly in the preview. Apply generates editable collision points."), &dialog);
+        auto *hint = new QLabel(tr("Blue L/R: drag up or down, or set Y from 0 (top) to height (bottom). "
+            "Orange A and pink B: drag anywhere in the stamp. "
+            "Left/right X endpoints stay at the edges so the collision surface spans the whole stamp. "
+            "OK generates ordinary editable collision points."), &dialog);
         hint->setWordWrap(true); form->addRow(hint);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         form->addRow(buttons);
         if (dialog.exec() != QDialog::Accepted || x1->value() > x2->value()) return;
-        const auto points = sampledCubicSlope(w, h, firstY, lastY,
+        const auto points = sampledCubicSlope(w, h, startY->value(), endY->value(),
             QPoint(x1->value(), y1->value()), QPoint(x2->value(), y2->value()));
         if (points.isEmpty()) return;
         const SidboxTilemap before = m_map;
@@ -2613,9 +3147,19 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     collisionEditLayout->addWidget(collisionHint);
     collisionSidebar->addWidget(collisionBankPane);
     collisionSidebar->addWidget(collisionEditPane);
-    collisionSidebar->setStretchFactor(0, 1);
-    collisionSidebar->setStretchFactor(1, 1);
-    collisionSidebar->setSizes({300, 300});
+    collisionSidebar->setCurrentIndex(0);
+    connect(cancelCollisionEdit, &QPushButton::clicked, this,
+            [this]() { finishCollisionStampEdit(false); });
+    connect(acceptCollisionEdit, &QPushButton::clicked, this,
+            [this]() { finishCollisionStampEdit(true); });
+    m_collisionCanvas->setFocusPolicy(Qt::StrongFocus);
+    auto *deleteCollisionPoint = new QShortcut(QKeySequence(Qt::Key_Delete), m_collisionCanvas);
+    deleteCollisionPoint->setContext(Qt::WidgetShortcut);
+    connect(deleteCollisionPoint, &QShortcut::activated, this, [this]() {
+        if (m_collisionViews && m_collisionViews->currentIndex() == 1 &&
+            m_collisionDeletePoint && m_collisionDeletePoint->isEnabled())
+            m_collisionDeletePoint->click();
+    });
     m_stampTabs->addTab(collisionSidebar, tr("Collision Stamps"));
     // Physics loop workspace. The yellow marker is the shared bottom
     // entrance/exit; the blue circle is NOT an ordinary solid slope. The
@@ -2627,6 +3171,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     loopLayout->setSpacing(6);
     // The tab already says Loop Tracks; no extra title or third-party name.
     auto *loopList = new QListWidget(loopPane);
+    loopList->setObjectName(QStringLiteral("GGLoopTrackBank"));
+    loopList->setSpacing(2);
     loopLayout->addWidget(loopList, 1);
     auto *loopActions = new QHBoxLayout;
     auto *loopAdd = new QPushButton(tr("Add Loop"), loopPane);
@@ -2734,6 +3280,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             auto *item = new QListWidgetItem(loopIcon,
                 tr("Loop %1  (%2, %3)  R%4")
                 .arg(i+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
+            item->setSizeHint(QSize(0, 34)); // Room for the bordered card.
             loopList->addItem(item);
         }
         loopList->setCurrentRow(qBound(-1,selected,int(m_map.loops.size())-1));
@@ -2857,6 +3404,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         [this](int row) { selectCollisionStamp(row); });
     connect(m_collisionList, &QListWidget::itemClicked, this,
         [this](QListWidgetItem *item) { selectCollisionStamp(m_collisionList->row(item)); });
+    connect(m_collisionList, &QListWidget::itemDoubleClicked, this,
+        [this](QListWidgetItem *item) { openCollisionStampEditor(m_collisionList->row(item)); });
     connect(addCollision, &QPushButton::clicked, this, [this]() {
         if (m_map.collisionStamps.size() >= 128) {
             QMessageBox::warning(this, tr("Collision stamps"), tr("Maximum of 128 collision stamps."));
@@ -3099,6 +3648,12 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(m_saveButton, &QPushButton::clicked, this, [this]() {
         if (!m_saveCallback) return;
         if (m_canvas && m_canvas->painting) return;
+        // The saved project must contain the CURRENT pan, not the pan from
+        // the last time the editor was opened.
+        if (m_canvas) {
+            m_map.viewPanX = m_canvas->horizontalScrollBar()->value() / qMax(1, m_canvas->zoom);
+            m_map.viewPanY = m_canvas->verticalScrollBar()->value() / qMax(1, m_canvas->zoom);
+        }
         if (m_saveCallback(m_map)) {
             saveViewSettings();
             m_saveStatus->setText(tr("Saved to game design"));
@@ -3233,10 +3788,10 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         m_canvas->viewport()->update();
         m_stampCanvas->update();
     };
-    connect(m_flipX, &QCheckBox::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
-    connect(m_flipY, &QCheckBox::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
-    connect(m_drawFront, &QCheckBox::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
-    connect(m_stampUseFront, &QCheckBox::toggled, this, [this](bool enabled) {
+    connect(m_flipX, &QToolButton::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
+    connect(m_flipY, &QToolButton::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
+    connect(m_drawFront, &QToolButton::toggled, this, [updateFlipBrush](bool) { updateFlipBrush(); });
+    connect(m_stampUseFront, &QToolButton::toggled, this, [this](bool enabled) {
         m_canvas->stampUseFrontBrush = enabled;
         m_canvas->viewport()->update();
     });
@@ -3247,8 +3802,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                                               (m_stampMirrorY->isChecked() ? 2 : 0));
         m_canvas->viewport()->update();
     };
-    connect(m_stampMirrorX, &QCheckBox::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
-    connect(m_stampMirrorY, &QCheckBox::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
+    connect(m_stampMirrorX, &QToolButton::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
+    connect(m_stampMirrorY, &QToolButton::toggled, this, [updateStampMirror](bool) { updateStampMirror(); });
     connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
         [this, brushC](int) {
             m_canvas->collisionBrush = brushC->currentData().toInt();
@@ -3298,17 +3853,14 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_stampCanvas->graphicBrush = m_canvas->graphicBrush;
     updateAtlasPicker();
     m_canvas->adjust();
-    // Pan is project-specific, while zoom and brush choices are IDE preferences.
-    m_viewSettingsKey = QString::fromLatin1(QCryptographicHash::hash(
-        QDir(m_designDirectory).absolutePath().toUtf8(),
-        QCryptographicHash::Sha256).toHex());
+    // This position is saved in the project's tilemap JSON (.sbgm), not
+    // QSettings, so sharing/reopening the project restores the same view.
+    // Restore only after the scroll area's viewport has its final size.
     QTimer::singleShot(0, this, [this]() {
         if (!m_canvas) return;
         m_canvas->adjust();
-        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-        const QString prefix = QStringLiteral("GameTilemapEditor/pan/") + m_viewSettingsKey;
-        m_canvas->horizontalScrollBar()->setValue(settings.value(prefix + QStringLiteral("/x"), 0).toInt());
-        m_canvas->verticalScrollBar()->setValue(settings.value(prefix + QStringLiteral("/y"), 0).toInt());
+        m_canvas->horizontalScrollBar()->setValue(m_map.viewPanX * m_canvas->zoom);
+        m_canvas->verticalScrollBar()->setValue(m_map.viewPanY * m_canvas->zoom);
     });
     updateStampList();
     updateCollisionList();
@@ -3558,6 +4110,8 @@ void SidboxTilemapEditor::updateCollisionEditorControls()
     if (!m_collisionList || !m_collisionCanvas) return;
     const int selected = m_collisionList->currentRow();
     const bool valid = selected >= 0 && selected < m_map.collisionStamps.size();
+    if (!valid && m_collisionViews && m_collisionViews->currentIndex() != 0)
+        m_collisionViews->setCurrentIndex(0);
     if (m_collisionCanvas->selected != selected) {
         // Changing stamps also changes the editor, not just the painting brush.
         m_collisionCanvas->selected = selected;
@@ -3618,6 +4172,52 @@ void SidboxTilemapEditor::updateCollisionPointControls()
         (m_map.collisionStamps.at(selected).width * m_map.collisionStamps.at(selected).tileSize + 1 >
          m_map.collisionStamps.at(selected).points.size()));
     m_collisionDeletePoint->setEnabled(interior);
+}
+
+void SidboxTilemapEditor::openCollisionStampEditor(int row)
+{
+    if (!m_collisionViews || !m_collisionList || !m_stampTabs ||
+        row < 0 || row >= m_map.collisionStamps.size()) return;
+    // A bank single-click still selects the paint brush. Double-click (or
+    // Shift-click on a placed slope) opens the editor without copying data.
+    m_stampTabs->setCurrentIndex(1);
+    m_collisionList->setCurrentRow(row);
+    selectCollisionStamp(row);
+    // Capture before entering the editor so X genuinely cancels ALL slope
+    // changes, including size and edits to placed copies, without leaving
+    // cancelled edits on the undo stack.
+    m_collisionEditBefore = m_map;
+    m_collisionEditUndoBefore = m_undoStack;
+    m_collisionEditRedoBefore = m_redoStack;
+    m_collisionEditIndex = row;
+    m_collisionEditStatusBefore = m_saveStatus ? m_saveStatus->text() : QString();
+    m_collisionEditActive = true;
+    m_collisionViews->setCurrentIndex(1);
+    updateCollisionEditorControls();
+    m_collisionCanvas->setFocus(Qt::OtherFocusReason);
+}
+
+void SidboxTilemapEditor::finishCollisionStampEdit(bool accept)
+{
+    if (!m_collisionViews || !m_collisionList || !m_collisionEditActive) return;
+    const int row = m_collisionEditIndex;
+    m_collisionEditActive = false;
+    m_collisionEditIndex = -1;
+    if (!accept) {
+        restoreMap(m_collisionEditBefore);
+        m_undoStack = m_collisionEditUndoBefore;
+        m_redoStack = m_collisionEditRedoBefore;
+        updateHistoryActions();
+        if (m_saveStatus) m_saveStatus->setText(m_collisionEditStatusBefore);
+    }
+    // Release snapshots once the transaction is finished.
+    m_collisionEditBefore = SidboxTilemap();
+    m_collisionEditUndoBefore.clear();
+    m_collisionEditRedoBefore.clear();
+    m_collisionEditStatusBefore.clear();
+    m_collisionViews->setCurrentIndex(0);
+    updateCollisionList(row);
+    m_collisionList->setFocus();
 }
 
 void SidboxTilemapEditor::selectCollisionStamp(int row)
@@ -3794,15 +4394,18 @@ void SidboxTilemapEditor::saveViewSettings()
     settings.setValue(QStringLiteral("GameTilemapEditor/brushFlags"), m_canvas->flipBrush);
     settings.setValue(QStringLiteral("GameTilemapEditor/stampUseFront"),
                       m_canvas->stampUseFrontBrush);
-    if (!m_viewSettingsKey.isEmpty()) {
-        const QString prefix = QStringLiteral("GameTilemapEditor/pan/") + m_viewSettingsKey;
-        settings.setValue(prefix + QStringLiteral("/x"), m_canvas->horizontalScrollBar()->value());
-        settings.setValue(prefix + QStringLiteral("/y"), m_canvas->verticalScrollBar()->value());
-    }
+    // Pan belongs to the tilemap JSON and is captured on Save/Apply,
+    // not in application-global settings. Cancel must not modify the project.
 }
 
 void SidboxTilemapEditor::done(int result)
 {
+    // QDialog::accept() reaches here before the owner calls result().
+    // Cancel retains the previously committed pan in the project.
+    if (result == QDialog::Accepted && m_canvas) {
+        m_map.viewPanX = m_canvas->horizontalScrollBar()->value() / qMax(1, m_canvas->zoom);
+        m_map.viewPanY = m_canvas->verticalScrollBar()->value() / qMax(1, m_canvas->zoom);
+    }
     saveViewSettings();
     // Save for Apply and Cancel alike: window state is a user preference,
     // not a tilemap edit. saveGeometry includes the maximised state.
@@ -3817,6 +4420,13 @@ void SidboxTilemapEditor::keyPressEvent(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Escape && m_canvas && m_canvas->temporaryActive) {
         m_canvas->deactivateTemporary();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && m_collisionViews &&
+        m_stampTabs && m_stampTabs->currentIndex() == 1 &&
+        m_collisionViews->currentIndex() == 1) {
+        finishCollisionStampEdit(false);
         event->accept();
         return;
     }

@@ -32,6 +32,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QTimer;
+class QShowEvent;
 
 /*
  * Stage 53: V1 game design document with host-side PPB import/preview and
@@ -61,12 +62,16 @@ public:
     bool regenerateBuildFiles();
     // The SAME full Update Project operation as the Game Designer button:
     // ZIP backup, SDK helper refresh, exports, maingame.c.txt, managed main.c.
+    // fromCompile: F5 has already obtained (or remembered) consent; skip the
+    // redundant confirmation and success notice, but always show errors.
     // False on confirmation cancel or failure; caller must stop the build.
-    bool updateGameProject();
+    bool updateGameProject(bool fromCompile = false);
     void setTheme(const IDETheme &theme);
 
 protected:
     void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void restoreWorldViewPosition();
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -96,11 +101,17 @@ private:
         bool springSlide = false; // OFF = constant sideways push; ON = momentum with friction.
         bool breakTouch = false; // false = stomp from above; true = touch/leave/touch again
         bool breakBounce = false; // launch after each qualifying stomp
+        bool breakFromBelow = false; // player jumps into underside (not stomp/touch)
+        QString breakDropCollectableId; // stable ID of collectable spawned on final break
+        bool breakRewardImpulse = false; // Opt-in launch; default matches Stage 3.96 gravity-only drop.
+        int breakRewardVx = 0; // signed horizontal launch speed, pixels/frame
+        int breakRewardVy = -8; // signed vertical launch speed, negative is UP
         int breakHits = 1; // 1..4, stored per placed instance
         int breakStrength = 11; // upward px/frame for bounce
         int breakLaunchX = 0; // -left, +right px/frame
         bool objectInitiallyActive = true; // Default for all old designs.
         bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
+        bool objectFlipX = false, objectFlipY = false; // Optional BOB mirroring; hitbox stays in place.
         int hazardDamage = 1; // Per contact; game owns its health/score rules.
         int hazardKickX = 0, hazardKickY = -11; // Signed px/frame; Y negative is UP.
         bool hazardKick = true;
@@ -127,6 +138,7 @@ private:
         int audioRadius = 0;         // 0 = fixed volume/pan; otherwise attenuation in pixels.
         int audioFadeFrames = 8;     // Fade of continuously moving/ambient sounds.
         QString objectSplineId; // stable spline ID, not name/array position
+        int objectSplineStartDelay = 0; // 50 Hz frames to wait before first path movement (per placed object)
         bool objectAnimated = false;
         int animFirst = 0, animCount = 1, animTicks = 5;
         QString animMode = QStringLiteral("loop");
@@ -217,6 +229,11 @@ private:
     bool m_syncSelection = false;
     QGraphicsScene *m_scene = nullptr;
     QGraphicsView *m_view = nullptr;
+    // The WORLD canvas pan is independent of the tilemap editor and of
+    // cameraX/Y used by the running game. Restore after the view is shown.
+    QPointF m_savedWorldViewCenter;
+    bool m_restoreWorldViewCenter = false;
+    bool m_worldPanMoved = false;
     QGraphicsRectItem *m_cameraFrame = nullptr;
     QGraphicsRectItem *m_worldFrame = nullptr;
     QGraphicsItem *m_tilemapOverlayItem = nullptr;

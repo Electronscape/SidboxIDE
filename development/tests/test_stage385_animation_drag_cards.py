@@ -19,7 +19,7 @@ assert 'const int cell = index.data(Qt::UserRole).toInt();' in source
 assert 'const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));' in source
 assert 'QStringLiteral("%1ms").arg(ticks * 20)' in source
 assert 'p->drawLine(card.left() + 1, card.top() + 23' in source
-assert 'm_timeline->setItemDelegate(new AnimationFrameCardDelegate(m_timeline));' in source
+assert 'm_timeline->setItemDelegate(new AnimationFrameCardDelegate(m_theme.accent, m_timeline));' in source
 
 # Qt drop path: uses its own MIME format and explicitly accepts drops.
 assert 'new QDrag(this)' in source

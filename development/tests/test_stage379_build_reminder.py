@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 3.79b update: full Update Project for F5; Qt6 runtime tests are external."""
+"""Stage 3.79b update: full Update Project for F5; Stage 4.08 silent F5 dialogs."""
 from pathlib import Path
 p = Path(__file__).resolve().parents[2]
 m = (p/'mainwindow.cpp').read_text()
@@ -12,7 +12,7 @@ proj = (p/'gamedesigner_update.cpp').read_text()
 compile_f5 = m.split('void MainWindow::compileActiveFile()', 1)[1].split('void MainWindow::handleCompilerFinished(', 1)[0]
 check = m.split('bool MainWindow::checkGameBuildGeneration()',1)[1].split('void MainWindow::compileActiveFile()',1)[0]
 generate = ge.split('bool SidboxGameDesigner::regenerateBuildFiles()',1)[1].split('void SidboxGameDesigner::generateGameCode()',1)[0]
-full = proj.split('bool SidboxGameDesigner::updateGameProject()',1)[1]
+full = proj.split('bool SidboxGameDesigner::updateGameProject(bool fromCompile)',1)[1]
 assert 'if (!checkGameBuildGeneration()) return;' in compile_f5
 assert compile_f5.index('if (!checkGameBuildGeneration()) return;') < compile_f5.index('projectFilesForCompile()')
 assert 'm_gameBuildFirstCheckPending' in h and 'm_gameBuildAskBeforeBuild' in h
@@ -23,10 +23,10 @@ assert 'm_gameBuildAskBeforeBuild = false;' in check
 assert 'gameBuildFilesOutdated(path)' in check
 assert 'new SidboxGameDesigner' not in check
 assert 'openGameDesigner(path)' in check
-assert 'if (!game->updateGameProject()) return false;' in check
+assert 'if (!game->updateGameProject(true)) return false;' in check
 assert 'game->regenerateBuildFiles()' not in check
 assert 'if (rememberUpdateAfterSuccess)' in check
-assert check.index('if (!game->updateGameProject()) return false;') < check.index('if (rememberUpdateAfterSuccess)')
+assert check.index('if (!game->updateGameProject(true)) return false;') < check.index('if (rememberUpdateAfterSuccess)')
 assert 'if (game->tilemapBuildFilesMissing())' not in compile_f5
 assert 'void MainWindow::showProjectSettings()' in m
 assert 'dialog.setAskBeforeGameBuild(m_gameBuildAskBeforeBuild);' in m
@@ -34,7 +34,7 @@ assert 'm_gameBuildAskBeforeBuild = dialog.askBeforeGameBuild();' in m
 assert 'askBeforeGameBuild() const' in dh
 assert 'm_askBeforeGameBuildCheck' in d
 assert '"Ask before running Update Project on build (F5)"' in d
-assert 'bool updateGameProject();' in gh.split('protected:',1)[0], 'method callable by MainWindow'
+assert 'bool updateGameProject(bool fromCompile = false);' in gh.split('protected:',1)[0], 'method callable by MainWindow'
 assert 'regenerateBuildFiles()' in gh
 assert 'generateGameCodeCore(embedPixels, true)' in generate
 assert 'tilemapBuildFilesMissing()' in generate
@@ -45,7 +45,7 @@ assert 'gameBackupWriteZip(' in full
 assert 'gameBackupTrimArchives(' in full
 assert 'backupFolder' in full
 assert 'maingame.c.txt' in full
-assert 'generateGameCodeCore(embed->isChecked(), true)' in full
+assert 'generateGameCodeCore(embedPixels, true)' in full
 assert 'saveDesign()' in full
 assert 'return false;' in full and full.rstrip().endswith('return true;\n}')
 assert '2048LL * 1024LL' in m

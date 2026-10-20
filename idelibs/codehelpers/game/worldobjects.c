@@ -14,6 +14,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->sprite = sprite;
     object->animation = 0;
     object->spline = 0;
+    object->spline_start_delay = 0;
     object->x = x;
     object->y = y;
     object->previous_x = x;
@@ -103,7 +104,17 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
         object->previous_x = object->x;
         object->previous_y = object->y;
         if (object->spline && object->sprite) {
-            run_spline(object->spline, frames);
+            /* Consume the delay without advancing this object's path.
+               A multi-frame update may end the wait partway through, so
+               advance ONLY the remaining frames after the countdown. */
+            uint16_t move_frames = frames;
+            if (object->spline_start_delay) {
+                const uint16_t waiting = object->spline_start_delay < move_frames
+                    ? object->spline_start_delay : move_frames;
+                object->spline_start_delay -= waiting;
+                move_frames -= waiting;
+            }
+            if (move_frames) run_spline(object->spline, move_frames);
             object->x = object->sprite->drawx;
             object->y = object->sprite->drawy;
         }
@@ -282,6 +293,32 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                 (int64_t)y + p->height >= o->y);
             if (!still_touching) o->break_touching = 0;
         }
+        /* Head-butt blocks register a fresh upward crossing of their underside.
+           The jump must be deliberate, not a spike/spring knockback or fall.
+           Reset the armed jump here: a second hit requires a NEW jump. */
+        if (o->type == GAME_OBJECT_BREAKABLE && o->break_from_below &&
+            !o->break_touching && p->break_stomp_armed) {
+            const int32_t old_top = p->before_feet - p->height;
+            const int64_t old_bottom = (int64_t)o->previous_y + o->height;
+            const int64_t new_bottom = (int64_t)o->y + o->height;
+            if (old_top >= old_bottom && y <= new_bottom && y < old_top &&
+                (int64_t)x < (int64_t)o->x + o->width &&
+                (int64_t)x + p->width > o->x) {
+                o->break_touching = 1;
+                if (o->break_hits_done < 4) ++o->break_hits_done;
+                o->break_hit_triggered = 1;
+                if (o->break_hits_done >= (o->break_hits_required
+                        ? o->break_hits_required : 1)) {
+                    o->break_triggered = 1;
+                    o->active = 0;
+                }
+                *p->y100 = ((int32_t)new_bottom - p->offset_y) * 100;
+                if (*p->vy100 < 0) *p->vy100 = 0;
+                *p->on_ground = 0;
+                p->break_stomp_armed = 0;
+                return;
+            }
+        }
         // Switches are intangible: they never behave like a platform.
         if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE ||
             o->type == GAME_OBJECT_HAZARD) continue;
@@ -404,7 +441,8 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         /* Touch-mode counts a fresh contact from any direction. Stomp-mode
            counts ONLY a landing following an actual player jump; gravity
            alone is not an attack. A non-stomping landing is still solid. */
-        const uint8_t valid_hit = (uint8_t)(best_touch || p->break_stomp_armed);
+        const uint8_t valid_hit = (uint8_t)(!best->break_from_below &&
+            (best_touch || p->break_stomp_armed));
         if (valid_hit && !best->break_touching) {
             best->break_touching = 1;
             if (best->break_hits_done < 4) ++best->break_hits_done;

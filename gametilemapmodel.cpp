@@ -72,6 +72,10 @@ void SidboxTilemap::resizeMap(int w, int h)
                     nextS[to * tileSize + i] = slopes.at(from * tileSize + i);
         }
     width = w; height = h;
+    if (referencePlayerPositionSet) {
+        referencePlayerX = qBound(0, referencePlayerX, w * tileSize);
+        referencePlayerY = qBound(0, referencePlayerY, h * tileSize);
+    }
     graphics = nextG; collisions = nextC; flips = nextF; slopes = nextS;
     for (int i = loops.size()-1; i >= 0; --i) {
         const auto &track=loops.at(i);
@@ -104,6 +108,13 @@ QJsonObject SidboxTilemap::toJson() const
     result.insert(QStringLiteral("height"), height);
     result.insert(QStringLiteral("tileSize"), tileSize);
     result.insert(QStringLiteral("atlasPath"), atlasPath);
+    result.insert(QStringLiteral("viewPanX"), viewPanX);
+    result.insert(QStringLiteral("viewPanY"), viewPanY);
+    // Not part of the exported .map / generated engine data.
+    if (referencePlayerPositionSet) {
+        result.insert(QStringLiteral("referencePlayerX"), referencePlayerX);
+        result.insert(QStringLiteral("referencePlayerY"), referencePlayerY);
+    }
     result.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(graphics, 9).toBase64()));
     QJsonArray zoneNames;
     for (int i = 0; i < 8; ++i)
@@ -434,6 +445,15 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     }
     width = w; height = h; tileSize = tile;
     atlasPath = object.value(QStringLiteral("atlasPath")).toString();
+    // Old designs have no viewport position and open at the top-left.
+    viewPanX = qBound(0, object.value(QStringLiteral("viewPanX")).toInt(0), w * tile);
+    viewPanY = qBound(0, object.value(QStringLiteral("viewPanY")).toInt(0), h * tile);
+    referencePlayerPositionSet = object.value(QStringLiteral("referencePlayerX")).isDouble()
+                              && object.value(QStringLiteral("referencePlayerY")).isDouble();
+    referencePlayerX = referencePlayerPositionSet
+        ? qBound(0, object.value(QStringLiteral("referencePlayerX")).toInt(), w * tile) : 0;
+    referencePlayerY = referencePlayerPositionSet
+        ? qBound(0, object.value(QStringLiteral("referencePlayerY")).toInt(), h * tile) : 0;
     if (extended) graphics = g;
     else {
         // Old .sbgm projects used one byte per graphic ID. Upgrade in memory.

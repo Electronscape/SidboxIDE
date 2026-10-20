@@ -23,6 +23,7 @@ typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
     game_animation_t *animation;/* Optional frame animation. */
     game_spline_t *spline;      /* Optional spline driving WORLD movement. */
+    uint16_t spline_start_delay; /* 50 Hz frames left before the path starts; default 0. */
     int32_t x, y;               /* Current WORLD top-left of collision box. */
     int32_t previous_x, previous_y; /* Previous position for carrying rider. */
     uint16_t width, height;
@@ -37,6 +38,7 @@ typedef struct {
     uint8_t break_hits_done;
     uint8_t break_touch_mode;    /* 0=stomp, 1=touch from any side. */
     uint8_t break_bounce;        /* Stomp: launch again after each contact. */
+    uint8_t break_from_below;   /* Only an intentional upward head-butt counts. */
     int16_t break_strength;      /* Upward bounce, pixels/frame. */
     int16_t break_launch_x;      /* Optional left/right bounce, pixels/frame. */
     uint8_t break_touching;      /* Edge latch; leave before hitting again. */

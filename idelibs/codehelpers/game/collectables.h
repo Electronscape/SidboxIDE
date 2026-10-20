@@ -21,10 +21,12 @@ typedef struct {
     gfxbob_t *sprite;               /* Each item needs its own gfxbob_t instance. */
     game_animation_t *animation;    /* Optional: NULL for still images. */
     game_spline_t *spline;          /* Optional: NULL for stationary items. */
+    uint16_t spline_start_delay; /* 50 Hz frames to wait before moving; default 0. */
     int32_t x, y;                   /* Current WORLD top-left position. */
     uint16_t width, height;         /* Pickup hitbox (not rendered). */
     uint16_t kind, value;           /* Game-specific kind and amount. */
     uint8_t active;                 /* 0 = already collected / hidden. */
+    uint8_t can_collect;            /* 0 = currently dropping, not yet landed. */
     uint8_t draw_behind_tiles; /* Draw before tilemap rather than after. */
     uint16_t respawn_frames;        /* 0 = never respawn; delay after pickup. */
     uint16_t respawn_left;          /* Internal countdown, in update frames. */

@@ -269,10 +269,12 @@ void gameBackupTrimArchives(const QDir &location)
 }
 }
 
-bool SidboxGameDesigner::updateGameProject()
+bool SidboxGameDesigner::updateGameProject(bool fromCompile)
 {
-    // This command deliberately operates on the currently opened .sbgm only.
-    // An explicit confirmation and a timestamped backup precede every write.
+    // Only the explicit Game Designer button shows the update confirmation and
+    // success notice. F5 already handled consent and may have remembered it
+    // for this IDE session. Both paths use the SAME backup and update logic;
+    // errors remain visible even when called by F5.
     if (m_filePath.isEmpty() || !m_valid) return false;
     const QDir project(QFileInfo(m_filePath).absolutePath());
     const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
@@ -365,36 +367,41 @@ bool SidboxGameDesigner::updateGameProject()
         else adding << p;
     }
 
-    QMessageBox confirm(this);
-    confirm.setIcon(QMessageBox::Warning);
-    confirm.setStyleSheet(QStringLiteral("QMessageBox, QPushButton, QCheckBox, QTextEdit { border-radius: 0px; }"));
-    confirm.setWindowTitle(tr("Update Game Project — Confirm"));
-    confirm.setText(tr("Back up and update the current game project?"));
-    confirm.setInformativeText(tr(
-        "CoderGirl will refresh existing game helper C/H files from the SDK, "
-        "export the current spline paths and tilemap (if present), then regenerate "
-        "gameassets, gameworlditems and a complete, copyable maingame.c.txt.\n\n"
-        "Any edits in replaced helpers or generated files will be overwritten. "
-        "A ZIP backup is made FIRST.\n\n"
-        "Only a verified, unchanged IDE-owned main.c may be regenerated. "
-        "Hand-edited, unknown and user-owned main.c files remain protected. "
-        "maingame.c.txt is always updated.\n\n"
-        "Only the newest 20 Update Project ZIP backups are retained "
-        "(older ZIPs are deleted after a successful update). "
-        "Earlier folder-style backups are preserved.\n\n"
-        "Replace %1 existing files; create up to %2 missing files.")
-        .arg(replacing.size()).arg(adding.size()));
-    confirm.setDetailedText(tr("FILES TO REPLACE:\n%1\n\nFILES TO CREATE:\n%2")
-        .arg(replacing.isEmpty() ? tr("(none)") : replacing.join(QStringLiteral("\n")),
-             adding.isEmpty() ? tr("(none)") : adding.join(QStringLiteral("\n"))));
-    auto *embed = new QCheckBox(tr("Embed sprite and selected tile-atlas PPBs in generated C (normally load from SD card)"), &confirm);
-    embed->setChecked(false);
-    confirm.setCheckBox(embed);
-    auto *proceed = confirm.addButton(tr("Back Up and Update"), QMessageBox::AcceptRole);
-    confirm.addButton(QMessageBox::Cancel);
-    confirm.setDefaultButton(qobject_cast<QPushButton *>(confirm.button(QMessageBox::Cancel)));
-    confirm.exec();
-    if (confirm.clickedButton() != proceed) return false;
+    bool embedPixels = false; // Compile uses the normal external-PPB mode.
+    if (!fromCompile) {
+        QMessageBox confirm(this);
+        confirm.setIcon(QMessageBox::Warning);
+        confirm.setStyleSheet(QStringLiteral("QMessageBox, QPushButton, QCheckBox, QTextEdit { border-radius: 0px; }"));
+        confirm.setWindowTitle(tr("Update Game Project — Confirm"));
+        confirm.setText(tr("Back up and update the current game project?"));
+        confirm.setInformativeText(tr(
+            "CoderGirl will refresh existing game helper C/H files from the SDK, "
+            "export the current spline paths and tilemap (if present), then regenerate "
+            "gameassets, gameworlditems and a complete, copyable maingame.c.txt.\n\n"
+            "Any edits in replaced helpers or generated files will be overwritten. "
+            "A ZIP backup is made FIRST.\n\n"
+            "Only a verified, unchanged IDE-owned main.c may be regenerated. "
+            "Hand-edited, unknown and user-owned main.c files remain protected. "
+            "maingame.c.txt is always updated.\n\n"
+            "Only the newest 20 Update Project ZIP backups are retained "
+            "(older ZIPs are deleted after a successful update). "
+            "Earlier folder-style backups are preserved.\n\n"
+            "Replace %1 existing files; create up to %2 missing files.")
+            .arg(replacing.size()).arg(adding.size()));
+        confirm.setDetailedText(tr("FILES TO REPLACE:\n%1\n\nFILES TO CREATE:\n%2")
+            .arg(replacing.isEmpty() ? tr("(none)") : replacing.join(QStringLiteral("\n")),
+                 adding.isEmpty() ? tr("(none)") : adding.join(QStringLiteral("\n"))));
+        auto *embed = new QCheckBox(tr("Embed sprite and selected tile-atlas PPBs in generated C (normally load from SD card)"), &confirm);
+        embed->setChecked(false);
+        confirm.setCheckBox(embed);
+        auto *proceed = confirm.addButton(tr("Back Up and Update"), QMessageBox::AcceptRole);
+        confirm.addButton(QMessageBox::Cancel);
+        confirm.setDefaultButton(qobject_cast<QPushButton *>(confirm.button(QMessageBox::Cancel)));
+        confirm.exec();
+        if (confirm.clickedButton() != proceed) return false;
+
+        embedPixels = embed->isChecked();
+    }
 
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
     const QDir backupRoot(project.filePath(QStringLiteral(".codergirl-backups/updates")));
@@ -471,7 +478,7 @@ bool SidboxGameDesigner::updateGameProject()
         error = tr("Spline export failed.");
     if (error.isEmpty() && m_tilemapEnabled && !exportTilemap(false, true))
         error = tr("Tilemap export failed.");
-    if (error.isEmpty() && !generateGameCodeCore(embed->isChecked(), true))
+    if (error.isEmpty() && !generateGameCodeCore(embedPixels, true))
         error = tr("V1 game code generation failed.");
     if (!error.isEmpty()) {
         // Restore known outputs, using atomic replacement. The originals
@@ -518,10 +525,12 @@ bool SidboxGameDesigner::updateGameProject()
     QDir(backupFolder).removeRecursively();
     gameBackupTrimArchives(backupRoot);
     if (assetFilesChanged) assetFilesChanged();
-    QMessageBox::information(this, tr("Game Project Updated"),
-        tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
-           "main.c is updated only while still IDE-owned. User-owned source and existing beginner guides are untouched.\n\n"
-           "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
-               .arg(archivePath));
+    if (!fromCompile) {
+        QMessageBox::information(this, tr("Game Project Updated"),
+            tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
+               "main.c is updated only while still IDE-owned. User-owned source and existing beginner guides are untouched.\n\n"
+               "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
+                   .arg(archivePath));
+    }
     return true;
 }

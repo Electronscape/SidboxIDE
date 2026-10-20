@@ -9,6 +9,7 @@
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
+#include "ppbcodec.h"
 #include "ui_mainwindow.h"
 
 #include <algorithm>
@@ -74,6 +75,10 @@
 #include <QPlainTextEdit>
 #include <QPixmap>
 #include <QGraphicsEffect>
+#include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsPixmapItem>
+#include <QWheelEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QPoint>
@@ -5607,8 +5612,9 @@ private:
 class SidboxProgrammerCalculator : public QWidget
 {
 public:
-    explicit SidboxProgrammerCalculator(QWidget *parent = nullptr) : QWidget(parent)
+    explicit SidboxProgrammerCalculator(const IDETheme &theme, QWidget *parent = nullptr) : QWidget(parent)
     {
+        updateTheme(theme);
         setObjectName(QStringLiteral("sidboxProgrammerCalculator"));
         setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
@@ -5757,6 +5763,33 @@ public:
     }
 
 private:
+public:
+    void updateTheme(const IDETheme &theme)
+    {
+        m_bitBorder = theme.border;
+        m_bitAccent = theme.accent;
+        m_bitBackground = theme.inputBackground;
+        // Contrast must be calculated from the actual bit highlight, not
+        // from the desktop system palette (which differs in light themes).
+        m_bitSelectedText = m_bitAccent.lightnessF() < 0.52
+            ? QColor(Qt::white) : QColor(Qt::black);
+        m_bitText = theme.text;
+        for (QToolButton *button : m_bitButtons)
+            if (button) applyBitTheme(button);
+    }
+
+    void applyBitTheme(QToolButton *button)
+    {
+        button->setStyleSheet(QStringLiteral(
+            "QToolButton { padding:0px; border:1px solid %1; background:%2; color:%3; border-radius:0px; }"
+            "QToolButton:checked { background:%4; color:%5; font-weight:bold; }"
+            "QToolButton:hover { border-color:%4; }")
+            .arg(ideThemeColorName(m_bitBorder), ideThemeColorName(m_bitBackground),
+                 ideThemeColorName(m_bitText), ideThemeColorName(m_bitAccent),
+                 ideThemeColorName(m_bitSelectedText)));
+    }
+
+private:
     void rebuildBitRows(int bits)
     {
         // Rebuild only when the width changes, NOT when the value changes.
@@ -5793,9 +5826,7 @@ private:
                 QFont bitFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
                 bitFont.setPointSize(8);
                 button->setFont(bitFont);
-                button->setStyleSheet(QStringLiteral(
-                    "QToolButton { padding: 0px; border: 1px solid palette(mid); }"
-                    "QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); font-weight: bold; }"));
+                applyBitTheme(button);
                 button->setToolTip(tr("Toggle bit %1 (0x%2); result becomes a hexadecimal value.")
                                    .arg(bit).arg(QString::number(quint64(1) << bit, 16).toUpper()));
                 line->addWidget(button, 1);
@@ -5881,6 +5912,7 @@ private:
         m_message->setToolTip(tr("Division and right-shifts use unsigned arithmetic; SDEC shows the two's-complement value."));
     }
 
+    QColor m_bitBorder, m_bitAccent, m_bitBackground, m_bitSelectedText, m_bitText;
     QLineEdit *m_expression = nullptr;
     QComboBox *m_width = nullptr;
     QLineEdit *m_display[3] = {nullptr, nullptr, nullptr};
@@ -6445,6 +6477,8 @@ void MainWindow::setupInterface()
     homeAction->setToolTip(tr("Show the Home page and recent projects"));
     QAction *openProjectAction = toolBar->addAction(QIcon(":/icons/open_project.png"), tr("Open Project..."));
     QAction *saveProjectAction = toolBar->addAction(QIcon(":/icons/save_project.png"), tr("Save Project..."));
+    QAction *viewPpbAction = toolBar->addAction(QIcon(":/icons/search_term.png"), tr("View PPB..."));
+    viewPpbAction->setToolTip(tr("Open a SIDBOX PPB image without needing a Game Designer project"));
     toolBar->addSeparator();
     QAction *projectSettingsAction = toolBar->addAction(QIcon(":/icons/project_settings.png"), tr("Project Settings"));
     QAction *guiDesignerAction = toolBar->addAction(QIcon(":/icons/toolbar_guidesigner.png"), tr("GUI Designer"));
@@ -6463,12 +6497,14 @@ void MainWindow::setupInterface()
     findReplaceAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
 
 
-    QAction *findCurrentWordAction = new QAction(tr("Find Current Word"), this);
-    findCurrentWordAction->setShortcuts({
-        QKeySequence(QStringLiteral("Ctrl+F")),
-        QKeySequence(QStringLiteral("F3"))
-    });
-    addAction(findCurrentWordAction);
+    // Ctrl+F searches only the current source tab; F3 repeats (wrapping at EOF).
+    // The excellent Ctrl+Shift+F project-wide Find/Replace remains unchanged.
+    QAction *findDocumentAction = new QAction(tr("Find in Current Document..."), this);
+    findDocumentAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
+    addAction(findDocumentAction);
+    QAction *findNextAction = new QAction(tr("Find Next in Document"), this);
+    findNextAction->setShortcut(QKeySequence(QStringLiteral("F3")));
+    addAction(findNextAction);
 
     toolBar->addSeparator();
     QAction *compileAction = toolBar->addAction(QIcon(":/icons/compile.png"), tr("Compile [F5]"));
@@ -6496,6 +6532,22 @@ void MainWindow::setupInterface()
     connect(homeAction, &QAction::triggered, this, &MainWindow::showHomePage);
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
     connect(saveProjectAction, &QAction::triggered, this, &MainWindow::saveProject);
+    connect(viewPpbAction, &QAction::triggered, this, [this]() {
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        QString lastDirectory = settings.value(
+            QStringLiteral("files/viewPpbLastDirectory"), QDir::homePath()).toString();
+        if (!QDir(lastDirectory).exists())
+            lastDirectory = QDir::homePath();
+
+        const QString file = QFileDialog::getOpenFileName(this, tr("View PPB Image"),
+            lastDirectory, tr("SIDBOX PPB Images (*.ppb);;All Files (*)"));
+        if (file.isEmpty())
+            return;
+
+        settings.setValue(QStringLiteral("files/viewPpbLastDirectory"),
+                          QFileInfo(file).absolutePath());
+        openFile(file);
+    });
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(guiDesignerAction, &QAction::triggered, this, &MainWindow::createGuiDesigner);
     connect(gameDesignerAction, &QAction::triggered, this, &MainWindow::createGameDesigner);
@@ -6504,8 +6556,10 @@ void MainWindow::setupInterface()
     connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
     connect(apiCheatSheetAction, &QAction::triggered,
             this, &MainWindow::showApiCheatSheet);
-    connect(findCurrentWordAction, &QAction::triggered,
-            this, &MainWindow::showFindReplaceForCurrentWord);
+    connect(findDocumentAction, &QAction::triggered,
+            this, &MainWindow::showDocumentFind);
+    connect(findNextAction, &QAction::triggered,
+            this, &MainWindow::findNextInDocument);
     connect(compileAction, &QAction::triggered, this, &MainWindow::compileActiveFile);
 
     /*
@@ -6761,10 +6815,20 @@ void MainWindow::setupInterface()
 
     // A fixed-height programmer calculator beneath the file tree.
     // Never borrows space from the centre editor or the right-hand symbol tree.
-    projectLayout->addWidget(new SidboxProgrammerCalculator(projectPane));
+    projectLayout->addWidget(new SidboxProgrammerCalculator(m_theme, projectPane));
 
+    // A mouse double click emits itemDoubleClicked AND itemActivated on Qt6.
+    // Connecting both opened modal PPB previews twice in a row.
     connect(m_projectFiles, &QTreeWidget::itemDoubleClicked, this, &MainWindow::openProjectFile);
-    connect(m_projectFiles, &QTreeWidget::itemActivated, this, &MainWindow::openProjectFile);
+    // Preserve keyboard opening without reconnecting itemActivated, which
+    // Qt emits as part of a mouse double-click on some platforms.
+    auto *openTreeItemAction = new QAction(tr("Open Selected Project File"), m_projectFiles);
+    openTreeItemAction->setShortcuts({QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
+    openTreeItemAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    m_projectFiles->addAction(openTreeItemAction);
+    connect(openTreeItemAction, &QAction::triggered, this, [this]() {
+        if (QTreeWidgetItem *item = m_projectFiles->currentItem()) openProjectFile(item, 0);
+    });
     //connect(addFileButton, &QPushButton::clicked, this, &MainWindow::addExistingProjectFile);
     //connect(createFileButton, &QPushButton::clicked, this, &MainWindow::createProjectFile);
     //connect(resourceFileButton, &QPushButton::clicked, this, &MainWindow::createResourceFile);
@@ -9711,7 +9775,9 @@ bool MainWindow::checkGameBuildGeneration()
             // Game Designer's Update Project button. It makes its ZIP backup,
             // refreshes helpers, writes maingame.c.txt and applies the normal
             // main.c ownership checks. Cancellation or failure stops F5.
-            if (!game->updateGameProject()) return false;
+            // F5's own choice already authorizes the update. Never show a
+            // second confirmation or a success popup during compilation.
+            if (!game->updateGameProject(true)) return false;
         }
         refreshProjectFiles();
         if (rememberUpdateAfterSuccess) {
@@ -11638,6 +11704,33 @@ bool MainWindow::openFile(const QString &filePath)
 
 */
 
+// A small, independent pixel-art viewer for SIDBOX PPB assets. The PPB file
+// includes its own 256-entry CLUT, so no game project is required.
+class SidboxPpbView final : public QGraphicsView
+{
+public:
+    explicit SidboxPpbView(QWidget *parent = nullptr) : QGraphicsView(parent)
+    {
+        setDragMode(QGraphicsView::ScrollHandDrag);
+        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        setResizeAnchor(QGraphicsView::AnchorViewCenter);
+        setRenderHint(QPainter::SmoothPixmapTransform, false);
+        setBackgroundBrush(QBrush(QColor(39, 45, 55)));
+        setFrameShape(QFrame::NoFrame);
+    }
+    void zoomBy(qreal factor)
+    {
+        const qreal next = transform().m11() * factor;
+        if (next >= 0.05 && next <= 32.0) scale(factor, factor);
+    }
+protected:
+    void wheelEvent(QWheelEvent *event) override
+    {
+        zoomBy(event->angleDelta().y() > 0 ? 1.25 : 0.8);
+        event->accept();
+    }
+};
+
 bool MainWindow::openFile(const QString &filePath)
 {
     if (QFileInfo(filePath).suffix().compare(QStringLiteral("sbui"), Qt::CaseInsensitive) == 0) {
@@ -11647,9 +11740,56 @@ bool MainWindow::openFile(const QString &filePath)
         return openGameDesigner(filePath);
     }
 
+    // PPBs are self-describing indexed images (dimensions, 256-colour CLUT,
+    // pixel indices). Preview even without a Game Designer / .sbgm.
+    if (QFileInfo(filePath).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) == 0) {
+        SidboxPpb::Picture picture;
+        QString error;
+        if (!SidboxPpb::read(filePath, &picture, &error)) {
+            QMessageBox::warning(this, tr("PPB Viewer"), error);
+            return false;
+        }
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("PPB Viewer — %1").arg(QFileInfo(filePath).fileName()));
+        dialog.resize(850, 600);
+        dialog.setStyleSheet(styleSheet());
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *tools = new QHBoxLayout();
+        auto *info = new QLabel(tr("%1 × %2 pixels  •  embedded 256-colour CLUT  •  drag to pan; wheel to zoom")
+            .arg(picture.indexed.width()).arg(picture.indexed.height()), &dialog);
+        tools->addWidget(info, 1);
+        auto *minus = new QPushButton(tr("−"), &dialog);
+        auto *plus = new QPushButton(tr("+"), &dialog);
+        auto *actual = new QPushButton(tr("100%"), &dialog);
+        auto *fit = new QPushButton(tr("Fit"), &dialog);
+        tools->addWidget(minus);
+        tools->addWidget(plus);
+        tools->addWidget(actual);
+        tools->addWidget(fit);
+        layout->addLayout(tools);
+        auto *view = new SidboxPpbView(&dialog);
+        auto *scene = new QGraphicsScene(view);
+        view->setScene(scene);
+        QGraphicsPixmapItem *pix = scene->addPixmap(QPixmap::fromImage(picture.indexed));
+        pix->setTransformationMode(Qt::FastTransformation);
+        scene->setSceneRect(pix->boundingRect());
+        layout->addWidget(view, 1);
+        connect(minus, &QPushButton::clicked, view, [view]() { view->zoomBy(0.8); });
+        connect(plus, &QPushButton::clicked, view, [view]() { view->zoomBy(1.25); });
+        connect(actual, &QPushButton::clicked, view, [view]() { view->resetTransform(); });
+        connect(fit, &QPushButton::clicked, view, [view, scene]() {
+            view->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
+        });
+        QTimer::singleShot(0, view, [view, scene]() {
+            view->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
+        });
+        dialog.exec();
+        return true;
+    }
+
     // Do not accidentally interpret binary SIDBOX game assets as UTF-8 C source.
     const QString assetSuffix = QFileInfo(filePath).suffix().toLower();
-    if (QStringList{QStringLiteral("ppb"), QStringLiteral("pal"), QStringLiteral("act"),
+    if (QStringList{QStringLiteral("pal"), QStringLiteral("act"),
                     QStringLiteral("png"), QStringLiteral("bmp"), QStringLiteral("jpg"),
                     QStringLiteral("jpeg"), QStringLiteral("gif"), QStringLiteral("wav"),
                     QStringLiteral("mod"), QStringLiteral("s3m"), QStringLiteral("xm"),
@@ -15438,6 +15578,8 @@ bool MainWindow::updateProjectLinkerScript(QString *errorMessage) const
 
 void MainWindow::applyTheme()
 {
+    if (auto *widget = findChild<QWidget *>(QStringLiteral("sidboxProgrammerCalculator")))
+        static_cast<SidboxProgrammerCalculator *>(widget)->updateTheme(m_theme);
     const auto C = [](const QColor &colour) {
         return ideThemeColorName(colour);
     };

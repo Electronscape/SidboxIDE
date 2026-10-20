@@ -10,6 +10,7 @@
 #include <QVector>
 #include <QPair>
 #include <QPoint>
+#include <QRect>
 #include <QtGlobal>
 #include <QElapsedTimer>
 #include <functional>
@@ -85,6 +86,12 @@ struct SidboxTilemap {
     int height = 100;
     int tileSize = 16;
     QString atlasPath; // relative to the .sbgm document
+    int viewPanX = 0; // Tile editor viewport top-left in WORLD pixels, saved to .sbgm
+    int viewPanY = 0; // Independent of the IDE-wide zoom preference
+    // Tile-editor sizing reference ONLY. Never used by game runtime or player spawn.
+    bool referencePlayerPositionSet = false;
+    int referencePlayerX = 0; // world pixels, sprite top-left
+    int referencePlayerY = 0;
     QByteArray graphics = QByteArray(20000, char(0)); // 2 bytes per cell (LE uint16_t)
     QByteArray collisions = QByteArray(10000, char(0));
     QByteArray flips = QByteArray(10000, char(0)); // 0x01=flip X, 0x02=flip Y
@@ -107,12 +114,15 @@ class QEvent;
 class QKeyEvent;
 class QSpinBox;
 class QCheckBox;
+class QToolButton;
+class QFrame;
 class QPushButton;
 class QTimer;
 class QSplitter;
 class QListWidget;
 class QLineEdit;
 class QTabWidget;
+class QStackedWidget;
 class QScrollArea;
 class QSlider;
 
@@ -126,6 +136,11 @@ public:
                         QWidget *parent = nullptr);
     SidboxTilemap result() const { return m_map; }
     void setTheme(const IDETheme &theme);
+    // Optional overlay uses the *same* sprite resource as generated player physics.
+    // The reference can move independently of that resource's World Editor position.
+    void setPlayerReference(const QImage &spriteFrame, int scalePercent,
+                            const QPoint &worldPosition,
+                            const QRect &hitbox = QRect());
     // Commit the editor's current working copy to the parent project without closing.
     void setSaveCallback(const std::function<bool(const SidboxTilemap &)> &callback);
 protected:
@@ -143,6 +158,7 @@ private:
     StampCanvas *m_stampCanvas = nullptr;
     CollisionCanvas *m_collisionCanvas = nullptr;
     QListWidget *m_collisionList = nullptr;
+    QStackedWidget *m_collisionViews = nullptr;
     QTabWidget *m_stampTabs = nullptr;
     QLineEdit *m_collisionName = nullptr;
     QSpinBox *m_collisionWidth = nullptr;
@@ -164,6 +180,9 @@ private:
     QPushButton *m_findLegacyButton = nullptr;
     int m_lastLegacyIndex = -1;
     QPushButton *m_saveButton = nullptr;
+    QFrame *m_playerToolsDivider = nullptr;
+    QToolButton *m_playerReferenceToggle = nullptr;
+    QToolButton *m_playerCollisionToggle = nullptr;
     std::function<bool(const SidboxTilemap &)> m_saveCallback;
     QLineEdit *m_stampName = nullptr;
     QSpinBox *m_stampWidth = nullptr;
@@ -172,7 +191,6 @@ private:
     QLabel *m_atlasPicker = nullptr;
     QScrollArea *m_atlasArea = nullptr;
     int m_atlasDisplayColumns = 1;
-    QString m_viewSettingsKey;
     void saveViewSettings();
     QLabel *m_animationPreview = nullptr;
     QLabel *m_animationStatus = nullptr;
@@ -187,12 +205,12 @@ private:
     QComboBox *m_customZoneBrush = nullptr;
     void updateCustomZoneBrushLabels();
     QComboBox *m_flipMode = nullptr;
-    QCheckBox *m_flipX = nullptr;
-    QCheckBox *m_flipY = nullptr;
-    QCheckBox *m_drawFront = nullptr;
-    QCheckBox *m_stampUseFront = nullptr;
-    QCheckBox *m_stampMirrorX = nullptr;
-    QCheckBox *m_stampMirrorY = nullptr;
+    QToolButton *m_flipX = nullptr;
+    QToolButton *m_flipY = nullptr;
+    QToolButton *m_drawFront = nullptr;
+    QToolButton *m_stampUseFront = nullptr;
+    QToolButton *m_stampMirrorX = nullptr;
+    QToolButton *m_stampMirrorY = nullptr;
     QComboBox *m_tileSizeCombo = nullptr;
     QComboBox *m_atlasCombo = nullptr;
     QSpinBox *m_sizeX = nullptr;
@@ -202,6 +220,15 @@ private:
     QVector<SidboxTilemap> m_undoStack;
     QVector<SidboxTilemap> m_redoStack;
     SidboxTilemap m_strokeStart;
+    // Transaction for the open Collision Stamp Editor. Cancel restores both
+    // the map data and undo history to their state at editor entry.
+    SidboxTilemap m_collisionEditBefore;
+    QVector<SidboxTilemap> m_collisionEditUndoBefore;
+    QVector<SidboxTilemap> m_collisionEditRedoBefore;
+    bool m_collisionEditActive = false;
+    int m_collisionEditIndex = -1;
+    QString m_collisionEditStatusBefore;
+    void finishCollisionStampEdit(bool accept);
     void recordChange(const SidboxTilemap &before);
     void updateHistoryActions();
     void updateCellStatus();
@@ -219,6 +246,7 @@ private:
     void updateCollisionEditorControls();
     void updateCollisionPointControls();
     void selectCollisionStamp(int row);
+    void openCollisionStampEditor(int row);
     void updateAnimationControls();
     void updateAnimationPreview();
     void saveSelectedAnimation();

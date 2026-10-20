@@ -132,12 +132,12 @@ bool SidboxGameDesigner::loadDesign()
       m_snapStep->setCurrentText(QStringLiteral("%1 px").arg(
           QStringList{QStringLiteral("4"),QStringLiteral("8"),QStringLiteral("16"),
                       QStringLiteral("32"),QStringLiteral("64")}.contains(QString::number(step)) ? step : 32));
-      const int zoom = obj.value(QStringLiteral("zoomPercent")).toInt(100);
-      m_zoom->setCurrentText(QStringLiteral("%1%").arg(
-          QStringList{QStringLiteral("25"), QStringLiteral("50"), QStringLiteral("75"),
-                      QStringLiteral("100"), QStringLiteral("200")}.contains(QString::number(zoom)) ? zoom : 100));
-      m_view->resetTransform(); m_view->scale(zoom > 0 ? qBound(25, zoom, 200) / 100.0 : 1.,
-                                             zoom > 0 ? qBound(25, zoom, 200) / 100.0 : 1.);
+      const int requestedZoom = obj.value(QStringLiteral("zoomPercent")).toInt(100);
+      const int zoom = QStringList{QStringLiteral("25"), QStringLiteral("50"), QStringLiteral("75"),
+          QStringLiteral("100"), QStringLiteral("200"), QStringLiteral("400")}.contains(
+          QString::number(requestedZoom)) ? requestedZoom : 100;
+      m_zoom->setCurrentText(QStringLiteral("%1%").arg(zoom));
+      m_view->resetTransform(); m_view->scale(zoom / 100.0, zoom / 100.0);
     }
     {
         QSignalBlocker b1(m_planeMode), b2(m_showLabels), b3(m_forcePalette), b4(m_showTilemap);
@@ -196,6 +196,11 @@ bool SidboxGameDesigner::loadDesign()
         r.springSlide = object.value(QStringLiteral("springSlide")).toBool(false);
         r.breakTouch = object.value(QStringLiteral("breakTouch")).toBool(false);
         r.breakBounce = object.value(QStringLiteral("breakBounce")).toBool(false);
+        r.breakFromBelow = object.value(QStringLiteral("breakFromBelow")).toBool(false);
+        r.breakDropCollectableId = object.value(QStringLiteral("breakDropCollectableId")).toString();
+        r.breakRewardImpulse = object.value(QStringLiteral("breakRewardImpulse")).toBool(false);
+        r.breakRewardVx = qBound(-20, object.value(QStringLiteral("breakRewardVx")).toInt(0), 20);
+        r.breakRewardVy = qBound(-20, object.value(QStringLiteral("breakRewardVy")).toInt(-8), 20);
         r.breakHits = qBound(1, object.value(QStringLiteral("breakHits")).toInt(1), 4);
         r.breakStrength = qBound(1, object.value(QStringLiteral("breakStrength")).toInt(11), 100);
         r.breakLaunchX = qBound(-40, object.value(QStringLiteral("breakLaunchX")).toInt(0), 40);
@@ -238,6 +243,7 @@ bool SidboxGameDesigner::loadDesign()
         r.audioRadius = qBound(0, object.value(QStringLiteral("audioRadius")).toInt(0), 32767);
         r.audioFadeFrames = qBound(0, object.value(QStringLiteral("audioFadeFrames")).toInt(8), 255);
         r.objectSplineId = object.value(QStringLiteral("splineId")).toString();
+        r.objectSplineStartDelay = qBound(0, object.value(QStringLiteral("splineStartDelay")).toInt(0), 65535);
         r.objectAnimated = object.value(QStringLiteral("animated")).toBool(false);
         r.animFirst = qBound(0, object.value(QStringLiteral("animFirst")).toInt(0), 255);
         r.animCount = qBound(1, object.value(QStringLiteral("animCount")).toInt(1), 256);
@@ -246,6 +252,8 @@ bool SidboxGameDesigner::loadDesign()
         if (!QStringList{QStringLiteral("loop"), QStringLiteral("once"),
                 QStringLiteral("pingpong")}.contains(r.animMode)) r.animMode = QStringLiteral("loop");
         r.drawBehindTiles = a.value(QStringLiteral("drawBehindTiles")).toBool(false);
+        r.objectFlipX = a.value(QStringLiteral("objectFlipX")).toBool(false);
+        r.objectFlipY = a.value(QStringLiteral("objectFlipY")).toBool(false);
         r.backgroundMode = a.value(QStringLiteral("backgroundMode")).toString(QStringLiteral("sprite"));
         if (r.kind != QStringLiteral("background") ||
             !QStringList{QStringLiteral("sprite"), QStringLiteral("direct_ready"),
@@ -319,6 +327,17 @@ bool SidboxGameDesigner::loadDesign()
     }
     m_activeSpline = qBound(-1, obj.value(QStringLiteral("activeSpline")).toInt(-1),
                             m_splinePaths.size() - 1);
+    // A saved WORLD canvas centre is a viewport setting, not the game camera.
+    // Keep coordinates in scene/world units so a different zoom or IDE window
+    // size restores the same interesting part of the level. Older .sbgm files
+    // have no fields and keep their original default viewport behaviour.
+    m_restoreWorldViewCenter = obj.value(QStringLiteral("worldViewCenterX")).isDouble()
+                            && obj.value(QStringLiteral("worldViewCenterY")).isDouble();
+    if (m_restoreWorldViewCenter) {
+        m_savedWorldViewCenter = QPointF(
+            qBound(-double(MAX_WORLD), obj.value(QStringLiteral("worldViewCenterX")).toDouble(), double(MAX_WORLD)),
+            qBound(-double(MAX_WORLD), obj.value(QStringLiteral("worldViewCenterY")).toDouble(), double(MAX_WORLD)));
+    }
     m_loading = false;
     m_undoResources.clear();
     m_redoResources.clear();
@@ -342,6 +361,14 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("snapEnabled"), m_snap->isChecked());
     obj.insert(QStringLiteral("snapStep"), m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt());
     obj.insert(QStringLiteral("zoomPercent"), m_zoom->currentText().chopped(1).toInt());
+    // Save where the user panned the WORLD editor, not the in-game camera.
+    // If loading happens in a hidden tab, retain the saved centre until its
+    // first display instead of serialising the uninitialised viewport centre.
+    const QPointF worldViewCenter = m_restoreWorldViewCenter
+        ? m_savedWorldViewCenter
+        : m_view->mapToScene(m_view->viewport()->rect().center());
+    obj.insert(QStringLiteral("worldViewCenterX"), worldViewCenter.x());
+    obj.insert(QStringLiteral("worldViewCenterY"), worldViewCenter.y());
     obj.insert(QStringLiteral("showAssetLabels"), m_showLabels->isChecked());
     obj.insert(QStringLiteral("showTilemapOverlay"), m_showTilemap->isChecked());
     obj.insert(QStringLiteral("planeMode"), m_planeMode->currentData().toString());
@@ -365,8 +392,11 @@ bool SidboxGameDesigner::saveDesign()
         if (r.kind == QStringLiteral("sprite") && !r.animationFile.isEmpty())
             a.insert(QStringLiteral("animationFile"), r.animationFile);
         a.insert(QStringLiteral("locked"), r.locked);
-        if (r.kind == QStringLiteral("sprite"))
+        if (r.kind == QStringLiteral("sprite")) {
             a.insert(QStringLiteral("drawBehindTiles"), r.drawBehindTiles);
+            a.insert(QStringLiteral("objectFlipX"), r.objectFlipX);
+            a.insert(QStringLiteral("objectFlipY"), r.objectFlipY);
+        }
         if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
             QJsonObject object;
             object.insert(QStringLiteral("type"), r.objectType);
@@ -382,6 +412,11 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("springSlide"), r.springSlide);
             object.insert(QStringLiteral("breakTouch"), r.breakTouch);
             object.insert(QStringLiteral("breakBounce"), r.breakBounce);
+            object.insert(QStringLiteral("breakFromBelow"), r.breakFromBelow);
+            object.insert(QStringLiteral("breakDropCollectableId"), r.breakDropCollectableId);
+            object.insert(QStringLiteral("breakRewardImpulse"), r.breakRewardImpulse);
+            object.insert(QStringLiteral("breakRewardVx"), r.breakRewardVx);
+            object.insert(QStringLiteral("breakRewardVy"), r.breakRewardVy);
             object.insert(QStringLiteral("breakHits"), r.breakHits);
             object.insert(QStringLiteral("breakStrength"), r.breakStrength);
             object.insert(QStringLiteral("breakLaunchX"), r.breakLaunchX);
@@ -419,6 +454,7 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("audioRadius"), r.audioRadius);
             object.insert(QStringLiteral("audioFadeFrames"), r.audioFadeFrames);
             object.insert(QStringLiteral("splineId"), r.objectSplineId);
+            object.insert(QStringLiteral("splineStartDelay"), r.objectSplineStartDelay);
             object.insert(QStringLiteral("animated"), r.objectAnimated);
             object.insert(QStringLiteral("animFirst"), r.animFirst);
             object.insert(QStringLiteral("animCount"), r.animCount);

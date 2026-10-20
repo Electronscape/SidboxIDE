@@ -262,6 +262,40 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         objectSlot.insert(pickups.at(i)->id, QStringLiteral("pickups[%1]").arg(i));
     for (int i = 0; i < nw; ++i)
         objectSlot.insert(platforms.at(i)->id, QStringLiteral("platforms[%1]").arg(i));
+    // A reward is a real Collectable resource, referenced by stable ID.
+    // Keep one owner per dormant pickup to avoid duplicate spawning.
+    QHash<QString, int> breakRewardOwner;
+    for (int i = 0; i < nw; ++i) {
+        const Resource &block = *platforms.at(i);
+        if (block.objectType != QStringLiteral("breakable") ||
+            block.breakDropCollectableId.isEmpty()) continue;
+        const QString id = block.breakDropCollectableId;
+        int rewardIndex = -1;
+        for (int j = 0; j < np; ++j)
+            if (pickups.at(j)->id == id) { rewardIndex = j; break; }
+        if (rewardIndex < 0) {
+            if (error) *error = tr("Breakable '%1' targets a missing collectable. Reassign its reward.")
+                .arg(block.name);
+            return false;
+        }
+        if (!m_tilemapEnabled || pickupPaths.at(rewardIndex) >= 0) {
+            if (error) *error = tr("Breakable '%1' needs an enabled tilemap and a reward "
+                                   "collectable without a movement spline.").arg(block.name);
+            return false;
+        }
+        if (breakRewardOwner.contains(id)) {
+            if (error) *error = tr("Two breakables try to spawn the same reward '%1'. "
+                                   "Use a different collectable for each block.")
+                                   .arg(pickups.at(rewardIndex)->name);
+            return false;
+        }
+        breakRewardOwner.insert(id, i);
+    }
+    QSet<int> droppingPickups;
+    for (auto it = breakRewardOwner.constBegin(); it != breakRewardOwner.constEnd(); ++it)
+        for (int j = 0; j < np; ++j)
+            if (pickups.at(j)->id == it.key()) droppingPickups.insert(j);
+    const bool hasBreakRewards = !droppingPickups.isEmpty();
     bool linkedKeys = false;
     for (const Resource *r : pickups) if (r->pickupKind == 3 &&
         r->targetAction != QStringLiteral("none") && !r->targetObjectId.isEmpty()) linkedKeys = true;
@@ -441,6 +475,14 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         }
     }
     if (np) C << "static game_collectable_t pickups[" << np << "];\n";
+    if (hasBreakRewards) {
+        C << "/* Per-reward falling state; world position uses hundredths of a pixel. */\n"
+             "static uint8_t cg_reward_falling[" << np << "];\n"
+             "static int32_t cg_reward_x100[" << np << "];\n"
+             "static int32_t cg_reward_y100[" << np << "];\n"
+             "static int32_t cg_reward_vx100[" << np << "];\n"
+             "static int32_t cg_reward_vy100[" << np << "];\n";
+    }
     if (np && !usedSfx.isEmpty()) C << "static uint8_t cg_pickup_was_inactive[" << np << "];\n";
     if (nw) C << "static game_world_object_t platforms[" << nw << "];\n";
     if (nw && m_tilemapEnabled)
@@ -463,6 +505,11 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     }
     C << "\nuint8_t gameworlditems_init(void)\n{\n";
     if (nw && m_tilemapEnabled) C << "    cg_hazard_zone_contact = 0;\n";
+    if (hasBreakRewards) {
+        C << "    for (uint16_t i = 0; i < " << np
+          << "; ++i) { cg_reward_falling[i] = 0; cg_reward_x100[i] = 0; cg_reward_y100[i] = 0; "
+             "cg_reward_vx100[i] = 0; cg_reward_vy100[i] = 0; }\n";
+    }
     if (nw && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << nw
         << "; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; "
            "cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }\n";
@@ -492,7 +539,8 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
               << "    pickups[" << ix << "].width = " << r.hitWidth << ";\n"
               << "    pickups[" << ix << "].height = " << r.hitHeight << ";\n"
               << "    pickups[" << ix << "].respawn_frames = " << r.respawnFrames << ";\n"
-              << "    pickups[" << ix << "].active = " << (r.objectInitiallyActive ? "1" : "0") << ";\n"
+              << "    pickups[" << ix << "].active = " << (droppingPickups.contains(ix) ? "0" :
+                    (r.objectInitiallyActive ? "1" : "0")) << ";\n"
               << "    pickups[" << ix << "].draw_behind_tiles = " << (r.drawBehindTiles ? "1" : "0") << ";\n";
         } else {
             const QString kind = r.objectType == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
@@ -516,8 +564,11 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                 C << "    platforms[" << ix << "].conveyor_speed = " << r.conveyorSpeed << ";\n";
             if (r.objectType == QStringLiteral("breakable")) {
                 C << "    platforms[" << ix << "].break_hits_required = " << r.breakHits << ";\n";
-                C << "    platforms[" << ix << "].break_touch_mode = " << (r.breakTouch ? "1" : "0") << ";\n";
+                C << "    platforms[" << ix << "].break_touch_mode = "
+                  << (r.breakTouch && !r.breakFromBelow ? "1" : "0") << ";\n";
                 C << "    platforms[" << ix << "].break_bounce = " << (r.breakBounce ? "1" : "0") << ";\n";
+                C << "    platforms[" << ix << "].break_from_below = "
+                  << (r.breakFromBelow ? "1" : "0") << ";\n";
                 C << "    platforms[" << ix << "].break_strength = " << r.breakStrength << ";\n";
                 C << "    platforms[" << ix << "].break_launch_x = " << r.breakLaunchX << ";\n";
             }
@@ -543,13 +594,23 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                   << (r.springJumpBoost ? "1" : "0") << ";\n";
             }
         }
+        // Flip belongs to this sprite BOB, not to collision or spline coordinates.
+        // Keep unrelated runtime flags intact. Generic animations only change index.
+        if (r.objectFlipX || r.objectFlipY) {
+            C << "    " << bob << ".flags = (uint8_t)((" << bob
+              << ".flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | "
+              << (r.objectFlipX ? "BLIT_FLAG_FLIP_X" : "0") << " | "
+              << (r.objectFlipY ? "BLIT_FLAG_FLIP_Y" : "0") << ");\n";
+        }
         if (path >= 0) {
             const QString sym = splineSymbol(path);
             const QString var = QStringLiteral("%1_path_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
             C << "    start_spline(&" << var << ", " << sprite << ", "
               << sym << "_path, " << sym << "_count, " << sym << "_frames, " << sym << "_loop);\n"
               << "    set_spline_pos(&" << var << ", " << r.x << ", " << r.y << ");\n"
-              << "    " << (collect ? "pickups" : "platforms") << "[" << ix << "].spline = &" << var << ";\n";
+              << "    " << (collect ? "pickups" : "platforms") << "[" << ix << "].spline = &" << var << ";\n"
+              << "    " << (collect ? "pickups" : "platforms") << "[" << ix
+              << "].spline_start_delay = " << qBound(0, r.objectSplineStartDelay, 65535) << ";\n";
         }
         if (r.objectAnimated) {
             const QString var = QStringLiteral("%1_anim_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
@@ -584,6 +645,69 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
     if (np && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << np
         << "; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;\n";
     if (np) C << "    game_collectables_update(pickups, " << np << ", frames);\n";
+    if (hasBreakRewards) {
+        C << R"REWARD(
+    /* Prize launch: optional X/Y impulse, then gravity. Sweep each axis
+       pixel-by-pixel so thin tile walls, ceilings and floors are respected.
+       A reward cannot be collected until it lands on solid ground. */
+    for (uint16_t i = 0; i < GAMEWORLDITEMS_PICKUP_COUNT; ++i) {
+        if (!cg_reward_falling[i]) continue;
+        for (uint16_t tick = 0; tick < frames; ++tick) {
+            int32_t x = pickups[i].x;
+            int32_t y = pickups[i].y;
+            int32_t next_x100 = cg_reward_x100[i] + cg_reward_vx100[i];
+            int32_t next_y100;
+            int32_t vx = cg_reward_vx100[i];
+            int32_t vy = cg_reward_vy100[i] + 65; /* gravity 0.65px/frame² */
+            if (vy > 900) vy = 900;
+            cg_reward_vy100[i] = vy;
+            next_y100 = cg_reward_y100[i] + vy;
+            /* Horizontal sweep. Walls stop horizontal speed, not gravity. */
+            int32_t target_x = next_x100 / 100;
+            while (x != target_x) {
+                int32_t step = target_x > x ? 1 : -1;
+                if (game_tilemap_actor_blocked(&game_level1, x + step, y,
+                        pickups[i].width, pickups[i].height)) {
+                    vx = 0;
+                    next_x100 = x * 100;
+                    break;
+                }
+                x += step;
+            }
+            /* A gentle horizontal slowdown leaves the launch visible
+               without letting prizes drift forever across the level. */
+            cg_reward_vx100[i] = (vx * 97) / 100;
+            if (cg_reward_vx100[i] > -5 && cg_reward_vx100[i] < 5)
+                cg_reward_vx100[i] = 0;
+            cg_reward_x100[i] = next_x100;
+            int32_t target_y = next_y100 / 100;
+            uint8_t landed = 0;
+            while (y != target_y) {
+                int32_t step = target_y > y ? 1 : -1;
+                if (game_tilemap_actor_blocked(&game_level1, x, y + step,
+                        pickups[i].width, pickups[i].height)) {
+                    if (step > 0) landed = 1;
+                    cg_reward_vy100[i] = 0;
+                    next_y100 = y * 100;
+                    break;
+                }
+                y += step;
+            }
+            cg_reward_y100[i] = next_y100;
+            game_collectable_set_position(&pickups[i], x, y);
+            if (landed || (cg_reward_vy100[i] >= 0 &&
+                    game_tilemap_actor_blocked(&game_level1, x, y + 1,
+                        pickups[i].width, pickups[i].height))) {
+                cg_reward_falling[i] = 0;
+                cg_reward_vx100[i] = 0;
+                cg_reward_vy100[i] = 0;
+                pickups[i].can_collect = 1;
+                break;
+            }
+        }
+    }
+)REWARD";
+    }
     if (!usedSfx.isEmpty()) {
         for (int i = 0; i < np; ++i) {
             const Resource &r = *pickups.at(i);
@@ -663,6 +787,32 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         if (m_tilemapEnabled) C << "    if (game_death_is_dead()) return;\n";
         C << "    game_world_objects_after(platforms, " << nw << ", player);\n"
              "    game_world_objects_hazards(platforms, " << nw << ", player);\n";
+        if (hasBreakRewards) {
+            for (int i = 0; i < nw; ++i) {
+                const Resource &block = *platforms.at(i);
+                if (block.objectType != QStringLiteral("breakable") ||
+                    block.breakDropCollectableId.isEmpty()) continue;
+                int j = -1;
+                for (int k = 0; k < np; ++k)
+                    if (pickups.at(k)->id == block.breakDropCollectableId) { j = k; break; }
+                if (j < 0) continue; // already validated above
+                C << "    if (platforms[" << i << "].break_triggered) {\n"
+                  << "        pickups[" << j << "].active = 1;\n"
+                  << "        pickups[" << j << "].can_collect = 0;\n"
+                  << "        pickups[" << j << "].respawn_left = 0;\n"
+                  << "        game_collectable_set_position(&pickups[" << j << "], "
+                  << "platforms[" << i << "].x + (platforms[" << i
+                  << "].width - pickups[" << j << "].width) / 2, platforms[" << i << "].y);\n"
+                  << "        cg_reward_x100[" << j << "] = pickups[" << j << "].x * 100;\n"
+                  << "        cg_reward_y100[" << j << "] = pickups[" << j << "].y * 100;\n"
+                  << "        cg_reward_vx100[" << j << "] = "
+                  << (block.breakRewardImpulse ? block.breakRewardVx * 100 : 0) << ";\n"
+                  << "        cg_reward_vy100[" << j << "] = "
+                  << (block.breakRewardImpulse ? block.breakRewardVy * 100 : 0) << ";\n"
+                  << "        cg_reward_falling[" << j << "] = 1;\n"
+                  << "    }\n";
+            }
+        }
         if (m_tilemapEnabled) {
             C << "    /* Hazard Zone: ENTERED once, INSIDE each frame, EXITED on leaving. */\n"
                  "    uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&\n"
@@ -831,6 +981,17 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         "stops player physics. Respawn with game_tile_player_reset().\n"
         "See gametilemap.txt for all six hazard reason constants.\n";
     if (np) G << "Call gameworlditems_check(...) after physics using player WORLD position.\n";
+    if (hasBreakRewards) G <<
+        "\nBREAKABLE HEAD-BUTT REWARDS\n"
+        "A block with 'Break from below' takes deliberate upward head-butt hits\n"
+        "rather than jumping on its top. The usual 1-4 hit counter applies.\n"
+        "The configured reward is a normal Collectable sprite, automatically\n"
+        "hidden at game start, activated at the broken block's position,\n"
+        "then dropped with gravity until it reaches a solid tile.\n"
+        "It cannot be picked up during the fall. After landing, the ordinary\n"
+        "on_pickup() callback, sound, value and respawn settings still apply.\n"
+        "No extra calls are needed in user-owned main.c if it already calls\n"
+        "gameworlditems_update(), gameworlditems_after(), and check().\n\n";
     G << "Optional Draw behind tiles: the generated starter calls\n"
          "gameworlditems_draw_behind() BEFORE drawing the foreground map,\n"
          "then gameworlditems_draw() AFTER it. Never draw the same sprite twice.\n"
@@ -1262,6 +1423,9 @@ static void on_custom_zone(uint8_t zone, uint8_t event,
  * The generated gameworlditems.c does ALL the spline setup and movement:
  *   gameworlditems_init()       -> start_spline() + set_spline_pos()
  *   gameworlditems_update(1)    -> run_spline() once per frame
+ *   Spline start delay in Game Object Properties freezes the path at its
+ *   starting position for N game frames (50 frames = one second). It only
+ *   delays spline movement, not sprite animation or collision checking.
  *   gameworlditems_draw(cx,cy)  -> drawing with the camera offset
  * Those calls are already in THIS main.c below when objects exist.
  * Do NOT call run_spline() again for an attached object, or draw it twice.
@@ -1471,8 +1635,12 @@ int main(int argc, char *argv[])
             player_anim_state = PLAYER_ANIM_STATE_WALK;
         }
 )CG";
-            if (hasMurderObjects) out << R"CG(#ifdef PLAYER_ANIM_STATE_HURT
-        /* Per-Hazard opt-in. A missing Hurt state leaves normal animation. */
+            if (hasMurderObjects) out << R"CG(#if defined(PLAYER_ANIM_HAS_HURT_STATE) && PLAYER_ANIM_HAS_HURT_STATE
+        /* Hazard "Use player Hurt animation" overrides Jump/Fall while
+         * the player's damage grace period is active. The animation-header
+         * exporter defines HAS_HURT_STATE when a Hurt state actually exists.
+         * Without a Hurt state, normal animation selection is preserved.
+         * For an existing hand-owned main.c, copy this block there too. */
         if (world_player.hurt_anim_active && world_player.hurt_ticks_remaining)
             player_anim_state = PLAYER_ANIM_STATE_HURT;
 #endif
@@ -1547,6 +1715,11 @@ int main(int argc, char *argv[])
                 r.objectType != QStringLiteral("decoration") || &r == player ||
                 r.plane == QStringLiteral("background") || !r.drawBehindTiles) continue;
             const QString bob = spriteSymbol(r);
+            if (r.objectFlipX || r.objectFlipY)
+                out << "        " << bob << ".flags = (uint8_t)((" << bob
+                    << ".flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | "
+                    << (r.objectFlipX ? "BLIT_FLAG_FLIP_X" : "0") << " | "
+                    << (r.objectFlipY ? "BLIT_FLAG_FLIP_Y" : "0") << ");\n";
             out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
                 << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
                 << "        gfx_drawbob(&" << bob << ");\n";
@@ -1567,6 +1740,11 @@ int main(int argc, char *argv[])
                 r.objectType != QStringLiteral("decoration") || &r == player ||
                 r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
             const QString bob = spriteSymbol(r);
+            if (r.objectFlipX || r.objectFlipY)
+                out << "        " << bob << ".flags = (uint8_t)((" << bob
+                    << ".flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | "
+                    << (r.objectFlipX ? "BLIT_FLAG_FLIP_X" : "0") << " | "
+                    << (r.objectFlipY ? "BLIT_FLAG_FLIP_Y" : "0") << ");\n";
             out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
                 << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
                 << "        gfx_drawbob(&" << bob << ");\n";
@@ -1612,6 +1790,11 @@ int main(int argc, char *argv[])
                 r.objectType != QStringLiteral("decoration") ||
                 r.plane == QStringLiteral("background") || r.drawBehindTiles) continue;
             const QString bob = spriteSymbol(r);
+            if (r.objectFlipX || r.objectFlipY)
+                out << "        " << bob << ".flags = (uint8_t)((" << bob
+                    << ".flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | "
+                    << (r.objectFlipX ? "BLIT_FLAG_FLIP_X" : "0") << " | "
+                    << (r.objectFlipY ? "BLIT_FLAG_FLIP_Y" : "0") << ");\n";
             out << "        " << bob << ".drawx = " << r.x << " - camera_x;\n"
                 << "        " << bob << ".drawy = " << r.y << " - camera_y;\n"
                 << "        gfx_drawbob(&" << bob << ");\n";

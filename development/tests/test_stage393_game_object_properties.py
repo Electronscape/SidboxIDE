@@ -12,7 +12,7 @@ assert 'QSlider(Qt::Horizontal' in fn and 'QSpinBox::setValue' in fn
 assert 'LIVE PREVIEW' in fn and 'COLLISION PREVIEW' in fn
 assert 'QTimer::timeout' in fn and 'cachedImage(resolvedPath(old.path))' in fn
 assert 'colour(m_theme.accent)' in fn
-for section in ['General', 'Visual & Movement', 'Physics / Collision', 'Breakable',
+for section in ['General', 'Visual & Movements', 'Physics / Collision', 'Breakable',
                 'Hazard / Murder Object', 'Collectable', 'Audio Events / Spring',
                 'Audio Events / Hazard', 'Linked Object', 'Switch & Trigger']:
     assert f'makeCard(tr("{section}")' in fn, section

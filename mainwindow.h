@@ -49,6 +49,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
+    QString m_documentFindText; // Ctrl+F current-document query, reused by F3.
 
     QHash<CodeEditor *, QSet<QString>> m_symbolTreeExpanded;
     CodeEditor *m_symbolTreeEditor = nullptr;
@@ -71,6 +72,8 @@ private:
     void showOptions();
     void showFindReplace();
     void showFindReplaceForCurrentWord();
+    void showDocumentFind();
+    void findNextInDocument();
     void showProjectSettings();
     void showApiCheatSheet();
     void showAboutIde();

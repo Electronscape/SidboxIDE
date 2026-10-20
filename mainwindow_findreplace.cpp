@@ -282,3 +282,50 @@ void MainWindow::showFindReplaceForCurrentWord()
     }
 }
 
+
+// Small current-tab search. F3 starts AFTER the highlighted match and wraps
+// from EOF to the first match. Never invokes or modifies project-wide search.
+void MainWindow::showDocumentFind()
+{
+    CodeEditor *editor = activeEditor();
+    if (!editor || editor->isResourceMode()) {
+        statusBar()->showMessage(tr("Open a source document to search."), 3000);
+        return;
+    }
+    QString initial = m_documentFindText;
+    const QTextCursor cursor = editor->textCursor();
+    if (cursor.hasSelection()) {
+        const QString selected = cursor.selectedText();
+        if (!selected.contains(QLatin1Char('\n')) && selected.size() < 200)
+            initial = selected;
+    }
+    bool accepted = false;
+    const QString query = QInputDialog::getText(this, tr("Find in Current Document"),
+        tr("Find text (F3 finds next):"), QLineEdit::Normal, initial, &accepted);
+    if (!accepted || query.isEmpty()) return;
+    m_documentFindText = query;
+    findNextInDocument();
+}
+
+void MainWindow::findNextInDocument()
+{
+    CodeEditor *editor = activeEditor();
+    if (!editor || editor->isResourceMode()) return;
+    if (m_documentFindText.isEmpty()) {
+        showDocumentFind();
+        return;
+    }
+    const QTextDocument *document = editor->document();
+    QTextCursor result = document->find(m_documentFindText, editor->textCursor());
+    if (result.isNull()) {
+        // QTextDocument::find from position 0 includes the beginning of file.
+        result = document->find(m_documentFindText, 0);
+    }
+    if (result.isNull()) {
+        statusBar()->showMessage(tr("'%1' wasn't found in this document.").arg(m_documentFindText), 3500);
+        return;
+    }
+    editor->setTextCursor(result);
+    editor->centerCursor();
+    editor->setFocus();
+}

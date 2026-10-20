@@ -11,7 +11,8 @@ assert 'The helper decides WHICH object was touched' in export
 assert 'gameworlditems_check(player_physics.x100 / 100' in export
 assert 'on_pickup, &score);' in export
 assert 'p->break_stomp_armed = 1' in world
-assert 'const uint8_t valid_hit = (uint8_t)(best_touch || p->break_stomp_armed)' in world
+assert 'const uint8_t valid_hit = (uint8_t)(!best->break_from_below &&' in world
+assert '(best_touch || p->break_stomp_armed)' in world
 assert 'uint8_t break_stomp_armed;' in hdr
 assert 'loopForm->addRow(tr("Center"), loopCenterRow)' in editor
 assert 'loopCenterRow->addWidget(loopX, 1)' in editor

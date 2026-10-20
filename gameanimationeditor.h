@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QStringList>
 #include <QVector>
+#include "idetheme.h"
 #include <functional>
 
 class QListWidget;
@@ -27,7 +28,8 @@ public:
                                const QString &animationFile,
                                const QString &defaultHeaderFile,
                                int cellWidth, int cellHeight,
-                               QWidget *parent = nullptr);
+                               QWidget *parent = nullptr,
+                               const IDETheme &theme = defaultIDETheme());
     QString animationFile() const { return m_file; }
     bool isUsable() const { return !m_atlas.isNull(); }
     int cellWidth() const { return m_cellW; }
@@ -40,6 +42,7 @@ private:
         int ticks = 5; // SIDBOX 50 Hz VBlanks per image
         bool loop = true;
     };
+    IDETheme m_theme;
     QString m_file;
     QString m_defaultHeaderFile;
     QString m_atlasFile;

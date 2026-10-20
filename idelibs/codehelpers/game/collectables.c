@@ -14,6 +14,7 @@ uint8_t game_collectable_start(game_collectable_t *item, gfxbob_t *sprite,
     item->sprite = sprite;
     item->animation = 0;
     item->spline = 0;
+    item->spline_start_delay = 0;
     item->x = sprite->drawx;
     item->y = sprite->drawy;
     item->width = sprite->width;
@@ -21,6 +22,7 @@ uint8_t game_collectable_start(game_collectable_t *item, gfxbob_t *sprite,
     item->kind = kind;
     item->value = value;
     item->active = 1;
+    item->can_collect = 1;
     item->draw_behind_tiles = 0;
     item->respawn_frames = 0;
     item->respawn_left = 0;
@@ -59,7 +61,14 @@ void game_collectables_update(game_collectable_t *items, uint16_t count, uint16_
         }
         if (!item->sprite) continue;
         if (item->spline) {
-            run_spline(item->spline, frames);
+            uint16_t move_frames = frames;
+            if (item->spline_start_delay) {
+                const uint16_t waiting = item->spline_start_delay < move_frames
+                    ? item->spline_start_delay : move_frames;
+                item->spline_start_delay -= waiting;
+                move_frames -= waiting;
+            }
+            if (move_frames) run_spline(item->spline, move_frames);
             item->x = item->sprite->drawx;
             item->y = item->sprite->drawy;
         }
@@ -75,7 +84,8 @@ uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
     uint16_t taken = 0;
     for (uint16_t i = 0; i < count; ++i) {
         game_collectable_t *item = &items[i];
-        if (!item->active || !item->sprite || !item->width || !item->height) continue;
+        if (!item->active || !item->can_collect || !item->sprite ||
+            !item->width || !item->height) continue;
         if (px < (int64_t)item->x + item->width &&
             (int64_t)px + pw > item->x &&
             py < (int64_t)item->y + item->height &&

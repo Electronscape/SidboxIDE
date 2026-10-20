@@ -16,6 +16,8 @@
 #include <QDialogButtonBox>
 #include <QDropEvent>
 #include <QPen>
+#include <QPair>
+#include <QVector>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -44,6 +46,9 @@
 #include <QLineEdit>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QWheelEvent>
+#include <QtMath>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -62,14 +67,14 @@ QStringList directionsFor(int count)
 
 // The requested compact state glyphs are drawn locally — no extra PNGs,
 // resources or runtime asset dependencies.
-QIcon animationStateIcon(const QString &state)
+QIcon animationStateIcon(const QString &state, const IDETheme &theme)
 {
     QPixmap pix(20, 20);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor(222, 234, 245), 2, Qt::SolidLine, Qt::RoundCap));
-    p.setBrush(QColor(222, 234, 245));
+    p.setPen(QPen(theme.text, 2, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(theme.text);
     p.drawEllipse(QRect(8, 2, 4, 4));
     const bool running = state.compare(QStringLiteral("Run"), Qt::CaseInsensitive) == 0;
     const bool jumping = state.compare(QStringLiteral("Jump"), Qt::CaseInsensitive) == 0;
@@ -95,6 +100,7 @@ class AnimationTimelineList final : public QListWidget {
 public:
     explicit AnimationTimelineList(QWidget *parent = nullptr) : QListWidget(parent) {}
     std::function<void(int, int)> reordered;
+    QColor accent;
 
 protected:
     int insertionAt(const QPoint &at) const
@@ -118,7 +124,7 @@ protected:
             : visualItemRect(item(m_dropInsertion));
         const int x = m_dropInsertion >= count() ? edge.right() + 2 : edge.left() - 2;
         QPainter painter(viewport());
-        painter.setPen(QPen(QColor(244, 70, 95), 3));
+        painter.setPen(QPen(accent, 3));
         painter.drawLine(x, 8, x, viewport()->height() - 10);
     }
 
@@ -213,8 +219,8 @@ private:
 // The data remains on ordinary QListWidgetItems for saving and drag handling.
 class AnimationFrameCardDelegate final : public QStyledItemDelegate {
 public:
-    explicit AnimationFrameCardDelegate(QObject *parent = nullptr)
-        : QStyledItemDelegate(parent) {}
+    explicit AnimationFrameCardDelegate(const IDETheme &theme, QObject *parent = nullptr)
+        : QStyledItemDelegate(parent), m_theme(theme) {}
 
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
     {
@@ -228,17 +234,17 @@ public:
         const QRect card = option.rect.adjusted(4, 4, -4, -4);
         const bool selected = option.state & QStyle::State_Selected;
         const bool hovered = option.state & QStyle::State_MouseOver;
-        const QColor border = selected ? QColor(244, 70, 95)
-                                        : hovered ? QColor(118, 139, 163)
-                                                  : QColor(55, 69, 85);
-        p->fillRect(card, QColor(16, 25, 35));
+        const QColor border = selected ? m_theme.accent
+                                        : hovered ? m_theme.scrollHandleHover
+                                                  : m_theme.border;
+        p->fillRect(card, m_theme.panelBackground);
         p->fillRect(QRect(card.left() + 1, card.top() + 1,
-                          card.width() - 2, 21), QColor(21, 33, 46));
+                          card.width() - 2, 21), m_theme.alternateBackground);
         p->fillRect(QRect(card.left() + 1, card.bottom() - 22,
-                          card.width() - 2, 21), QColor(20, 30, 42));
+                          card.width() - 2, 21), m_theme.alternateBackground);
         p->setPen(QPen(border, selected ? 2 : 1));
         p->drawRect(card.adjusted(0, 0, -1, -1));
-        p->setPen(QColor(52, 66, 81));
+        p->setPen(m_theme.border);
         p->drawLine(card.left() + 1, card.top() + 23,
                     card.right() - 1, card.top() + 23);
         p->drawLine(card.left() + 1, card.bottom() - 23,
@@ -251,7 +257,7 @@ public:
         font.setPixelSize(12);
         font.setBold(selected);
         p->setFont(font);
-        p->setPen(QColor(220, 229, 241));
+        p->setPen(m_theme.text);
         p->drawText(QRect(card.left() + 2, card.top() + 2,
                           card.width() - 4, 18), Qt::AlignCenter, QString::number(cell));
         const QRect imageArea(card.left() + 4, card.top() + 26,
@@ -265,22 +271,24 @@ public:
         font.setBold(false);
         font.setPixelSize(11);
         p->setFont(font);
-        p->setPen(QColor(163, 177, 193));
+        p->setPen(m_theme.mutedText);
         p->drawText(QRect(card.left() + 2, card.bottom() - 22,
                           card.width() - 4, 21), Qt::AlignCenter,
                     QStringLiteral("%1ms").arg(ticks * 20));
         p->restore();
     }
+private:
+    IDETheme m_theme;
 };
 
 // Small diagram icons for 2/4/8-direction controls (no resource files needed).
-QPixmap directionModeGlyph(int count)
+QPixmap directionModeGlyph(int count, const IDETheme &theme)
 {
     QPixmap result(20, 20);
     result.fill(Qt::transparent);
     QPainter p(&result);
     p.setPen(Qt::NoPen);
-    const QColor active(195, 209, 225), inactive(76, 92, 111);
+    const QColor active = theme.accent, inactive = theme.mutedText;
     const int n = count == 8 ? 3 : 2;
     const int cell = n == 3 ? 4 : 6, space = n == 3 ? 2 : 3;
     const int origin = (20 - (n * cell + (n - 1) * space)) / 2;
@@ -301,6 +309,11 @@ QPixmap directionModeGlyph(int count)
 class AnimationAtlasView final : public QWidget {
 public:
     QImage image;
+    QColor accent;
+    QColor background;
+    QColor atlasGrid;
+    QColor cellNumberBackground;
+    QColor cellNumberText;
     int cellW = 32, cellH = 32, zoom = 3, selected = -1;
     std::function<void(int, bool)> doubleClicked;
     explicit AnimationAtlasView(QWidget *parent = nullptr) : QWidget(parent) {
@@ -316,13 +329,13 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
-        p.fillRect(rect(), QColor(35, 39, 44));
+        p.fillRect(rect(), background);
         if (image.isNull() || cellW < 1 || cellH < 1) return;
         p.setRenderHint(QPainter::SmoothPixmapTransform, false);
         p.drawImage(QRect(0, 0, image.width() * zoom, image.height() * zoom), image);
         const int cols = image.width() / cellW;
         const int rows = image.height() / cellH;
-        p.setPen(QColor(105, 107, 116, 130));
+        p.setPen(atlasGrid);
         for (int x = 0; x <= cols; ++x) p.drawLine(x * cellW * zoom, 0, x * cellW * zoom, rows * cellH * zoom);
         for (int y = 0; y <= rows; ++y) p.drawLine(0, y * cellH * zoom, cols * cellW * zoom, y * cellH * zoom);
         // Atlas indexes are visible at all zoom levels (row-major, zero based).
@@ -334,12 +347,12 @@ protected:
             const QString number = QString::number(n);
             const int width = p.fontMetrics().horizontalAdvance(number) + 8;
             const int height = p.fontMetrics().height() + 3;
-            p.fillRect(QRect(topLeft.x() + 2, topLeft.y() + 2, width, height), QColor(9, 15, 24, 220));
-            p.setPen(QColor(240, 245, 254));
+            p.fillRect(QRect(topLeft.x() + 2, topLeft.y() + 2, width, height), cellNumberBackground);
+            p.setPen(cellNumberText);
             p.drawText(topLeft + QPoint(6, 2 + p.fontMetrics().ascent()), number);
         }
         if (selected >= 0 && selected < cols * rows) {
-            p.setPen(QPen(QColor(248, 70, 103), 2));
+            p.setPen(QPen(accent, 2));
             p.setBrush(Qt::NoBrush);
             p.drawRect(QRect((selected % cols) * cellW * zoom,
                              (selected / cols) * cellH * zoom,
@@ -367,6 +380,85 @@ protected:
     }
 };
 
+
+// The atlas keeps its existing cell click/double-click behaviour, while a
+// middle-button grab pans the scroll area and the wheel zooms around the
+// pointer without jumping to the upper-left of the sheet.
+class AnimationAtlasScrollArea final : public QScrollArea {
+public:
+    explicit AnimationAtlasScrollArea(QWidget *parent = nullptr) : QScrollArea(parent) {
+        viewport()->installEventFilter(this);
+    }
+    std::function<int()> currentZoom;
+    std::function<void(int)> setZoom;
+    void setAtlasWidget(QWidget *atlas) {
+        setWidget(atlas);
+        atlas->installEventFilter(this);
+    }
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (watched != viewport() && watched != widget())
+            return QScrollArea::eventFilter(watched, event);
+        QWidget *source = qobject_cast<QWidget *>(watched);
+        if (event->type() == QEvent::Wheel) {
+            auto *wheel = static_cast<QWheelEvent *>(event);
+            if (!currentZoom || !setZoom) return false;
+            const int steps = wheel->angleDelta().y() / 120;
+            const int direction = steps ? steps :
+                (wheel->angleDelta().y() > 0 || wheel->pixelDelta().y() > 0) ? 1 :
+                (wheel->angleDelta().y() < 0 || wheel->pixelDelta().y() < 0) ? -1 : 0;
+            if (!direction) return false;
+            const int before = currentZoom();
+            const int after = qBound(1, before + direction, 16);
+            const QPoint at = viewport()->mapFromGlobal(source->mapToGlobal(wheel->position().toPoint()));
+            const double imageX = double(horizontalScrollBar()->value() + at.x()) / before;
+            const double imageY = double(verticalScrollBar()->value() + at.y()) / before;
+            if (after != before) {
+                setZoom(after); // Resizes the original atlas widget synchronously.
+                horizontalScrollBar()->setValue(qRound(imageX * after) - at.x());
+                verticalScrollBar()->setValue(qRound(imageY * after) - at.y());
+            }
+            wheel->accept();
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::MiddleButton) {
+                m_dragging = true;
+                m_lastGlobal = source->mapToGlobal(mouse->position().toPoint());
+                viewport()->setCursor(Qt::ClosedHandCursor);
+                if (widget()) widget()->setCursor(Qt::ClosedHandCursor);
+                mouse->accept();
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseMove && m_dragging) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            const QPoint global = source->mapToGlobal(mouse->position().toPoint());
+            const QPoint delta = global - m_lastGlobal;
+            m_lastGlobal = global;
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+            mouse->accept();
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::MiddleButton && m_dragging) {
+                m_dragging = false;
+                viewport()->unsetCursor();
+                if (widget()) widget()->setCursor(Qt::CrossCursor);
+                mouse->accept();
+                return true;
+            }
+        }
+        return QScrollArea::eventFilter(watched, event);
+    }
+private:
+    bool m_dragging = false;
+    QPoint m_lastGlobal;
+};
+
 QIcon frameIcon(const QImage &atlas, int frame, int w, int h)
 {
     const int cols = atlas.width() / w;
@@ -378,8 +470,8 @@ QIcon frameIcon(const QImage &atlas, int frame, int w, int h)
 
 SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFile,
         const QString &animationFile, const QString &defaultHeaderFile,
-        int cellWidth, int cellHeight, QWidget *parent)
-    : QDialog(parent), m_file(animationFile),
+        int cellWidth, int cellHeight, QWidget *parent, const IDETheme &theme)
+    : QDialog(parent), m_theme(theme), m_file(animationFile),
       m_defaultHeaderFile(defaultHeaderFile), m_atlasFile(atlasFile),
       m_cellW(cellWidth > 0 && cellWidth <= 256 ? cellWidth : 32),
       m_cellH(cellHeight > 0 && cellHeight <= 256 ? cellHeight : 32)
@@ -405,32 +497,55 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
     setWindowTitle(tr("Player Animation Editor — %1").arg(QFileInfo(atlasFile).fileName()));
     setMinimumSize(1080, 690);
     resize(1370, 860);
-    // Same sharp-corner dark workspace treatment as the requested mock-up.
-    // No global QApp stylesheet changes: this is scoped to this editor.
-    setStyleSheet(QStringLiteral(R"CSS(
-        QDialog { background:#10161e; color:#e5eaf2; }
-        QWidget { color:#e1e6ef; font-size:13px; }
+    // Keep the existing compact toolkit layout, but use ONLY the selected
+    // IDE theme for widget colours. Light themes must not inherit dark cards,
+    // buttons, popup lists, scrollbars or labels from the original mock-up.
+    const QColor selectedText = (m_theme.accent.lightness() < 128)
+        ? QColor(Qt::white) : QColor(Qt::black);
+    QString sheet = QStringLiteral(R"CSS(
+        QDialog { background:@window; color:@text; }
+        QWidget { color:@text; font-size:13px; }
         QLabel { background:transparent; }
-        QSplitter::handle { background:#27313e; width:2px; }
-        QListWidget, QScrollArea { background:#111923; border:1px solid #354252; border-radius:0px; }
+        QSplitter::handle { background:@border; width:2px; }
+        QListWidget, QScrollArea { background:@panel; border:1px solid @border; border-radius:0px; }
         QListWidget::item { padding:3px; }
-        QListWidget::item:selected { background:#6b2030; color:#fff; border-left:3px solid #f0465d; }
-        QListWidget::item:hover { background:#283545; }
-        QPushButton { background:#222c39; color:#e7eaf0; border:1px solid #465263;
+        QListWidget::item:selected { background:@accent; color:@selected; border-left:3px solid @accent; }
+        QListWidget::item:hover:!selected { background:@hover; }
+        QPushButton { background:@panel; color:@text; border:1px solid @border;
                       border-radius:0px; padding:6px 10px; min-height:22px; }
-        QPushButton:hover { border-color:#f0465d; background:#333743; }
-        QPushButton:pressed { background:#692332; }
-        QComboBox, QSpinBox, QLineEdit { background:#17222e; color:#e7eaf0;
-                       border:1px solid #435165; border-radius:0px; padding:4px; min-height:22px; }
+        QPushButton:hover { border-color:@accent; background:@hover; }
+        QPushButton:pressed { background:@accent; color:@selected; }
+        QComboBox, QSpinBox, QLineEdit { background:@input; color:@text;
+                       border:1px solid @border; border-radius:0px; padding:4px; min-height:22px; }
         QComboBox::drop-down { border:0; }
-        QComboBox QAbstractItemView { background:#17222e; color:#e7eaf0; selection-background-color:#682636; }
+        QComboBox QAbstractItemView { background:@input; color:@text;
+                         selection-background-color:@accent; selection-color:@selected; }
         QCheckBox { spacing:7px; }
-        QCheckBox::indicator { width:16px; height:16px; border:1px solid #728295; border-radius:0px; background:#182330; }
-        QCheckBox::indicator:checked { background:#f0465d; border-color:#f0465d; }
-        QScrollBar:horizontal, QScrollBar:vertical { background:#101820; border:0; }
-        QScrollBar::handle:horizontal, QScrollBar::handle:vertical { background:#465366; border-radius:0px; min-width:18px; min-height:18px; }
+        QCheckBox::indicator { width:16px; height:16px; border:1px solid @border;
+                              border-radius:0px; background:@input; }
+        QCheckBox::indicator:checked { background:@accent; border-color:@accent; }
+        QRadioButton::indicator { width:14px; height:14px; }
+        QRadioButton::indicator:checked { background:@accent; border:2px solid @border; }
+        QRadioButton::indicator:unchecked { background:@input; border:2px solid @border; }
+        QScrollBar:horizontal, QScrollBar:vertical { background:@panel; border:0; }
+        QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
+                        background:@scroll; border-radius:0px; min-width:18px; min-height:18px; }
         QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
-    )CSS"));
+    )CSS");
+    const QVector<QPair<QString, QColor>> colours = {
+        {QStringLiteral("@window"), m_theme.windowBackground},
+        {QStringLiteral("@panel"), m_theme.panelBackground},
+        {QStringLiteral("@input"), m_theme.inputBackground},
+        {QStringLiteral("@text"), m_theme.text},
+        {QStringLiteral("@border"), m_theme.border},
+        {QStringLiteral("@accent"), m_theme.accent},
+        {QStringLiteral("@selected"), selectedText},
+        {QStringLiteral("@hover"), m_theme.hover},
+        {QStringLiteral("@scroll"), m_theme.scrollHandle}
+    };
+    for (const auto &entry : colours)
+        sheet.replace(entry.first, ideThemeColorName(entry.second));
+    setStyleSheet(sheet);
     m_states = {"Idle", "Walk", "Run", "Push", "Jump", "Fall", "Slide", "Balance", "Hurt", "Land"};
     if (!m_atlas.isNull()) readDocument();
     createUi();
@@ -494,6 +609,28 @@ void SidboxPlayerAnimationEditor::createUi()
     auto *leftLayout = new QVBoxLayout(left);
     leftLayout->addWidget(new QLabel(tr("Animation States"), left));
     m_stateList = new QListWidget(left);
+    // Match the Game Object Properties type selector: square bordered cards,
+    // a stronger accent selection and contrasting text in light themes.
+    // Scope this styling to the state list, leaving the atlas and timeline
+    // selection visuals exactly as they were.
+    m_stateList->setObjectName(QStringLiteral("GGAnimationStates"));
+    m_stateList->setSpacing(0);
+    m_stateList->setIconSize(QSize(20, 20));
+    const QColor stateSelectionBg = m_theme.accent.darker(230);
+    const QColor stateSelectionFg = stateSelectionBg.lightnessF() < 0.52
+        ? QColor(Qt::white) : QColor(Qt::black);
+    m_stateList->setStyleSheet(QStringLiteral(R"GGSTATE(
+        QListWidget#GGAnimationStates { background:%1; color:%2; border:1px solid %3;
+            border-radius:0px; outline:0px; }
+        QListWidget#GGAnimationStates::item { padding:8px; border:1px solid %3;
+            border-radius:0px; margin-bottom:2px; }
+        QListWidget#GGAnimationStates::item:selected { background:%4; color:%5;
+            border:1px solid %6; border-left:3px solid %6; }
+        QListWidget#GGAnimationStates::item:hover { border-color:%6; }
+    )GGSTATE")
+        .arg(ideThemeColorName(m_theme.panelBackground), ideThemeColorName(m_theme.text),
+             ideThemeColorName(m_theme.border), ideThemeColorName(stateSelectionBg),
+             ideThemeColorName(stateSelectionFg), ideThemeColorName(m_theme.accent)));
     leftLayout->addWidget(m_stateList, 1);
     auto *stateButtons = new QHBoxLayout;
     auto *addState = new QPushButton(tr("+ State"), left);
@@ -503,8 +640,9 @@ void SidboxPlayerAnimationEditor::createUi()
     // Screenshot-style direction mode selector directly below Animation States.
     auto *modeBox = new QWidget(left);
     modeBox->setStyleSheet(QStringLiteral(
-        "QWidget { background:#101820; border:1px solid #304052; border-radius:0px; }"
-        "QLabel, QRadioButton { border:0; background:transparent; }"));
+        "QWidget { background:%1; border:1px solid %2; border-radius:0px; }"
+        "QLabel, QRadioButton { border:0; background:transparent; }")
+        .arg(ideThemeColorName(m_theme.panelBackground), ideThemeColorName(m_theme.border)));
     auto *modeLayout = new QVBoxLayout(modeBox);
     modeLayout->setContentsMargins(8, 8, 8, 8);
     modeLayout->setSpacing(5);
@@ -521,7 +659,7 @@ void SidboxPlayerAnimationEditor::createUi()
         line->addWidget(radio);
         line->addStretch();
         auto *symbol = new QLabel(modeBox);
-        symbol->setPixmap(directionModeGlyph(n));
+        symbol->setPixmap(directionModeGlyph(n, m_theme));
         line->addWidget(symbol);
         modeLayout->addLayout(line);
     }
@@ -558,12 +696,20 @@ void SidboxPlayerAnimationEditor::createUi()
     m_zoom->setToolTip(tr("Nearest-neighbour display zoom only."));
     atlasRow->addWidget(new QLabel(tr("Zoom"), middle)); atlasRow->addWidget(m_zoom);
     mid->addLayout(atlasRow);
-    auto *scroll = new QScrollArea(middle);
+    auto *scroll = new AnimationAtlasScrollArea(middle);
     scroll->setWidgetResizable(false);
+    scroll->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    scroll->currentZoom = [this]() { return m_zoom->value(); };
+    scroll->setZoom = [this](int zoom) { m_zoom->setValue(zoom); };
     auto *atlas = new AnimationAtlasView(scroll);
     atlas->image = m_atlas;
+    atlas->accent = m_theme.accent;
+    atlas->background = m_theme.panelBackground;
+    atlas->atlasGrid = m_theme.border;
+    atlas->cellNumberBackground = m_theme.alternateBackground;
+    atlas->cellNumberText = m_theme.text;
     m_atlasView = atlas;
-    scroll->setWidget(atlas);
+    scroll->setAtlasWidget(atlas);
     mid->addWidget(scroll, 1);
     mid->addWidget(new QLabel(tr("Frame Timeline — drag to reorder; select for individual duration"), middle));
     m_timeline = new AnimationTimelineList(middle);
@@ -572,7 +718,8 @@ void SidboxPlayerAnimationEditor::createUi()
     m_timeline->setWrapping(false);
     m_timeline->setIconSize(QSize(64, 64));
     m_timeline->setGridSize(QSize(92, 136));
-    m_timeline->setItemDelegate(new AnimationFrameCardDelegate(m_timeline));
+    static_cast<AnimationTimelineList *>(m_timeline)->accent = m_theme.accent;
+    m_timeline->setItemDelegate(new AnimationFrameCardDelegate(m_theme, m_timeline));
     // Keep icon-mode dragging enabled; our dropEvent owns the actual reorder.
     m_timeline->setMovement(QListView::Snap);
     m_timeline->setMouseTracking(true);
@@ -613,7 +760,8 @@ void SidboxPlayerAnimationEditor::createUi()
     m_preview->setAlignment(Qt::AlignCenter);
     m_preview->setMinimumSize(210, 220);
     m_preview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_preview->setStyleSheet(QStringLiteral("background:#24282c; border:1px solid #646a71; border-radius:0px;"));
+    m_preview->setStyleSheet(QStringLiteral("background:%1; border:1px solid %2; border-radius:0px;")
+        .arg(ideThemeColorName(m_theme.panelBackground), ideThemeColorName(m_theme.border)));
     rightLayout->addWidget(m_preview, 1);
     m_play = new QPushButton(tr("Pause preview"), right);
     rightLayout->addWidget(m_play);
@@ -760,7 +908,8 @@ void SidboxPlayerAnimationEditor::rebuildStateList(int selected)
     QSignalBlocker guard(m_stateList);
     m_stateList->clear();
     for (const QString &state : m_states) {
-        auto *item = new QListWidgetItem(animationStateIcon(state), state);
+        auto *item = new QListWidgetItem(animationStateIcon(state, m_theme), state);
+        item->setSizeHint(QSize(170, 43)); // Same bordered row height as object types.
         m_stateList->addItem(item);
     }
     if (!m_states.isEmpty()) m_stateList->setCurrentRow(qBound(0, selected, m_states.size() - 1));
@@ -868,10 +1017,10 @@ void SidboxPlayerAnimationEditor::refreshPreview()
 {
     const Clip *clip = effectiveClip();
     QImage preview(256, 256, QImage::Format_ARGB32);
-    preview.fill(QColor(35, 39, 44));
+    preview.fill(m_theme.panelBackground);
     QPainter painter(&preview);
-    painter.fillRect(QRect(0, 0, 256, 256), QColor(16, 24, 34));
-    painter.setPen(QPen(QColor(48, 65, 83), 1));
+    painter.fillRect(QRect(0, 0, 256, 256), m_theme.alternateBackground);
+    painter.setPen(QPen(m_theme.border, 1));
     const QPoint horizon(128, 164);
     for (int x = -128; x <= 384; x += 48)
         painter.drawLine(horizon, QPoint(x, 255));
@@ -892,12 +1041,12 @@ void SidboxPlayerAnimationEditor::refreshPreview()
         }
     }
     if (m_showBox->isChecked()) {
-        painter.setPen(QPen(QColor(105, 227, 240), 1));
+        painter.setPen(QPen(m_theme.accent, 1));
         painter.drawRect(x + m_boxX->value() * scale, y + m_boxY->value() * scale,
                          m_boxW->value() * scale, m_boxH->value() * scale);
     }
     if (m_showFoot->isChecked()) {
-        painter.setPen(QPen(QColor(246, 213, 65), 2));
+        painter.setPen(QPen(m_theme.brightText, 2));
         const int fx = x + m_footX->value() * scale, fy = y + m_footY->value() * scale;
         painter.drawLine(fx - 7, fy, fx + 7, fy);
         painter.drawLine(fx, fy - 7, fx, fy + 7);
@@ -1124,6 +1273,11 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
     s += "};\n\n";
     s += QString("#define %1_STATE_COUNT %2u\n#define %1_DIRECTION_COUNT %3u\n\n")
         .arg(prefix.toUpper()).arg(m_states.size()).arg(dirs.size());
+    // State IDs above are enum constants, so #ifdef PLAYER_ANIM_STATE_HURT
+    // never works. Export a true preprocessor flag for conditional C code.
+    s += QString("#define %1_HAS_HURT_STATE %2\n\n")
+        .arg(prefix.toUpper())
+        .arg(m_states.contains(QStringLiteral("Hurt"), Qt::CaseInsensitive) ? 1 : 0);
     s += QString("typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } %1_clip_t;\n")
         .arg(prefix);
     s += QString("typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; } %1_playeranim_t;\n\n")

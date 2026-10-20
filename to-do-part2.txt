@@ -1,9 +1,85 @@
+1: compile time, as you know it has the feature that if something was changed, it asks to update the game (or remembered not to remind)
+in pressing the compile time, the confirm and the Update Game projects - confirm, and the "game updated" info box should be surpressed, AS the user would have ticked the box to stop pestering this session.
+
+the button that says Update Project... SHOULD never surpress those boxes though!
+
+
+
+
+
+[done]
+1: Panning in the World Edit view still doesnae load the saved pannin location. still seems to default to the top left (where the camera is focussed)
+2: in the tile map editor -> slopes editor, when a selected node is clicked, could I have the DELETE key do the same as clicking Delete note please?
+the Slope editor might need a "cancel" and "okay" to save/cancel an edit. but the buttons instead of using words, use a "X" and "tick glypth" these could be 24x24 pix icons?
+3: in the Object Editor, using the [<] and the [>] buttons to go from previous/next object, the window closes and re-opens with the next object. its distracting
+
+
+[DONE]
+1: Player Animation Editor - mouse interaction in the sprite cells, Middle click hold should allow for panning, the wheel mouse should be used to change the zoom (keeping the current pannin location), while dragging the pannin should have that grab mouse icon ;)
+2: the Game editor view (sbgm tab) the wheel mouse should control the zoom (it already does the middle click hold to pan :))
+3: Game Object Properties: the function all round is great!!
+BUUT at the top could we have two arrows < and > so we can easily move to the previou/next game object in the list.. the arrows needs to be 16x16 icons.
+I think the window WOULD look nice having the enlarged icon of the GameObject icon at the top so its like
+[ICON] Game Object Properties : [<] <the object> [>]
+the Live Preview should have the animations buttons [>] [||][ # ] , so play, pause, stop (rewind anim frame), have them like 16x16 icons in there too. they'll need to be able to be themed with the selected IDE probably the same colour as the text
+
+
+[DONE]
+1: the world.sbgm ALSO needs to remember where i panned to!! <3
+
+
 GUI interfacin...
+[DONE]
+1: Player Animation Editor: needs to respect the theme in the IDE ;) I DO like the theme, but parts of it are still dark colours (am testin the light theme rn)
+2: splines time line, could we have a start spline timer? this basically holds the spline loop for an X amount of frames before it starts doing its movement and loops
+it would be useful for stagged moving items at different times.
+
+3: the tile editor really needs to remember where i panned to! hehe, in the project file might be worth storing it there
+
+
+[done]
+adding a "momentum to a spawned item in breakable collectable"
+
+[DONE]
+Generally:
+CTRL + F should find something in the current document,
+CTRL + SHIFT + F uses the FULL search (as this is excellent as it is)
+. so with the CTRL + F just a really basic find dialog, that will allow someone to find the first word, then keep pressing F3 to find the next word (and then go to the top of the document again and do the same search)
+
+Main window:
+1: the calculator is not fully using the theme, selected binary numbers are still using the systems colours.
+when selecting the bits, the text needs to be select colour aware so that the same text colour and the high lighter arent the same colour xD
+2: Added feature, is it possible to be able to open a ppb file type viewer? doesnt need to be fancy, just a pannable, zoomable view of the format.
+i think ppbs carry their palette data, if not select the palette they're used in on the resources. IF there is no resource or sbgm created. use the default CLUT (even if the colours are wrong, they will have an idea what the ppb looks like anywyay)
+
+Game Object properties:
+1: the theme (in light mode:) the selected Object type is using dark text, so the dark blue high light is the same as the text, could we have this invert the colours?
+2: can remove the Object ID: those numbers wont mean anything to the end user ;)
+
+New Object Type function to add to breakables:
+Could we have it where it can be broken by hittin it from below?
+an when it does, it creates another fallin collectable that lands on the ground (normal collisions that can be just a normal collectable)
+this would mean havin a collectable somewhere off screen for its settings (so might need a flag to hide it in runtime until its needed by the breakable spawner)
+so the idea is, player jumps bashes their heads on the buttom a few times (like the counter) it breaks, and it spawns the offscreen collectable game object...
+HOW easy would this be to implement?
+
+
+
+
+[DONE]
 Player Animation Editor:
-The Player Animation editor has red themes still, it needs to use the colours from the select IDE themes
+1: The Player Animation editor has red themes still, it needs to use the colours from the select IDE themes
 BUT keeping the look! just with the correct colours.
 
 
+Game Object properties:
+1: The window needs to remember if it was maximized or not.
+2: Interestin object feature!! could we have under Visual Movement (rename that to Visual & Movements) could we add the flags to flip the object? x flip and y flip on the same row under animate sprite frame?
+3: Movement Splines: could we have the icon in there [icon][the name of spline], (use the ones in my resources please)
+4: I have noticed that the Use player Hurt animation isnae workin in the game? did i miss somethin in the code to do this?
+
+
+[DONE]
 Game Object properties:
 Tweaks
 The object Type:
