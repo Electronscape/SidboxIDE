@@ -111,6 +111,10 @@ private:
         int breakHits = 1; // 1..4, stored per placed instance
         int breakStrength = 11; // upward px/frame for bounce
         int breakLaunchX = 0; // -left, +right px/frame
+        bool enemyHurtsOnTouch = true; // Side/underside hits use the shared player-damage event.
+        int enemyDamage = 1;
+        int enemyDefeatFrame = -1; // -1=vanish immediately; otherwise show this atlas frame.
+        int enemyDefeatFrames = 20; // 50 FPS ticks to show defeat frame.
         bool objectInitiallyActive = true; // Default for all old designs.
         bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
         bool objectFlipX = false, objectFlipY = false; // Optional BOB mirroring; hitbox stays in place.

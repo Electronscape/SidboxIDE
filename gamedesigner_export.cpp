@@ -190,6 +190,18 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 return false;
             }
         }
+        if (r.objectType == QStringLiteral("enemy") && r.enemyDefeatFrame >= 0) {
+            const QImage image = cachedImage(resolvedPath(r.path));
+            const int cw = r.cellWidth > 0 ? r.cellWidth : image.width();
+            const int ch = r.cellHeight > 0 ? r.cellHeight : image.height();
+            const int frames = !image.isNull() && cw > 0 && ch > 0
+                ? (image.width() / cw) * (image.height() / ch) : 0;
+            if (r.enemyDefeatFrame >= frames) {
+                if (error) *error = tr("Enemy '%1' has defeated frame %2, but its sprite only has %3 frames.")
+                    .arg(r.name).arg(r.enemyDefeatFrame).arg(frames);
+                return false;
+            }
+        }
         int attached = -1;
         if (!r.objectSplineId.isEmpty()) {
             for (int i = 0; i < m_splinePaths.size(); ++i)
@@ -268,7 +280,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     QHash<QString, int> breakRewardOwner;
     for (int i = 0; i < nw; ++i) {
         const Resource &block = *platforms.at(i);
-        if (block.objectType != QStringLiteral("breakable") ||
+        if ((block.objectType != QStringLiteral("breakable") && block.objectType != QStringLiteral("enemy")) ||
             block.breakDropCollectableId.isEmpty()) continue;
         const QString id = block.breakDropCollectableId;
         int rewardIndex = -1;
@@ -300,6 +312,14 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     bool linkedKeys = false;
     for (const Resource *r : pickups) if (r->pickupKind == 3 &&
         r->targetAction != QStringLiteral("none") && !r->targetObjectId.isEmpty()) linkedKeys = true;
+    for (const Resource *r : platforms) {
+        if (r->objectType == QStringLiteral("enemy") &&
+            r->targetAction != QStringLiteral("none") && !r->targetObjectId.isEmpty() &&
+            !objectSlot.contains(r->targetObjectId)) {
+            if (error) *error = tr("Enemy '%1' links to a missing Game Object. Reassign its defeat target.").arg(r->name);
+            return false;
+        }
+    }
     for (const Resource *r : pickups) {
         if (r->pickupKind != 3 || r->targetAction == QStringLiteral("none") ||
             r->targetObjectId.isEmpty()) continue;
@@ -367,7 +387,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             for (const QString &id : {obj->sfxStart, obj->sfxMove,
                                       obj->sfxStop, obj->sfxReverse})
                 if (!id.isEmpty()) usedSfx.insert(id);
-        } else if (obj->objectType == QStringLiteral("breakable")) {
+        } else if (obj->objectType == QStringLiteral("breakable") || obj->objectType == QStringLiteral("enemy")) {
             for (const QString &id : {obj->sfxBreakHit, obj->sfxBreakBounce,
                                       obj->sfxBreakFinish})
                 if (!id.isEmpty()) usedSfx.insert(id);
@@ -554,6 +574,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                 r.objectType == QStringLiteral("deathzone") ? QStringLiteral("GAME_OBJECT_DEATH_ZONE") :
                 r.objectType == QStringLiteral("breakable") ? QStringLiteral("GAME_OBJECT_BREAKABLE") :
                 r.objectType == QStringLiteral("hazard") ? QStringLiteral("GAME_OBJECT_HAZARD") :
+                r.objectType == QStringLiteral("enemy") ? QStringLiteral("GAME_OBJECT_ENEMY") :
                 QStringLiteral("GAME_OBJECT_SPRING");
             C << "    if (!game_world_object_start(" << target << ", " << kind << ", "
               << sprite << ", " << r.x << ", " << r.y << ", "
@@ -575,6 +596,16 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                   << (r.breakFromBelow ? "1" : "0") << ";\n";
                 C << "    platforms[" << ix << "].break_strength = " << r.breakStrength << ";\n";
                 C << "    platforms[" << ix << "].break_launch_x = " << r.breakLaunchX << ";\n";
+            }
+            if (r.objectType == QStringLiteral("enemy")) {
+                C << "    platforms[" << ix << "].break_hits_required = " << r.breakHits << ";\n"
+                  << "    platforms[" << ix << "].break_bounce = " << (r.breakBounce ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].break_strength = " << r.breakStrength << ";\n"
+                  << "    platforms[" << ix << "].break_launch_x = " << r.breakLaunchX << ";\n"
+                  << "    platforms[" << ix << "].enemy_hurts_on_touch = " << (r.enemyHurtsOnTouch ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_damage = " << r.enemyDamage << ";\n"
+                  << "    platforms[" << ix << "].enemy_defeat_frame = " << r.enemyDefeatFrame << ";\n"
+                  << "    platforms[" << ix << "].enemy_defeat_frames = " << r.enemyDefeatFrames << ";\n";
             }
             if (r.objectType == QStringLiteral("hazard")) {
                 C << "    platforms[" << ix << "].hazard_damage = " << r.hazardDamage << ";\n"
@@ -798,7 +829,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
         if (hasBreakRewards) {
             for (int i = 0; i < nw; ++i) {
                 const Resource &block = *platforms.at(i);
-                if (block.objectType != QStringLiteral("breakable") ||
+                if ((block.objectType != QStringLiteral("breakable") && block.objectType != QStringLiteral("enemy")) ||
                     block.breakDropCollectableId.isEmpty()) continue;
                 int j = -1;
                 for (int k = 0; k < np; ++k)
@@ -840,6 +871,14 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                  "        if (game_death_is_dead()) return;\n"
                  "    }\n";
         }
+        // Defeat actions are one-frame pulses from the runtime; no repeated door toggles.
+        for (int i = 0; i < nw; ++i) {
+            const Resource &enemy = *platforms.at(i);
+            if (enemy.objectType != QStringLiteral("enemy")) continue;
+            const QString action = linkedAction(enemy);
+            if (!action.isEmpty())
+                C << "    if (platforms[" << i << "].break_triggered) { " << action << " }\n";
+        }
         for (int i = 0; i < nw; ++i) {
             const Resource &r = *platforms.at(i);
             if (r.objectType == QStringLiteral("spring") && !r.sfxSpring.isEmpty()) {
@@ -855,7 +894,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                     C << "    if (platforms[" << i << "].hazard_bounce_triggered) "
                       << cSfxCall(r.sfxHazardBounce, pos, r.audioRadius);
             }
-            if (r.objectType == QStringLiteral("breakable")) {
+            if (r.objectType == QStringLiteral("breakable") || r.objectType == QStringLiteral("enemy")) {
                 const QString pos = QStringLiteral("platforms[%1].x").arg(i);
                 if (!r.sfxBreakHit.isEmpty())
                     C << "    if (platforms[" << i << "].break_hit_triggered) "
@@ -1132,7 +1171,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();
     const bool hasMurderObjects = hasPhysics && std::any_of(m_resources.cbegin(), m_resources.cend(),
         [](const Resource &r) { return r.kind == QStringLiteral("sprite") &&
-                                      r.objectType == QStringLiteral("hazard"); });
+                                      (r.objectType == QStringLiteral("hazard") || r.objectType == QStringLiteral("enemy")); });
     QString program;
     QTextStream out(&program);
     out << R"CG(/*

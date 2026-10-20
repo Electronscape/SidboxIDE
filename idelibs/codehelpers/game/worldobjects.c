@@ -9,7 +9,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
                                 gfxbob_t *sprite, int32_t x, int32_t y,
                                 uint16_t width, uint16_t height)
 {
-    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_HAZARD ||
+    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_ENEMY ||
         !width || !height) return 0;
     object->sprite = sprite;
     object->animation = 0;
@@ -36,6 +36,10 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->break_strength = 11;
     object->break_launch_x = 0;
     object->break_touching = 0;
+    object->enemy_hurts_on_touch = 1;
+    object->enemy_defeat_frame = -1;
+    object->enemy_defeat_frames = 20;
+    object->enemy_dying = 0;
     object->break_triggered = 0;
     object->break_hit_triggered = 0;
     object->break_bounce_triggered = 0;
@@ -96,6 +100,10 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
         object->hazard_hit_triggered = 0;
         object->hazard_bounce_triggered = 0;
         if (!object->active) {
+            if (object->type == GAME_OBJECT_ENEMY && object->enemy_dying) {
+                object->enemy_dying = frames >= object->enemy_dying
+                    ? 0 : (uint8_t)(object->enemy_dying - frames);
+            }
             object->spring_touching = 0;
             object->break_touching = 0;
             object->hazard_touching = 0;
@@ -199,6 +207,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
             if (!o->active || o->type == GAME_OBJECT_TRIGGER ||
                 o->type == GAME_OBJECT_DEATH_ZONE ||
                 o->type == GAME_OBJECT_HAZARD ||
+                o->type == GAME_OBJECT_ENEMY ||
                 (o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
                 (o->type == GAME_OBJECT_BREAKABLE && o->break_touch_mode) ||
                 feet != o->previous_y ||
@@ -284,7 +293,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             o->break_touching = 0;
             continue;
         }
-        if (o->type == GAME_OBJECT_BREAKABLE && o->break_touching) {
+        if ((o->type == GAME_OBJECT_BREAKABLE || o->type == GAME_OBJECT_ENEMY) && o->break_touching) {
             /* A hit only rearms once the player's bounds have separated. */
             const uint8_t still_touching = (uint8_t)(
                 (int64_t)x <= (int64_t)o->x + o->width &&
@@ -305,7 +314,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                 (int64_t)x < (int64_t)o->x + o->width &&
                 (int64_t)x + p->width > o->x) {
                 o->break_touching = 1;
-                if (o->break_hits_done < 4) ++o->break_hits_done;
+                if (o->break_hits_done < 255) ++o->break_hits_done;
                 o->break_hit_triggered = 1;
                 if (o->break_hits_done >= (o->break_hits_required
                         ? o->break_hits_required : 1)) {
@@ -437,20 +446,27 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     if (!best) return;
     /* Side/underside contact must NOT teleport the player onto the top. */
     if (!best_touch) *p->y100 = (best->y - p->height - p->offset_y) * 100;
-    if (best->type == GAME_OBJECT_BREAKABLE) {
+    if (best->type == GAME_OBJECT_BREAKABLE || best->type == GAME_OBJECT_ENEMY) {
         /* Touch-mode counts a fresh contact from any direction. Stomp-mode
            counts ONLY a landing following an actual player jump; gravity
            alone is not an attack. A non-stomping landing is still solid. */
-        const uint8_t valid_hit = (uint8_t)(!best->break_from_below &&
-            (best_touch || p->break_stomp_armed));
+        const uint8_t valid_hit = (uint8_t)(best->type == GAME_OBJECT_ENEMY
+            ? (!best_touch && !rising) : (!best->break_from_below &&
+            (best_touch || p->break_stomp_armed)));
         if (valid_hit && !best->break_touching) {
             best->break_touching = 1;
-            if (best->break_hits_done < 4) ++best->break_hits_done;
+            if (best->type == GAME_OBJECT_ENEMY) best->hazard_touching = 1;
+            if (best->break_hits_done < 255) ++best->break_hits_done;
             best->break_hit_triggered = 1; /* A valid hit, including the final break. */
             if (best->break_hits_done >= (best->break_hits_required
                     ? best->break_hits_required : 1)) {
                 best->break_triggered = 1;
-                best->active = 0; /* Draw and collisions disappear immediately. */
+                best->active = 0; /* Collision disappears immediately. */
+                if (best->type == GAME_OBJECT_ENEMY && best->sprite &&
+                    best->enemy_defeat_frame >= 0 && best->enemy_defeat_frames) {
+                    best->sprite->index = (uint8_t)best->enemy_defeat_frame;
+                    best->enemy_dying = best->enemy_defeat_frames;
+                }
             }
         }
         if (!best_touch && valid_hit && best->break_bounce && !best->break_touch_mode) {
@@ -609,7 +625,9 @@ void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
     const int32_t y = *p->y100 / 100 + p->offset_y;
     for (uint16_t i = 0; i < count; ++i) {
         game_world_object_t *o = &objects[i];
-        if (o->type != GAME_OBJECT_HAZARD) continue;
+        if (o->type != GAME_OBJECT_HAZARD &&
+            o->type != GAME_OBJECT_ENEMY) continue;
+        if (o->type == GAME_OBJECT_ENEMY && !o->enemy_hurts_on_touch) continue;
         if (!o->active || !o->width || !o->height) {
             o->hazard_touching = 0;
             continue;
@@ -671,7 +689,7 @@ void game_world_objects_draw_layer(const game_world_object_t *objects,
     if (!objects) return;
     for (uint16_t i = 0; i < count; ++i) {
         const game_world_object_t *object = &objects[i];
-        if (!object->active || !object->sprite ||
+        if ((!object->active && !object->enemy_dying) || !object->sprite ||
             !!object->draw_behind_tiles != !!behind) continue;
         gfxbob_t visible = *object->sprite;
         visible.drawx = clamp16((int64_t)object->x - cx);

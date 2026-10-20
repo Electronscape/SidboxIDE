@@ -18,6 +18,7 @@
 #define GAME_OBJECT_DEATH_ZONE 6u
 #define GAME_OBJECT_BREAKABLE  7u
 #define GAME_OBJECT_HAZARD     8u /* damaging, non-solid, movable spikes etc. */
+#define GAME_OBJECT_ENEMY      9u /* stompable animated enemy, side contact can hurt */
 
 typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
@@ -42,6 +43,10 @@ typedef struct {
     int16_t break_strength;      /* Upward bounce, pixels/frame. */
     int16_t break_launch_x;      /* Optional left/right bounce, pixels/frame. */
     uint8_t break_touching;      /* Edge latch; leave before hitting again. */
+    uint8_t enemy_hurts_on_touch;
+    int16_t enemy_defeat_frame; /* -1 hides immediately, 0..255 displays sprite frame. */
+    uint8_t enemy_defeat_frames; /* Number of frames to show the defeated image. */
+    uint8_t enemy_dying; /* Draw-only countdown. Collision is disabled immediately. */
     uint8_t break_triggered;     /* One-frame break event on final hit. */
     uint8_t break_hit_triggered; /* One-frame event for each accepted hit, final included. */
     uint8_t break_bounce_triggered; /* One-frame event for each actual bounce. */

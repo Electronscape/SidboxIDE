@@ -207,7 +207,7 @@ bool SidboxGameDesigner::loadDesign()
         if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
                 QStringLiteral("conveyor"), QStringLiteral("spring"),
                 QStringLiteral("trigger"), QStringLiteral("door"),
-                QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard")}.contains(type)
+                QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"), QStringLiteral("enemy")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -228,9 +228,14 @@ bool SidboxGameDesigner::loadDesign()
         r.breakRewardImpulse = object.value(QStringLiteral("breakRewardImpulse")).toBool(false);
         r.breakRewardVx = qBound(-20, object.value(QStringLiteral("breakRewardVx")).toInt(0), 20);
         r.breakRewardVy = qBound(-20, object.value(QStringLiteral("breakRewardVy")).toInt(-8), 20);
-        r.breakHits = qBound(1, object.value(QStringLiteral("breakHits")).toInt(1), 4);
+        r.breakHits = qBound(1, object.value(QStringLiteral("breakHits")).toInt(1),
+            r.objectType == QStringLiteral("enemy") ? 20 : 4);
         r.breakStrength = qBound(1, object.value(QStringLiteral("breakStrength")).toInt(11), 100);
         r.breakLaunchX = qBound(-40, object.value(QStringLiteral("breakLaunchX")).toInt(0), 40);
+        r.enemyHurtsOnTouch = object.value(QStringLiteral("enemyHurtsOnTouch")).toBool(true);
+        r.enemyDamage = qBound(0, object.value(QStringLiteral("enemyDamage")).toInt(1), 65535);
+        r.enemyDefeatFrame = qBound(-1, object.value(QStringLiteral("enemyDefeatFrame")).toInt(-1), 255);
+        r.enemyDefeatFrames = qBound(1, object.value(QStringLiteral("enemyDefeatFrames")).toInt(20), 255);
         r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
         r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
         r.hazardKickX = qBound(-40, object.value(QStringLiteral("hazardKickX")).toInt(0), 40);
@@ -462,6 +467,10 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("breakHits"), r.breakHits);
             object.insert(QStringLiteral("breakStrength"), r.breakStrength);
             object.insert(QStringLiteral("breakLaunchX"), r.breakLaunchX);
+            object.insert(QStringLiteral("enemyHurtsOnTouch"), r.enemyHurtsOnTouch);
+            object.insert(QStringLiteral("enemyDamage"), r.enemyDamage);
+            object.insert(QStringLiteral("enemyDefeatFrame"), r.enemyDefeatFrame);
+            object.insert(QStringLiteral("enemyDefeatFrames"), r.enemyDefeatFrames);
             object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
             object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
             object.insert(QStringLiteral("hazardKickX"), r.hazardKickX);

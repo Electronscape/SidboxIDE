@@ -4102,11 +4102,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard springCard = makeCard(tr("Spring / Bouncer"));
     const PropertyCard breakCard = makeCard(tr("Breakable"));
     const PropertyCard hazardCard = makeCard(tr("Hazard / Murder Object"));
+    const PropertyCard enemyCard = makeCard(tr("Stompable Enemy"));
     const PropertyCard audioCollectCard = makeCard(tr("Audio Events / Collectable"));
     const PropertyCard audioLiftCard = makeCard(tr("Audio Events / Moving Platform"));
     const PropertyCard audioSpringCard = makeCard(tr("Audio Events / Spring"));
     const PropertyCard audioConveyorCard = makeCard(tr("Audio Events / Conveyor"));
-    const PropertyCard audioBreakCard = makeCard(tr("Audio Events / Breakable"));
+    const PropertyCard audioBreakCard = makeCard(tr("Audio Events / Breakable & Enemy"));
     const PropertyCard audioHazardCard = makeCard(tr("Audio Events / Hazard"));
     const PropertyCard audioOptionsCard = makeCard(tr("Audio / Range & Fade"), false);
 
@@ -4163,6 +4164,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Hazard Zone (touch = callback)"), QStringLiteral("deathzone"));
     type->addItem(tr("Breakable Object"), QStringLiteral("breakable"));
     type->addItem(tr("Hazard / Murder Object (touch hurts)"), QStringLiteral("hazard"));
+    type->addItem(tr("Stompable Enemy (jump on to defeat)"), QStringLiteral("enemy"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     // The left-hand list is the behaviour selector; keep the combo as the
     // original model for existing validation and signal connections.
@@ -4506,6 +4508,50 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(breakReward, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateBreakControls](int) { updateBreakControls(); });
     updateBreakControls();
+    // A stompable enemy uses the well-tested breakable multi-hit + bounce path.
+    // This separate card deliberately exposes only enemy-relevant properties.
+    form = enemyCard.form;
+    auto *enemyReward = new GameComboBox(&dialog);
+    enemyReward->addItem(tr("None — no drop"), QString());
+    for (const Resource &candidate : m_resources) {
+        if (candidate.id == old.id || candidate.kind != QStringLiteral("sprite") ||
+            candidate.objectType != QStringLiteral("collectable")) continue;
+        enemyReward->addItem(candidate.name, candidate.id);
+    }
+    enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
+    enemyReward->setToolTip(tr("On defeat, spawn this hidden Collectable. Place it in the world and check Hidden until activated."));
+    form->addRow(tr("Drop collectable on defeat"), enemyReward);
+    auto *enemyHits = spin(1, 20, old.breakHits);
+    auto *enemyBounce = new QCheckBox(tr("Bounce player after every stomp"), &dialog);
+    enemyBounce->setChecked(old.objectType == QStringLiteral("enemy") ? old.breakBounce : true);
+    auto *enemyBounceY = spin(1, 40, old.breakStrength);
+    auto *enemyBounceX = spin(-40, 40, old.breakLaunchX);
+    auto *enemyHurt = new QCheckBox(tr("Hurt player on side / underside contact"), &dialog);
+    enemyHurt->setChecked(old.enemyHurtsOnTouch);
+    auto *enemyDamage = spin(0, 65535, old.enemyDamage);
+    auto *enemyDefeatFrame = spin(-1, 255, old.enemyDefeatFrame);
+    enemyDefeatFrame->setSpecialValueText(tr("None — disappear immediately"));
+    auto *enemyDefeatTicks = spin(1, 255, old.enemyDefeatFrames);
+    enemyHits->setToolTip(tr("Number of distinct stomps to defeat this enemy. One landing counts once."));
+    enemyBounceY->setToolTip(tr("A fixed bounce impulse, independent from held-jump boost."));
+    enemyDefeatFrame->setToolTip(tr("Sprite atlas frame to display after defeat. -1 hides the enemy immediately."));
+    form->addRow(tr("Stomps to defeat"), quickValue(enemyHits));
+    form->addRow(QString(), enemyBounce);
+    form->addRow(tr("Bounce upward"), quickValue(enemyBounceY));
+    form->addRow(tr("Bounce sideways"), quickValue(enemyBounceX));
+    form->addRow(QString(), enemyHurt);
+    form->addRow(tr("Side contact damage"), quickValue(enemyDamage));
+    form->addRow(tr("Defeated atlas frame"), enemyDefeatFrame);
+    form->addRow(tr("Show defeat frame (50 FPS)"), quickValue(enemyDefeatTicks));
+    form->addRow(new QLabel(tr("Use the ordinary Animation Frames and Spline controls above for movement.\n"
+                                "Linked Object selects what happens when this enemy is defeated."), &dialog));
+    connect(enemyBounce, &QCheckBox::toggled, &dialog, [enemyBounceY,enemyBounceX](bool on){
+        enemyBounceY->setEnabled(on); enemyBounceX->setEnabled(on);
+    });
+    connect(enemyHurt, &QCheckBox::toggled, enemyDamage, &QWidget::setEnabled);
+    enemyBounceY->setEnabled(enemyBounce->isChecked());
+    enemyBounceX->setEnabled(enemyBounce->isChecked());
+    enemyDamage->setEnabled(enemyHurt->isChecked());
     // Hazards are intangible damage sensors. The direction values below are
     // signed; negative Y sends the player UP, positive Y pushes them DOWN.
     form = hazardCard.form;
@@ -4680,10 +4726,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
         QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
         QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
-        QStringLiteral("▦"), QStringLiteral("✹")};
+        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟")};
     const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
         tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
-        tr("Hazard zone"), tr("Breakable"), tr("Murder object")};
+        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy")};
     for (int n = 0; n < type->count(); ++n) {
         auto *item = new QListWidgetItem(icons.value(n) + QStringLiteral("   ") + titles.value(n));
         item->setData(Qt::UserRole, type->itemData(n));
@@ -4935,8 +4981,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         initiallyActive->setEnabled(isObject);
         initiallyActive->setVisible(isObject && behaviour != QStringLiteral("collectable"));
         hiddenCollectable->setEnabled(behaviour == QStringLiteral("collectable"));
-        targetObject->setEnabled(isTrigger || isKey);
-        targetAction->setEnabled(isTrigger || isKey);
+        targetObject->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
+        targetAction->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
         triggerPress->setEnabled(isTrigger);
         triggerOneShot->setEnabled(isTrigger);
         musicAction->setEnabled(isTrigger);
@@ -4958,10 +5004,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         sfxReverse->setEnabled(behaviour == QStringLiteral("lift"));
         sfxSpring->setEnabled(behaviour == QStringLiteral("spring"));
         sfxAmbient->setEnabled(behaviour == QStringLiteral("conveyor"));
-        sfxBreakHit->setEnabled(behaviour == QStringLiteral("breakable"));
-        sfxBreakBounce->setEnabled(behaviour == QStringLiteral("breakable") &&
-                                    !breakTouch->isChecked() && breakBounce->isChecked());
-        sfxBreakFinish->setEnabled(behaviour == QStringLiteral("breakable"));
+        sfxBreakHit->setEnabled(behaviour == QStringLiteral("breakable") || behaviour == QStringLiteral("enemy"));
+        sfxBreakBounce->setEnabled((behaviour == QStringLiteral("enemy") && enemyBounce->isChecked()) ||
+            (behaviour == QStringLiteral("breakable") && !breakTouch->isChecked() && breakBounce->isChecked()));
+        sfxBreakFinish->setEnabled(behaviour == QStringLiteral("breakable") || behaviour == QStringLiteral("enemy"));
         sfxHazardHit->setEnabled(behaviour == QStringLiteral("hazard"));
         sfxHazardBounce->setEnabled(behaviour == QStringLiteral("hazard") && hazardKick->isChecked());
         sfxHazardAmbient->setEnabled(behaviour == QStringLiteral("hazard"));
@@ -4981,26 +5027,28 @@ void SidboxGameDesigner::configureGameObject(int index)
         const bool isSpring = behaviour == QStringLiteral("spring");
         const bool isBreak = behaviour == QStringLiteral("breakable");
         const bool isHazard = behaviour == QStringLiteral("hazard");
+        const bool isEnemy = behaviour == QStringLiteral("enemy");
         generalCard.panel->setVisible(true);
         visualCard.panel->setVisible(true);
         animationCard.panel->setVisible(isObject && animated->isChecked());
         collisionCard.panel->setVisible(isObject);
         collectCard.panel->setVisible(isCollect);
-        linkedCard.panel->setVisible(isTrigger || isKey);
+        linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
         triggerCard.panel->setVisible(isTrigger);
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
         conveyorCard.panel->setVisible(isConveyor);
         springCard.panel->setVisible(isSpring);
         breakCard.panel->setVisible(isBreak);
         hazardCard.panel->setVisible(isHazard);
+        enemyCard.panel->setVisible(isEnemy);
         audioCollectCard.panel->setVisible(isCollect);
         audioLiftCard.panel->setVisible(isLift);
         audioSpringCard.panel->setVisible(isSpring);
         audioConveyorCard.panel->setVisible(isConveyor);
-        audioBreakCard.panel->setVisible(isBreak);
+        audioBreakCard.panel->setVisible(isBreak || isEnemy);
         audioHazardCard.panel->setVisible(isHazard);
         audioOptionsCard.panel->setVisible(isCollect || isLift || isSpring ||
-            isConveyor || isBreak || isHazard);
+            isConveyor || isBreak || isHazard || isEnemy);
     };
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
@@ -5011,6 +5059,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(breakTouch, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
     connect(breakBounce, &QCheckBox::toggled, &dialog,
+            [enableFields](bool) { enableFields(); });
+    connect(enemyBounce, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
     connect(hazardKick, &QCheckBox::toggled, &dialog,
             [enableFields](bool) { enableFields(); });
@@ -5056,15 +5106,20 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.springSlide = springSlide->isChecked();
     r.springJumpBoost = springJumpBoost->isChecked();
     r.breakTouch = breakTouch->isChecked();
-    r.breakBounce = breakBounce->isChecked() && !breakFromBelow->isChecked();
+    r.breakBounce = newType == QStringLiteral("enemy") ? enemyBounce->isChecked() : (breakBounce->isChecked() && !breakFromBelow->isChecked());
     r.breakFromBelow = breakFromBelow->isChecked();
-    r.breakDropCollectableId = breakReward->currentData().toString();
+    r.breakDropCollectableId = newType == QStringLiteral("enemy")
+        ? enemyReward->currentData().toString() : breakReward->currentData().toString();
     r.breakRewardImpulse = breakRewardImpulse->isChecked();
     r.breakRewardVx = breakRewardVx->value();
     r.breakRewardVy = breakRewardVy->value();
-    r.breakHits = breakHits->value();
-    r.breakStrength = breakStrength->value();
-    r.breakLaunchX = breakLaunchX->value();
+    r.breakHits = newType == QStringLiteral("enemy") ? enemyHits->value() : breakHits->value();
+    r.breakStrength = newType == QStringLiteral("enemy") ? enemyBounceY->value() : breakStrength->value();
+    r.breakLaunchX = newType == QStringLiteral("enemy") ? enemyBounceX->value() : breakLaunchX->value();
+    r.enemyHurtsOnTouch = enemyHurt->isChecked();
+    r.enemyDamage = enemyDamage->value();
+    r.enemyDefeatFrame = enemyDefeatFrame->value();
+    r.enemyDefeatFrames = enemyDefeatTicks->value();
     r.objectInitiallyActive = (newType == QStringLiteral("collectable"))
         ? !hiddenCollectable->isChecked() : initiallyActive->isChecked();
     r.drawBehindTiles = behindTiles->isChecked();
