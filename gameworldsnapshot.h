@@ -1,0 +1,587 @@
+#ifndef CODERGIRL_GAME_WORLD_SNAPSHOT_H
+#define CODERGIRL_GAME_WORLD_SNAPSHOT_H
+
+// Stage 5.1: each .sbgm has BOTH a private .codergirl snapshot and a visible
+// worlds/<name>/ build tree. The tree compiles simultaneously with other
+// worlds; public per-world C identifiers are renamed by a generated header.
+// The legacy canonical helper files remain for existing hand-written main.c.
+#include <QDateTime>
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <QRegularExpression>
+#include <QSet>
+#include <QStringList>
+#include <QUuid>
+#include "gametilemap.h"
+
+namespace GameWorldSnapshot {
+
+inline QString activeFile(const QString &designPath)
+{
+    return QFileInfo(designPath).absoluteDir().filePath(
+        QStringLiteral(".codergirl/active-world.json"));
+}
+
+inline bool isActive(const QString &designPath)
+{
+    QFile file(activeFile(designPath));
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const auto doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject()) return false;
+    return QFileInfo(doc.object().value(QStringLiteral("designFile")).toString()).absoluteFilePath()
+        == QFileInfo(designPath).absoluteFilePath();
+}
+
+inline bool hasActiveSelection(const QString &designPath)
+{
+    return QFileInfo::exists(activeFile(designPath));
+}
+
+// Two different filenames can sanitise to the same C symbol (e.g.
+// "Cave 2.sbgm" and "Cave-2.sbgm"). Never let them share a world bundle.
+inline bool validateUniqueName(const QString &designPath, QString *error)
+{
+    const QFileInfo design(designPath);
+    const QDir folder(design.absolutePath());
+    const QString worldName = sidboxTilemapWorldBaseName(designPath);
+    for (const QFileInfo &candidate : folder.entryInfoList(QDir::Files | QDir::NoDotAndDotDot)) {
+        if (candidate.suffix().compare(QStringLiteral("sbgm"), Qt::CaseInsensitive) != 0
+            || candidate.absoluteFilePath() == design.absoluteFilePath()) continue;
+        if (sidboxTilemapWorldBaseName(candidate.absoluteFilePath())
+                .compare(worldName, Qt::CaseInsensitive) == 0) {
+            if (error) *error = QStringLiteral(
+                "Two .sbgm worlds would export the same C/file name '%1': %2 and %3. "
+                "Rename one design before generating either world.")
+                    .arg(worldName, design.fileName(), candidate.fileName());
+            return false;
+        }
+    }
+    return true;
+}
+
+// Build the C namespace from the *actual rendered public declarations*, not
+// resource-name guesses. This includes each world's named sprites, draw calls,
+// PPB atlas lookup, sounds, music, NPC callbacks and exported spline arrays.
+// The macro header is included BEFORE every generated world translation unit;
+// the C compiler therefore emits genuinely distinct linker symbols.
+inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
+{
+    QSet<QString> names;
+    const QStringList headers = {
+        QStringLiteral("gameassets/gameassets.h"),
+        QStringLiteral("gamehelpers/gameworlditems.h"),
+        QStringLiteral("gamehelpers/gameadventure.h"),
+        QStringLiteral("gamehelpers/splinepaths.h")
+    };
+    const QRegularExpression functionRe(QStringLiteral(
+        R"((?m)^\s*(?:extern\s+)?[A-Za-z_][A-Za-z_0-9 \t\*]*?\s*\*?\s*([A-Za-z_][A-Za-z_0-9]*)\s*\()"));
+    const QRegularExpression externRe(QStringLiteral(
+        R"((?m)^\s*extern\s+[^;\n]*?\b([A-Za-z_][A-Za-z_0-9]*)\s*(?:\[[^;\n]*\])?\s*;)"));
+    for (const QString &relative : headers) {
+        QFile input(QDir(bundleDirectory).filePath(relative));
+        if (!input.open(QIODevice::ReadOnly)) continue;
+        const QString content = QString::fromUtf8(input.readAll());
+        auto functions = functionRe.globalMatch(content);
+        while (functions.hasNext()) {
+            const QString name = functions.next().captured(1);
+            if (!name.isEmpty()) names.insert(name);
+        }
+        auto externs = externRe.globalMatch(content);
+        while (externs.hasNext()) {
+            const QString name = externs.next().captured(1);
+            if (!name.isEmpty()) names.insert(name);
+        }
+    }
+    // Mandatory public functions also cover pointer-return types without
+    // whitespace before the asterisk, and empty-world rule stubs.
+    for (const char *name : {"gameassets_init", "gameassets_shutdown",
+            "gameassets_find_ppb", "gameassets_draw_foreground",
+            "gameassets_draw_background", "gameassets_draw_layers",
+            "gameassets_show_background", "drawworld",
+            "gameworlditems_init", "gameworlditems_update", "gameworlditems_draw",
+            "gameworlditems_draw_behind", "gameworlditems_check",
+            "gameworlditems_before", "gameworlditems_after",
+            "gameworlditems_set_active", "gameworlditems_trigger",
+            "gameadventure_setup", "gameadventure_on_event"}) {
+        names.insert(QLatin1String(name));
+    }
+    return names;
+}
+
+inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project,
+                             const QString &worldName, const QStringList &files,
+                             bool hasMap, QString *error)
+{
+    const QString worlds = project.filePath(QStringLiteral("worlds"));
+    if (!QDir().mkpath(worlds)) {
+        if (error) *error = QStringLiteral("Cannot create worlds directory: %1").arg(worlds);
+        return false;
+    }
+    const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString staging = QDir(worlds).filePath(QStringLiteral(".staging-") + uuid);
+    const QString destination = QDir(worlds).filePath(worldName);
+    const QString previous = QDir(worlds).filePath(QStringLiteral(".previous-") + uuid);
+    if (!QDir().mkpath(staging)) {
+        if (error) *error = QStringLiteral("Cannot stage buildable world: %1").arg(worldName);
+        return false;
+    }
+    auto abort = [&](const QString &reason) {
+        QDir(staging).removeRecursively();
+        if (error) *error = reason;
+        return false;
+    };
+    const QStringList symbols = exportedIdentifiers(bundleDirectory).values();
+    QStringList sorted = symbols;
+    sorted.sort(Qt::CaseSensitive);
+    QByteArray mappings = "/* CoderGirl generated; public C symbols belong to this world. */\n"
+                          "/* Included by world C modules before their own headers. */\n";
+    for (const QString &name : sorted) {
+        static const QRegularExpression valid(QStringLiteral("^[A-Za-z_][A-Za-z_0-9]*$"));
+        if (!valid.match(name).hasMatch())
+            return abort(QStringLiteral("Invalid world C export: %1").arg(name));
+        mappings += "#define " + name.toUtf8() + " " + worldName.toUtf8()
+                    + "_" + name.toUtf8() + "\n";
+    }
+    for (const QString &relative : files) {
+        // maingame is documentation/starter code, not an additional entry point.
+        if (relative == QStringLiteral("maingame.c.txt")) continue;
+        const QString inputPath = QDir(bundleDirectory).filePath(relative);
+        QFile source(inputPath);
+        if (!source.open(QIODevice::ReadOnly))
+            return abort(QStringLiteral("Cannot read world file: %1").arg(inputPath));
+        QByteArray bytes = source.readAll();
+        if (relative.endsWith(QStringLiteral(".c")))
+            bytes.prepend("#include \"../world_symbols.h\"\n");
+        // The tilemap header's normal ../gamehelpers include is correct in
+        // project/gamelevels/, but this mirror is three directories deeper.
+        if (relative.startsWith(QStringLiteral("gamelevels/"))
+            && relative.endsWith(QStringLiteral(".h")))
+            bytes.replace("\"../gamehelpers/gametilemap.h\"",
+                          "\"../../../gamehelpers/gametilemap.h\"");
+        const QString output = QDir(staging).filePath(relative);
+        if (!QDir().mkpath(QFileInfo(output).absolutePath()))
+            return abort(QStringLiteral("Cannot create world output: %1").arg(output));
+        QSaveFile target(output);
+        if (!target.open(QIODevice::WriteOnly) || target.write(bytes) != bytes.size()
+            || !target.commit())
+            return abort(QStringLiteral("Cannot write world module: %1").arg(output));
+    }
+    auto writeFile = [&](const QString &relative, const QByteArray &bytes) {
+        QSaveFile out(QDir(staging).filePath(relative));
+        return out.open(QIODevice::WriteOnly) && out.write(bytes) == bytes.size() && out.commit();
+    };
+    if (!writeFile(QStringLiteral("world_symbols.h"), mappings))
+        return abort(QStringLiteral("Cannot write world namespace header."));
+
+    // This public header is safe to include alongside other world_api.h files.
+    // No preprocessor alias leaks into main.c or other world headers.
+    const QByteArray id = worldName.toUtf8();
+    QByteArray api = "/* Public Stage 5.2 world-module entry points (used by gameworlds.c). */\n"
+                     "#ifndef CODERGIRL_WORLD_API_" + id.toUpper() + "_H\n"
+                     "#define CODERGIRL_WORLD_API_" + id.toUpper() + "_H\n"
+                     "#include <stdint.h>\n"
+                     "#include \"../../gamehelpers/gameworlds.h\"\n"
+                     "int " + id + "_gameassets_init(void);\n"
+                     "void " + id + "_gameassets_shutdown(void);\n"
+                     "void " + id + "_gameassets_draw_foreground(void);\n"
+                     "void " + id + "_gameassets_draw_background(void);\n"
+                     "void " + id + "_drawworld(void);\n"
+                     "uint8_t " + id + "_gameworlditems_init(void);\n"
+                     "void " + id + "_gameworlditems_update(uint16_t frames);\n"
+                     "void " + id + "_gameworlditems_draw(int32_t x, int32_t y);\n"
+                     "void " + id + "_gameadventure_setup(void);\n"
+                     "void " + id + "_gameadventure_store_inventory(gameworlds_inventory_put_t,void *);\n"
+                     "void " + id + "_gameadventure_load_inventory(gameworlds_inventory_get_t,void *);\n"
+                     "void " + id + "_gameassets_show_background(void);\n";
+    {
+        QFile objectsHeader(QDir(bundleDirectory).filePath(QStringLiteral("gamehelpers/gameworlditems.h")));
+        const QByteArray exported = objectsHeader.open(QIODevice::ReadOnly)
+            ? objectsHeader.readAll() : QByteArray();
+        if (exported.contains("gameworlditems_draw_behind"))
+            api += "void " + id + "_gameworlditems_draw_behind(int32_t,int32_t);\n";
+        if (exported.contains("gameworlditems_before")) {
+            api += "void " + id + "_gameworlditems_before(game_world_player_t*);\n";
+            api += "void " + id + "_gameworlditems_after(game_world_player_t*);\n";
+        }
+        if (exported.contains("gameworlditems_check"))
+            api += "uint16_t " + id + "_gameworlditems_check(int32_t,int32_t,uint16_t,uint16_t,game_pickup_callback_t,void*);\n";
+    }
+    if (hasMap) {
+        api += "#include \"../../gamehelpers/gametilemap.h\"\n"
+               "#include \"gamelevels/" + id + ".h\"\n";
+    }
+    api += "#endif\n";
+    if (!writeFile(QStringLiteral("world_api.h"), api))
+        return abort(QStringLiteral("Cannot write public world API header."));
+
+    // Never replace a user's existing folder unless it was already created
+    // by this exact world exporter. A previous .sbgm test or ordinary custom
+    // sources must not be destroyed as a side effect of regeneration.
+    const bool hadOld = QDir(destination).exists();
+    if (hadOld) {
+        QFile prior(QDir(destination).filePath(QStringLiteral("world-build.json")));
+        const auto priorManifest = prior.open(QIODevice::ReadOnly)
+            ? QJsonDocument::fromJson(prior.readAll()) : QJsonDocument();
+        if (!priorManifest.isObject()
+            || priorManifest.object().value(QStringLiteral("format")).toString()
+                   != QStringLiteral("CODERGIRL-V1-COMPILED-WORLD")
+            || priorManifest.object().value(QStringLiteral("worldName")).toString() != worldName)
+            return abort(QStringLiteral("Refusing to overwrite user folder worlds/%1. "
+                "Move it aside or use a different world name.").arg(worldName));
+        // A programmer may add custom files to the visible folder after
+        // generation. Never delete those during a later world export.
+        QSet<QString> ownedFiles;
+        for (const QJsonValue &value : priorManifest.object().value(QStringLiteral("files")).toArray())
+            ownedFiles.insert(value.toString());
+        QDirIterator iterator(destination, QDir::Files | QDir::NoDotAndDotDot,
+                              QDirIterator::Subdirectories);
+        while (iterator.hasNext()) {
+            const QString existing = QDir(destination).relativeFilePath(iterator.next());
+            if (!ownedFiles.contains(existing))
+                return abort(QStringLiteral("World %1 contains an additional file '%2'. "
+                    "Move custom code outside the generated world folder before updating.")
+                    .arg(worldName, existing));
+        }
+    }
+    QJsonArray buildFiles;
+    for (const QString &relative : files)
+        if (relative != QStringLiteral("maingame.c.txt")) buildFiles.append(relative);
+    buildFiles.append(QStringLiteral("world_symbols.h"));
+    buildFiles.append(QStringLiteral("world_api.h"));
+    buildFiles.append(QStringLiteral("world-build.json"));
+    QJsonObject buildManifest;
+    buildManifest.insert(QStringLiteral("files"), buildFiles);
+    buildManifest.insert(QStringLiteral("format"), QStringLiteral("CODERGIRL-V1-COMPILED-WORLD"));
+    buildManifest.insert(QStringLiteral("version"), 1);
+    buildManifest.insert(QStringLiteral("worldName"), worldName);
+    buildManifest.insert(QStringLiteral("generatedAt"),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    if (!writeFile(QStringLiteral("world-build.json"),
+                   QJsonDocument(buildManifest).toJson(QJsonDocument::Indented)))
+        return abort(QStringLiteral("Cannot write world build manifest."));
+    if (hadOld && !QDir().rename(destination, previous))
+        return abort(QStringLiteral("Cannot preserve previous buildable world."));
+    if (!QDir().rename(staging, destination)) {
+        if (hadOld) QDir().rename(previous, destination);
+        return abort(QStringLiteral("Cannot publish buildable world: %1").arg(worldName));
+    }
+    if (hadOld) QDir(previous).removeRecursively();
+    return true;
+}
+
+// Stage 5.2: regenerate ONE shared dispatcher from ALL published worlds.
+// These are C symbol addresses and validated filenames, never C gameplay logic.
+// Runtime behaviour belongs to gameworlds.rulec/.ruleh.
+inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
+                                QString *error)
+{
+    const QDir worlds(project.filePath(QStringLiteral("worlds")));
+    const QRegularExpression identifier(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    QStringList names = worlds.entryList(QDir::Dirs | QDir::NoDotAndDotDot,
+                                         QDir::Name | QDir::IgnoreCase);
+    QStringList published, declarations, records;
+    QStringList beforeFns, afterFns, checkFns;
+    bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
+    for (const QString &name : names) {
+        if (name.startsWith(QLatin1Char('.'))) continue;
+        const QString directory = worlds.filePath(name);
+        // A user may keep their own world folders. Only published GamerGirl
+        // directories, identified by our manifest, are registry members.
+        if (!QFileInfo::exists(QDir(directory).filePath(QStringLiteral("world-build.json"))))
+            continue;
+        QFile build(QDir(directory).filePath(QStringLiteral("world-build.json")));
+        QFile bundle(project.filePath(QStringLiteral(".codergirl/worlds/") + name
+                                      + QStringLiteral("/world.json")));
+        if (!build.open(QIODevice::ReadOnly) || !bundle.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("Missing world build/bundle manifest for '%1'.").arg(name);
+            return false;
+        }
+        const auto b = QJsonDocument::fromJson(build.readAll()).object();
+        const auto meta = QJsonDocument::fromJson(bundle.readAll()).object();
+        if (b.value(QStringLiteral("format")).toString() != QStringLiteral("CODERGIRL-V1-COMPILED-WORLD")
+            || b.value(QStringLiteral("worldName")).toString() != name
+            || meta.value(QStringLiteral("worldName")).toString() != name
+            || !identifier.match(name).hasMatch()) {
+            if (error) *error = QStringLiteral("Invalid or conflicting published world '%1'.").arg(name);
+            return false;
+        }
+        published << name;
+        const QString stem = name + QStringLiteral("_");
+        const bool hasMap = QFileInfo::exists(QDir(directory).filePath(
+            QStringLiteral("gamelevels/") + name + QStringLiteral(".c")));
+        QFile publicApi(QDir(directory).filePath(QStringLiteral("world_api.h")));
+        const QByteArray exposed = publicApi.open(QIODevice::ReadOnly)
+            ? publicApi.readAll() : QByteArray();
+        const bool behind = exposed.contains("gameworlditems_draw_behind");
+        const bool inventoryApi = exposed.contains("gameadventure_store_inventory");
+        const bool showBackground = exposed.contains("gameassets_show_background");
+        const bool hasWorldPhysics = exposed.contains("gameworlditems_before");
+        const bool hasPickup = exposed.contains("gameworlditems_check");
+        anyWorldPhysics |= hasWorldPhysics;
+        anyPickups |= hasPickup;
+        beforeFns << (hasWorldPhysics ? name + QStringLiteral("_gameworlditems_before") : QStringLiteral("0"));
+        afterFns << (hasWorldPhysics ? name + QStringLiteral("_gameworlditems_after") : QStringLiteral("0"));
+        checkFns << (hasPickup ? name + QStringLiteral("_gameworlditems_check") : QStringLiteral("0"));
+        anyAdventure |= meta.value(QStringLiteral("hasAdventure")).toBool();
+        declarations << QStringLiteral("#include \"../worlds/%1/world_api.h\"").arg(name);
+        const QString zero = QStringLiteral("0");
+        const QString objectsBehind = behind ? stem + QStringLiteral("gameworlditems_draw_behind") : zero;
+        const QString inventoryStore = inventoryApi
+            ? stem + QStringLiteral("gameadventure_store_inventory") : zero;
+        const QString inventoryLoad = inventoryApi
+            ? stem + QStringLiteral("gameadventure_load_inventory") : zero;
+        const QString showDirect = showBackground
+            ? stem + QStringLiteral("gameassets_show_background") : zero;
+        const QString mapVar = hasMap ? QStringLiteral("&game_") + name : zero;
+        const QString mapLoad = hasMap ? QStringLiteral("game_") + name + QStringLiteral("_load_map") : zero;
+        const QString mapUnload = hasMap ? QStringLiteral("game_") + name + QStringLiteral("_unload_map") : zero;
+        const QString atlasLoad = hasMap ? QStringLiteral("game_") + name + QStringLiteral("_load_atlas") : zero;
+        const QString atlasUnload = hasMap ? QStringLiteral("game_") + name + QStringLiteral("_unload_atlas") : zero;
+        const QString mapPath = meta.value(QStringLiteral("externalMap")).toBool() && hasMap
+            ? QStringLiteral("\"gamelevels/") + name + QStringLiteral(".map\"") : zero;
+        QString row = QStringLiteral("    {\"%1\", %2gameassets_init, %2gameassets_shutdown,\n"
+            "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3,\n"
+            "     %2gameassets_draw_foreground, %2gameassets_draw_background, %4,\n"
+            "     %2gameadventure_setup, %5, %6,\n"
+            "     %7, %8, %9, %10, %11, %12}");
+        const QStringList values = {name, stem, objectsBehind, showDirect,
+            inventoryStore, inventoryLoad, mapVar, mapLoad, mapUnload,
+            atlasLoad, atlasUnload, mapPath};
+        for (int i = values.size(); i >= 1; --i)
+            row.replace(QStringLiteral("%") + QString::number(i), values.at(i - 1));
+        records << row;
+    }
+    if (published.isEmpty()) {
+        if (error) *error = QStringLiteral("No published worlds exist to create a world registry.");
+        return false;
+    }
+    for (int i = 0; i < records.size(); ++i) {
+        QString &entry = records[i];
+        entry.chop(1); // old final '}'
+        if (anyWorldPhysics)
+            entry += QStringLiteral(", ") + beforeFns.at(i) + QStringLiteral(", ") + afterFns.at(i);
+        if (anyPickups)
+            entry += QStringLiteral(", ") + checkFns.at(i);
+        entry += QLatin1Char('}');
+    }
+    // Use active selection as initial world. This does NOT force main.c to
+    // load anything; it only chooses the default for gameworlds_start(NULL).
+    QFile active(project.filePath(QStringLiteral(".codergirl/active-world.json")));
+    if (active.open(QIODevice::ReadOnly)) {
+        const QString first = QJsonDocument::fromJson(active.readAll()).object()
+            .value(QStringLiteral("worldName")).toString();
+        if (published.contains(first)) {
+            published.removeAll(first);
+            published.prepend(first);
+        }
+    }
+    // Reorder C records to keep the same default order as published names.
+    // Each record begins with the escaped, validated name literal.
+    QStringList ordered;
+    for (const QString &name : published)
+        for (const QString &record : records)
+            if (record.startsWith(QStringLiteral("    {\"") + name + QStringLiteral("\",")))
+                ordered << record;
+    QFile source(templates.filePath(QStringLiteral("gameworlds.rulec")));
+    QFile header(templates.filePath(QStringLiteral("gameworlds.ruleh")));
+    if (!source.open(QIODevice::ReadOnly) || !header.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("Missing SDK gameworlds.rulec/.ruleh templates.");
+        return false;
+    }
+    QByteArray generated = source.readAll();
+    generated.replace("@IDE{WORLD_DECLARATIONS}", declarations.join(QLatin1Char('\n')).toUtf8());
+    generated.replace("@IDE{WORLD_RECORDS}", ordered.join(QStringLiteral(",\n")).toUtf8());
+    const auto renderConditions = [&](QByteArray *content) -> bool {
+        const QByteArray flagEnd = "@IDE_END\n";
+        const QList<QPair<QByteArray, bool>> flags = {
+            {"@IDE_IF{HAS_ADVENTURE_RUNTIME}\n", anyAdventure},
+            {"@IDE_IF{HAS_WORLD_PHYSICS}\n", anyWorldPhysics},
+            {"@IDE_IF{HAS_PICKUPS}\n", anyPickups}
+        };
+        for (const auto &flag : flags) {
+            int cursor = 0;
+            while ((cursor = content->indexOf(flag.first, cursor)) >= 0) {
+                const int end = content->indexOf(flagEnd, cursor + flag.first.size());
+                if (end < 0) return false;
+                const QByteArray block = content->mid(cursor + flag.first.size(),
+                                                     end - cursor - flag.first.size());
+                content->replace(cursor, end + flagEnd.size() - cursor,
+                                 flag.second ? block : QByteArray());
+                cursor += flag.second ? block.size() : 0;
+            }
+        }
+        return !content->contains("@IDE_IF{") && !content->contains("@IDE_END");
+    };
+    if (!renderConditions(&generated)) {
+        if (error) *error = QStringLiteral("Invalid conditions in gameworlds.rulec.");
+        return false;
+    }
+    if (generated.contains("@IDE{") || generated.contains("@IDE_IF{") || generated.contains("@IDE_END")) {
+        if (error) *error = QStringLiteral("Unresolved world registry rule token.");
+        return false;
+    }
+    const QString root = project.filePath(QStringLiteral("gamehelpers"));
+    if (!QDir().mkpath(root)) {
+        if (error) *error = QStringLiteral("Could not create gamehelpers for world manager.");
+        return false;
+    }
+    const QStringList dests = {QDir(root).filePath(QStringLiteral("gameworlds.h")),
+                               QDir(root).filePath(QStringLiteral("gameworlds.c"))};
+    QByteArray renderedHeader = header.readAll();
+    if (!renderConditions(&renderedHeader)) {
+        if (error) *error = QStringLiteral("Invalid conditions in gameworlds.ruleh.");
+        return false;
+    }
+    const QList<QByteArray> bytes = {renderedHeader, generated};
+    // Check BOTH destinations before writing EITHER: a user-owned .c must
+    // not leave a newly updated .h behind on a failed publication.
+    for (const QString &destination : dests) {
+        QFile check(destination);
+        if (check.exists() && (!check.open(QIODevice::ReadOnly)
+             || !check.read(200).contains("GamerGirl Stage 5.2"))) {
+            if (error) *error = QStringLiteral("Refusing to overwrite user-owned file: %1").arg(destination);
+            return false;
+        }
+    }
+    for (int i = 0; i < dests.size(); ++i) {
+        QSaveFile out(dests.at(i));
+        if (!out.open(QIODevice::WriteOnly) || out.write(bytes.at(i)) != bytes.at(i).size() || !out.commit()) {
+            if (error) *error = QStringLiteral("Could not write generated multi-world runtime: %1").arg(dests.at(i));
+            return false;
+        }
+    }
+    const QString guide = QDir(root).filePath(QStringLiteral("gameworlds-guide.txt"));
+    if (!QFileInfo::exists(guide)) {
+        QFile templateGuide(templates.filePath(QStringLiteral("gameworlds.ruletxt")));
+        if (!templateGuide.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("Missing SDK multi-world guide template.");
+            return false;
+        }
+        QSaveFile output(guide);
+        const QByteArray guideBytes = templateGuide.readAll();
+        if (!output.open(QIODevice::WriteOnly)
+            || output.write(guideBytes) != guideBytes.size() || !output.commit()) {
+            if (error) *error = QStringLiteral("Could not install generated multi-world guide.");
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool publish(const QString &designPath, const QString &worldName,
+                    bool hasMap, bool externalMap, bool hasSpline,
+                    bool hasAdventure, bool embedPixels, const QString &rulesDirectory, QString *error)
+{
+    const QDir project(QFileInfo(designPath).absolutePath());
+    const QString worldParent = project.filePath(QStringLiteral(".codergirl/worlds"));
+    if (!QDir().mkpath(worldParent)) {
+        if (error) *error = QStringLiteral("Cannot create world snapshot directory: %1").arg(worldParent);
+        return false;
+    }
+    const QString suffix = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString staging = QDir(worldParent).filePath(QStringLiteral(".staging-") + suffix);
+    const QString destination = QDir(worldParent).filePath(worldName);
+    const QString displaced = QDir(worldParent).filePath(QStringLiteral(".previous-") + suffix);
+    if (!QDir().mkpath(staging)) {
+        if (error) *error = QStringLiteral("Cannot create world snapshot staging directory.");
+        return false;
+    }
+    auto abort = [&](const QString &message) {
+        QDir(staging).removeRecursively();
+        if (error) *error = message;
+        return false;
+    };
+
+    QStringList files = {
+        QStringLiteral("gameassets/gameassets.c"),
+        QStringLiteral("gameassets/gameassets.h"),
+        QStringLiteral("gamehelpers/gameworlditems.c"),
+        QStringLiteral("gamehelpers/gameworlditems.h"),
+        QStringLiteral("gamehelpers/gameworlditems.txt"),
+        QStringLiteral("maingame.c.txt")
+    };
+    // No-story designs also generate a harmless rule-owned Adventure stub.
+    files << QStringLiteral("gamehelpers/gameadventure.c")
+          << QStringLiteral("gamehelpers/gameadventure.h");
+    if (hasSpline)
+        files << QStringLiteral("gamehelpers/splinepaths.c")
+              << QStringLiteral("gamehelpers/splinepaths.h");
+    if (hasMap) {
+        const QString base = QStringLiteral("gamelevels/") + worldName;
+        files << base + QStringLiteral(".c") << base + QStringLiteral(".h");
+        if (externalMap) files << base + QStringLiteral(".map");
+    }
+    QJsonArray copied;
+    for (const QString &relative : files) {
+        const QString src = project.filePath(relative);
+        if (!QFileInfo(src).isFile()) {
+            // World-items stubs and a first-time starter may be absent in
+            // legacy projects. Never accidentally archive another world's
+            // old generated files to fill that gap.
+            return abort(QStringLiteral("Missing generated world file: %1").arg(src));
+        }
+        const QString dst = QDir(staging).filePath(relative);
+        if (!QDir().mkpath(QFileInfo(dst).absolutePath()) || !QFile::copy(src, dst))
+            return abort(QStringLiteral("Could not snapshot world file: %1").arg(relative));
+        copied.append(relative);
+    }
+    QJsonObject manifest;
+    manifest.insert(QStringLiteral("format"), QStringLiteral("CODERGIRL-V1-WORLD-BUNDLE"));
+    manifest.insert(QStringLiteral("version"), 2);
+    manifest.insert(QStringLiteral("worldName"), worldName);
+    manifest.insert(QStringLiteral("designFile"), QFileInfo(designPath).absoluteFilePath());
+    manifest.insert(QStringLiteral("generatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    manifest.insert(QStringLiteral("externalMap"), externalMap);
+    manifest.insert(QStringLiteral("embedPixels"), embedPixels);
+    manifest.insert(QStringLiteral("hasAdventure"), hasAdventure);
+    manifest.insert(QStringLiteral("hasSplines"), hasSpline);
+    manifest.insert(QStringLiteral("files"), copied);
+    {
+        QSaveFile output(QDir(staging).filePath(QStringLiteral("world.json")));
+        const QByteArray bytes = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+        if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit())
+            return abort(QStringLiteral("Could not write world bundle manifest."));
+    }
+    // A previous world bundle remains intact until the replacement is ready.
+    const bool hadPrevious = QDir(destination).exists();
+    if (hadPrevious && !QDir().rename(destination, displaced))
+        return abort(QStringLiteral("Could not preserve previous world bundle: %1").arg(worldName));
+    if (!QDir().rename(staging, destination)) {
+        if (hadPrevious) QDir().rename(displaced, destination);
+        return abort(QStringLiteral("Could not publish world bundle: %1").arg(worldName));
+    }
+    if (hadPrevious) QDir(displaced).removeRecursively();
+
+    // Stage 5.1: emit the *compilable* mirror AFTER the private archive has
+    // been committed. Never expose a half-written world in Files in Project.
+    if (!publishBuildTree(destination, project, worldName, files, hasMap, error))
+        return false;
+
+    // Only mark a world active once its entire generated bundle is committed.
+    // QSaveFile ensures an interrupted update cannot leave partial JSON.
+    const QString activePath = activeFile(designPath);
+    QSaveFile active(activePath);
+    manifest.remove(QStringLiteral("files"));
+    manifest.insert(QStringLiteral("snapshotDirectory"),
+                    QStringLiteral(".codergirl/worlds/") + worldName);
+    const QByteArray activeBytes = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    if (!active.open(QIODevice::WriteOnly)
+        || active.write(activeBytes) != activeBytes.size() || !active.commit()) {
+        active.cancelWriting();
+        if (error) *error = QStringLiteral("World bundle saved, but could not update active-world marker: %1").arg(activePath);
+        return false;
+    }
+    // Update the shared registry after the committed world is active.
+    if (!publishWorldRegistry(project, QDir(rulesDirectory), error))
+        return false;
+    return true;
+}
+
+} // namespace GameWorldSnapshot
+#endif

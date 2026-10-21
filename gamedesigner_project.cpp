@@ -1,5 +1,6 @@
 // Stage 3.69: split from gamedesigner.cpp. Method bodies are unchanged.
 #include "gamedesigner.h"
+#include "gameworldsnapshot.h"
 #include "gamedesigner_limits.h"
 #include "ppbcodec.h"
 #include "pngpaletteimport.h"
@@ -595,9 +596,14 @@ bool SidboxGameDesigner::saveDesign()
     // Nothing is created for older projects until Export is chosen.
     const QString pathHeader = QDir(QFileInfo(m_filePath).absolutePath())
         .filePath(QStringLiteral("gamehelpers/splinepaths.h"));
-    if (QFileInfo::exists(pathHeader) && !exportSplinePaths(false)) return false;
+    // Only the active design may refresh canonical generated spline code.
+    // Editing a different .sbgm must not silently replace that world's paths.
+    if ((!GameWorldSnapshot::hasActiveSelection(m_filePath)
+         || GameWorldSnapshot::isActive(m_filePath))
+        && QFileInfo::exists(pathHeader) && !exportSplinePaths(false)) return false;
+    const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
     const QString tileHeader = QDir(QFileInfo(m_filePath).absolutePath())
-        .filePath(QStringLiteral("gamelevels/level1.h"));
+        .filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h"));
     if (m_tilemapEnabled && QFileInfo::exists(tileHeader) && !exportTilemap(false)) return false;
     setDirty(false);
     return true;

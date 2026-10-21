@@ -8,6 +8,7 @@
 #include "guidesigner.h"
 #include "gamedesigner.h"
 #include "gamemainownership.h"
+#include "gameworldsnapshot.h"
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
@@ -1550,6 +1551,8 @@ bool isExcludedProjectDirectoryName(const QString &name)
     return name == QStringLiteral("build")
         || name == QStringLiteral("buildv1")
         || name == QStringLiteral(".history")
+        || name == QStringLiteral(".codergirl")
+        || name == QStringLiteral(".codergirl-backups")
         || name == QStringLiteral(".git")
         || name == QStringLiteral(".svn")
         || name == QStringLiteral(".hg")
@@ -9404,15 +9407,74 @@ void MainWindow::showProjectSettings()
 // Stage 3.79 — safe V1 Game pre-build generation reminder.
 // A saved .sbgm, its PPB assets and its animation definition can each change
 // without changing generated C. Compare their timestamps to gameassets.c.
-bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
+// Stage 5.2c: published world bundles are independent. A world-manager build
+// must check each world's OWN generated sources, not the old canonical
+// gameassets.c output owned by whichever design was edited most recently.
+bool MainWindow::gameBuildFilesOutdated(const QString &designPath, bool worldManagerMode) const
 {
     const QFileInfo design(designPath);
-    const QString output = design.dir().filePath(QStringLiteral("gameassets/gameassets.c"));
-    const QFileInfo generated(output);
-    if (!generated.isFile()
-        || !QFileInfo::exists(design.dir().filePath(QStringLiteral("gameassets/gameassets.h"))))
-        return true;
-    const QDateTime built = generated.lastModified();
+    QDateTime built;
+    if (worldManagerMode) {
+        const QDir project = design.dir();
+        const QString name = sidboxTilemapWorldBaseName(designPath);
+        const QString worldDir = QStringLiteral("worlds/") + name + QLatin1Char('/');
+        const QString bundleFile = QStringLiteral(".codergirl/worlds/") + name
+                                   + QStringLiteral("/world.json");
+        const QFileInfo generated(project.filePath(worldDir + QStringLiteral("world-build.json")));
+        QFile bundle(project.filePath(bundleFile));
+        QFile build(project.filePath(worldDir + QStringLiteral("world-build.json")));
+        if (!generated.isFile() || !bundle.open(QIODevice::ReadOnly)
+            || !build.open(QIODevice::ReadOnly)) return true;
+        const QJsonDocument bundleDoc = QJsonDocument::fromJson(bundle.readAll());
+        const QJsonDocument buildDoc = QJsonDocument::fromJson(build.readAll());
+        if (!bundleDoc.isObject() || !buildDoc.isObject()) return true;
+        const QJsonObject meta = bundleDoc.object();
+        const QJsonObject buildMeta = buildDoc.object();
+        if (meta.value(QStringLiteral("format")).toString() != QStringLiteral("CODERGIRL-V1-WORLD-BUNDLE")
+            || meta.value(QStringLiteral("worldName")).toString() != name
+            || QFileInfo(meta.value(QStringLiteral("designFile")).toString()).absoluteFilePath()
+                != design.absoluteFilePath()
+            || buildMeta.value(QStringLiteral("format")).toString() != QStringLiteral("CODERGIRL-V1-COMPILED-WORLD")
+            || buildMeta.value(QStringLiteral("worldName")).toString() != name)
+            return true;
+        // Check required generated modules; optional map/adventure/spline files
+        // are described by the per-world manifest below.
+        const QStringList required = {
+            worldDir + QStringLiteral("world_symbols.h"),
+            worldDir + QStringLiteral("world_api.h"),
+            worldDir + QStringLiteral("gameassets/gameassets.c"),
+            worldDir + QStringLiteral("gamehelpers/gameworlditems.c"),
+            worldDir + QStringLiteral("gamehelpers/gameadventure.c"),
+            QStringLiteral("gamehelpers/gameworlds.c"),
+            QStringLiteral("gamehelpers/gameworlds.h")
+        };
+        for (const QString &path : required)
+            if (!QFileInfo::exists(project.filePath(path))) return true;
+        const QJsonArray generatedFiles = buildMeta.value(QStringLiteral("files")).toArray();
+        if (generatedFiles.isEmpty()) return true;
+        for (const QJsonValue &entry : generatedFiles) {
+            const QString relative = entry.toString();
+            if (relative.isEmpty() || !QFileInfo::exists(project.filePath(worldDir + relative)))
+                return true;
+        }
+        built = generated.lastModified();
+    } else {
+        // Legacy main.c builds exactly one canonical gameassets.c and must
+        // continue respecting the active-world ownership marker.
+        const QString markerPath = design.dir().filePath(QStringLiteral(".codergirl/active-world.json"));
+        QFile markerFile(markerPath);
+        if (!markerFile.open(QIODevice::ReadOnly)) return true;
+        const auto markerDoc = QJsonDocument::fromJson(markerFile.readAll());
+        if (!markerDoc.isObject() ||
+            QFileInfo(markerDoc.object().value(QStringLiteral("designFile")).toString()).absoluteFilePath()
+                != design.absoluteFilePath()) return true;
+        const QString output = design.dir().filePath(QStringLiteral("gameassets/gameassets.c"));
+        const QFileInfo generated(output);
+        if (!generated.isFile()
+            || !QFileInfo::exists(design.dir().filePath(QStringLiteral("gameassets/gameassets.h"))))
+            return true;
+        built = generated.lastModified();
+    }
     if (design.lastModified() > built) return true;
     QFile file(designPath);
     if (!file.open(QIODevice::ReadOnly)) return true; // fail safely
@@ -9460,10 +9522,16 @@ bool MainWindow::checkGameBuildGeneration()
     designs.sort(Qt::CaseInsensitive);
     if (designs.isEmpty()) return true;
 
-    // Several game designs in the same folder can generate the SAME output
-    // filenames. Pick one explicitly; otherwise later designs would silently
-    // overwrite the files generated for the first design.
-    if (designs.size() > 1) {
+    // This is the SAME opt-in that the V1 linker uses to avoid duplicate
+    // legacy modules. Never infer multi-world mode solely from the number
+    // of .sbgm files: a legacy main.c still needs its single-world chooser.
+    QFile entryPoint(project.filePath(QStringLiteral("main.c")));
+    const bool worldManagerMode = entryPoint.open(QIODevice::ReadOnly)
+        && entryPoint.readAll().contains("GAMERGIRL_WORLD_MANAGER_MAIN");
+
+    // Only legacy single-world main.c needs a design selection. F5 with
+    // a world-manager main.c checks/updates ALL designs independently.
+    if (!worldManagerMode && designs.size() > 1) {
         QStringList names;
         int initial = 0;
         const auto *active = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
@@ -9474,18 +9542,46 @@ bool MainWindow::checkGameBuildGeneration()
         }
         bool accepted = false;
         const QString chosen = QInputDialog::getItem(this, tr("Choose Game Design"),
-            tr("Several .sbgm designs exist. Which world should F5 generate?"),
+            tr("Several .sbgm worlds exist. Which design should F5 regenerate now?\n"
+               "Every published world compiles into the game.\n"
+               "Stage 5.2 provides runtime world switching through gameworlds.h."),
             names, initial, false, &accepted);
         if (!accepted) return false;
         designs = { designs.at(names.indexOf(chosen)) };
     }
 
-    // Each .sbgm exports gameassets into its own containing directory.
+    // An edited main.c is user-owned; the IDE does not change its map includes.
+    // Don't silently compile a different active world with the old map/player.
+    const QString selectedWorld = sidboxTilemapWorldBaseName(designs.first());
+    QFile userMain(project.filePath(QStringLiteral("main.c")));
+    if (userMain.open(QIODevice::ReadOnly)) {
+        const QString code = QString::fromUtf8(userMain.readAll());
+        const QRegularExpression includes(QStringLiteral(
+            R"((?m)^[ \t]*#[ \t]*include[ \t]*[<"]gamelevels/([A-Za-z_][A-Za-z0-9_]*)\.h[>"])"));
+        QSet<QString> referencedWorlds;
+        auto found = includes.globalMatch(code);
+        while (found.hasNext()) referencedWorlds.insert(found.next().captured(1));
+        if (!code.contains("GAMERGIRL_WORLD_MANAGER_MAIN")
+            && !referencedWorlds.isEmpty() && !referencedWorlds.contains(selectedWorld)) {
+            QStringList otherWorlds;
+            for (const QString &world : referencedWorlds) otherWorlds << world;
+            QMessageBox::warning(this, tr("World Selection — main.c"),
+                tr("You selected %1.sbgm, but your hand-written main.c includes "
+                   "a different generated world header (%2).\n\n"
+                   "Your legacy main.c still selects one world. Update main.c to "
+                   "use this world, or select the world already referenced. "
+                   "No game files have been changed.")
+                   .arg(selectedWorld, otherWorlds.join(QStringLiteral(", "))));
+            return false;
+        }
+    }
+    // The active-world manifest tells us whether canonical outputs belong to
+    // the chosen design, independently of file timestamps.
     // For the common single-design project, show the first-build reminder even
     // when generated files look up to date (requested safety behaviour).
     QStringList outdated;
     for (const QString &path : std::as_const(designs)) {
-        if (gameBuildFilesOutdated(path)) outdated << path;
+        if (gameBuildFilesOutdated(path, worldManagerMode)) outdated << path;
     }
     if (!m_gameBuildFirstCheckPending && outdated.isEmpty()) return true;
 
@@ -9500,7 +9596,9 @@ bool MainWindow::checkGameBuildGeneration()
         question.setText(m_gameBuildFirstCheckPending
             ? tr("Update the game project before compiling?")
             : tr("Game resources have changed since the last update."));
-        question.setInformativeText(tr(
+        question.setInformativeText((worldManagerMode
+            ? tr("Each changed .sbgm world will be updated before compiling.\n\n")
+            : QString()) + tr(
             "Update and Compile runs the SAME full Update Project operation "
             "as the Game Designer button:\n"
             "- Create a ZIP backup BEFORE replacing files.\n"
@@ -9538,6 +9636,13 @@ bool MainWindow::checkGameBuildGeneration()
             rememberUpdateAfterSuccess = rememberChoice;
         }
         Q_UNUSED(no)
+    }
+    if (!worldManagerMode && !shouldRegenerate && GameWorldSnapshot::hasActiveSelection(designs.first())
+        && !GameWorldSnapshot::isActive(designs.first())) {
+        QMessageBox::warning(this, tr("Compile — Wrong Active World"),
+            tr("The compiled game sources currently belong to another .sbgm world.\n"
+               "Use Update and Compile to activate your selected world first."));
+        return false;
     }
     if (shouldRegenerate) {
         // If the first compile of a freshly opened project was requested,
@@ -9989,6 +10094,14 @@ void MainWindow::compileActiveFile()
         QStringLiteral("-I"), apiDir.absolutePath(),
         QStringLiteral("-I"), QDir(libsPath).filePath(QStringLiteral("libraries")),
     };
+
+    // Nested worlds/<name>/gamehelpers/*.c still use the shared, single-copy
+    // engine headers from project/gamehelpers/. Keep SDK includes untouched.
+    if (normalizedProjectType(m_projectType) == GameProjectType) {
+        arguments << QStringLiteral("-I") << QDir(m_projectPath).filePath(QStringLiteral("gamehelpers"));
+        arguments << QStringLiteral("-I") << QDir(m_projectPath).filePath(QStringLiteral("gameassets"));
+        arguments << QStringLiteral("-I") << m_projectPath;
+    }
 
     if (m_compilerFunctionSections) {
         arguments << QStringLiteral("-ffunction-sections");
@@ -14687,6 +14800,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
         QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.uis"),
         QStringLiteral("*.ppb"), QStringLiteral("*.pal"), QStringLiteral("*.act"),
+        QStringLiteral("*.map"),
         QStringLiteral("*.png"), QStringLiteral("*.bmp"), QStringLiteral("*.jpg"),
         QStringLiteral("*.jpeg"), QStringLiteral("*.gif"),
         QStringLiteral("*.wav"), QStringLiteral("*.mod"), QStringLiteral("*.s3m"),
@@ -14755,16 +14869,51 @@ QStringList MainWindow::projectFilesForCompile() const
     candidates.append(projectFolderSourceFiles());
     candidates.removeDuplicates();
 
+    // Stage 5.2: the new multi-world controller replaces per-project
+    // canonical generated modules only when main.c explicitly opts in.
+    // Otherwise an existing hand-written main.c keeps linking untouched.
+    bool worldManagerMain = false;
+    if (normalizedProjectType(m_projectType) == GameProjectType) {
+        QFile entry(QDir(m_projectPath).filePath(QStringLiteral("main.c")));
+        if (entry.open(QIODevice::ReadOnly))
+            worldManagerMain = entry.readAll().contains("GAMERGIRL_WORLD_MANAGER_MAIN");
+    }
     for (const QString &filePath : std::as_const(candidates)) {
         // Never compile a history file, even if it was accidentally listed
         // explicitly in an older hand-edited project manifest.
         const QString relativePath = m_projectPath.isEmpty()
             ? QString() : QDir(m_projectPath).relativeFilePath(filePath);
-        if (relativePath.startsWith(QStringLiteral(".history/"))
+        if (relativePath.startsWith(QStringLiteral(".codergirl/"))
+            || relativePath.startsWith(QStringLiteral(".codergirl-backups/"))
+            || relativePath.startsWith(QStringLiteral(".history/"))
             || relativePath.startsWith(QStringLiteral("build/"))
             || relativePath.startsWith(QStringLiteral("buildv1/")))
             continue;
-        if (isCompilableSource(filePath)) {
+        // Stage 5.1: visible worlds/<name>/ contains linkable, namespaced
+        // V1 modules. They are not V2 CGARM application sources.
+        const bool gameProject = normalizedProjectType(m_projectType) == GameProjectType;
+        if (relativePath.startsWith(QStringLiteral("worlds/")) && !gameProject)
+            continue;
+        if (gameProject && worldManagerMain &&
+            (relativePath == QStringLiteral("gameassets/gameassets.c")
+             || relativePath == QStringLiteral("gamehelpers/gameworlditems.c")
+             || relativePath == QStringLiteral("gamehelpers/gameadventure.c")
+             || relativePath == QStringLiteral("gamehelpers/splinepaths.c")))
+            continue;
+        // The per-world tilemap C is already in worlds/<name>/gamelevels/.
+        // The legacy gamelevels/<name>.c remains on disk for old main.c
+        // includes, but must never be linked a second time.
+        if (gameProject && relativePath.startsWith(QStringLiteral("gamelevels/"))
+            && relativePath.endsWith(QStringLiteral(".c"), Qt::CaseInsensitive)) {
+            const QString base = QFileInfo(filePath).completeBaseName();
+            const QString copy = QDir(m_projectPath).filePath(
+                QStringLiteral("worlds/") + base + QStringLiteral("/gamelevels/")
+                + base + QStringLiteral(".c"));
+            if (QFileInfo::exists(copy)) continue;
+        }
+        // Regeneration can remove obsolete world modules (e.g. splinepaths).
+        // Stale entries in older project manifests must not reach the compiler.
+        if (QFileInfo(filePath).isFile() && isCompilableSource(filePath)) {
             files.append(filePath);
         }
     }

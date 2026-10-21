@@ -16,7 +16,8 @@ bool read(const QString &path, Picture *picture, QString *error = nullptr);
 bool fromImage(const QImage &image, Picture *picture, QString *error = nullptr);
 bool write(const QString &path, const Picture &picture, QString *error = nullptr);
 bool exportC(const QString &cPath, const QString &symbol,
-             const Picture &picture, QString *error = nullptr);
+             const Picture &picture, QString *error = nullptr,
+             const QString &rulesDirectory = QString());
 QString identifier(const QString &candidate);
 }
 

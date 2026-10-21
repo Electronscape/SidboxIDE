@@ -20,7 +20,7 @@ assert m.count('m_gameBuildFirstCheckPending = true;') == 2
 assert m.count('m_gameBuildAskBeforeBuild = true;') == 2
 assert 'QCheckBox(tr("Remember my choice for this project session")' in check
 assert 'm_gameBuildAskBeforeBuild = false;' in check
-assert 'gameBuildFilesOutdated(path)' in check
+assert 'gameBuildFilesOutdated(path, worldManagerMode)' in check
 assert 'new SidboxGameDesigner' not in check
 assert 'openGameDesigner(path)' in check
 assert 'if (!game->updateGameProject(true)) return false;' in check

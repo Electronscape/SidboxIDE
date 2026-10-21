@@ -1,4 +1,5 @@
 #include "gametilemap.h"
+#include "gamehelpertemplates.h"
 #include "gametilemapinternal.h"
 #include "ppbcodec.h"
 #include "gameeditorcontrolstyle.h"
@@ -2538,7 +2539,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     // Collision brush moves into the same toolbar as the cell/stamp flags.
     // The graphics brush moves above the atlas, as an icon-only mode strip.
     auto *renameZone = new QPushButton(tr("Name Zone"), this);
-    renameZone->setToolTip(tr("Name Custom 1–8. Export creates GAME_ZONE_ID_NAME macros in gamelevels/level1.h; callback IDs stay 1–8."));
+    renameZone->setToolTip(tr("Name Custom 1–8. Export creates GAME_ZONE_ID_NAME macros in the exported world header; callback IDs stay 1–8."));
     auto *customSolid = new QCheckBox(tr("Custom is solid"), this);
     customSolid->setToolTip(tr("Blocking custom zones stop the player, but still report touch events. Pass-through zones do not block."));
     connect(brushC, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -4710,7 +4711,8 @@ bool SidboxTilemapEditor::eventFilter(QObject *target, QEvent *event)
 }
 
 // Friendly custom-zone names are design-specific, not properties of the
-// shared player engine. Generate legal, collision-free C symbols for level1.h.
+// shared player engine. Generate legal, collision-free C symbols for the
+// exported world header.
 // All eight stable numeric fallbacks remain available even when unnamed.
 static QString cZoneLabel(const QString &label)
 {
@@ -4763,8 +4765,26 @@ QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone)
     return cZoneSymbols(map).at(zone - 1);
 }
 
+QString sidboxTilemapWorldBaseName(const QString &designFilePath)
+{
+    QString text = QFileInfo(designFilePath).completeBaseName().trimmed();
+    if (text.isEmpty()) text = QStringLiteral("level1");
+
+    QString out;
+    out.reserve(text.size() + 1);
+    for (int i = 0; i < text.size(); ++i) {
+        const QChar ch = text.at(i);
+        if (ch.isLetterOrNumber() || ch == QLatin1Char('_')) out += ch;
+        else out += QLatin1Char('_');
+    }
+    if (out.isEmpty()) out = QStringLiteral("level1");
+    if (out.at(0).isDigit()) out.prepend(QLatin1Char('_'));
+    return out;
+}
+
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
-                         QString *error, bool externalMap)
+                         QString *error, bool externalMap, const QString &designFilePath,
+                         const QString &rulesDirectory)
 {
     if (map.width < 30 || map.width > SIDBOX_MAP_MAX_AXIS ||
         map.height < 20 || map.height > SIDBOX_MAP_MAX_AXIS ||
@@ -4948,200 +4968,193 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         seenAnimated.insert(a.graphicId);
     }
     const QString folder = QDir(designDirectory).filePath(QStringLiteral("gamelevels"));
+    const QString worldBase = sidboxTilemapWorldBaseName(designFilePath);
+    const QString worldSymbol = QStringLiteral("game_") + worldBase;
+    const QString worldHeader = worldBase + QStringLiteral(".h");
+    const QString worldSource = worldBase + QStringLiteral(".c");
+    const QString worldMap = worldBase + QStringLiteral(".map");
     if (!QDir().mkpath(folder)) {
         if (error) *error = QStringLiteral("Cannot create gamelevels directory.");
         return false;
     }
-    QByteArray header =
-        "#ifndef SIDBOX_GAME_LEVEL1_H\n#define SIDBOX_GAME_LEVEL1_H\n"
-        "#include <stdint.h>\n#include \"../gamehelpers/gametilemap.h\"\n\n"
-        "uint8_t game_level1_load_map(const char *filename);\n"
-        "void game_level1_unload_map(void);\n"
-        "uint8_t game_level1_load_atlas(void);\n"
-        "void game_level1_unload_atlas(void);\n"
-        "extern game_tilemap_t game_level1;\n"
-        "#endif\n";
-    // Logical IDs are 1..8 for BOTH blocking and pass-through custom tiles.
-    // Zone-friendly names live here, rather than in the reusable physics
-    // helper, because each game project may name those IDs differently.
-    const QStringList zoneSymbols = cZoneSymbols(map);
-    QByteArray zoneDefines =
-        "/* Generated from Tilemap Editor > Name Zone (project-specific).\n"
-        " * Edit names in GamerGirl and export the tilemap again.\n"
-        " * Zones 1..8 are unchanged by solid/pass-through selection. */\n";
-    for (int zone = 1; zone <= 8; ++zone)
-        zoneDefines += "#define GAME_ZONE_ID_CUSTOM_" + QByteArray::number(zone)
-            + " " + QByteArray::number(zone) + "u\n";
-    for (int zone = 1; zone <= 8; ++zone) {
-        const QByteArray fallback = "GAME_ZONE_ID_CUSTOM_" + QByteArray::number(zone);
-        const QByteArray name = zoneSymbols.at(zone - 1).toLatin1();
-        if (name != fallback)
-            zoneDefines += "#define " + name + " " + fallback + "\n";
-    }
-    zoneDefines += "\n";
-    header.replace("uint8_t game_level1_load_map", zoneDefines + "uint8_t game_level1_load_map");
-    if (!externalMap) header.replace("extern game_tilemap_t game_level1;",
-        "extern const uint16_t game_level1_graphics[];\n"
-        "extern const uint8_t game_level1_collisions[];\n"
-        "extern const uint8_t game_level1_flips[];\n"
-        "extern const uint8_t game_level1_slopes[];\n"
-        "extern const uint16_t game_level1_shape_refs[];\n"
-        "extern const game_tile_shape_t game_level1_shape_defs[];\n"
-        "extern const game_tile_shape_point_t game_level1_shape_points[];\n"
-        "extern const game_tile_shape_instance_t game_level1_shape_instances[];\n"
-        "extern const game_tile_animation_t game_level1_animations[];\n"
-        "extern game_tilemap_t game_level1;");
-    QByteArray source = "#include \"level1.h\"\n"
-        "/* Optional sprite PPB sharing. Standalone tilemaps still work. */\n"
-        "#if defined(__has_include)\n"
-        "# if __has_include(\"../gameassets/gameassets.h\")\n"
-        "#  include \"../gameassets/gameassets.h\"\n"
-        "# endif\n"
-        "#endif\n\n";
-    if (!externalMap) {
-        source += "/* Embedded graphics and collision arrays: no SD map file needed. */\n";
-    auto writeBytes = [&source](const QByteArray &data, const QByteArray &name) {
-        source += "const uint8_t " + name + "[] __attribute__((aligned(32))) = {\n";
-        for (int i = 0; i < data.size(); ++i) {
-            if (i % 20 == 0) source += "    ";
-            source += QByteArray::number(quint8(data.at(i)));
-            if (i != data.size() - 1) source += ",";
-            if (i % 20 == 19 || i == data.size() - 1) source += "\n";
-            else source += " ";
+    // Stage 4.51: template is the executable C; Qt supplies tile IDs,
+    // collision rows, named zones, animation, loop and atlas metadata.
+    const QDir rules(rulesDirectory);
+    QMap<QString, QByteArray> templates, sections;
+    const QRegularExpression sectionRe(QStringLiteral(
+        R"((?ms)^@IDE_SECTION\{([A-Z_][A-Z0-9_]*)\}[ \t]*\r?\n(.*?)^@IDE_SECTION_END[ \t]*\r?\n?)"));
+    for (const QString &ext : {QStringLiteral(".rulec"), QStringLiteral(".ruleh")}) {
+        QFile file(rules.filePath(QStringLiteral("worldmap") + ext));
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("Cannot read tilemap rule: %1").arg(file.fileName());
+            return false;
         }
-        source += "};\n\n";
+        QString raw = QString::fromUtf8(file.readAll());
+        auto matches = sectionRe.globalMatch(raw);
+        const int expected = raw.count(QStringLiteral("@IDE_SECTION{"));
+        int extracted = 0;
+        while (matches.hasNext()) {
+            const auto match = matches.next();
+            if (sections.contains(match.captured(1))) {
+                if (error) *error = QStringLiteral("Duplicate tilemap rule section: %1").arg(match.captured(1));
+                return false;
+            }
+            sections.insert(match.captured(1), match.captured(2).toUtf8());
+            ++extracted;
+        }
+        raw.remove(sectionRe);
+        if (expected != extracted || raw.contains(QStringLiteral("@IDE_SECTION"))) {
+            if (error) *error = QStringLiteral("Malformed section in %1").arg(file.fileName());
+            return false;
+        }
+        templates.insert(ext, raw.toUtf8());
+    }
+    const auto num = [](auto v) { return QString::number(v); };
+    auto renderZone = [&](const QString &name, const QMap<QString, QString> &fields,
+                          QString &dest) -> bool {
+        if (!sections.contains(name)) {
+            if (error) *error = QStringLiteral("Missing tilemap rule section %1").arg(name);
+            return false;
+        }
+        QByteArray rendered;
+        if (!GameHelperTemplates::renderFields(sections.value(name), fields,
+                 QStringLiteral("worldmap.ruleh / ") + name, &rendered, error)) return false;
+        dest += QString::fromUtf8(rendered);
+        return true;
     };
-    source += "const uint16_t game_level1_graphics[] __attribute__((aligned(32))) = {\n";
-    for (int i = 0, n = map.width * map.height; i < n; ++i) {
-        if (i % 16 == 0) source += "    ";
-        source += QByteArray::number(mapGraphic(map.graphics, i));
-        if (i != n - 1) source += ",";
-        if (i % 16 == 15 || i == n - 1) source += "\n";
-        else source += " ";
+    QString zones;
+    const QStringList zoneSymbols = cZoneSymbols(map);
+    for (int zone = 1; zone <= 8; ++zone) {
+        if (!renderZone(QStringLiteral("ZONE_ID"), {{QStringLiteral("ZONE"), num(zone)}}, zones)) return false;
     }
-    source += "};\n\n";
-    writeBytes(map.collisions, "game_level1_collisions");
-    writeBytes(map.flips, "game_level1_flips");
-    if (custom) writeBytes(map.slopes, "game_level1_slopes");
-    if (pointShapes) {
-        source += "const uint16_t game_level1_shape_refs[] = {\n";
-        for (int i = 0; i < map.width * map.height; ++i) {
-            if (i % 16 == 0) source += "    ";
-            source += QByteArray::number(quint8(shapeRefs.at(i*2)) | (quint8(shapeRefs.at(i*2+1)) << 8));
-            if (i != map.width * map.height - 1) source += ",";
-            if (i % 16 == 15 || i == map.width * map.height - 1) source += "\n";
-            else source += " ";
+    for (int zone = 1; zone <= 8; ++zone) {
+        const QString fallback = QStringLiteral("GAME_ZONE_ID_CUSTOM_%1").arg(zone);
+        if (zoneSymbols.at(zone - 1) != fallback &&
+            !renderZone(QStringLiteral("ZONE_ALIAS"),
+                 {{QStringLiteral("ZONE"), num(zone)},
+                  {QStringLiteral("ALIAS"), zoneSymbols.at(zone - 1)}}, zones)) return false;
+    }
+    const auto byteRows = [](const QByteArray &data) {
+        QString result;
+        for (int i = 0; i < data.size(); ++i) {
+            if (i % 20 == 0) result += QStringLiteral("    ");
+            result += QString::number(quint8(data.at(i)));
+            if (i != data.size() - 1) result += QLatin1Char(',');
+            if (i % 20 == 19 || i == data.size() - 1) result += QLatin1Char('\n');
+            else result += QLatin1Char(' ');
         }
-        source += "};\n\n";
-        source += "const game_tile_shape_t game_level1_shape_defs[] = {\n";
-        int offset = 0;
-        for (int id : usedShapes) {
-            const auto &shape = map.collisionStamps.at(id);
-            source += "    {" + QByteArray::number(shape.width) + ", " +
-                QByteArray::number(shape.height) + ", " + QByteArray::number(offset) +
-                ", " + QByteArray::number(shape.points.size()) + ", " +
-                QByteArray::number(shape.passiveSurface ? shape.dampingPercent : 0) + ", " +
-                QByteArray::number(shape.passiveSurface ? 1 : 0) + "},\n";
-            offset += shape.points.size();
-        }
-        source += "};\n\nconst game_tile_shape_point_t game_level1_shape_points[] = {\n";
-        for (int id : usedShapes)
-            for (const QPoint &pt : map.collisionStamps.at(id).points)
-                source += "    {" + QByteArray::number(pt.x()) + ", " + QByteArray::number(pt.y()) + "},\n";
-        source += "};\n\nconst game_tile_shape_instance_t game_level1_shape_instances[] = {\n";
-        for (const auto &place : map.collisionPlacements)
-            source += "    {" + QByteArray::number(place.x) + ", " + QByteArray::number(place.y) +
-                ", " + QByteArray::number(shapeRemap.at(place.stamp)) + ", " +
-                QByteArray::number(place.mirrorX ? 1 : 0) + "},\n";
-        source += "};\n\n";
-    }
-    }
+        return result;
+    };
+    QString graphics, shapeRefRows, shapeDefs, shapePoints, shapeInstances;
     if (!externalMap) {
-
-    source += "const game_tile_animation_t game_level1_animations[] = {\n";
-    if (map.animations.isEmpty()) source += "    {0, 0, 0, 0} // No animations yet\n";
-    else {
-        for (const SidboxTileAnimation &a : map.animations) {
-            const int flags = (a.loop ? 1 : 0) | (a.bounce ? 2 : 0);
-            source += QByteArray("    {") + QByteArray::number(a.graphicId) + ", " +
-                QByteArray::number(a.frames) + ", " + QByteArray::number(a.frameTicks) +
-                ", " + QByteArray::number(flags) + "},\n";
+        for (int i = 0, n = map.width * map.height; i < n; ++i) {
+            if (i % 16 == 0) graphics += QStringLiteral("    ");
+            graphics += num(mapGraphic(map.graphics, i));
+            if (i != n - 1) graphics += QLatin1Char(',');
+            if (i % 16 == 15 || i == n - 1) graphics += QLatin1Char('\n');
+            else graphics += QLatin1Char(' ');
+        }
+        if (pointShapes) {
+            for (int i = 0, n = map.width * map.height; i < n; ++i) {
+                if (i % 16 == 0) shapeRefRows += QStringLiteral("    ");
+                shapeRefRows += num(quint8(shapeRefs.at(i*2)) | (quint8(shapeRefs.at(i*2+1)) << 8));
+                if (i != n - 1) shapeRefRows += QLatin1Char(',');
+                if (i % 16 == 15 || i == n-1) shapeRefRows += QLatin1Char('\n');
+                else shapeRefRows += QLatin1Char(' ');
+            }
+            int offset = 0;
+            for (int id : usedShapes) {
+                const auto &shape = map.collisionStamps.at(id);
+                shapeDefs += QStringLiteral("    {%1, %2, %3, %4, %5, %6},\n")
+                    .arg(shape.width).arg(shape.height).arg(offset).arg(shape.points.size())
+                    .arg(shape.passiveSurface ? shape.dampingPercent : 0)
+                    .arg(shape.passiveSurface ? 1 : 0);
+                offset += shape.points.size();
+                for (const QPoint &pt : shape.points)
+                    shapePoints += QStringLiteral("    {%1, %2},\n").arg(pt.x()).arg(pt.y());
+            }
+            for (const auto &place : map.collisionPlacements)
+                shapeInstances += QStringLiteral("    {%1, %2, %3, %4},\n")
+                    .arg(place.x).arg(place.y).arg(shapeRemap.at(place.stamp))
+                    .arg(place.mirrorX ? 1 : 0);
         }
     }
-    source += "};\n\n";
+    QString animationRows;
+    if (map.animations.isEmpty()) animationRows = QStringLiteral("    {0, 0, 0, 0} // No animations yet\n");
+    else for (const SidboxTileAnimation &a : map.animations)
+        animationRows += QStringLiteral("    {%1, %2, %3, %4},\n")
+            .arg(a.graphicId).arg(a.frames).arg(a.frameTicks)
+            .arg((a.loop ? 1 : 0) | (a.bounce ? 2 : 0));
+    QString loopRows;
+    for (const SidboxLoopTrack &l : map.loops)
+        loopRows += QStringLiteral("    {%1, %2, %3, %4, %5, %6, %7},\n")
+            .arg(l.centerX).arg(l.centerY).arg(l.radius).arg(l.entrySpeed100)
+            .arg(l.downhillBoost100).arg(l.coastAfterExit ? 1 : 0).arg(l.coastFalloffPermille);
+    QByteArray atlasPath = QDir::cleanPath(QDir::fromNativeSeparators(map.atlasPath)).toUtf8();
+    atlasPath.replace("\\", "\\\\");
+    atlasPath.replace("\"", "\\\"");
+    const bool embedded = !externalMap;
+    const QMap<QString, QString> cfields = {
+        {QStringLiteral("EXTERNAL"), externalMap ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("EMBEDDED"), embedded ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_LEGACY_SLOPES"), custom ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_POINT_SHAPES"), pointShapes ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_LOOPS"), map.loops.isEmpty() ? QStringLiteral("0") : QStringLiteral("1")},
+        {QStringLiteral("HAS_ATLAS"), tileCount ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("GRAPHIC_ROWS"), graphics},
+        {QStringLiteral("COLLISION_ROWS"), byteRows(map.collisions)},
+        {QStringLiteral("FLIP_ROWS"), byteRows(map.flips)},
+        {QStringLiteral("SLOPE_ROWS"), byteRows(map.slopes)},
+        {QStringLiteral("SHAPE_REF_ROWS"), shapeRefRows},
+        {QStringLiteral("SHAPE_DEF_ROWS"), shapeDefs},
+        {QStringLiteral("SHAPE_POINT_ROWS"), shapePoints},
+        {QStringLiteral("SHAPE_INSTANCE_ROWS"), shapeInstances},
+        {QStringLiteral("ANIMATION_ROWS"), animationRows},
+        {QStringLiteral("LOOP_ROWS"), loopRows},
+        {QStringLiteral("MAP_WIDTH"), num(map.width)},
+        {QStringLiteral("MAP_HEIGHT"), num(map.height)},
+        {QStringLiteral("TILE_SIZE"), num(map.tileSize)},
+        {QStringLiteral("TILE_COUNT"), num(tileCount)},
+        {QStringLiteral("ANIM_POINTER"), embedded && !map.animations.isEmpty() ? worldSymbol + QStringLiteral("_animations") : QStringLiteral("0")},
+        {QStringLiteral("ANIM_COUNT"), embedded ? num(map.animations.size()) : QStringLiteral("0")},
+        {QStringLiteral("FLIP_POINTER"), embedded ? worldSymbol + QStringLiteral("_flips") : QStringLiteral("0 /* TFCard flips loaded later */")},
+        {QStringLiteral("SLOPE_POINTER"), embedded && custom ? worldSymbol + QStringLiteral("_slopes") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_REF_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_refs") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_INSTANCE_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_instances") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_DEF_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_defs") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_POINTS_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_points") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_INSTANCE_COUNT"), embedded && pointShapes ? num(map.collisionPlacements.size()) : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_DEF_COUNT"), embedded && pointShapes ? num(usedShapes.size()) : QStringLiteral("0")},
+        {QStringLiteral("LOOP_POINTER"), map.loops.isEmpty() ? QStringLiteral("0") : worldSymbol + QStringLiteral("_loops")},
+        {QStringLiteral("LOOP_COUNT"), num(map.loops.size())},
+        {QStringLiteral("ATLAS_PATH"), QStringLiteral("\"") + QString::fromUtf8(atlasPath) + QStringLiteral("\"")},
+        {QStringLiteral("ATLAS_HASH"), num(atlasHash)},
+        {QStringLiteral("ATLAS_WIDTH"), num(atlasWidth)},
+        {QStringLiteral("ATLAS_HEIGHT"), num(atlasHeight)},
+        {QStringLiteral("WORLD_HEADER_FILENAME"), worldHeader},
+        {QStringLiteral("WORLD_SYMBOL"), worldSymbol}
+    };
+    const QMap<QString, QString> hfields = {
+        {QStringLiteral("EMBEDDED"), embedded ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("ZONE_ROWS"), zones},
+        {QStringLiteral("WORLD_HEADER_FILENAME"), worldHeader},
+        {QStringLiteral("WORLD_HEADER_GUARD"), worldBase == QStringLiteral("level1")
+             ? QStringLiteral("SIDBOX_GAME_LEVEL1_H")
+             : QStringLiteral("SIDBOX_GAME_") + worldSymbol + QStringLiteral("_H")},
+        {QStringLiteral("WORLD_SYMBOL"), worldSymbol}
+    };
+    QByteArray header, source, conditional;
+    if (!templates.value(QStringLiteral(".ruleh")).contains("@IDE{ZONE_ROWS}") ||
+        !templates.value(QStringLiteral(".rulec")).contains("@IDE{MAP_WIDTH}")) {
+        if (error) *error = QStringLiteral("Tilemap rules are missing required generation markers.");
+        return false;
     }
-    if (!map.loops.isEmpty()) {
-        source += "/* Level-only loop tracks. Available with embedded OR SD tilemaps. */\n";
-        source += "static const game_tile_loop_t game_level1_loops[] = {\n";
-        for (const SidboxLoopTrack &l : map.loops)
-            source += "    {" + QByteArray::number(l.centerX) + ", " +
-                QByteArray::number(l.centerY) + ", " +
-                QByteArray::number(l.radius) + ", " +
-                QByteArray::number(l.entrySpeed100) + ", " +
-                QByteArray::number(l.downhillBoost100) + ", " +
-                QByteArray::number(l.coastAfterExit ? 1 : 0) + ", " +
-                QByteArray::number(l.coastFalloffPermille) + "},\n";
-        source += "};\n\n";
-    }
-    source += "game_tilemap_t game_level1 = {\n";
-    source += externalMap ? "    0, 0, 0,\n" : "    game_level1_graphics, game_level1_collisions, 0,\n";
-    source += QByteArray("    ") + QByteArray::number(map.width) + ", " + QByteArray::number(map.height)
-        + ", " + QByteArray::number(map.tileSize) + ", " + QByteArray::number(tileCount) + ",\n"
-        + (externalMap || map.animations.isEmpty() ? QByteArray("    0, 0") :
-            QByteArray("    game_level1_animations, ") + QByteArray::number(map.animations.size()))
-        + ",\n    0, 0, 0, /* atlas width, height, borrowed flag */\n"
-        + "    0, " + (externalMap ? QByteArray("0 /* SD flips loaded later */") : QByteArray("game_level1_flips"))
-        + ", " + (externalMap ? QByteArray("0 /* SD slopes loaded later */") :
-                 (custom ? QByteArray("game_level1_slopes") : QByteArray("0")))
-        + (pointShapes ? QByteArray(",\n    ") +
-            (externalMap ? QByteArray("0, 0, 0, 0, 0, 0") :
-            QByteArray("game_level1_shape_refs, game_level1_shape_instances, ") +
-            "game_level1_shape_defs, game_level1_shape_points, " +
-            QByteArray::number(map.collisionPlacements.size()) + ", " +
-            QByteArray::number(usedShapes.size())) : QByteArray(",\n    0, 0, 0, 0, 0, 0"))
-        + (map.loops.isEmpty() ? QByteArray(",\n    0, 0") :
-            QByteArray(",\n    game_level1_loops, ") + QByteArray::number(map.loops.size()))
-        + "\n};\n\n";
-    if (externalMap) {
-        source += "/* SD map v2/v3/v4: file includes graphics, collisions, flips, optional slopes and animations. */\n"
-                  "uint8_t game_level1_load_map(const char *filename)\n" 
-                  "{ return game_tilemap_load_map(&game_level1, filename); }\n"
-                  "void game_level1_unload_map(void)\n"
-                  "{ game_tilemap_unload_map(&game_level1); }\n\n";
-    } else {
-        source += "/* Embedded C mode does not require reading an SD .map. */\n"
-                  "uint8_t game_level1_load_map(const char *filename)\n"
-                  "{ (void)filename; return 1; }\n"
-                  "void game_level1_unload_map(void) {}\n\n";
-    }
-    // The generated level remembers its SD resource. The runtime helper
-    // validates size and checksum and leaves the PPB pixels row-major.
-    // SIDBOX gfx_drawbob() selects cells directly from that image.
-    if (tileCount) {
-        QByteArray path = QDir::cleanPath(QDir::fromNativeSeparators(map.atlasPath)).toUtf8();
-        path.replace("\\", "\\\\");
-        path.replace("\"", "\\\"");
-        source += "/* Once at startup, AFTER initMalloc(). No per-frame SD reads. */\n";
-        source += "uint8_t game_level1_load_atlas(void)\n{\n";
-        source += "    if (game_level1.atlas) return 1;\n";
-        source += "#ifdef GAMEASSETS_HAS_PPB_LOOKUP\n"
-                  "    /* Share ONLY an identical PPB with a matching pixel checksum. */\n"
-                  "    uint16_t shared_w = 0, shared_h = 0;\n"
-                  "    const uint8_t *shared = gameassets_find_ppb(\"" + path +
-                  "\", &shared_w, &shared_h);\n"
-                  "    if (shared)\n"
-                  "        return game_tilemap_attach_shared_ppb_atlas(&game_level1, "
-                  "shared, shared_w, shared_h, " + QByteArray::number(atlasHash) + "u);\n"
-                  "#endif\n";
-        source += "    /* No matching sprite atlas: allocate separately from SD. */\n";
-        source += "    return game_tilemap_load_ppb_atlas(&game_level1, \"" + path + "\", "
-            + QByteArray::number(atlasWidth) + ", " + QByteArray::number(atlasHeight)
-            + ", " + QByteArray::number(atlasHash) + "u);\n}\n\n";
-    } else {
-        source += "uint8_t game_level1_load_atlas(void) { return 1; }\n\n";
-    }
-    source += "void game_level1_unload_atlas(void)\n{\n"
-              "    game_tilemap_unload_ppb_atlas(&game_level1);\n}\n";
+    if (!GameHelperTemplates::renderConditionals(templates.value(QStringLiteral(".ruleh")), hfields,
+            QStringLiteral("worldmap.ruleh"), &conditional, error) ||
+        !GameHelperTemplates::renderFields(conditional, hfields, QStringLiteral("worldmap.ruleh"), &header, error) ||
+        !GameHelperTemplates::renderConditionals(templates.value(QStringLiteral(".rulec")), cfields,
+            QStringLiteral("worldmap.rulec"), &conditional, error) ||
+        !GameHelperTemplates::renderFields(conditional, cfields, QStringLiteral("worldmap.rulec"), &source, error)) return false;
     const auto atomic = [error](const QString &path, const QByteArray &bytes) {
         QSaveFile f(path);
         if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size() || !f.commit()) {
@@ -5204,9 +5217,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         bytes.append(char(pointShapes ? usedShapes.size() : 0));
         bytes.append(char(pointShapes && custom ? 1 : 0)); // v4 legacy-height presence
         bytes += payload;
-        if (!atomic(QDir(folder).filePath(QStringLiteral("level1.map")), bytes))
+        if (!atomic(QDir(folder).filePath(worldMap), bytes))
             return false;
     }
-    return atomic(QDir(folder).filePath(QStringLiteral("level1.h")), header)
-        && atomic(QDir(folder).filePath(QStringLiteral("level1.c")), source);
+    return atomic(QDir(folder).filePath(worldHeader), header)
+        && atomic(QDir(folder).filePath(worldSource), source);
 }

@@ -1,0 +1,208 @@
+/* GamerGirl Stage 5.2 -- one world controller, even for a single-world game.
+ * All worlds are linked, but only the active world's large assets are loaded.
+ * Never call start/apply_pending from a world-object callback or during draw.
+ */
+#include "gameworlds.h"
+#include <stddef.h>
+#include <string.h>
+#include "apis.h"
+@IDE_IF{HAS_WORLD_PHYSICS}
+#include "gameworldobjects.h"
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+#include "gamecollectables.h"
+@IDE_END
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+#include "gameadventureruntime.h"
+@IDE_END
+@IDE{WORLD_DECLARATIONS}
+
+typedef struct {
+    const char *name;
+    int (*assets_init)(void);
+    void (*assets_shutdown)(void);
+    uint8_t (*objects_init)(void);
+    void (*objects_update)(uint16_t);
+    void (*objects_draw)(int32_t, int32_t);
+    void (*objects_draw_behind)(int32_t, int32_t);
+    void (*assets_foreground)(void);
+    void (*assets_background)(void);
+    void (*assets_show_background)(void);
+    void (*adventure_setup)(void);
+    void (*inventory_store)(gameworlds_inventory_put_t, void *);
+    void (*inventory_load)(gameworlds_inventory_get_t, void *);
+    void *map;
+    uint8_t (*load_map)(const char *);
+    void (*unload_map)(void);
+    uint8_t (*load_atlas)(void);
+    void (*unload_atlas)(void);
+    const char *map_path;
+@IDE_IF{HAS_WORLD_PHYSICS}
+    void (*before)(game_world_player_t *);
+    void (*after)(game_world_player_t *);
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    uint16_t (*check)(int32_t, int32_t, uint16_t, uint16_t, game_pickup_callback_t, void *);
+@IDE_END
+} gameworlds_record_t;
+
+static const gameworlds_record_t worlds[] = {
+@IDE{WORLD_RECORDS}
+};
+#define WORLD_COUNT (sizeof(worlds) / sizeof(worlds[0]))
+#define GAMEWORLDS_MAX_INVENTORY 64u
+/* Identity is the item NAME, not its per-world index. Different worlds can
+ * arrange their Adventure item lists differently and still share inventory.
+ * Hash collisions (FNV-1a) are handled by a second string check using the
+ * original game's static item-name pointer; world code is never unloaded. */
+typedef struct { const char *name; uint16_t amount; } inventory_entry_t;
+static inventory_entry_t inventory[GAMEWORLDS_MAX_INVENTORY];
+static uint16_t inventory_count;
+static gameworlds_player_state_t persistent;
+static gameworlds_player_hook_t save_player, restore_player;
+static void *player_context;
+static const gameworlds_record_t *active_world;
+static const gameworlds_record_t *pending_world;
+static uint8_t applying;
+static uint8_t saved_player_is_valid; /* Never restore zeroed state on first start. */
+
+static const gameworlds_record_t *find_world(const char *name)
+{
+    if (!name || !*name) return &worlds[0];
+    for (size_t i = 0; i < WORLD_COUNT; ++i)
+        if (strcmp(worlds[i].name, name) == 0) return &worlds[i];
+    return 0;
+}
+static void inventory_put(const char *name, uint16_t amount, void *user)
+{
+    (void)user;
+    if (!name || !*name) return;
+    for (uint16_t i = 0; i < inventory_count; ++i)
+        if (strcmp(inventory[i].name, name) == 0) { inventory[i].amount = amount; return; }
+    if (inventory_count < GAMEWORLDS_MAX_INVENTORY) {
+        inventory[inventory_count].name = name;
+        inventory[inventory_count].amount = amount;
+        ++inventory_count;
+    }
+}
+static uint32_t inventory_get(const char *name, void *user)
+{
+    (void)user;
+    if (!name) return UINT32_MAX;
+    for (uint16_t i = 0; i < inventory_count; ++i)
+        if (strcmp(inventory[i].name, name) == 0) return inventory[i].amount;
+    return UINT32_MAX; /* Not yet in backpack: retain world-defined initial. */
+}
+void gameworlds_player_hooks(gameworlds_player_hook_t save,
+                             gameworlds_player_hook_t restore, void *user)
+{
+    save_player = save;
+    restore_player = restore;
+    player_context = user;
+}
+gameworlds_player_state_t *gameworlds_state(void) { return &persistent; }
+uint16_t gameworlds_count(void) { return (uint16_t)WORLD_COUNT; }
+const char *gameworlds_name(uint16_t i) { return i < WORLD_COUNT ? worlds[i].name : 0; }
+const char *gameworlds_active(void) { return active_world ? active_world->name : 0; }
+void *gameworlds_map(void) { return active_world ? active_world->map : 0; }
+
+static void unload_active(void)
+{
+    if (!active_world) return;
+    music_stop(); /* Never free sample buffers while DMA/audio still use them. */
+    if (active_world->inventory_store)
+        active_world->inventory_store(inventory_put, 0);
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    /* Discard NPC/skin pointers to old world's assets. */
+    game_adventure_start(0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 2, 0, 0);
+@IDE_END
+    if (active_world->unload_atlas) active_world->unload_atlas();
+    if (active_world->unload_map) active_world->unload_map();
+    active_world->assets_shutdown();
+    active_world = 0;
+}
+static uint8_t activate(const gameworlds_record_t *world)
+{
+    if (!world || !world->assets_init()) return 0;
+    if (world->load_map && !world->load_map(world->map_path)) goto failed;
+    if (world->load_atlas && !world->load_atlas()) goto failed;
+    /* Only call setup after sprite/PPB resources and tilemaps exist. */
+    if (world->adventure_setup) world->adventure_setup();
+    if (world->inventory_load) world->inventory_load(inventory_get, 0);
+    if (!world->objects_init()) goto failed;
+    active_world = world;
+    return 1;
+failed:
+    music_stop();
+    if (world->unload_atlas) world->unload_atlas();
+    if (world->unload_map) world->unload_map();
+    world->assets_shutdown();
+    return 0;
+}
+uint8_t gameworlds_start(const char *name)
+{
+    const gameworlds_record_t *target = find_world(name);
+    if (!target || applying) return 0;
+    if (target == active_world) return 1;
+    applying = 1;
+    pending_world = 0;
+    if (active_world && save_player) {
+        save_player(&persistent, player_context);
+        saved_player_is_valid = 1;
+    }
+    unload_active();
+    const uint8_t success = activate(target);
+    /* First start: the game initialises its player normally. On subsequent
+     * loads, only restore state that was actually captured from a player. */
+    if (success && saved_player_is_valid && restore_player)
+        restore_player(&persistent, player_context);
+    applying = 0;
+    return success;
+}
+uint8_t gameworlds_request(const char *name)
+{
+    const gameworlds_record_t *target = find_world(name);
+    if (!name || !*name || !target || applying) return 0;
+    pending_world = target;
+    return 1;
+}
+uint8_t gameworlds_apply_pending(void)
+{
+    if (!pending_world) return 1;
+    const gameworlds_record_t *target = pending_world;
+    pending_world = 0;
+    return gameworlds_start(target->name);
+}
+void gameworlds_shutdown(void)
+{
+    if (active_world && save_player) {
+        save_player(&persistent, player_context);
+        saved_player_is_valid = 1;
+    }
+    unload_active();
+    pending_world = 0;
+}
+void gameworlds_update(uint16_t frames)
+{ if (active_world) active_world->objects_update(frames); }
+void gameworlds_draw(int32_t x, int32_t y)
+{ if (active_world) active_world->objects_draw(x,y); }
+void gameworlds_draw_behind(int32_t x, int32_t y)
+{ if (active_world && active_world->objects_draw_behind) active_world->objects_draw_behind(x,y); }
+@IDE_IF{HAS_WORLD_PHYSICS}
+void gameworlds_before(game_world_player_t *p)
+{ if (active_world && active_world->before) active_world->before(p); }
+void gameworlds_after(game_world_player_t *p)
+{ if (active_world && active_world->after) active_world->after(p); }
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+uint16_t gameworlds_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
+                          game_pickup_callback_t cb, void *user)
+{ return active_world && active_world->check
+    ? active_world->check(x,y,w,h,cb,user) : 0; }
+@IDE_END
+void gameworlds_draw_foreground(void)
+{ if (active_world) active_world->assets_foreground(); }
+void gameworlds_draw_background(void)
+{ if (active_world) active_world->assets_background(); }
+void gameworlds_show_background(void)
+{ if (active_world) active_world->assets_show_background(); }

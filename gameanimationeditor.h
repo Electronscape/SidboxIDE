@@ -105,7 +105,7 @@ private:
     void exportHeader();
     bool saveHeader(const QString &path);
     bool offerHeaderUpdate();
-    QString generateHeader(const QString &prefix) const;
+    QString generateHeader(const QString &prefix, QString *error = nullptr) const;
 };
 
 #endif

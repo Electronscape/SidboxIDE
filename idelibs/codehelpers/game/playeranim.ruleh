@@ -1,0 +1,113 @@
+/* GamerGirl Player Animation - generated from .sbanim. DO NOT EDIT.
+ * Requires the original atlas loaded into gfxbob_t (cell dimensions match).
+ * Call after moving the player and before gfx_drawbob().
+ * State/direction numbers follow the enums below. 50 ticks/second.
+ */
+#ifndef @IDE{PREFIX_UPPER}_PLAYERANIM_H
+#define @IDE{PREFIX_UPPER}_PLAYERANIM_H
+#include "apis.h"
+#include <stdint.h>
+
+#define @IDE{PREFIX_UPPER}_HITBOX_X @IDE{HITBOX_X}u
+#define @IDE{PREFIX_UPPER}_HITBOX_Y @IDE{HITBOX_Y}u
+#define @IDE{PREFIX_UPPER}_HITBOX_W @IDE{HITBOX_W}u
+#define @IDE{PREFIX_UPPER}_HITBOX_H @IDE{HITBOX_H}u
+
+enum {
+@IDE{STATE_ENUMS}};
+
+enum {
+@IDE{DIRECTION_ENUMS}};
+
+#define @IDE{PREFIX_UPPER}_STATE_COUNT @IDE{STATE_COUNT}u
+#define @IDE{PREFIX_UPPER}_DIRECTION_COUNT @IDE{DIRECTION_COUNT}u
+
+#define @IDE{PREFIX_UPPER}_HAS_HURT_STATE @IDE{HAS_HURT}
+
+typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } @IDE{PREFIX}_clip_t;
+typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; } @IDE{PREFIX}_playeranim_t;
+
+@IDE{CLIP_ARRAYS}
+static const @IDE{PREFIX}_clip_t @IDE{PREFIX}_clips[@IDE{CLIP_COUNT}] = {
+@IDE{CLIP_ROWS}};
+
+static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob,
+                           uint8_t state, uint8_t direction, uint16_t frame_step)
+{
+    const @IDE{PREFIX}_clip_t *clip;
+    if (!a || !bob || !bob->imgdat) return;
+    if (state >= @IDE{STATE_COUNT}u || direction >= @IDE{DIRECTION_COUNT}u) return;
+    clip = &@IDE{PREFIX}_clips[(uint16_t)state * @IDE{DIRECTION_COUNT}u + direction];
+    if (!clip->count) {
+        state = @IDE{IDLE_ID}u; /* missing animation: use Idle */
+        clip = &@IDE{PREFIX}_clips[(uint16_t)state * @IDE{DIRECTION_COUNT}u + direction];
+        if (!clip->count) { direction = 0; clip = &@IDE{PREFIX}_clips[(uint16_t)state * @IDE{DIRECTION_COUNT}u]; }
+        if (!clip->count) return;
+    }
+    if (!a->started || a->state != state || a->direction != direction) {
+        a->started = 1; a->state = state; a->direction = direction;
+        a->position = 0; a->elapsed = 0;
+    } else if (frame_step && (clip->loop || a->position + 1u < clip->count)) {
+        uint32_t remaining = (uint32_t)a->elapsed + frame_step;
+        if (!clip->frame_ticks) {
+            /* Fast path for uniform timings, identical to legacy playback. */
+            uint32_t steps = remaining / clip->ticks;
+            a->elapsed = (uint16_t)(remaining % clip->ticks);
+            if (steps) {
+                uint32_t next = (uint32_t)a->position + steps;
+                a->position = clip->loop ? (uint16_t)(next % clip->count)
+                             : (uint16_t)(next >= clip->count ? clip->count - 1u : next);
+            }
+        } else {
+            /* Duration belongs to the frame POSITION, not its atlas index. */
+            uint16_t duration = clip->frame_ticks[a->position];
+            while (remaining >= duration) {
+                remaining -= duration;
+                if (a->position + 1u < clip->count) ++a->position;
+                else if (clip->loop) a->position = 0;
+                else { remaining = 0; break; }
+                duration = clip->frame_ticks[a->position];
+            }
+            a->elapsed = (uint16_t)remaining;
+        }
+    }
+    bob->index = clip->frames[a->position];
+    bob->flags = (uint8_t)((bob->flags & (uint8_t)~BLIT_FLAG_FLIP_X)
+                  | (clip->flip_x ? BLIT_FLAG_FLIP_X : 0));
+}
+
+@IDE_IF{AUTO_STATE}
+/* Optional automatic state selection. horizontal=-1/0/+1.
+ * running / pushing / sliding / balancing / hurt are game-provided flags.
+ * Balancing is not detected automatically by the physics helper yet. */
+static inline uint8_t @IDE{PREFIX}_auto_state(uint8_t on_ground, int32_t vy100,
+                                      int8_t horizontal, uint8_t is_running,
+                                      uint8_t is_pushing, uint8_t is_sliding,
+                                      uint8_t is_balancing, uint8_t is_hurt)
+{
+    if (is_hurt) return @IDE{HURT}u;
+    if (!on_ground) return vy100 < 0 ? @IDE{JUMP}u : @IDE{FALL}u;
+    if (is_pushing) return @IDE{PUSH}u;
+    if (is_balancing) return @IDE{BALANCE}u;
+    if (is_sliding) return @IDE{SLIDE}u;
+    if (horizontal) return is_running ? @IDE{RUN}u : @IDE{WALK}u;
+    return @IDE{IDLE}u;
+}
+@IDE_END
+#endif
+
+@IDE_SECTION{STATE}
+    @IDE{PREFIX_UPPER}_STATE_@IDE{STATE_NAME} = @IDE{STATE_ID},
+@IDE_SECTION_END
+@IDE_SECTION{DIRECTION}
+    @IDE{PREFIX_UPPER}_DIR_@IDE{DIRECTION_NAME} = @IDE{DIRECTION_ID},
+@IDE_SECTION_END
+@IDE_SECTION{FRAME_ARRAY}
+static const uint8_t @IDE{ARRAY_NAME}[] = { @IDE{FRAME_VALUES} };
+@IDE_SECTION_END
+@IDE_SECTION{TICK_ARRAY}
+static const uint8_t @IDE{ARRAY_NAME}[] = { @IDE{TICK_VALUES} };
+@IDE_SECTION_END
+@IDE_SECTION{CLIP_ENTRY}
+    { @IDE{FRAME_ARRAY}, @IDE{TICK_ARRAY}, @IDE{FRAME_COUNT}u, @IDE{TICKS}u, @IDE{LOOP}, @IDE{FLIP} },
+@IDE_SECTION_END

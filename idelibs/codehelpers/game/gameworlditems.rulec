@@ -9,7 +9,7 @@
 #include "gametilemap.h"
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
-#include "../gamelevels/level1.h"
+#include "../gamelevels/@IDE{WORLD_HEADER_FILENAME}"
 @IDE_END
 @IDE_IF{HAS_AUDIO}
 /* Automatic object audio. WAVs and channels are defined in gameassets.
@@ -100,7 +100,7 @@ void gameworlditems_update(uint16_t frames)
     game_world_objects_update(platforms, @IDE{WORLD_OBJECT_COUNT}, frames);
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
-    game_world_objects_roam(platforms, @IDE{WORLD_OBJECT_COUNT}, frames, cg_enemy_tile_blocked, &game_level1);
+    game_world_objects_roam(platforms, @IDE{WORLD_OBJECT_COUNT}, frames, cg_enemy_tile_blocked, &@IDE{WORLD_SYMBOL});
 @IDE_END
 @IDE_IF{HAS_AUDIO_PICKUPS}
     for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;
@@ -128,7 +128,7 @@ void gameworlditems_update(uint16_t frames)
             int32_t target_x = next_x100 / 100;
             while (x != target_x) {
                 int32_t step = target_x > x ? 1 : -1;
-                if (game_tilemap_actor_blocked(&game_level1, x + step, y,
+                if (game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x + step, y,
                         pickups[i].width, pickups[i].height)) {
                     vx = 0;
                     next_x100 = x * 100;
@@ -146,7 +146,7 @@ void gameworlditems_update(uint16_t frames)
             uint8_t landed = 0;
             while (y != target_y) {
                 int32_t step = target_y > y ? 1 : -1;
-                if (game_tilemap_actor_blocked(&game_level1, x, y + step,
+                if (game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x, y + step,
                         pickups[i].width, pickups[i].height)) {
                     if (step > 0) landed = 1;
                     cg_reward_vy100[i] = 0;
@@ -158,7 +158,7 @@ void gameworlditems_update(uint16_t frames)
             cg_reward_y100[i] = next_y100;
             game_collectable_set_position(&pickups[i], x, y);
             if (landed || (cg_reward_vy100[i] >= 0 &&
-                    game_tilemap_actor_blocked(&game_level1, x, y + 1,
+                    game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x, y + 1,
                         pickups[i].width, pickups[i].height))) {
                 cg_reward_falling[i] = 0;
                 cg_reward_vx100[i] = 0;
@@ -189,7 +189,7 @@ void gameworlditems_before(game_world_player_t *player)
     if (game_death_is_dead()) return;
     if (player) {
         player->position_blocked = cg_world_player_blocked;
-        player->collision_context = &game_level1;
+        player->collision_context = &@IDE{WORLD_SYMBOL};
     }
 @IDE_END
     game_world_objects_before(platforms, @IDE{WORLD_OBJECT_COUNT}, player);

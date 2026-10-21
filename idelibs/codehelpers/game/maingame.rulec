@@ -70,7 +70,7 @@
 #include "gameassets/gameassets.h"
 @IDE_IF{HAS_MAP}
 #include "gamehelpers/gametilemap.h"
-#include "gamelevels/level1.h"
+#include "gamelevels/@IDE{WORLD_HEADER_FILENAME}"
 @IDE_END
 @IDE_IF{HAS_OBJECTS}
 #include "gamehelpers/gameworlditems.h"
@@ -225,7 +225,7 @@ static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
 /* OPTIONAL PROGRAMMABLE ZONES: these comments are EXAMPLES, not automatic
  * physics changes. Each custom tile zone reports 1..8 and ENTERED/INSIDE/EXITED.
  * Solid and pass-through versions share the same logical zone number.
- * Use the generated GAME_ZONE_ID_* names from gamelevels/level1.h,
+ * Use the generated GAME_ZONE_ID_* names from gamelevels/@IDE{WORLD_HEADER_FILENAME},
  * NOT hard-coded 1..8 numbers. Re-export after renaming a zone.
  * The commented physics presets are EXAMPLES; names do not activate them.
  * Change or remove these examples to suit your game. */
@@ -381,7 +381,7 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_EXTERNAL_MAP}
     /* External tile/collision/animation map. Copy this .map to the SD card.
        Objects are still compiled from the .sbgm game design. */
-    if (!game_level1_load_map("gamelevels/level1.map")) {
+    if (!@IDE{WORLD_SYMBOL}_load_map("gamelevels/@IDE{WORLD_MAP_FILENAME}")) {
         result = 6;
         goto cleanup;
     }
@@ -389,7 +389,7 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_MAP}
     /* Atlas PPB: dedicated Tile Atlases resource (shared with gameassets),
        legacy sprite-based atlas, or direct SD fallback. Never drawn as a sprite. */
-    if (!game_level1_load_atlas()) { result = 5; goto cleanup; }
+    if (!@IDE{WORLD_SYMBOL}_load_atlas()) { result = 5; goto cleanup; }
     game_tilemap_animation_reset();
 @IDE_END
 @IDE_IF{HAS_ADVENTURE}
@@ -424,7 +424,7 @@ int main(int argc, char *argv[])
     gfx_scrollf(0, 0);
 @IDE_IF{HAS_PHYSICS}
     /* The sprite named 'player' becomes the physics-controlled character. */
-    if (!game_tile_player_start(&player_physics, &game_level1, &@IDE{PLAYER_SYMBOL})) { result = 4; goto cleanup; }
+    if (!game_tile_player_start(&player_physics, &@IDE{WORLD_SYMBOL}, &@IDE{PLAYER_SYMBOL})) { result = 4; goto cleanup; }
 @IDE_IF{HAS_PLAYER_ANIMATION}
 
 #if GAMERGIRL_PLAYER_ANIMATIONS
@@ -589,8 +589,8 @@ int main(int argc, char *argv[])
         /* Follow the player in WORLD pixels, clamped to the level bounds. */
         camera_x = player_physics.x100 / 100 - VIEW_W / 2;
         camera_y = player_physics.y100 / 100 - VIEW_H / 2;
-        int32_t max_x = (int32_t)game_level1.width * game_level1.tile_size - VIEW_W;
-        int32_t max_y = (int32_t)game_level1.height * game_level1.tile_size - VIEW_H;
+        int32_t max_x = (int32_t)@IDE{WORLD_SYMBOL}.width * @IDE{WORLD_SYMBOL}.tile_size - VIEW_W;
+        int32_t max_y = (int32_t)@IDE{WORLD_SYMBOL}.height * @IDE{WORLD_SYMBOL}.tile_size - VIEW_H;
         if (max_x < 0) max_x = 0;
         if (max_y < 0) max_y = 0;
         if (camera_x < 0) camera_x = 0;
@@ -630,7 +630,7 @@ int main(int argc, char *argv[])
 @IDE_END
 @IDE{SCENERY_BEHIND_TILES}
 @IDE_IF{HAS_MAP}
-        game_tilemap_blit_view_cleared(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);
+        game_tilemap_blit_view_cleared(&@IDE{WORLD_SYMBOL}, camera_x, camera_y, VIEW_W, VIEW_H);
 @IDE_END
 @IDE_IF{HAS_OBJECTS}
         gameworlditems_draw(camera_x, camera_y);
@@ -682,7 +682,7 @@ int main(int argc, char *argv[])
 @IDE_END
 @IDE_IF{HAS_FRONT_TILES}
         /* Foreground tiles are deliberately drawn AFTER the player. */
-        game_tilemap_blit_view_front(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);
+        game_tilemap_blit_view_front(&@IDE{WORLD_SYMBOL}, camera_x, camera_y, VIEW_W, VIEW_H);
 @IDE_END
 @IDE_IF{HAS_ADVENTURE_PHYSICS}
         game_adventure_draw(camera_x, camera_y, player_physics.x100 / 100, player_physics.y100 / 100);
@@ -701,8 +701,8 @@ cleanup:
        because its pixels may be borrowed from a sprite PPB allocation. */
     music_stop();
 @IDE_IF{HAS_MAP}
-    game_level1_unload_atlas();
-    game_level1_unload_map();
+    @IDE{WORLD_SYMBOL}_unload_atlas();
+    @IDE{WORLD_SYMBOL}_unload_map();
 @IDE_END
     gameassets_shutdown();
     restore_desktop();

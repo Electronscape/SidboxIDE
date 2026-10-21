@@ -30,6 +30,7 @@ struct CycleSettings {
 struct Request {
     QString designDirectory;
     QString outputDirectory; // typically <project>/gameassets
+    QString rulesDirectory;  // IDE idelibs/codehelpers/game: required .rulec/.ruleh templates
     QVector<Asset> assets;
     QString foregroundPalette;
     QString backgroundPalette;

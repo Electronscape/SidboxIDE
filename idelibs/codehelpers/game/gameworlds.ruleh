@@ -1,0 +1,68 @@
+/* GamerGirl Stage 5.2 -- generated project-wide multi-world runtime.
+ * All .sbgm projects (including one-world games) use this same API.
+ * This is an API, not a second copy of the old global gameassets loader.
+ */
+#ifndef CODERGIRL_GAMEWORLDS_H
+#define CODERGIRL_GAMEWORLDS_H
+#include <stdint.h>
+
+@IDE_IF{HAS_WORLD_PHYSICS}
+#include "gameworldobjects.h"
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+#include "gamecollectables.h"
+@IDE_END
+
+typedef struct {
+    uint32_t score;
+    uint32_t health;
+    uint32_t lives;
+    uint32_t flags;           /* YOUR persistent story flags */
+    int32_t player_x100;
+    int32_t player_y100;
+    int32_t player_vx100;
+    int32_t player_vy100;
+    uint8_t user[64];         /* optional game-owned persistent data */
+} gameworlds_player_state_t;
+
+typedef void (*gameworlds_player_hook_t)(gameworlds_player_state_t *state, void *user);
+typedef void (*gameworlds_inventory_put_t)(const char *name, uint16_t count, void *user);
+typedef uint32_t (*gameworlds_inventory_get_t)(const char *name, void *user);
+
+/* Register hooks to save the LIVE player before leaving a world and restore
+ * to the newly-created player after its assets and physics are ready.
+ * The first start does NOT call restore: create your first player normally.
+ * Subsequent transitions restore only after a successful world load.
+ * Hooks must not free world resources or request an immediate load. */
+void gameworlds_player_hooks(gameworlds_player_hook_t save,
+                             gameworlds_player_hook_t restore, void *user);
+gameworlds_player_state_t *gameworlds_state(void);
+uint16_t gameworlds_count(void);
+const char *gameworlds_name(uint16_t index);
+const char *gameworlds_active(void);
+/* NULL or empty starts the project's selected/default world. */
+uint8_t gameworlds_start(const char *name);
+/* Safe inside callbacks: only queues a change. Does NOT unload anything. */
+uint8_t gameworlds_request(const char *name);
+/* Call OUTSIDE the frame's collision, object and drawing passes.
+ * 0 = failed; 1 = no change or successful transition. */
+uint8_t gameworlds_apply_pending(void);
+void gameworlds_shutdown(void);
+/* The current map may be NULL for a scenery-only world. */
+void *gameworlds_map(void);
+void gameworlds_update(uint16_t frames);
+void gameworlds_draw(int32_t camera_x, int32_t camera_y);
+void gameworlds_draw_behind(int32_t camera_x, int32_t camera_y);
+@IDE_IF{HAS_WORLD_PHYSICS}
+void gameworlds_before(game_world_player_t *player);
+void gameworlds_after(game_world_player_t *player);
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+uint16_t gameworlds_check(int32_t x, int32_t y, uint16_t width, uint16_t height,
+                          game_pickup_callback_t callback, void *user);
+@IDE_END
+void gameworlds_draw_foreground(void);
+void gameworlds_draw_background(void);
+void gameworlds_show_background(void);
+/* Each world manages its own objects; these wrappers dispatch to active world. */
+#endif

@@ -1,0 +1,94 @@
+GAMERGIRL — MULTI-WORLD RUNNING GUIDE (STAGE 5.2)
+================================================
+
+The IDE now generates gamehelpers/gameworlds.c/.h from ALL published
+worlds/<name>/ folders.  It works with ONE world too: start(NULL).
+Each world has unique code and object instances. Only the active world's
+assets/maps/atlas and object state should be initialised at runtime.
+
+IMPORTANT: YOUR main.c IS NEVER REPLACED AUTOMATICALLY.
+
+1. Regenerate EACH of your .sbgm designs using Update Game Project once,
+   so all worlds have the Stage 5.2 public APIs and inventory hooks.
+2. Include "gamehelpers/gameworlds.h" in main.c.
+3. Replace canonical gameassets_init / world1_load_map / load_atlas / 
+   gameadventure_setup / gameworlditems_init calls with:
+
+       if (!gameworlds_start("world1")) { /* handle load failure */ }
+
+   Or use gameworlds_start(NULL) to choose the last generated world.
+4. Use gameworlds_map() when rebinding player physics to the new world.
+   A mapless world returns NULL: handle scenery-only worlds explicitly.
+5. Dispatch object animation and drawing via gameworlds_update(),
+   gameworlds_draw() and gameworlds_draw_behind(). Foreground/background
+   drawing uses gameworlds_draw_foreground / gameworlds_draw_background.
+6. For a door/collision/trigger, queue a change from inside the callback:
+
+       gameworlds_request("forest");
+
+   At a SAFE FRAME BOUNDARY after finishing collision/drawing:
+
+       if (!gameworlds_apply_pending()) { /* handle failed load */ }
+
+   Do NOT do an immediate unload inside the collision or drawing code.
+7. Save and restore the player using gameworlds_player_hooks(). Your
+   save hook copies score/HP/velocity etc into gameworlds_player_state_t;
+   your restore hook creates/rebinds the player for the NEW map, then
+   places them at a suitable spawn point. The FIRST gameworlds_start()
+   does not restore an uninitialised player: initialise the first player
+   normally once the first world has loaded. See the example below.
+8. Inventory items with the same Adventure name across worlds share
+   quantities. Missing item names keep their counts until they appear
+   in another world. Worlds without Adventure are supported.
+9. When main.c has FULLY migrated off canonical gameassets/gameworlditems/
+   gameadventure/splinepaths modules, add this exact comment to main.c:
+
+       /* GAMERGIRL_WORLD_MANAGER_MAIN */
+
+   This opts your project into excluding those OLD compiled copies.
+   Do NOT add the marker while main.c still refers to legacy symbols!
+
+--- PLAYER CALLBACK EXAMPLE ---
+
+/* In your own main.c, after declaring player_physics and score/health: */
+static void save_player(gameworlds_player_state_t *s, void *ctx)
+{
+    (void)ctx;
+    s->score = score;
+    s->health = player_health;
+    s->player_x100 = player_physics.x100;
+    s->player_y100 = player_physics.y100;
+    s->player_vy100 = player_physics.vy100;
+}
+static void restore_player(gameworlds_player_state_t *s, void *ctx)
+{
+    (void)ctx;
+    score = s->score;
+    player_health = s->health;
+    /* IMPORTANT: rebind physics to a sprite owned by the NEW world and
+       the NEW map before reusing saved coordinates or calling physics.
+       For a different spawn point, use game_tile_player_reset(). */
+    /* game_tile_player_start(&player_physics, gameworlds_map(), NEW_PLAYER_SPRITE); */
+    player_physics.x100 = s->player_x100;
+    player_physics.y100 = s->player_y100;
+    player_physics.vy100 = s->player_vy100;
+}
+
+/* Before gameworlds_start(): */
+gameworlds_player_hooks(save_player, restore_player, NULL);
+
+A gfxbob_t contains a pointer to world-owned sprite pixels. NEVER retain
+or reuse an old world's player BOB once its assets have been unloaded.
+For a game that needs a player in every world, define that player sprite in
+each world or implement a separate permanent/shared player asset. This stage
+does NOT automatically invent a missing player or create a door/spawn editor.
+
+The state is retained across world transitions IN RAM, not saved to TFCard.
+State per-world such as collected chests and defeated enemies is reset when
+that world is reloaded; persistent world completion flags are your game's
+responsibility. Runtime loading/asset safety works without a GUI trigger.
+
+For single-world projects simply call gameworlds_start(NULL) once, and
+use gameworlds_shutdown() at exit. During migration old main.c continues to
+compile, but it still runs through the legacy root-level resources until
+YOU change it to use the new gameworlds API.

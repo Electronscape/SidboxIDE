@@ -8,6 +8,7 @@
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
 #include "gamehelpertemplates.h"
+#include "gameworldsnapshot.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -277,6 +278,11 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     // for this IDE session. Both paths use the SAME backup and update logic;
     // errors remain visible even when called by F5.
     if (m_filePath.isEmpty() || !m_valid) return false;
+    QString nameError;
+    if (!GameWorldSnapshot::validateUniqueName(m_filePath, &nameError)) {
+        QMessageBox::warning(this, tr("World Naming Conflict"), nameError);
+        return false;
+    }
     const QDir project(QFileInfo(m_filePath).absolutePath());
     const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
     if (!templates.exists()) {
@@ -307,7 +313,10 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         const QString base = QFileInfo(name).completeBaseName();
         // The story rules generate gameadventure.c/.h; they are not
         // SDK helpers and must never become gamegameadventure.c/.h.
-        if (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameworlditems")) continue;
+        if (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameadventureempty")
+            || base == QStringLiteral("gameworlditems")
+            || base == QStringLiteral("embeddedresource") || base == QStringLiteral("worldmap")
+            || base == QStringLiteral("gameworlds")) continue;
         if (QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".c")))
             || QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".h"))))
             needed.insert(base);
@@ -377,16 +386,18 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.c"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.txt"));
-    if (hasAdventure()) {
-        outputs.insert(QStringLiteral("gamehelpers/gameadventure.c"));
-        outputs.insert(QStringLiteral("gamehelpers/gameadventure.h"));
-    }
+    // Even no-story worlds regenerate empty Adventure stubs; back them up too.
+    outputs.insert(QStringLiteral("gamehelpers/gameadventure.c"));
+    outputs.insert(QStringLiteral("gamehelpers/gameadventure.h"));
+    outputs.insert(QStringLiteral("gamehelpers/gameworlds.c"));
+    outputs.insert(QStringLiteral("gamehelpers/gameworlds.h"));
     outputs.insert(QStringLiteral("maingame.c.txt"));
     // Main generation may create a missing file or transfer a dirty external
     // file. Back up/track BOTH source and metadata for full rollback. User
     // files are still excluded from actual regeneration by the CRC gate.
     outputs.insert(QStringLiteral("main.c"));
     outputs.insert(QStringLiteral(".codergirl/main-ownership.json"));
+    outputs.insert(QStringLiteral(".codergirl/active-world.json"));
 
     if (hasSpline
         || QFileInfo::exists(installed.filePath(QStringLiteral("splinepaths.h")))) {
@@ -396,9 +407,10 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         outputs.insert(QStringLiteral("gamehelpers/splinepaths.h"));
     }
     if (m_tilemapEnabled) {
-        outputs.insert(QStringLiteral("gamelevels/level1.c"));
-        outputs.insert(QStringLiteral("gamelevels/level1.h"));
-        if (m_tilemapExternal) outputs.insert(QStringLiteral("gamelevels/level1.map"));
+        const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
+        outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".c"));
+        outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h"));
+        if (m_tilemapExternal) outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".map"));
     }
     for (const QString &base : helperNames) {
         const QString targetBase = QStringLiteral("gamehelpers/game") + base;
@@ -580,6 +592,7 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     if (!fromCompile) {
         QMessageBox::information(this, tr("Game Project Updated"),
             tr("Game helper files refreshed, splines/tilemap exported, and V1 game code regenerated.\n\n"
+               "This world has a separate buildable source tree under worlds/<name>/. Other published worlds are compiled too.\n\n"
                "main.c is updated only while still IDE-owned. User-owned source and existing beginner guides are untouched.\n\n"
                "ZIP backup: %1\nOnly the newest 20 update ZIP backups are kept.")
                    .arg(archivePath));

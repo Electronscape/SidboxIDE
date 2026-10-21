@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QMap>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QStringList>
@@ -44,15 +45,21 @@ bool save(const QString &path, const QByteArray &bytes, QString *error)
 // rule would otherwise silently discard an NPC, dialogue or event action.
 bool loadRule(const QDir &folder, const QString &extension,
               const QMap<QString,QString> &fields,
-              const QStringList &required, QByteArray *output, QString *error)
+              const QStringList &required, QByteArray *output, QString *error,
+              const QByteArray *preloaded = nullptr)
 {
     const QString path = folder.filePath(QStringLiteral("gameadventure") + extension);
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error) *error = QStringLiteral("Cannot read Adventure story rule: %1").arg(path);
-        return false;
+    QByteArray source;
+    if (preloaded) {
+        source = *preloaded;
+    } else {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("Cannot read Adventure story rule: %1").arg(path);
+            return false;
+        }
+        source = file.readAll();
     }
-    const QByteArray source = file.readAll();
     for (const QString &name : required) {
         if (!source.contains(QStringLiteral("@IDE{%1}").arg(name).toUtf8())) {
             if (error) *error = QStringLiteral("The Adventure story rule %1 is missing required @IDE{%2}. ")
@@ -60,7 +67,9 @@ bool loadRule(const QDir &folder, const QString &extension,
             return false;
         }
     }
-    return GameHelperTemplates::renderFields(source, fields, path, output, error);
+    QByteArray conditional;
+    return GameHelperTemplates::renderConditionals(source, fields, path, &conditional, error)
+        && GameHelperTemplates::renderFields(conditional, fields, path, output, error);
 }
 } // namespace
 
@@ -78,6 +87,33 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         return false;
     }
 
+    const QDir rules(gameRulesDirectory);
+    const QString ruleCPath = rules.filePath(QStringLiteral("gameadventure.rulec"));
+    QFile ruleCFile(ruleCPath);
+    if (!ruleCFile.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("Cannot read Adventure story rule: %1").arg(ruleCPath);
+        return false;
+    }
+    QString ruleText = QString::fromUtf8(ruleCFile.readAll());
+    const QRegularExpression linkedRe(QStringLiteral(
+        R"((?ms)^@IDE_SECTION\{LINKED_ACTION\}[ \t]*\r?\n(.*?)^@IDE_SECTION_END[ \t]*\r?\n?)"));
+    const auto linkedMatch = linkedRe.match(ruleText);
+    if (!linkedMatch.hasMatch() || ruleText.count(QStringLiteral("@IDE_SECTION{")) != 1
+        || ruleText.count(QStringLiteral("@IDE_SECTION_END")) != 1) {
+        if (error) *error = QStringLiteral("Missing or malformed LINKED_ACTION section in %1. ")
+            .arg(ruleCPath) + QStringLiteral("No project files were changed.");
+        return false;
+    }
+    const QByteArray linkedActionRule = linkedMatch.captured(1).toUtf8();
+    ruleText.remove(linkedRe);
+    const QByteArray ruleCSource = ruleText.toUtf8();
+    if (!ruleCSource.contains("@IDE_IF{HAS_SKIN}") ||
+        !ruleCSource.contains("@IDE_IF{HAS_WORLD_OBJECTS}")) {
+        if (error) *error = QStringLiteral("Missing Adventure conditional block in %1. ")
+            .arg(ruleCPath) + QStringLiteral("No project files were changed.");
+        return false;
+    }
+
     // The IDE validates and serializes project DATA only. The declarations,
     // #includes, setup function, event callback and array structure all belong
     // to gameadventure.rulec/.ruleh, not the Qt program.
@@ -85,8 +121,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     fields.insert(QStringLiteral("ITEM_COUNT"), QString::number(itemList.size()));
     fields.insert(QStringLiteral("NODE_COUNT"), QString::number(nodes.size()));
     fields.insert(QStringLiteral("NPC_COUNT"), QString::number(npcList.size()));
-    fields.insert(QStringLiteral("WORLD_OBJECT_INCLUDE"), worldObjects.isEmpty()
-        ? QString() : QStringLiteral("#include \"gameworlditems.h\"\n"));
+    fields.insert(QStringLiteral("HAS_WORLD_OBJECTS"),
+        worldObjects.isEmpty() ? QStringLiteral("0") : QStringLiteral("1"));
 
     QString items;
     QTextStream itemOut(&items);
@@ -127,8 +163,14 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 const QString mode = choice.value("targetAction").toString("enable");
                 const int modeNumber = mode == QStringLiteral("disable") ? 0
                     : mode == QStringLiteral("toggle") ? 2 : 1;
-                linkedActions.append(QStringLiteral("    case %1: gameworlditems_set_active(%2u, %3u); break;\n")
-                    .arg(action).arg(target->worldSlot).arg(modeNumber));
+                QByteArray linkedCase;
+                if (!GameHelperTemplates::renderFields(linkedActionRule,
+                        {{QStringLiteral("EVENT_ID"), QString::number(action)},
+                         {QStringLiteral("WORLD_SLOT"), QString::number(target->worldSlot)},
+                         {QStringLiteral("ACTION_MODE"), QString::number(modeNumber)}},
+                        ruleCPath + QStringLiteral(" / LINKED_ACTION"), &linkedCase, error))
+                    return false;
+                linkedActions.append(QString::fromUtf8(linkedCase));
             }
             nodeOut << "        {" << quoted(choice.value("text").toString().left(180)) << ","
                     << quoted(choice.value("reply").toString().left(150)) << ","
@@ -240,22 +282,22 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         rel=QDir(projectRoot).relativeFilePath(atlas->path);
         if (rel.startsWith("../") || QDir::isAbsolutePath(rel)) rel=QFileInfo(atlas->path).fileName();
     }
-    fields.insert(QStringLiteral("SKIN_LOAD_STATEMENT"),rel.isEmpty() ? QString()
-        : QStringLiteral("    skin = gameassets_find_ppb(%1, &width, &height);").arg(quoted(rel)));
+    fields.insert(QStringLiteral("HAS_SKIN"),
+        rel.isEmpty() ? QStringLiteral("0") : QStringLiteral("1"));
+    fields.insert(QStringLiteral("SKIN_PATH"), quoted(rel));
 
-    const QDir rules(gameRulesDirectory);
     QByteArray renderedC, renderedH;
     const QStringList requiredC = {
-        QStringLiteral("WORLD_OBJECT_INCLUDE"),QStringLiteral("ITEM_ROWS"),
+        QStringLiteral("ITEM_ROWS"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),
         QStringLiteral("SKIN_FLIPS"),QStringLiteral("LINKED_ACTION_CASES"),
-        QStringLiteral("SKIN_LOAD_STATEMENT")};
+        QStringLiteral("SKIN_PATH")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),
                                    QStringLiteral("NPC_COUNT")};
     // Both rules are read, checked and fully expanded before writing either file.
-    if (!loadRule(rules,QStringLiteral(".rulec"),fields,requiredC,&renderedC,error)
+    if (!loadRule(rules,QStringLiteral(".rulec"),fields,requiredC,&renderedC,error, &ruleCSource)
         || !loadRule(rules,QStringLiteral(".ruleh"),fields,requiredH,&renderedH,error))
         return false;
 

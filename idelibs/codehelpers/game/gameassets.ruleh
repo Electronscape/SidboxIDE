@@ -1,0 +1,48 @@
+/* CoderGirl V1 auto-generated. Recreate from .sbgm; do not hand-edit. */
+#ifndef CODERGIRL_GENERATED_GAMEASSETS_H
+#define CODERGIRL_GENERATED_GAMEASSETS_H
+#include <stdint.h>
+#include "apis.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Call AFTER initMalloc(), before the first draw. Returns 1 on success. */
+int gameassets_init(void);
+void gameassets_shutdown(void);
+/* Exposes sprite PPB pixels for a matching tilemap atlas (no copy). */
+#define GAMEASSETS_HAS_PPB_LOOKUP 1
+const uint8_t *gameassets_find_ppb(const char *sd_path, uint16_t *width, uint16_t *height);
+/* Uses the CURRENT graphics draw buffer; does not flip/display. */
+void gameassets_draw_foreground(void);
+void gameassets_draw_background(void);
+/* Single plane: all placed assets. Dual plane: foreground only. */
+void drawworld(void);
+/* Convenience: supply your actual active front/back gfx_bitmap_t pointers. */
+void gameassets_draw_layers(gfx_bitmap_t *front, gfx_bitmap_t *back);
+/* Direct background: assigns the bitmap to the display, no sprite blit. */
+void gameassets_show_background(void);
+
+@IDE{DIRECT_BACK_HEADERS}
+@IDE{SPRITE_HEADERS}
+@IDE{SOUND_HEADERS}
+@IDE{MUSIC_HEADERS}
+
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+@IDE_SECTION{HEADER_DIRECT}
+extern gfx_bitmap_t @IDE{SYMBOL}_backbitmap;
+@IDE_SECTION_END
+@IDE_SECTION{HEADER_SPRITE}
+extern gfxbob_t @IDE{SYMBOL}@IDE{ARRAY_DECL};
+void draw@IDE{SYMBOL}(@IDE{ARGUMENT});
+@IDE_SECTION_END
+@IDE_SECTION{HEADER_SOUND}
+void playsound@IDE{SYMBOL}(void);
+@IDE_SECTION_END
+@IDE_SECTION{HEADER_MUSIC}
+void playmusic@IDE{SYMBOL}(void);
+@IDE_SECTION_END

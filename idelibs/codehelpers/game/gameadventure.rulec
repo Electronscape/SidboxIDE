@@ -6,7 +6,9 @@
 #include "gameadventure.h"
 #include "gameadventureruntime.h"
 #include "../gameassets/gameassets.h"
-@IDE{WORLD_OBJECT_INCLUDE}
+@IDE_IF{HAS_WORLD_OBJECTS}
+#include "gameworlditems.h"
+@IDE_END
 
 static const game_adventure_item_t items[] = {
 @IDE{ITEM_ROWS}
@@ -66,7 +68,9 @@ void gameadventure_setup(void)
 {
     const uint8_t *skin = 0;
     uint16_t width = 0, height = 0;
-@IDE{SKIN_LOAD_STATEMENT}
+@IDE_IF{HAS_SKIN}
+    skin = gameassets_find_ppb(@IDE{SKIN_PATH}, &width, &height);
+@IDE_END
     game_adventure_start(items, GAME_ADVENTURE_STORY_ITEM_COUNT,
         nodes, GAME_ADVENTURE_STORY_NODE_COUNT,
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
@@ -76,3 +80,30 @@ void gameadventure_setup(void)
     game_adventure_skin_flips(skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);
 }
+
+/* Exported inventories use stable item names; world-local list positions
+ * may differ. Zero counts are meaningful (consumed inventory remains empty). */
+void gameadventure_store_inventory(gameworlds_inventory_put_t sink, void *user)
+{
+    if (!sink) return;
+    for (uint16_t i = 0; i < GAME_ADVENTURE_STORY_ITEM_COUNT; ++i)
+        if (items[i].name && *items[i].name)
+            sink(items[i].name, game_adventure_quantity(i), user);
+}
+void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)
+{
+    if (!lookup) return;
+    for (uint16_t i = 0; i < GAME_ADVENTURE_STORY_ITEM_COUNT; ++i) {
+        if (!items[i].name || !*items[i].name) continue;
+        const uint32_t incoming = lookup(items[i].name, user);
+        if (incoming == UINT32_MAX) continue;
+        const uint16_t target = (uint16_t)incoming;
+        const uint16_t current = game_adventure_quantity(i);
+        if (target > current) game_adventure_add(i, (uint16_t)(target - current));
+        else if (current > target) game_adventure_remove(i, (uint16_t)(current - target));
+    }
+}
+
+@IDE_SECTION{LINKED_ACTION}
+    case @IDE{EVENT_ID}: gameworlditems_set_active(@IDE{WORLD_SLOT}u, @IDE{ACTION_MODE}u); break;
+@IDE_SECTION_END

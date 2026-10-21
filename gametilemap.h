@@ -261,13 +261,19 @@ private:
 };
 
 // Returns the per-project C symbol for logical custom zone 1..8.
-// The matching #defines are generated in gamelevels/level1.h on export;
+// The matching #defines are generated in the exported gamelevels/<world>.h;
 // engine-wide gametilemap.h is deliberately NOT rewritten for zone names.
 QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone);
+
+// Derive the exported world base name from the .sbgm design file.
+// Result is sanitised to a legal C/file identifier and falls back to "level1".
+QString sidboxTilemapWorldBaseName(const QString &designFilePath);
 
 // Exported level data always lives in gamelevels/. This function does not
 // create helper templates, modify gameassets, or touch main.c.
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
-                         QString *error, bool externalMap = false);
+                         QString *error, bool externalMap = false,
+                         const QString &designFilePath = QString(),
+                         const QString &rulesDirectory = QString());
 
 #endif

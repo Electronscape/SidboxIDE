@@ -1,3 +1,47 @@
+Stage 5.1 — Buildable World Folders
+
+Create worlds/<name>/, generate uniquely named C functions and resources for each world, and modify the build integration so multiple worlds compile into the same game without duplicate symbols. Keep the existing main.c safe.
+
+This is the foundation. We should prove that two worlds can coexist and link successfully before implementing transitions.
+
+Stage 5.2 — Shared Player and World Transitions
+
+Add shared player state, world entry points, explicit load/unload functions and the Game Designer's Change World trigger.
+
+Then we can test walking through a door in world1, arriving in forest, and returning with the same health and inventory.
+
+Persistent world-specific progress—such as a treasure chest staying collected after leaving and returning—can follow once basic switching is stable.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 The Inventory Items, is a little tricky to understand.
 Item Name: is that a list of all the possible items the level expects to see?
 also, Icon index? not sure what that is.. i think a lot of this needs to be visual so it makes it idiot proof (remember am tryna be the "wtf do id o here") END user xD

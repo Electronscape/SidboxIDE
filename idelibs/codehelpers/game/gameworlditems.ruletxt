@@ -1,0 +1,110 @@
+@IDE_IF{HAS_ITEMS}
+CODERGIRL — GENERATED WORLD OBJECTS GUIDE
+========================================
+
+Regeneration replaces gameworlditems.c/.h/.txt. For hand-written notes,
+use a separate filename. User-owned main.c is never overwritten.
+
+Configured objects: @IDE{PICKUP_COUNT} collectable(s), @IDE{WORLD_OBJECT_COUNT} world object(s) (including @IDE{TRIGGER_COUNT} triggers).
+Each uses its own graphics instance and WORLD coordinates from Game Designer.
+
+After gameassets_init(), call gameworlditems_init().
+Each frame call gameworlditems_update(1) before player physics.
+@IDE_IF{HAS_WORLDS_WITH_MAP}
+Moving lift wall safety: CoderGirl automatically connects this
+level's solid/slope collision map. The helper carries the player
+only to the last safe pixel before a wall. You do not need to
+add a collision callback in main.c. Update Project updates BOTH
+World Objects and Tilemap helpers for this feature.
+
+@IDE_END
+@IDE_IF{HAS_WORLDS}
+Bind game_world_player_t to the LIVE player physics fields,
+then call gameworlditems_before()/after() around player physics.
+For exact spring jump behaviour with game_tile_player_t also bind:
+  world_player.jump_held = &player_physics.jump_held;
+  // Also REQUIRED for intentional-jump-only Breakable stomps.
+  world_player.coyote = &player_physics.coyote;
+  world_player.jump_speed = &player_physics.jump_speed;
+  world_player.spring_force_vx100 = &player_physics.force_vx100;
+  // Slidy spring kickback now respects the current physics preset.
+  // Existing OWNER: user main.c needs this one-time binding!
+Spring touch activation is per-object. OFF requires landing on top;
+ON launches on any hitbox contact, with no repeated bounce while overlapping.
+Jump + spring is per-object. OFF uses spring strength alone,
+ON adds jump speed ONLY on a new Jump press at contact.
+@IDE_END
+@IDE_IF{HAS_TILEMAP}
+Player death: register game_death_set_callback(on_player_death, user)
+once after game_tile_player_start(). Both hazardous tile collisions and
+configured Hazard Zones dispatch a contact callback (with cause and WORLD X/Y).
+Hazards report ENTERED, INSIDE each update, EXITED after leaving.
+Contact is nonfatal; only game_death_mark_dead() or explicit death
+stops player physics. Respawn with game_tile_player_reset().
+See gametilemap.txt for all six hazard reason constants.
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+Call gameworlditems_check(...) after physics using player WORLD position.
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+
+BREAKABLE HEAD-BUTT REWARDS
+A block with 'Break from below' takes deliberate upward head-butt hits
+rather than jumping on its top. The usual 1-4 hit counter applies.
+The configured reward is a normal Collectable sprite, automatically
+hidden at game start, activated at the broken block's position,
+then dropped with gravity until it reaches a solid tile.
+It cannot be picked up during the fall. After landing, the ordinary
+on_pickup() callback, sound, value and respawn settings still apply.
+No extra calls are needed in user-owned main.c if it already calls
+gameworlditems_update(), gameworlditems_after(), and check().
+
+@IDE_END
+Optional Draw behind tiles: the generated starter calls
+gameworlditems_draw_behind() BEFORE drawing the foreground map,
+then gameworlditems_draw() AFTER it. Never draw the same sprite twice.
+Hazard/Murder objects are non-solid moving sensors: a contact sets
+world_player.hurt_triggered and hurt_damage_this_frame once.
+YOUR game subtracts health. Default starter has an example.
+The visual blink uses BLIT_FLAG_SOLIDCOLOUR with a foreground
+palette index; Hurt animation is opt-in per hazard.
+@IDE_IF{HAS_TRIGGERS}
+Switches and buttons run AUTOMATICALLY inside gameworlditems_after().
+It checks player contact and FIRE2, then applies the configured
+enable/disable/toggle target action. No extra main.c call is needed
+if your existing main.c already calls gameworlditems_after().
+The optional gameworlditems_trigger(...) API is available for
+custom loops that intentionally skip the normal after() step.
+Repeatable switches fire once per contact or button press.
+One-shot switches deactivate themselves. Targets may start disabled.
+Trigger music actions play a selected Music resource or stop playback.
+Call music_update() in the main loop (the generated example does).
+A Door / Solid blocker is collidable while enabled and vanishes when disabled.
+Do NOT paint a permanent tilemap solid over a door: tilemap walls
+are separate and will continue blocking after the door disappears.
+@IDE_END
+Call gameworlditems_draw(camera_x,camera_y) after selecting the foreground buffer.
+Do not call offset_spline() on attached object splines: draw applies camera offset.
+Gameassets' drawworld() automatically excludes managed object sprites.
+
+Full, current example: open maingame.c.txt in the Project Tree.
+@IDE_IF{HAS_AUDIO}
+
+STAGE 3.12 SOUND EVENTS
+------------------------
+Sound resources are selected in the Game Object Properties window,
+and generated playsound... functions are provided by gameassets.
+Spring launches, pickups, respawns, lift start/stop/reverse and
+continuous movement / conveyor ambience play automatically.
+Enable Loop on the SOUND resource for continuous sounds.
+Loop fade and stereo panning update once per gameworlditems_draw().
+Radius 0 disables automatic distance attenuation and positional pan.
+IMPORTANT: SIDBOX has 8 sample channels. Sounds using the SAME
+channel can interrupt one another. Assign distinct channels to
+simultaneously playing sounds in Game Resources > Sounds.
+Do not free assets while a sample is playing; stop audio first.
+@IDE_END
+@IDE_ELSE
+No world objects are configured in this design.
+Right-click a sprite in Game Resources to configure one.
+@IDE_END

@@ -1,0 +1,102 @@
+#include "@IDE{WORLD_HEADER_FILENAME}"
+/* Optional sprite PPB sharing. Standalone tilemaps still work. */
+#if defined(__has_include)
+# if __has_include("../gameassets/gameassets.h")
+#  include "../gameassets/gameassets.h"
+# endif
+#endif
+
+@IDE_IF{EMBEDDED}
+/* Embedded graphics and collision arrays: no TFCard map file needed. */
+const uint16_t @IDE{WORLD_SYMBOL}_graphics[] __attribute__((aligned(32))) = {
+@IDE{GRAPHIC_ROWS}};
+
+const uint8_t @IDE{WORLD_SYMBOL}_collisions[] __attribute__((aligned(32))) = {
+@IDE{COLLISION_ROWS}};
+
+const uint8_t @IDE{WORLD_SYMBOL}_flips[] __attribute__((aligned(32))) = {
+@IDE{FLIP_ROWS}};
+
+@IDE_IF{HAS_LEGACY_SLOPES}
+const uint8_t @IDE{WORLD_SYMBOL}_slopes[] __attribute__((aligned(32))) = {
+@IDE{SLOPE_ROWS}};
+
+@IDE_END
+@IDE_IF{HAS_POINT_SHAPES}
+const uint16_t @IDE{WORLD_SYMBOL}_shape_refs[] = {
+@IDE{SHAPE_REF_ROWS}};
+
+const game_tile_shape_t @IDE{WORLD_SYMBOL}_shape_defs[] = {
+@IDE{SHAPE_DEF_ROWS}};
+
+const game_tile_shape_point_t @IDE{WORLD_SYMBOL}_shape_points[] = {
+@IDE{SHAPE_POINT_ROWS}};
+
+const game_tile_shape_instance_t @IDE{WORLD_SYMBOL}_shape_instances[] = {
+@IDE{SHAPE_INSTANCE_ROWS}};
+
+@IDE_END
+const game_tile_animation_t @IDE{WORLD_SYMBOL}_animations[] = {
+@IDE{ANIMATION_ROWS}};
+
+@IDE_END
+@IDE_IF{HAS_LOOPS}
+/* Level-only loop tracks. Available with embedded OR TFCard tilemaps. */
+static const game_tile_loop_t @IDE{WORLD_SYMBOL}_loops[] = {
+@IDE{LOOP_ROWS}};
+
+@IDE_END
+game_tilemap_t @IDE{WORLD_SYMBOL} = {
+@IDE_IF{EXTERNAL}
+    0, 0, 0,
+@IDE_ELSE
+    @IDE{WORLD_SYMBOL}_graphics, @IDE{WORLD_SYMBOL}_collisions, 0,
+@IDE_END
+    @IDE{MAP_WIDTH}, @IDE{MAP_HEIGHT}, @IDE{TILE_SIZE}, @IDE{TILE_COUNT},
+    @IDE{ANIM_POINTER}, @IDE{ANIM_COUNT},
+    0, 0, 0, /* atlas width, height, borrowed flag */
+    0, @IDE{FLIP_POINTER}, @IDE{SLOPE_POINTER},
+    @IDE{SHAPE_REF_POINTER}, @IDE{SHAPE_INSTANCE_POINTER},
+    @IDE{SHAPE_DEF_POINTER}, @IDE{SHAPE_POINTS_POINTER},
+    @IDE{SHAPE_INSTANCE_COUNT}, @IDE{SHAPE_DEF_COUNT},
+    @IDE{LOOP_POINTER}, @IDE{LOOP_COUNT}
+};
+
+@IDE_IF{EXTERNAL}
+/* TFCard map v2/v3/v4: file includes graphics, collisions, flips, optional slopes and animations. */
+uint8_t @IDE{WORLD_SYMBOL}_load_map(const char *filename)
+{ return game_tilemap_load_map(&@IDE{WORLD_SYMBOL}, filename); }
+void @IDE{WORLD_SYMBOL}_unload_map(void)
+{ game_tilemap_unload_map(&@IDE{WORLD_SYMBOL}); }
+@IDE_ELSE
+/* Embedded C mode does not require reading a TFCard .map. */
+uint8_t @IDE{WORLD_SYMBOL}_load_map(const char *filename)
+{ (void)filename; return 1; }
+void @IDE{WORLD_SYMBOL}_unload_map(void) {}
+@IDE_END
+
+@IDE_IF{HAS_ATLAS}
+/* Once at startup, AFTER initMalloc(). No per-frame TFCard reads. */
+uint8_t @IDE{WORLD_SYMBOL}_load_atlas(void)
+{
+    if (@IDE{WORLD_SYMBOL}.atlas) return 1;
+#ifdef GAMEASSETS_HAS_PPB_LOOKUP
+    /* Share ONLY an identical PPB with a matching pixel checksum. */
+    uint16_t shared_w = 0, shared_h = 0;
+    const uint8_t *shared = gameassets_find_ppb(@IDE{ATLAS_PATH}, &shared_w, &shared_h);
+    if (shared)
+        return game_tilemap_attach_shared_ppb_atlas(&@IDE{WORLD_SYMBOL},
+            shared, shared_w, shared_h, @IDE{ATLAS_HASH}u);
+#endif
+    /* No matching sprite atlas: allocate separately from TFCard. */
+    return game_tilemap_load_ppb_atlas(&@IDE{WORLD_SYMBOL}, @IDE{ATLAS_PATH},
+        @IDE{ATLAS_WIDTH}, @IDE{ATLAS_HEIGHT}, @IDE{ATLAS_HASH}u);
+}
+@IDE_ELSE
+uint8_t @IDE{WORLD_SYMBOL}_load_atlas(void) { return 1; }
+@IDE_END
+
+void @IDE{WORLD_SYMBOL}_unload_atlas(void)
+{
+    game_tilemap_unload_ppb_atlas(&@IDE{WORLD_SYMBOL});
+}

@@ -1,7 +1,9 @@
 #include "gameanimationeditor.h"
+#include "gamehelpertemplates.h"
 #include "gameeditoricons.h"
 #include "ppbcodec.h"
 
+#include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QDrag>
@@ -1248,55 +1250,90 @@ bool SidboxPlayerAnimationEditor::writeDocument()
     return true;
 }
 
-QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
+QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QString *error) const
 {
-    // Fully standalone C99 header: no dynamic allocation, no source bitmap,
-    // noncontiguous frames supported. One runtime instance per player.
-    QString s;
-    s += "/* GamerGirl Player Animation - generated from .sbanim. DO NOT EDIT.\n"
-         " * Requires the original atlas loaded into gfxbob_t (cell dimensions match).\n"
-         " * Call after moving the player and before gfx_drawbob().\n"
-         " * State/direction numbers follow the enums below. 50 ticks/second.\n */\n"
-         "#ifndef " + prefix.toUpper() + "_PLAYERANIM_H\n#define " + prefix.toUpper() + "_PLAYERANIM_H\n"
-         "#include \"apis.h\"\n#include <stdint.h>\n\n";
-    // Runtime physics can consume this without parsing .sbanim on SIDBOX.
-    // The BOB still uses its full 32/48/64px atlas cell for rendering.
-    s += QString("#define %1_HITBOX_X %2u\n"
-                 "#define %1_HITBOX_Y %3u\n"
-                 "#define %1_HITBOX_W %4u\n"
-                 "#define %1_HITBOX_H %5u\n\n")
-             .arg(prefix.toUpper()).arg(m_boxX->value()).arg(m_boxY->value())
-             .arg(m_boxW->value()).arg(m_boxH->value());
-    s += "enum {\n";
+    // The playeranim.ruleh owns the COMPLETE runtime C implementation.
+    // Only state IDs, direction IDs, clip frame/tick data and defaults come from Qt.
+    const QDir app(QCoreApplication::applicationDirPath());
+    QStringList candidates;
+    if (qEnvironmentVariableIsSet("SIDBOX_SDK"))
+        candidates << qEnvironmentVariable("SIDBOX_SDK");
+    candidates << app.filePath(QStringLiteral("idelibs"))
+               << app.filePath(QStringLiteral("../idelibs"))
+               << app.filePath(QStringLiteral("../../idelibs"))
+               << app.filePath(QStringLiteral("../SidboxIDE/idelibs"))
+               << QDir::current().filePath(QStringLiteral("idelibs"))
+               << QDir::current().filePath(QStringLiteral("SidboxIDE/idelibs"));
+    QString templatePath;
+    for (const QString &root : candidates) {
+        const QString candidate = QDir(root).filePath(QStringLiteral("codehelpers/game/playeranim.ruleh"));
+        if (QFileInfo::exists(candidate)) { templatePath = candidate; break; }
+    }
+    if (templatePath.isEmpty()) {
+        if (error) *error = QStringLiteral("Missing IDE template idelibs/codehelpers/game/playeranim.ruleh");
+        return {};
+    }
+    QFile templateFile(templatePath);
+    if (!templateFile.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("Cannot read Player Animation rule: %1").arg(templatePath);
+        return {};
+    }
+    QString raw = QString::fromUtf8(templateFile.readAll());
+    QMap<QString, QByteArray> sections;
+    const QRegularExpression sectionRe(QStringLiteral(
+        R"((?ms)^@IDE_SECTION\{([A-Z_][A-Z0-9_]*)\}[ \t]*\r?\n(.*?)^@IDE_SECTION_END[ \t]*\r?\n?)"));
+    auto matches = sectionRe.globalMatch(raw);
+    const int sectionCount = raw.count(QStringLiteral("@IDE_SECTION{"));
+    while (matches.hasNext()) {
+        const auto matched = matches.next();
+        if (sections.contains(matched.captured(1))) {
+            if (error) *error = QStringLiteral("Duplicate Player Animation rule section: %1").arg(matched.captured(1));
+            return {};
+        }
+        sections.insert(matched.captured(1), matched.captured(2).toUtf8());
+    }
+    raw.remove(sectionRe);
+    if (sections.size() != sectionCount || raw.contains(QStringLiteral("@IDE_SECTION"))) {
+        if (error) *error = QStringLiteral("Malformed Player Animation rule sections.");
+        return {};
+    }
+    for (const QString &name : {QStringLiteral("STATE"), QStringLiteral("DIRECTION"),
+                                QStringLiteral("FRAME_ARRAY"), QStringLiteral("TICK_ARRAY"),
+                                QStringLiteral("CLIP_ENTRY")}) {
+        if (!sections.contains(name)) {
+            if (error) *error = QStringLiteral("Missing Player Animation rule section %1").arg(name);
+            return {};
+        }
+    }
+    auto renderRow = [&](const QString &name, const QMap<QString, QString> &fields,
+                         QString &output) -> bool {
+        QByteArray rendered;
+        if (!GameHelperTemplates::renderFields(sections.value(name), fields,
+                QStringLiteral("playeranim.ruleh / ") + name, &rendered, error)) return false;
+        output += QString::fromUtf8(rendered);
+        return true;
+    };
+    const QString up = prefix.toUpper();
+    QString stateRows, directionRows, arrays, clips;
     QStringList identifiers;
     for (int i = 0; i < m_states.size(); ++i) {
         QString name = m_states.at(i).toUpper();
-        name.replace(QRegularExpression("[^A-Z0-9_]"), "_");
-        if (name.isEmpty() || name.at(0).isDigit()) name.prepend("STATE_");
+        name.replace(QRegularExpression(QStringLiteral("[^A-Z0-9_]")), QStringLiteral("_"));
+        if (name.isEmpty() || name.at(0).isDigit()) name.prepend(QStringLiteral("STATE_"));
         if (identifiers.contains(name)) name += QStringLiteral("_%1").arg(i);
         identifiers.append(name);
-        s += QString("    %1_STATE_%2 = %3,\n").arg(prefix.toUpper(), name).arg(i);
+        if (!renderRow(QStringLiteral("STATE"),
+                {{QStringLiteral("PREFIX_UPPER"), up},
+                 {QStringLiteral("STATE_NAME"), name},
+                 {QStringLiteral("STATE_ID"), QString::number(i)}}, stateRows)) return {};
     }
-    s += "};\n\nenum {\n";
     const QStringList dirs = directionsFor(m_mode);
-    for (int i = 0; i < dirs.size(); ++i) {
-        QString name = dirs.at(i).toUpper();
-        s += QString("    %1_DIR_%2 = %3,\n").arg(prefix.toUpper(), name).arg(i);
-    }
-    s += "};\n\n";
-    s += QString("#define %1_STATE_COUNT %2u\n#define %1_DIRECTION_COUNT %3u\n\n")
-        .arg(prefix.toUpper()).arg(m_states.size()).arg(dirs.size());
-    // State IDs above are enum constants, so #ifdef PLAYER_ANIM_STATE_HURT
-    // never works. Export a true preprocessor flag for conditional C code.
-    s += QString("#define %1_HAS_HURT_STATE %2\n\n")
-        .arg(prefix.toUpper())
-        .arg(m_states.contains(QStringLiteral("Hurt"), Qt::CaseInsensitive) ? 1 : 0);
-    s += QString("typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } %1_clip_t;\n")
-        .arg(prefix);
-    s += QString("typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; } %1_playeranim_t;\n\n")
-        .arg(prefix);
-    QString arrays;
-    QStringList entries;
+    for (int i = 0; i < dirs.size(); ++i)
+        if (!renderRow(QStringLiteral("DIRECTION"),
+                {{QStringLiteral("PREFIX_UPPER"), up},
+                 {QStringLiteral("DIRECTION_NAME"), dirs.at(i).toUpper()},
+                 {QStringLiteral("DIRECTION_ID"), QString::number(i)}}, directionRows)) return {};
+
     int index = 0;
     for (const QString &state : m_states) for (const QString &dir : dirs) {
         const auto found = m_clips.constFind(clipKey(state, dir));
@@ -1304,9 +1341,9 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
         bool flip = false;
         if (!clip && m_mirror) {
             QString src;
-            if (dir == "Left") src = "Right";
-            else if (dir == "UpLeft") src = "UpRight";
-            else if (dir == "DownLeft") src = "DownRight";
+            if (dir == QStringLiteral("Left")) src = QStringLiteral("Right");
+            else if (dir == QStringLiteral("UpLeft")) src = QStringLiteral("UpRight");
+            else if (dir == QStringLiteral("DownLeft")) src = QStringLiteral("DownRight");
             if (!src.isEmpty()) {
                 const auto inherited = m_clips.constFind(clipKey(state, src));
                 if (inherited != m_clips.constEnd() && !inherited->frames.isEmpty()) {
@@ -1314,14 +1351,14 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
                 }
             }
         }
-        if (!clip) {
-            entries << "    { 0, 0, 0, 1, 1, 0 },";
-        } else {
-            const QString name = QString("%1_frames_%2").arg(prefix).arg(index);
-            arrays += QString("static const uint8_t %1[] = { ").arg(name);
-            for (int f : clip->frames) arrays += QString::number(f) + ", ";
-            arrays += "};\n";
-            QString timings = QStringLiteral("0");
+        QString frameName = QStringLiteral("0"), tickName = QStringLiteral("0");
+        if (clip) {
+            frameName = QStringLiteral("%1_frames_%2").arg(prefix).arg(index);
+            QStringList frameValues;
+            for (int frame : clip->frames) frameValues.append(QString::number(frame));
+            if (!renderRow(QStringLiteral("FRAME_ARRAY"),
+                {{QStringLiteral("ARRAY_NAME"), frameName},
+                 {QStringLiteral("FRAME_VALUES"), frameValues.join(QStringLiteral(", ")) + QStringLiteral(", ")}}, arrays)) return {};
             bool nonuniform = false;
             for (int pos = 0; pos < clip->frames.size(); ++pos) {
                 if ((pos < clip->frameTicks.size() ? clip->frameTicks.at(pos) : clip->ticks) != clip->ticks) {
@@ -1329,104 +1366,71 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix) const
                 }
             }
             if (nonuniform) {
-                timings = QString("%1_ticks_%2").arg(prefix).arg(index);
-                arrays += QString("static const uint8_t %1[] = { ").arg(timings);
+                tickName = QStringLiteral("%1_ticks_%2").arg(prefix).arg(index);
+                QStringList ticks;
                 for (int pos = 0; pos < clip->frames.size(); ++pos)
-                    arrays += QString::number(pos < clip->frameTicks.size()
-                        ? clip->frameTicks.at(pos) : clip->ticks) + ", ";
-                arrays += "};\n";
+                    ticks.append(QString::number(pos < clip->frameTicks.size()
+                                ? clip->frameTicks.at(pos) : clip->ticks));
+                if (!renderRow(QStringLiteral("TICK_ARRAY"),
+                    {{QStringLiteral("ARRAY_NAME"), tickName},
+                     {QStringLiteral("TICK_VALUES"), ticks.join(QStringLiteral(", ")) + QStringLiteral(", ")}}, arrays)) return {};
             }
-            entries << QString("    { %1, %2, %3u, %4u, %5u, %6u },")
-                          .arg(name).arg(timings).arg(clip->frames.size()).arg(clip->ticks)
-                          .arg(clip->loop ? 1 : 0).arg(flip ? 1 : 0);
         }
+        const QMap<QString, QString> fields = {
+            {QStringLiteral("FRAME_ARRAY"), frameName},
+            {QStringLiteral("TICK_ARRAY"), tickName},
+            {QStringLiteral("FRAME_COUNT"), clip ? QString::number(clip->frames.size()) : QStringLiteral("0")},
+            {QStringLiteral("TICKS"), clip ? QString::number(clip->ticks) : QStringLiteral("1")},
+            {QStringLiteral("LOOP"), !clip || clip->loop ? QStringLiteral("1") : QStringLiteral("0")},
+            {QStringLiteral("FLIP"), flip ? QStringLiteral("1") : QStringLiteral("0")}
+        };
+        if (!renderRow(QStringLiteral("CLIP_ENTRY"), fields, clips)) return {};
         ++index;
     }
-    s += arrays + "\n";
-    s += QString("static const %1_clip_t %1_clips[%2] = {\n")
-         .arg(prefix).arg(entries.size());
-    for (const QString &e : entries) s += e + '\n';
-    s += "};\n\n";
-    s += QString("static inline void %1_step(%1_playeranim_t *a, gfxbob_t *bob,\n"
-                 "                           uint8_t state, uint8_t direction, uint16_t frame_step)\n"
-                 "{\n"
-                 "    const %1_clip_t *clip;\n"
-                 "    if (!a || !bob || !bob->imgdat) return;\n"
-                 "    if (state >= %2u || direction >= %3u) return;\n"
-                 "    clip = &%1_clips[(uint16_t)state * %3u + direction];\n"
-                 "    if (!clip->count) {\n"
-                 "        state = %4u; /* missing animation: use Idle */\n"
-                 "        clip = &%1_clips[(uint16_t)state * %3u + direction];\n"
-                 "        if (!clip->count) { direction = 0; clip = &%1_clips[(uint16_t)state * %3u]; }\n"
-                 "        if (!clip->count) return;\n"
-                 "    }\n"
-                 "    if (!a->started || a->state != state || a->direction != direction) {\n"
-                 "        a->started = 1; a->state = state; a->direction = direction;\n"
-                 "        a->position = 0; a->elapsed = 0;\n"
-                 "    } else if (frame_step && (clip->loop || a->position + 1u < clip->count)) {\n"
-                 "        uint32_t remaining = (uint32_t)a->elapsed + frame_step;\n"
-                 "        if (!clip->frame_ticks) {\n"
-                 "            /* Fast path for uniform timings, identical to legacy playback. */\n"
-                 "            uint32_t steps = remaining / clip->ticks;\n"
-                 "            a->elapsed = (uint16_t)(remaining %% clip->ticks);\n"
-                 "            if (steps) {\n"
-                 "                uint32_t next = (uint32_t)a->position + steps;\n"
-                 "                a->position = clip->loop ? (uint16_t)(next %% clip->count)\n"
-                 "                             : (uint16_t)(next >= clip->count ? clip->count - 1u : next);\n"
-                 "            }\n"
-                 "        } else {\n"
-                 "            /* Duration belongs to the frame POSITION, not its atlas index. */\n"
-                 "            uint16_t duration = clip->frame_ticks[a->position];\n"
-                 "            while (remaining >= duration) {\n"
-                 "                remaining -= duration;\n"
-                 "                if (a->position + 1u < clip->count) ++a->position;\n"
-                 "                else if (clip->loop) a->position = 0;\n"
-                 "                else { remaining = 0; break; }\n"
-                 "                duration = clip->frame_ticks[a->position];\n"
-                 "            }\n"
-                 "            a->elapsed = (uint16_t)remaining;\n"
-                 "        }\n"
-                 "    }\n"
-                 "    bob->index = clip->frames[a->position];\n"
-                 "    bob->flags = (uint8_t)((bob->flags & (uint8_t)~BLIT_FLAG_FLIP_X)\n"
-                 "                  | (clip->flip_x ? BLIT_FLAG_FLIP_X : 0));\n"
-                 "}\n\n#endif\n")
-            .arg(prefix).arg(m_states.size()).arg(dirs.size())
-            .arg(qMax(0, m_states.indexOf("Idle")));
-    if (m_autoState) {
-        // The caller supplies game physics readings; no main.c or physics
-        // solver is modified by the IDE. All missing states fall back to Idle.
-        const auto named = [this](const QString &n) {
-            for (int i = 0; i < m_states.size(); ++i)
-                if (m_states.at(i).compare(n, Qt::CaseInsensitive) == 0) return i;
-            return 0;
-        };
-        const int idle = named("Idle"), walking = named("Walk"), running = named("Run");
-        const int pushing = named("Push"), jumping = named("Jump"), falling = named("Fall");
-        const int sliding = named("Slide"), balancing = named("Balance"), hurt = named("Hurt");
-        s.replace("\n#endif\n", "\n");
-        s += QString(
-            "/* Optional automatic state selection. horizontal=-1/0/+1.\n"
-            " * running / pushing / sliding / balancing / hurt are game-provided flags.\n"
-            " * Balancing is not detected automatically by the physics helper yet. */\n"
-            "static inline uint8_t %1_auto_state(uint8_t on_ground, int32_t vy100,\n"
-            "                                      int8_t horizontal, uint8_t is_running,\n"
-            "                                      uint8_t is_pushing, uint8_t is_sliding,\n"
-            "                                      uint8_t is_balancing, uint8_t is_hurt)\n"
-            "{\n"
-            "    if (is_hurt) return %10u;\n"
-            "    if (!on_ground) return vy100 < 0 ? %7u : %8u;\n"
-            "    if (is_pushing) return %6u;\n"
-            "    if (is_balancing) return %9u;\n"
-            "    if (is_sliding) return %11u;\n"
-            "    if (horizontal) return is_running ? %5u : %4u;\n"
-            "    return %3u;\n"
-            "}\n\n#endif\n")
-            .arg(prefix).arg(m_states.size()).arg(idle).arg(walking).arg(running)
-            .arg(pushing).arg(jumping).arg(falling).arg(balancing).arg(hurt).arg(sliding);
+    const auto named = [this](const QString &name) {
+        for (int i = 0; i < m_states.size(); ++i)
+            if (m_states.at(i).compare(name, Qt::CaseInsensitive) == 0) return i;
+        return 0;
+    };
+    const QMap<QString, QString> fields = {
+        {QStringLiteral("PREFIX"), prefix}, {QStringLiteral("PREFIX_UPPER"), up},
+        {QStringLiteral("HITBOX_X"), QString::number(m_boxX->value())},
+        {QStringLiteral("HITBOX_Y"), QString::number(m_boxY->value())},
+        {QStringLiteral("HITBOX_W"), QString::number(m_boxW->value())},
+        {QStringLiteral("HITBOX_H"), QString::number(m_boxH->value())},
+        {QStringLiteral("STATE_ENUMS"), stateRows},
+        {QStringLiteral("DIRECTION_ENUMS"), directionRows},
+        {QStringLiteral("STATE_COUNT"), QString::number(m_states.size())},
+        {QStringLiteral("DIRECTION_COUNT"), QString::number(dirs.size())},
+        {QStringLiteral("HAS_HURT"), m_states.contains(QStringLiteral("Hurt"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("CLIP_ARRAYS"), arrays},
+        {QStringLiteral("CLIP_COUNT"), QString::number(clips.isEmpty() ? 0 : m_states.size() * dirs.size())},
+        {QStringLiteral("CLIP_ROWS"), clips},
+        {QStringLiteral("IDLE_ID"), QString::number(qMax(0, m_states.indexOf(QStringLiteral("Idle"))))},
+        {QStringLiteral("AUTO_STATE"), m_autoState ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("IDLE"), QString::number(named(QStringLiteral("Idle")))},
+        {QStringLiteral("WALK"), QString::number(named(QStringLiteral("Walk")))},
+        {QStringLiteral("RUN"), QString::number(named(QStringLiteral("Run")))},
+        {QStringLiteral("PUSH"), QString::number(named(QStringLiteral("Push")))},
+        {QStringLiteral("JUMP"), QString::number(named(QStringLiteral("Jump")))},
+        {QStringLiteral("FALL"), QString::number(named(QStringLiteral("Fall")))},
+        {QStringLiteral("BALANCE"), QString::number(named(QStringLiteral("Balance")))},
+        {QStringLiteral("HURT"), QString::number(named(QStringLiteral("Hurt")))},
+        {QStringLiteral("SLIDE"), QString::number(named(QStringLiteral("Slide")))}
+    };
+    for (const QString &name : {QStringLiteral("STATE_ENUMS"), QStringLiteral("CLIP_ROWS"),
+                                QStringLiteral("CLIP_ARRAYS"), QStringLiteral("AUTO_STATE")}) {
+        if (!raw.contains(QStringLiteral("@IDE{%1}").arg(name)) && name != QStringLiteral("AUTO_STATE")) {
+            if (error) *error = QStringLiteral("Player Animation rule missing @IDE{%1}").arg(name);
+            return {};
+        }
     }
-    s.replace("%%", "%");
-    return s;
+    QByteArray conditional, output;
+    if (!GameHelperTemplates::renderConditionals(raw.toUtf8(), fields,
+            QStringLiteral("playeranim.ruleh"), &conditional, error) ||
+        !GameHelperTemplates::renderFields(conditional, fields,
+            QStringLiteral("playeranim.ruleh"), &output, error)) return {};
+    return QString::fromUtf8(output);
 }
 bool SidboxPlayerAnimationEditor::saveHeader(const QString &path)
 {
@@ -1442,7 +1446,12 @@ bool SidboxPlayerAnimationEditor::saveHeader(const QString &path)
             tr("Could not create folder:\n%1").arg(info.absolutePath()));
         return false;
     }
-    const QByteArray bytes = generateHeader(prefix).toUtf8();
+    QString generationError;
+    const QByteArray bytes = generateHeader(prefix, &generationError).toUtf8();
+    if (bytes.isEmpty()) {
+        QMessageBox::warning(this, tr("Player Animation Header"), generationError);
+        return false;
+    }
     QSaveFile out(path);
     if (!out.open(QIODevice::WriteOnly) || out.write(bytes) != bytes.size() || !out.commit()) {
         QMessageBox::warning(this, tr("Player Animation Header"),

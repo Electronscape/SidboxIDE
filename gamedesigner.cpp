@@ -1,4 +1,5 @@
 #include "gamedesigner.h"
+#include "gameworldsnapshot.h"
 #include "gamedesigner_limits.h"
 #include "ppbcodec.h"
 #include "pngpaletteimport.h"
@@ -816,7 +817,12 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
     if ((category != QStringLiteral("game") && category != QStringLiteral("gui"))
         || base.isEmpty() || base.contains(QLatin1Char('/')) || base.contains(QLatin1Char('\\'))
         || base == QStringLiteral(".") || base == QStringLiteral("..")
-        || (category == QStringLiteral("game") && base == QStringLiteral("gameadventure"))) return;
+        || (category == QStringLiteral("game") && (base == QStringLiteral("gameadventure")
+            || base == QStringLiteral("gameassets") || base == QStringLiteral("gameworlditems")
+            || base == QStringLiteral("gameadventureempty")
+            || base == QStringLiteral("maingame") || base == QStringLiteral("splinepaths")
+            || base == QStringLiteral("level1") || base == QStringLiteral("worldmap")
+            || base == QStringLiteral("embeddedresource")))) return;
     const QDir templateFolder(QDir(helperTemplatesRoot()).filePath(category));
     const QString sourceH = category == QStringLiteral("game")
         ? GameHelperTemplates::sourcePath(templateFolder, base, QStringLiteral(".h"))
@@ -1228,7 +1234,7 @@ void SidboxGameDesigner::openTilemapEditor()
             saveEvenWithoutExport ? static_cast<QWidget *>(&editor) : this,
             tr("Apply Tilemap"),
             tr("Apply these tilemap changes and export the C level files now?\n\n"
-               "Yes: Save the game design, export gamelevels/level1.c/.h, "
+               "Yes: Save the game design, export gamelevels/<world>.c/.h, "
                "and add any missing tilemap helper files.\n"
                "No: With Save, save the .sbgm (and refresh existing exports); "
                "with Apply to Design, keep the changes in memory."),
@@ -1254,8 +1260,9 @@ bool SidboxGameDesigner::tilemapBuildFilesMissing() const
 {
     if (!m_tilemapEnabled) return false;
     const QDir dir(QFileInfo(m_filePath).absolutePath());
-    return !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/level1.c")))
-        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/level1.h")))
+    const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
+    return !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".c")))
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h")))
         || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.c")))
         || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.h")));
 }
@@ -1268,6 +1275,11 @@ bool SidboxGameDesigner::exportTilemapForCompile()
 bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelper)
 {
     if (!m_tilemapEnabled) return false;
+    QString nameError;
+    if (!GameWorldSnapshot::validateUniqueName(m_filePath, &nameError)) {
+        QMessageBox::warning(this, tr("World Naming Conflict"), nameError);
+        return false;
+    }
     const QString directory = QFileInfo(m_filePath).absolutePath();
     // Mode is per .sbgm and persists for automatic saves/Update Project.
     // No mode choice during auto-export, so rebuilding stays deterministic.
@@ -1277,8 +1289,8 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         choice.setWindowTitle(tr("Export Platformer Tilemap"));
         choice.setText(tr("Choose where the tilemap graphics and collision data live."));
         choice.setInformativeText(tr("Embedded .c: map bytes become part of the .app.\n"
-            "SD .map: map bytes load from gamelevels/level1.map at runtime.\n"
-            "Both generate gamelevels/level1.c/.h for the shared game_level1 API.\n"
+            "SD .map: map bytes load from gamelevels/<world>.map at runtime.\n"
+            "Both generate gamelevels/<world>.c/.h using the .sbgm world name.\n"
             "The .map stores tile data and animations; placed game objects stay compiled."));
         choice.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius:0px; }"));
         auto *embedded = choice.addButton(tr("Export embedded .c"), QMessageBox::AcceptRole);
@@ -1422,23 +1434,28 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         }
     }
     QString error;
-    if (!sidboxExportTilemap(m_tilemap, directory, &error, m_tilemapExternal)) {
+    if (!sidboxExportTilemap(m_tilemap, directory, &error, m_tilemapExternal,
+                             m_filePath, QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")))) {
         QMessageBox::warning(this, tr("Tilemap Export"), error);
         return false;
     }
     if (assetFilesChanged) assetFilesChanged();
-    if (showMessage)
+    if (showMessage) {
+        const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
+        const QString worldSymbol = QStringLiteral("game_") + worldBase;
         QMessageBox::information(this, tr("Tilemap Exported"),
             m_tilemapExternal
-                ? tr("Created gamelevels/level1.map plus level1.c/.h.\n"
-                     "Copy gamelevels/level1.map to the same SD-card path.\n"
-                     "Call game_level1_load_map(\"gamelevels/level1.map\") after initMalloc(), "
-                     "BEFORE game_level1_load_atlas().\n"
+                ? tr("Created gamelevels/%1.map plus %1.c/.h.\n"
+                     "Copy gamelevels/%1.map to the same SD-card path.\n"
+                     "Call %2_load_map(\"gamelevels/%1.map\") after initMalloc(), BEFORE %2_load_atlas().\n"
                      "Object/sprite placement remains part of generated C.\n"
                      "Use Update Project to refresh older installed tilemap helpers.")
-                : tr("Map exported into gamelevels/level1.c and level1.h.\n"
-                     "Call game_level1_load_atlas() once after initMalloc().\n"
-                     "Copyable instructions: gamehelpers/gametilemap.txt."));
+                      .arg(worldBase, worldSymbol)
+                : tr("Map exported into gamelevels/%1.c and %1.h.\n"
+                     "Call %2_load_atlas() once after initMalloc().\n"
+                     "Copyable instructions: gamehelpers/gametilemap.txt.")
+                      .arg(worldBase, worldSymbol));
+    }
     return true;
 }
 
@@ -1799,11 +1816,43 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
             tr("Cannot create folder:\n%1").arg(folder));
         return false;
     }
-    QByteArray header = "/* GENERATED by CoderGirl Game Designer. Edit paths and pauses in the canvas. */\n"
-        "#ifndef CODERGIRL_V1_SPLINEPATHS_H\n#define CODERGIRL_V1_SPLINEPATHS_H\n"
-        "#include \"gamespline.h\"\n\n";
-    QByteArray source = "/* GENERATED by CoderGirl Game Designer. Do not edit this file. */\n"
-        "#include \"splinepaths.h\"\n\n";
+    // Stage 4.51: splinepaths.rulec/.ruleh own the C declarations and arrays;
+    // the IDE supplies only validated path names, points, pauses and settings.
+    const QDir pathRuleFolder(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+    QMap<QString, QByteArray> mainTemplates, pathTemplates;
+    const QRegularExpression pathSectionRe(QStringLiteral(
+        R"((?ms)^@IDE_SECTION\{PATH\}[ \t]*\r?\n(.*?)^@IDE_SECTION_END[ \t]*\r?\n?)"));
+    for (const QString &ext : {QStringLiteral(".rulec"), QStringLiteral(".ruleh")}) {
+        QFile input(pathRuleFolder.filePath(QStringLiteral("splinepaths") + ext));
+        if (!input.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Export Spline Paths"),
+                tr("Cannot read spline-path rule: %1").arg(input.fileName()));
+            return false;
+        }
+        QString raw = QString::fromUtf8(input.readAll());
+        const auto match = pathSectionRe.match(raw);
+        if (raw.count(QStringLiteral("@IDE_SECTION{PATH}")) != 1 ||
+            !match.hasMatch()) {
+            QMessageBox::warning(this, tr("Export Spline Paths"),
+                tr("Malformed PATH section in %1").arg(input.fileName()));
+            return false;
+        }
+        pathTemplates.insert(ext, match.captured(1).toUtf8());
+        raw.remove(pathSectionRe);
+        if (raw.contains(QStringLiteral("@IDE_SECTION"))) {
+            QMessageBox::warning(this, tr("Export Spline Paths"),
+                tr("Unclosed rule section in %1").arg(input.fileName()));
+            return false;
+        }
+        mainTemplates.insert(ext, raw.toUtf8());
+    }
+    if (!mainTemplates.value(QStringLiteral(".rulec")).contains("@IDE{PATH_DEFINITIONS}") ||
+        !mainTemplates.value(QStringLiteral(".ruleh")).contains("@IDE{PATH_DECLARATIONS}")) {
+        QMessageBox::warning(this, tr("Export Spline Paths"),
+            tr("Spline-path rule is missing its required path collection marker."));
+        return false;
+    }
+    QString definitions, declarations;
     QSet<QString> identifiers;
     for (int i = 0; i < m_splinePaths.size(); ++i) {
         const SplinePath &path = m_splinePaths.at(i);
@@ -1817,25 +1866,47 @@ bool SidboxGameDesigner::exportSplinePaths(bool showMessage)
         while (identifiers.contains(identifier))
             identifier = unsuffixed + QStringLiteral("_%1").arg(suffix++);
         identifiers.insert(identifier);
-        header += QStringLiteral("extern const game_spline_point_t %1_path[%2];\n"
-                                 "extern const uint16_t %1_count;\n"
-                                 "extern const uint16_t %1_frames;\n"
-                                 "extern const uint8_t %1_loop;\n\n")
-                          .arg(identifier).arg(path.points.size()).toUtf8();
-        source += QStringLiteral("const game_spline_point_t %1_path[%2] = {\n")
-                          .arg(identifier).arg(path.points.size()).toUtf8();
-        for (int p = 0; p < path.points.size(); ++p) {
-            const QPoint &point = path.points.at(p);
-            source += QStringLiteral("    {%1, %2, %3},\n")
-                          .arg(point.x()).arg(point.y()).arg(path.pointPauses.value(p, 0)).toUtf8();
+        QString pointRows;
+        for (int n = 0; n < path.points.size(); ++n) {
+            const QPoint &point = path.points.at(n);
+            pointRows += QStringLiteral("    {%1, %2, %3},\n")
+                .arg(point.x()).arg(point.y()).arg(path.pointPauses.value(n, 0));
         }
-        source += QStringLiteral("};\nconst uint16_t %1_count = %2;\n"
-                                 "const uint16_t %1_frames = %3;\n"
-                                 "const uint8_t %1_loop = %4;\n\n")
-                        .arg(identifier).arg(path.points.size())
-                        .arg(path.durationFrames).arg(path.loop ? 1 : 0).toUtf8();
+        const QMap<QString, QString> fields = {
+            {QStringLiteral("SYMBOL"), identifier},
+            {QStringLiteral("POINT_COUNT"), QString::number(path.points.size())},
+            {QStringLiteral("POINT_ROWS"), pointRows},
+            {QStringLiteral("DURATION_FRAMES"), QString::number(path.durationFrames)},
+            {QStringLiteral("LOOP"), path.loop ? QStringLiteral("1") : QStringLiteral("0")}
+        };
+        QByteArray out;
+        QString err;
+        if (!GameHelperTemplates::renderFields(pathTemplates.value(QStringLiteral(".rulec")),
+                                                fields, QStringLiteral("splinepaths.rulec/PATH"),
+                                                &out, &err)) {
+            QMessageBox::warning(this, tr("Export Spline Paths"), err);
+            return false;
+        }
+        definitions += QString::fromUtf8(out);
+        if (!GameHelperTemplates::renderFields(pathTemplates.value(QStringLiteral(".ruleh")),
+                                                fields, QStringLiteral("splinepaths.ruleh/PATH"),
+                                                &out, &err)) {
+            QMessageBox::warning(this, tr("Export Spline Paths"), err);
+            return false;
+        }
+        declarations += QString::fromUtf8(out);
     }
-    header += "#endif\n";
+    QByteArray header, source;
+    QString err;
+    if (!GameHelperTemplates::renderFields(mainTemplates.value(QStringLiteral(".rulec")),
+            {{QStringLiteral("PATH_DEFINITIONS"), definitions}},
+            QStringLiteral("splinepaths.rulec"), &source, &err) ||
+        !GameHelperTemplates::renderFields(mainTemplates.value(QStringLiteral(".ruleh")),
+            {{QStringLiteral("PATH_DECLARATIONS"), declarations}},
+            QStringLiteral("splinepaths.ruleh"), &header, &err)) {
+        QMessageBox::warning(this, tr("Export Spline Paths"), err);
+        return false;
+    }
 
     // Install only missing helper files. Never replace custom game code.
     // Copy helpers first, so an incomplete helper copy never produces new
@@ -2109,7 +2180,11 @@ void SidboxGameDesigner::buildUi()
             for (const QString &header : headers) {
                 const QString base = QFileInfo(header).completeBaseName();
                 if (offered.contains(base) || (folderName == QStringLiteral("game")
-                     && (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameworlditems") || base == QStringLiteral("maingame")))) continue;
+                     && (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameworlditems") || base == QStringLiteral("maingame")
+                         || base == QStringLiteral("gameassets") || base == QStringLiteral("splinepaths")
+            || base == QStringLiteral("gameadventureempty")
+                         || base == QStringLiteral("level1") || base == QStringLiteral("worldmap")
+                         || base == QStringLiteral("embeddedresource")))) continue;
                 const QString src = folderName == QStringLiteral("game")
                     ? GameHelperTemplates::sourcePath(folder, base, QStringLiteral(".c"))
                     : folder.filePath(base + QStringLiteral(".c"));
@@ -4043,7 +4118,8 @@ void SidboxGameDesigner::exportSelectedC()
         tr("This will create a .c and .h file containing approximately %1 bytes of indexed "
            "graphics/palette data before compiler overhead. The project scanner may compile "
            "the .c file on the next F5. Continue?").arg(bytes)) != QMessageBox::Yes) return;
-    if (!SidboxPpb::exportC(cPath, r.name, picture, &error)) {
+    if (!SidboxPpb::exportC(cPath, r.name, picture, &error,
+                            QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")))) {
         QMessageBox::warning(this, tr("Embedded C Resource"), error); return;
     }
     if (assetFilesChanged) assetFilesChanged();
@@ -6457,7 +6533,43 @@ void SidboxGameDesigner::openAdventureEditor()
 }
 bool SidboxGameDesigner::exportAdventure(QString *error)
 {
-    if (!hasAdventure()) return true;
+    if (!hasAdventure()) {
+        // A world without a story must not retain a previous world's generated
+        // gameadventure.c/.h. Even these no-story declarations live in rules.
+        const QDir templates(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
+        const QString folder = QDir(QFileInfo(m_filePath).absolutePath())
+                                   .filePath(QStringLiteral("gamehelpers"));
+        if (!QDir().mkpath(folder)) {
+            if (error) *error = tr("Cannot create Adventure output directory: %1").arg(folder);
+            return false;
+        }
+        for (const QString &ext : {QStringLiteral(".h"), QStringLiteral(".c")}) {
+            const QString destination = QDir(folder).filePath(QStringLiteral("gameadventure") + ext);
+            QFile old(destination);
+            if (old.exists()) {
+                if (!old.open(QIODevice::ReadOnly)
+                    || !old.read(150).contains("GENERATED by GamerGirl")) {
+                    if (error) *error = tr("Refusing to replace a non-generated Adventure file: %1").arg(destination);
+                    return false;
+                }
+            }
+            QFile input(templates.filePath(QStringLiteral("gameadventureempty.rule")
+                               + (ext == QStringLiteral(".h") ? QStringLiteral("h") : QStringLiteral("c"))));
+            if (!input.open(QIODevice::ReadOnly)) {
+                if (error) *error = tr("Missing no-story Adventure rule: %1").arg(input.fileName());
+                return false;
+            }
+            const QByteArray bytes = input.readAll();
+            QSaveFile output(destination);
+            if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size()
+                || !output.commit()) {
+                output.cancelWriting();
+                if (error) *error = tr("Could not write empty Adventure code: %1").arg(destination);
+                return false;
+            }
+        }
+        return true;
+    }
     QVector<GameAdventureAsset> sprites, atlases;
     for (const Resource &r : m_resources) {
         if (r.path.isEmpty() || (r.kind != QStringLiteral("sprite") && r.kind != QStringLiteral("tileatlas"))) continue;
