@@ -307,7 +307,7 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         const QString base = QFileInfo(name).completeBaseName();
         // The story rules generate gameadventure.c/.h; they are not
         // SDK helpers and must never become gamegameadventure.c/.h.
-        if (base == QStringLiteral("gameadventure")) continue;
+        if (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameworlditems")) continue;
         if (QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".c")))
             || QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".h"))))
             needed.insert(base);

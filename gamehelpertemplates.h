@@ -10,6 +10,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QMap>
+#include <QVector>
+#include <QStringList>
 #include <QRegularExpression>
 #include <QString>
 #include <QByteArray>
@@ -79,6 +81,71 @@ inline QMap<QString, QString> valuesFor(const QString &helper,
         values.insert(QStringLiteral("FRAMES_PER_CHAR"), bounded("framesPerChar", 1, 30, 2));
     }
     return values;
+}
+
+// Conditional rule blocks are evaluated before @IDE{...} substitutions.
+// Nested blocks are supported. Unknown conditions and unbalanced directives fail.
+// @IDE_IF{FLAG}, @IDE_ELSE and @IDE_END must each occupy an entire line.
+inline bool renderConditionals(const QByteArray &source,
+                               const QMap<QString, QString> &fields,
+                               const QString &label,
+                               QByteArray *result, QString *error)
+{
+    if (!result) { if (error) *error = QStringLiteral("No output for %1.").arg(label); return false; }
+    struct Frame { bool parent; bool condition; bool seenElse; };
+    QVector<Frame> stack;
+    bool active = true;
+    QString output;
+    bool firstOutputLine = true;
+    const QStringList lines = QString::fromUtf8(source).split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    const QRegularExpression open(QStringLiteral(R"(^\s*@IDE_IF\{([A-Z_][A-Z0-9_]*)\}\s*$)"));
+    for (int lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+        const QString &line = lines.at(lineIndex);
+        const auto matched = open.match(line);
+        if (matched.hasMatch()) {
+            const QString name = matched.captured(1);
+            if (!fields.contains(name) ||
+                (fields.value(name) != QStringLiteral("0") && fields.value(name) != QStringLiteral("1"))) {
+                if (error) *error = QStringLiteral("Unknown/non-boolean condition %1 at %2:%3.")
+                    .arg(name, label).arg(lineIndex + 1);
+                return false;
+            }
+            const bool yes = fields.value(name) == QStringLiteral("1");
+            stack.push_back({active, yes, false});
+            active = active && yes;
+        } else if (line.trimmed() == QStringLiteral("@IDE_ELSE")) {
+            if (stack.isEmpty() || stack.last().seenElse) {
+                if (error) *error = QStringLiteral("Unexpected/duplicate @IDE_ELSE at %1:%2.").arg(label).arg(lineIndex + 1);
+                return false;
+            }
+            stack.last().seenElse = true;
+            active = stack.last().parent && !stack.last().condition;
+        } else if (line.trimmed() == QStringLiteral("@IDE_END")) {
+            if (stack.isEmpty()) {
+                if (error) *error = QStringLiteral("Unexpected @IDE_END at %1:%2.").arg(label).arg(lineIndex + 1);
+                return false;
+            }
+            active = stack.takeLast().parent;
+        } else {
+            if (line.trimmed().startsWith(QStringLiteral("@IDE_IF")) ||
+                line.trimmed().startsWith(QStringLiteral("@IDE_ELSE")) ||
+                line.trimmed().startsWith(QStringLiteral("@IDE_END"))) {
+                if (error) *error = QStringLiteral("Malformed rule directive at %1:%2.").arg(label).arg(lineIndex + 1);
+                return false;
+            }
+            if (active) {
+                if (!firstOutputLine) output += QLatin1Char('\n');
+                firstOutputLine = false;
+                output += line;
+            }
+        }
+    }
+    if (!stack.isEmpty()) {
+        if (error) *error = QStringLiteral("Unclosed @IDE_IF in %1.").arg(label);
+        return false;
+    }
+    *result = output.toUtf8();
+    return true;
 }
 
 // Story generators use the same strict substitution logic as runtime helpers,

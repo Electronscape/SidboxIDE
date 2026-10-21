@@ -1,0 +1,719 @@
+@IDE_IF{PART_MAIN}
+/*
+ * SIDBOX IDE / GamerGirl - GENERATED V1 GAME STARTER (Stage 3.64)
+ * ==============================================================
+ * This is REAL C source code, not a list of pseudocode snippets.
+ * It is generated from the resources in the CURRENT .sbgm design.
+ *
+ * START HERE:
+ *  1. In Game Designer select Update Game Project to export the helpers.
+ *  2. The IDE regenerates main.c only while it remains IDE-owned.
+ *     Editing and saving main.c transfers ownership permanently to you.
+ *  3. Put exported PPB, music and SD .map resources on the SIDBOX SD card.
+ *  4. Add your game rules inside the clearly marked sections.
+ *
+ * After changing your Game Designer resources, regenerate this example.
+ * User-owned main.c is never replaced. maingame.c.txt is always updated.
+ *
+ * WORLD coordinates are map positions. SCREEN coordinates subtract camera.
+ * Game objects are managed by gameworlditems; do not draw them twice.
+ *
+ * CURRENT DESIGN:
+ * Tilemap: @IDE{TILEMAP_DESCRIPTION}
+ * Player sprite (must be named 'player'): @IDE{PLAYER_DESCRIPTION}
+ * Sprites: @IDE{SPRITE_COUNT}, collectables: @IDE{PICKUP_COUNT}, other game objects: @IDE{WORLD_OBJECT_COUNT}
+ * Music: @IDE{MUSIC_DESCRIPTION}, sound: @IDE{SOUND_DESCRIPTION}
+ * Spline paths: @IDE{SPLINE_COUNT}, attached moving sprites: @IDE{ATTACHED_SPLINE_COUNT}
+@IDE_IF{HAS_PLAYER_ANIMATION}
+ * Player animation: @IDE{PLAYER_ANIMATION_FILE} (editor metadata)
+ * V1 C export: gameanimations/player_anim.h (prompted on Save Animations)
+@IDE_END
+@IDE_IF{HAS_CUSTOM_COLLISION_SURFACES}
+ * Custom collision surfaces are handled automatically by game_tile_player_run().
+ * Point-defined stamps use shared definitions and whole placements (SBMP v4).
+ * Legacy Stage 3.35 painted slopes remain available as SBMP v3 data.
+ * Update gametilemap.c/.h to the new shape-aware helpers before building.
+@IDE_END
+@IDE_IF{HAS_ADVENTURE}
+ * Adventure Editor: NPCs, inventory and dialogue enabled.
+ * FIRE2 near NPC = talk, UP/DOWN chooses, FIRE2 confirms.
+ * UP+FIRE2 away from NPC = inventory.
+ * User-owned main.c remains protected: copy integration from this guide.
+@IDE_END
+@IDE_IF{HAS_LOOPS}
+ * Loop tracks: @IDE{LOOP_COUNT} circular tracks.
+ * These are generated into level1.c even for SD .map projects.
+ * Approach the bottom yellow marker fast enough in either direction.
+ * game_tile_player_run() handles attachment, gravity and release.
+ * game_tile_player_on_loop(&player_physics) tests attachment.
+ * IMPORTANT: track travel guides player movement, it doesn't rotate
+ * the sprite. For freeform/full pinball physics use custom C.
+@IDE_END
+@IDE_IF{HAS_NO_MAP}
+ * No tilemap: this starter displays placed sprites without tile physics.
+ * Add a tilemap and regenerate to enable built-in player movement.
+@IDE_END
+@IDE_IF{HAS_MAP_ONLY}
+ * No ordinary sprite named 'player' found: the map renders, but
+ * player movement is not invented. Name the player sprite 'player'
+ * (case-insensitive), attach its image, and regenerate.
+@IDE_END
+@IDE_IF{HAS_OBJECTS_NO_PHYSICS}
+ * Game objects draw/animate, but need a physics player to trigger
+ * pickups, switches, lifts and springs automatically.
+@IDE_END
+ */
+#include <stdint.h>
+#include <stddef.h>
+#include "apis.h"
+#include "main.h"
+#include "gameassets/gameassets.h"
+@IDE_IF{HAS_MAP}
+#include "gamehelpers/gametilemap.h"
+#include "gamelevels/level1.h"
+@IDE_END
+@IDE_IF{HAS_OBJECTS}
+#include "gamehelpers/gameworlditems.h"
+@IDE_END
+@IDE_IF{HAS_ADVENTURE}
+#include "gamehelpers/gameadventure.h"
+@IDE_END
+@IDE_IF{HAS_SPLINES}
+#include "gamehelpers/gamespline.h"
+#include "gamehelpers/splinepaths.h"
+@IDE_END
+@IDE_IF{HAS_PLAYER_ANIMATION}
+
+/* PLAYER ANIMATION -- ONE-SWITCH SETUP (Stage 3.64)
+ * ------------------------------------------------
+ * 1. Game Designer > Sprite named player > Player Animations...
+ *    Define frames for Idle / Walk / Jump / Fall (facing Right).
+ *    Tick Mirror Left from Right. Save Animations and save Game Design.
+ * 2. Click Save Animations, then YES when asked to create or update
+ *    gameanimations/player_anim.h. No manual export is necessary.
+ *    The header uses the player_anim C symbol prefix automatically.
+ *    Saving animation edits can update the header again on request.
+ * 3. Set GAMERGIRL_PLAYER_ANIMATIONS to 1 below and rebuild the V1 game.
+ *    The starter selects Idle, Walk, Jump, Fall and X-flips for left.
+ *    Animation is selected AFTER moving-platform/spring collision resolution.
+ *    BOB frame indexing is 0..255 and requires the same atlas cell size.
+ *    Use an indexed PPB atlas with palette index 0 transparent on SIDBOX.
+ *
+ * This starter animation is OPTIONAL: with the switch set to 0 it works
+ * without the exported header. If you rename/delete the four basic states,
+ * adjust the matching PLAYER_ANIM_STATE_* names below to match the export.
+ * Push/Run/Hurt/Slide and custom states can be chosen from YOUR game logic.
+ * No .sbanim is loaded by the runtime: it is editor metadata ONLY.
+ * IMPORTANT: Existing USER-OWNED main.c is NEVER replaced by Update Project.
+ * To use this code in a user-owned main.c, copy the animation sections from
+ * the newly regenerated maingame.c.txt into your game source deliberately.
+ */
+#define GAMERGIRL_PLAYER_ANIMATIONS 0  /* Change to 1 after saving the .h */
+#if GAMERGIRL_PLAYER_ANIMATIONS
+#include "gameanimations/player_anim.h"
+static player_anim_playeranim_t player_anim = {0};
+static uint8_t player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
+#endif
+@IDE_END
+
+#define VIEW_W 480
+#define VIEW_H 320
+
+/* Two independent foreground buffers, swapped after each frame. */
+static gfx_bitmap_t *front[2];
+static uint8_t draw_index = 0;
+@IDE_IF{HAS_PHYSICS}
+
+/* This is the ONE physical player. Position and velocity are in 1/100 px. */
+static game_tile_player_t player_physics = {0};
+@IDE_IF{HAS_WORLD_PLAYER}
+
+/* Adapter POINTS INTO player_physics, so spring/lift movement is live. */
+static game_world_player_t world_player = {0};
+@IDE_END
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+
+/* COLLECTABLES — WHAT THIS CODE DOES
+ * ----------------------------------
+ * The Game Designer places collectables, but YOU decide what picking one up
+ * means (points, keys, health, ammunition, opening doors, playing sounds...).
+ *
+ * on_pickup() is called by gameworlditems_check() when the player's
+ * collision box touches an ACTIVE collectable. You do not call on_pickup()
+ * directly. 'item' tells you WHICH collectable was picked up; item->value
+ * is the value you entered in Game Object Properties.
+ *
+ * 'user' carries your own game state into the callback. Below we pass
+ * &score, the ADDRESS of our score variable. The cast turns that generic
+ * pointer back into a uint32_t pointer so we can add points to it.
+ * The NULL checks guard against accidental invalid arguments.
+ *
+ * This is only a STARTER EXAMPLE. Change the body to handle different
+ * pickup types (e.g. keys or health); don't assume every pickup is score.
+ * The helper handles marking ordinary pickups collected/respawning as
+ * configured; the callback is where YOUR game reacts to each pickup.
+ */
+static uint32_t score = 0;
+static void on_pickup(game_collectable_t *item, void *user)
+{
+    uint32_t *points = (uint32_t *)user;
+    if (!item || !points) return;
+    *points += item->value;  /* Replace with your own key/health/score rules. */
+
+@IDE_IF{HAS_ADVENTURE}
+    game_adventure_collect(item->kind); /* Pick up one matching inventory item. */
+@IDE_END
+}
+@IDE_END
+@IDE_IF{HAS_MURDER_OBJECTS}
+
+/* The Game Designer's Hazard/Murder Objects fire ONE damage event per impact.
+ * This is YOUR game's health rule; change the starting HP or replace this code.
+ * Hit/bounce sounds and BOB flashing are managed automatically by helpers. */
+static uint32_t player_health = 3;
+@IDE_END
+@IDE_IF{HAS_PLAYER_HAZARDS}
+
+/* Hazard contacts NEVER kill automatically. YOUR game decides what to do. */
+static void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)
+{
+    (void)x; (void)y; (void)user;
+    if (reason == GAME_HAZARD_TILE_ENTERED || reason == GAME_HAZARD_ZONE_ENTERED) {
+        /* Entered: damage once, or start an effect. */
+    } else if (reason == GAME_HAZARD_TILE_INSIDE || reason == GAME_HAZARD_ZONE_INSIDE) {
+        /* Inside: fired each physics update; use a timer for gradual damage. */
+    } else if (reason == GAME_HAZARD_TILE_EXITED || reason == GAME_HAZARD_ZONE_EXITED) {
+        /* Exited: stop the effect. */
+    } else if (reason == GAME_DEATH_SCRIPT) {
+        /* Deliberate scripted death. */
+    }
+    /* game_death_mark_dead() freezes physics. game_tile_player_reset()
+       resumes at your chosen spawn point; neither is automatic. */
+}
+@IDE_END
+@IDE_IF{HAS_CUSTOM_ZONES}
+/* CUSTOM ZONES IN THIS LEVEL (names are documentation only):
+@IDE_IF{USED_ZONE_1}
+ *   Zone 1: @IDE{ZONE_NAME_1} (@IDE{ZONE_1})
+@IDE_END
+@IDE_IF{USED_ZONE_2}
+ *   Zone 2: @IDE{ZONE_NAME_2} (@IDE{ZONE_2})
+@IDE_END
+@IDE_IF{USED_ZONE_3}
+ *   Zone 3: @IDE{ZONE_NAME_3} (@IDE{ZONE_3})
+@IDE_END
+@IDE_IF{USED_ZONE_4}
+ *   Zone 4: @IDE{ZONE_NAME_4} (@IDE{ZONE_4})
+@IDE_END
+@IDE_IF{USED_ZONE_5}
+ *   Zone 5: @IDE{ZONE_NAME_5} (@IDE{ZONE_5})
+@IDE_END
+@IDE_IF{USED_ZONE_6}
+ *   Zone 6: @IDE{ZONE_NAME_6} (@IDE{ZONE_6})
+@IDE_END
+@IDE_IF{USED_ZONE_7}
+ *   Zone 7: @IDE{ZONE_NAME_7} (@IDE{ZONE_7})
+@IDE_END
+@IDE_IF{USED_ZONE_8}
+ *   Zone 8: @IDE{ZONE_NAME_8} (@IDE{ZONE_8})
+@IDE_END
+ */
+@IDE_END
+@IDE_IF{HAS_CUSTOM_ZONES}
+
+/* OPTIONAL PROGRAMMABLE ZONES: these comments are EXAMPLES, not automatic
+ * physics changes. Each custom tile zone reports 1..8 and ENTERED/INSIDE/EXITED.
+ * Solid and pass-through versions share the same logical zone number.
+ * Use the generated GAME_ZONE_ID_* names from gamelevels/level1.h,
+ * NOT hard-coded 1..8 numbers. Re-export after renaming a zone.
+ * The commented physics presets are EXAMPLES; names do not activate them.
+ * Change or remove these examples to suit your game. */
+static void on_custom_zone(uint8_t zone, uint8_t event,
+    int32_t x, int32_t y, void *user)
+{
+    (void)x; (void)y;
+    game_tile_player_t *p = (game_tile_player_t *)user;
+    if (!p) return;
+    if (event == GAME_ZONE_ENTERED) {
+        switch (zone) {
+            case @IDE{ZONE_1}: /* Example: slow */
+                /* game_tile_player_set_physics_slow(p); */ break;
+            case @IDE{ZONE_2}: /* Example: water */
+                /* game_tile_player_set_physics_water(p); */ break;
+            case @IDE{ZONE_3}: /* Example: ice */
+                /* game_tile_player_set_physics_ice(p); */ break;
+            case @IDE{ZONE_4}: /* Example: space */
+                /* game_tile_player_set_physics_space(p); */ break;
+            case @IDE{ZONE_5}: /* Example: floating */
+                /* game_tile_player_set_physics_floating(p); */ break;
+            case @IDE{ZONE_6}: /* Example: jetpack */
+                /* game_tile_player_set_physics_jetpack(p); */ break;
+            case @IDE{ZONE_7}: /* Example: gravity */
+                /* game_tile_player_set_gravity(p, 10); */ break;
+            case @IDE{ZONE_8}: /* Example: walk speed */
+                /* game_tile_player_set_walk_speed(p, 2); */ break;
+        }
+    } else if (event == GAME_ZONE_INSIDE) {
+        /* Example: count time inside for damage, sound or wind effects.
+         * Updraft: apply_force(p, 0.0f, -0.40f); // optional upward thrust
+         * Call the ordinary player-run OR the no-input player-step once
+         * per frame to advance physics and keep collision detection active.
+         */
+    } else if (event == GAME_ZONE_EXITED) {
+        /* Optional: restore defaults when leaving a zone.
+         * game_tile_player_set_physics_normal(p);
+         * If zones overlap, decide which remaining zone should take priority. */
+    }
+}
+@IDE_END
+@IDE_IF{HAS_PHYSICS}
+
+/* OPTIONAL: EXTERNAL FORCES / SPACE THRUSTERS
+ * -------------------------------------------
+ * apply_force(&player_physics, x, y) ADDS momentum in pixels/frame.
+ * +X = right, -X = left; +Y = down, -Y = upward thrust.
+ * It does NOT move the player immediately, so collisions remain safe.
+ * Call game_tile_player_run() OR game_tile_player_step() once per frame,
+ * not both! A simple wind or explosion also works in NORMAL movement:
+ *
+ *   apply_force(&player_physics, 2.0f, -1.0f); // one-time knockback
+ *   // ... your usual game_tile_player_run() then integrates the force.
+ *
+ * OPTIONAL zero-gravity, joystick-controlled spacecraft:
+ *   1. Enter the space zone in your on_custom_zone() callback (if present).
+ *      Set your own bool/flag named in_space to 1 on ENTERED,
+ *      and set it to 0 on EXITED. Compare zone with your generated
+ *      GAME_ZONE_ID_SPACE (if you named a zone Space).
+ *      game_tile_player_set_physics_space(&player_physics);
+ *      game_tile_player_set_gravity(&player_physics, 0);
+ *   2. Replace the game_tile_player_run() line in the loop below with:
+ *
+ *   if (in_space) {
+ *       const uint8_t joy = getjoyport();
+ *       if (joy & BTN_LEFT)  apply_force(&player_physics, -0.18f,  0.0f);
+ *       if (joy & BTN_RIGHT) apply_force(&player_physics,  0.18f,  0.0f);
+ *       if (joy & BTN_UP)    apply_force(&player_physics,  0.0f, -0.18f);
+ *       if (joy & BTN_DOWN)  apply_force(&player_physics,  0.0f,  0.18f);
+ *       game_tile_player_step(&player_physics, 1);
+ *   } else {
+ *       game_tile_player_run(&player_physics, getjoyport(), 1);
+ *   }
+ *
+ *   3. On leaving space call game_tile_player_set_physics_normal().
+ *
+ * External X momentum has configurable drag (percent lost per tick):
+ *   game_tile_player_set_force_drag(&player_physics, 0); // no drag: space
+ *   game_tile_player_set_force_drag(&player_physics, 12); // slow down
+ * Space preset sets X drag to 0 automatically. Gravity remains separate.
+ * Existing solids, ceilings, slopes, zone events and springs still work.
+ * Force inputs and callbacks are OPTIONAL. None are enabled here by default.
+ */
+@IDE_END
+@IDE_IF{HAS_SPLINES}
+
+/* SPLINE MOVEMENT -- GENERATED FROM YOUR GAME DESIGN
+ * -------------------------------------------------
+ * Update Game Project installs gamehelpers/gamespline.c/.h and exports
+ * gamehelpers/splinepaths.c/.h; both .c files must be compiled by the IDE.
+ * The path data is generated from the spline nodes in Game Designer.
+ *
+ * FOR SPRITES CONFIGURED AS GAME OBJECTS:
+ * Game Object Properties -> Movement spline attaches the saved path.
+ * The generated gameworlditems.c does ALL the spline setup and movement:
+ *   gameworlditems_init()       -> start_spline() + set_spline_pos()
+ *   gameworlditems_update(1)    -> run_spline() once per frame
+ *   Spline start delay in Game Object Properties freezes the path at its
+ *   starting position for N game frames (50 frames = one second). It only
+ *   delays spline movement, not sprite animation or collision checking.
+ *   gameworlditems_draw(cx,cy)  -> drawing with the camera offset
+ * Those calls are already in THIS main.c below when objects exist.
+ * Do NOT call run_spline() again for an attached object, or draw it twice.
+ *
+ * ATTACHED OBJECTS IN THIS DESIGN:
+@IDE{SPLINE_ATTACHED_DESCRIPTIONS} *
+ * EXPORTED PATHS:
+@IDE{SPLINE_PATH_DESCRIPTIONS} *
+ * OPTIONAL: HAND-CONTROLLED SPLINE (for an ordinary, non-managed sprite).
+ * The following is REAL C you may copy into your own game if you want to
+ * control a spline manually. It is intentionally NOT executed by default.
+ * Attach a spline through Game Object Properties instead for no-code movement.
+ *
+ * Near the top of main.c:
+ *     static game_spline_t custom_motion = {0};
+ * After gameassets_init(), substituting a REAL, non-player sprite variable:
+ *     start_spline(&custom_motion, &YOUR_SPRITE, @IDE{FIRST_SPLINE_SYMBOL}_path,
+ *         @IDE{FIRST_SPLINE_SYMBOL}_count, @IDE{FIRST_SPLINE_SYMBOL}_frames,
+ *         @IDE{FIRST_SPLINE_SYMBOL}_loop);
+ *     set_spline_pos(&custom_motion, 100, 100); // optional world start
+ * Once per frame, before rendering:
+ *     run_spline(&custom_motion, 1);
+ * Immediately BEFORE drawing this sprite, after camera_x/y are calculated:
+ *     offset_spline(&custom_motion, -camera_x, -camera_y);
+ *     gfx_drawbob(&YOUR_SPRITE);
+ * Do not also draw YOUR_SPRITE through gameassets_draw_foreground().
+ */
+@IDE_END
+
+int main(int argc, char *argv[])
+{
+    int result = 0;
+    (void)argc;
+    (void)argv;
+
+    /* 1. Set up SIDBOX hardware and memory BEFORE loading resources. */
+    configure_runmode(GAMEMODE_PROFILE_0);
+    suspend_desktop();
+    initMalloc();
+@IDE_IF{HAS_AUDIO}
+    set_audio_dma(512);
+    set_music_dma = 1;
+@IDE_END
+    gfx_setlcd(DEFAULT_RENDER_ORDER, FPS_50);
+@IDE_IF{DUAL_PLANE}
+    gfx_mode(VIEW_W, VIEW_H, VIEW_W, VIEW_H, DISPFLAG_DUALLAYER | DISPFLAG_SCROLLABLE);
+@IDE_ELSE
+    gfx_mode(VIEW_W, VIEW_H, VIEW_W, VIEW_H, DISPFLAG_SINGLELAYER | DISPFLAG_SCROLLABLE);
+@IDE_END
+
+    /* 2. Load the generated sprites, backgrounds, palettes and audio. */
+    if (!gameassets_init()) { result = 1; goto cleanup; }
+@IDE_IF{HAS_EXTERNAL_MAP}
+    /* External tile/collision/animation map. Copy this .map to the SD card.
+       Objects are still compiled from the .sbgm game design. */
+    if (!game_level1_load_map("gamelevels/level1.map")) {
+        result = 6;
+        goto cleanup;
+    }
+@IDE_END
+@IDE_IF{HAS_MAP}
+    /* Atlas PPB: dedicated Tile Atlases resource (shared with gameassets),
+       legacy sprite-based atlas, or direct SD fallback. Never drawn as a sprite. */
+    if (!game_level1_load_atlas()) { result = 5; goto cleanup; }
+    game_tilemap_animation_reset();
+@IDE_END
+@IDE_IF{HAS_ADVENTURE}
+    gameadventure_setup(); /* Inventory, NPCs and dialogue. */
+@IDE_END
+@IDE_IF{HAS_OBJECTS}
+    /* Configured objects, animations, switches, doors and sounds.
+       ALSO calls start_spline() for each configured moving object. */
+    if (!gameworlditems_init()) { result = 2; goto cleanup; }
+@IDE_END
+
+    front[0] = gfx_getfbuffer1();
+    front[1] = gfx_getfbuffer2();
+    if (!front[0] || !front[1] || front[0] == front[1]
+        || !front[0]->bitmap || !front[1]->bitmap
+        || front[0]->bitmap == front[1]->bitmap) {
+        result = 3;
+        goto cleanup;
+    }
+    /* Show a direct background PPB (if configured in Game Designer). */
+    gameassets_show_background();
+@IDE_IF{HAS_BACKGROUND_PLANE}
+    /* Background BOB resources are drawn once to the background plane.
+       Direct backgrounds are instead displayed by show_background above. */
+    gfx_bitmap_t *back = gfx_getbbuffer1();
+    if (!back || !back->bitmap) { result = 7; goto cleanup; }
+    gfx_usebuffer(back);
+    gameassets_draw_background();
+    gfx_showbbuffer(back);
+@IDE_END
+    gfx_scrollb(0, 0);
+    gfx_scrollf(0, 0);
+@IDE_IF{HAS_PHYSICS}
+    /* The sprite named 'player' becomes the physics-controlled character. */
+    if (!game_tile_player_start(&player_physics, &game_level1, &@IDE{PLAYER_SYMBOL})) { result = 4; goto cleanup; }
+@IDE_IF{HAS_PLAYER_ANIMATION}
+
+#if GAMERGIRL_PLAYER_ANIMATIONS
+    /* Stage 3.68: the animation editor's hitbox drives physical contact.
+       Without enabled player animations, the original full BOB size is used.
+       Offsets are relative to the visible sprite, not its world coordinates. */
+    if (!game_tile_player_set_hitbox(&player_physics,
+            PLAYER_ANIM_HITBOX_X, PLAYER_ANIM_HITBOX_Y,
+            PLAYER_ANIM_HITBOX_W, PLAYER_ANIM_HITBOX_H)) {
+        result = 4; goto cleanup; /* Invalid/out-of-sprite hitbox. */
+    }
+#endif
+@IDE_END
+@IDE_IF{HAS_PLAYER_HAZARDS}
+    game_death_set_callback(on_player_death, NULL);
+@IDE_END
+@IDE_IF{HAS_CUSTOM_ZONES}
+    game_tile_set_zone_callback(on_custom_zone, &player_physics);
+@IDE_END
+@IDE_IF{HAS_WORLD_PLAYER}
+
+    /* Do not copy world coordinates: bind addresses of live physics fields. */
+    world_player.x100 = &player_physics.x100;
+    world_player.y100 = &player_physics.y100;
+    world_player.vy100 = &player_physics.vy100;
+    /* Slidy springs use the same external momentum as apply_force(),
+       including current ICE/WATER/SPACE drag. */
+    world_player.spring_force_vx100 = &player_physics.force_vx100;
+    world_player.on_ground = &player_physics.on_ground;
+    world_player.jump_held = &player_physics.jump_held;
+    world_player.coyote = &player_physics.coyote;
+    world_player.jump_speed = &player_physics.jump_speed;
+    world_player.width = player_physics.hitbox_w ? player_physics.hitbox_w : @IDE{PLAYER_SYMBOL}.width;
+    world_player.height = player_physics.hitbox_h ? player_physics.hitbox_h : @IDE{PLAYER_SYMBOL}.height;
+    world_player.offset_x = player_physics.hitbox_x;
+    world_player.offset_y = player_physics.hitbox_y;
+@IDE_END
+@IDE_END
+@IDE_IF{HAS_MUSIC}
+
+    /* Music marked "Play on game start" begins in gameassets_init().
+       Other tunes can be started by their playmusicNAME() function;
+       Music triggers configured on objects work automatically. */
+@IDE_END
+
+    /* 3. The frame loop. Leave the helper calls in this order. */
+    while (1) {
+        gfx_lcdwait();
+@IDE_IF{HAS_PHYSICS}
+@IDE_IF{HAS_ADVENTURE}
+        const uint8_t adventure_buttons = getjoyport();
+        game_adventure_input(adventure_buttons, player_physics.x100 / 100,
+            player_physics.y100 / 100, player_physics.hitbox_w ? player_physics.hitbox_w : @IDE{PLAYER_SYMBOL}.width,
+            player_physics.hitbox_h ? player_physics.hitbox_h : @IDE{PLAYER_SYMBOL}.height, 1);
+        if (!game_adventure_open()) {
+@IDE_END
+@IDE_END
+@IDE_IF{HAS_OBJECTS}
+@IDE_IF{HAS_ATTACHED_SPLINES}
+        /* This ALSO advances every attached spline exactly once. */
+@IDE_END
+        gameworlditems_update(1);
+@IDE_END
+@IDE_IF{HAS_PHYSICS}
+@IDE_IF{HAS_WORLD_PLAYER}
+        gameworlditems_before(&world_player);
+@IDE_END
+        /* OPTIONAL THRUSTERS: replace the next line with the in_space
+         * example above, and still step physics every frame. */
+@IDE_IF{HAS_PLAYER_ANIMATION}
+        const uint8_t player_buttons = getjoyport();
+@IDE_IF{HAS_ADVENTURE}
+        /* Adventure uses UP for menus; only FIRE1 jumps. */
+        game_tile_player_run(&player_physics, player_buttons & (uint8_t)~BTN_UP, 1);
+@IDE_ELSE
+        game_tile_player_run(&player_physics, player_buttons, 1);
+@IDE_END
+@IDE_ELSE
+@IDE_IF{HAS_ADVENTURE}
+        game_tile_player_run(&player_physics, getjoyport() & (uint8_t)~BTN_UP, 1);
+@IDE_ELSE
+        game_tile_player_run(&player_physics, getjoyport(), 1);
+@IDE_END
+@IDE_END
+        /* Moving platforms, conveyors and springs resolve AFTER tile physics.
+           Their final on_ground/vy100 are the values animation must see.
+           Keep this ahead of animation selection, even for an idle rider. */
+@IDE_IF{HAS_WORLD_PLAYER}
+        gameworlditems_after(&world_player);
+@IDE_END
+@IDE_IF{HAS_MURDER_OBJECTS}
+        /* Once per accepted spike/hazard hit; invulnerability prevents
+           repeated damage while flashing. You own game-over/health rules. */
+        if (world_player.hurt_triggered) {
+            if (player_health > world_player.hurt_damage_this_frame)
+                player_health -= world_player.hurt_damage_this_frame;
+            else player_health = 0;
+            /* TODO: if player_health == 0, run your death/respawn logic. */
+        }
+@IDE_END
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS
+        /* Stage 3.81: select animation AFTER world-object contacts resolve.
+         * A carried rider should use Idle, not Fall; a player walking along
+         * the platform should use Walk. Springs can launch Jump immediately.
+         * Only change facing while pressing LEFT/RIGHT; idle retains facing.
+         * If you use game_tile_player_step(), keep animation AFTER both the
+         * tile-player step and gameworlditems_after(). */
+        if (player_buttons & BTN_LEFT)  player_anim_facing = PLAYER_ANIM_DIR_LEFT;
+        if (player_buttons & BTN_RIGHT) player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
+        uint8_t player_anim_state = PLAYER_ANIM_STATE_IDLE;
+        if (!player_physics.on_ground) {
+            player_anim_state = (player_physics.vy100 < 0)
+                              ? PLAYER_ANIM_STATE_JUMP : PLAYER_ANIM_STATE_FALL;
+        } else if (player_buttons & (BTN_LEFT | BTN_RIGHT)) {
+            player_anim_state = PLAYER_ANIM_STATE_WALK;
+        }
+@IDE_IF{HAS_MURDER_OBJECTS}
+#if defined(PLAYER_ANIM_HAS_HURT_STATE) && PLAYER_ANIM_HAS_HURT_STATE
+        /* Hazard "Use player Hurt animation" overrides Jump/Fall while
+         * the player's damage grace period is active. The animation-header
+         * exporter defines HAS_HURT_STATE when a Hurt state actually exists.
+         * Without a Hurt state, normal animation selection is preserved.
+         * For an existing hand-owned main.c, copy this block there too. */
+        if (world_player.hurt_anim_active && world_player.hurt_ticks_remaining)
+            player_anim_state = PLAYER_ANIM_STATE_HURT;
+#endif
+@IDE_END
+        player_anim_step(&player_anim, &@IDE{PLAYER_SYMBOL}, player_anim_state, player_anim_facing, 1);
+#endif
+@IDE_END
+
+@IDE_IF{HAS_PICKUPS}
+        /* COLLECTABLE PICKUP CHECK — leave this AFTER player movement.
+         * Run it ONCE each frame. It compares the live player's WORLD
+         * collision rectangle against the Game Designer's collectables.
+         * x100/y100 are hundredths of a pixel, hence the / 100; hitbox_x/y
+         * shift the rectangle inside the player image. The fallback width
+         * and height use the sprite size if no custom hitbox was defined.
+         *
+         * on_pickup is the callback above; &score is the user-data pointer
+         * passed to it. Replace both if your game uses different state.
+         * The helper decides WHICH object was touched; your callback
+         * decides WHAT collecting it does. No pickup = no callback.
+         */
+        gameworlditems_check(player_physics.x100 / 100 + player_physics.hitbox_x,
+            player_physics.y100 / 100 + player_physics.hitbox_y,
+            player_physics.hitbox_w ? player_physics.hitbox_w : @IDE{PLAYER_SYMBOL}.width,
+            player_physics.hitbox_h ? player_physics.hitbox_h : @IDE{PLAYER_SYMBOL}.height, on_pickup, &score);
+@IDE_END
+@IDE_END
+@IDE_IF{HAS_PHYSICS}
+@IDE_IF{HAS_ADVENTURE}
+        } /* Resume physics after conversation. */
+@IDE_END
+@IDE_END
+/* SCREEN RENDERING ORDER -- defined by this rule, not by Qt.
+ * Qt supplies only generated scenery placements at the marked positions.
+ * Keep back scenery before tilemap and player before front-layer tiles. */
+        int32_t camera_x = 0, camera_y = 0;
+@IDE_IF{HAS_PHYSICS}
+        /* Follow the player in WORLD pixels, clamped to the level bounds. */
+        camera_x = player_physics.x100 / 100 - VIEW_W / 2;
+        camera_y = player_physics.y100 / 100 - VIEW_H / 2;
+        int32_t max_x = (int32_t)game_level1.width * game_level1.tile_size - VIEW_W;
+        int32_t max_y = (int32_t)game_level1.height * game_level1.tile_size - VIEW_H;
+        if (max_x < 0) max_x = 0;
+        if (max_y < 0) max_y = 0;
+        if (camera_x < 0) camera_x = 0;
+        if (camera_y < 0) camera_y = 0;
+        if (camera_x > max_x) camera_x = max_x;
+        if (camera_y > max_y) camera_y = max_y;
+@IDE_END
+@IDE_IF{HAS_MAPLESS_SCENE}
+        (void)camera_x; (void)camera_y;
+@IDE_END
+@IDE_IF{HAS_MAP}
+        game_tilemap_animation_tick(1);
+@IDE_END
+
+        /* Draw into the hidden buffer, then display and swap. */
+        gfx_usebuffer(front[draw_index]);
+        gfx_setcolour(0);
+        gfx_rectf(0, 0, VIEW_W, VIEW_H);
+@IDE_IF{SINGLE_PLANE_BACKGROUND}
+        gameassets_draw_background(); /* Single-plane background */
+@IDE_END
+@IDE_IF{HAS_OBJECTS}
+        /* GAME OBJECTS BEHIND THE TILEMAP — WHY DRAW THEM HERE?
+         * Each placed Game Object has an optional "Draw behind tilemap"
+         * setting. This call draws ONLY objects with that setting enabled.
+         * We draw them BEFORE the tilemap so the floor/walls can cover them:
+         * for example, spikes can rise gradually from behind a floor tile.
+         * Objects drawn in front are handled later by gameworlditems_draw().
+         *
+         * camera_x and camera_y are the camera's WORLD position. The helper
+         * subtracts them so moving objects appear in the right screen spot.
+         * This is VISUAL layering only: collision and damage still work.
+         * Keep this call BEFORE game_tilemap_blit_view_cleared(), or the
+         * tilemap won't be able to hide the parts of an object behind it.
+         */
+        gameworlditems_draw_behind(camera_x, camera_y);
+@IDE_END
+@IDE{SCENERY_BEHIND_TILES}
+@IDE_IF{HAS_MAP}
+        game_tilemap_blit_view_cleared(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);
+@IDE_END
+@IDE_IF{HAS_OBJECTS}
+        gameworlditems_draw(camera_x, camera_y);
+@IDE_END
+@IDE_IF{HAS_MAP}
+@IDE{SCENERY_IN_FRONT_OF_TILES}
+@IDE_IF{HAS_PHYSICS}
+@IDE_IF{HAS_ADVENTURE}
+        game_adventure_draw_npcs(camera_x, camera_y); /* Placed NPC sprites. */
+@IDE_END
+        game_tile_player_screen(&player_physics, camera_x, camera_y);
+@IDE_IF{HAS_MURDER_OBJECTS}
+        /* PLAYER HURT FLASH — WHY MAKE A COPY OF THE SPRITE?
+         * A Hazard / Murder Object can make the player flash after a hit.
+         * The world_player helper knows the selected flash palette colour,
+         * how many flashes to show, and how many frames each one lasts.
+         *
+         * We copy the original gfxbob_t into player_visible for drawing
+         * THIS frame only. That means the solid-colour flag does not stick
+         * on the real player sprite after flashing ends, and your regular
+         * animation continues working normally.
+         *
+         * game_world_player_hurt_flash() returns true only during the ON
+         * parts of the flashing sequence. It puts the chosen foreground
+         * palette INDEX in flash_colour (not a 24-bit RGB colour).
+         * BLIT_FLAG_SOLIDCOLOUR tells SIDBOX to draw the BOB in a solid
+         * palette colour; flagval[BLIT_FLAG_TYPE_TINT_VALUE] picks which one.
+         * When the helper returns false, draw the ordinary sprite instead.
+         * gfx_drawbob() happens ONCE per frame in either case.
+         *
+         * Change the flash colour, count or timing in the Hazard object's
+         * properties in Game Designer; regenerate the project to update it.
+         */
+        {
+            gfxbob_t player_visible = @IDE{PLAYER_SYMBOL};
+            uint8_t flash_colour = 0;
+            if (game_world_player_hurt_flash(&world_player, &flash_colour)) {
+                player_visible.flags |= BLIT_FLAG_SOLIDCOLOUR;
+                player_visible.flagval[BLIT_FLAG_TYPE_TINT_VALUE] = flash_colour;
+            }
+            gfx_drawbob(&player_visible);
+        }
+@IDE_ELSE
+        gfx_drawbob(&@IDE{PLAYER_SYMBOL});
+@IDE_END
+@IDE_END
+@IDE_ELSE
+        gameassets_draw_foreground();
+@IDE_END
+@IDE_IF{HAS_FRONT_TILES}
+        /* Foreground tiles are deliberately drawn AFTER the player. */
+        game_tilemap_blit_view_front(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);
+@IDE_END
+@IDE_IF{HAS_ADVENTURE_PHYSICS}
+        game_adventure_draw(camera_x, camera_y, player_physics.x100 / 100, player_physics.y100 / 100);
+@IDE_END
+
+        /* YOUR GAME LOGIC: scoring UI, effects and custom HUD go here.
+           To exit, add your input check with break; cleanup is below. */
+        gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
+        gfx_displaynow();
+        draw_index ^= 1u;
+        music_update();  /* Keep SIDBOX music/audio processing alive. */
+    }
+
+cleanup:
+    /* Stop audio before freeing samples. Unload atlas before gameassets,
+       because its pixels may be borrowed from a sprite PPB allocation. */
+    music_stop();
+@IDE_IF{HAS_MAP}
+    game_level1_unload_atlas();
+    game_level1_unload_map();
+@IDE_END
+    gameassets_shutdown();
+    restore_desktop();
+    return result;
+}
+@IDE_END
+@IDE_IF{PART_SPRITE_DRAW}
+@IDE_IF{SPRITE_FLIPPED}
+        @IDE{SPRITE_SYMBOL}.flags = (uint8_t)((@IDE{SPRITE_SYMBOL}.flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | @IDE{SPRITE_FLIP_X} | @IDE{SPRITE_FLIP_Y});
+@IDE_END
+        @IDE{SPRITE_SYMBOL}.drawx = @IDE{SPRITE_X} - camera_x;
+        @IDE{SPRITE_SYMBOL}.drawy = @IDE{SPRITE_Y} - camera_y;
+        gfx_drawbob(&@IDE{SPRITE_SYMBOL});
+@IDE_END

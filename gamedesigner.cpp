@@ -2109,7 +2109,7 @@ void SidboxGameDesigner::buildUi()
             for (const QString &header : headers) {
                 const QString base = QFileInfo(header).completeBaseName();
                 if (offered.contains(base) || (folderName == QStringLiteral("game")
-                     && base == QStringLiteral("gameadventure"))) continue;
+                     && (base == QStringLiteral("gameadventure") || base == QStringLiteral("gameworlditems") || base == QStringLiteral("maingame")))) continue;
                 const QString src = folderName == QStringLiteral("game")
                     ? GameHelperTemplates::sourcePath(folder, base, QStringLiteral(".c"))
                     : folder.filePath(base + QStringLiteral(".c"));
