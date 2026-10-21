@@ -5,6 +5,15 @@
 #define GAMERGIRL_ADVENTURERUNTIME_H
 #include <stdint.h>
 #include "apis.h"
+/* Rendered by GamerGirl from adventureruntime.ruleh.  The runtime's
+   64-slot storage capacity remains
+   independent of how many inventory types this design currently uses. */
+#define GAME_ADVENTURE_MAX_ITEMS @IDE{MAX_ITEMCOUNT}u
+#define GAME_ADVENTURE_CONFIGURED_ITEMS @IDE{ITEM_COUNT}u
+/* The game generator passes these project values via the runtime API;
+   keep definitions in the rule header rather than hardcoding C++ literals. */
+#define GAME_ADVENTURE_DEFAULT_TILE_SIZE @IDE{TILE_SIZE}u
+#define GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR @IDE{FRAMES_PER_CHAR}u
 
 typedef struct {
     const char *name;

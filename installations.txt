@@ -1,3 +1,0 @@
-for the history to work, zlib needs installing
-
-sudo dnf install zlib-devel

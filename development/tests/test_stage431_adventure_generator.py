@@ -4,8 +4,8 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[2]
 ui=(root/'gameadventureeditor.cpp').read_text()
 gen=(root/'gameadventuregen.cpp').read_text()
-run=(root/'idelibs/codehelpers/game/adventureruntime.c').read_text()
-head=(root/'idelibs/codehelpers/game/adventureruntime.h').read_text()
+run=(root/'idelibs/codehelpers/game/adventureruntime.rulec').read_text()
+head=(root/'idelibs/codehelpers/game/adventureruntime.ruleh').read_text()
 world=(root/'gamedesigner.cpp').read_text()
 export=(root/'gamedesigner_export.cpp').read_text()
 assert all(x in ui for x in ['"idleFrames"','"talkFrames"','framesKeys[state]', 'Move Up', 'Move Down', 'Play preview', 'skinFlips', 'Item name', 'game_adventure_collect(item->kind)', 'QComboBox*','startNode'])

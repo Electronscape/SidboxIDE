@@ -35,7 +35,7 @@ typedef struct {
     uint8_t touch_activation;  /* 0 = top landing; 1 = any-side contact. */
     uint8_t spring_slide;      /* 0 = constant X push; 1 = friction/inertia X kickback. */
     uint8_t spring_touching;   /* Internal: contact latch, rearmed when separated. */
-    uint8_t break_hits_required;  /* 1..4; each instance owns its own count. */
+    uint8_t break_hits_required;  /* 1..20 for enemies, 1..4 breakables. */
     uint8_t break_hits_done;
     uint8_t break_touch_mode;    /* 0=stomp, 1=touch from any side. */
     uint8_t break_bounce;        /* Stomp: launch again after each contact. */
@@ -43,10 +43,21 @@ typedef struct {
     int16_t break_strength;      /* Upward bounce, pixels/frame. */
     int16_t break_launch_x;      /* Optional left/right bounce, pixels/frame. */
     uint8_t break_touching;      /* Edge latch; leave before hitting again. */
+    uint8_t enemy_roam; /* 0 = stationary/spline; 1 = tilemap ground patrol. */
+    uint8_t enemy_roam_speed, enemy_step_height;
+    int8_t enemy_roam_direction; /* -1=left, +1=right. */
+    uint8_t enemy_base_flip_x; /* original BOB flip independent of facing */
     uint8_t enemy_hurts_on_touch;
+    uint8_t enemy_stomp_side_kick; /* 0=only vertical rebound; 1=add break_launch_x on weak-spot hit. */
+    uint8_t enemy_attack_direction; /* 0=from above, 1=from below, 2=both. */
     int16_t enemy_defeat_frame; /* -1 hides immediately, 0..255 displays sprite frame. */
-    uint8_t enemy_defeat_frames; /* Number of frames to show the defeated image. */
-    uint8_t enemy_dying; /* Draw-only countdown. Collision is disabled immediately. */
+    uint8_t enemy_defeat_frames; /* Legacy single-pose duration in 50-Hz ticks. */
+    uint8_t enemy_defeat_count; /* Sequential death frames from the starting atlas index. */
+    uint8_t enemy_defeat_delay; /* Ticks per atlas frame; one-shot animation. */
+    uint16_t enemy_dying; /* Draw-only ticks remaining; collision disabled immediately. */
+    int16_t enemy_stomp_offset_x, enemy_stomp_offset_y; /* Top-left offset from BODY. */
+    uint16_t enemy_stomp_width; /* 0 = same width as body. */
+    uint8_t enemy_stomp_height; /* Falling-feet tolerance within vulnerable zone. */
     uint8_t break_triggered;     /* One-frame break event on final hit. */
     uint8_t break_hit_triggered; /* One-frame event for each accepted hit, final included. */
     uint8_t break_bounce_triggered; /* One-frame event for each actual bounce. */
@@ -126,6 +137,11 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
 void game_world_object_set_position(game_world_object_t *object, int32_t x, int32_t y);
 void game_world_objects_update(game_world_object_t *objects, uint16_t count,
                                 uint16_t frames);
+/* Call immediately after update() in tilemap games. The callback must use the
+   same collision map as the player; NULL leaves patrols stationary. */
+void game_world_objects_roam(game_world_object_t *objects, uint16_t count,
+    uint16_t frames, uint8_t (*blocked)(int32_t x, int32_t y,
+        uint16_t width, uint16_t height, void *context), void *context);
 
 /* Called BEFORE the existing tile/platformer physics. Carry known riders and
    remember their original feet for collision testing. One game-frame at a time. */

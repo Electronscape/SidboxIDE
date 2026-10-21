@@ -5,6 +5,7 @@
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
+#include "gamehelpertemplates.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
 
@@ -127,13 +128,21 @@ bool SidboxGameDesigner::installMissingWorldHelpers(QString *error, bool prompt)
         for (const QString &ext : {QStringLiteral(".h"), QStringLiteral(".c"), QStringLiteral(".txt")}) {
             const QString to = QDir(dest).filePath(base + ext);
             if (QFileInfo::exists(to)) continue;
-            const QString from = templates.filePath(name + ext);
+            const QString from = GameHelperTemplates::sourcePath(templates, name, ext);
             QFile file(from);
             if (!file.open(QIODevice::ReadOnly)) {
                 if (error) *error = tr("Missing helper template: %1").arg(from);
                 return false;
             }
-            QByteArray data = file.readAll();
+            const QByteArray sourceBytes = file.readAll();
+            QByteArray data;
+            if (ext == QStringLiteral(".c") || ext == QStringLiteral(".h")) {
+                if (!GameHelperTemplates::render(sourceBytes, name, ext, m_adventure,
+                                                 &data, error))
+                    return false;
+            } else {
+                data = sourceBytes;
+            }
             if (ext == QStringLiteral(".c")) {
                 data.replace((QStringLiteral("\"%1.h\"").arg(name)).toUtf8(),
                              (QStringLiteral("\"%1.h\"").arg(base)).toUtf8());
@@ -196,9 +205,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             const int ch = r.cellHeight > 0 ? r.cellHeight : image.height();
             const int frames = !image.isNull() && cw > 0 && ch > 0
                 ? (image.width() / cw) * (image.height() / ch) : 0;
-            if (r.enemyDefeatFrame >= frames) {
-                if (error) *error = tr("Enemy '%1' has defeated frame %2, but its sprite only has %3 frames.")
-                    .arg(r.name).arg(r.enemyDefeatFrame).arg(frames);
+            if (r.enemyDefeatFrame + r.enemyDefeatCount > qMin(256, frames)) {
+                if (error) *error = tr("Enemy '%1': death animation starts at %2 and uses %3 frames, "
+                                      "but the sprite atlas has only %4 usable frames (maximum 256).")
+                    .arg(r.name).arg(r.enemyDefeatFrame).arg(r.enemyDefeatCount)
+                    .arg(qMin(256, frames));
                 return false;
             }
         }
@@ -287,18 +298,18 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         for (int j = 0; j < np; ++j)
             if (pickups.at(j)->id == id) { rewardIndex = j; break; }
         if (rewardIndex < 0) {
-            if (error) *error = tr("Breakable '%1' targets a missing collectable. Reassign its reward.")
+            if (error) *error = tr("Object '%1' targets a missing collectable. Reassign its reward.")
                 .arg(block.name);
             return false;
         }
         if (!m_tilemapEnabled || pickupPaths.at(rewardIndex) >= 0) {
-            if (error) *error = tr("Breakable '%1' needs an enabled tilemap and a reward "
+            if (error) *error = tr("Object '%1' needs an enabled tilemap and a reward "
                                    "collectable without a movement spline.").arg(block.name);
             return false;
         }
         if (breakRewardOwner.contains(id)) {
-            if (error) *error = tr("Two breakables try to spawn the same reward '%1'. "
-                                   "Use a different collectable for each block.")
+            if (error) *error = tr("Two game objects try to spawn the same reward '%1'. "
+                                   "Use a different collectable for each object.")
                                    .arg(pickups.at(rewardIndex)->name);
             return false;
         }
@@ -602,10 +613,30 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                   << "    platforms[" << ix << "].break_bounce = " << (r.breakBounce ? "1" : "0") << ";\n"
                   << "    platforms[" << ix << "].break_strength = " << r.breakStrength << ";\n"
                   << "    platforms[" << ix << "].break_launch_x = " << r.breakLaunchX << ";\n"
+                  << "    platforms[" << ix << "].enemy_stomp_side_kick = " << (r.enemyStompSideKick ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].enemy_attack_direction = " << r.enemyAttackDirection << ";\n"
                   << "    platforms[" << ix << "].enemy_hurts_on_touch = " << (r.enemyHurtsOnTouch ? "1" : "0") << ";\n"
                   << "    platforms[" << ix << "].hazard_damage = " << r.enemyDamage << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick = " << (r.hazardKick ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick_x = " << r.hazardKickX << ";\n"
+                  << "    platforms[" << ix << "].hazard_kick_y = " << r.hazardKickY << ";\n"
+                  << "    platforms[" << ix << "].hazard_hurt_animation = " << (r.hazardHurtAnimation ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash = " << (r.hazardFlash ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_colour = " << r.hazardFlashColour << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_count = " << r.hazardFlashCount << ";\n"
+                  << "    platforms[" << ix << "].hazard_flash_frames = " << r.hazardFlashFrames << ";\n"
+                  << "    platforms[" << ix << "].enemy_roam = " << (r.enemyRoam && m_tilemapEnabled ? "1" : "0") << ";\n"
+                  << "    platforms[" << ix << "].enemy_roam_speed = " << r.enemyRoamSpeed << ";\n"
+                  << "    platforms[" << ix << "].enemy_step_height = " << r.enemyStepHeight << ";\n"
+                  << "    platforms[" << ix << "].enemy_roam_direction = " << (r.enemyRoamLeft ? "-1" : "1") << ";\n"
                   << "    platforms[" << ix << "].enemy_defeat_frame = " << r.enemyDefeatFrame << ";\n"
-                  << "    platforms[" << ix << "].enemy_defeat_frames = " << r.enemyDefeatFrames << ";\n";
+                  << "    platforms[" << ix << "].enemy_defeat_frames = " << r.enemyDefeatDelay << ";\n"
+                  << "    platforms[" << ix << "].enemy_defeat_count = " << r.enemyDefeatCount << ";\n"
+                  << "    platforms[" << ix << "].enemy_defeat_delay = " << r.enemyDefeatDelay << ";\n"
+                  << "    platforms[" << ix << "].enemy_stomp_offset_x = " << r.enemyStompOffsetX << ";\n"
+                  << "    platforms[" << ix << "].enemy_stomp_offset_y = " << r.enemyStompOffsetY << ";\n"
+                  << "    platforms[" << ix << "].enemy_stomp_width = " << r.enemyStompWidth << ";\n"
+                  << "    platforms[" << ix << "].enemy_stomp_height = " << r.enemyStompHeight << ";\n";
             }
             if (r.objectType == QStringLiteral("hazard")) {
                 C << "    platforms[" << ix << "].hazard_damage = " << r.hazardDamage << ";\n"
@@ -637,7 +668,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
               << (r.objectFlipX ? "BLIT_FLAG_FLIP_X" : "0") << " | "
               << (r.objectFlipY ? "BLIT_FLAG_FLIP_Y" : "0") << ");\n";
         }
-        if (path >= 0) {
+        if (path >= 0 && !(r.objectType == QStringLiteral("enemy") && r.enemyRoam)) {
             const QString sym = splineSymbol(path);
             const QString var = QStringLiteral("%1_path_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
             C << "    start_spline(&" << var << ", " << sprite << ", "
@@ -647,6 +678,8 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
               << "    " << (collect ? "pickups" : "platforms") << "[" << ix
               << "].spline_start_delay = " << qBound(0, r.objectSplineStartDelay, 65535) << ";\n";
         }
+        if (!collect && r.objectType == QStringLiteral("enemy"))
+            C << "    platforms[" << ix << "].enemy_base_flip_x = " << (r.objectFlipX ? "1" : "0") << ";\n";
         if (r.objectAnimated) {
             const QString var = QStringLiteral("%1_anim_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix);
             C << "    if (!start_animation(&" << var << ", " << sprite << ", "
@@ -679,8 +712,13 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
                    "    if (index >= GAMEWORLDITEMS_PLATFORM_COUNT) return;\n"
                    "    platforms[index].active = state == 2 ? (uint8_t)!platforms[index].active : (uint8_t)(state != 0);\n"
                    "}\n\n";
+    if (nw && m_tilemapEnabled) C << "/* Same tile/slope query as the player. */\n"
+        "static uint8_t cg_enemy_tile_blocked(int32_t x, int32_t y, uint16_t w, uint16_t h, void *ctx)\n"
+        "{ return game_tilemap_actor_blocked((const game_tilemap_t *)ctx, x, y, w, h); }\n\n";
     C << "void gameworlditems_update(uint16_t frames)\n{\n";
     if (nw) C << "    game_world_objects_update(platforms, " << nw << ", frames);\n";
+    if (nw && m_tilemapEnabled) C << "    game_world_objects_roam(platforms, " << nw
+        << ", frames, cg_enemy_tile_blocked, &game_level1);\n";
     if (np && !usedSfx.isEmpty()) C << "    for (uint16_t i = 0; i < " << np
         << "; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;\n";
     if (np) C << "    game_collectables_update(pickups, " << np << ", frames);\n";
@@ -2042,6 +2080,30 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         return false;
     }
     if (anySpline && !exportSplinePaths(false)) return false;
+
+    // gameadventure.c now references configuration macros emitted by the
+    // adventure .ruleh. Generate Code only installs *missing* helpers; an
+    // older installed header must not silently produce unbuildable C.
+    // Update Game Project refreshes both runtime files transactionally.
+    if (hasAdventure()) {
+        const QString runtimeHeader = QDir(QFileInfo(m_filePath).absolutePath())
+            .filePath(QStringLiteral("gamehelpers/gameadventureruntime.h"));
+        QFile headerFile(runtimeHeader);
+        if (!headerFile.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Adventure Runtime Rules"),
+                tr("Cannot read Adventure runtime header: %1").arg(runtimeHeader));
+            return false;
+        }
+        const QByteArray headerBytes = headerFile.readAll();
+        if (!headerBytes.contains("GAME_ADVENTURE_DEFAULT_TILE_SIZE")
+            || !headerBytes.contains("GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR")) {
+            QMessageBox::warning(this, tr("Adventure Runtime Rules"),
+                tr("The installed Adventure runtime is from an earlier version.\n"
+                   "Use Update Game Project to back up the game and install the "
+                   "current .rulec/.ruleh runtime before generating code."));
+            return false;
+        }
+    }
 
     SidboxGameCodeGen::Request request;
     request.designDirectory = QFileInfo(m_filePath).absolutePath();

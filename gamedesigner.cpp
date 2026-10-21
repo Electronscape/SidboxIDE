@@ -5,6 +5,7 @@
 #include "gamepalette.h"
 #include "gamepaletteeditor.h"
 #include "gamecodegen.h"
+#include "gamehelpertemplates.h"
 #include "gameadventureeditor.h"
 #include "gameadventuregen.h"
 #include "gameanimationeditor.h"
@@ -142,6 +143,147 @@ protected:
         p.drawLine(cx, cy + 2, cx + 4, cy - 2);
     }
 };
+
+// Pick a death animation's FIRST frame visually. This is intentionally an
+// editor-only dialog: the stored numeric frame ID and generated runtime data
+// stay exactly the same. Cancel returns -2; -1 means explicitly no animation.
+static int chooseDeathAtlasStart(QWidget *parent, const QImage &atlas,
+                                 int cellW, int cellH, int previous,
+                                 int sequenceLength, const QColor &accent)
+{
+    if (atlas.isNull() || cellW <= 0 || cellH <= 0) {
+        QMessageBox::information(parent, QObject::tr("Death animation atlas"),
+            QObject::tr("This sprite has no readable atlas. Check its PPB resource first."));
+        return -2;
+    }
+    const int cols = atlas.width() / cellW;
+    const int rows = atlas.height() / cellH;
+    const int frames = qMin(256, cols * rows); // existing runtime index is 8-bit
+    if (cols < 1 || rows < 1 || frames < 1) {
+        QMessageBox::information(parent, QObject::tr("Death animation atlas"),
+            QObject::tr("No complete sprite cells were found in this atlas."));
+        return -2;
+    }
+
+    QDialog picker(parent);
+    picker.setWindowTitle(QObject::tr("Choose Death Animation Start Frame"));
+    picker.resize(750, 585);
+    auto *layout = new QVBoxLayout(&picker);
+    auto *instructions = new QLabel(QObject::tr(
+        "Choose the FIRST death frame. Frames are numbered from 0, left to right, top to bottom.\n"
+        "Double-click a frame to accept it. The following frames play once."), &picker);
+    instructions->setWordWrap(true);
+    layout->addWidget(instructions);
+    auto *grid = new QListWidget(&picker);
+    grid->setObjectName(QStringLiteral("GGDeathAtlasFramePicker"));
+    grid->setViewMode(QListView::IconMode);
+    grid->setResizeMode(QListView::Adjust);
+    grid->setMovement(QListView::Static);
+    grid->setWrapping(true);
+    grid->setSpacing(5);
+    grid->setIconSize(QSize(64, 64));
+    grid->setGridSize(QSize(88, 94));
+    grid->setUniformItemSizes(true);
+    grid->setSelectionMode(QAbstractItemView::SingleSelection);
+    layout->addWidget(grid, 1);
+
+    // Keep pixels crisp, even when the game's sprite cell is tiny.
+    auto pictureFor = [&](int index, int iconSize) -> QPixmap {
+        const QImage cell = atlas.copy((index % cols) * cellW,
+                                       (index / cols) * cellH, cellW, cellH);
+        QPixmap image(iconSize, iconSize);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        const QColor light(81, 81, 81), dark(57, 57, 57);
+        const int check = 8;
+        for (int y = 0; y < iconSize; y += check)
+            for (int x = 0; x < iconSize; x += check)
+                painter.fillRect(QRect(x, y, check, check),
+                                 ((x + y) / check) % 2 ? light : dark);
+        const QImage scaled = cell.scaled(iconSize - 6, iconSize - 6,
+            Qt::KeepAspectRatio, Qt::FastTransformation);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        painter.drawImage((iconSize - scaled.width()) / 2,
+                          (iconSize - scaled.height()) / 2, scaled);
+        return image;
+    };
+    for (int frame = 0; frame < frames; ++frame) {
+        auto *item = new QListWidgetItem(QIcon(pictureFor(frame, 64)),
+                                          QObject::tr("Frame %1").arg(frame));
+        item->setData(Qt::UserRole, frame);
+        item->setToolTip(QObject::tr("Frame %1 — atlas column %2, row %3")
+            .arg(frame).arg(frame % cols).arg(frame / cols));
+        item->setTextAlignment(Qt::AlignHCenter);
+        grid->addItem(item);
+    }
+    const int initial = qBound(0, previous, frames - 1);
+    grid->setCurrentRow(initial);
+    grid->scrollToItem(grid->item(initial), QAbstractItemView::PositionAtCenter);
+
+    auto *summary = new QLabel(&picker);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+    auto *strip = new QWidget(&picker);
+    auto *stripLayout = new QHBoxLayout(strip);
+    stripLayout->setContentsMargins(0, 0, 0, 0);
+    stripLayout->setSpacing(5);
+    layout->addWidget(strip);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &picker);
+    auto *clear = buttons->addButton(QObject::tr("No death animation"), QDialogButtonBox::ResetRole);
+    layout->addWidget(buttons);
+    int chosen = -2;
+    const int length = qMax(1, sequenceLength);
+    const auto refresh = [&]() {
+        const int selected = grid->currentRow();
+        const bool valid = selected >= 0 && selected + length <= frames;
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(valid);
+        summary->setText(valid
+            ? QObject::tr("Death sequence: frames %1 to %2 (%3 frames).")
+                .arg(selected).arg(selected + length - 1).arg(length)
+            : QObject::tr("Not enough atlas frames after this start for %1 death frames. "
+                           "Pick an earlier cell or reduce Number of death frames.")
+                .arg(length));
+        while (QLayoutItem *child = stripLayout->takeAt(0)) {
+            delete child->widget();
+            delete child;
+        }
+        if (selected < 0) return;
+        for (int i = 0; i < qMin(length, 8) && selected + i < frames; ++i) {
+            auto *label = new QLabel(strip);
+            label->setFixedSize(54, 62);
+            label->setAlignment(Qt::AlignCenter);
+            label->setPixmap(pictureFor(selected + i, 48));
+            label->setToolTip(QObject::tr("Death frame %1").arg(selected + i));
+            stripLayout->addWidget(label);
+        }
+        if (length > 8) stripLayout->addWidget(new QLabel(QObject::tr("+ %1 more").arg(length - 8), strip));
+        stripLayout->addStretch(1);
+    };
+    // Use the IDE's theme accent only for the visual selection indicator.
+    grid->setStyleSheet(QStringLiteral("QListWidget#GGDeathAtlasFramePicker::item:selected {"
+                                       " border:2px solid %1; border-radius:0px; }")
+                            .arg(accent.name()));
+    QObject::connect(grid, &QListWidget::currentRowChanged, &picker,
+                     [&refresh](int) { refresh(); });
+    QObject::connect(grid, &QListWidget::itemDoubleClicked, &picker,
+                     [&](QListWidgetItem *item) {
+        if (item && item->data(Qt::UserRole).toInt() + length <= frames) {
+            chosen = item->data(Qt::UserRole).toInt();
+            picker.accept();
+        }
+    });
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &picker, [&]() {
+        chosen = grid->currentRow();
+        picker.accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &picker, &QDialog::reject);
+    QObject::connect(clear, &QPushButton::clicked, &picker, [&]() {
+        chosen = -1;
+        picker.accept();
+    });
+    refresh();
+    return picker.exec() == QDialog::Accepted ? chosen : -2;
+}
 
 // World Editor names are editor overlays, not theme-coloured UI text.
 // Render the dark keyline FIRST, then the thick, bright lettering over it:
@@ -675,8 +817,12 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
         || base.isEmpty() || base.contains(QLatin1Char('/')) || base.contains(QLatin1Char('\\'))
         || base == QStringLiteral(".") || base == QStringLiteral("..")) return;
     const QDir templateFolder(QDir(helperTemplatesRoot()).filePath(category));
-    const QString sourceH = templateFolder.filePath(base + QStringLiteral(".h"));
-    const QString sourceC = templateFolder.filePath(base + QStringLiteral(".c"));
+    const QString sourceH = category == QStringLiteral("game")
+        ? GameHelperTemplates::sourcePath(templateFolder, base, QStringLiteral(".h"))
+        : templateFolder.filePath(base + QStringLiteral(".h"));
+    const QString sourceC = category == QStringLiteral("game")
+        ? GameHelperTemplates::sourcePath(templateFolder, base, QStringLiteral(".c"))
+        : templateFolder.filePath(base + QStringLiteral(".c"));
     QFile hTemplate(sourceH), cTemplate(sourceC);
     if (!hTemplate.open(QIODevice::ReadOnly) || !cTemplate.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this, tr("Add Helper Code"),
@@ -684,6 +830,21 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
         return;
     }
     QByteArray header = hTemplate.readAll(), source = cTemplate.readAll();
+    // All Game helper entry points must render @IDE fields before installing.
+    // GUI helpers are intentionally NOT migrated in Stage 4.42.
+    if (category == QStringLiteral("game")) {
+        QByteArray renderedH, renderedC;
+        QString renderError;
+        if (!GameHelperTemplates::render(header, base, QStringLiteral(".h"), m_adventure,
+                                         &renderedH, &renderError)
+            || !GameHelperTemplates::render(source, base, QStringLiteral(".c"), m_adventure,
+                                             &renderedC, &renderError)) {
+            QMessageBox::warning(this, tr("Add Helper Code"), renderError);
+            return;
+        }
+        header = renderedH;
+        source = renderedC;
+    }
     // Installed game helper names retain the existing game-prefix convention.
     const QString installedBase = category + base;
     source.replace((QStringLiteral("\"%1.h\"").arg(base)).toUtf8(),
@@ -1940,9 +2101,18 @@ void SidboxGameDesigner::buildUi()
             const QDir folder(templateRoot.isEmpty() ? QStringLiteral("__unavailable_codehelpers__")
                                                       : QDir(templateRoot).filePath(folderName));
             int count = 0;
-            for (const QString &header : folder.entryList({QStringLiteral("*.h")}, QDir::Files, QDir::Name)) {
+            QStringList headers = folder.entryList({QStringLiteral("*.h")}, QDir::Files, QDir::Name);
+            if (folderName == QStringLiteral("game"))
+                headers.append(folder.entryList({QStringLiteral("*.ruleh")}, QDir::Files, QDir::Name));
+            QSet<QString> offered;
+            for (const QString &header : headers) {
                 const QString base = QFileInfo(header).completeBaseName();
-                if (!QFileInfo::exists(folder.filePath(base + QStringLiteral(".c")))) continue;
+                if (offered.contains(base)) continue;
+                const QString src = folderName == QStringLiteral("game")
+                    ? GameHelperTemplates::sourcePath(folder, base, QStringLiteral(".c"))
+                    : folder.filePath(base + QStringLiteral(".c"));
+                if (!QFileInfo::exists(src)) continue;
+                offered.insert(base);
                 // Discover new helpers on every right-click. Optional <name>.ini
                 // gives the menu a friendly title and tooltip for beginners.
                 QSettings helperInfo(folder.filePath(base + QStringLiteral(".ini")),
@@ -4101,7 +4271,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard conveyorCard = makeCard(tr("Conveyor"));
     const PropertyCard springCard = makeCard(tr("Spring / Bouncer"));
     const PropertyCard breakCard = makeCard(tr("Breakable"));
-    const PropertyCard hazardCard = makeCard(tr("Hazard / Murder Object"));
+    const PropertyCard hazardCard = makeCard(tr("Damage / Knockback / Hurt Effects"));
     const PropertyCard enemyCard = makeCard(tr("Stompable Enemy"));
     const PropertyCard audioCollectCard = makeCard(tr("Audio Events / Collectable"));
     const PropertyCard audioLiftCard = makeCard(tr("Audio Events / Moving Platform"));
@@ -4314,12 +4484,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     hiddenCollectable->setChecked(!old.objectInitiallyActive ||
         (old.objectType == QStringLiteral("collectable") &&
          std::any_of(m_resources.cbegin(), m_resources.cend(), [&](const Resource &candidate) {
-             return candidate.objectType == QStringLiteral("breakable") &&
+             return (candidate.objectType == QStringLiteral("breakable") ||
+                     candidate.objectType == QStringLiteral("enemy")) &&
                     candidate.breakDropCollectableId == old.id;
          })));
     hiddenCollectable->setToolTip(tr("Hide this collectable when the level starts. "
                                   "It can later be activated by a linked trigger or "
-                                  "spawned by a breakable. Breakable rewards are hidden "
+                                  "spawned by a Breakable or Stompable Enemy. Reward items are hidden "
                                   "automatically even when this option is off."));
     collectCard.form->addRow(QString(), hiddenCollectable);
     connect(hiddenCollectable, &QCheckBox::toggled, initiallyActive,
@@ -4520,47 +4691,166 @@ void SidboxGameDesigner::configureGameObject(int index)
     }
     enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
     enemyReward->setToolTip(tr("On defeat, spawn this hidden Collectable. Place it in the world and check Hidden until activated."));
-    form->addRow(tr("Drop collectable on defeat"), enemyReward);
+    // Stage 4.41a: keep reward-launch controls prominent and full-width.
+    // The earlier side-by-side slider row was too cramped in the scrolling
+    // Game Object Properties column, making the X/Y controls hard to find.
+    form->addRow(new QLabel(tr("DEFEAT REWARD — spawned when enemy dies"), &dialog));
+    form->addRow(tr("Item dropped when defeated"), enemyReward);
+    // Existing collectable-drop velocities (the same fields used by Breakables).
+    auto *enemyRewardImpulse = new QCheckBox(tr("Launch dropped item on defeat"), &dialog);
+    enemyRewardImpulse->setChecked(old.breakRewardImpulse);
+    auto *enemyRewardVx = spin(-20, 20, old.breakRewardVx);
+    auto *enemyRewardVy = spin(-20, 20, old.breakRewardVy);
+    enemyRewardVx->setToolTip(tr("Initial X speed in px/frame. Negative = LEFT; positive = RIGHT."));
+    enemyRewardVy->setToolTip(tr("Initial Y speed in px/frame. Negative = UP; positive = DOWN. Gravity takes over."));
+    // Disable the slider AND the numeric spin box together, not just the box.
+    QWidget *enemyRewardXField = quickValue(enemyRewardVx);
+    QWidget *enemyRewardYField = quickValue(enemyRewardVy);
+    form->addRow(QString(), enemyRewardImpulse);
+    form->addRow(tr("Reward speed X (px/frame)"), enemyRewardXField);
+    form->addRow(tr("Reward speed Y (px/frame)"), enemyRewardYField);
+    const auto updateEnemyRewardControls = [enemyReward, enemyRewardImpulse,
+                                           enemyRewardXField, enemyRewardYField]() {
+        const bool hasDrop = !enemyReward->currentData().toString().isEmpty();
+        enemyRewardImpulse->setEnabled(hasDrop);
+        const bool launch = hasDrop && enemyRewardImpulse->isChecked();
+        enemyRewardXField->setEnabled(launch);
+        enemyRewardYField->setEnabled(launch);
+    };
+    connect(enemyReward, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [updateEnemyRewardControls](int){ updateEnemyRewardControls(); });
+    connect(enemyRewardImpulse, &QCheckBox::toggled, &dialog, updateEnemyRewardControls);
+    updateEnemyRewardControls();
     auto *enemyHits = spin(1, 20, old.breakHits);
     auto *enemyBounce = new QCheckBox(tr("Bounce player after every stomp"), &dialog);
     enemyBounce->setChecked(old.objectType == QStringLiteral("enemy") ? old.breakBounce : true);
     auto *enemyBounceY = spin(1, 40, old.breakStrength);
     auto *enemyBounceX = spin(-40, 40, old.breakLaunchX);
+    auto *enemyStompSideKick = new QCheckBox(tr("Also kick player SIDEWAYS on a vulnerable hit"), &dialog);
+    enemyStompSideKick->setChecked(old.enemyStompSideKick);
+    enemyStompSideKick->setToolTip(tr("Normally head-stomps rebound vertically only. Turn ON to add the signed X kick; "
+                                      "this does NOT affect the red body's knockback-on-damage controls."));
+    auto *enemyAttackDirection = new GameComboBox(&dialog);
+    enemyAttackDirection->addItem(tr("From ABOVE (fall onto head)"), 0);
+    enemyAttackDirection->addItem(tr("From BELOW (jump into underside)"), 1);
+    enemyAttackDirection->addItem(tr("BOTH (top or underside)"), 2);
+    enemyAttackDirection->setCurrentIndex(qMax(0, enemyAttackDirection->findData(old.enemyAttackDirection)));
+    enemyAttackDirection->setToolTip(tr("The GREEN hitbox is the vulnerable area for these attacks. "
+                                       "From below requires a deliberate upward jump. "
+                                       "A successful underside hit stops upward movement, avoiding repeated hits."));
     auto *enemyHurt = new QCheckBox(tr("Hurt player on side / underside contact"), &dialog);
     enemyHurt->setChecked(old.enemyHurtsOnTouch);
     auto *enemyDamage = spin(0, 65535, old.enemyDamage);
     auto *enemyDefeatFrame = spin(-1, 255, old.enemyDefeatFrame);
     enemyDefeatFrame->setSpecialValueText(tr("None — disappear immediately"));
-    auto *enemyDefeatTicks = spin(1, 255, old.enemyDefeatFrames);
+    auto *enemyDefeatCount = spin(1, 255, old.enemyDefeatCount);
+    auto *enemyDefeatDelay = spin(1, 255, old.enemyDefeatDelay);
+    auto *enemyStompX = spin(-64, 64, old.enemyStompOffsetX);
+    auto *enemyStompY = spin(-64, 64, old.enemyStompOffsetY);
+    auto *enemyStompW = spin(0, 512, old.enemyStompWidth);
+    enemyStompW->setSpecialValueText(tr("Match body width"));
+    auto *enemyStompH = spin(1, 64, old.enemyStompHeight);
     enemyHits->setToolTip(tr("Number of distinct stomps to defeat this enemy. One landing counts once."));
     enemyBounceY->setToolTip(tr("A fixed bounce impulse, independent from held-jump boost."));
-    enemyDefeatFrame->setToolTip(tr("Sprite atlas frame to display after defeat. -1 hides the enemy immediately."));
-    form->addRow(tr("Stomps to defeat"), quickValue(enemyHits));
+    enemyDefeatFrame->setToolTip(tr("Starting atlas frame for the death animation. -1 = vanish immediately."));
+    enemyDefeatCount->setToolTip(tr("Consecutive atlas frames, starting at the death start frame. Plays ONCE."));
+    enemyDefeatDelay->setToolTip(tr("Game ticks PER death frame, at 50 FPS. A one-frame pose stays for this duration."));
+    enemyStompX->setToolTip(tr("Vulnerable-zone left edge relative to the enemy body. Negative extends left."));
+    enemyStompY->setToolTip(tr("Vulnerable-zone top relative to body. Negative moves it ABOVE the enemy."));
+    enemyStompW->setToolTip(tr("Width of the vulnerable zone. Zero automatically uses body width."));
+    enemyStompH->setToolTip(tr("Green vulnerable box height, for downward stomps OR deliberate upward head-butts."));
+    form->addRow(tr("Hits before enemy dies"), quickValue(enemyHits));
     form->addRow(QString(), enemyBounce);
-    form->addRow(tr("Bounce upward"), quickValue(enemyBounceY));
-    form->addRow(tr("Bounce sideways"), quickValue(enemyBounceX));
+    form->addRow(tr("Top-hit rebound (upward)"), quickValue(enemyBounceY));
+    form->addRow(QString(), enemyStompSideKick);
+    form->addRow(tr("Optional sideways kick X"), quickValue(enemyBounceX));
+    form->addRow(tr("Green weak spot can be hit"), enemyAttackDirection);
+    form->addRow(new QLabel(tr("From BELOW: the hit stops the player's ascent; with rebound ON, "
+                                "Kim recoils DOWN to separate from the enemy."), &dialog));
     form->addRow(QString(), enemyHurt);
-    form->addRow(tr("Side contact damage"), quickValue(enemyDamage));
-    form->addRow(tr("Defeated atlas frame"), enemyDefeatFrame);
-    form->addRow(tr("Show defeat frame (50 FPS)"), quickValue(enemyDefeatTicks));
-    form->addRow(new QLabel(tr("Use the ordinary Animation Frames and Spline controls above for movement.\n"
-                                "Linked Object selects what happens when this enemy is defeated."), &dialog));
-    connect(enemyBounce, &QCheckBox::toggled, &dialog, [enemyBounceY,enemyBounceX](bool on){
-        enemyBounceY->setEnabled(on); enemyBounceX->setEnabled(on);
-    });
-    connect(enemyHurt, &QCheckBox::toggled, enemyDamage, &QWidget::setEnabled);
-    enemyBounceY->setEnabled(enemyBounce->isChecked());
-    enemyBounceX->setEnabled(enemyBounce->isChecked());
-    enemyDamage->setEnabled(enemyHurt->isChecked());
+    enemyDamage->hide(); // Shared Hazard/Murder damage card owns the single damage setting.
+    form->addRow(new QLabel(tr("DEATH ANIMATION — plays once, then disappears"), &dialog));
+    // Keep numeric entry for exact edits, but make visual selection the easy path.
+    auto *deathStartPicker = new QPushButton(tr("Choose from atlas..."), &dialog);
+    deathStartPicker->setToolTip(tr("See the sprite atlas and choose the first frame visually. "
+                                    "The existing frame IDs and generated C remain unchanged."));
+    auto *deathStartRow = new QWidget(&dialog);
+    auto *deathStartLayout = new QHBoxLayout(deathStartRow);
+    deathStartLayout->setContentsMargins(0, 0, 0, 0);
+    deathStartLayout->setSpacing(7);
+    enemyDefeatFrame->setMinimumWidth(88);
+    deathStartLayout->addWidget(enemyDefeatFrame);
+    deathStartLayout->addWidget(deathStartPicker, 1);
+    form->addRow(tr("Death starting atlas frame"), deathStartRow);
+    form->addRow(tr("Number of death frames"), quickValue(enemyDefeatCount));
+    form->addRow(tr("Delay per frame (50 FPS)"), quickValue(enemyDefeatDelay));
+    form->addRow(new QLabel(tr("GREEN VULNERABLE HITBOX — independent of RED danger/body"), &dialog));
+    form->addRow(tr("Stomp box X offset (px)"), quickValue(enemyStompX));
+    form->addRow(tr("Stomp box Y offset (px)"), quickValue(enemyStompY));
+    form->addRow(tr("Stomp box width (px)"), quickValue(enemyStompW));
+    form->addRow(tr("Stomp box height (px)"), quickValue(enemyStompH));
+    const auto updateDeathOptions = [enemyDefeatFrame, enemyDefeatCount, enemyDefeatDelay]() {
+        const bool enabled = enemyDefeatFrame->value() >= 0;
+        enemyDefeatCount->setEnabled(enabled);
+        enemyDefeatDelay->setEnabled(enabled);
+    };
+    connect(enemyDefeatFrame, qOverload<int>(&QSpinBox::valueChanged),
+            &dialog, [updateDeathOptions](int) { updateDeathOptions(); });
+    updateDeathOptions();
+    form->addRow(new QLabel(tr("ABOVE: place the green box over the head (e.g. Y=-6).\n"
+                                "BELOW: place it under the feet (e.g. Y=body height).\n"
+                                "Red remains dangerous; the weak spot works only from the chosen direction."), &dialog));
+    auto *enemyRoam = new QCheckBox(tr("Walk on tilemap (patrol and turn at walls)"), &dialog);
+    enemyRoam->setChecked(old.enemyRoam);
+    enemyRoam->setToolTip(tr("Uses solid tiles and slopes. Overrides the Movement Spline for THIS enemy. "
+                             "Place the enemy with its feet on the ground. Requires Advanced Platformer."));
+    auto *enemyRoamSpeed = spin(1, 8, old.enemyRoamSpeed);
+    auto *enemyStepHeight = spin(1, 12, old.enemyStepHeight);
+    auto *enemyRoamLeft = new QCheckBox(tr("Start walking left"), &dialog);
+    enemyRoamLeft->setChecked(old.enemyRoamLeft);
+    enemyStepHeight->setToolTip(tr("Maximum rise or fall allowed for each 1-pixel patrol step. "
+                                  "Lower = resists steeper slopes; higher = climbs steeper terrain. "
+                                  "A wall taller than this makes the enemy turn around."));
+    enemyRoamSpeed->setToolTip(tr("Pixels moved per 50 Hz game frame. Start with 1."));
+    form->addRow(QString(), enemyRoam);
+    form->addRow(tr("Patrol speed (px/frame)"), quickValue(enemyRoamSpeed));
+    form->addRow(tr("Slope climb / descent (px)"), quickValue(enemyStepHeight));
+    form->addRow(QString(), enemyRoamLeft);
+    auto updateEnemyRoam = [=]() {
+        const bool enabled = type->currentData().toString() == QStringLiteral("enemy") &&
+            enemyRoam->isChecked();
+        enemyRoamSpeed->setEnabled(enabled);
+        enemyStepHeight->setEnabled(enabled);
+        enemyRoamLeft->setEnabled(enabled);
+    };
+    connect(enemyRoam, &QCheckBox::toggled, &dialog, updateEnemyRoam);
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [updateEnemyRoam](int) { updateEnemyRoam(); });
+    updateEnemyRoam();
+    form->addRow(new QLabel(tr("Damage, knockback, hurt animation and flashing are in the\n"
+                                "Damage / Knockback / Hurt Effects card directly below.\n"
+                                "The drop requires a hidden Collectable; linked actions fire on final stomp."), &dialog));
+    const auto updateEnemyBounceControls = [enemyBounce,enemyBounceY,enemyBounceX,enemyStompSideKick]() {
+        enemyBounceY->setEnabled(enemyBounce->isChecked());
+        enemyStompSideKick->setEnabled(enemyBounce->isChecked());
+        enemyBounceX->setEnabled(enemyBounce->isChecked() && enemyStompSideKick->isChecked());
+    };
+    connect(enemyBounce, &QCheckBox::toggled, &dialog, updateEnemyBounceControls);
+    connect(enemyStompSideKick, &QCheckBox::toggled, &dialog, updateEnemyBounceControls);
+    updateEnemyBounceControls();
+    // Damage and visual hit effects share the well-tested Murder Object settings.
+    enemyDamage->setEnabled(false);
     // Hazards are intangible damage sensors. The direction values below are
     // signed; negative Y sends the player UP, positive Y pushes them DOWN.
     form = hazardCard.form;
-    auto *hazardDamage = spin(0, 65535, old.hazardDamage);
+    auto *hazardDamage = spin(0, 65535, old.objectType == QStringLiteral("enemy") ? old.enemyDamage : old.hazardDamage);
     auto *hazardKick = new QCheckBox(tr("Knock player back on hit"), &dialog);
     hazardKick->setChecked(old.hazardKick);
     auto *hazardKickX = spin(-40, 40, old.hazardKickX);
     auto *hazardKickY = spin(-40, 40, old.hazardKickY);
-    hazardKickX->setToolTip(tr("Negative = kick left; positive = kick right; zero = no horizontal kick."));
+    hazardKickX->setToolTip(tr("Stompable Enemy: horizontal knockback STRENGTH (absolute value); "
+                              "the player is pushed away from the approaching collision. "
+                              "Murder Object: signed direction (- left, + right). Zero disables horizontal knockback."));
     hazardKickY->setToolTip(tr("Negative = kick up; positive = kick down; zero = no vertical kick."));
     hazardDamage->setToolTip(tr("Amount passed to your game's damage callback. Your game decides how health is used."));
     auto *hazardHurtAnim = new QCheckBox(tr("Use player Hurt animation on damage"), &dialog);
@@ -4599,7 +4889,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Number of flashes"), quickValue(hazardFlashes));
     form->addRow(tr("Frames between flashes"), quickValue(hazardFlashFrames));
     auto updateHazardControls = [=]() {
-        const bool hazard = type->currentData().toString() == QStringLiteral("hazard");
+        const bool hazard = type->currentData().toString() == QStringLiteral("hazard") ||
+                            type->currentData().toString() == QStringLiteral("enemy");
         for (QWidget *w : {static_cast<QWidget *>(hazardDamage), static_cast<QWidget *>(hazardKick),
                            static_cast<QWidget *>(hazardHurtAnim), static_cast<QWidget *>(hazardFlash)})
             w->setEnabled(hazard);
@@ -4614,6 +4905,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateHazardControls](int) { updateHazardControls(); });
     updateHazardControls();
+    /* Friendly default for a newly converted enemy: knock Kim sideways away
+       from the enemy as well as upward. Existing enemy values remain intact. */
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [type, hazardKickX, initialType = old.objectType](int) {
+        if (type->currentData().toString() == QStringLiteral("enemy") &&
+            initialType != QStringLiteral("enemy") && hazardKickX->value() == 0)
+            hazardKickX->setValue(8);
+    });
     form = visualCard.form;
     auto *spline = new GameComboBox(&dialog);
     spline->addItem(tr("None (stationary)"), QString());
@@ -4754,7 +5053,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     propertiesLayout->setContentsMargins(2, 2, 4, 2);
     propertiesLayout->setSpacing(7);
     for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
-         collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard, hazardCard,
+         collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
+         enemyCard, hazardCard,
          audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
          audioBreakCard, audioHazardCard, audioOptionsCard}) {
         propertiesLayout->addWidget(card.panel);
@@ -4828,14 +5128,31 @@ void SidboxGameDesigner::configureGameObject(int index)
     spriteInfo->setObjectName(QStringLiteral("GGHelper"));
     spriteInfo->setWordWrap(true);
     previewLayout->addWidget(spriteInfo);
-    auto *collisionTitle = new QLabel(tr("COLLISION PREVIEW"), previewPanel);
+    auto *collisionTitle = new QLabel(tr("COLLISION PREVIEW — LIVE"), previewPanel);
     collisionTitle->setObjectName(QStringLiteral("GGSideSection"));
     previewLayout->addWidget(collisionTitle);
     auto *collisionPreview = new QLabel(previewPanel);
     collisionPreview->setObjectName(QStringLiteral("GGPreviewImage"));
     collisionPreview->setMinimumHeight(145);
     collisionPreview->setAlignment(Qt::AlignCenter);
+    collisionPreview->setToolTip(tr("Stompable Enemy: red is the damaging body hitbox; "
+                                   "green is the separate vulnerable hitbox for ABOVE / BELOW hits. "
+                                   "Both follow the X/Y/width/height controls immediately."));
     previewLayout->addWidget(collisionPreview);
+    // Visible, square-cornered key, immediately below the collision preview.
+    // Only enemy objects need two differently coloured hitboxes.
+    auto *collisionLegend = new QWidget(previewPanel);
+    auto *legendLayout = new QHBoxLayout(collisionLegend);
+    legendLayout->setContentsMargins(2, 0, 2, 0);
+    legendLayout->setSpacing(10);
+    auto *hurtLegend = new QLabel(tr("■ Red: danger"), collisionLegend);
+    hurtLegend->setStyleSheet(QStringLiteral("QLabel { color: #ee5966; }"));
+    auto *stompLegend = new QLabel(tr("■ Green: weak spot"), collisionLegend);
+    stompLegend->setStyleSheet(QStringLiteral("QLabel { color: #40d690; }"));
+    legendLayout->addWidget(hurtLegend);
+    legendLayout->addWidget(stompLegend);
+    legendLayout->addStretch(1);
+    previewLayout->addWidget(collisionLegend);
     auto *collisionDimensions = new QFormLayout;
     collisionDimensions->setContentsMargins(2, 3, 2, 2);
     collisionDimensions->setSpacing(5);
@@ -4860,14 +5177,46 @@ void SidboxGameDesigner::configureGameObject(int index)
         if (palette.size() == 256)
             atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
     }
+    // The picker uses this exact same palette-corrected sprite atlas as the
+    // existing Game Object preview, including after Previous/Next object.
+    const auto refreshDeathStartButton = [&, deathStartPicker, enemyDefeatFrame]() {
+        const int cw = old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width();
+        const int ch = old.cellHeight > 0 ? qMin(old.cellHeight, atlas.height()) : atlas.height();
+        const int cols = cw > 0 ? atlas.width() / cw : 0;
+        const int rows = ch > 0 ? atlas.height() / ch : 0;
+        const int index = enemyDefeatFrame->value();
+        const bool canPreview = cols > 0 && rows > 0 && index >= 0 && index < cols * rows;
+        deathStartPicker->setEnabled(cols > 0 && rows > 0);
+        deathStartPicker->setText(canPreview
+            ? tr("Choose... (frame %1)").arg(index)
+            : tr("Choose from atlas..."));
+        if (!canPreview) { deathStartPicker->setIcon(QIcon()); return; }
+        const QImage frame = atlas.copy((index % cols) * cw, (index / cols) * ch, cw, ch);
+        deathStartPicker->setIcon(QIcon(QPixmap::fromImage(frame.scaled(36, 36,
+            Qt::KeepAspectRatio, Qt::FastTransformation))));
+        deathStartPicker->setIconSize(QSize(36, 36));
+    };
+    connect(deathStartPicker, &QPushButton::clicked, &dialog,
+            [this, &dialog, &atlas, &old, enemyDefeatFrame, enemyDefeatCount]() {
+        const int cw = old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width();
+        const int ch = old.cellHeight > 0 ? qMin(old.cellHeight, atlas.height()) : atlas.height();
+        const int selected = chooseDeathAtlasStart(&dialog, atlas, cw, ch,
+            enemyDefeatFrame->value(), enemyDefeatCount->value(), m_theme.accent);
+        if (selected >= -1) enemyDefeatFrame->setValue(selected); // -2 = Cancel
+    });
+    connect(enemyDefeatFrame, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+            [refreshDeathStartButton](int) { refreshDeathStartButton(); });
+    refreshDeathStartButton();
     int previewFrame = 0;
     bool previewPlaying = true;
     auto *previewTimer = new QTimer(&dialog);
     // Keep preview linked to whichever object is currently selected; the
     // dialog stays OPEN while the previous/next arrows reload its controls.
     const auto updatePreview = [this, &previewFrame, &atlas, &old, animated,
-                                first, count, mode, hitW, hitH, objectFlipX, objectFlipY,
-                                spritePreview, collisionPreview, spriteInfo]() {
+                                first, count, mode, type, hitW, hitH,
+                                enemyStompX, enemyStompY, enemyStompW, enemyStompH,
+                                objectFlipX, objectFlipY, spritePreview, collisionPreview,
+                                collisionLegend, spriteInfo]() {
         const int cw = atlas.isNull() ? 1 :
             (old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width());
         const int ch = atlas.isNull() ? 1 :
@@ -4897,7 +5246,11 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (objectFlipY->isChecked()) flipDirections |= Qt::Vertical;
             frame = frame.flipped(flipDirections);
         }
-        const auto makeCanvas = [this, frame, hitW, hitH]
+        const bool enemyPreview =
+            type->currentData().toString() == QStringLiteral("enemy");
+        collisionLegend->setVisible(enemyPreview);
+        const auto makeCanvas = [this, frame, hitW, hitH, enemyPreview,
+                                 enemyStompX, enemyStompY, enemyStompW, enemyStompH]
                                 (int width, int height, bool showCollision) {
             QPixmap canvas(width, height);
             canvas.fill(m_theme.windowBackground);
@@ -4906,22 +5259,63 @@ void SidboxGameDesigner::configureGameObject(int index)
             for (int x = 0; x < width; x += 20) painter.drawLine(x, 0, x, height);
             for (int y = 0; y < height; y += 20) painter.drawLine(0, y, width, y);
             if (!frame.isNull()) {
-                const int maxW = width - 28;
-                const int maxH = height - 28;
-                const int factor = qMax(1, qMin(maxW / qMax(1, frame.width()),
-                                                 maxH / qMax(1, frame.height())));
-                const int w = qMin(maxW, frame.width() * factor);
-                const int h = qMin(maxH, frame.height() * factor);
-                const QRect destination((width-w)/2, (height-h)/2, w, h);
-                painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-                painter.drawImage(destination, frame);
-                if (showCollision) {
-                    const double sx = double(destination.width()) / qMax(1, frame.width());
-                    const double sy = double(destination.height()) / qMax(1, frame.height());
-                    painter.setPen(QPen(m_theme.accent, 2, Qt::DashLine));
-                    painter.drawRect(QRectF(destination.x(), destination.y(),
-                        qMin(double(destination.width()), hitW->value()*sx),
-                        qMin(double(destination.height()), hitH->value()*sy)));
+                if (!showCollision || !enemyPreview) {
+                    // Preserve the existing integer nearest-neighbour sprite
+                    // preview and single-hitbox rendering for other objects.
+                    const int maxW = width - 28;
+                    const int maxH = height - 28;
+                    const int factor = qMax(1, qMin(maxW / qMax(1, frame.width()),
+                                                     maxH / qMax(1, frame.height())));
+                    const int w = qMin(maxW, frame.width() * factor);
+                    const int h = qMin(maxH, frame.height() * factor);
+                    const QRect destination((width-w)/2, (height-h)/2, w, h);
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                    painter.drawImage(destination, frame);
+                    if (showCollision) {
+                        const double sx = double(destination.width()) / qMax(1, frame.width());
+                        const double sy = double(destination.height()) / qMax(1, frame.height());
+                        painter.setPen(QPen(m_theme.accent, 2, Qt::DashLine));
+                        painter.drawRect(QRectF(destination.x(), destination.y(),
+                            qMin(double(destination.width()), hitW->value()*sx),
+                            qMin(double(destination.height()), hitH->value()*sy)));
+                    }
+                } else {
+                    // Stompable enemy: world-space body and vulnerable box.
+                    // Negative X/Y offsets and wider boxes are not clipped.
+                    const QRectF sprite(0, 0, frame.width(), frame.height());
+                    const QRectF body(0, 0, hitW->value(), hitH->value());
+                    // These offsets are relative to the BODY origin and DO NOT
+                    // change when the enemy sprite is flipped in the runtime.
+                    const QRectF stomp(enemyStompX->value(), enemyStompY->value(),
+                        enemyStompW->value() == 0 ? hitW->value() : enemyStompW->value(),
+                        enemyStompH->value());
+                    const QRectF contents = sprite.united(body).united(stomp);
+                    const double scale = qMin((width - 28.0) / qMax(1.0, contents.width()),
+                                               (height - 28.0) / qMax(1.0, contents.height()));
+                    const double originX = (width - contents.width() * scale) / 2.0
+                                           - contents.left() * scale;
+                    const double originY = (height - contents.height() * scale) / 2.0
+                                           - contents.top() * scale;
+                    const auto mapHitbox = [originX, originY, scale](const QRectF &r) {
+                        return QRectF(originX + r.x() * scale,
+                                      originY + r.y() * scale,
+                                      r.width() * scale, r.height() * scale);
+                    };
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                    painter.drawImage(mapHitbox(sprite), frame);
+                    // RED = the damaging body. GREEN = the stompable area.
+                    // Draw green last so it remains visible even where the
+                    // two zones overlap. Outlines stay two screen pixels wide.
+                    QPen hurtPen(QColor(238, 89, 102), 2, Qt::SolidLine);
+                    hurtPen.setCosmetic(true);
+                    painter.setPen(hurtPen);
+                    painter.setBrush(QColor(238, 89, 102, 58));
+                    painter.drawRect(mapHitbox(body));
+                    QPen stompPen(QColor(64, 214, 144), 2, Qt::DashLine);
+                    stompPen.setCosmetic(true);
+                    painter.setPen(stompPen);
+                    painter.setBrush(QColor(64, 214, 144, 68));
+                    painter.drawRect(mapHitbox(stomp));
                 }
             } else {
                 painter.setPen(m_theme.mutedText);
@@ -4967,6 +5361,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     for (QSpinBox *spin : {first, count, ticks, hitW, hitH})
         connect(spin, qOverload<int>(&QSpinBox::valueChanged), &dialog,
                 [=](int) { refreshTimer(); });
+    // The collision preview must react to *every* vulnerable hitbox slider,
+    // not merely the sprite/body size. No Save, rebuild, or preview restart.
+    for (QSpinBox *spin : {enemyStompX, enemyStompY, enemyStompW, enemyStompH})
+        connect(spin, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [=](int) { updatePreview(); });
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [=](int) { updatePreview(); });
     refreshTimer();
 
     auto enableFields = [=]() {
@@ -5039,7 +5440,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         conveyorCard.panel->setVisible(isConveyor);
         springCard.panel->setVisible(isSpring);
         breakCard.panel->setVisible(isBreak);
-        hazardCard.panel->setVisible(isHazard);
+        hazardCard.panel->setVisible(isHazard || isEnemy);
         enemyCard.panel->setVisible(isEnemy);
         audioCollectCard.panel->setVisible(isCollect);
         audioLiftCard.panel->setVisible(isLift);
@@ -5079,6 +5480,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     }
     const auto commitObject = [&]() -> bool {
     const QString newType = type->currentData().toString();
+    if (newType == QStringLiteral("enemy") && enemyRoam->isChecked() && !m_tilemapEnabled) {
+        QMessageBox::warning(this, tr("Enemy Patrol"),
+            tr("Walk on tilemap requires an Advanced Platformer tilemap. "
+               "Use a spline or disable tilemap roaming."));
+        return false;
+    }
     if (newType == QStringLiteral("deathzone") && !m_tilemapEnabled) {
         QMessageBox::warning(this, tr("Game Object"),
             tr("Hazard Zones require an Advanced Platformer tilemap. "
@@ -5110,16 +5517,29 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.breakFromBelow = breakFromBelow->isChecked();
     r.breakDropCollectableId = newType == QStringLiteral("enemy")
         ? enemyReward->currentData().toString() : breakReward->currentData().toString();
-    r.breakRewardImpulse = breakRewardImpulse->isChecked();
-    r.breakRewardVx = breakRewardVx->value();
-    r.breakRewardVy = breakRewardVy->value();
+    r.breakRewardImpulse = newType == QStringLiteral("enemy")
+        ? enemyRewardImpulse->isChecked() : breakRewardImpulse->isChecked();
+    r.breakRewardVx = newType == QStringLiteral("enemy") ? enemyRewardVx->value() : breakRewardVx->value();
+    r.breakRewardVy = newType == QStringLiteral("enemy") ? enemyRewardVy->value() : breakRewardVy->value();
     r.breakHits = newType == QStringLiteral("enemy") ? enemyHits->value() : breakHits->value();
     r.breakStrength = newType == QStringLiteral("enemy") ? enemyBounceY->value() : breakStrength->value();
     r.breakLaunchX = newType == QStringLiteral("enemy") ? enemyBounceX->value() : breakLaunchX->value();
+    r.enemyStompSideKick = enemyStompSideKick->isChecked();
+    r.enemyAttackDirection = enemyAttackDirection->currentData().toInt();
     r.enemyHurtsOnTouch = enemyHurt->isChecked();
-    r.enemyDamage = enemyDamage->value();
+    r.enemyDamage = newType == QStringLiteral("enemy") ? hazardDamage->value() : enemyDamage->value();
+    r.enemyRoam = enemyRoam->isChecked();
+    r.enemyRoamSpeed = enemyRoamSpeed->value();
+    r.enemyStepHeight = enemyStepHeight->value();
+    r.enemyRoamLeft = enemyRoamLeft->isChecked();
     r.enemyDefeatFrame = enemyDefeatFrame->value();
-    r.enemyDefeatFrames = enemyDefeatTicks->value();
+    r.enemyDefeatFrames = enemyDefeatDelay->value(); // legacy read-back
+    r.enemyDefeatCount = enemyDefeatCount->value();
+    r.enemyDefeatDelay = enemyDefeatDelay->value();
+    r.enemyStompOffsetX = enemyStompX->value();
+    r.enemyStompOffsetY = enemyStompY->value();
+    r.enemyStompWidth = enemyStompW->value();
+    r.enemyStompHeight = enemyStompH->value();
     r.objectInitiallyActive = (newType == QStringLiteral("collectable"))
         ? !hiddenCollectable->isChecked() : initiallyActive->isChecked();
     r.drawBehindTiles = behindTiles->isChecked();
@@ -5185,7 +5605,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         hiddenCollectable->setChecked(!old.objectInitiallyActive ||
             (old.objectType == QStringLiteral("collectable") &&
              std::any_of(m_resources.cbegin(), m_resources.cend(), [&](const Resource &candidate) {
-                return candidate.objectType == QStringLiteral("breakable") &&
+                return (candidate.objectType == QStringLiteral("breakable") ||
+                        candidate.objectType == QStringLiteral("enemy")) &&
                        candidate.breakDropCollectableId == old.id;
              })));
         behindTiles->setChecked(old.drawBehindTiles);
@@ -5229,7 +5650,29 @@ void SidboxGameDesigner::configureGameObject(int index)
         breakBounce->setChecked(old.breakBounce);
         breakStrength->setValue(old.breakStrength);
         breakLaunchX->setValue(old.breakLaunchX);
-        hazardDamage->setValue(old.hazardDamage);
+        hazardDamage->setValue(old.objectType == QStringLiteral("enemy") ? old.enemyDamage : old.hazardDamage);
+        enemyHits->setValue(old.breakHits);
+        enemyBounce->setChecked(old.breakBounce);
+        enemyBounceY->setValue(old.breakStrength);
+        enemyBounceX->setValue(old.breakLaunchX);
+        enemyStompSideKick->setChecked(old.enemyStompSideKick);
+        enemyAttackDirection->setCurrentIndex(qMax(0, enemyAttackDirection->findData(old.enemyAttackDirection)));
+        enemyRewardImpulse->setChecked(old.breakRewardImpulse);
+        enemyRewardVx->setValue(old.breakRewardVx);
+        enemyRewardVy->setValue(old.breakRewardVy);
+        enemyHurt->setChecked(old.enemyHurtsOnTouch);
+        enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
+        enemyDefeatFrame->setValue(old.enemyDefeatFrame);
+        enemyDefeatCount->setValue(old.enemyDefeatCount);
+        enemyDefeatDelay->setValue(old.enemyDefeatDelay);
+        enemyStompX->setValue(old.enemyStompOffsetX);
+        enemyStompY->setValue(old.enemyStompOffsetY);
+        enemyStompW->setValue(old.enemyStompWidth);
+        enemyStompH->setValue(old.enemyStompHeight);
+        enemyRoam->setChecked(old.enemyRoam);
+        enemyRoamSpeed->setValue(old.enemyRoamSpeed);
+        enemyStepHeight->setValue(old.enemyStepHeight);
+        enemyRoamLeft->setChecked(old.enemyRoamLeft);
         hazardKick->setChecked(old.hazardKick);
         hazardKickX->setValue(old.hazardKickX);
         hazardKickY->setValue(old.hazardKickY);
@@ -5285,6 +5728,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (palette.size() == 256)
                 atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
         }
+        refreshDeathStartButton();
         previewFrame = 0;
         previewPlaying = true;
         enableFields();

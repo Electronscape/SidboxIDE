@@ -7,6 +7,7 @@
 #include "gamecodegen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
+#include "gamehelpertemplates.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -301,7 +302,7 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         needed.insert(QStringLiteral("spline"));
     }
     const QDir installed(project.filePath(QStringLiteral("gamehelpers")));
-    const QStringList known = templates.entryList({QStringLiteral("*.c")}, QDir::Files, QDir::Name);
+    const QStringList known = templates.entryList({QStringLiteral("*.c"), QStringLiteral("*.rulec")}, QDir::Files, QDir::Name);
     for (const QString &name : known) {
         const QString base = QFileInfo(name).completeBaseName();
         if (QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".c")))
@@ -314,11 +315,39 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     helperNames.sort();
     for (const QString &base : helperNames) {
         for (const QString &ext : {QStringLiteral(".c"), QStringLiteral(".h")}) {
-            if (!QFileInfo::exists(templates.filePath(base + ext))) {
+            const QString source = GameHelperTemplates::sourcePath(templates, base, ext);
+            if (!QFileInfo::exists(source)) {
                 QMessageBox::warning(this, tr("Update Game Project"),
-                    tr("Missing SDK helper template: %1").arg(templates.filePath(base + ext)));
+                    tr("Missing SDK helper template: %1").arg(source));
                 return false;
             }
+        }
+    }
+
+    // Resolve every helper C/H template BEFORE backing up or modifying the
+    // project. Unknown and unfinished @IDE markers are fatal, never copied.
+    // Keep these rendered bytes for the actual install so the source cannot
+    // change between validation and commit.
+    QMap<QString, QByteArray> renderedHelpers;
+    for (const QString &base : helperNames) {
+        for (const QString &ext : {QStringLiteral(".c"), QStringLiteral(".h")}) {
+            QFile input(GameHelperTemplates::sourcePath(templates, base, ext));
+            if (!input.open(QIODevice::ReadOnly)) {
+                QMessageBox::warning(this, tr("Update Game Project"),
+                    tr("Cannot read game helper template: %1").arg(input.fileName()));
+                return false;
+            }
+            QByteArray output;
+            QString renderError;
+            if (!GameHelperTemplates::render(input.readAll(), base, ext, m_adventure,
+                                             &output, &renderError)) {
+                QMessageBox::warning(this, tr("Update Game Project"), renderError);
+                return false;
+            }
+            if (ext == QStringLiteral(".c"))
+                output.replace(QStringLiteral("\"%1.h\"").arg(base).toUtf8(),
+                               QStringLiteral("\"game%1.h\"").arg(base).toUtf8());
+            renderedHelpers.insert(base + ext, output);
         }
     }
 
@@ -454,15 +483,16 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         for (const QString &ext : {QStringLiteral(".h"), QStringLiteral(".c"), QStringLiteral(".txt")}) {
             const QString output = installed.filePath(installedBase + ext);
             if (ext == QStringLiteral(".txt") && QFileInfo::exists(output)) continue;
-            QFile source(templates.filePath(base + ext));
-            if (ext == QStringLiteral(".txt") && !source.exists()) continue;
-            if (!source.open(QIODevice::ReadOnly)) {
-                error = tr("Cannot read template: %1").arg(source.fileName()); break;
-            }
-            QByteArray bytes = source.readAll();
-            if (ext == QStringLiteral(".c")) {
-                bytes.replace(QStringLiteral("\"%1.h\"").arg(base).toUtf8(),
-                              QStringLiteral("\"%1.h\"").arg(installedBase).toUtf8());
+            QByteArray bytes;
+            if (ext == QStringLiteral(".txt")) {
+                QFile source(templates.filePath(base + ext));
+                if (!source.exists()) continue;
+                if (!source.open(QIODevice::ReadOnly)) {
+                    error = tr("Cannot read guide: %1").arg(source.fileName()); break;
+                }
+                bytes = source.readAll();
+            } else {
+                bytes = renderedHelpers.value(base + ext);
             }
             if (!QDir().mkpath(QFileInfo(output).absolutePath())) {
                 error = tr("Cannot create folder for: %1").arg(output); break;

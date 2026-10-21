@@ -232,10 +232,27 @@ bool SidboxGameDesigner::loadDesign()
             r.objectType == QStringLiteral("enemy") ? 20 : 4);
         r.breakStrength = qBound(1, object.value(QStringLiteral("breakStrength")).toInt(11), 100);
         r.breakLaunchX = qBound(-40, object.value(QStringLiteral("breakLaunchX")).toInt(0), 40);
+        // Designs from 4.40 with a nonzero sideways bounce must retain that behaviour.
+        // New objects start with vertical-only vulnerable-hit rebound.
+        r.enemyStompSideKick = object.value(QStringLiteral("enemyStompSideKick"))
+            .toBool(r.objectType == QStringLiteral("enemy") && r.breakLaunchX != 0);
+        r.enemyAttackDirection = qBound(0, object.value(QStringLiteral("enemyAttackDirection")).toInt(0), 2);
         r.enemyHurtsOnTouch = object.value(QStringLiteral("enemyHurtsOnTouch")).toBool(true);
         r.enemyDamage = qBound(0, object.value(QStringLiteral("enemyDamage")).toInt(1), 65535);
+        r.enemyRoam = object.value(QStringLiteral("enemyRoam")).toBool(false);
+        r.enemyRoamSpeed = qBound(1, object.value(QStringLiteral("enemyRoamSpeed")).toInt(1), 8);
+        r.enemyStepHeight = qBound(1, object.value(QStringLiteral("enemyStepHeight")).toInt(4), 12);
+        r.enemyRoamLeft = object.value(QStringLiteral("enemyRoamLeft")).toBool(false);
         r.enemyDefeatFrame = qBound(-1, object.value(QStringLiteral("enemyDefeatFrame")).toInt(-1), 255);
         r.enemyDefeatFrames = qBound(1, object.value(QStringLiteral("enemyDefeatFrames")).toInt(20), 255);
+        r.enemyDefeatCount = qBound(1, object.value(QStringLiteral("enemyDefeatCount")).toInt(1), 255);
+        // Old projects had only one defeated frame with a total display duration.
+        r.enemyDefeatDelay = qBound(1, object.value(QStringLiteral("enemyDefeatDelay"))
+                                    .toInt(r.enemyDefeatFrames), 255);
+        r.enemyStompOffsetX = qBound(-64, object.value(QStringLiteral("enemyStompOffsetX")).toInt(0), 64);
+        r.enemyStompOffsetY = qBound(-64, object.value(QStringLiteral("enemyStompOffsetY")).toInt(0), 64);
+        r.enemyStompWidth = qBound(0, object.value(QStringLiteral("enemyStompWidth")).toInt(0), 512);
+        r.enemyStompHeight = qBound(1, object.value(QStringLiteral("enemyStompHeight")).toInt(1), 64);
         r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
         r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
         r.hazardKickX = qBound(-40, object.value(QStringLiteral("hazardKickX")).toInt(0), 40);
@@ -467,10 +484,22 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("breakHits"), r.breakHits);
             object.insert(QStringLiteral("breakStrength"), r.breakStrength);
             object.insert(QStringLiteral("breakLaunchX"), r.breakLaunchX);
+            object.insert(QStringLiteral("enemyStompSideKick"), r.enemyStompSideKick);
+            object.insert(QStringLiteral("enemyAttackDirection"), r.enemyAttackDirection);
             object.insert(QStringLiteral("enemyHurtsOnTouch"), r.enemyHurtsOnTouch);
             object.insert(QStringLiteral("enemyDamage"), r.enemyDamage);
+            object.insert(QStringLiteral("enemyRoam"), r.enemyRoam);
+            object.insert(QStringLiteral("enemyRoamSpeed"), r.enemyRoamSpeed);
+            object.insert(QStringLiteral("enemyStepHeight"), r.enemyStepHeight);
+            object.insert(QStringLiteral("enemyRoamLeft"), r.enemyRoamLeft);
             object.insert(QStringLiteral("enemyDefeatFrame"), r.enemyDefeatFrame);
-            object.insert(QStringLiteral("enemyDefeatFrames"), r.enemyDefeatFrames);
+            object.insert(QStringLiteral("enemyDefeatFrames"), r.enemyDefeatDelay); // backward-readable
+            object.insert(QStringLiteral("enemyDefeatCount"), r.enemyDefeatCount);
+            object.insert(QStringLiteral("enemyDefeatDelay"), r.enemyDefeatDelay);
+            object.insert(QStringLiteral("enemyStompOffsetX"), r.enemyStompOffsetX);
+            object.insert(QStringLiteral("enemyStompOffsetY"), r.enemyStompOffsetY);
+            object.insert(QStringLiteral("enemyStompWidth"), r.enemyStompWidth);
+            object.insert(QStringLiteral("enemyStompHeight"), r.enemyStompHeight);
             object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
             object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
             object.insert(QStringLiteral("hazardKickX"), r.hazardKickX);

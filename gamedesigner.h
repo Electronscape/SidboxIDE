@@ -111,10 +111,21 @@ private:
         int breakHits = 1; // 1..4, stored per placed instance
         int breakStrength = 11; // upward px/frame for bounce
         int breakLaunchX = 0; // -left, +right px/frame
+        bool enemyStompSideKick = false; // Optional horizontal impulse on a VULNERABLE hit, separate from side-contact knockback.
+        int enemyAttackDirection = 0; // 0=from above, 1=from below, 2=either (uses the SAME editable green box).
         bool enemyHurtsOnTouch = true; // Side/underside hits use the shared player-damage event.
         int enemyDamage = 1;
+        bool enemyRoam = false; // Optional ground patrol (Advanced Platformer tile collision).
+        int enemyRoamSpeed = 1; // Whole pixels per 50-Hz frame; 1..8.
+        int enemyStepHeight = 4; // Slope/step climb and descent allowance, pixels.
+        bool enemyRoamLeft = false; // Initial patrol direction; checked from X flip independently.
         int enemyDefeatFrame = -1; // -1=vanish immediately; otherwise show this atlas frame.
-        int enemyDefeatFrames = 20; // 50 FPS ticks to show defeat frame.
+        int enemyDefeatFrames = 20; // Legacy one-frame duration (older projects).
+        int enemyDefeatCount = 1; // Sequential atlas frames, 1..256-start.
+        int enemyDefeatDelay = 20; // 50-Hz ticks PER frame; defaults to old pose duration.
+        int enemyStompOffsetX = 0, enemyStompOffsetY = 0; // Relative to normal body box.
+        int enemyStompWidth = 0; // 0=match body hitbox width.
+        int enemyStompHeight = 1; // Vertical tolerance beneath vulnerable-zone top.
         bool objectInitiallyActive = true; // Default for all old designs.
         bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
         bool objectFlipX = false, objectFlipY = false; // Optional BOB mirroring; hitbox stays in place.

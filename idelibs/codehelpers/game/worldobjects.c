@@ -36,10 +36,23 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->break_strength = 11;
     object->break_launch_x = 0;
     object->break_touching = 0;
+    object->enemy_roam = 0;
+    object->enemy_roam_speed = 1;
+    object->enemy_step_height = 4;
+    object->enemy_roam_direction = 1;
+    object->enemy_base_flip_x = sprite ? !!(sprite->flags & BLIT_FLAG_FLIP_X) : 0;
     object->enemy_hurts_on_touch = 1;
+    object->enemy_stomp_side_kick = 0;
+    object->enemy_attack_direction = 0; /* Legacy top-only stomps. */
     object->enemy_defeat_frame = -1;
     object->enemy_defeat_frames = 20;
+    object->enemy_defeat_count = 1;
+    object->enemy_defeat_delay = 0; /* 0 preserves legacy enemy_defeat_frames override. */
     object->enemy_dying = 0;
+    object->enemy_stomp_offset_x = 0;
+    object->enemy_stomp_offset_y = 0;
+    object->enemy_stomp_width = 0;
+    object->enemy_stomp_height = 1;
     object->break_triggered = 0;
     object->break_hit_triggered = 0;
     object->break_bounce_triggered = 0;
@@ -101,8 +114,20 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
         object->hazard_bounce_triggered = 0;
         if (!object->active) {
             if (object->type == GAME_OBJECT_ENEMY && object->enemy_dying) {
+                const uint8_t count_frames = object->enemy_defeat_count
+                    ? object->enemy_defeat_count : 1;
+                const uint8_t delay = object->enemy_defeat_delay
+                    ? object->enemy_defeat_delay : (object->enemy_defeat_frames
+                        ? object->enemy_defeat_frames : 1);
+                const uint32_t total = (uint32_t)count_frames * delay;
                 object->enemy_dying = frames >= object->enemy_dying
-                    ? 0 : (uint8_t)(object->enemy_dying - frames);
+                    ? 0 : (uint16_t)(object->enemy_dying - frames);
+                if (object->enemy_dying && object->sprite) {
+                    uint32_t elapsed = total - object->enemy_dying;
+                    uint32_t frame = elapsed / delay;
+                    if (frame >= count_frames) frame = count_frames - 1;
+                    object->sprite->index = (uint8_t)(object->enemy_defeat_frame + frame);
+                }
             }
             object->spring_touching = 0;
             object->break_touching = 0;
@@ -127,6 +152,62 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
             object->y = object->sprite->drawy;
         }
         if (object->animation) run_animation(object->animation, frames);
+    }
+}
+
+/* Patrol along the collision map without an NPC physics engine. Every pixel
+   step checks the same walls and solid slope interior as the tile player.
+   Climb at most enemy_step_height pixels and follow descents of the same size.
+   Reverse rather than walk off a cliff; placement starts on solid ground. */
+void game_world_objects_roam(game_world_object_t *objects, uint16_t count,
+    uint16_t frames, uint8_t (*blocked)(int32_t x, int32_t y,
+        uint16_t width, uint16_t height, void *context), void *context)
+{
+    if (!objects || !frames || !blocked) return;
+    for (uint16_t n = 0; n < count; ++n) {
+        game_world_object_t *o = &objects[n];
+        if (o->type != GAME_OBJECT_ENEMY || !o->active || !o->enemy_roam ||
+            !o->width || !o->height) continue;
+        int dir = o->enemy_roam_direction < 0 ? -1 : 1;
+        int speed = o->enemy_roam_speed ? o->enemy_roam_speed : 1;
+        int step = o->enemy_step_height ? o->enemy_step_height : 1;
+        if (speed > 8) speed = 8;
+        if (step > 12) step = 12;
+        for (uint16_t frame = 0; frame < frames; ++frame) {
+            for (int pixel = 0; pixel < speed; ++pixel) {
+                const int32_t nx = o->x + dir;
+                int32_t ny = o->y;
+                if (blocked(nx, ny, o->width, o->height, context)) {
+                    /* A slope may require climbing a few pixels first. */
+                    int climb;
+                    for (climb = 1; climb <= step; ++climb) {
+                        if (!blocked(nx, o->y - climb, o->width, o->height, context)) {
+                            ny = o->y - climb;
+                            break;
+                        }
+                    }
+                    if (climb > step) { dir = -dir; break; }
+                }
+                /* Follow downhill terrain without floating above it. A ledge
+                   reverses direction instead of walking off. */
+                int down;
+                for (down = 0; down <= step; ++down) {
+                    if (blocked(nx, ny + down + 1, o->width, o->height, context))
+                        break;
+                }
+                if (down > step) { dir = -dir; break; }
+                o->x = nx;
+                o->y = ny + down;
+            }
+        }
+        o->enemy_roam_direction = (int8_t)dir;
+        if (o->sprite) {
+            o->sprite->drawx = clamp16(o->x);
+            o->sprite->drawy = clamp16(o->y);
+            /* Always restore original designer X flip before applying facing. */
+            o->sprite->flags = (uint16_t)((o->sprite->flags & ~BLIT_FLAG_FLIP_X) |
+                ((!!o->enemy_base_flip_x != (dir < 0)) ? BLIT_FLAG_FLIP_X : 0));
+        }
     }
 }
 
@@ -258,6 +339,49 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
    Touch springs sweep the player hitbox against the spring's moving hitbox,
    so a fast crossing does not slip through between frames. A contact latch
    stops repeated launches until the player has actually left the spring. */
+/* Apply a qualifying vulnerable hit once per contact, irrespective of attack side.
+   The red body's damage logic remains separate in hazards(). */
+static uint8_t enemy_vulnerable_hit(game_world_object_t *o,
+                                    game_world_player_t *p, uint8_t from_below)
+{
+    if (o->break_touching) return 0;
+    o->break_touching = 1;
+    o->hazard_touching = 1; /* This accepted attack is never a damage hit. */
+    if (o->break_hits_done < 255) ++o->break_hits_done;
+    o->break_hit_triggered = 1;
+    if (o->break_hits_done >= (o->break_hits_required ? o->break_hits_required : 1)) {
+        o->break_triggered = 1;
+        o->active = 0;
+        if (o->sprite && o->enemy_defeat_frame >= 0 && o->enemy_defeat_frames) {
+            const uint8_t frames = o->enemy_defeat_count ? o->enemy_defeat_count : 1;
+            const uint8_t delay = o->enemy_defeat_delay ? o->enemy_defeat_delay :
+                (o->enemy_defeat_frames ? o->enemy_defeat_frames : 1);
+            o->sprite->index = (uint8_t)o->enemy_defeat_frame;
+            o->enemy_dying = (uint16_t)((uint32_t)frames * delay);
+        }
+    }
+    if (o->break_bounce) {
+        o->break_bounce_triggered = 1;
+        /* A head-butt recoils DOWN instead of launching the player back into
+           the underside; top stomps keep the normal UP rebound. */
+        const int32_t speed = o->break_strength > 0 ? o->break_strength : 11;
+        *p->vy100 = from_below ? (speed > 4 ? speed / 2 : 2) * 100 : -speed * 100;
+        *p->on_ground = 0;
+        if (p->coyote) *p->coyote = 0;
+        if (o->enemy_stomp_side_kick && o->break_launch_x) {
+            if (p->spring_force_vx100) {
+                int64_t vx = (int64_t)*p->spring_force_vx100 + (int64_t)o->break_launch_x * 100;
+                if (vx > 3200) vx = 3200;
+                if (vx < -3200) vx = -3200;
+                *p->spring_force_vx100 = (int32_t)vx;
+            } else p->spring_x100 = (int32_t)o->break_launch_x * 100;
+        }
+    } else if (from_below && *p->vy100 < 0) {
+        *p->vy100 = 0; /* Head contact always stops upward penetration. */
+    }
+    return 1;
+}
+
 void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                               game_world_player_t *p)
 {
@@ -295,12 +419,43 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         }
         if ((o->type == GAME_OBJECT_BREAKABLE || o->type == GAME_OBJECT_ENEMY) && o->break_touching) {
             /* A hit only rearms once the player's bounds have separated. */
+            const int32_t touch_x = o->type == GAME_OBJECT_ENEMY
+                ? o->x + o->enemy_stomp_offset_x : o->x;
+            const int32_t touch_y = o->type == GAME_OBJECT_ENEMY
+                ? o->y + o->enemy_stomp_offset_y : o->y;
+            const uint16_t touch_w = o->type == GAME_OBJECT_ENEMY && o->enemy_stomp_width
+                ? o->enemy_stomp_width : o->width;
+            const uint16_t touch_h = o->type == GAME_OBJECT_ENEMY
+                ? (o->enemy_stomp_height ? o->enemy_stomp_height : 1) : o->height;
             const uint8_t still_touching = (uint8_t)(
-                (int64_t)x <= (int64_t)o->x + o->width &&
-                (int64_t)x + p->width >= o->x &&
-                (int64_t)y <= (int64_t)o->y + o->height &&
-                (int64_t)y + p->height >= o->y);
+                (int64_t)x <= (int64_t)touch_x + touch_w &&
+                (int64_t)x + p->width >= touch_x &&
+                (int64_t)y <= (int64_t)touch_y + touch_h &&
+                (int64_t)y + p->height >= touch_y);
             if (!still_touching) o->break_touching = 0;
+        }
+        /* Optional enemy WEAK SPOT from BELOW: swept rising-head crossing.
+           Uses the green rectangle, not the dangerous red body. Requires a
+           deliberate player jump, just like existing breakable head-butts.
+           Contact is latched until full separation for multi-hit enemies. */
+        if (o->type == GAME_OBJECT_ENEMY && o->enemy_attack_direction != 0 &&
+            !o->break_touching && p->break_stomp_armed && *p->vy100 < 0) {
+            const int32_t zone_x = o->x + o->enemy_stomp_offset_x;
+            const int32_t zone_y = o->y + o->enemy_stomp_offset_y;
+            const int32_t zone_w = o->enemy_stomp_width ? o->enemy_stomp_width : o->width;
+            const int32_t zone_h = o->enemy_stomp_height ? o->enemy_stomp_height : 1;
+            const int64_t old_top = (int64_t)p->before_feet - p->height;
+            const int64_t old_bottom = (int64_t)o->previous_y + o->enemy_stomp_offset_y + zone_h;
+            const int64_t new_bottom = (int64_t)zone_y + zone_h;
+            if (old_top >= old_bottom && y <= new_bottom && y < old_top &&
+                (int64_t)x < (int64_t)zone_x + zone_w &&
+                (int64_t)x + p->width > zone_x) {
+                *p->y100 = ((int32_t)new_bottom - p->offset_y) * 100;
+                enemy_vulnerable_hit(o, p, 1);
+                *p->on_ground = 0;
+                p->break_stomp_armed = 0;
+                return;
+            }
         }
         /* Head-butt blocks register a fresh upward crossing of their underside.
            The jump must be deliberate, not a spike/spring knockback or fall.
@@ -418,25 +573,39 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
             continue; /* Touch springs never behave as standing platforms. */
         }
 
-        /* The old one-way landing rules remain unchanged for normal
-           springs, moving lifts and conveyors. */
+        /* Enemy stomp area is independent from the dangerous body rectangle.
+           The top of this area is a one-way landing plane, and the zone's
+           height allows late/diagonal foot contact. Ordinary surfaces keep
+           their original landing rules and their original hitboxes. */
         if (rising && !jumping_now) continue;
-        const int64_t start = (int64_t)p->before_feet - o->previous_y;
-        const int64_t end = (int64_t)feet - o->y;
+        const uint8_t enemy = o->type == GAME_OBJECT_ENEMY;
+        if (enemy && o->enemy_attack_direction == 1) continue; /* BELOW only. */
+        const int32_t stomp_y = o->y + (enemy ? o->enemy_stomp_offset_y : 0);
+        const int32_t prior_stomp_y = o->previous_y + (enemy ? o->enemy_stomp_offset_y : 0);
+        const int32_t stomp_x = o->x + (enemy ? o->enemy_stomp_offset_x : 0);
+        const int32_t prior_stomp_x = o->previous_x + (enemy ? o->enemy_stomp_offset_x : 0);
+        const uint16_t stomp_w = enemy && o->enemy_stomp_width
+            ? o->enemy_stomp_width : o->width;
+        const int32_t tolerance = enemy ? (o->enemy_stomp_height
+            ? o->enemy_stomp_height : 1) : 0;
+        const int64_t start = (int64_t)p->before_feet - prior_stomp_y;
+        const int64_t end = (int64_t)feet - stomp_y;
         const uint8_t spring_jump_contact = (uint8_t)(
             rising && jumping_now && p->before_vy100 >= 0 &&
             o->type == GAME_OBJECT_SPRING && start == 0);
-        if (!spring_jump_contact && (rising || start > 0 || end < 0)) continue;
-        int64_t n = spring_jump_contact ? 0 : -start;
+        if (!spring_jump_contact && (rising || start > tolerance || end < 0 ||
+            (enemy && start > 0 && (end <= start || *p->vy100 <= 0)))) continue;
+        int64_t n = spring_jump_contact ? 0 : (start > 0 ? end - start : -start);
         int64_t d = spring_jump_contact ? 1 : end - start;
         if (d == 0) { n = 1; d = 1; }
         else if (n == 0 && !spring_jump_contact) { n = d; }
         const int64_t player_at_x = (int64_t)p->before_x * (d - n) + (int64_t)x * n;
-        const int64_t object_at_x = (int64_t)o->previous_x * (d - n) + (int64_t)o->x * n;
+        const int64_t object_at_x = (int64_t)prior_stomp_x * (d - n) + (int64_t)stomp_x * n;
         if (player_at_x + (int64_t)p->width * d <= object_at_x ||
-            player_at_x >= object_at_x + (int64_t)o->width * d) continue;
+            player_at_x >= object_at_x + (int64_t)stomp_w * d) continue;
         if (!best || n * best_d < best_n * d ||
-            (n * best_d == best_n * d && !best_touch && o->y < best->y)) {
+            (n * best_d == best_n * d && !best_touch && stomp_y <
+                best->y + (best->type == GAME_OBJECT_ENEMY ? best->enemy_stomp_offset_y : 0))) {
             best = o;
             best_touch = 0;
             best_n = n;
@@ -445,7 +614,8 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
     }
     if (!best) return;
     /* Side/underside contact must NOT teleport the player onto the top. */
-    if (!best_touch) *p->y100 = (best->y - p->height - p->offset_y) * 100;
+    if (!best_touch) *p->y100 = (best->y + (best->type == GAME_OBJECT_ENEMY
+        ? best->enemy_stomp_offset_y : 0) - p->height - p->offset_y) * 100;
     if (best->type == GAME_OBJECT_BREAKABLE || best->type == GAME_OBJECT_ENEMY) {
         /* Touch-mode counts a fresh contact from any direction. Stomp-mode
            counts ONLY a landing following an actual player jump; gravity
@@ -453,24 +623,24 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         const uint8_t valid_hit = (uint8_t)(best->type == GAME_OBJECT_ENEMY
             ? (!best_touch && !rising) : (!best->break_from_below &&
             (best_touch || p->break_stomp_armed)));
-        if (valid_hit && !best->break_touching) {
-            best->break_touching = 1;
-            if (best->type == GAME_OBJECT_ENEMY) best->hazard_touching = 1;
-            if (best->break_hits_done < 255) ++best->break_hits_done;
-            best->break_hit_triggered = 1; /* A valid hit, including the final break. */
-            if (best->break_hits_done >= (best->break_hits_required
-                    ? best->break_hits_required : 1)) {
-                best->break_triggered = 1;
-                best->active = 0; /* Collision disappears immediately. */
-                if (best->type == GAME_OBJECT_ENEMY && best->sprite &&
-                    best->enemy_defeat_frame >= 0 && best->enemy_defeat_frames) {
-                    best->sprite->index = (uint8_t)best->enemy_defeat_frame;
-                    best->enemy_dying = best->enemy_defeat_frames;
+        if (best->type == GAME_OBJECT_ENEMY) {
+            if (valid_hit && !best_touch && enemy_vulnerable_hit(best, p, 0)) {
+                if (best->break_bounce) return; /* Already performed vertical rebound. */
+            }
+        } else {
+            if (valid_hit && !best->break_touching) {
+                best->break_touching = 1;
+                if (best->break_hits_done < 255) ++best->break_hits_done;
+                best->break_hit_triggered = 1;
+                if (best->break_hits_done >= (best->break_hits_required ? best->break_hits_required : 1)) {
+                    best->break_triggered = 1;
+                    best->active = 0;
                 }
             }
         }
-        if (!best_touch && valid_hit && best->break_bounce && !best->break_touch_mode) {
-            best->break_bounce_triggered = 1; /* A real bounce, never mere contact. */
+        if (!best_touch && valid_hit && best->type == GAME_OBJECT_BREAKABLE &&
+            best->break_bounce && !best->break_touch_mode) {
+            best->break_bounce_triggered = 1;
             *p->vy100 = -(int32_t)(best->break_strength > 0 ? best->break_strength : 11) * 100;
             *p->on_ground = 0;
             if (p->coyote) *p->coyote = 0;
@@ -480,9 +650,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                 if (vx > 3200) vx = 3200;
                 if (vx < -3200) vx = -3200;
                 *p->spring_force_vx100 = (int32_t)vx;
-            } else {
-                p->spring_x100 = (int32_t)best->break_launch_x * 100;
-            }
+            } else p->spring_x100 = (int32_t)best->break_launch_x * 100;
         } else if (!best_touch) {
             /* Walking/falling onto a breakable is a normal landing. An
                unbounced successful stomp consumes the intentional jump. */
@@ -656,17 +824,48 @@ void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
         p->hurt_ticks_remaining = (uint16_t)(duration > 65535u ? 65535u : duration);
         if (o->hazard_kick) {
             o->hazard_bounce_triggered = 1;
+            /* Enemy knockback uses the APPROACH side, not current sprite
+               facing or final centres (fast movement may cross centres).
+               Relative motion also handles an enemy walking into a stationary
+               player. Ordinary Murder Objects keep their signed X direction. */
+            int32_t kick_x = o->hazard_kick_x;
+            if (o->type == GAME_OBJECT_ENEMY && kick_x) {
+                const int64_t previous_player_left = p->before_x;
+                const int64_t previous_player_right = previous_player_left + p->width;
+                const int64_t previous_enemy_left = o->previous_x;
+                const int64_t previous_enemy_right = previous_enemy_left + o->width;
+                const int64_t relative_dx = ((int64_t)x - p->before_x) -
+                                            ((int64_t)o->x - o->previous_x);
+                int direction;
+                if (previous_player_right <= previous_enemy_left) {
+                    direction = -1; /* Player entered from the left. */
+                } else if (previous_player_left >= previous_enemy_right) {
+                    direction = 1;  /* Player entered from the right. */
+                } else if (relative_dx > 0) {
+                    direction = -1; /* Player moved right relative to enemy. */
+                } else if (relative_dx < 0) {
+                    direction = 1;  /* Enemy approached from the left, etc. */
+                } else {
+                    direction = ((previous_player_left * 2 + p->width) <=
+                                 (previous_enemy_left * 2 + o->width)) ? -1 : 1;
+                }
+                if (kick_x < 0) kick_x = -kick_x;
+                kick_x *= direction;
+            }
             *p->vy100 = (int32_t)o->hazard_kick_y * 100;
             *p->on_ground = 0;
             if (p->coyote) *p->coyote = 0;
             if (p->spring_force_vx100) {
-                int64_t vx = (int64_t)*p->spring_force_vx100 +
-                             (int64_t)o->hazard_kick_x * 100;
+                /* A hit must REVERSE movement toward the enemy even if an
+                   older spring force is still pushing the opposite way. */
+                int64_t vx = o->type == GAME_OBJECT_ENEMY
+                    ? (int64_t)kick_x * 100
+                    : (int64_t)*p->spring_force_vx100 + (int64_t)kick_x * 100;
                 if (vx > 3200) vx = 3200;
                 if (vx < -3200) vx = -3200;
                 *p->spring_force_vx100 = (int32_t)vx;
             } else {
-                p->spring_x100 = (int32_t)o->hazard_kick_x * 100;
+                p->spring_x100 = kick_x * 100;
             }
         }
         break; /* One damage event maximum per frame. */

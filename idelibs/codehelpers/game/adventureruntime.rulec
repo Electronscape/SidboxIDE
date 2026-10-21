@@ -2,10 +2,25 @@
 #include "apis.h"
 #include <string.h>
 
+
 /* Bounded static memory: 64 inventory types, up to 3 choices per node. */
-#define GA_MAX_ITEMS 64
-#define GA_COLS 54 /* 8-pixel-wide glyphs, not 16-pixel glyphs. */
-#define GA_LINES 6
+#define GA_MAX_ITEMS GAME_ADVENTURE_MAX_ITEMS
+#define GA_COLS @IDE{GA_COLS} /* 8-pixel-wide glyphs, not 16-pixel glyphs. */
+#define GA_LINES @IDE{GA_LINES}
+
+/* Lets do a lot of sex! */
+/* Design-time values. These are filled from Adventure Editor when this
+   .rulec is rendered into gameadventureruntime.c by Update Game Project.
+   Runtime counters/pointers below are internal state, not project settings. */
+
+
+#define GA_DIALOG_DEFAULT_X @IDE{DIALOG_X}
+#define GA_DIALOG_DEFAULT_Y @IDE{DIALOG_Y}
+#define GA_DIALOG_DEFAULT_W @IDE{DIALOG_WIDTH}u
+#define GA_DIALOG_DEFAULT_H @IDE{DIALOG_HEIGHT}u
+#define GA_TEXT_DEFAULT_COLOUR @IDE{TEXT_COLOUR_INDEX}u
+#define GA_TEXT_DEFAULT_OUTLINE @IDE{TEXT_OUTLINE_ENABLED}u
+#define GA_TEXT_DEFAULT_OUTLINE_COLOUR @IDE{OUTLINE_COLOUR_INDEX}u
 static const game_adventure_item_t *ga_items;
 static const game_adventure_node_t *ga_nodes;
 static const game_adventure_npc_t *ga_npcs;
@@ -34,10 +49,12 @@ static uint16_t ga_skin_w, ga_skin_h;
 static uint8_t ga_tile, ga_frames_per_char;
 static uint16_t ga_skin_indices[9];
 static uint8_t ga_skin_flips[9];
-static uint8_t ga_text_colour=15, ga_outline_enabled, ga_outline_colour;
+static uint8_t ga_text_colour=GA_TEXT_DEFAULT_COLOUR;
+static uint8_t ga_outline_enabled=GA_TEXT_DEFAULT_OUTLINE;
+static uint8_t ga_outline_colour=GA_TEXT_DEFAULT_OUTLINE_COLOUR;
 /* Dialogue height is a MINIMUM: expanded at draw time for the current node. */
-static int16_t ga_dialog_x=20, ga_dialog_y=148;
-static uint16_t ga_dialog_w=440, ga_dialog_h=162;
+static int16_t ga_dialog_x=GA_DIALOG_DEFAULT_X, ga_dialog_y=GA_DIALOG_DEFAULT_Y;
+static uint16_t ga_dialog_w=GA_DIALOG_DEFAULT_W, ga_dialog_h=GA_DIALOG_DEFAULT_H;
 
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height)
 {
@@ -188,16 +205,21 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_state = ga_prev_buttons = ga_choice = ga_inventory_offset = 0;
     ga_active_npc = 0xFFFFu;
     game_adventure_npc_animations(0,0);
-    game_adventure_text_style(15,0,0);
+    game_adventure_text_style(GA_TEXT_DEFAULT_COLOUR,
+                              GA_TEXT_DEFAULT_OUTLINE,
+                              GA_TEXT_DEFAULT_OUTLINE_COLOUR);
     ga_node = ga_typed = ga_ticks = ga_reply_typed = ga_reply_ticks = 0;
     ga_after_reply = -1; ga_reply = 0;
     ga_skin_pixels = skin_pixels; ga_skin_w = atlas_width; ga_skin_h = atlas_height;
-    ga_tile = tile_size >= 4 && tile_size <= 32 ? tile_size : 8;
+    ga_tile = tile_size >= 4 && tile_size <= 32 ? tile_size
+                                                    : GAME_ADVENTURE_DEFAULT_TILE_SIZE;
     for (uint8_t i = 0; i < 9; ++i) ga_skin_indices[i] = skin_indices ? skin_indices[i] : i;
     game_adventure_skin_flips(0);
-    ga_frames_per_char = frames_per_char ? frames_per_char : 2;
+    ga_frames_per_char = frames_per_char ? frames_per_char
+                                           : GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR;
     ga_action = action; ga_user = user;
-    game_adventure_dialogue_box(20, 148, 440, 162);
+    game_adventure_dialogue_box(GA_DIALOG_DEFAULT_X, GA_DIALOG_DEFAULT_Y,
+                                GA_DIALOG_DEFAULT_W, GA_DIALOG_DEFAULT_H);
 }
 static uint8_t ga_choice_visible(uint16_t node, uint8_t choice)
 {
