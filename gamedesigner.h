@@ -49,6 +49,8 @@ public:
 
     std::function<void()> tabTitleChanged;
     std::function<void()> assetFilesChanged;
+    // MainWindow owns project-wide .sbgm discovery and batch updates.
+    std::function<bool()> updateAllProjectWorlds;
     // True when an open main.c editor has unsaved changes.
     std::function<bool(const QString &)> mainSourceHasUnsavedEdits;
     QString filePath() const;
@@ -179,6 +181,8 @@ private:
     bool hasAdventure() const;
     void openTilemapEditor();
     void openPlayerAnimationEditor(int resourceIndex = -1);
+    void openPlayerEditor();
+    void editPlayerStart();
     void rebuildTilemapOverlay();
     bool exportTilemap(bool showMessage, bool includeMissingHelper = false);
     struct SplinePath {
@@ -245,6 +249,13 @@ private:
     QString m_filePath;
     QVector<Resource> m_resources;
     QJsonObject m_adventure; // Advanced Platformer dialogue/inventory data (in .sbgm)
+    // Stage 5.4: world owns spawn only. The player is project-owned (.sbpi).
+    QString m_playerProfile = QStringLiteral("players/player.sbpi");
+    QString m_playerEntry = QStringLiteral("default");
+    int m_playerStartX = 0, m_playerStartY = 0;
+    int m_playerFacing = 1; // 0=left, 1=right
+    QGraphicsItem *m_playerStartMarker = nullptr;
+
     bool m_dirty = false;
     bool m_valid = true;
     bool m_loading = false;

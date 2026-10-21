@@ -1,0 +1,93 @@
+/* GamerGirl Shared Player -- generated from players/player.sbpi. DO NOT EDIT.
+ * Atlas is allocated once and survives all world changes. TFCard PPB file.
+ */
+#include "gameplayer.h"
+#include <stdlib.h>
+#include <string.h>
+const gameplayer_defaults_t gameplayer_defaults = {
+    @IDE{HEALTH}u,@IDE{LIVES}u,@IDE{SCORE}u,
+    @IDE{CUSTOM_HITBOX}u,@IDE{PHYSICS_PRESET}u,
+    @IDE{HITBOX_X},@IDE{HITBOX_Y},@IDE{HITBOX_W}u,@IDE{HITBOX_H}u
+};
+gfxbob_t gameplayer_sprite;
+static uint8_t *gameplayer_pixels;
+static const gameplayer_inventory_entry_t gameplayer_items[] = {
+@IDE{INVENTORY_ROWS}    {0,0,0}
+};
+const gameplayer_inventory_entry_t *gameplayer_initial_inventory(uint16_t *count) {
+    if (count) *count = @IDE{INVENTORY_COUNT}u;
+    return gameplayer_items;
+}
+uint8_t gameplayer_inventory_visible(const char *name) {
+    if (!name) return 1;
+    uint16_t count = 0;
+    const gameplayer_inventory_entry_t *items = gameplayer_initial_inventory(&count);
+    for (uint16_t i = 0; i < count; ++i)
+        if (strcmp(items[i].name, name) == 0)
+            return items[i].hidden ? 0u : 1u;
+    return 1; /* Items never defined in the .sbpi remain visible by default. */
+}
+typedef struct {
+    const char *name;
+    int32_t initial;
+    int32_t value;
+} gameplayer_stat_entry_t;
+static gameplayer_stat_entry_t gameplayer_stats[] = {
+@IDE{CUSTOM_STAT_ROWS}    {0, 0, 0}
+};
+uint16_t gameplayer_custom_stat_count(void) { return @IDE{CUSTOM_STAT_COUNT}u; }
+const char *gameplayer_custom_stat_name(uint16_t index) {
+    return index < gameplayer_custom_stat_count() ? gameplayer_stats[index].name : 0;
+}
+uint8_t gameplayer_stat_get(const char *name, int32_t *out_value) {
+    if (!name || !out_value) return 0;
+    for (uint16_t i = 0; i < gameplayer_custom_stat_count(); ++i) {
+        if (strcmp(name, gameplayer_stats[i].name) == 0) {
+            *out_value = gameplayer_stats[i].value; return 1;
+        }
+    }
+    return 0;
+}
+uint8_t gameplayer_stat_set(const char *name, int32_t value) {
+    if (!name) return 0;
+    for (uint16_t i = 0; i < gameplayer_custom_stat_count(); ++i) {
+        if (strcmp(name, gameplayer_stats[i].name) == 0) {
+            gameplayer_stats[i].value = value; return 1;
+        }
+    }
+    return 0;
+}
+void gameplayer_shutdown(void) {
+    memset(&gameplayer_sprite,0,sizeof(gameplayer_sprite));
+    free(gameplayer_pixels); gameplayer_pixels=0;
+}
+int gameplayer_init(void) {
+    const char *path = @IDE{PPB_PATH};
+    const uint32_t bytes = @IDE{ATLAS_W}u * @IDE{ATLAS_H}u;
+    uint8_t header[16]; uint32_t got=0;
+    if (gameplayer_pixels) return 1; /* persistent across worlds */
+    for (uint16_t i = 0; i < gameplayer_custom_stat_count(); ++i)
+        gameplayer_stats[i].value = gameplayer_stats[i].initial;
+    if (sfopen(0,(char*)path,SD_READ)!=F_OK) return 0;
+    if (sfread(0,header,16,&got)!=F_OK || got!=16u
+        || (((uint32_t)header[1]<<8)|header[2])!=@IDE{ATLAS_W}u
+        || (((uint32_t)header[3]<<8)|header[4])!=@IDE{ATLAS_H}u
+        || (((uint32_t)header[5]<<24)|((uint32_t)header[6]<<16)
+            |((uint32_t)header[7]<<8)|header[8])!=bytes) {
+        sfclose(0); return 0;
+    }
+    gameplayer_pixels = (uint8_t*)malloc(bytes);
+    if (!gameplayer_pixels) { sfclose(0); return 0; }
+    if (sflseek(0,1040u)!=F_OK || sfread(0,gameplayer_pixels,bytes,&got)!=F_OK || got!=bytes) {
+        sfclose(0); gameplayer_shutdown(); return 0;
+    }
+    sfclose(0);
+    memset(&gameplayer_sprite,0,sizeof(gameplayer_sprite));
+    gameplayer_sprite.imgdat=gameplayer_pixels;
+    gameplayer_sprite.atlas_stride=@IDE{ATLAS_W}u;
+    gameplayer_sprite.atlas_height=@IDE{ATLAS_H}u;
+    gameplayer_sprite.width=@IDE{CELL_W}u;
+    gameplayer_sprite.height=@IDE{CELL_H}u;
+    gameplayer_sprite.scale=100;
+    return 1;
+}

@@ -381,6 +381,11 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     // exist in the snapshot; user-owned main.c is backed up, never replaced.
     QSet<QString> outputs;
     outputs.insert(QFileInfo(m_filePath).absoluteFilePath());
+    const QDir gameProject(QFileInfo(m_filePath).absolutePath());
+    if (QFileInfo::exists(gameProject.filePath(QStringLiteral("players/player.sbpi")))) {
+        outputs.insert(QStringLiteral("gamehelpers/gameplayer.c"));
+        outputs.insert(QStringLiteral("gamehelpers/gameplayer.h"));
+    }
     outputs.insert(QStringLiteral("gameassets/gameassets.c"));
     outputs.insert(QStringLiteral("gameassets/gameassets.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.c"));

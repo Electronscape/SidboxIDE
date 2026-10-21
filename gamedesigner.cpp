@@ -1,5 +1,7 @@
 #include "gamedesigner.h"
 #include "gameworldsnapshot.h"
+#include "gameplayerprofile.h"
+#include "gamenpcitemindex.h"
 #include "gamedesigner_limits.h"
 #include "ppbcodec.h"
 #include "pngpaletteimport.h"
@@ -84,6 +86,8 @@
 #include <zlib.h>
 #include <limits>
 #include <QScrollArea>
+#include <QTabWidget>
+#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QSettings>
@@ -292,12 +296,14 @@ static int chooseDeathAtlasStart(QWidget *parent, const QImage &atlas,
 class WorldObjectTag final : public QGraphicsSimpleTextItem
 {
 public:
-    explicit WorldObjectTag(const QString &name, QGraphicsItem *parent)
-        : QGraphicsSimpleTextItem(name, parent)
+    explicit WorldObjectTag(const QString &name, QGraphicsItem *parent,
+                            int fontPixels = 14,
+                            const QColor &fill = QColor(255, 255, 225))
+        : QGraphicsSimpleTextItem(name, parent), m_fill(fill)
     {
         QFont tagFont = font();
         tagFont.setWeight(QFont::Black);
-        tagFont.setPixelSize(14);
+        tagFont.setPixelSize(fontPixels);
         setFont(tagFont);
         // Reserve paint bounds for the outline even though paint() draws it itself.
         setPen(QPen(Qt::black, 3.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -315,10 +321,12 @@ protected:
                              Qt::RoundCap, Qt::RoundJoin));
         painter->drawPath(glyph);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(255, 255, 225)); // constant, never theme.text
+        painter->setBrush(m_fill); // stable label colour, independent of UI theme
         painter->drawPath(glyph);
         painter->restore();
     }
+private:
+    QColor m_fill;
 };
 
 class GameScene final : public QGraphicsScene
@@ -822,7 +830,7 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
             || base == QStringLiteral("gameadventureempty")
             || base == QStringLiteral("maingame") || base == QStringLiteral("splinepaths")
             || base == QStringLiteral("level1") || base == QStringLiteral("worldmap")
-            || base == QStringLiteral("embeddedresource")))) return;
+            || base == QStringLiteral("embeddedresource") || base == QStringLiteral("gameplayer") || base == QStringLiteral("gameworlds")))) return;
     const QDir templateFolder(QDir(helperTemplatesRoot()).filePath(category));
     const QString sourceH = category == QStringLiteral("game")
         ? GameHelperTemplates::sourcePath(templateFolder, base, QStringLiteral(".h"))
@@ -1104,7 +1112,7 @@ void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
     int index = resourceIndex >= 0 ? resourceIndex : selectedIndex();
     if (index < 0 || index >= m_resources.size() ||
         m_resources.at(index).kind != QStringLiteral("sprite")) {
-        QMessageBox::information(this, tr("Player Animations"),
+        QMessageBox::information(this, tr("Sprite Animations"),
             tr("Select a Sprite under Game Resources first.\n\n"
                "Animation states belong to the selected Sprite atlas."));
         return;
@@ -1112,7 +1120,7 @@ void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
     const Resource &resource = m_resources.at(index);
     const QString atlas = resolvedPath(resource.path);
     if (!QFileInfo::exists(atlas)) {
-        QMessageBox::warning(this, tr("Player Animations"),
+        QMessageBox::warning(this, tr("Sprite Animations"),
             tr("The selected Sprite needs an existing PPB or PNG atlas.\n%1").arg(atlas));
         return;
     }
@@ -1152,6 +1160,409 @@ void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
     if (assetFilesChanged) assetFilesChanged();
 }
 
+
+// Stage 5.3: ONE project player profile, with the existing animation editor
+// kept intact. The .sbpi is design metadata, never rewritten from a world.
+void SidboxGameDesigner::openPlayerEditor()
+{
+    const QDir project(QFileInfo(m_filePath).absolutePath());
+    QJsonObject profile = GamePlayerProfile::defaults();
+    const bool hasProfile = QFileInfo::exists(GamePlayerProfile::profilePath(project));
+    if (hasProfile) {
+        QString error;
+        if (!GamePlayerProfile::read(project, &profile, &error)) {
+            QMessageBox::warning(this, tr("Create / Edit Player"), error); return;
+        }
+    } else {
+        // Non-destructive migration: borrow the existing 'player' sprite's
+        // atlas geometry and animation sidecar. Do NOT remove that resource.
+        for (const Resource &r : m_resources) {
+            if (r.kind == QStringLiteral("sprite")
+                && r.name.compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0) {
+                profile.insert(QStringLiteral("atlasPath"), r.path);
+                profile.insert(QStringLiteral("animationFile"), r.animationFile.isEmpty()
+                    ? QStringLiteral("gameanimations/player_anim.sbanim") : r.animationFile);
+                if (r.cellWidth > 0) profile.insert(QStringLiteral("cellWidth"), r.cellWidth);
+                if (r.cellHeight > 0) profile.insert(QStringLiteral("cellHeight"), r.cellHeight);
+                m_playerStartX = r.x; m_playerStartY = r.y;
+                break;
+            }
+        }
+    }
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Create / Edit Player — Shared Across All Worlds"));
+    dialog.setMinimumWidth(490);
+    dialog.setStyleSheet(QStringLiteral("QDialog, QWidget, QPushButton, QLineEdit, QSpinBox, QTabWidget, QTabBar, QPlainTextEdit, QTableWidget, QHeaderView { border-radius: 0px; }"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *tabs = new QTabWidget(&dialog); layout->addWidget(tabs);
+    auto *appearance = new QWidget(tabs); auto *af = new QFormLayout(appearance);
+    auto *atlas = new QLineEdit(profile.value(QStringLiteral("atlasPath")).toString(), appearance);
+    auto *browse = new QPushButton(tr("Browse PPB..."), appearance);
+    af->addRow(tr("Sprite atlas (project-relative)"), atlas);
+    af->addRow(browse);
+    connect(browse, &QPushButton::clicked, &dialog, [&,this] {
+        const QString path=QFileDialog::getOpenFileName(&dialog, tr("Player PPB"), project.absolutePath(), tr("SIDBOX PPB (*.ppb)"));
+        if (!path.isEmpty()) atlas->setText(project.relativeFilePath(path));
+    });
+    auto *anim = new QLineEdit(profile.value(QStringLiteral("animationFile")).toString(), appearance);
+    if (anim->text().trimmed().isEmpty())
+        anim->setText(QStringLiteral("gameanimations/player_anim.sbanim"));
+    af->addRow(tr("Animation definition (.sbanim)"), anim);
+    auto *browseAnim = new QPushButton(tr("Choose Existing .sbanim..."), appearance);
+    af->addRow(browseAnim);
+    connect(browseAnim, &QPushButton::clicked, &dialog, [&,this] {
+        const QString path = QFileDialog::getOpenFileName(&dialog, tr("Player Animations"),
+            project.absolutePath(), tr("SIDBOX Player Animations (*.sbanim)"));
+        if (!path.isEmpty()) anim->setText(project.relativeFilePath(path));
+    });
+    auto *cw=new QSpinBox(appearance), *ch=new QSpinBox(appearance);
+    for (QSpinBox *spin : {cw,ch}) spin->setRange(1,2048);
+    cw->setValue(profile.value(QStringLiteral("cellWidth")).toInt(32));
+    ch->setValue(profile.value(QStringLiteral("cellHeight")).toInt(32));
+    af->addRow(tr("Atlas cell width"),cw); af->addRow(tr("Atlas cell height"),ch);
+    auto *editAnim = new QPushButton(tr("Create / Edit Animations..."), appearance);
+    af->addRow(editAnim);
+    auto *animNote = new QLabel(tr("Animations belong to this shared player, not a world Sprite. "
+        "When saving animations, choose Yes to generate gameanimations/player_anim.h "
+        "for your game's C code."), appearance);
+    animNote->setWordWrap(true);
+    af->addRow(animNote);
+    connect(editAnim, &QPushButton::clicked, &dialog, [&,this] {
+        const QFileInfo art(project.filePath(atlas->text().trimmed()));
+        if (!art.isFile() || art.suffix().compare(QStringLiteral("ppb"),Qt::CaseInsensitive)
+            || !art.absoluteFilePath().startsWith(project.absolutePath()+QLatin1Char('/'))) {
+            QMessageBox::warning(&dialog, tr("Player Animations"),
+                tr("Choose an existing PPB inside this game project first."));
+            return;
+        }
+        QString relativeAnimation = QDir::cleanPath(anim->text().trimmed());
+        if (relativeAnimation == QStringLiteral(".") || relativeAnimation.isEmpty())
+            relativeAnimation = QStringLiteral("gameanimations/player_anim.sbanim");
+        const QFileInfo animationPath(project.filePath(relativeAnimation));
+        if (animationPath.suffix().compare(QStringLiteral("sbanim"), Qt::CaseInsensitive)
+            || !animationPath.absoluteFilePath().startsWith(project.absolutePath()+QLatin1Char('/'))) {
+            QMessageBox::warning(&dialog, tr("Player Animations"),
+                tr("The .sbanim definition must be stored inside this game project."));
+            return;
+        }
+        SidboxPlayerAnimationEditor editor(art.absoluteFilePath(),
+            animationPath.absoluteFilePath(),
+            project.filePath(QStringLiteral("gameanimations/player_anim.h")),
+            cw->value(), ch->value(), &dialog, m_theme);
+        if (!editor.isUsable() || editor.exec()!=QDialog::Accepted) return;
+        anim->setText(project.relativeFilePath(editor.animationFile()));
+        cw->setValue(editor.cellWidth());
+        ch->setValue(editor.cellHeight());
+    });
+    tabs->addTab(appearance,tr("Appearance & Animations"));
+    auto *hitboxPage=new QWidget(tabs);auto *hf=new QFormLayout(hitboxPage);
+    auto *customHitbox=new QCheckBox(tr("Override animation hitbox"),hitboxPage);
+    customHitbox->setChecked(profile.value(QStringLiteral("customHitbox")).toBool());hf->addRow(customHitbox);
+    auto *hx=new QSpinBox(hitboxPage),*hy=new QSpinBox(hitboxPage);
+    auto *hw=new QSpinBox(hitboxPage),*hh=new QSpinBox(hitboxPage);
+    for(QSpinBox *spin:{hx,hy})spin->setRange(-1024,1024);
+    for(QSpinBox *spin:{hw,hh})spin->setRange(1,2048);
+    hx->setValue(profile.value(QStringLiteral("hitboxX")).toInt());
+    hy->setValue(profile.value(QStringLiteral("hitboxY")).toInt());
+    hw->setValue(profile.value(QStringLiteral("hitboxW")).toInt(32));
+    hh->setValue(profile.value(QStringLiteral("hitboxH")).toInt(32));
+    hf->addRow(tr("Offset X"),hx);hf->addRow(tr("Offset Y"),hy);
+    hf->addRow(tr("Width"),hw);hf->addRow(tr("Height"),hh);
+    tabs->addTab(hitboxPage,tr("Hitbox"));
+    auto *movement=new QWidget(tabs);auto *mf=new QFormLayout(movement);
+    auto *preset=new QComboBox(movement);
+    for(const QString &mode:{QStringLiteral("normal"),QStringLiteral("ice"),QStringLiteral("water"),
+                            QStringLiteral("space"),QStringLiteral("floating")})
+        preset->addItem(mode.left(1).toUpper()+mode.mid(1),mode);
+    preset->setCurrentIndex(qMax(0,preset->findData(profile.value(QStringLiteral("physicsPreset")).toString(QStringLiteral("normal")))));
+    mf->addRow(tr("Starting physics preset"),preset);
+    auto *notice=new QLabel(tr("Applied once when the game first starts. Your C game can change physics dynamically for water, ice and zones."),movement);
+    notice->setWordWrap(true);mf->addRow(notice);
+    tabs->addTab(movement,tr("Movement & Physics"));
+    // Project-wide player stats: the three engine defaults remain fixed fields.
+    // Other stats (Mana, Fear, Magic...) are named runtime variables, not world objects.
+    auto *stats = new QWidget(tabs);
+    auto *statsLayout = new QVBoxLayout(stats);
+    auto *sf = new QFormLayout();
+    statsLayout->addLayout(sf);
+    auto *health = new QSpinBox(stats), *lives = new QSpinBox(stats), *score = new QSpinBox(stats);
+    health->setRange(0,65535); lives->setRange(0,65535); score->setRange(0,1000000000);
+    health->setValue(profile.value(QStringLiteral("health")).toInt(100));
+    lives->setValue(profile.value(QStringLiteral("lives")).toInt(3));
+    score->setValue(profile.value(QStringLiteral("score")).toInt());
+    sf->addRow(tr("Starting health"), health);
+    sf->addRow(tr("Starting lives"), lives);
+    sf->addRow(tr("Starting score"), score);
+    statsLayout->addWidget(new QLabel(tr("Custom starting stats (e.g. Mana, Magic, Fear). "
+        "These values remain with your shared player across worlds."),stats));
+    auto *customStats = new QTableWidget(0, 2, stats);
+    customStats->setHorizontalHeaderLabels({tr("Stat name"), tr("Starting value")});
+    customStats->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    customStats->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    customStats->verticalHeader()->setVisible(false);
+    customStats->setSelectionBehavior(QAbstractItemView::SelectRows);
+    customStats->setSelectionMode(QAbstractItemView::SingleSelection);
+    customStats->setAlternatingRowColors(true);
+    customStats->setMinimumHeight(125);
+    statsLayout->addWidget(customStats);
+    auto *statsButtons = new QHBoxLayout();
+    auto *addStat = new QPushButton(tr("Add Stat"),stats);
+    auto *removeStat = new QPushButton(tr("Remove Selected"),stats);
+    statsButtons->addWidget(addStat); statsButtons->addWidget(removeStat); statsButtons->addStretch();
+    statsLayout->addLayout(statsButtons);
+    tabs->addTab(stats,tr("Initial Stats"));
+
+    // Inventory entries are kept as structured {name,initial} JSON as before.
+    // Editing them in a table avoids the old error-prone "name=quantity" syntax.
+    auto *inventoryPage = new QWidget(tabs);
+    auto *iv = new QVBoxLayout(inventoryPage);
+    auto *inventoryNote = new QLabel(tr("Give each starting item a unique name and quantity. "
+        "Use Add Item for NPC to find items requested in any world's dialogue. "
+        "Items with quantity 0 never appear in the backpack. Secret/quest items "
+        "appear as soon as the player owns one; NPCs can still request, give and take "
+        "them. World changes preserve quantities."),inventoryPage);
+    inventoryNote->setWordWrap(true);
+    iv->addWidget(inventoryNote);
+    auto *inventory = new QTableWidget(0, 3, inventoryPage);
+    inventory->setHorizontalHeaderLabels({tr("Item name"), tr("Starting quantity"),
+        tr("Secret / quest item")});
+    inventory->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    inventory->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    inventory->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    inventory->verticalHeader()->setVisible(false);
+    inventory->setSelectionBehavior(QAbstractItemView::SelectRows);
+    inventory->setSelectionMode(QAbstractItemView::SingleSelection);
+    inventory->setAlternatingRowColors(true);
+    iv->addWidget(inventory);
+    auto *inventoryButtons = new QHBoxLayout();
+    auto *addItem = new QPushButton(tr("Add Item"),inventoryPage);
+    auto *addNpcItem = new QPushButton(tr("Add Item for NPC..."),inventoryPage);
+    addNpcItem->setToolTip(tr("Find items required by reachable NPC dialogue in every .sbgm world."));
+    auto *removeItem = new QPushButton(tr("Remove Selected"),inventoryPage);
+    inventoryButtons->addWidget(addItem); inventoryButtons->addWidget(addNpcItem);
+    inventoryButtons->addWidget(removeItem);
+    inventoryButtons->addStretch(); iv->addLayout(inventoryButtons);
+    tabs->addTab(inventoryPage,tr("Inventory"));
+
+    // The same row mechanics and maximum-item checks for both editor pages.
+    const auto appendNamedRow = [](QTableWidget *table, const QString &name,
+                                   int value, int minimum, int maximum) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        table->setItem(row, 0, new QTableWidgetItem(name));
+        auto *spin = new QSpinBox(table);
+        spin->setRange(minimum,maximum);
+        spin->setValue(value);
+        table->setCellWidget(row, 1, spin);
+        if (table->columnCount() == 3) {
+            auto *hiddenCell = new QTableWidgetItem();
+            hiddenCell->setFlags((hiddenCell->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+            hiddenCell->setCheckState(Qt::Unchecked);
+            hiddenCell->setToolTip(QObject::tr("Mark this as a secret/quest item. All zero-quantity items are hidden; once owned, this item appears in the backpack and remains usable by NPCs."));
+            table->setItem(row, 2, hiddenCell);
+        }
+        return row;
+    };
+    for (const QJsonValue &v : profile.value(QStringLiteral("customStats")).toArray()) {
+        const QJsonObject stat = v.toObject();
+        appendNamedRow(customStats, stat.value(QStringLiteral("name")).toString(),
+                       stat.value(QStringLiteral("initial")).toInt(), -1000000000, 1000000000);
+    }
+    for (const QJsonValue &v : profile.value(QStringLiteral("inventory")).toArray()) {
+        const QJsonObject item = v.toObject();
+        const int row = appendNamedRow(inventory, item.value(QStringLiteral("name")).toString(),
+                       item.value(QStringLiteral("initial")).toInt(), 0, 65535);
+        inventory->item(row, 2)->setCheckState(
+            item.value(QStringLiteral("hidden")).toBool(false) ? Qt::Checked : Qt::Unchecked);
+    }
+    connect(addStat, &QPushButton::clicked, &dialog, [=, &dialog] {
+        if (customStats->rowCount() >= 64) {
+            QMessageBox::warning(&dialog,tr("Custom Stats"),tr("Maximum 64 custom stats.")); return;
+        }
+        const int row=appendNamedRow(customStats,QString(),0,-1000000000,1000000000);
+        customStats->setCurrentCell(row,0);
+        customStats->editItem(customStats->item(row,0));
+    });
+    connect(addItem, &QPushButton::clicked, &dialog, [=, &dialog] {
+        if (inventory->rowCount() >= 64) {
+            QMessageBox::warning(&dialog,tr("Inventory"),tr("Maximum 64 item types.")); return;
+        }
+        const int row=appendNamedRow(inventory,QString(),0,0,65535);
+        inventory->setCurrentCell(row,0);
+        inventory->editItem(inventory->item(row,0));
+    });
+    connect(addNpcItem, &QPushButton::clicked, &dialog, [=, &dialog] {
+        const QVector<GameNpcItemIndex::Entry> choices = GameNpcItemIndex::requestedItems(project);
+        if (choices.isEmpty()) {
+            QMessageBox::information(&dialog,tr("NPC Inventory"),
+                tr("No NPC dialogue currently requests an item in any saved .sbgm world. "
+                   "Save your worlds after editing their Adventure dialogue, then try again."));
+            return;
+        }
+        QDialog picker(&dialog);
+        picker.setWindowTitle(tr("Add Item Requested by NPC"));
+        picker.setMinimumWidth(500);
+        picker.setStyleSheet(QStringLiteral("QDialog, QPushButton, QListWidget { border-radius: 0px; }"));
+        auto *vertical = new QVBoxLayout(&picker);
+        auto *hint = new QLabel(tr("These item names come from NPC 'Requires this item' choices "
+                                   "in your saved worlds. Select one to give the player a starting quantity."),&picker);
+        hint->setWordWrap(true);
+        vertical->addWidget(hint);
+        auto *list = new QListWidget(&picker);
+        for (const auto &entry : choices) {
+            auto *row = new QListWidgetItem(entry.name + QStringLiteral(" — ")
+                + entry.requestedBy.join(QStringLiteral(", ")), list);
+            row->setData(Qt::UserRole,entry.name);
+        }
+        list->setCurrentRow(0);
+        vertical->addWidget(list);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,&picker);
+        vertical->addWidget(buttons);
+        QObject::connect(buttons,&QDialogButtonBox::accepted,&picker,&QDialog::accept);
+        QObject::connect(buttons,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
+        QObject::connect(list,&QListWidget::itemDoubleClicked,&picker,[&](QListWidgetItem *) { picker.accept(); });
+        if (picker.exec() != QDialog::Accepted || !list->currentItem()) return;
+        const QString chosen = list->currentItem()->data(Qt::UserRole).toString();
+        for (int row=0; row<inventory->rowCount(); ++row) {
+            const QTableWidgetItem *existing = inventory->item(row,0);
+            if (existing && existing->text().trimmed().compare(chosen,Qt::CaseInsensitive) == 0) {
+                inventory->setCurrentCell(row,1);
+                QMessageBox::information(&dialog,tr("Already in Inventory"),
+                    tr("'%1' is already listed. Change its starting quantity or visibility in that row.").arg(chosen));
+                return;
+            }
+        }
+        if (inventory->rowCount() >= 64) {
+            QMessageBox::warning(&dialog,tr("Inventory"),tr("Maximum 64 item types.")); return;
+        }
+        const int row=appendNamedRow(inventory,chosen,0,0,65535);
+        inventory->setCurrentCell(row,1);
+        if (QSpinBox *amount = qobject_cast<QSpinBox*>(inventory->cellWidget(row,1)))
+            amount->setFocus();
+    });
+    connect(removeStat, &QPushButton::clicked, &dialog, [=] {
+        const int row=customStats->currentRow(); if(row>=0) customStats->removeRow(row);
+    });
+    connect(removeItem, &QPushButton::clicked, &dialog, [=] {
+        const int row=inventory->currentRow(); if(row>=0) inventory->removeRow(row);
+    });
+    auto *buttons=new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel,&dialog);
+    layout->addWidget(buttons);
+    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&,this] {
+        const QFileInfo art(project.filePath(atlas->text().trimmed()));
+        if (!art.isFile() || art.suffix().compare(QStringLiteral("ppb"),Qt::CaseInsensitive)!=0
+            || !art.absoluteFilePath().startsWith(project.absolutePath()+QLatin1Char('/'))) {
+            QMessageBox::warning(&dialog,tr("Player"),tr("Select an existing PPB INSIDE this game project."));return;
+        }
+        const QString relativeAnim = QDir::cleanPath(anim->text().trimmed());
+        if (!relativeAnim.isEmpty() && relativeAnim != QStringLiteral(".")) {
+            const QFileInfo animationPath(project.filePath(relativeAnim));
+            if (animationPath.suffix().compare(QStringLiteral("sbanim"),Qt::CaseInsensitive)
+                || !animationPath.absoluteFilePath().startsWith(project.absolutePath()+QLatin1Char('/'))) {
+                QMessageBox::warning(&dialog,tr("Player"),
+                    tr("The animation .sbanim must be inside this game project."));
+                return;
+            }
+        }
+        // Commit in-progress name edits before validating their table cells.
+        customStats->setFocus();
+        inventory->setFocus();
+        buttons->setFocus();
+        const auto readNamedRows = [&](QTableWidget *table, const QString &title,
+                                       QJsonArray *rows) -> bool {
+            QSet<QString> seen;
+            if (table->rowCount() > 64) {
+                QMessageBox::warning(&dialog,title,tr("Maximum 64 entries."));return false;
+            }
+            for (int row=0; row<table->rowCount(); ++row) {
+                QTableWidgetItem *nameCell=table->item(row,0);
+                QSpinBox *amount=qobject_cast<QSpinBox*>(table->cellWidget(row,1));
+                const QString name=nameCell ? nameCell->text().trimmed() : QString();
+                const QString key=name.toCaseFolded();
+                if (name.isEmpty() || name.contains(QLatin1Char('\n')) || seen.contains(key)
+                    || !amount) {
+                    QMessageBox::warning(&dialog,title,
+                        tr("Each row needs a unique, non-empty name. Please check row %1.").arg(row+1));
+                    return false;
+                }
+                seen.insert(key);
+                QJsonObject entry;
+                entry.insert(QStringLiteral("name"),name);
+                entry.insert(QStringLiteral("initial"),amount->value());
+                if (table->columnCount() == 3) {
+                    const QTableWidgetItem *hide = table->item(row,2);
+                    entry.insert(QStringLiteral("hidden"),
+                        hide && hide->checkState() == Qt::Checked);
+                }
+                rows->append(entry);
+            }
+            return true;
+        };
+        QJsonArray items, customValues;
+        if (!readNamedRows(inventory,tr("Inventory"),&items)
+            || !readNamedRows(customStats,tr("Custom Stats"),&customValues)) return;
+        QJsonObject data=GamePlayerProfile::defaults();
+        data.insert(QStringLiteral("atlasPath"),QDir::fromNativeSeparators(atlas->text().trimmed()));
+        data.insert(QStringLiteral("animationFile"),anim->text().trimmed());
+        data.insert(QStringLiteral("cellWidth"),cw->value());
+        data.insert(QStringLiteral("cellHeight"),ch->value());
+        data.insert(QStringLiteral("health"),health->value());
+        data.insert(QStringLiteral("lives"),lives->value());
+        data.insert(QStringLiteral("score"),score->value());
+        data.insert(QStringLiteral("customHitbox"),customHitbox->isChecked());
+        data.insert(QStringLiteral("hitboxX"),hx->value());
+        data.insert(QStringLiteral("hitboxY"),hy->value());
+        data.insert(QStringLiteral("hitboxW"),hw->value());
+        data.insert(QStringLiteral("hitboxH"),hh->value());
+        data.insert(QStringLiteral("physicsPreset"),preset->currentData().toString());
+        data.insert(QStringLiteral("inventory"),items);
+        data.insert(QStringLiteral("customStats"),customValues);
+        QString error;
+        if (!GamePlayerProfile::write(project,data,&error)) {
+            QMessageBox::warning(&dialog,tr("Player"),error); return;
+        }
+        dialog.accept();
+    });
+    if (dialog.exec()!=QDialog::Accepted) return;
+    m_playerProfile=QStringLiteral("players/player.sbpi");
+    setDirty(); refreshResources(); rebuildScene();
+    if (assetFilesChanged) assetFilesChanged();
+}
+
+void SidboxGameDesigner::editPlayerStart()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Player Start — World Entry Point"));
+    dialog.setStyleSheet(QStringLiteral("QDialog, QPushButton, QLineEdit, QSpinBox, QComboBox { border-radius: 0px; }"));
+    auto *layout=new QVBoxLayout(&dialog); auto *form=new QFormLayout(); layout->addLayout(form);
+    auto *profile=new QLineEdit(m_playerProfile,&dialog);
+    profile->setReadOnly(true);
+    form->addRow(tr("Shared player"),profile);
+    auto *edit=new QPushButton(tr("Create / Edit Player..."),&dialog);
+    form->addRow(edit);
+    connect(edit,&QPushButton::clicked,&dialog,[this,profile] {
+        openPlayerEditor(); profile->setText(m_playerProfile);
+    });
+    auto *entry=new QLineEdit(m_playerEntry,&dialog);form->addRow(tr("Entry name"),entry);
+    auto *x=new QSpinBox(&dialog),*y=new QSpinBox(&dialog);
+    for (QSpinBox *spin:{x,y}) spin->setRange(0,32767);
+    x->setValue(m_playerStartX);y->setValue(m_playerStartY);
+    form->addRow(tr("World X (pixels)"),x);form->addRow(tr("World Y (pixels)"),y);
+    auto *face=new QComboBox(&dialog);
+    face->addItem(tr("Left"),0);face->addItem(tr("Right"),1);
+    face->setCurrentIndex(m_playerFacing);form->addRow(tr("Initial facing"),face);
+    auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);
+    layout->addWidget(buttons);
+    connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
+    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    if (dialog.exec()!=QDialog::Accepted) return;
+    m_playerStartX=x->value();m_playerStartY=y->value();
+    m_playerFacing=face->currentData().toInt();
+    m_playerEntry=entry->text().trimmed().isEmpty()?QStringLiteral("default"):entry->text().trimmed();
+    setDirty();refreshResources();rebuildScene();
+}
+
 void SidboxGameDesigner::openTilemapEditor()
 {
     QVector<QPair<QString, QString>> atlases;
@@ -1172,6 +1583,11 @@ void SidboxGameDesigner::openTilemapEditor()
     const QString directory = QFileInfo(m_filePath).absolutePath();
     SidboxTilemapEditor editor(m_tilemap, atlases, directory, this);
     editor.setTheme(m_theme);
+    // For old projects without .sbpi, retain the legacy reference preview.
+    // Once a shared player exists the project profile (not a world sprite)
+    // supplies the tile editor's player art and hitbox below.
+    const QDir gameProject(QFileInfo(m_filePath).absolutePath());
+    if (!QFileInfo::exists(GamePlayerProfile::profilePath(gameProject))) {
     // Mirror the generator's definition of "player": last decoration Sprite
     // named player (case-insensitive). This is a design-only copy, not an
     // additional world object and not the live character's spawn position.
@@ -1213,6 +1629,7 @@ void SidboxGameDesigner::openTilemapEditor()
             }
         }
     }
+    }
     // "Save" commits this editor's working copy immediately while keeping
     // the tile editor open. "Apply" still closes and follows the old export
     // prompt; "Cancel" discards changes since the last successful Save.
@@ -1252,6 +1669,13 @@ void SidboxGameDesigner::openTilemapEditor()
     editor.setSaveCallback([&applyChanges](const SidboxTilemap &map) {
         return applyChanges(map, true);
     });
+    // The preview uses the configured Idle animation frame and initial
+    // facing. No world-owned duplicate player resource is required.
+    QRect playerHitbox;
+    const QImage sharedSprite = GamePlayerProfile::idlePreview(gameProject, m_playerFacing, &playerHitbox);
+    if (!sharedSprite.isNull())
+        editor.setPlayerReference(sharedSprite, 100,
+                                  QPoint(m_playerStartX,m_playerStartY), playerHitbox);
     if (editor.exec() != QDialog::Accepted) return;
     applyChanges(editor.result(), false);
 }
@@ -2036,10 +2460,10 @@ void SidboxGameDesigner::buildUi()
     auto *editTilemap = new QPushButton(tr("Tilemap Editor..."), this);
     editTilemap->setToolTip(tr("Edit the attached tilemap artwork, collision and tile animations."));
     topActions->addWidget(editTilemap);
-    auto *editPlayerAnimation = new QPushButton(tr("Player Animations..."), this);
-    editPlayerAnimation->setToolTip(tr("Build named sprite animations from a Sprite atlas, with directions, frame timing and C export."));
+    auto *editPlayerAnimation = new QPushButton(tr("Create / Edit Player..."), this);
+    editPlayerAnimation->setToolTip(tr("Configure the shared player atlas, Idle animations, hitbox, physics and inventory."));
     topActions->addWidget(editPlayerAnimation);
-    connect(editPlayerAnimation, &QPushButton::clicked, this, [this] { openPlayerAnimationEditor(); });
+    connect(editPlayerAnimation, &QPushButton::clicked, this, [this] { openPlayerEditor(); });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -2133,7 +2557,10 @@ void SidboxGameDesigner::buildUi()
     updateProject->setToolTip(tr("Back up and refresh installed game helpers, export splines/tiles, "
                                  "and regenerate V1 code plus maingame.c.txt in one operation."));
     resourcesLayout->addWidget(updateProject);
-    connect(updateProject, &QPushButton::clicked, this, [this]() { updateGameProject(); });
+    connect(updateProject, &QPushButton::clicked, this, [this]() {
+        if (updateAllProjectWorlds) updateAllProjectWorlds();
+        else updateGameProject(); // standalone Designer fallback
+    });
     m_resourceTree->setToolTip(tr("Drag files from Project Files here, or right-click to add resources. "
         "Tile Atlases holds PPB tile sheets without placing a sprite on the canvas. "
         "Double-click a palette to open its editor. "
@@ -2149,6 +2576,7 @@ void SidboxGameDesigner::buildUi()
             target = target->parent();
         const QString category = target ? target->data(0, Qt::UserRole + 1).toString() : QString();
         const QString plane = target ? target->data(0, Qt::UserRole + 2).toString() : QString();
+        if (category == QStringLiteral("playerstart")) { editPlayerStart(); return; }
         QMenu menu(this);
         QAction *addSprite = menu.addAction(tr("Add Sprite..."));
         QAction *addAtlas = menu.addAction(tr("Add Tile Atlas..."));
@@ -2242,7 +2670,7 @@ void SidboxGameDesigner::buildUi()
         }
         if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")) {
             menu.addSeparator();
-            editSpriteAnimations = menu.addAction(tr("Edit Player Animations..."));
+            editSpriteAnimations = menu.addAction(tr("Edit Sprite Animations..."));
             configureObject = menu.addAction(tr("Configure Game Object..."));
             configureObject->setToolTip(tr("Choose collectable, moving lift, conveyor or spring, plus animation and spline."));
         }
@@ -2336,6 +2764,7 @@ void SidboxGameDesigner::buildUi()
             [this](QTreeWidgetItem *item, int) {
         if (!item) return;
         const QString group = item->data(0, Qt::UserRole + 1).toString();
+        if (group == QStringLiteral("playerstart")) { editPlayerStart(); return; }
         if (group == QStringLiteral("sprite") && item->data(0, Qt::UserRole).isValid()) {
             const int index = item->data(0, Qt::UserRole).toInt();
             if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index) && m_view) {
@@ -3016,6 +3445,12 @@ void SidboxGameDesigner::refreshResources()
     };
     QSignalBlocker block(m_resourceTree);
     m_resourceTree->clear();
+    auto *playerStart = new QTreeWidgetItem(m_resourceTree, QStringList{
+        tr("Player Start — %1 (%2, %3)").arg(m_playerEntry).arg(m_playerStartX).arg(m_playerStartY)});
+    playerStart->setData(0, Qt::UserRole + 1, QStringLiteral("playerstart"));
+    playerStart->setToolTip(0, tr("Double-click to choose the shared .sbpi player, spawn position and facing. "
+        "Drag player.sbpi here to attach the project player."));
+    playerStart->setIcon(0, treeIcon(QStringLiteral("sprite")));
     for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("tileatlas"),
                                  QStringLiteral("background"), QStringLiteral("palette"),
                                  QStringLiteral("sound"), QStringLiteral("music")}) {
@@ -3291,6 +3726,7 @@ void SidboxGameDesigner::rebuildScene()
     m_sceneItems.resize(m_resources.size());
     m_worldFrame = nullptr;
     m_cameraFrame = nullptr;
+    m_playerStartMarker = nullptr;
     m_scene->setSceneRect(0, 0, m_worldWidth->value(), m_worldHeight->value());
     m_worldFrame = m_scene->addRect(m_scene->sceneRect().adjusted(0, 0, -1, -1),
                                      QPen(QColor(130, 160, 194), 2));
@@ -3328,6 +3764,49 @@ void SidboxGameDesigner::rebuildScene()
         title->setAcceptedMouseButtons(Qt::NoButton);
         m_sceneItems[i] = item;
     }
+    // The start marker shows the *shared* player's Idle frame, with the
+    // world's initial facing. It is a designer preview only (no SIDBOX BOB).
+    // Yellow fallback is shown until an actual .sbpi + PPB are configured.
+    const QDir playerProject(QFileInfo(m_filePath).absolutePath());
+    const QImage idleSprite = GamePlayerProfile::idlePreview(playerProject, m_playerFacing);
+    QPixmap spawnIcon;
+    if (!idleSprite.isNull()) {
+        spawnIcon = QPixmap::fromImage(idleSprite);
+    } else {
+        spawnIcon = QPixmap(20,28); spawnIcon.fill(Qt::transparent);
+        QPainter painter(&spawnIcon); painter.setPen(QPen(QColor(22,22,22),2));
+        painter.setBrush(QColor(255,207,75));
+        painter.drawEllipse(QRect(2,2,16,16));
+        painter.drawLine(10,18,10,27); painter.drawLine(4,22,16,22);
+    }
+    auto *spawn = new PlacedImage(spawnIcon);
+    spawn->setZValue(10500);
+    spawn->setFlag(QGraphicsItem::ItemIsMovable,true);
+    spawn->setFlag(QGraphicsItem::ItemIsSelectable,true);
+    spawn->setToolTip(tr("Player Start — drag to place, or double-click Player Start in Game Resources"));
+    spawn->setData(0,-1);
+    spawn->snapped=[this](const QPointF &point) {
+        const int step=m_snap && m_snap->isChecked()
+            ? m_snapStep->currentText().section(QLatin1Char(' '),0,0).toInt() : 1;
+        return QPointF(qBound(0,qRound(point.x()/qMax(1,step))*qMax(1,step),m_worldWidth->value()),
+                       qBound(0,qRound(point.y()/qMax(1,step))*qMax(1,step),m_worldHeight->value()));
+    };
+    spawn->moved=[this](QGraphicsItem *item) {
+        if (m_loading) return;
+        m_playerStartX=qRound(item->pos().x());m_playerStartY=qRound(item->pos().y());
+        setDirty();refreshResources();
+    };
+    m_scene->addItem(spawn);
+    spawn->setPos(m_playerStartX,m_playerStartY);
+    // Compact magenta label, centred ABOVE the actual player position.
+    // Keep the WorldObjectTag dark keyline exactly as before.
+    auto *startTag = new WorldObjectTag(tr("PLAYER START"), spawn,
+                                        11, QColor(255, 62, 206));
+    const QRectF labelBounds = startTag->boundingRect();
+    startTag->setPos((spawnIcon.width() - labelBounds.width()) / 2.0,
+                     -labelBounds.height() - 3.0);
+    startTag->setAcceptedMouseButtons(Qt::NoButton);
+    m_playerStartMarker=spawn;
     rebuildTilemapOverlay();
     m_cameraFrame = m_scene->addRect(QRectF(0, 0, LCD_WIDTH, LCD_HEIGHT),
                  QPen(QColor(255, 207, 75), 2, Qt::DashLine));
@@ -3710,6 +4189,22 @@ void SidboxGameDesigner::importDroppedFiles(const QStringList &paths, const QStr
     for (const QString &path : paths) {
         const QFileInfo info(path);
         if (!info.isFile()) continue;
+        if (info.suffix().compare(QStringLiteral("sbpi"), Qt::CaseInsensitive) == 0) {
+            const QDir project(QFileInfo(m_filePath).absolutePath());
+            if (QFileInfo(info.absoluteFilePath()).absoluteFilePath() !=
+                QFileInfo(GamePlayerProfile::profilePath(project)).absoluteFilePath()) {
+                warnings << tr("Shared player must be stored at players/player.sbpi in this project.");
+                continue;
+            }
+            QJsonObject check;
+            QString error;
+            if (!GamePlayerProfile::read(project, &check, &error)) {
+                warnings << error; continue;
+            }
+            m_playerProfile = QStringLiteral("players/player.sbpi");
+            setDirty(); refreshResources(); ++added;
+            continue;
+        }
         const QString guessed = assetKindForFile(path);
         const QString category = targetKind.isEmpty()
             ? (guessed.isEmpty() ? QStringLiteral("sprite") : guessed) : targetKind;

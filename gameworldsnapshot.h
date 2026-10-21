@@ -287,7 +287,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList names = worlds.entryList(QDir::Dirs | QDir::NoDotAndDotDot,
                                          QDir::Name | QDir::IgnoreCase);
     QStringList published, declarations, records;
-    QStringList beforeFns, afterFns, checkFns;
+    QStringList beforeFns, afterFns, checkFns, spawnFields;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
         if (name.startsWith(QLatin1Char('.'))) continue;
@@ -346,6 +346,29 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         const QString atlasUnload = hasMap ? QStringLiteral("game_") + name + QStringLiteral("_unload_atlas") : zero;
         const QString mapPath = meta.value(QStringLiteral("externalMap")).toBool() && hasMap
             ? QStringLiteral("\"gamelevels/") + name + QStringLiteral(".map\"") : zero;
+        // Stage 5.4: Player Start is WORLD metadata, not another player object.
+        // Read the SAVED .sbgm, not whichever designer tab happens to be open.
+        QJsonObject design;
+        QFile designFile(meta.value(QStringLiteral("designFile")).toString());
+        if (designFile.open(QIODevice::ReadOnly))
+            design = QJsonDocument::fromJson(designFile.readAll()).object();
+        const QJsonObject start = design.value(QStringLiteral("playerStart")).toObject();
+        int spawnX = start.value(QStringLiteral("x")).toInt(0);
+        int spawnY = start.value(QStringLiteral("y")).toInt(0);
+        if (start.isEmpty()) { // Backwards compatible with pre-5.4 player placement.
+            for (const QJsonValue &value : design.value(QStringLiteral("resources")).toArray()) {
+                const QJsonObject resource=value.toObject();
+                if (resource.value(QStringLiteral("kind")).toString()==QStringLiteral("sprite")
+                    && resource.value(QStringLiteral("name")).toString().compare(
+                        QStringLiteral("player"),Qt::CaseInsensitive)==0) {
+                    spawnX=resource.value(QStringLiteral("x")).toInt();
+                    spawnY=resource.value(QStringLiteral("y")).toInt();
+                    break;
+                }
+            }
+        }
+        const int facing=qBound(0,start.value(QStringLiteral("facing")).toInt(1),1);
+        spawnFields << QStringLiteral(", %1, %2, %3").arg(spawnX).arg(spawnY).arg(facing);
         QString row = QStringLiteral("    {\"%1\", %2gameassets_init, %2gameassets_shutdown,\n"
             "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3,\n"
             "     %2gameassets_draw_foreground, %2gameassets_draw_background, %4,\n"
@@ -369,6 +392,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             entry += QStringLiteral(", ") + beforeFns.at(i) + QStringLiteral(", ") + afterFns.at(i);
         if (anyPickups)
             entry += QStringLiteral(", ") + checkFns.at(i);
+        entry += spawnFields.at(i);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to
@@ -403,7 +427,9 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         const QList<QPair<QByteArray, bool>> flags = {
             {"@IDE_IF{HAS_ADVENTURE_RUNTIME}\n", anyAdventure},
             {"@IDE_IF{HAS_WORLD_PHYSICS}\n", anyWorldPhysics},
-            {"@IDE_IF{HAS_PICKUPS}\n", anyPickups}
+            {"@IDE_IF{HAS_PICKUPS}\n", anyPickups},
+            {"@IDE_IF{HAS_PLAYER_VISIBILITY}\n", anyAdventure &&
+                 QFileInfo::exists(project.filePath(QStringLiteral("players/player.sbpi")))}
         };
         for (const auto &flag : flags) {
             int cursor = 0;

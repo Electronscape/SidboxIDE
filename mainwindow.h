@@ -79,6 +79,8 @@ private:
     void showAboutIde();
     void compileActiveFile();
     bool checkGameBuildGeneration();
+    bool updateAllGameWorlds();
+    bool updateGameWorldPaths(const QStringList &paths, bool fromCompile);
     bool gameBuildFilesOutdated(const QString &designPath) const;
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();

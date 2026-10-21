@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='stage52-feature-test-') as temp:
     (gh / 'gamecollectables.h').write_text('#ifndef TEST_GC_H\n#define TEST_GC_H\ntypedef void (*game_pickup_callback_t)(int,void*);\n#endif\n')
     (gh / 'apis.h').write_text('void music_stop(void);\n')
     (gh / 'gameadventureruntime.h').write_text('void game_adventure_start(const void*,int,const void*,int,const void*,int,const void*,int,int,int,const void*,int,const void*,const void*);\n')
-    flags = {'HAS_WORLD_PHYSICS': True, 'HAS_PICKUPS': True, 'HAS_ADVENTURE_RUNTIME': True}
+    flags = {'HAS_WORLD_PHYSICS': True, 'HAS_PICKUPS': True, 'HAS_ADVENTURE_RUNTIME': True, 'HAS_PLAYER_VISIBILITY': False}
     (gh / 'gameworlds.h').write_text(render((sdk/'gameworlds.ruleh').read_text(), flags))
     worlds = ['world1', 'forest']
     for world in worlds:
@@ -52,7 +52,7 @@ unsigned short PREFIXgameworlditems_check(int,int,unsigned short,unsigned short,
     for world in worlds:
         base=f'{world}_'
         has_feats=world=='world1'
-        values=[f'"{world}"',base+'gameassets_init',base+'gameassets_shutdown',base+'gameworlditems_init',base+'gameworlditems_update',base+'gameworlditems_draw', base+'gameworlditems_draw_behind' if has_feats else '0',base+'gameassets_draw_foreground',base+'gameassets_draw_background',base+'gameassets_show_background',base+'gameadventure_setup',base+'gameadventure_store_inventory',base+'gameadventure_load_inventory','0','0','0','0','0','0',base+'gameworlditems_before' if has_feats else '0',base+'gameworlditems_after' if has_feats else '0',base+'gameworlditems_check' if has_feats else '0']
+        values=[f'"{world}"',base+'gameassets_init',base+'gameassets_shutdown',base+'gameworlditems_init',base+'gameworlditems_update',base+'gameworlditems_draw', base+'gameworlditems_draw_behind' if has_feats else '0',base+'gameassets_draw_foreground',base+'gameassets_draw_background',base+'gameassets_show_background',base+'gameadventure_setup',base+'gameadventure_store_inventory',base+'gameadventure_load_inventory','0','0','0','0','0','0',base+'gameworlditems_before' if has_feats else '0',base+'gameworlditems_after' if has_feats else '0',base+'gameworlditems_check' if has_feats else '0', '120' if has_feats else '50', '80' if has_feats else '20', '1' if has_feats else '0']
         records.append('    {'+', '.join(values)+'}')
     c = (sdk/'gameworlds.rulec').read_text()
     c = c.replace('@IDE{WORLD_DECLARATIONS}', '\n'.join(f'#include "../worlds/{w}/world_api.h"' for w in worlds))
@@ -89,12 +89,14 @@ int main(void){
  game_world_player_t player={0};
  gameworlds_player_hooks(save,restore,0);
  assert(gameworlds_start("world1"));
- assert(current==1); assert(restore_count==0); /* never restore zeros at startup */
+ assert(current==1); assert(restore_count==0);
+ gameworlds_spawn_t pos={0};assert(gameworlds_player_start(&pos) && pos.x==120 && pos.y==80 && pos.facing==1); /* never restore zeros at startup */
  gameworlds_before(&player);assert(player.touched==1 && before_count==1);
  gameworlds_after(&player);assert(player.touched==2 && after_count==1);
  assert(gameworlds_check(0,0,3,3,0,0)==7 && check_count==1);
  assert(gameworlds_request("forest"));assert(current==1); /* deferred */
  assert(gameworlds_apply_pending());assert(current==2 && save_count==1 && restore_count==1);
+ assert(gameworlds_player_start(&pos) && pos.x==50 && pos.y==20 && pos.facing==0);
  player.touched=0;gameworlds_before(&player);gameworlds_after(&player);
  assert(!player.touched && before_count==1 && after_count==1);
  assert(gameworlds_check(0,0,3,3,0,0)==0 && check_count==1);

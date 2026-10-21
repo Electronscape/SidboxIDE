@@ -15,6 +15,9 @@
 @IDE_IF{HAS_ADVENTURE_RUNTIME}
 #include "gameadventureruntime.h"
 @IDE_END
+@IDE_IF{HAS_PLAYER_VISIBILITY}
+#include "gameplayer.h"
+@IDE_END
 @IDE{WORLD_DECLARATIONS}
 
 typedef struct {
@@ -44,6 +47,8 @@ typedef struct {
 @IDE_IF{HAS_PICKUPS}
     uint16_t (*check)(int32_t, int32_t, uint16_t, uint16_t, game_pickup_callback_t, void *);
 @IDE_END
+    int32_t start_x, start_y;
+    uint8_t start_facing;
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -93,6 +98,8 @@ static uint32_t inventory_get(const char *name, void *user)
         if (strcmp(inventory[i].name, name) == 0) return inventory[i].amount;
     return UINT32_MAX; /* Not yet in backpack: retain world-defined initial. */
 }
+void gameworlds_seed_inventory(const char *name, uint16_t initial)
+{ inventory_put(name, initial, 0); }
 void gameworlds_player_hooks(gameworlds_player_hook_t save,
                              gameworlds_player_hook_t restore, void *user)
 {
@@ -105,6 +112,13 @@ uint16_t gameworlds_count(void) { return (uint16_t)WORLD_COUNT; }
 const char *gameworlds_name(uint16_t i) { return i < WORLD_COUNT ? worlds[i].name : 0; }
 const char *gameworlds_active(void) { return active_world ? active_world->name : 0; }
 void *gameworlds_map(void) { return active_world ? active_world->map : 0; }
+uint8_t gameworlds_player_start(gameworlds_spawn_t *out) {
+    if (!active_world || !out) return 0;
+    out->x = active_world->start_x;
+    out->y = active_world->start_y;
+    out->facing = active_world->start_facing;
+    return 1;
+}
 
 static void unload_active(void)
 {
@@ -128,6 +142,9 @@ static uint8_t activate(const gameworlds_record_t *world)
     if (world->load_atlas && !world->load_atlas()) goto failed;
     /* Only call setup after sprite/PPB resources and tilemaps exist. */
     if (world->adventure_setup) world->adventure_setup();
+@IDE_IF{HAS_PLAYER_VISIBILITY}
+    game_adventure_set_inventory_filter(gameplayer_inventory_visible);
+@IDE_END
     if (world->inventory_load) world->inventory_load(inventory_get, 0);
     if (!world->objects_init()) goto failed;
     active_world = world;

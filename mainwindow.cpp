@@ -1424,6 +1424,7 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
         || lower == QStringLiteral("md") || lower == QStringLiteral("res")
         || lower == QStringLiteral("sbui") || lower == QStringLiteral("sbgm")
+        || lower == QStringLiteral("sbpi")
         || lower == QStringLiteral("uis")
         || lower == QStringLiteral("ppb") || lower == QStringLiteral("pal")
         || lower == QStringLiteral("act") || lower == QStringLiteral("png")
@@ -7685,6 +7686,7 @@ bool MainWindow::openGameDesigner(const QString &filePath)
     // New PNG/PPB/audio assets need only a file-tree refresh. A full Rescan
     // reparses all C functions and is unnecessary for binary resource imports.
     game->assetFilesChanged = [this]() { refreshProjectFiles(); };
+    game->updateAllProjectWorlds = [this]() { return updateAllGameWorlds(); };
     game->mainSourceHasUnsavedEdits = [this](const QString &mainPath) {
         for (int i = 0; i < m_editorTabs->count(); ++i) {
             CodeEditor *open = primaryEditorForTab(m_editorTabs->widget(i));
@@ -9458,6 +9460,22 @@ bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
     }
     built = generated.lastModified();
     if (design.lastModified() > built) return true;
+    const QFileInfo playerFile(project.filePath(QStringLiteral("players/player.sbpi")));
+    if (playerFile.isFile()) {
+        if (playerFile.lastModified()>built ||
+            !QFileInfo::exists(project.filePath(QStringLiteral("gamehelpers/gameplayer.c"))) ||
+            !QFileInfo::exists(project.filePath(QStringLiteral("gamehelpers/gameplayer.h")))) return true;
+        QFile profile(playerFile.absoluteFilePath());
+        if (!profile.open(QIODevice::ReadOnly)) return true;
+        const QJsonObject config=QJsonDocument::fromJson(profile.readAll()).object();
+        for (const QString &field : {QStringLiteral("atlasPath"),QStringLiteral("animationFile")}) {
+            const QString path=config.value(field).toString();
+            if (!path.isEmpty()) {
+                const QFileInfo dependency(project.filePath(path));
+                if (!dependency.isFile() || dependency.lastModified()>built) return true;
+            }
+        }
+    }
     QFile file(designPath);
     if (!file.open(QIODevice::ReadOnly)) return true; // fail safely
     QJsonParseError error;
@@ -9480,6 +9498,70 @@ bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
     const QJsonObject tilemap = root.value(QStringLiteral("tilemap")).toObject();
     if (newer(tilemap.value(QStringLiteral("atlasPath")).toString())) return true;
     return false;
+}
+
+// Stage 5.2e: the Game Designer button and F5 share EXACTLY this world
+// discovery/generation pipeline. The button regenerates every saved world;
+// F5 passes only changed designs. Neither path edits user-owned main.c.
+bool MainWindow::updateGameWorldPaths(const QStringList &paths, bool fromCompile)
+{
+    const int previousTab = m_editorTabs->currentIndex();
+    for (const QString &path : paths) {
+        SidboxGameDesigner *game = nullptr;
+        const QString absolute = QFileInfo(path).absoluteFilePath();
+        for (int i = 0; i < m_editorTabs->count(); ++i) {
+            auto *open = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
+            if (open && QFileInfo(open->filePath()).absoluteFilePath() == absolute) {
+                game = open; break;
+            }
+        }
+        if (!game) {
+            if (!openGameDesigner(absolute)) return false;
+            game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
+        }
+        if (!game || !game->updateGameProject(fromCompile)) return false;
+    }
+    if (previousTab >= 0 && previousTab < m_editorTabs->count())
+        m_editorTabs->setCurrentIndex(previousTab);
+    refreshProjectFiles();
+    return true;
+}
+
+bool MainWindow::updateAllGameWorlds()
+{
+    if (m_projectPath.isEmpty()) return false;
+    QStringList worlds;
+    const QDir project(m_projectPath);
+    for (const QString &path : std::as_const(m_projectFilesInProject))
+        if (path.endsWith(QStringLiteral(".sbgm"), Qt::CaseInsensitive)
+            && QFileInfo::exists(path)) worlds << QFileInfo(path).absoluteFilePath();
+    for (int i = 0; i < m_editorTabs->count(); ++i)
+        if (auto *game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i)))
+            worlds << QFileInfo(game->filePath()).absoluteFilePath();
+    for (const QString &name : project.entryList({QStringLiteral("*.sbgm")}, QDir::Files))
+        worlds << project.absoluteFilePath(name);
+    worlds.removeDuplicates();
+    worlds.sort(Qt::CaseInsensitive);
+    if (worlds.isEmpty()) {
+        QMessageBox::information(this, tr("Update Game Project"), tr("No saved .sbgm worlds were found."));
+        return false;
+    }
+    QMessageBox confirm(this);
+    confirm.setWindowTitle(tr("Update ALL Worlds"));
+    confirm.setText(tr("Update all %1 game worlds?").arg(worlds.size()));
+    confirm.setInformativeText(tr("Each world receives an individual ZIP backup before regeneration. "
+        "Published world code, player profile and world registry are refreshed. "
+        "Your user-owned main.c stays untouched."));
+    confirm.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius: 0px; }"));
+    auto *yes = confirm.addButton(tr("Update All Worlds"), QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() != yes) return false;
+    if (!updateGameWorldPaths(worlds, true)) return false;
+    QMessageBox::information(this, tr("All Worlds Updated"),
+        tr("Updated %1 worlds. Each world has its own published sources; main.c was not replaced.")
+            .arg(worlds.size()));
+    return true;
 }
 
 bool MainWindow::checkGameBuildGeneration()
@@ -9615,33 +9697,7 @@ bool MainWindow::checkGameBuildGeneration()
         // If the first compile of a freshly opened project was requested,
         // perform the full Update Project even when timestamps are in sync.
         const QStringList targets = m_gameBuildFirstCheckPending ? designs : outdated;
-        for (const QString &path : targets) {
-            SidboxGameDesigner *game = nullptr;
-            for (int i = 0; i < m_editorTabs->count(); ++i) {
-                auto *open = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
-                if (open && QFileInfo(open->filePath()).absoluteFilePath() == path) {
-                    game = open; break;
-                }
-            }
-            // Use the normal Designer tab when the design wasn't open.
-            // Do NOT create/destroy a hidden temporary Designer on every F5:
-            // teardown of Game Designer tabs has a separately reported crash.
-            if (!game) {
-                const int previousTab = m_editorTabs->currentIndex();
-                if (!openGameDesigner(path)) return false;
-                game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
-                if (!game) return false;
-                if (previousTab >= 0 && previousTab < m_editorTabs->count())
-                    m_editorTabs->setCurrentIndex(previousTab);
-            }
-            // Reuse the SAME full, transactional operation as the
-            // Game Designer's Update Project button. It makes its ZIP backup,
-            // refreshes helpers, writes maingame.c.txt and applies the normal
-            // main.c ownership checks. Cancellation or failure stops F5.
-            // F5's own choice already authorizes the update. Never show a
-            // second confirmation or a success popup during compilation.
-            if (!game->updateGameProject(true)) return false;
-        }
+        if (!updateGameWorldPaths(targets, true)) return false;
         refreshProjectFiles();
         if (rememberUpdateAfterSuccess) {
             m_gameBuildAskBeforeBuild = false;
@@ -12651,6 +12707,8 @@ void MainWindow::refreshProjectFiles()
             fileIcon = gameEditorIcon(QStringLiteral("tree_guidesigner.png"));
         } else if (suffix == QStringLiteral("sbgm")) {
             fileIcon = gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
+        } else if (suffix == QStringLiteral("sbpi")) {
+            fileIcon = gameEditorIcon(QStringLiteral("tree_file_res.png"));
         } else if (suffix == QStringLiteral("md")) {
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_md.png"));
         } else if (suffix == QStringLiteral("ppb") || suffix == QStringLiteral("png")
@@ -14765,7 +14823,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
         QStringLiteral("*.cc"), QStringLiteral("*.cpp"), QStringLiteral("*.hpp"),
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
-        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.uis"),
+        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.sbpi"), QStringLiteral("*.uis"),
         QStringLiteral("*.ppb"), QStringLiteral("*.pal"), QStringLiteral("*.act"),
         QStringLiteral("*.map"),
         QStringLiteral("*.png"), QStringLiteral("*.bmp"), QStringLiteral("*.jpg"),

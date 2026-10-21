@@ -20,7 +20,8 @@ assert 'Choose Game Design' not in check
 assert 'gameworlds_start' in check and 'Multi-World Migration Required' in check
 assert 'gameBuildFilesOutdated(path)' in check
 assert 'm_gameBuildFirstCheckPending ? designs : outdated' in check
-assert 'if (!game->updateGameProject(true)) return false;' in check
+assert 'updateGameWorldPaths(targets, true)' in check
+assert 'bool MainWindow::updateGameWorldPaths(' in cpp
 assert 'worldManagerMain' not in build
 for filename in ['gameassets/gameassets.c','gamehelpers/gameworlditems.c','gamehelpers/gameadventure.c','gamehelpers/splinepaths.c']:
     assert filename in build, filename

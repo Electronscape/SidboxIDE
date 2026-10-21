@@ -48,8 +48,13 @@ uint8_t gameworlds_request(const char *name);
  * 0 = failed; 1 = no change or successful transition. */
 uint8_t gameworlds_apply_pending(void);
 void gameworlds_shutdown(void);
+/* Seed project-wide starting items BEFORE gameworlds_start(); never resets on travel. */
+void gameworlds_seed_inventory(const char *name, uint16_t initial);
 /* The current map may be NULL for a scenery-only world. */
 void *gameworlds_map(void);
+/* Spawn belongs to the active WORLD; player graphics/stats belong to GAME. */
+typedef struct { int32_t x, y; uint8_t facing; } gameworlds_spawn_t;
+uint8_t gameworlds_player_start(gameworlds_spawn_t *out);
 void gameworlds_update(uint16_t frames);
 void gameworlds_draw(int32_t camera_x, int32_t camera_y);
 void gameworlds_draw_behind(int32_t camera_x, int32_t camera_y);

@@ -93,6 +93,11 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
    Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,
                                    uint16_t count);
+typedef uint8_t (*game_adventure_item_visible_t)(const char *name);
+/* Source-compatibility hook for existing world controllers. Backpack rows now
+ * display ONLY owned items (quantity > 0), even when tagged secret. The tag
+ * never changes NPC requirements, quantities or pickup behaviour. */
+void game_adventure_set_inventory_filter(game_adventure_item_visible_t filter);
 uint8_t game_adventure_open(void);
 /* Draw all configured NPC sprite BOBs at their CURRENT generated world positions.
    Call once after world tiles and before the player; no manual Guardian coordinates. */

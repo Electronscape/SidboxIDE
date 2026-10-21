@@ -26,6 +26,34 @@ static const game_adventure_node_t *ga_nodes;
 static const game_adventure_npc_t *ga_npcs;
 static uint16_t ga_item_count, ga_node_count, ga_npc_count;
 static uint16_t ga_counts[GA_MAX_ITEMS];
+static game_adventure_item_visible_t ga_inventory_filter;
+void game_adventure_set_inventory_filter(game_adventure_item_visible_t filter)
+{ ga_inventory_filter = filter; }
+/* Backpack rows represent what the player HAS, not everything the game
+ * knows about. Zero-quantity entries stay off-screen. A secret item's saved
+ * hidden marker is a discovery hint, not a permanent block: once its live
+ * count is nonzero, show the item by name. Dialogue/pickup quantities use
+ * ga_counts independently of this display rule.
+ *
+ * Keep the older filter setter for source compatibility with generated
+ * world managers; its static hidden flag cannot conceal an owned item.
+ */
+static uint8_t ga_item_visible(uint16_t i)
+{
+    return i < ga_item_count && ga_counts[i] != 0u;
+}
+static uint16_t ga_visible_count(void)
+{
+    uint16_t total = 0;
+    for (uint16_t i = 0; i < ga_item_count; ++i) if (ga_item_visible(i)) ++total;
+    return total;
+}
+static uint16_t ga_visible_item_id(uint16_t display_index)
+{
+    for (uint16_t i = 0; i < ga_item_count; ++i)
+        if (ga_item_visible(i) && display_index-- == 0) return i;
+    return ga_item_count;
+}
 /* 256 nodes x 3 choices: 96 bytes for once-only flags. One bit per choice. */
 static uint8_t ga_used_choices[(256u * 3u + 7u) / 8u];
 static uint8_t ga_completed_npcs[256];
@@ -40,6 +68,12 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
 
 static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply */
 static uint8_t ga_prev_buttons, ga_choice, ga_inventory_offset;
+static void ga_inventory_clamp_offset(void)
+{
+    const uint16_t visible = ga_visible_count();
+    const uint16_t max_offset = visible > GA_LINES ? (uint16_t)(visible - GA_LINES) : 0u;
+    if (ga_inventory_offset > max_offset) ga_inventory_offset = (uint8_t)max_offset;
+}
 static uint16_t ga_node, ga_typed, ga_ticks, ga_reply_typed, ga_reply_ticks;
 static int16_t ga_after_reply;
 static const char *ga_reply;
@@ -287,8 +321,9 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         return 0;
     }
     if (ga_state == 2) {
+        ga_inventory_clamp_offset();
         if (press) { ga_state = 0; return 0; }
-        if (down && ga_inventory_offset + GA_LINES < ga_item_count) ++ga_inventory_offset;
+        if (down && ga_inventory_offset + GA_LINES < ga_visible_count()) ++ga_inventory_offset;
         if (up && ga_inventory_offset) --ga_inventory_offset;
         return 1;
     }
@@ -502,10 +537,11 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
 {
     if (!ga_state) return;
     if (ga_state == 2) {
+        ga_inventory_clamp_offset();
         ga_frame(40, 34, 400, 172);
         ga_text(56, 48, "INVENTORY");
         for (uint8_t i = 0; i < GA_LINES; ++i) {
-            uint16_t id = ga_inventory_offset + i;
+            uint16_t id = ga_visible_item_id((uint16_t)(ga_inventory_offset + i));
             if (id >= ga_item_count) break;
             char line[60];
             /* bounded display: no heap allocation and no variable precision libc */

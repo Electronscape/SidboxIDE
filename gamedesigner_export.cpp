@@ -9,6 +9,7 @@
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
+#include "gameplayerprofile.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -930,14 +931,30 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
             adventureNpcIds.insert(entry.toObject().value(QStringLiteral("spriteId")).toString());
     }
     const bool hasMap = m_tilemapEnabled;
-    const bool hasPhysics = hasMap && player;
+    const QDir gameProject(QFileInfo(m_filePath).absolutePath());
+    const bool hasSharedPlayer = QFileInfo::exists(GamePlayerProfile::profilePath(gameProject));
+    QJsonObject sharedProfile;
+    QString sharedError;
+    if (hasSharedPlayer && !GamePlayerProfile::read(gameProject,&sharedProfile,&sharedError)) {
+        if (error) *error = sharedError;
+        return false;
+    }
+    const bool hasPhysics = hasMap && (player || hasSharedPlayer);
     const bool hasObjects = pickups || worldObjects;
-    const bool hasMapOnly = hasMap && !player;
-    const QString playerName = hasPhysics ? spriteSymbol(*player) : QString();
+    const bool hasMapOnly = hasMap && !player && !hasSharedPlayer;
+    const QString playerName = player ? spriteSymbol(*player) : QString();
     // Stage 3.64: only show the player-animation integration when this
     // actual player resource has a saved .sbanim sidecar. Generated main.c
     // remains complete and buildable even before the C header is exported.
-    const bool hasPlayerAnimation = hasPhysics && !player->animationFile.isEmpty();
+    const QString playerAnimationFile = hasSharedPlayer
+        ? sharedProfile.value(QStringLiteral("animationFile")).toString()
+        : (player ? player->animationFile : QString());
+    // A shared .sbpi may name a FUTURE animation sidecar. Only teach the
+    // animation calls once both the .sbanim AND its C header have been saved.
+    const bool hasPlayerAnimation = hasPhysics && !playerAnimationFile.isEmpty()
+        && (!hasSharedPlayer ||
+            (QFileInfo::exists(gameProject.filePath(playerAnimationFile)) &&
+             QFileInfo::exists(gameProject.filePath(QStringLiteral("gameanimations/player_anim.h")))));
     const bool hasMurderObjects = hasPhysics && std::any_of(m_resources.cbegin(), m_resources.cend(),
         [](const Resource &r) { return r.kind == QStringLiteral("sprite") &&
                                       (r.objectType == QStringLiteral("hazard") || r.objectType == QStringLiteral("enemy")); });
@@ -970,6 +987,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFlag("HAS_BACKGROUND_PLANE", dualPlane && hasBackgroundSprites);
     mainFlag("DUAL_PLANE", dualPlane);
     mainFlag("HAS_PHYSICS", hasPhysics);
+    mainFlag("HAS_SHARED_PLAYER", hasSharedPlayer);
     mainFlag("HAS_WORLD_PLAYER", hasPhysics && worldObjects);
     mainFlag("HAS_PICKUPS", hasPhysics && pickups);
     mainFlag("HAS_ATTACHED_SPLINES", hasObjects && !attachedSplineDescriptions.isEmpty());
@@ -999,7 +1017,8 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         hasMap ? (m_tilemapExternal ? QStringLiteral("SD .map") : QStringLiteral("embedded C"))
                : QStringLiteral("none"));
     mainFields.insert(QStringLiteral("PLAYER_DESCRIPTION"),
-        player ? safeCommentValue(spriteSymbol(*player)) : QStringLiteral("not found"));
+        hasSharedPlayer ? QStringLiteral("shared players/player.sbpi") :
+        (player ? safeCommentValue(spriteSymbol(*player)) : QStringLiteral("not found")));
     mainFields.insert(QStringLiteral("SPRITE_COUNT"), QString::number(spriteCount));
     mainFields.insert(QStringLiteral("PICKUP_COUNT"), QString::number(pickups));
     mainFields.insert(QStringLiteral("WORLD_OBJECT_COUNT"), QString::number(worldObjects));
@@ -1009,7 +1028,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFields.insert(QStringLiteral("ATTACHED_SPLINE_COUNT"),
                       QString::number(attachedSplineDescriptions.size()));
     mainFields.insert(QStringLiteral("PLAYER_ANIMATION_FILE"),
-                      hasPlayerAnimation ? safeCommentValue(player->animationFile) : QString());
+                      hasPlayerAnimation ? safeCommentValue(playerAnimationFile) : QString());
     mainFields.insert(QStringLiteral("LOOP_COUNT"), QString::number(m_tilemap.loops.size()));
     for (int i = 0; i < 8; ++i) {
         const QString suffix = QString::number(i + 1);
@@ -1328,6 +1347,16 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         QMessageBox::warning(this, tr("World Bundle"),
             tr("Generated the active world, but could not publish its independent "
                "world bundle:\n%1").arg(snapshotError));
+        return false;
+    }
+    // Stage 5.3: generated player C is project-wide, NEVER namespaced per world.
+    // A missing .sbpi keeps existing older games functional until migrated.
+    QString playerError;
+    if (!GamePlayerProfile::generate(
+            QDir(QFileInfo(m_filePath).absolutePath()),
+            QDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game"))),
+            &playerError)) {
+        QMessageBox::warning(this, tr("Shared Player"), playerError);
         return false;
     }
     if (assetFilesChanged) assetFilesChanged();

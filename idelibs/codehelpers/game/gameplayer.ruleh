@@ -1,0 +1,32 @@
+/* GamerGirl Shared Player -- generated from players/player.sbpi. DO NOT EDIT.
+ * This is ONE project-wide sprite, not owned or freed by any individual world.
+ */
+#ifndef CODERGIRL_SHARED_PLAYER_H
+#define CODERGIRL_SHARED_PLAYER_H
+#include <stdint.h>
+#include "apis.h"
+typedef struct { const char *name; uint16_t initial; uint8_t hidden; } gameplayer_inventory_entry_t;
+/* Defaults from .sbpi. The live inventory/stats belong to the gameworlds state. */
+typedef struct {
+    uint32_t health, lives, score;
+    uint8_t custom_hitbox, physics_preset;
+    int16_t hitbox_x, hitbox_y;
+    uint16_t hitbox_w, hitbox_h;
+} gameplayer_defaults_t;
+extern const gameplayer_defaults_t gameplayer_defaults;
+extern gfxbob_t gameplayer_sprite;
+int gameplayer_init(void); /* Call AFTER initMalloc, only once for the whole game. */
+void gameplayer_shutdown(void); /* Call AFTER gameworlds_shutdown. */
+const gameplayer_inventory_entry_t *gameplayer_initial_inventory(uint16_t *count);
+/* Secret-item metadata lookup (0 for items tagged secret in .sbpi).
+ * The backpack itself always shows owned items (quantity > 0), including
+ * secrets, and hides zero-count items. NPC rules still see every item. */
+uint8_t gameplayer_inventory_visible(const char *name);
+/* Game-wide custom stats from player.sbpi, retained across world changes.
+ * On first gameplayer_init() they start at their configured initial values.
+ * Use the exact name entered in Create / Edit Player. */
+uint16_t gameplayer_custom_stat_count(void);
+const char *gameplayer_custom_stat_name(uint16_t index);
+uint8_t gameplayer_stat_get(const char *name, int32_t *out_value); /* 0 = missing */
+uint8_t gameplayer_stat_set(const char *name, int32_t value); /* 0 = missing */
+#endif

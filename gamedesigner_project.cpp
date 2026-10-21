@@ -1,6 +1,7 @@
 // Stage 3.69: split from gamedesigner.cpp. Method bodies are unchanged.
 #include "gamedesigner.h"
 #include "gameworldsnapshot.h"
+#include "gameplayerprofile.h"
 #include "gamedesigner_limits.h"
 #include "ppbcodec.h"
 #include "pngpaletteimport.h"
@@ -121,6 +122,12 @@ bool SidboxGameDesigner::loadDesign()
         return false;
     }
     m_loading = true;
+    const QJsonObject start = obj.value(QStringLiteral("playerStart")).toObject();
+    m_playerProfile = start.value(QStringLiteral("profile")).toString(QStringLiteral("players/player.sbpi"));
+    m_playerEntry = start.value(QStringLiteral("entry")).toString(QStringLiteral("default"));
+    m_playerFacing = qBound(0, start.value(QStringLiteral("facing")).toInt(1), 1);
+    m_playerStartX = qMax(0,start.value(QStringLiteral("x")).toInt(0));
+    m_playerStartY = qMax(0,start.value(QStringLiteral("y")).toInt(0));
     m_worldWidth->setValue(qBound(LCD_WIDTH, obj.value(QStringLiteral("worldWidth")).toInt(960), MAX_WORLD));
     m_worldHeight->setValue(qBound(LCD_HEIGHT, obj.value(QStringLiteral("worldHeight")).toInt(640), MAX_WORLD));
     m_cameraX->setValue(qBound(0, obj.value(QStringLiteral("cameraX")).toInt(),
@@ -438,6 +445,13 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("activeForegroundPalette"), m_activeForegroundPalette);
     obj.insert(QStringLiteral("activeBackgroundPalette"), m_activeBackgroundPalette);
     obj.insert(QStringLiteral("adventure"), m_adventure);
+    QJsonObject start;
+    start.insert(QStringLiteral("profile"), m_playerProfile);
+    start.insert(QStringLiteral("entry"), m_playerEntry);
+    start.insert(QStringLiteral("x"), m_playerStartX);
+    start.insert(QStringLiteral("y"), m_playerStartY);
+    start.insert(QStringLiteral("facing"), m_playerFacing);
+    obj.insert(QStringLiteral("playerStart"), start);
     QJsonArray assets;
     for (const Resource &r : m_resources) {
         QJsonObject a;
