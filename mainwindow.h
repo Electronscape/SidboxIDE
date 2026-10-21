@@ -79,7 +79,7 @@ private:
     void showAboutIde();
     void compileActiveFile();
     bool checkGameBuildGeneration();
-    bool gameBuildFilesOutdated(const QString &designPath, bool worldManagerMode) const;
+    bool gameBuildFilesOutdated(const QString &designPath) const;
     void openProjectFile(QTreeWidgetItem *item, int column);
     void addExistingProjectFile();
     void createProjectFile();

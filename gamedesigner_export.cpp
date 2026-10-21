@@ -949,9 +949,6 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         return value;
     };
     const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
-    const QString worldSymbol = QStringLiteral("game_") + worldBase;
-    const QString worldHeader = worldBase + QStringLiteral(".h");
-    const QString worldMap = worldBase + QStringLiteral(".map");
     const QDir gameRulesDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
     const QString mainRulesPath = gameRulesDir.filePath(QStringLiteral("maingame.rulec"));
     QFile mainRules(mainRulesPath);
@@ -987,10 +984,8 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFlag("HAS_ADVENTURE_PHYSICS", adventureEnabled && hasPhysics);
     mainFlag("HAS_FRONT_TILES", hasMap && std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),
         [](char flags) { return (quint8(flags) & 4u) != 0; }));
+    mainFields.insert(QStringLiteral("WORLD_BASE"), worldBase);
     mainFields.insert(QStringLiteral("PLAYER_SYMBOL"), playerName);
-    mainFields.insert(QStringLiteral("WORLD_SYMBOL"), worldSymbol);
-    mainFields.insert(QStringLiteral("WORLD_HEADER_FILENAME"), worldHeader);
-    mainFields.insert(QStringLiteral("WORLD_MAP_FILENAME"), worldMap);
     for (int zone = 1; zone <= 8; ++zone)
         mainFields.insert(QStringLiteral("ZONE_%1").arg(zone),
             sidboxTilemapZoneMacroName(m_tilemap, zone));
@@ -1336,16 +1331,17 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         return false;
     }
     if (assetFilesChanged) assetFilesChanged();
-    QString message = tr("Generated gameassets/gameassets.c and gameassets.h.\n\n"
-                         "Include \"gameassets/gameassets.h\" from main.c.\n"
-                         "Call gameassets_init() after initMalloc() and gfx_mode().\n"
-                         "Use maingame.c.txt for the correct draw/update order.\n\n"
-                         "The generated code owns NO display buffers or game logic. "
-                         "In dual-plane mode, background sprite drawing is separate. "
-                         "For a direct background buffer, call gameassets_show_background() "
-                         "after gameassets_init().");
+    QString message = tr("Published this world's assets, objects and Adventure code under\n"
+                         "worlds/%1/.\n\n"
+                         "Every Game project now uses gamehelpers/gameworlds.h,\n"
+                         "including projects with only one world.\n"
+                         "Call gameworlds_start(\"%1\") after SIDBOX display/memory setup.\n"
+                         "Use gameworlds_update()/draw()/shutdown() as shown\n"
+                         "in maingame.c.txt. The old root gameassets/gameworlditems\n"
+                         "modules are export staging only and are NOT linked.")
+        .arg(sidboxTilemapWorldBaseName(m_filePath));
     if (anyWorldObject)
-        message += tr("\n\nGenerated gamehelpers/gameworlditems.c/.h/.txt for your configured game objects.");
+        message += tr("\n\nWorld object files and guide were generated for this world.");
     message += tr("\n\nUpdated maingame.c.txt. main.c is regenerated only if "
                   "it is IDE-owned and has not been manually edited.");
     message += tr("\n\nBuildable world: worlds/%1/ (compiled alongside other generated worlds).")

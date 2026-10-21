@@ -440,7 +440,7 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         confirm.setInformativeText(tr(
             "CoderGirl will refresh existing game helper C/H files from the SDK, "
             "export the current spline paths and tilemap (if present), then regenerate "
-            "gameassets, gameworlditems and a complete, copyable maingame.c.txt.\n\n"
+            "each published world's resources and a world-manager maingame.c.txt.\n\n"
             "Any edits in replaced helpers or generated files will be overwritten. "
             "A ZIP backup is made FIRST.\n\n"
             "Only a verified, unchanged IDE-owned main.c may be regenerated. "

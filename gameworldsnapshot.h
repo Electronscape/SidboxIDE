@@ -4,7 +4,8 @@
 // Stage 5.1: each .sbgm has BOTH a private .codergirl snapshot and a visible
 // worlds/<name>/ build tree. The tree compiles simultaneously with other
 // worlds; public per-world C identifiers are renamed by a generated header.
-// The legacy canonical helper files remain for existing hand-written main.c.
+// Root-level generated outputs remain as temporary exporter inputs only;
+// Stage 5.2d never links them and never uses a single-world runtime.
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
