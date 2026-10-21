@@ -52,11 +52,13 @@ assert 'QStringLiteral("*.ruleh")' in manual
 assert not (TEMPLATES / 'adventureruntime.c').exists()
 assert not (TEMPLATES / 'adventureruntime.h').exists()
 generator = (ROOT / 'gameadventuregen.cpp').read_text()
-assert 'GAME_ADVENTURE_DEFAULT_TILE_SIZE,skin_cells,' in generator
-assert 'GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR,on_event,0)' in generator
+story = (ROOT / 'idelibs/codehelpers/game/gameadventure.rulec').read_text()
+assert 'GAME_ADVENTURE_DEFAULT_TILE_SIZE' in story and 'skin_cells' in story
+assert 'GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR' in story and 'on_event, 0)' in story
 assert 'game_adventure_dialogue_box(' not in generator
 assert 'game_adventure_text_style(' not in generator
-assert 'game_adventure_skin_flips(' in generator
+assert 'game_adventure_skin_flips(' in story
+assert 'game_adventure_start(' in story and 'game_adventure_start(' not in generator
 
 with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)

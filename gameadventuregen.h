@@ -8,5 +8,6 @@
 bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoot,
                            const QVector<GameAdventureAsset> &sprites,
                            const QVector<GameAdventureAsset> &atlases,
-                           const QVector<GameAdventureAsset> &worldObjects, QString *error);
+                           const QVector<GameAdventureAsset> &worldObjects,
+                           const QString &gameRulesDirectory, QString *error);
 #endif

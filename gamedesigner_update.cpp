@@ -305,9 +305,26 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     const QStringList known = templates.entryList({QStringLiteral("*.c"), QStringLiteral("*.rulec")}, QDir::Files, QDir::Name);
     for (const QString &name : known) {
         const QString base = QFileInfo(name).completeBaseName();
+        // The story rules generate gameadventure.c/.h; they are not
+        // SDK helpers and must never become gamegameadventure.c/.h.
+        if (base == QStringLiteral("gameadventure")) continue;
         if (QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".c")))
             || QFileInfo::exists(installed.filePath(QStringLiteral("game") + base + QStringLiteral(".h"))))
             needed.insert(base);
+    }
+    // The Adventure story is a generated project file, not an installable
+    // "game<helper>" runtime. It has its own .rulec/.ruleh pair. Check both
+    // before starting Update Game Project's ZIP backup / file replacement.
+    if (hasAdventure()) {
+        for (const QString &ext : {QStringLiteral(".rulec"), QStringLiteral(".ruleh")}) {
+            const QString path = templates.filePath(QStringLiteral("gameadventure") + ext);
+            if (!QFileInfo::exists(path)) {
+                QMessageBox::warning(this, tr("Update Game Project"),
+                    tr("Missing Adventure story rule: %1\n"
+                       "The game project has not been modified.").arg(path));
+                return false;
+            }
+        }
     }
     // Make sure the required templates are all present before touching disk.
     QStringList helperNames;

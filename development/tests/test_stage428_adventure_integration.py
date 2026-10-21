@@ -20,7 +20,7 @@ for term in ['hasAdventure()', 'gamehelpers/gameadventure.c', 'gamehelpers/gamea
 assert 'main.c' in update and 'backup' in update.lower()
 assert 'set(CMAKE_CXX_STANDARD 17)' in text('CMakeLists.txt')
 assert 'gameadventureeditor.cpp' in text('CMakeLists.txt') and 'gameadventuregen.cpp' in text('CMakeLists.txt')
-gen = text('gameadventuregen.cpp')
+gen = text('gameadventuregen.cpp') + text('idelibs/codehelpers/game/gameadventure.rulec')
 for term in ['gameworlditems_set_active', 'skin_cells', 'gameassets_find_ppb', 'on_event', 'QSaveFile']:
     assert term in gen, term
 print('Stage 4.28 static integration checks passed')

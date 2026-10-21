@@ -1,4 +1,5 @@
 #include "worldobjects.h"
+/* TEST conditions: FISH PIE */
 
 static int16_t clamp16(int64_t x)
 {
@@ -23,7 +24,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->height = height;
     object->type = type;
     object->conveyor_speed = 0;
-    object->spring_strength = 10;
+    object->spring_strength = @IDE{SPRING_STRENGTH_DEFAULT};
     object->spring_launch_x = 0; /* Default remains a straight-up bounce. */
     object->allow_jump_boost = 0; /* Explicit opt-in only: avoid surprise super-jumps. */
     object->touch_activation = 0; /* Existing springs always use landing behaviour. */
@@ -33,19 +34,19 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->break_hits_done = 0;
     object->break_touch_mode = 0;
     object->break_bounce = 0;
-    object->break_strength = 11;
+    object->break_strength = @IDE{BREAK_STRENGTH_DEFAULT};
     object->break_launch_x = 0;
     object->break_touching = 0;
     object->enemy_roam = 0;
-    object->enemy_roam_speed = 1;
-    object->enemy_step_height = 4;
+    object->enemy_roam_speed = @IDE{ENEMY_ROAM_SPEED_DEFAULT};
+    object->enemy_step_height = @IDE{ENEMY_STEP_HEIGHT_DEFAULT};
     object->enemy_roam_direction = 1;
     object->enemy_base_flip_x = sprite ? !!(sprite->flags & BLIT_FLAG_FLIP_X) : 0;
     object->enemy_hurts_on_touch = 1;
     object->enemy_stomp_side_kick = 0;
     object->enemy_attack_direction = 0; /* Legacy top-only stomps. */
     object->enemy_defeat_frame = -1;
-    object->enemy_defeat_frames = 20;
+    object->enemy_defeat_frames = @IDE{ENEMY_DEFEAT_FRAMES_DEFAULT};
     object->enemy_defeat_count = 1;
     object->enemy_defeat_delay = 0; /* 0 preserves legacy enemy_defeat_frames override. */
     object->enemy_dying = 0;
@@ -57,15 +58,15 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->break_hit_triggered = 0;
     object->break_bounce_triggered = 0;
     object->draw_behind_tiles = 0;
-    object->hazard_damage = 1;
+    object->hazard_damage = @IDE{HAZARD_DAMAGE_DEFAULT};
     object->hazard_kick_x = 0;
     object->hazard_kick_y = -11;
     object->hazard_kick = 1;
     object->hazard_hurt_animation = 1;
     object->hazard_flash = 1;
-    object->hazard_flash_colour = 15;
-    object->hazard_flash_count = 4;
-    object->hazard_flash_frames = 3;
+    object->hazard_flash_colour = @IDE{HAZARD_FLASH_COLOUR_DEFAULT};
+    object->hazard_flash_count = @IDE{HAZARD_FLASH_COUNT_DEFAULT};
+    object->hazard_flash_frames = @IDE{HAZARD_FLASH_FRAMES_DEFAULT};
     object->hazard_touching = 0;
     object->hazard_hit_triggered = 0;
     object->hazard_bounce_triggered = 0;

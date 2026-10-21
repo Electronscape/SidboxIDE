@@ -35,6 +35,20 @@ inline QMap<QString, QString> valuesFor(const QString &helper,
                                         const QJsonObject &adventure)
 {
     QMap<QString, QString> values;
+    if (helper == QStringLiteral("worldobjects")) {
+        // Stage 4.44: runtime defaults owned by the IDE rule renderer.
+        // Preserve original numeric defaults and object IDs exactly.
+        values.insert(QStringLiteral("WORLD_OBJECT_FIRST_TYPE"), QStringLiteral("1"));
+        values.insert(QStringLiteral("SPRING_STRENGTH_DEFAULT"), QStringLiteral("10"));
+        values.insert(QStringLiteral("BREAK_STRENGTH_DEFAULT"), QStringLiteral("11"));
+        values.insert(QStringLiteral("ENEMY_ROAM_SPEED_DEFAULT"), QStringLiteral("1"));
+        values.insert(QStringLiteral("ENEMY_STEP_HEIGHT_DEFAULT"), QStringLiteral("4"));
+        values.insert(QStringLiteral("ENEMY_DEFEAT_FRAMES_DEFAULT"), QStringLiteral("20"));
+        values.insert(QStringLiteral("HAZARD_DAMAGE_DEFAULT"), QStringLiteral("1"));
+        values.insert(QStringLiteral("HAZARD_FLASH_COLOUR_DEFAULT"), QStringLiteral("15"));
+        values.insert(QStringLiteral("HAZARD_FLASH_COUNT_DEFAULT"), QStringLiteral("4"));
+        values.insert(QStringLiteral("HAZARD_FLASH_FRAMES_DEFAULT"), QStringLiteral("3"));
+    }
     if (helper == QStringLiteral("adventureruntime")) {
         // Preserve the existing 64-item runtime capacity independently of
         // the current project's inventory count. Other source paths may
@@ -65,6 +79,49 @@ inline QMap<QString, QString> valuesFor(const QString &helper,
         values.insert(QStringLiteral("FRAMES_PER_CHAR"), bounded("framesPerChar", 1, 30, 2));
     }
     return values;
+}
+
+// Story generators use the same strict substitution logic as runtime helpers,
+// but provide per-project record tables rather than a fixed set of scalar values.
+// Replace tokens in ONE pass: quoted player dialogue containing token-like text
+// must never be interpreted as a second template or evaluated recursively.
+inline bool renderFields(const QByteArray &source,
+                         const QMap<QString, QString> &fields,
+                         const QString &label,
+                         QByteArray *result, QString *error)
+{
+    if (!result) {
+        if (error) *error = QStringLiteral("No destination supplied for %1.").arg(label);
+        return false;
+    }
+    const QString input = QString::fromUtf8(source);
+    const QRegularExpression token(QStringLiteral(R"(@IDE\{([A-Z_][A-Z0-9_]*)\})"));
+    QString output;
+    output.reserve(input.size());
+    qsizetype cursor = 0;
+    qsizetype marker = input.indexOf(QStringLiteral("@IDE{"));
+    while (marker >= 0) {
+        const QRegularExpressionMatch match = token.match(input, marker,
+                                                         QRegularExpression::NormalMatch,
+                                                         QRegularExpression::AnchorAtOffsetMatchOption);
+        if (!match.hasMatch()) {
+            if (error) *error = QStringLiteral("Malformed placeholder in %1 near character %2.")
+                .arg(label).arg(marker);
+            return false;
+        }
+        const QString name = match.captured(1);
+        if (!fields.contains(name)) {
+            if (error) *error = QStringLiteral("Unknown @IDE{%1} in %2.").arg(name, label);
+            return false;
+        }
+        output += input.mid(cursor, marker - cursor);
+        output += fields.value(name);
+        cursor = match.capturedEnd();
+        marker = input.indexOf(QStringLiteral("@IDE{"), cursor);
+    }
+    output += input.mid(cursor);
+    *result = output.toUtf8();
+    return true;
 }
 
 inline bool render(const QByteArray &source, const QString &helper,

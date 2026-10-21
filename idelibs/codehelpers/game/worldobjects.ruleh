@@ -10,7 +10,8 @@
 #include "gameanimation.h"
 #include "gamespline.h"
 
-#define GAME_OBJECT_LIFT      1u
+#define GAME_WORLD_OBJECT_FIRST_TYPE @IDE{WORLD_OBJECT_FIRST_TYPE}u
+#define GAME_OBJECT_LIFT      GAME_WORLD_OBJECT_FIRST_TYPE
 #define GAME_OBJECT_CONVEYOR  2u
 #define GAME_OBJECT_SPRING    3u
 #define GAME_OBJECT_TRIGGER   4u

@@ -815,7 +815,8 @@ void SidboxGameDesigner::addCodeHelper(const QString &category, const QString &b
 {
     if ((category != QStringLiteral("game") && category != QStringLiteral("gui"))
         || base.isEmpty() || base.contains(QLatin1Char('/')) || base.contains(QLatin1Char('\\'))
-        || base == QStringLiteral(".") || base == QStringLiteral("..")) return;
+        || base == QStringLiteral(".") || base == QStringLiteral("..")
+        || (category == QStringLiteral("game") && base == QStringLiteral("gameadventure"))) return;
     const QDir templateFolder(QDir(helperTemplatesRoot()).filePath(category));
     const QString sourceH = category == QStringLiteral("game")
         ? GameHelperTemplates::sourcePath(templateFolder, base, QStringLiteral(".h"))
@@ -2107,7 +2108,8 @@ void SidboxGameDesigner::buildUi()
             QSet<QString> offered;
             for (const QString &header : headers) {
                 const QString base = QFileInfo(header).completeBaseName();
-                if (offered.contains(base)) continue;
+                if (offered.contains(base) || (folderName == QStringLiteral("game")
+                     && base == QStringLiteral("gameadventure"))) continue;
                 const QString src = folderName == QStringLiteral("game")
                     ? GameHelperTemplates::sourcePath(folder, base, QStringLiteral(".c"))
                     : folder.filePath(base + QStringLiteral(".c"));
@@ -6480,5 +6482,6 @@ bool SidboxGameDesigner::exportAdventure(QString *error)
         object.worldSlot = slot++; worldObjects.append(object);
     }
     return generateGameAdventure(m_adventure, QFileInfo(m_filePath).absolutePath(), sprites,
-                                 atlases, worldObjects, error);
+                                 atlases, worldObjects,
+                                 QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")), error);
 }
