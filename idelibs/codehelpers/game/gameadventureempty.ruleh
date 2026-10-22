@@ -7,6 +7,8 @@
 #define GAME_ADVENTURE_STORY_NODE_COUNT 0u
 #define GAME_ADVENTURE_STORY_NPC_COUNT 0u
 void gameadventure_setup(void);
+void gameadventure_save_progress(void);
+void gameadventure_restore_progress(void);
 void gameadventure_store_inventory(gameworlds_inventory_put_t sink, void *user);
 void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user);
 void gameadventure_on_event(uint16_t event_id);

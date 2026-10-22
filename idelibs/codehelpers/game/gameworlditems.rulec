@@ -66,6 +66,205 @@ static uint16_t cg_loop_gain[@IDE{WORLD_OBJECT_COUNT}];
 static uint16_t cg_loop_target[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
 @IDE{WORLD_DECLARATIONS}
+/* Stage 5.21: per-world RAM snapshot. Each generated world module keeps its
+ * own copy, even while another world's graphics and collision data are loaded.
+ * Store values ONLY, never gfxbob/animation/spline pointers. */
+@IDE_IF{HAS_WORLDS}
+typedef struct {
+    int32_t x, y, previous_x, previous_y;
+    uint16_t dying;
+    uint8_t active, hits, roam_direction;
+    uint8_t has_spline, has_animation;
+    uint16_t spline_elapsed, spline_pause, spline_next;
+    uint16_t spline_start_delay;
+    int32_t spline_offset_x, spline_offset_y;
+    uint8_t spline_active, spline_finish;
+    uint16_t animation_current, animation_counter, animation_phase, sprite_index;
+    uint8_t animation_playing, animation_finished;
+} cg_world_object_state_t;
+static cg_world_object_state_t cg_saved_objects[@IDE{WORLD_OBJECT_COUNT}];
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+typedef struct {
+    int32_t x, y;
+    uint16_t respawn_left, spline_start_delay, sprite_index;
+    uint8_t active, can_collect, has_spline, has_animation;
+    uint16_t spline_elapsed, spline_pause, spline_next;
+    int32_t spline_offset_x, spline_offset_y;
+    uint8_t spline_active, spline_finish;
+    uint16_t animation_current, animation_counter, animation_phase;
+    uint8_t animation_playing, animation_finished;
+} cg_world_pickup_state_t;
+static cg_world_pickup_state_t cg_saved_pickups[@IDE{PICKUP_COUNT}];
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+static uint8_t cg_saved_reward_falling[@IDE{PICKUP_COUNT}];
+static int32_t cg_saved_reward_x100[@IDE{PICKUP_COUNT}];
+static int32_t cg_saved_reward_y100[@IDE{PICKUP_COUNT}];
+static int32_t cg_saved_reward_vx100[@IDE{PICKUP_COUNT}];
+static int32_t cg_saved_reward_vy100[@IDE{PICKUP_COUNT}];
+@IDE_END
+static uint8_t cg_world_snapshot_valid;
+
+void gameworlditems_save_state(void)
+{
+@IDE_IF{HAS_WORLDS}
+    for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) {
+        const game_world_object_t *o = &platforms[i];
+        cg_world_object_state_t *d = &cg_saved_objects[i];
+        d->active = o->active;
+        d->hits = o->break_hits_done;
+        d->dying = o->enemy_dying;
+        d->roam_direction = (uint8_t)o->enemy_roam_direction;
+        d->x = o->x; d->y = o->y;
+        d->previous_x = o->previous_x; d->previous_y = o->previous_y;
+        d->spline_start_delay = o->spline_start_delay;
+        d->has_spline = o->spline != 0;
+        if (o->spline) {
+            d->spline_elapsed = o->spline->elapsed_frames;
+            d->spline_pause = o->spline->pause_remaining;
+            d->spline_next = o->spline->next_pause_index;
+            d->spline_offset_x = o->spline->offset_x;
+            d->spline_offset_y = o->spline->offset_y;
+            d->spline_active = o->spline->active;
+            d->spline_finish = o->spline->finish_after_pause;
+        }
+        d->has_animation = o->animation != 0;
+        if (o->animation) {
+            d->animation_current = o->animation->current_frame;
+            d->animation_counter = o->animation->frame_counter;
+            d->animation_phase = o->animation->pingpong_phase;
+            d->animation_playing = o->animation->playing;
+            d->animation_finished = o->animation->finished;
+        }
+        d->sprite_index = o->sprite ? o->sprite->index : 0;
+    }
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
+        const game_collectable_t *o = &pickups[i];
+        cg_world_pickup_state_t *d = &cg_saved_pickups[i];
+        d->active = o->active;
+        d->can_collect = o->can_collect;
+        d->respawn_left = o->respawn_left;
+        d->x = o->x; d->y = o->y;
+        d->spline_start_delay = o->spline_start_delay;
+        d->has_spline = o->spline != 0;
+        if (o->spline) {
+            d->spline_elapsed = o->spline->elapsed_frames;
+            d->spline_pause = o->spline->pause_remaining;
+            d->spline_next = o->spline->next_pause_index;
+            d->spline_offset_x = o->spline->offset_x;
+            d->spline_offset_y = o->spline->offset_y;
+            d->spline_active = o->spline->active;
+            d->spline_finish = o->spline->finish_after_pause;
+        }
+        d->has_animation = o->animation != 0;
+        if (o->animation) {
+            d->animation_current = o->animation->current_frame;
+            d->animation_counter = o->animation->frame_counter;
+            d->animation_phase = o->animation->pingpong_phase;
+            d->animation_playing = o->animation->playing;
+            d->animation_finished = o->animation->finished;
+        }
+        d->sprite_index = o->sprite ? o->sprite->index : 0;
+    }
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
+        cg_saved_reward_falling[i] = cg_reward_falling[i];
+        cg_saved_reward_x100[i] = cg_reward_x100[i];
+        cg_saved_reward_y100[i] = cg_reward_y100[i];
+        cg_saved_reward_vx100[i] = cg_reward_vx100[i];
+        cg_saved_reward_vy100[i] = cg_reward_vy100[i];
+    }
+@IDE_END
+    cg_world_snapshot_valid = 1;
+}
+
+void gameworlditems_restore_state(void)
+{
+    if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
+@IDE_IF{HAS_WORLDS}
+    for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) {
+        game_world_object_t *o = &platforms[i];
+        const cg_world_object_state_t *d = &cg_saved_objects[i];
+        o->active = d->active;
+        o->break_hits_done = d->hits;
+        o->enemy_dying = d->dying;
+        o->enemy_roam_direction = (int8_t)d->roam_direction;
+        o->x = d->x; o->y = d->y;
+        o->previous_x = d->previous_x; o->previous_y = d->previous_y;
+        o->spline_start_delay = d->spline_start_delay;
+        if (o->spline && d->has_spline) {
+            o->spline->elapsed_frames = d->spline_elapsed;
+            o->spline->pause_remaining = d->spline_pause;
+            o->spline->next_pause_index = d->spline_next;
+            o->spline->offset_x = d->spline_offset_x;
+            o->spline->offset_y = d->spline_offset_y;
+            o->spline->active = d->spline_active;
+            o->spline->finish_after_pause = d->spline_finish;
+        }
+        if (o->animation && d->has_animation) {
+            o->animation->current_frame = d->animation_current;
+            o->animation->frame_counter = d->animation_counter;
+            o->animation->pingpong_phase = d->animation_phase;
+            o->animation->playing = d->animation_playing;
+            o->animation->finished = d->animation_finished;
+        }
+        if (o->sprite) {
+            o->sprite->drawx = (int16_t)d->x;
+            o->sprite->drawy = (int16_t)d->y;
+            o->sprite->index = d->sprite_index;
+        }
+        /* Contact latches are transient, not game progression. */
+        o->trigger_touching = 0; o->trigger_pressed = 0;
+        o->spring_touching = 0; o->break_touching = 0;
+    }
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
+        game_collectable_t *o = &pickups[i];
+        const cg_world_pickup_state_t *d = &cg_saved_pickups[i];
+        o->active = d->active;
+        o->can_collect = d->can_collect;
+        o->respawn_left = d->respawn_left;
+        o->x = d->x; o->y = d->y;
+        o->spline_start_delay = d->spline_start_delay;
+        if (o->spline && d->has_spline) {
+            o->spline->elapsed_frames = d->spline_elapsed;
+            o->spline->pause_remaining = d->spline_pause;
+            o->spline->next_pause_index = d->spline_next;
+            o->spline->offset_x = d->spline_offset_x;
+            o->spline->offset_y = d->spline_offset_y;
+            o->spline->active = d->spline_active;
+            o->spline->finish_after_pause = d->spline_finish;
+        }
+        if (o->animation && d->has_animation) {
+            o->animation->current_frame = d->animation_current;
+            o->animation->frame_counter = d->animation_counter;
+            o->animation->pingpong_phase = d->animation_phase;
+            o->animation->playing = d->animation_playing;
+            o->animation->finished = d->animation_finished;
+        }
+        if (o->sprite) {
+            o->sprite->drawx = (int16_t)d->x;
+            o->sprite->drawy = (int16_t)d->y;
+            o->sprite->index = d->sprite_index;
+        }
+    }
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
+        cg_reward_falling[i] = cg_saved_reward_falling[i];
+        cg_reward_x100[i] = cg_saved_reward_x100[i];
+        cg_reward_y100[i] = cg_saved_reward_y100[i];
+        cg_reward_vx100[i] = cg_saved_reward_vx100[i];
+        cg_reward_vy100[i] = cg_saved_reward_vy100[i];
+    }
+@IDE_END
+}
+
 uint8_t gameworlditems_init(void)
 {
 @IDE_IF{HAS_TILEMAP_WORLDS}
@@ -247,6 +446,9 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
 
 @IDE_END
 @IDE_IF{HAS_TRIGGERS}
+/* Deferred world changes are implemented by the shared world manager. */
+uint8_t gameworlds_request(const char *name);
+uint8_t gameworlds_request_at(const char *name, const char *start_id);
 uint16_t gameworlditems_trigger(int32_t x, int32_t y, uint16_t w, uint16_t h, uint8_t pressed)
 {
     uint16_t fired = game_world_objects_trigger(platforms, @IDE{WORLD_OBJECT_COUNT}, x, y, w, h, pressed);
@@ -282,6 +484,8 @@ void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 uint8_t gameworlditems_init(void) { return 1; }
 void gameworlditems_update(uint16_t frames) { (void)frames; }
 void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
+void gameworlditems_save_state(void) {}
+void gameworlditems_restore_state(void) {}
 @IDE_END
 
 @IDE_SECTION{SOUND_WRAPPER}

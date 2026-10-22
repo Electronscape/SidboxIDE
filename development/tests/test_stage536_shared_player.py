@@ -12,7 +12,9 @@ fields = {"PPB_PATH": '"players/hero.ppb"',"ATLAS_W":"64","ATLAS_H":"32",
           "HITBOX_X":"2", "HITBOX_Y":"3", "HITBOX_W":"12", "HITBOX_H":"13",
           "INVENTORY_COUNT":"2",
           "INVENTORY_ROWS":'    {"key", 1u, 1u},\n    {"gold", 7u, 0u},\n',
-          "CUSTOM_STAT_COUNT":"0", "CUSTOM_STAT_ROWS":""}
+          "CUSTOM_STAT_COUNT":"0", "CUSTOM_STAT_ROWS":"",
+          "PHYSICS_PROFILE_COUNT":"2",
+          "PHYSICS_PROFILE_ROWS":"    {2u, 2u, 2, 5, 12, 3, 18u},\n    {7u, 1u, 6, 9, 20, 12, 4u},\n"}
 for key, val in fields.items(): template_c = template_c.replace('@IDE{' + key + '}',val)
 assert '@IDE{' not in template_c
 with tempfile.TemporaryDirectory(prefix="sbpi-stage536-") as tmp:
@@ -33,12 +35,25 @@ typedef struct {
 } gfxbob_t;
 #endif
 ''')
+    (root / "gametilemap.h").write_text('''#ifndef MOCK_GAME_TILEMAP_H
+#define MOCK_GAME_TILEMAP_H
+#include <stdint.h>
+typedef struct {
+    int16_t walk_speed, jump_speed, gravity, max_fall_speed;
+    uint8_t physics_mode, force_drag_percent;
+} game_tile_player_t;
+void game_tile_player_set_physics(game_tile_player_t*,uint8_t);
+void game_tile_player_set_force_drag(game_tile_player_t*,uint8_t);
+#endif
+''')
     (root / "main.c").write_text('''#include "gameplayer.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 static uint8_t ppb[1040+64*32];static uint32_t offset;
 static int open_flag,close_count;
+void game_tile_player_set_physics(game_tile_player_t *p, uint8_t id) {p->physics_mode=id;}
+void game_tile_player_set_force_drag(game_tile_player_t *p, uint8_t drag) {p->force_drag_percent=drag;}
 int sfopen(int f,const char *path,int mode){assert(f==0 && mode==1 && !strcmp(path,"players/hero.ppb"));open_flag=1;offset=0;return 0;}
 int sfclose(int f){assert(f==0 && open_flag);open_flag=0;++close_count;return 0;}
 int sfread(int f,void*out,uint32_t len,uint32_t*got){assert(f==0 && open_flag);if(offset+len>sizeof(ppb))return 1;memcpy(out,ppb+offset,len);offset+=len;*got=len;return 0;}
@@ -52,6 +67,12 @@ int main(void){
  assert(!gameplayer_inventory_visible("key") && gameplayer_inventory_visible("gold") && gameplayer_inventory_visible("not-listed"));
  assert(gameplayer_defaults.custom_hitbox==1 && gameplayer_defaults.physics_preset==2);
  assert(gameplayer_defaults.hitbox_x==2 && gameplayer_defaults.hitbox_h==13);
+ game_tile_player_t physics={0};
+ assert(gameplayer_apply_physics(&physics,7) && physics.physics_mode==1);
+ assert(physics.walk_speed==6 && physics.jump_speed==9 && physics.gravity==20);
+ assert(physics.max_fall_speed==12 && physics.force_drag_percent==4);
+ assert(!gameplayer_apply_physics(&physics,99));
+ assert(gameplayer_apply_physics(&physics,2) && physics.gravity==12);
  assert(gameplayer_init());assert(gameplayer_sprite.atlas_stride==64 && gameplayer_sprite.width==16);
  assert(gameplayer_sprite.imgdat[17]==17 && gameplayer_sprite.scale==100);
  assert(gameplayer_init()); assert(close_count==1);

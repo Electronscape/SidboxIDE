@@ -9,6 +9,30 @@ const gameplayer_defaults_t gameplayer_defaults = {
     @IDE{CUSTOM_HITBOX}u,@IDE{PHYSICS_PRESET}u,
     @IDE{HITBOX_X},@IDE{HITBOX_Y},@IDE{HITBOX_W}u,@IDE{HITBOX_H}u
 };
+/* Physics profiles are project data, generated once, not duplicated per world. */
+typedef struct {
+    uint8_t id, mode;
+    int16_t walk_speed, jump_speed, gravity, max_fall_speed;
+    uint8_t drag;
+} gameplayer_physics_profile_t;
+static const gameplayer_physics_profile_t gameplayer_physics_profiles[] = {
+@IDE{PHYSICS_PROFILE_ROWS}    {0,0,0,0,0,0,0}
+};
+uint8_t gameplayer_apply_physics(game_tile_player_t *player, uint8_t profile_id) {
+    if (!player) return 0;
+    for (uint16_t i = 0; i < @IDE{PHYSICS_PROFILE_COUNT}u; ++i) {
+        const gameplayer_physics_profile_t *physics = &gameplayer_physics_profiles[i];
+        if (physics->id != profile_id) continue;
+        game_tile_player_set_physics(player, physics->mode);
+        player->walk_speed = physics->walk_speed;
+        player->jump_speed = physics->jump_speed;
+        player->gravity = physics->gravity;
+        player->max_fall_speed = physics->max_fall_speed;
+        game_tile_player_set_force_drag(player, physics->drag);
+        return 1;
+    }
+    return 0;
+}
 gfxbob_t gameplayer_sprite;
 static uint8_t *gameplayer_pixels;
 static const gameplayer_inventory_entry_t gameplayer_items[] = {

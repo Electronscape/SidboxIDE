@@ -143,6 +143,9 @@ private:
 
         QString targetObjectId; // Stable resource ID; never a tree index or name.
         QString targetAction = QStringLiteral("none"); // enable, disable, toggle.
+        QString gotoWorldName; // target world basename, not a path or tab index
+        bool gotoPress = false; // false = walk into door; true = FIRE2 contact
+        QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID
         bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
         bool triggerOneShot = false; // Destroy/hide trigger after firing.
         QString triggerMusicId; // Stable ID of music tree resource; empty means no chosen track.
@@ -178,6 +181,7 @@ private:
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
     void openAdventureEditor();
+    void editPlayerStartLocation(const QString &id);
     bool exportAdventure(QString *error);
     bool hasAdventure() const;
     // Snapshot of project-global stamp bank at last world load/save.
@@ -263,6 +267,13 @@ private:
     QString m_playerEntry = QStringLiteral("default");
     int m_playerStartX = 0, m_playerStartY = 0;
     int m_playerFacing = 1; // 0=left, 1=right
+    // Additional, named destination entrances belong to this world only.
+    struct PlayerStartLocation {
+        QString id;
+        QString name;
+        int x = 0, y = 0, facing = 1;
+    };
+    QVector<PlayerStartLocation> m_otherPlayerStarts;
     QGraphicsItem *m_playerStartMarker = nullptr;
 
     bool m_dirty = false;

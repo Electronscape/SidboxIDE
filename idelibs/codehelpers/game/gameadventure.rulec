@@ -64,6 +64,21 @@ static void on_event(uint16_t event_id, void *user)
     }
 }
 
+/* Static RAM belongs to this world, not to the shared Adventure renderer. */
+static uint8_t cg_saved_story_choices[GAME_ADVENTURE_USED_CHOICE_BYTES];
+static uint8_t cg_saved_story_npcs[GAME_ADVENTURE_COMPLETED_NPC_BYTES];
+static uint8_t cg_saved_story_valid;
+void gameadventure_save_progress(void)
+{
+    game_adventure_save_progress(cg_saved_story_choices, cg_saved_story_npcs);
+    cg_saved_story_valid = 1;
+}
+void gameadventure_restore_progress(void)
+{
+    if (cg_saved_story_valid)
+        game_adventure_restore_progress(cg_saved_story_choices, cg_saved_story_npcs);
+}
+
 void gameadventure_setup(void)
 {
     const uint8_t *skin = 0;

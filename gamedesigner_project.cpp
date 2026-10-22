@@ -129,6 +129,21 @@ bool SidboxGameDesigner::loadDesign()
     m_playerFacing = qBound(0, start.value(QStringLiteral("facing")).toInt(1), 1);
     m_playerStartX = qMax(0,start.value(QStringLiteral("x")).toInt(0));
     m_playerStartY = qMax(0,start.value(QStringLiteral("y")).toInt(0));
+    m_otherPlayerStarts.clear();
+    QSet<QString> seenStartIds{QStringLiteral("default")};
+    for (const QJsonValue &v : obj.value(QStringLiteral("playerStarts")).toArray()) {
+        const QJsonObject entry = v.toObject();
+        PlayerStartLocation location;
+        location.id = entry.value(QStringLiteral("id")).toString();
+        location.name = entry.value(QStringLiteral("name")).toString().trimmed();
+        if (location.id.isEmpty() || seenStartIds.contains(location.id)) continue;
+        seenStartIds.insert(location.id);
+        location.x = qBound(0, entry.value(QStringLiteral("x")).toInt(), 32767);
+        location.y = qBound(0, entry.value(QStringLiteral("y")).toInt(), 32767);
+        location.facing = qBound(0, entry.value(QStringLiteral("facing")).toInt(1), 1);
+        if (location.name.isEmpty()) location.name = tr("Door start");
+        m_otherPlayerStarts.push_back(location);
+    }
     m_worldWidth->setValue(qBound(LCD_WIDTH, obj.value(QStringLiteral("worldWidth")).toInt(960), MAX_WORLD));
     m_worldHeight->setValue(qBound(LCD_HEIGHT, obj.value(QStringLiteral("worldHeight")).toInt(640), MAX_WORLD));
     m_cameraX->setValue(qBound(0, obj.value(QStringLiteral("cameraX")).toInt(),
@@ -277,6 +292,9 @@ bool SidboxGameDesigner::loadDesign()
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
                          QStringLiteral("toggle")}.contains(r.targetAction))
             r.targetAction = QStringLiteral("none");
+        r.gotoWorldName = object.value(QStringLiteral("gotoWorldName")).toString();
+        r.gotoPress = object.value(QStringLiteral("gotoPress")).toBool(false);
+        r.gotoStartId = object.value(QStringLiteral("gotoStartId")).toString(QStringLiteral("default"));
         r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
         r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
         r.triggerMusicId = object.value(QStringLiteral("triggerMusicId")).toString();
@@ -532,6 +550,17 @@ bool SidboxGameDesigner::saveDesign()
     start.insert(QStringLiteral("y"), m_playerStartY);
     start.insert(QStringLiteral("facing"), m_playerFacing);
     obj.insert(QStringLiteral("playerStart"), start);
+    QJsonArray otherStarts;
+    for (const PlayerStartLocation &location : m_otherPlayerStarts) {
+        QJsonObject point;
+        point.insert(QStringLiteral("id"), location.id);
+        point.insert(QStringLiteral("name"), location.name);
+        point.insert(QStringLiteral("x"), location.x);
+        point.insert(QStringLiteral("y"), location.y);
+        point.insert(QStringLiteral("facing"), location.facing);
+        otherStarts.append(point);
+    }
+    obj.insert(QStringLiteral("playerStarts"), otherStarts);
     QJsonArray assets;
     for (const Resource &r : m_resources) {
         QJsonObject a;
@@ -607,6 +636,9 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("hazardFlashFrames"), r.hazardFlashFrames);
             object.insert(QStringLiteral("targetObjectId"), r.targetObjectId);
             object.insert(QStringLiteral("targetAction"), r.targetAction);
+            object.insert(QStringLiteral("gotoWorldName"), r.gotoWorldName);
+            object.insert(QStringLiteral("gotoPress"), r.gotoPress);
+            object.insert(QStringLiteral("gotoStartId"), r.gotoStartId);
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
             object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);
             object.insert(QStringLiteral("triggerMusicId"), r.triggerMusicId);

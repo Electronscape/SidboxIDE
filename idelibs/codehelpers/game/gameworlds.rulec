@@ -18,6 +18,15 @@
 @IDE_IF{HAS_PLAYER_VISIBILITY}
 #include "gameplayer.h"
 @IDE_END
+@IDE_IF{HAS_SHARED_PLAYER}
+#include "gameplayer.h"
+@IDE_END
+typedef struct {
+    const char *id;
+    int32_t x, y;
+    uint8_t facing;
+} gameworlds_named_spawn_t;
+
 @IDE{WORLD_DECLARATIONS}
 
 typedef struct {
@@ -49,6 +58,13 @@ typedef struct {
 @IDE_END
     int32_t start_x, start_y;
     uint8_t start_facing;
+    uint8_t physics_profile;
+    const gameworlds_named_spawn_t *named_spawns;
+    uint16_t named_spawn_count;
+    void (*world_state_save)(void);
+    void (*world_state_restore)(void);
+    void (*story_save)(void);
+    void (*story_restore)(void);
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -69,7 +85,19 @@ static void *player_context;
 static const gameworlds_record_t *active_world;
 static const gameworlds_record_t *pending_world;
 static uint8_t applying;
+static char pending_spawn_id[64] = "default";
+static char active_spawn_id[64] = "default";
 static uint8_t saved_player_is_valid; /* Never restore zeroed state on first start. */
+@IDE_IF{HAS_SHARED_PLAYER}
+static game_tile_player_t *bound_player_physics;
+uint8_t gameworlds_bind_player_physics(game_tile_player_t *player)
+{
+    if (!player || !active_world ||
+        !gameplayer_apply_physics(player, active_world->physics_profile)) return 0;
+    bound_player_physics = player;
+    return 1;
+}
+@IDE_END
 
 static const gameworlds_record_t *find_world(const char *name)
 {
@@ -111,12 +139,21 @@ gameworlds_player_state_t *gameworlds_state(void) { return &persistent; }
 uint16_t gameworlds_count(void) { return (uint16_t)WORLD_COUNT; }
 const char *gameworlds_name(uint16_t i) { return i < WORLD_COUNT ? worlds[i].name : 0; }
 const char *gameworlds_active(void) { return active_world ? active_world->name : 0; }
+uint8_t gameworlds_physics_profile(void)
+{ return active_world ? active_world->physics_profile : worlds[0].physics_profile; }
 void *gameworlds_map(void) { return active_world ? active_world->map : 0; }
 uint8_t gameworlds_player_start(gameworlds_spawn_t *out) {
     if (!active_world || !out) return 0;
     out->x = active_world->start_x;
     out->y = active_world->start_y;
     out->facing = active_world->start_facing;
+    for (uint16_t i = 0; i < active_world->named_spawn_count; ++i) {
+        const gameworlds_named_spawn_t *named = &active_world->named_spawns[i];
+        if (strcmp(named->id, active_spawn_id) == 0) {
+            out->x = named->x; out->y = named->y; out->facing = named->facing;
+            break;
+        }
+    }
     return 1;
 }
 
@@ -126,6 +163,9 @@ static void unload_active(void)
     music_stop(); /* Never free sample buffers while DMA/audio still use them. */
     if (active_world->inventory_store)
         active_world->inventory_store(inventory_put, 0);
+    /* Capture mutable objects and story flags BEFORE unbinding old assets. */
+    if (active_world->world_state_save) active_world->world_state_save();
+    if (active_world->story_save) active_world->story_save();
 @IDE_IF{HAS_ADVENTURE_RUNTIME}
     /* Discard NPC/skin pointers to old world's assets. */
     game_adventure_start(0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 2, 0, 0);
@@ -146,7 +186,10 @@ static uint8_t activate(const gameworlds_record_t *world)
     game_adventure_set_inventory_filter(gameplayer_inventory_visible);
 @IDE_END
     if (world->inventory_load) world->inventory_load(inventory_get, 0);
+    if (world->story_restore) world->story_restore();
     if (!world->objects_init()) goto failed;
+    /* Reapply this world's saved mutable state after its default objects are built. */
+    if (world->world_state_restore) world->world_state_restore();
     active_world = world;
     return 1;
 failed:
@@ -163,6 +206,7 @@ uint8_t gameworlds_start(const char *name)
     if (target == active_world) return 1;
     applying = 1;
     pending_world = 0;
+    strcpy(active_spawn_id, "default");
     if (active_world && save_player) {
         save_player(&persistent, player_context);
         saved_player_is_valid = 1;
@@ -173,22 +217,45 @@ uint8_t gameworlds_start(const char *name)
      * loads, only restore state that was actually captured from a player. */
     if (success && saved_player_is_valid && restore_player)
         restore_player(&persistent, player_context);
+@IDE_IF{HAS_SHARED_PLAYER}
+    /* On every successful world entry, including a later return, apply its
+     * chosen physics to the already-initialised shared player. The first world
+     * is applied when the game calls gameworlds_bind_player_physics(). */
+    if (success && bound_player_physics)
+        gameplayer_apply_physics(bound_player_physics, target->physics_profile);
+@IDE_END
     applying = 0;
     return success;
 }
-uint8_t gameworlds_request(const char *name)
+uint8_t gameworlds_request_at(const char *name, const char *start_id)
 {
     const gameworlds_record_t *target = find_world(name);
     if (!name || !*name || !target || applying) return 0;
+    if (!start_id || !*start_id) start_id = "default";
+    if (strlen(start_id) >= sizeof(pending_spawn_id)) return 0;
+    if (strcmp(start_id, "default") != 0) {
+        uint8_t found = 0;
+        for (uint16_t i = 0; i < target->named_spawn_count; ++i)
+            if (strcmp(target->named_spawns[i].id, start_id) == 0) { found = 1; break; }
+        if (!found) return 0;
+    }
+    strcpy(pending_spawn_id, start_id);
     pending_world = target;
     return 1;
 }
+uint8_t gameworlds_request(const char *name)
+{ return gameworlds_request_at(name, "default"); }
 uint8_t gameworlds_apply_pending(void)
 {
     if (!pending_world) return 1;
     const gameworlds_record_t *target = pending_world;
     pending_world = 0;
-    return gameworlds_start(target->name);
+    char requested[sizeof(pending_spawn_id)];
+    strcpy(requested, pending_spawn_id);
+    strcpy(pending_spawn_id, "default");
+    const uint8_t ok = gameworlds_start(target->name);
+    if (ok) strcpy(active_spawn_id, requested);
+    return ok;
 }
 void gameworlds_shutdown(void)
 {
@@ -198,6 +265,11 @@ void gameworlds_shutdown(void)
     }
     unload_active();
     pending_world = 0;
+    strcpy(active_spawn_id, "default");
+    strcpy(pending_spawn_id, "default");
+@IDE_IF{HAS_SHARED_PLAYER}
+    bound_player_physics = 0;
+@IDE_END
 }
 void gameworlds_update(uint16_t frames)
 { if (active_world) active_world->objects_update(frames); }

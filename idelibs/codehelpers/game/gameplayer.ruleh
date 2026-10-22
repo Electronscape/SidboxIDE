@@ -5,6 +5,7 @@
 #define CODERGIRL_SHARED_PLAYER_H
 #include <stdint.h>
 #include "apis.h"
+#include "gametilemap.h"
 typedef struct { const char *name; uint16_t initial; uint8_t hidden; } gameplayer_inventory_entry_t;
 /* Defaults from .sbpi. The live inventory/stats belong to the gameworlds state. */
 typedef struct {
@@ -15,6 +16,11 @@ typedef struct {
 } gameplayer_defaults_t;
 extern const gameplayer_defaults_t gameplayer_defaults;
 extern gfxbob_t gameplayer_sprite;
+/* Apply a named/edited physics profile by its stable numeric ID.
+   The mode controls ICE/jetpack behaviour; the numbers control movement.
+   Changes preserve current velocities just like the existing mode setter.
+   Returns 0 if that profile was removed or does not exist. */
+uint8_t gameplayer_apply_physics(game_tile_player_t *player, uint8_t profile_id);
 int gameplayer_init(void); /* Call AFTER initMalloc, only once for the whole game. */
 void gameplayer_shutdown(void); /* Call AFTER gameworlds_shutdown. */
 const gameplayer_inventory_entry_t *gameplayer_initial_inventory(uint16_t *count);

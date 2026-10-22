@@ -20,6 +20,7 @@
 #include <QStringList>
 #include <QUuid>
 #include "gametilemap.h"
+#include "gameplayerprofile.h"
 
 namespace GameWorldSnapshot {
 
@@ -109,7 +110,9 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_draw_behind", "gameworlditems_check",
             "gameworlditems_before", "gameworlditems_after",
             "gameworlditems_set_active", "gameworlditems_trigger",
-            "gameadventure_setup", "gameadventure_on_event"}) {
+            "gameadventure_setup", "gameadventure_on_event",
+            "gameworlditems_save_state", "gameworlditems_restore_state",
+            "gameadventure_save_progress", "gameadventure_restore_progress"}) {
         names.insert(QLatin1String(name));
     }
     return names;
@@ -194,9 +197,13 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "void " + id + "_gameassets_draw_background(void);\n"
                      "void " + id + "_drawworld(void);\n"
                      "uint8_t " + id + "_gameworlditems_init(void);\n"
+                     "void " + id + "_gameworlditems_save_state(void);\n"
+                     "void " + id + "_gameworlditems_restore_state(void);\n"
                      "void " + id + "_gameworlditems_update(uint16_t frames);\n"
                      "void " + id + "_gameworlditems_draw(int32_t x, int32_t y);\n"
                      "void " + id + "_gameadventure_setup(void);\n"
+                     "void " + id + "_gameadventure_save_progress(void);\n"
+                     "void " + id + "_gameadventure_restore_progress(void);\n"
                      "void " + id + "_gameadventure_store_inventory(gameworlds_inventory_put_t,void *);\n"
                      "void " + id + "_gameadventure_load_inventory(gameworlds_inventory_get_t,void *);\n"
                      "void " + id + "_gameassets_show_background(void);\n";
@@ -287,7 +294,14 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList names = worlds.entryList(QDir::Dirs | QDir::NoDotAndDotDot,
                                          QDir::Name | QDir::IgnoreCase);
     QStringList published, declarations, records;
-    QStringList beforeFns, afterFns, checkFns, spawnFields;
+    QJsonObject sharedPlayer;
+    const bool hasSharedPlayer = QFileInfo::exists(GamePlayerProfile::profilePath(project));
+    if (hasSharedPlayer && !GamePlayerProfile::read(project, &sharedPlayer, error)) return false;
+    QSet<int> availableProfiles;
+    for (const QJsonValue &value : GamePlayerProfile::physicsProfiles(sharedPlayer))
+        availableProfiles.insert(value.toObject().value(QStringLiteral("id")).toInt(-1));
+    QStringList beforeFns, afterFns, checkFns, spawnFields, namedStartFields;
+    QStringList spawnDeclarations;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
         if (name.startsWith(QLatin1Char('.'))) continue;
@@ -368,7 +382,39 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             }
         }
         const int facing=qBound(0,start.value(QStringLiteral("facing")).toInt(1),1);
-        spawnFields << QStringLiteral(", %1, %2, %3").arg(spawnX).arg(spawnY).arg(facing);
+        const int worldPhysicsId = hasSharedPlayer
+            ? GamePlayerProfile::physicsForWorld(sharedPlayer, name) : 0;
+        if (hasSharedPlayer && !availableProfiles.contains(worldPhysicsId)) {
+            if (error) *error = QStringLiteral("World '%1' references missing physics profile ID %2.")
+                .arg(name).arg(worldPhysicsId);
+            return false;
+        }
+        spawnFields << QStringLiteral(", %1, %2, %3, %4")
+            .arg(spawnX).arg(spawnY).arg(facing).arg(worldPhysicsId);
+        QStringList entries;
+        QSet<QString> knownIds{QStringLiteral("default")};
+        const QRegularExpression startIdPattern(QStringLiteral("^[a-zA-Z0-9_-]{1,63}$"));
+        for (const QJsonValue &v : design.value(QStringLiteral("playerStarts")).toArray()) {
+            const QJsonObject entry = v.toObject();
+            const QString id = entry.value(QStringLiteral("id")).toString();
+            if (!startIdPattern.match(id).hasMatch() || knownIds.contains(id)) {
+                if (error) *error = QStringLiteral("Invalid or duplicate Player Start ID in '%1'.").arg(name);
+                return false;
+            }
+            knownIds.insert(id);
+            entries << QStringLiteral("{\"%1\", %2, %3, %4}")
+                .arg(id)
+                .arg(qBound(0, entry.value(QStringLiteral("x")).toInt(), 32767))
+                .arg(qBound(0, entry.value(QStringLiteral("y")).toInt(), 32767))
+                .arg(qBound(0, entry.value(QStringLiteral("facing")).toInt(1), 1));
+        }
+        if (entries.isEmpty()) namedStartFields << QStringLiteral(", 0, 0");
+        else {
+            const QString symbol = name + QStringLiteral("_player_starts");
+            spawnDeclarations << QStringLiteral("static const gameworlds_named_spawn_t %1[] = { %2 };")
+                .arg(symbol, entries.join(QStringLiteral(", ")));
+            namedStartFields << QStringLiteral(", %1, sizeof(%1) / sizeof(%1[0])").arg(symbol);
+        }
         QString row = QStringLiteral("    {\"%1\", %2gameassets_init, %2gameassets_shutdown,\n"
             "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3,\n"
             "     %2gameassets_draw_foreground, %2gameassets_draw_background, %4,\n"
@@ -393,6 +439,11 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         if (anyPickups)
             entry += QStringLiteral(", ") + checkFns.at(i);
         entry += spawnFields.at(i);
+        entry += namedStartFields.at(i);
+        const QString id = published.at(i);
+        entry += QStringLiteral(", %1_gameworlditems_save_state, %1_gameworlditems_restore_state, "
+                                "%1_gameadventure_save_progress, %1_gameadventure_restore_progress")
+            .arg(id);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to
@@ -420,7 +471,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         return false;
     }
     QByteArray generated = source.readAll();
-    generated.replace("@IDE{WORLD_DECLARATIONS}", declarations.join(QLatin1Char('\n')).toUtf8());
+    generated.replace("@IDE{WORLD_DECLARATIONS}",
+        (declarations + spawnDeclarations).join(QLatin1Char('\n')).toUtf8());
     generated.replace("@IDE{WORLD_RECORDS}", ordered.join(QStringLiteral(",\n")).toUtf8());
     const auto renderConditions = [&](QByteArray *content) -> bool {
         const QByteArray flagEnd = "@IDE_END\n";
@@ -428,8 +480,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             {"@IDE_IF{HAS_ADVENTURE_RUNTIME}\n", anyAdventure},
             {"@IDE_IF{HAS_WORLD_PHYSICS}\n", anyWorldPhysics},
             {"@IDE_IF{HAS_PICKUPS}\n", anyPickups},
-            {"@IDE_IF{HAS_PLAYER_VISIBILITY}\n", anyAdventure &&
-                 QFileInfo::exists(project.filePath(QStringLiteral("players/player.sbpi")))}
+            {"@IDE_IF{HAS_PLAYER_VISIBILITY}\n", anyAdventure && hasSharedPlayer},
+            {"@IDE_IF{HAS_SHARED_PLAYER}\n", hasSharedPlayer}
         };
         for (const auto &flag : flags) {
             int cursor = 0;

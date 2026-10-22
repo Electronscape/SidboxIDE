@@ -89,6 +89,11 @@ void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t 
    These separate tables preserve compatibility with older dialogue structs. */
 void game_adventure_story_flags(const uint8_t *choice_flags,
                                 const uint16_t *completed_nodes);
+/* Save only world-local dialogue progress; inventory is shared separately. */
+#define GAME_ADVENTURE_USED_CHOICE_BYTES 96u
+#define GAME_ADVENTURE_COMPLETED_NPC_BYTES 256u
+void game_adventure_save_progress(uint8_t used_choices[96], uint8_t completed_npcs[256]);
+void game_adventure_restore_progress(const uint8_t used_choices[96], const uint8_t completed_npcs[256]);
 /* Optional NPC idle/talking atlas sequences. Called AFTER game_adventure_start.
    Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,

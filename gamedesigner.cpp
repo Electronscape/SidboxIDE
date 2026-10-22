@@ -1201,8 +1201,9 @@ void SidboxGameDesigner::openPlayerEditor()
     }
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Create / Edit Player — Shared Across All Worlds"));
-    dialog.setMinimumWidth(490);
-    dialog.setStyleSheet(QStringLiteral("QDialog, QWidget, QPushButton, QLineEdit, QSpinBox, QTabWidget, QTabBar, QPlainTextEdit, QTableWidget, QHeaderView { border-radius: 0px; }"));
+    dialog.setMinimumWidth(760);
+    dialog.setMinimumHeight(560);
+    dialog.setStyleSheet(QStringLiteral("QDialog, QWidget, QPushButton, QLineEdit, QSpinBox, QTabWidget, QTabBar, QPlainTextEdit, QTableWidget, QListWidget, QComboBox, QHeaderView { border-radius: 0px; }"));
     auto *layout = new QVBoxLayout(&dialog);
     auto *tabs = new QTabWidget(&dialog); layout->addWidget(tabs);
     auto *appearance = new QWidget(tabs); auto *af = new QFormLayout(appearance);
@@ -1279,16 +1280,222 @@ void SidboxGameDesigner::openPlayerEditor()
     hf->addRow(tr("Offset X"),hx);hf->addRow(tr("Offset Y"),hy);
     hf->addRow(tr("Width"),hw);hf->addRow(tr("Height"),hh);
     tabs->addTab(hitboxPage,tr("Hitbox"));
-    auto *movement=new QWidget(tabs);auto *mf=new QFormLayout(movement);
-    auto *preset=new QComboBox(movement);
-    for(const QString &mode:{QStringLiteral("normal"),QStringLiteral("ice"),QStringLiteral("water"),
-                            QStringLiteral("space"),QStringLiteral("floating")})
-        preset->addItem(mode.left(1).toUpper()+mode.mid(1),mode);
-    preset->setCurrentIndex(qMax(0,preset->findData(profile.value(QStringLiteral("physicsPreset")).toString(QStringLiteral("normal")))));
-    mf->addRow(tr("Starting physics preset"),preset);
-    auto *notice=new QLabel(tr("Applied once when the game first starts. Your C game can change physics dynamically for water, ice and zones."),movement);
-    notice->setWordWrap(true);mf->addRow(notice);
-    tabs->addTab(movement,tr("Movement & Physics"));
+    // Stage 5.18: Shared, editable physics bank. Runtime modes retain their
+    // existing collision/ICE/jetpack behaviour; numbers are per-profile.
+    auto *movement = new QWidget(tabs);
+    auto *physicsPage = new QVBoxLayout(movement);
+    auto *startPhysicsRow = new QFormLayout();
+    auto *preset = new QComboBox(movement);
+    startPhysicsRow->addRow(tr("Default physics (unassigned worlds)"), preset);
+    auto *worldPicker = new QComboBox(movement);
+    auto *worldStartProfile = new QComboBox(movement);
+    for (const QFileInfo &worldFile : project.entryInfoList(
+             {QStringLiteral("*.sbgm")}, QDir::Files, QDir::Name)) {
+        const QString worldName = sidboxTilemapWorldBaseName(worldFile.absoluteFilePath());
+        if (worldPicker->findData(worldName) < 0)
+            worldPicker->addItem(worldName, worldName);
+    }
+    startPhysicsRow->addRow(tr("World"), worldPicker);
+    startPhysicsRow->addRow(tr("Starting physics for this world"), worldStartProfile);
+    physicsPage->addLayout(startPhysicsRow);
+    auto *physicsColumns = new QHBoxLayout();
+    physicsPage->addLayout(physicsColumns);
+    auto *physicsLeft = new QVBoxLayout();
+    physicsColumns->addLayout(physicsLeft, 1);
+    auto *physicsList = new QListWidget(movement);
+    physicsList->setMinimumWidth(165);
+    physicsLeft->addWidget(physicsList);
+    auto *physicsButtons = new QHBoxLayout();
+    physicsLeft->addLayout(physicsButtons);
+    auto *addPhysics = new QPushButton(tr("Add"), movement);
+    auto *removePhysics = new QPushButton(tr("Remove"), movement);
+    physicsButtons->addWidget(addPhysics); physicsButtons->addWidget(removePhysics);
+    auto *physicsForm = new QFormLayout();
+    physicsColumns->addLayout(physicsForm, 2);
+    auto *physicsIdLabel = new QLabel(movement);
+    physicsForm->addRow(tr("Profile ID (for C code)"), physicsIdLabel);
+    auto *physicsName = new QLineEdit(movement);
+    physicsName->setMaxLength(64);
+    physicsForm->addRow(tr("Name"), physicsName);
+    auto *physicsMode = new QComboBox(movement);
+    const QStringList modeLabels = {tr("Normal"), tr("Ice (sliding)"), tr("Water"),
+        tr("Slow"), tr("Space"), tr("Floating"), tr("Jetpack")};
+    for (int i = 0; i < modeLabels.size(); ++i)
+        physicsMode->addItem(modeLabels.at(i), i);
+    physicsForm->addRow(tr("Movement behaviour"), physicsMode);
+    auto *physicsWalk = new QSpinBox(movement);
+    physicsWalk->setRange(0, 16); physicsWalk->setSuffix(tr(" px/frame"));
+    auto *physicsJump = new QSpinBox(movement);
+    physicsJump->setRange(0, 32); physicsJump->setSuffix(tr(" px/frame"));
+    auto *physicsGravity = new QSpinBox(movement);
+    physicsGravity->setRange(0, 1000); physicsGravity->setSuffix(tr(" /100 px/frame²"));
+    auto *physicsFall = new QSpinBox(movement);
+    physicsFall->setRange(1, 32); physicsFall->setSuffix(tr(" px/frame"));
+    auto *physicsDrag = new QSpinBox(movement);
+    physicsDrag->setRange(0, 100); physicsDrag->setSuffix(QStringLiteral("%"));
+    physicsForm->addRow(tr("Walk speed"), physicsWalk);
+    physicsForm->addRow(tr("Jump speed"), physicsJump);
+    physicsForm->addRow(tr("Gravity"), physicsGravity);
+    physicsForm->addRow(tr("Maximum falling speed"), physicsFall);
+    physicsForm->addRow(tr("External momentum drag"), physicsDrag);
+    auto *physicsNotice = new QLabel(tr("These profiles belong to the shared player. "
+        "Choose a default starting profile and optionally override it for each world. "
+        "The world manager applies the selected profile on entry; "
+        "gameplayer_apply_physics(player, profileID) can still change physics in custom zones. "
+        "ICE sliding and JETPACK thrust follow the selected behaviour mode."), movement);
+    physicsNotice->setWordWrap(true);
+    physicsPage->addWidget(physicsNotice);
+    QJsonArray physicsDefs = GamePlayerProfile::physicsProfiles(profile);
+    int currentPhysicsId = GamePlayerProfile::startingPhysicsId(profile);
+    QJsonObject worldPhysics = GamePlayerProfile::worldPhysicsOverrides(profile);
+    const auto refreshWorldPhysicsChoices = [&] {
+        QSignalBlocker blocker(worldStartProfile);
+        worldStartProfile->clear();
+        worldStartProfile->addItem(tr("Use default physics"), -1);
+        for (const QJsonValue &value : physicsDefs) {
+            const QJsonObject entry = value.toObject();
+            worldStartProfile->addItem(entry.value(QStringLiteral("name")).toString(),
+                                       entry.value(QStringLiteral("id")).toInt());
+        }
+        const QString name = worldPicker->currentData().toString();
+        const bool hasWorld = !name.isEmpty();
+        worldStartProfile->setEnabled(hasWorld);
+        if (!hasWorld) return;
+        const int id = worldPhysics.value(name).toInt(-1);
+        const int index = worldStartProfile->findData(id);
+        // An obsolete ID is treated as inherited, never remapped to a different profile.
+        if (id >= 0 && index < 0) worldPhysics.remove(name);
+        worldStartProfile->setCurrentIndex(qMax(0, index));
+    };
+    connect(worldPicker, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            &dialog, [&](int) { refreshWorldPhysicsChoices(); });
+    connect(worldStartProfile, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            &dialog, [&](int index) {
+        const QString name = worldPicker->currentData().toString();
+        if (name.isEmpty() || index < 0) return;
+        const int id = worldStartProfile->itemData(index).toInt();
+        if (id < 0) worldPhysics.remove(name);
+        else worldPhysics.insert(name, id);
+    });
+    const auto refreshPhysicsChoices = [&] {
+        // Removing a global profile must also clear ALL world references to
+        // its stable ID, including worlds not currently selected in the UI.
+        QSet<int> availableIds;
+        for (const QJsonValue &value : physicsDefs)
+            availableIds.insert(value.toObject().value(QStringLiteral("id")).toInt(-1));
+        for (auto it = worldPhysics.begin(); it != worldPhysics.end();) {
+            if (!availableIds.contains(it.value().toInt(-1)))
+                it = worldPhysics.erase(it);
+            else ++it;
+        }
+        QSignalBlocker blocker(preset);
+        preset->clear();
+        for (const QJsonValue &value : physicsDefs) {
+            const QJsonObject item = value.toObject();
+            preset->addItem(item.value(QStringLiteral("name")).toString(),
+                            item.value(QStringLiteral("id")).toInt());
+        }
+        int selected = preset->findData(currentPhysicsId);
+        if (selected < 0 && preset->count()) {
+            selected = 0;
+            currentPhysicsId = preset->itemData(0).toInt();
+        }
+        preset->setCurrentIndex(selected);
+        refreshWorldPhysicsChoices();
+    };
+    const auto showPhysics = [&] {
+        const int row = physicsList->currentRow();
+        const bool valid = row >= 0 && row < physicsDefs.size();
+        for (QWidget *control : {static_cast<QWidget*>(physicsName), static_cast<QWidget*>(physicsMode),
+                                  static_cast<QWidget*>(physicsWalk), static_cast<QWidget*>(physicsJump),
+                                  static_cast<QWidget*>(physicsGravity), static_cast<QWidget*>(physicsFall),
+                                  static_cast<QWidget*>(physicsDrag)})
+            control->setEnabled(valid);
+        removePhysics->setEnabled(valid && physicsDefs.size() > 1);
+        if (!valid) return;
+        const QJsonObject item = physicsDefs.at(row).toObject();
+        physicsIdLabel->setText(QString::number(item.value(QStringLiteral("id")).toInt()));
+        const QSignalBlocker bn(physicsName), bm(physicsMode), bw(physicsWalk),
+            bj(physicsJump), bg(physicsGravity), bf(physicsFall), bd(physicsDrag);
+        physicsName->setText(item.value(QStringLiteral("name")).toString());
+        physicsMode->setCurrentIndex(physicsMode->findData(item.value(QStringLiteral("mode")).toInt()));
+        physicsWalk->setValue(item.value(QStringLiteral("walkSpeed")).toInt());
+        physicsJump->setValue(item.value(QStringLiteral("jumpSpeed")).toInt());
+        physicsGravity->setValue(item.value(QStringLiteral("gravity")).toInt());
+        physicsFall->setValue(item.value(QStringLiteral("maxFallSpeed")).toInt(1));
+        physicsDrag->setValue(item.value(QStringLiteral("forceDrag")).toInt());
+    };
+    const auto storePhysics = [&] {
+        const int row = physicsList->currentRow();
+        if (row < 0 || row >= physicsDefs.size()) return;
+        QJsonObject item = physicsDefs.at(row).toObject();
+        item.insert(QStringLiteral("name"), physicsName->text());
+        item.insert(QStringLiteral("mode"), physicsMode->currentData().toInt());
+        item.insert(QStringLiteral("walkSpeed"), physicsWalk->value());
+        item.insert(QStringLiteral("jumpSpeed"), physicsJump->value());
+        item.insert(QStringLiteral("gravity"), physicsGravity->value());
+        item.insert(QStringLiteral("maxFallSpeed"), physicsFall->value());
+        item.insert(QStringLiteral("forceDrag"), physicsDrag->value());
+        physicsDefs.replace(row, item);
+        physicsList->item(row)->setText(physicsName->text());
+        refreshPhysicsChoices();
+    };
+    connect(physicsList, &QListWidget::currentRowChanged, &dialog,
+        [&](int) { showPhysics(); });
+    connect(preset, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+        [&](int index) { if (index >= 0) currentPhysicsId = preset->itemData(index).toInt(); });
+    connect(physicsName, &QLineEdit::textChanged, &dialog, [&](const QString &) { storePhysics(); });
+    connect(physicsMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+        [&](int) { storePhysics(); });
+    for (QSpinBox *spin : {physicsWalk,physicsJump,physicsGravity,physicsFall,physicsDrag})
+        connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), &dialog,
+            [&](int) { storePhysics(); });
+    connect(addPhysics, &QPushButton::clicked, &dialog, [&] {
+        if (physicsDefs.size() >= 64) {
+            QMessageBox::warning(&dialog, tr("Movement Physics"), tr("Maximum 64 physics profiles."));
+            return;
+        }
+        QSet<int> used;
+        QSet<QString> names;
+        for (const QJsonValue &value : physicsDefs) {
+            const QJsonObject item = value.toObject();
+            used.insert(item.value(QStringLiteral("id")).toInt());
+            names.insert(item.value(QStringLiteral("name")).toString().toCaseFolded());
+        }
+        int nextId = 7; // Existing runtime modes retain reserved stable IDs 0-6.
+        while (nextId <= 255 && used.contains(nextId)) ++nextId;
+        if (nextId > 255) return;
+        const int selected = physicsList->currentRow();
+        QJsonObject item = selected >= 0 ? physicsDefs.at(selected).toObject()
+            : GamePlayerProfile::defaultPhysicsProfiles().first().toObject();
+        QString name = tr("New Physics");
+        int suffix = 2;
+        while (names.contains(name.toCaseFolded())) name = tr("New Physics %1").arg(suffix++);
+        item.insert(QStringLiteral("id"), nextId);
+        item.insert(QStringLiteral("name"), name);
+        physicsDefs.append(item);
+        physicsList->addItem(name);
+        physicsList->setCurrentRow(physicsDefs.size()-1);
+        refreshPhysicsChoices();
+        physicsName->setFocus(); physicsName->selectAll();
+    });
+    connect(removePhysics, &QPushButton::clicked, &dialog, [&] {
+        const int row = physicsList->currentRow();
+        if (row < 0 || physicsDefs.size() <= 1) return;
+        const QString name = physicsDefs.at(row).toObject().value(QStringLiteral("name")).toString();
+        if (QMessageBox::question(&dialog, tr("Remove Movement Physics"),
+                tr("Remove '%1' from this game's physics profiles?").arg(name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+        physicsDefs.removeAt(row);
+        delete physicsList->takeItem(row);
+        refreshPhysicsChoices();
+        physicsList->setCurrentRow(qMin(row, int(physicsDefs.size())-1));
+    });
+    for (const QJsonValue &value : physicsDefs)
+        physicsList->addItem(value.toObject().value(QStringLiteral("name")).toString());
+    refreshPhysicsChoices();
+    physicsList->setCurrentRow(qMax(0, preset->currentIndex()));
+    tabs->addTab(movement, tr("Movement & Physics"));
     // Project-wide player stats: the three engine defaults remain fixed fields.
     // Other stats (Mana, Fear, Magic...) are named runtime variables, not world objects.
     auto *stats = new QWidget(tabs);
@@ -1525,7 +1732,48 @@ void SidboxGameDesigner::openPlayerEditor()
         data.insert(QStringLiteral("hitboxY"),hy->value());
         data.insert(QStringLiteral("hitboxW"),hw->value());
         data.insert(QStringLiteral("hitboxH"),hh->value());
-        data.insert(QStringLiteral("physicsPreset"),preset->currentData().toString());
+        // Stable IDs ensure renamed and reordered profiles keep their meaning.
+        if (physicsDefs.isEmpty()) {
+            QMessageBox::warning(&dialog, tr("Movement Physics"),
+                tr("Add at least one physics profile.")); return;
+        }
+        QSet<QString> usedPhysicsNames;
+        QSet<int> usedPhysicsIds;
+        bool hasStartingPhysics = false;
+        for (const QJsonValue &value : physicsDefs) {
+            const QJsonObject item = value.toObject();
+            const QString name = item.value(QStringLiteral("name")).toString().trimmed();
+            const int id = item.value(QStringLiteral("id")).toInt(-1);
+            if (name.isEmpty() || name.contains(QLatin1Char('\n'))
+                || usedPhysicsNames.contains(name.toCaseFolded()) || usedPhysicsIds.contains(id)) {
+                QMessageBox::warning(&dialog, tr("Movement Physics"),
+                    tr("Physics profiles must have unique, non-empty names.")); return;
+            }
+            usedPhysicsNames.insert(name.toCaseFolded());
+            usedPhysicsIds.insert(id);
+            if (id == currentPhysicsId) hasStartingPhysics = true;
+        }
+        if (!hasStartingPhysics) {
+            QMessageBox::warning(&dialog, tr("Movement Physics"),
+                tr("Choose a valid starting physics profile.")); return;
+        }
+        data.insert(QStringLiteral("physicsPresetId"),currentPhysicsId);
+        data.insert(QStringLiteral("physicsProfiles"),physicsDefs);
+        for (auto it = worldPhysics.begin(); it != worldPhysics.end(); ++it) {
+            if (!usedPhysicsIds.contains(it.value().toInt(-1))) {
+                QMessageBox::warning(&dialog, tr("Movement Physics"),
+                    tr("A world references a removed physics profile. Select a valid profile."));
+                return;
+            }
+        }
+        data.insert(QStringLiteral("worldPhysics"),worldPhysics);
+        // Keep the old string for older tools that only know built-in presets.
+        const QStringList legacyNames = {QStringLiteral("normal"),QStringLiteral("ice"),
+            QStringLiteral("water"),QStringLiteral("slow"),QStringLiteral("space"),
+            QStringLiteral("floating"),QStringLiteral("jetpack")};
+        data.insert(QStringLiteral("physicsPreset"), currentPhysicsId >= 0
+            && currentPhysicsId < legacyNames.size() ? legacyNames.at(currentPhysicsId)
+            : QStringLiteral("normal"));
         data.insert(QStringLiteral("inventory"),items);
         data.insert(QStringLiteral("customStats"),customValues);
         QString error;
@@ -1571,6 +1819,45 @@ void SidboxGameDesigner::editPlayerStart()
     m_playerFacing=face->currentData().toInt();
     m_playerEntry=entry->text().trimmed().isEmpty()?QStringLiteral("default"):entry->text().trimmed();
     setDirty();refreshResources();rebuildScene();
+}
+
+// Edit a named entrance, or the non-removable default. IDs never depend on names.
+void SidboxGameDesigner::editPlayerStartLocation(const QString &id)
+{
+    if (id == QStringLiteral("default")) { editPlayerStart(); return; }
+    int index = -1;
+    for (int i = 0; i < m_otherPlayerStarts.size(); ++i)
+        if (m_otherPlayerStarts.at(i).id == id) { index = i; break; }
+    if (index < 0) return;
+    const PlayerStartLocation old = m_otherPlayerStarts.at(index);
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Edit Player Start"));
+    dialog.setStyleSheet(QStringLiteral("QDialog, QPushButton, QLineEdit, QSpinBox, QComboBox { border-radius: 0px; }"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    layout->addLayout(form);
+    auto *name = new QLineEdit(old.name, &dialog);
+    form->addRow(tr("Name"), name);
+    auto *x = new QSpinBox(&dialog), *y = new QSpinBox(&dialog);
+    for (QSpinBox *spin : {x, y}) spin->setRange(0, 32767);
+    x->setValue(old.x); y->setValue(old.y);
+    form->addRow(tr("World X (pixels)"), x);
+    form->addRow(tr("World Y (pixels)"), y);
+    auto *facing = new QComboBox(&dialog);
+    facing->addItem(tr("Left"), 0); facing->addItem(tr("Right"), 1);
+    facing->setCurrentIndex(old.facing);
+    form->addRow(tr("Facing"), facing);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString label = name->text().trimmed();
+    if (label.isEmpty()) { QMessageBox::warning(this, tr("Player Starts"), tr("Name cannot be empty.")); return; }
+    PlayerStartLocation &location = m_otherPlayerStarts[index];
+    location.name = label; location.x = x->value(); location.y = y->value();
+    location.facing = facing->currentData().toInt();
+    setDirty(); refreshResources(); rebuildScene();
 }
 
 void SidboxGameDesigner::openTilemapEditor()
@@ -2601,7 +2888,41 @@ void SidboxGameDesigner::buildUi()
             target = target->parent();
         const QString category = target ? target->data(0, Qt::UserRole + 1).toString() : QString();
         const QString plane = target ? target->data(0, Qt::UserRole + 2).toString() : QString();
-        if (category == QStringLiteral("playerstart")) { editPlayerStart(); return; }
+        if (category == QStringLiteral("playerstarts") || category == QStringLiteral("playerstart")) {
+            const QString startId = hit ? hit->data(0, Qt::UserRole + 3).toString() : QString();
+            QMenu startsMenu(this);
+            QAction *add = startsMenu.addAction(tr("Add Player Start..."));
+            QAction *change = nullptr, *removeStart = nullptr;
+            if (!startId.isEmpty()) {
+                change = startsMenu.addAction(tr("Edit Player Start..."));
+                if (startId != QStringLiteral("default"))
+                    removeStart = startsMenu.addAction(tr("Remove Player Start..."));
+            }
+            QAction *selected = startsMenu.exec(m_resourceTree->viewport()->mapToGlobal(pos));
+            if (selected == add) {
+                PlayerStartLocation created;
+                created.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                created.name = tr("Door %1 start").arg(m_otherPlayerStarts.size() + 1);
+                created.x = m_playerStartX; created.y = m_playerStartY;
+                created.facing = m_playerFacing;
+                m_otherPlayerStarts.push_back(created);
+                setDirty(); refreshResources(); rebuildScene();
+                editPlayerStartLocation(created.id);
+            } else if (selected == change) {
+                editPlayerStartLocation(startId);
+            } else if (removeStart && selected == removeStart) {
+                if (QMessageBox::question(this, tr("Remove Player Start"),
+                    tr("Remove this entrance? Doors targeting it will need another arrival location."),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes) {
+                    for (int i = 0; i < m_otherPlayerStarts.size(); ++i)
+                        if (m_otherPlayerStarts.at(i).id == startId) {
+                            m_otherPlayerStarts.removeAt(i); break;
+                        }
+                    setDirty(); refreshResources(); rebuildScene();
+                }
+            }
+            return;
+        }
         QMenu menu(this);
         QAction *addSprite = menu.addAction(tr("Add Sprite..."));
         QAction *addAtlas = menu.addAction(tr("Add Tile Atlas..."));
@@ -2800,7 +3121,9 @@ void SidboxGameDesigner::buildUi()
             [this](QTreeWidgetItem *item, int) {
         if (!item) return;
         const QString group = item->data(0, Qt::UserRole + 1).toString();
-        if (group == QStringLiteral("playerstart")) { editPlayerStart(); return; }
+        if (group == QStringLiteral("playerstart")) {
+            editPlayerStartLocation(item->data(0, Qt::UserRole + 3).toString()); return;
+        }
         if (group == QStringLiteral("sprite") && item->data(0, Qt::UserRole).isValid()) {
             const int index = item->data(0, Qt::UserRole).toInt();
             if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index) && m_view) {
@@ -3481,12 +3804,24 @@ void SidboxGameDesigner::refreshResources()
     };
     QSignalBlocker block(m_resourceTree);
     m_resourceTree->clear();
-    auto *playerStart = new QTreeWidgetItem(m_resourceTree, QStringList{
-        tr("Player Start — %1 (%2, %3)").arg(m_playerEntry).arg(m_playerStartX).arg(m_playerStartY)});
+    auto *startsRoot = new QTreeWidgetItem(m_resourceTree, QStringList{tr("Player Starts")});
+    startsRoot->setData(0, Qt::UserRole + 1, QStringLiteral("playerstarts"));
+    startsRoot->setToolTip(0, tr("Right-click to add another entrance position."));
+    startsRoot->setExpanded(expandedGroups.value(QStringLiteral("playerstarts"), true));
+    auto *playerStart = new QTreeWidgetItem(startsRoot, QStringList{
+        tr("Default start (%1, %2)").arg(m_playerStartX).arg(m_playerStartY)});
     playerStart->setData(0, Qt::UserRole + 1, QStringLiteral("playerstart"));
-    playerStart->setToolTip(0, tr("Double-click to choose the shared .sbpi player, spawn position and facing. "
-        "Drag player.sbpi here to attach the project player."));
+    playerStart->setData(0, Qt::UserRole + 3, QStringLiteral("default"));
+    playerStart->setToolTip(0, tr("Required default entrance; cannot be removed. Double-click to edit."));
     playerStart->setIcon(0, treeIcon(QStringLiteral("sprite")));
+    for (const PlayerStartLocation &location : m_otherPlayerStarts) {
+        auto *entry = new QTreeWidgetItem(startsRoot, QStringList{
+            QStringLiteral("%1 (%2, %3)").arg(location.name).arg(location.x).arg(location.y)});
+        entry->setData(0, Qt::UserRole + 1, QStringLiteral("playerstart"));
+        entry->setData(0, Qt::UserRole + 3, location.id);
+        entry->setIcon(0, treeIcon(QStringLiteral("sprite")));
+        entry->setToolTip(0, tr("Double-click to edit. Right-click to remove with confirmation."));
+    }
     for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("tileatlas"),
                                  QStringLiteral("background"), QStringLiteral("palette"),
                                  QStringLiteral("sound"), QStringLiteral("music")}) {
@@ -3843,6 +4178,31 @@ void SidboxGameDesigner::rebuildScene()
                      -labelBounds.height() - 3.0);
     startTag->setAcceptedMouseButtons(Qt::NoButton);
     m_playerStartMarker=spawn;
+    // Named entrances have their own drag handles. No player sprite allocation.
+    for (const PlayerStartLocation &location : m_otherPlayerStarts) {
+        auto *marker = new PlacedImage(spawnIcon);
+        marker->setZValue(10499);
+        marker->setFlag(QGraphicsItem::ItemIsMovable, true);
+        marker->setFlag(QGraphicsItem::ItemIsSelectable, true);
+        marker->setData(0, -2);
+        marker->setToolTip(tr("%1 — drag to position this entrance").arg(location.name));
+        marker->snapped = spawn->snapped;
+        const QString id = location.id;
+        marker->moved = [this, id](QGraphicsItem *item) {
+            if (m_loading) return;
+            for (PlayerStartLocation &entry : m_otherPlayerStarts)
+                if (entry.id == id) {
+                    entry.x = qRound(item->pos().x());
+                    entry.y = qRound(item->pos().y());
+                    setDirty(); refreshResources(); break;
+                }
+        };
+        m_scene->addItem(marker);
+        marker->setPos(location.x, location.y);
+        auto *tag = new WorldObjectTag(location.name, marker, 11, QColor(80, 235, 255));
+        tag->setPos(0, -tag->boundingRect().height() - 3);
+        tag->setAcceptedMouseButtons(Qt::NoButton);
+    }
     rebuildTilemapOverlay();
     m_cameraFrame = m_scene->addRect(QRectF(0, 0, LCD_WIDTH, LCD_HEIGHT),
                  QPen(QColor(255, 207, 75), 2, Qt::DashLine));
@@ -5350,6 +5710,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard breakCard = makeCard(tr("Breakable"));
     const PropertyCard hazardCard = makeCard(tr("Damage / Knockback / Hurt Effects"));
     const PropertyCard enemyCard = makeCard(tr("Stompable Enemy"));
+    const PropertyCard gotoCard = makeCard(tr("Goto World"));
     const PropertyCard audioCollectCard = makeCard(tr("Audio Events / Collectable"));
     const PropertyCard audioLiftCard = makeCard(tr("Audio Events / Moving Platform"));
     const PropertyCard audioSpringCard = makeCard(tr("Audio Events / Spring"));
@@ -5412,6 +5773,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Breakable Object"), QStringLiteral("breakable"));
     type->addItem(tr("Hazard / Murder Object (touch hurts)"), QStringLiteral("hazard"));
     type->addItem(tr("Stompable Enemy (jump on to defeat)"), QStringLiteral("enemy"));
+    type->addItem(tr("Goto World"), QStringLiteral("goto_world"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     // The left-hand list is the behaviour selector; keep the combo as the
     // original model for existing validation and signal connections.
@@ -5623,6 +5985,65 @@ void SidboxGameDesigner::configureGameObject(int index)
     musicTrack->setCurrentIndex(qMax(0, musicTrack->findData(old.triggerMusicId)));
     musicTrack->setToolTip(tr("Choose a music resource. The IDE uses its saved ID, not the filename."));
     form->addRow(tr("Tune"), musicTrack);
+
+    // A Goto World is a trigger sensor, never a solid door. World names are
+    // the same sanitized .sbgm basenames used by gameworlds_request().
+    form = gotoCard.form;
+    auto *gotoWorld = new GameComboBox(&dialog);
+    gotoWorld->addItem(tr("Choose destination world"), QString());
+    const QDir projectDir(QFileInfo(m_filePath).absolutePath());
+    const QString thisWorld = sidboxTilemapWorldBaseName(m_filePath);
+    for (const QFileInfo &world : projectDir.entryInfoList(
+            QStringList{QStringLiteral("*.sbgm")}, QDir::Files, QDir::Name)) {
+        const QString worldName = sidboxTilemapWorldBaseName(world.absoluteFilePath());
+        if (worldName != thisWorld && gotoWorld->findData(worldName) < 0)
+            gotoWorld->addItem(world.completeBaseName(), worldName);
+    }
+    gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
+    form->addRow(tr("Destination world"), gotoWorld);
+    auto *gotoStart = new GameComboBox(&dialog);
+    const auto populateGotoStarts = [this, gotoWorld, gotoStart](const QString &selectedId) {
+        gotoStart->clear();
+        gotoStart->addItem(tr("Default start"), QStringLiteral("default"));
+        const QString target = gotoWorld->currentData().toString();
+        if (!target.isEmpty()) {
+            const QDir project(QFileInfo(m_filePath).absolutePath());
+            QString designPath;
+            for (const QFileInfo &candidate : project.entryInfoList(
+                    QStringList{QStringLiteral("*.sbgm")}, QDir::Files)) {
+                if (sidboxTilemapWorldBaseName(candidate.absoluteFilePath()) == target) {
+                    designPath = candidate.absoluteFilePath(); break;
+                }
+            }
+            QFile file(designPath);
+            if (!designPath.isEmpty() && file.open(QIODevice::ReadOnly)) {
+                const QJsonObject design = QJsonDocument::fromJson(file.readAll()).object();
+                for (const QJsonValue &entry : design.value(QStringLiteral("playerStarts")).toArray()) {
+                    const QJsonObject start = entry.toObject();
+                    const QString id = start.value(QStringLiteral("id")).toString();
+                    if (!id.isEmpty() && id != QStringLiteral("default"))
+                        gotoStart->addItem(start.value(QStringLiteral("name")).toString(id), id);
+                }
+            }
+        }
+        const int found = gotoStart->findData(selectedId);
+        if (found >= 0) gotoStart->setCurrentIndex(found);
+        else if (!selectedId.isEmpty() && selectedId != QStringLiteral("default")) {
+            // Do not silently change a saved destination if another world removed it.
+            gotoStart->addItem(tr("Missing entrance: %1").arg(selectedId), selectedId);
+            gotoStart->setCurrentIndex(gotoStart->count() - 1);
+        }
+    };
+    populateGotoStarts(old.gotoStartId);
+    connect(gotoWorld, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+        [populateGotoStarts](int) { populateGotoStarts(QStringLiteral("default")); });
+    form->addRow(tr("Arrival location"), gotoStart);
+    auto *gotoActivation = new GameComboBox(&dialog);
+    gotoActivation->addItem(tr("Touch door"), false);
+    gotoActivation->addItem(tr("Press FIRE2 while touching"), true);
+    gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
+    form->addRow(tr("Enter using"), gotoActivation);
+    form->addRow(new QLabel(tr("The destination world owns its named player starts."), &dialog));
 
     form = collectCard.form;
     auto *respawn = spin(0, 65535, old.respawnFrames);
@@ -6102,10 +6523,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
         QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
         QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
-        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟")};
+        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"), QStringLiteral("⇥")};
     const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
         tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
-        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy")};
+        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"), tr("Goto World")};
     for (int n = 0; n < type->count(); ++n) {
         auto *item = new QListWidgetItem(icons.value(n) + QStringLiteral("   ") + titles.value(n));
         item->setData(Qt::UserRole, type->itemData(n));
@@ -6131,7 +6552,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     propertiesLayout->setSpacing(7);
     for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
          collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
-         enemyCard, hazardCard,
+         enemyCard, gotoCard, hazardCard,
          audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
          audioBreakCard, audioHazardCard, audioOptionsCard}) {
         propertiesLayout->addWidget(card.panel);
@@ -6455,6 +6876,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         pickup->setEnabled(behaviour == QStringLiteral("collectable"));
         value->setEnabled(behaviour == QStringLiteral("collectable"));
         const bool isTrigger = behaviour == QStringLiteral("trigger");
+        const bool isGoto = behaviour == QStringLiteral("goto_world");
+        gotoWorld->setEnabled(isGoto);
+        gotoActivation->setEnabled(isGoto);
+        gotoStart->setEnabled(isGoto);
         const bool isKey = behaviour == QStringLiteral("collectable") && pickup->currentData().toInt() == 3;
         initiallyActive->setEnabled(isObject);
         initiallyActive->setVisible(isObject && behaviour != QStringLiteral("collectable"));
@@ -6519,6 +6944,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         breakCard.panel->setVisible(isBreak);
         hazardCard.panel->setVisible(isHazard || isEnemy);
         enemyCard.panel->setVisible(isEnemy);
+        gotoCard.panel->setVisible(isGoto);
         audioCollectCard.panel->setVisible(isCollect);
         audioLiftCard.panel->setVisible(isLift);
         audioSpringCard.panel->setVisible(isSpring);
@@ -6577,6 +7003,11 @@ void SidboxGameDesigner::configureGameObject(int index)
                "Please assign a PPB and set the sprite scale to 100 first."));
         return false;
     }
+    if (newType == QStringLiteral("goto_world") && gotoWorld->currentData().toString().isEmpty()) {
+        QMessageBox::warning(this, tr("Goto World"),
+            tr("Choose another world in this project before saving this door."));
+        return false;
+    }
     rememberResourceEdit();
     m_adventure.insert(QStringLiteral("pickupTypes"),customPickupTypes);
     Resource &r = m_resources[index];
@@ -6633,6 +7064,9 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.hazardFlashFrames = hazardFlashFrames->value();
     r.targetObjectId = targetObject->currentData().toString();
     r.targetAction = targetAction->currentData().toString();
+    r.gotoWorldName = gotoWorld->currentData().toString();
+    r.gotoPress = gotoActivation->currentData().toBool();
+    r.gotoStartId = gotoStart->currentData().toString();
     r.triggerPress = triggerPress->isChecked();
     r.triggerOneShot = triggerOneShot->isChecked();
     r.triggerMusicId = musicTrack->currentData().toString();
@@ -6697,6 +7131,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
         targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
+        gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
+        populateGotoStarts(old.gotoStartId);
+        gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
         triggerPress->setChecked(old.triggerPress);
         triggerOneShot->setChecked(old.triggerOneShot);
         musicAction->setCurrentIndex(qMax(0, musicAction->findData(old.triggerMusicAction)));

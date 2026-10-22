@@ -100,6 +100,13 @@ void SplashScreenWidget::buildUi()
         "font-size:19px; color:%1; }")
         .arg(ideThemeColorName(m_theme.text)));
 
+    // Bump the stage and release date (DDMMYY) when publishing a new IDE build.
+    auto *buildLabel = new QLabel(QStringLiteral("Build: 5.22.221026"), panel);
+    buildLabel->setStyleSheet(QStringLiteral(
+        "QLabel { background:transparent; border:none; border-radius:0px; "
+        "font-size:15px; font-weight:bold; color:%1; }")
+        .arg(ideThemeColorName(m_theme.accent)));
+
     auto *footerLabel = new QLabel(QStringLiteral("Preparing IDE..."), panel);
     footerLabel->setStyleSheet(QStringLiteral(
         "QLabel { background:transparent; border:none; border-radius:0px; "
@@ -108,6 +115,7 @@ void SplashScreenWidget::buildUi()
 
     textColumn->addWidget(titleLabel);
     textColumn->addWidget(subtitleLabel);
+    textColumn->addWidget(buildLabel);
     textColumn->addStretch(1);
     textColumn->addWidget(footerLabel);
 

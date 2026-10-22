@@ -28,13 +28,13 @@
  * A shared players/player.sbpi produces gamehelpers/gameplayer.c/.h.
  * Its atlas is loaded once, independent of any world's resources.
  * User-owned main.c remains yours; copy these calls deliberately.
- * Switching worlds requires rebinding collision physics to the new map
- * (the shared BOB itself remains valid across transitions).
- * gameworlds_request("forest") only queues a change; apply_pending() runs
- * between frames. Register gameworlds_player_hooks(save,restore,user) when
- * implementing persistent player data, and rebind the destination sprite
- * before allowing physics to resume. The example below refuses to continue
- * after a switch until you implement that rebind (Stage 5.3).
+ * Goto World objects request changes safely during contact handling.
+ * gameworlds_apply_pending() applies them at the NEXT frame boundary;
+ * this starter then rebinds tile collision and resets position to that
+ * destination world's Player Start. The SHARED player BOB survives.
+ * Register gameworlds_player_hooks(save,restore,user) to persist additional
+ * game-owned state, or use gameworlds_state() for shared story counters.
+ * Collected-world-object history is not yet persistent (future feature).
  * CURRENT DESIGN:
  * Tilemap: @IDE{TILEMAP_DESCRIPTION}
  * Player sprite (must be named 'player'): @IDE{PLAYER_DESCRIPTION}
@@ -501,13 +501,11 @@ int main(int argc, char *argv[])
             gameplayer_defaults.hitbox_w,gameplayer_defaults.hitbox_h)) {
         result = 4; goto cleanup;
     }
-    /* Initial world physics only; gameplay can override it for zones etc. */
-    switch(gameplayer_defaults.physics_preset) {
-        case 1: game_tile_player_set_physics_ice(&player_physics); break;
-        case 2: game_tile_player_set_physics_water(&player_physics); break;
-        case 3: game_tile_player_set_physics_space(&player_physics); break;
-        case 4: game_tile_player_set_physics_floating(&player_physics); break;
-        default: break; /* Physics from game_tile_player_start(). */
+    /* Bind the actual player once. The manager applies this world's selected
+       physics now, then each destination world's profile after transitions.
+       Custom zones may still call gameplayer_apply_physics(player, id). */
+    if (!gameworlds_bind_player_physics(&player_physics)) {
+        result = 4; goto cleanup;
     }
 @IDE_END
 @IDE_IF{HAS_PLAYER_HAZARDS}
@@ -543,16 +541,80 @@ int main(int argc, char *argv[])
 @IDE_END
 
     /* 3. The frame loop. Leave the helper calls in this order. */
+    const char *running_world = gameworlds_active();
     while (1) {
         gfx_lcdwait();
-        /* Apply a queued world change OUTSIDE collisions and drawing.
-         * This first-world starter deliberately stops after a transition
-         * until your game implements destination player BOB/physics rebinding.
-         * Never run physics using freed pixels from the previous world. */
+        /* A Goto World contact QUEUES a request. Unload/reload only here,
+         * outside the previous world's collision and drawing callbacks. */
         if (!gameworlds_apply_pending()) { result = 8; goto cleanup; }
-        if (!gameworlds_active() ||
-            strcmp(gameworlds_active(), "@IDE{WORLD_BASE}") != 0) {
-            result = 9; goto cleanup; /* Rebind destination player first. */
+        const char *now_world = gameworlds_active();
+        if (!now_world) { result = 9; goto cleanup; }
+        if (!running_world || strcmp(running_world, now_world) != 0) {
+            running_world = now_world;
+@IDE_IF{HAS_PHYSICS}
+            /* The sprite is global; tile collision and spawn are per-world.
+             * Never dereference the old map after apply_pending(). */
+            gameworlds_spawn_t arrival = {0};
+            if (!gameworlds_player_start(&arrival) || !gameworlds_map()) {
+                result = 9; goto cleanup;
+            }
+            GAMERGIRL_PLAYER_BOB.drawx = arrival.x;
+            GAMERGIRL_PLAYER_BOB.drawy = arrival.y;
+            GAMERGIRL_PLAYER_BOB.flags = (uint8_t)(
+                (GAMERGIRL_PLAYER_BOB.flags & (uint8_t)~BLIT_FLAG_FLIP_X) |
+                (arrival.facing ? 0 : BLIT_FLAG_FLIP_X));
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS
+#ifdef PLAYER_ANIM_DIR_LEFT
+            player_anim_facing = arrival.facing ? PLAYER_ANIM_DIR_RIGHT : PLAYER_ANIM_DIR_LEFT;
+#endif
+#endif
+@IDE_END
+            if (!game_tile_player_start(&player_physics,
+                (game_tilemap_t *)gameworlds_map(), &GAMERGIRL_PLAYER_BOB)) {
+                result = 9; goto cleanup;
+            }
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS
+            if (!game_tile_player_set_hitbox(&player_physics,
+                    PLAYER_ANIM_HITBOX_X, PLAYER_ANIM_HITBOX_Y,
+                    PLAYER_ANIM_HITBOX_W, PLAYER_ANIM_HITBOX_H)) {
+                result = 9; goto cleanup;
+            }
+#endif
+@IDE_END
+@IDE_IF{HAS_SHARED_PLAYER}
+            if (gameplayer_defaults.custom_hitbox &&
+                !game_tile_player_set_hitbox(&player_physics,
+                    gameplayer_defaults.hitbox_x, gameplayer_defaults.hitbox_y,
+                    gameplayer_defaults.hitbox_w, gameplayer_defaults.hitbox_h)) {
+                result = 9; goto cleanup;
+            }
+            if (!gameworlds_bind_player_physics(&player_physics)) {
+                result = 9; goto cleanup;
+            }
+@IDE_END
+@IDE_IF{HAS_WORLD_PLAYER}
+            /* Adapter pointers are stable, but collision dimensions may vary
+             * with the new world/player hitbox. */
+            world_player.width = player_physics.hitbox_w ? player_physics.hitbox_w : GAMERGIRL_PLAYER_BOB.width;
+            world_player.height = player_physics.hitbox_h ? player_physics.hitbox_h : GAMERGIRL_PLAYER_BOB.height;
+            world_player.offset_x = player_physics.hitbox_x;
+            world_player.offset_y = player_physics.hitbox_y;
+@IDE_END
+@IDE_IF{HAS_MAP}
+            game_tilemap_animation_reset();
+@IDE_END
+@IDE_END
+            /* Fresh world background, including the optional back plane. */
+            gameworlds_show_background();
+@IDE_IF{HAS_BACKGROUND_PLANE}
+            gfx_usebuffer(back);
+            gameworlds_draw_background();
+            gfx_showbbuffer(back);
+@IDE_END
+            gfx_scrollb(0, 0);
+            gfx_scrollf(0, 0);
         }
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_ADVENTURE}
@@ -761,7 +823,7 @@ int main(int argc, char *argv[])
 @IDE_ELSE
         gameworlds_draw_foreground();
 @IDE_END
-@IDE_IF{HAS_FRONT_TILES}
+@IDE_IF{HAS_MAP}
         /* Foreground tiles are deliberately drawn AFTER the player. */
         game_tilemap_blit_view_front((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, VIEW_H);
 @IDE_END

@@ -1,3 +1,11 @@
+the Player Starts tree needs an icon ;) Can u create a 16x16 icon (that i can replace) name it gr_icon_playerstart.png
+
+the adventure system
+the dialog options, if i dont have the item, i should still be able to use it, but if i dont have what they want, they should reply with another answer (using another dialog id ofc)
+that way we dont give away the hint that the person has the right item ;)
+
+
+
 bit of a problem with the Tile map Tile stamps... They are lost when i close the IDE and re-open the project file... These "per atlas" stamps should be stored in the .proj file
 can this be fixed please?
 

@@ -57,6 +57,18 @@ static uint16_t ga_visible_item_id(uint16_t display_index)
 /* 256 nodes x 3 choices: 96 bytes for once-only flags. One bit per choice. */
 static uint8_t ga_used_choices[(256u * 3u + 7u) / 8u];
 static uint8_t ga_completed_npcs[256];
+void game_adventure_save_progress(uint8_t used_choices[96], uint8_t completed_npcs[256])
+{
+    if (!used_choices || !completed_npcs) return;
+    memcpy(used_choices, ga_used_choices, sizeof(ga_used_choices));
+    memcpy(completed_npcs, ga_completed_npcs, sizeof(ga_completed_npcs));
+}
+void game_adventure_restore_progress(const uint8_t used_choices[96], const uint8_t completed_npcs[256])
+{
+    if (!used_choices || !completed_npcs) return;
+    memcpy(ga_used_choices, used_choices, sizeof(ga_used_choices));
+    memcpy(ga_completed_npcs, completed_npcs, sizeof(ga_completed_npcs));
+}
 static const uint8_t *ga_choice_flags; /* node * 3 + answer */
 static const uint16_t *ga_completed_nodes; /* NPC index; UINT16_MAX => no alternate */
 void game_adventure_story_flags(const uint8_t *choice_flags,

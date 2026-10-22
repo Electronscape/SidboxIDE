@@ -40,10 +40,21 @@ gameworlds_player_state_t *gameworlds_state(void);
 uint16_t gameworlds_count(void);
 const char *gameworlds_name(uint16_t index);
 const char *gameworlds_active(void);
+/* Physics profile configured for the active world (default if unassigned). */
+uint8_t gameworlds_physics_profile(void);
+@IDE_IF{HAS_SHARED_PLAYER}
+#include "gametilemap.h"
+/* Bind the live player ONCE after game_tile_player_start(). Applies the first
+ * world's profile now and future worlds' profiles on successful entry. */
+uint8_t gameworlds_bind_player_physics(game_tile_player_t *player);
+@IDE_END
 /* NULL or empty starts the project's selected/default world. */
 uint8_t gameworlds_start(const char *name);
 /* Safe inside callbacks: only queues a change. Does NOT unload anything. */
 uint8_t gameworlds_request(const char *name);
+/* Request a specific named entrance in the destination world.
+ * "default" preserves the original Player Start behaviour. */
+uint8_t gameworlds_request_at(const char *name, const char *start_id);
 /* Call OUTSIDE the frame's collision, object and drawing passes.
  * 0 = failed; 1 = no change or successful transition. */
 uint8_t gameworlds_apply_pending(void);

@@ -30,7 +30,7 @@ assert 'gamehelpers/gameplayer.c' in main
 assert 'gameplayer_shutdown()' in rule and 'gameplayer_init()' in rule
 assert rule.index('gameplayer_init()') < rule.index('gameworlds_start("@IDE{WORLD_BASE}")')
 assert 'gameplayer_defaults.custom_hitbox' in rule
-assert 'gameplayer_defaults.physics_preset' in rule
+assert 'gameworlds_bind_player_physics(&player_physics)' in rule
 assert 'GamePlayerProfile::generate' in export
 assert 'HAS_SHARED_PLAYER' in export
 assert 'QSaveFile out' in profile

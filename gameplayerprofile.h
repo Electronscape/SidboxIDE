@@ -17,11 +17,66 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include "ppbcodec.h"
 
 namespace GamePlayerProfile {
 inline QString profilePath(const QDir &project) {
     return project.filePath(QStringLiteral("players/player.sbpi"));
+}
+// Stable profile IDs allow world code to refer to a saved physics profile.
+// The behaviour mode remains the existing tilemap engine's movement mode.
+inline QJsonArray defaultPhysicsProfiles() {
+    QJsonArray result;
+    struct Initial { const char *name; int walk, jump, gravity, fall, drag; };
+    const Initial values[] = {
+        {"Normal", 3, 7, 35, 9, 12},
+        {"Ice", 4, 7, 35, 9, 2},
+        {"Water", 2, 5, 12, 3, 18},
+        {"Slow", 1, 7, 35, 9, 18},
+        {"Space", 3, 7, 3, 3, 0},
+        {"Floating", 3, 7, 7, 2, 4},
+        {"Jetpack", 3, 7, 20, 6, 6}
+    };
+    for (int id = 0; id < 7; ++id) {
+        QJsonObject obj;
+        obj.insert(QStringLiteral("id"), id);
+        obj.insert(QStringLiteral("name"), QString::fromLatin1(values[id].name));
+        obj.insert(QStringLiteral("mode"), id);
+        obj.insert(QStringLiteral("walkSpeed"), values[id].walk);
+        obj.insert(QStringLiteral("jumpSpeed"), values[id].jump);
+        obj.insert(QStringLiteral("gravity"), values[id].gravity);
+        obj.insert(QStringLiteral("maxFallSpeed"), values[id].fall);
+        obj.insert(QStringLiteral("forceDrag"), values[id].drag);
+        result.append(obj);
+    }
+    return result;
+}
+inline int legacyPhysicsId(const QString &name) {
+    const QStringList modes = {QStringLiteral("normal"), QStringLiteral("ice"),
+        QStringLiteral("water"), QStringLiteral("slow"), QStringLiteral("space"),
+        QStringLiteral("floating"), QStringLiteral("jetpack")};
+    const int index = modes.indexOf(name.toLower());
+    return index < 0 ? 0 : index;
+}
+inline QJsonArray physicsProfiles(const QJsonObject &profile) {
+    return profile.contains(QStringLiteral("physicsProfiles"))
+        ? profile.value(QStringLiteral("physicsProfiles")).toArray()
+        : defaultPhysicsProfiles();
+}
+inline int startingPhysicsId(const QJsonObject &profile) {
+    return profile.contains(QStringLiteral("physicsPresetId"))
+        ? profile.value(QStringLiteral("physicsPresetId")).toInt(0)
+        : legacyPhysicsId(profile.value(QStringLiteral("physicsPreset")).toString(QStringLiteral("normal")));
+}
+// World name -> stable profile ID. An omitted world inherits the default.
+inline QJsonObject worldPhysicsOverrides(const QJsonObject &profile) {
+    return profile.value(QStringLiteral("worldPhysics")).toObject();
+}
+inline int physicsForWorld(const QJsonObject &profile, const QString &worldName) {
+    const QJsonValue assigned = worldPhysicsOverrides(profile).value(worldName);
+    return assigned.isDouble() ? assigned.toInt(startingPhysicsId(profile))
+                               : startingPhysicsId(profile);
 }
 inline QJsonObject defaults() {
     QJsonObject obj;
@@ -43,6 +98,9 @@ inline QJsonObject defaults() {
     obj.insert(QStringLiteral("hitboxW"), 32);
     obj.insert(QStringLiteral("hitboxH"), 32);
     obj.insert(QStringLiteral("physicsPreset"), QStringLiteral("normal"));
+    obj.insert(QStringLiteral("physicsPresetId"), 0);
+    obj.insert(QStringLiteral("physicsProfiles"), defaultPhysicsProfiles());
+    obj.insert(QStringLiteral("worldPhysics"), QJsonObject());
     return obj;
 }
 inline bool read(const QDir &project, QJsonObject *profile, QString *error=nullptr) {
@@ -263,12 +321,44 @@ inline bool generate(const QDir &project, const QDir &rules, QString *error=null
         if (error) *error = QStringLiteral("Cannot create shared player code directory.");
         return false;
     }
-    const QString preset = profile.value(QStringLiteral("physicsPreset")).toString(QStringLiteral("normal"));
-    const QStringList validPresets = {QStringLiteral("normal"),QStringLiteral("ice"),
-        QStringLiteral("water"),QStringLiteral("space"),QStringLiteral("floating")};
-    const int presetId = validPresets.indexOf(preset);
-    if (presetId < 0) {
-        if (error) *error = QStringLiteral("Invalid shared player physics preset.");
+    // The bank belongs to players/player.sbpi (shared across the whole game).
+    // IDs stay stable after deletion so C code can address a profile by ID.
+    const QJsonArray physics = physicsProfiles(profile);
+    if (physics.isEmpty() || physics.size() > 64) {
+        if (error) *error = QStringLiteral("Player needs 1 to 64 movement physics profiles.");
+        return false;
+    }
+    QSet<int> physicsIds;
+    QSet<QString> physicsNames;
+    QByteArray physicsRows;
+    const int presetId = startingPhysicsId(profile);
+    for (const QJsonValue &value : physics) {
+        const QJsonObject entry = value.toObject();
+        const QString name = entry.value(QStringLiteral("name")).toString().trimmed();
+        const int id = entry.value(QStringLiteral("id")).toInt(-1);
+        const int mode = entry.value(QStringLiteral("mode")).toInt(-1);
+        const int walk = entry.value(QStringLiteral("walkSpeed")).toInt(-1);
+        const int jump = entry.value(QStringLiteral("jumpSpeed")).toInt(-1);
+        const int gravity = entry.value(QStringLiteral("gravity")).toInt(-1);
+        const int fall = entry.value(QStringLiteral("maxFallSpeed")).toInt(-1);
+        const int drag = entry.value(QStringLiteral("forceDrag")).toInt(-1);
+        if (id < 0 || id > 255 || physicsIds.contains(id) || mode < 0 || mode > 6
+            || name.isEmpty() || name.contains(QLatin1Char('\n')) || name.size() > 64
+            || physicsNames.contains(name.toCaseFolded()) || walk < 0 || walk > 16
+            || jump < 0 || jump > 32 || gravity < 0 || gravity > 1000
+            || fall < 1 || fall > 32 || drag < 0 || drag > 100) {
+            if (error) *error = QStringLiteral("Invalid movement physics profile: %1").arg(name);
+            return false;
+        }
+        physicsIds.insert(id);
+        physicsNames.insert(name.toCaseFolded());
+        physicsRows += "    {" + QByteArray::number(id) + "u, " + QByteArray::number(mode)
+            + "u, " + QByteArray::number(walk) + ", " + QByteArray::number(jump)
+            + ", " + QByteArray::number(gravity) + ", " + QByteArray::number(fall)
+            + ", " + QByteArray::number(drag) + "u},\n";
+    }
+    if (!physicsIds.contains(presetId)) {
+        if (error) *error = QStringLiteral("The starting movement physics profile was removed.");
         return false;
     }
     const QList<QPair<QByteArray,QByteArray>> fields = {
@@ -286,6 +376,8 @@ inline bool generate(const QDir &project, const QDir &rules, QString *error=null
         {"@IDE{HITBOX_W}", QByteArray::number(qBound(1,profile.value(QStringLiteral("hitboxW")).toInt(32),2048))},
         {"@IDE{HITBOX_H}", QByteArray::number(qBound(1,profile.value(QStringLiteral("hitboxH")).toInt(32),2048))},
         {"@IDE{PHYSICS_PRESET}", QByteArray::number(presetId)},
+        {"@IDE{PHYSICS_PROFILE_COUNT}", QByteArray::number(physics.size())},
+        {"@IDE{PHYSICS_PROFILE_ROWS}", physicsRows},
         {"@IDE{CUSTOM_STAT_COUNT}", QByteArray::number(stats.size())},
         {"@IDE{CUSTOM_STAT_ROWS}", customStats},
         {"@IDE{INVENTORY_COUNT}", QByteArray::number(initial.size())},

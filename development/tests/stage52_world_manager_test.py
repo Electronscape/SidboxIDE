@@ -15,17 +15,17 @@ def render_flags(s, values):
         s = pattern.sub(lambda m:m.group(1) if enabled else '',s)
     assert '@IDE' not in s
     return s
-(out/'gamehelpers'/'gameworlds.h').write_text(render_flags((sdk/'gameworlds.ruleh').read_text(),{'HAS_WORLD_PHYSICS':False,'HAS_PICKUPS':False,'HAS_PLAYER_VISIBILITY':False}))
+(out/'gamehelpers'/'gameworlds.h').write_text(render_flags((sdk/'gameworlds.ruleh').read_text(),{'HAS_WORLD_PHYSICS':False,'HAS_PICKUPS':False,'HAS_PLAYER_VISIBILITY':False,'HAS_SHARED_PLAYER':False}))
 record=lambda name,map_yes,modern: (
     '    {"'+name+'", '+name+'_gameassets_init, '+name+'_gameassets_shutdown,\n'
     '     '+name+'_gameworlditems_init, '+name+'_gameworlditems_update, '+name+'_gameworlditems_draw, 0,\n'
     '     '+name+'_gameassets_draw_foreground, '+name+'_gameassets_draw_background, '+name+'_gameassets_show_background,\n'
     '     '+name+'_gameadventure_setup, '+name+'_gameadventure_store_inventory, '+name+'_gameadventure_load_inventory,\n'
-    '     '+(('&game_'+name+', game_'+name+'_load_map, game_'+name+'_unload_map, game_'+name+'_load_atlas, game_'+name+'_unload_atlas, "gamelevels/'+name+'.map"') if map_yes else '0, 0, 0, 0, 0, 0') + (', 120, 80, 1' if name=='world1' else ', 50, 20, 0') + '}')
+    '     '+(('&game_'+name+', game_'+name+'_load_map, game_'+name+'_unload_map, game_'+name+'_load_atlas, game_'+name+'_unload_atlas, "gamelevels/'+name+'.map"') if map_yes else '0, 0, 0, 0, 0, 0') + (', 120, 80, 1, 0' if name=='world1' else ', 50, 20, 0, 0') + '}')
 code=(sdk/'gameworlds.rulec').read_text()
 code=code.replace('@IDE{WORLD_DECLARATIONS}', '#include "../worlds/world1/world_api.h"\n#include "../worlds/forest/world_api.h"')
 code=code.replace('@IDE{WORLD_RECORDS}', record('world1',True,True)+',\n'+record('forest',False,True))
-code=render_flags(code,{'HAS_ADVENTURE_RUNTIME':True,'HAS_WORLD_PHYSICS':False,'HAS_PICKUPS':False,'HAS_PLAYER_VISIBILITY':False})
+code=render_flags(code,{'HAS_ADVENTURE_RUNTIME':True,'HAS_WORLD_PHYSICS':False,'HAS_PICKUPS':False,'HAS_PLAYER_VISIBILITY':False,'HAS_SHARED_PLAYER':False})
 assert '@IDE' not in code,code[:2000]
 (out/'gamehelpers'/'gameworlds.c').write_text(code)
 for name in ['world1','forest']:

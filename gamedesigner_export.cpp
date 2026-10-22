@@ -308,7 +308,49 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     const int np = pickups.size(), nw = platforms.size();
     int nt = 0;
-    for (const Resource *r : platforms) if (r->objectType == QStringLiteral("trigger")) ++nt;
+    for (const Resource *r : platforms)
+        if (r->objectType == QStringLiteral("trigger") || r->objectType == QStringLiteral("goto_world")) ++nt;
+    // Reject old/missing target worlds at generation, rather than generating
+    // a door that silently fails on the SIDBOX.
+    const QDir projectDir(QFileInfo(m_filePath).absolutePath());
+    QSet<QString> validWorlds;
+    for (const QFileInfo &world : projectDir.entryInfoList(
+            QStringList{QStringLiteral("*.sbgm")}, QDir::Files))
+        validWorlds.insert(sidboxTilemapWorldBaseName(world.absoluteFilePath()));
+    for (const Resource *r : platforms) {
+        if (r->objectType != QStringLiteral("goto_world")) continue;
+        if (r->gotoWorldName.isEmpty() || !validWorlds.contains(r->gotoWorldName) ||
+            r->gotoWorldName == sidboxTilemapWorldBaseName(m_filePath)) {
+            if (error) *error = tr("Goto World '%1' has an invalid destination. Select another world.")
+                .arg(r->name);
+            return false;
+        }
+        if (r->gotoStartId != QStringLiteral("default") && !r->gotoStartId.isEmpty()) {
+            QString destinationPath;
+            for (const QFileInfo &candidate : projectDir.entryInfoList(
+                    QStringList{QStringLiteral("*.sbgm")}, QDir::Files)) {
+                if (sidboxTilemapWorldBaseName(candidate.absoluteFilePath()) == r->gotoWorldName) {
+                    destinationPath = candidate.absoluteFilePath(); break;
+                }
+            }
+            QFile designFile(destinationPath);
+            if (destinationPath.isEmpty() || !designFile.open(QIODevice::ReadOnly)) {
+                if (error) *error = tr("Cannot read destination world for '%1'.").arg(r->name);
+                return false;
+            }
+            const QJsonObject destination = QJsonDocument::fromJson(designFile.readAll()).object();
+            bool exists = false;
+            for (const QJsonValue &v : destination.value(QStringLiteral("playerStarts")).toArray())
+                if (v.toObject().value(QStringLiteral("id")).toString() == r->gotoStartId) {
+                    exists = true; break;
+                }
+            if (!exists) {
+                if (error) *error = tr("Door '%1' references a deleted entrance in '%2'.")
+                    .arg(r->name, r->gotoWorldName);
+                return false;
+            }
+        }
+    }
     QHash<QString, QString> objectSlot; // Stable object ID -> generated live runtime instance.
     for (int i = 0; i < np; ++i)
         objectSlot.insert(pickups.at(i)->id, QStringLiteral("pickups[%1]").arg(i));
@@ -582,7 +624,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         f.insert(QStringLiteral("ANIM_VAR"), QStringLiteral("%1_anim_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix));
         f.insert(QStringLiteral("PATH_SYMBOL"), path >= 0 ? splineSymbol(path) : QString());
         boolValue("IS_PICKUP", collect);
-        boolValue("IS_TRIGGER", type == QStringLiteral("trigger"));
+        boolValue("IS_TRIGGER", type == QStringLiteral("trigger") || type == QStringLiteral("goto_world"));
         boolValue("IS_CONVEYOR", type == QStringLiteral("conveyor"));
         boolValue("IS_BREAKABLE", type == QStringLiteral("breakable"));
         boolValue("IS_ENEMY", enemy);
@@ -609,7 +651,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             ? pickupsKinds.at(qBound(1, r.pickupKind, 4)) : QStringLiteral("%1u").arg(qBound(5, r.pickupKind, 255)));
         const QString kind = type == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
             type == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
-            type == QStringLiteral("trigger") ? QStringLiteral("GAME_OBJECT_TRIGGER") :
+            (type == QStringLiteral("trigger") || type == QStringLiteral("goto_world")) ? QStringLiteral("GAME_OBJECT_TRIGGER") :
             type == QStringLiteral("door") ? QStringLiteral("GAME_OBJECT_DOOR") :
             type == QStringLiteral("deathzone") ? QStringLiteral("GAME_OBJECT_DEATH_ZONE") :
             type == QStringLiteral("breakable") ? QStringLiteral("GAME_OBJECT_BREAKABLE") :
@@ -617,8 +659,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             type == QStringLiteral("enemy") ? QStringLiteral("GAME_OBJECT_ENEMY") :
             QStringLiteral("GAME_OBJECT_SPRING");
         f.insert(QStringLiteral("OBJECT_KIND"), kind);
-        boolValue("TRIGGER_PRESS", r.triggerPress);
-        boolValue("TRIGGER_ONESHOT", r.triggerOneShot);
+        boolValue("TRIGGER_PRESS", type == QStringLiteral("goto_world") ? r.gotoPress : r.triggerPress);
+        boolValue("TRIGGER_ONESHOT", type == QStringLiteral("goto_world") ? false : r.triggerOneShot);
         value("CONVEYOR_SPEED", r.conveyorSpeed);
         value("BREAK_HITS", r.breakHits);
         boolValue("BREAK_TOUCH", r.breakTouch && !r.breakFromBelow);
@@ -770,11 +812,15 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
-        if (r.objectType != QStringLiteral("trigger")) continue;
+        if (r.objectType != QStringLiteral("trigger") &&
+            r.objectType != QStringLiteral("goto_world")) continue;
         QString action;
-        if (!targetAction(r, &action)) return false;
-        const bool stop = r.triggerMusicAction == QStringLiteral("stop");
-        const bool play = r.triggerMusicAction == QStringLiteral("play") && musicById.contains(r.triggerMusicId);
+        if (r.objectType == QStringLiteral("goto_world")) {
+            action = QStringLiteral("        gameworlds_request_at(\"%1\", \"%2\");\n")
+                .arg(r.gotoWorldName, r.gotoStartId.isEmpty() ? QStringLiteral("default") : r.gotoStartId);
+        } else if (!targetAction(r, &action)) return false;
+        const bool stop = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("stop");
+        const bool play = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("play") && musicById.contains(r.triggerMusicId);
         if (action.isEmpty() && !stop && !play) continue;
         const QMap<QString, QString> f{{QStringLiteral("INDEX"), number(i)},
             {QStringLiteral("ACTION_BODY"), action},
