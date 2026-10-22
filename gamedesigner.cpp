@@ -2776,6 +2776,10 @@ void SidboxGameDesigner::buildUi()
     editPlayerAnimation->setToolTip(tr("Configure the shared player atlas, Idle animations, hitbox, physics and inventory."));
     topActions->addWidget(editPlayerAnimation);
     connect(editPlayerAnimation, &QPushButton::clicked, this, [this] { openPlayerEditor(); });
+    auto *adventureButton = new QPushButton(tr("Adventure Editor..."), this);
+    adventureButton->setToolTip(tr("Advanced Platformer: design inventory, NPC dialogue, choices and a nine-tile box frame."));
+    topActions->addWidget(adventureButton);
+    connect(adventureButton, &QPushButton::clicked, this, [this] { openAdventureEditor(); });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -2812,10 +2816,6 @@ void SidboxGameDesigner::buildUi()
     m_resourceTree->setIconSize(QSize(20, 20));
     m_resourceTree->setSelectionMode(QAbstractItemView::SingleSelection);
     resourcesLayout->addWidget(m_resourceTree, 1);
-    auto *adventureButton = new QPushButton(tr("Adventure Editor..."), resourcesPanel);
-    adventureButton->setToolTip(tr("Advanced Platformer: design inventory, NPC dialogue, choices and a nine-tile box frame."));
-    resourcesLayout->addWidget(adventureButton);
-    connect(adventureButton, &QPushButton::clicked, this, [this] { openAdventureEditor(); });
     auto *frontClutLabel = new QLabel(tr("Preview foreground CLUT"), resourcesPanel);
     frontClutLabel->setWordWrap(true);
     resourcesLayout->addWidget(frontClutLabel);
@@ -3800,6 +3800,7 @@ void SidboxGameDesigner::refreshResources()
             return gameResourceIcon(QStringLiteral("gr_icon_audio.png"));
         if (kind == QStringLiteral("gameobject")) return gameResourceIcon(QStringLiteral("gr_icon_object.png"));
         if (kind == QStringLiteral("spline")) return gameResourceIcon(QStringLiteral("gr_icon_spline.png"));
+        if (kind == QStringLiteral("playerstart")) return gameResourceIcon(QStringLiteral("gr_icon_playerstart.png"));
         return QIcon();
     };
     QSignalBlocker block(m_resourceTree);
@@ -3808,18 +3809,19 @@ void SidboxGameDesigner::refreshResources()
     startsRoot->setData(0, Qt::UserRole + 1, QStringLiteral("playerstarts"));
     startsRoot->setToolTip(0, tr("Right-click to add another entrance position."));
     startsRoot->setExpanded(expandedGroups.value(QStringLiteral("playerstarts"), true));
+    startsRoot->setIcon(0, treeIcon(QStringLiteral("playerstart")));
     auto *playerStart = new QTreeWidgetItem(startsRoot, QStringList{
         tr("Default start (%1, %2)").arg(m_playerStartX).arg(m_playerStartY)});
     playerStart->setData(0, Qt::UserRole + 1, QStringLiteral("playerstart"));
     playerStart->setData(0, Qt::UserRole + 3, QStringLiteral("default"));
     playerStart->setToolTip(0, tr("Required default entrance; cannot be removed. Double-click to edit."));
-    playerStart->setIcon(0, treeIcon(QStringLiteral("sprite")));
+    playerStart->setIcon(0, treeIcon(QStringLiteral("playerstart")));
     for (const PlayerStartLocation &location : m_otherPlayerStarts) {
         auto *entry = new QTreeWidgetItem(startsRoot, QStringList{
             QStringLiteral("%1 (%2, %3)").arg(location.name).arg(location.x).arg(location.y)});
         entry->setData(0, Qt::UserRole + 1, QStringLiteral("playerstart"));
         entry->setData(0, Qt::UserRole + 3, location.id);
-        entry->setIcon(0, treeIcon(QStringLiteral("sprite")));
+        entry->setIcon(0, treeIcon(QStringLiteral("playerstart")));
         entry->setToolTip(0, tr("Double-click to edit. Right-click to remove with confirmation."));
     }
     for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("tileatlas"),

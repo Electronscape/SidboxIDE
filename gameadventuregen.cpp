@@ -139,7 +139,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
 
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
-    if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1}}},\n";
+    if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1,-1}}},\n";
     QStringList storyFlags, linkedActions;
     int nodeIndex = 0;
     for (const QJsonValue &v : nodes) {
@@ -175,6 +175,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
             nodeOut << "        {" << quoted(choice.value("text").toString().left(180)) << ","
                     << quoted(choice.value("reply").toString().left(150)) << ","
                     << clampInt(choice,"next",-1,nodes.size()-1,-1) << ","
+                    << clampInt(choice,"missingNext",-1,nodes.size()-1,-1) << ","
                     << clampInt(choice,"requires",-1,itemList.size()-1,-1) << ","
                     << clampInt(choice,"give",-1,itemList.size()-1,-1) << ","
                     << clampInt(choice,"take",-1,itemList.size()-1,-1) << ","

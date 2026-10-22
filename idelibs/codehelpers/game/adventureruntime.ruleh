@@ -26,6 +26,7 @@ typedef struct {
     const char *label;
     const char *reply; /* Player's response above their head */
     int16_t next;      /* Next dialogue node, -1 = close */
+    int16_t missing_next; /* Alternate node if the required item is missing, -1 = keep old no-op behaviour */
     int16_t requires;  /* Required inventory item index, -1 = no requirement */
     int16_t give;      /* Item index to grant on selection, -1 = none */
     int16_t take;      /* Item index to consume on selection, -1 = none */

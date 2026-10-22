@@ -294,6 +294,20 @@ static uint8_t ga_allowed(const game_adventure_choice_t *c)
 {
     return c->requires < 0 || ((uint16_t)c->requires < ga_item_count && ga_counts[c->requires]);
 }
+/* Called by the reply helper below, before its full definition. */
+static void ga_next_node(int16_t node);
+static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_node)
+{
+    ga_reply = c->reply && c->reply[0] ? c->reply : c->label;
+    ga_reply_typed = 0;
+    if (ga_reply && ga_reply[0]) {
+        ga_after_reply = next_node;
+        ga_reply_ticks = 0;
+        ga_state = 3;
+    } else {
+        ga_next_node(next_node);
+    }
+}
 static void ga_next_node(int16_t node)
 {
     if (node < 0 || node >= ga_node_count) { ga_state = 0; return; }
@@ -372,7 +386,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         if (!count) { ga_state = 0; return 0; }
         if (!ga_choice_visible(ga_node,ga_choice)) { ga_next_node((int16_t)ga_node); return 1; }
         const game_adventure_choice_t *c = &n->choices[ga_choice];
-        if (!ga_allowed(c)) return 1;
+        if (!ga_allowed(c)) {
+            /* No item: branch directly to the alternate NPC dialogue.
+               Never display the successful answer's player-speech bubble,
+               and never execute its item, event or completion actions. */
+            if (c->missing_next >= 0 && c->missing_next < ga_node_count)
+                ga_next_node(c->missing_next);
+            return 1;
+        }
         if (c->take >= 0 && !game_adventure_remove((uint16_t)c->take, 1)) return 1;
         if (c->give >= 0) game_adventure_add((uint16_t)c->give, 1);
         if (c->action >= 0 && ga_action) ga_action((uint16_t)c->action, ga_user);
@@ -382,13 +403,7 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         if (flags & 1u) ga_mark_choice_used(ga_node,ga_choice);
         if ((flags & 2u) && ga_active_npc < ga_npc_count && ga_active_npc < 256u)
             ga_completed_npcs[ga_active_npc] = 1u;
-        ga_reply = c->reply && c->reply[0] ? c->reply : c->label;
-        ga_reply_typed = 0;
-        if (ga_reply && ga_reply[0]) {
-            ga_after_reply = c->next;
-            ga_reply_ticks = 0;
-            ga_state = 3;
-        } else ga_next_node(c->next);
+        ga_reply_then_next(c, c->next);
     }
     return 1;
 }
@@ -609,7 +624,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     const int pad=12;
     const int inner_width=bw-2*pad;
     const uint8_t body_columns=(uint8_t)((inner_width/8)>50?50:inner_width/8);
-    /* Right gutter is reserved for unavailable-X and MORE arrows. */
+    /* Right gutter is reserved for MORE arrows only; item ownership stays hidden. */
     const uint8_t answer_columns=(uint8_t)(((inner_width-34)/8)>GA_COLS?GA_COLS:(inner_width-34)/8);
     const int needed=ga_dialogue_required_height(node,body_columns,answer_columns,row);
     const int bh=needed>(int)ga_dialog_h? (needed>320?320:needed) : ga_dialog_h;
@@ -648,7 +663,6 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         ga_text(bx+pad,cy,choice_index==ga_choice?">":" ");
         ga_wrapped(c->label,(uint16_t)strlen(c->label),bx+pad+14,cy,
                    answer_columns,draw_rows);
-        if (!ga_allowed(c)) ga_text(bx+bw-pad-24,cy,"X");
         /* The arrow gutter stays outside the wrapped answer's text area. */
         if (i==0 && first>0) ga_text(bx+bw-pad-8,cy,"^");
         if (i+1==shown && first+shown<count)

@@ -1,3 +1,8 @@
+bug: door game objects dont get saved to the .proj (at least they get lost when i reload the project after restarting the IDE)
+
+move the Adventure Editor button to the top of the same row as the [centre view on LCD] [tilemap editor...] [create /edit player ...] [Adventure Editor]
+
+
 the Player Starts tree needs an icon ;) Can u create a 16x16 icon (that i can replace) name it gr_icon_playerstart.png
 
 the adventure system

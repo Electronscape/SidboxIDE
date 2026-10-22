@@ -231,7 +231,8 @@ bool SidboxGameDesigner::loadDesign()
         if (QStringList{QStringLiteral("collectable"), QStringLiteral("lift"),
                 QStringLiteral("conveyor"), QStringLiteral("spring"),
                 QStringLiteral("trigger"), QStringLiteral("door"),
-                QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"), QStringLiteral("enemy")}.contains(type)
+                QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"),
+                QStringLiteral("enemy"), QStringLiteral("goto_world")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);

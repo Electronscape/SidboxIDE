@@ -431,7 +431,7 @@ QJsonArray defaultChoices()
     QJsonArray choices;
     for (int i=0;i<3;++i) {
         QJsonObject c; c.insert("text", ""); c.insert("reply", "");
-        c.insert("next", -1); c.insert("requires", -1);
+        c.insert("next", -1); c.insert("missingNext", -1); c.insert("requires", -1);
         c.insert("give", -1); c.insert("take", -1); c.insert("action", -1);
         choices.append(c);
     }
@@ -466,7 +466,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     while (choices.size() < 3) choices.append(defaultChoices().at(choices.size()));
     struct EditorFields {
         QTextEdit *label, *reply;
-        QComboBox *next, *event, *mode;
+        QComboBox *next, *missingNext, *event, *mode;
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
         QCheckBox *once, *completeNpc;
@@ -492,6 +492,11 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         for(int target=0;target<nodes.size();++target)
             fields[i].next->addItem(dialogueTitle(nodes[target].toObject(),target),target);
         fields[i].next->setCurrentIndex(std::max(0,fields[i].next->findData(choice.value("next").toInt(-1))));
+        fields[i].missingNext = new QComboBox(box);
+        fields[i].missingNext->addItem(QObject::tr("Keep current behaviour (do nothing)"), -1);
+        for(int target=0;target<nodes.size();++target)
+            fields[i].missingNext->addItem(dialogueTitle(nodes[target].toObject(),target),target);
+        fields[i].missingNext->setCurrentIndex(std::max(0,fields[i].missingNext->findData(choice.value("missingNext").toInt(-1))));
         fields[i].event=new QComboBox(box);
         fields[i].event->addItem(QObject::tr("No event"),QStringLiteral("none"));
         for (const auto &obj:objects)
@@ -528,25 +533,27 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(new QLabel(QObject::tr("Event / resource"),box),2,2);
         grid->addWidget(fields[i].event,2,3);
         grid->addWidget(fields[i].customId,3,4);
-        grid->addWidget(new QLabel(QObject::tr("Needs"),box),3,0);
-        grid->addWidget(fields[i].requires,3,1);
-        grid->addWidget(new QLabel(QObject::tr("Give"),box),3,2);
-        grid->addWidget(fields[i].give,3,3);
-        grid->addWidget(new QLabel(QObject::tr("Take"),box),4,0);
-        grid->addWidget(fields[i].take,4,1);
+        grid->addWidget(new QLabel(QObject::tr("If missing required item"),box),3,0);
+        grid->addWidget(fields[i].missingNext,3,1,1,3);
+        grid->addWidget(new QLabel(QObject::tr("Needs"),box),4,0);
+        grid->addWidget(fields[i].requires,4,1);
+        grid->addWidget(new QLabel(QObject::tr("Give"),box),4,2);
+        grid->addWidget(fields[i].give,4,3);
+        grid->addWidget(new QLabel(QObject::tr("Take"),box),5,0);
+        grid->addWidget(fields[i].take,5,1);
         fields[i].mode = new QComboBox(box);
         fields[i].mode->addItem(QObject::tr("Activate (close solid door)"),QStringLiteral("enable"));
         fields[i].mode->addItem(QObject::tr("Deactivate (open solid door)"),QStringLiteral("disable"));
         fields[i].mode->addItem(QObject::tr("Toggle"),QStringLiteral("toggle"));
         fields[i].mode->setCurrentIndex(std::max(0,fields[i].mode->findData(choice.value("targetAction").toString("enable"))));
-        grid->addWidget(new QLabel(QObject::tr("Game Object action"),box),5,0);
-        grid->addWidget(fields[i].mode,5,1,1,3);
+        grid->addWidget(new QLabel(QObject::tr("Game Object action"),box),6,0);
+        grid->addWidget(fields[i].mode,6,1,1,3);
         fields[i].once = new QCheckBox(QObject::tr("Only show this answer until successfully used"),box);
         fields[i].once->setChecked(choice.value("once").toBool(false));
-        grid->addWidget(fields[i].once,6,0,1,4);
+        grid->addWidget(fields[i].once,7,0,1,4);
         fields[i].completeNpc = new QCheckBox(QObject::tr("Mark this NPC as helped (use its completed dialogue next visit)"),box);
         fields[i].completeNpc->setChecked(choice.value("completeNpc").toBool(false));
-        grid->addWidget(fields[i].completeNpc,7,0,1,4);
+        grid->addWidget(fields[i].completeNpc,8,0,1,4);
         detail->addWidget(box);
     }
 
@@ -609,6 +616,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QJsonObject c; c.insert("text",fields[i].label->toPlainText().left(180));
         c.insert("reply",fields[i].reply->toPlainText().left(150));
         c.insert("next",fields[i].next->currentData().toInt());
+        c.insert("missingNext",fields[i].missingNext->currentData().toInt());
         const QString eventSelection=fields[i].event->currentData().toString();
         c.insert("action",eventSelection==QStringLiteral("custom")?fields[i].customId->value():-1);
         c.insert("requires",fields[i].requires->currentData().toInt());
