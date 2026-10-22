@@ -22,7 +22,7 @@ void test_text(int x, int y, const char *str) {
     }
 }
 void test_bob(gfxbob_t *bob) {
-    static const int xy[4][2]={{40,138},{48,138},{40,146},{48,146}};
+    static const int xy[4][2]={{40,142},{48,142},{40,150},{48,150}};
     static const unsigned offset[4]={8,16,24,256};
     for (int i=0;i<4;i++) {
         if (verify_quad && bob->drawx==xy[i][0] && bob->drawy==xy[i][1]) {
@@ -59,6 +59,8 @@ int main(void)
     assert(input(BTN_RIGHT)==1);up();
     assert(input(BTN_FIRE)==1);up();
     assert(game_adventure_quantity(0)==1);
+    assert(!game_adventure_open());
+    assert(input(BTN_FIRE2)==1);up(); /* Reopen after confirmed DESTROY. */
     assert(input(BTN_DOWN)==1);up();
     assert(input(BTN_FIRE)==1);up();
     draw();

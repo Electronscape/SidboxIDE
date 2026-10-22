@@ -118,7 +118,24 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
     ga_completed_nodes = completed_nodes;
 }
 
-static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply, 4 confirm destroy */
+static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply, 4 destroy, 5 GIVE */
+static const game_adventure_exchange_t *ga_exchanges;
+static uint16_t ga_exchange_count;
+static uint8_t ga_exchange_progress[GAME_ADVENTURE_EXCHANGE_SLOTS];
+static uint16_t ga_exchange_node;
+static uint8_t ga_exchange_choice;
+void game_adventure_exchange_rules(const game_adventure_exchange_t *rules, uint16_t count)
+{ ga_exchanges=rules; ga_exchange_count=rules ? (count > GAME_ADVENTURE_EXCHANGE_SLOTS ? GAME_ADVENTURE_EXCHANGE_SLOTS : count) : 0u; }
+void game_adventure_save_exchanges(uint8_t out[GAME_ADVENTURE_EXCHANGE_SLOTS])
+{ if (out) memcpy(out,ga_exchange_progress,sizeof(ga_exchange_progress)); }
+void game_adventure_restore_exchanges(const uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS])
+{ if (saved) memcpy(ga_exchange_progress,saved,sizeof(ga_exchange_progress)); }
+static const game_adventure_exchange_t *ga_exchange_rule(uint16_t node,uint8_t choice)
+{
+    const uint16_t index=(uint16_t)(node*3u+choice);
+    if (index>=ga_exchange_count || !ga_exchanges || !ga_exchanges[index].count) return 0;
+    return &ga_exchanges[index];
+}
 /* Optional query owned by the current world; only tests whether FIRE2 has
  * an active trigger under the player, without activating that trigger. */
 static game_adventure_fire2_action_t ga_fire2_action;
@@ -129,6 +146,11 @@ static uint8_t ga_inventory_selection; /* Index into owned/visible items. */
 static uint8_t ga_inventory_action; /* Among available USE, DROP, DESTROY (LEFT/RIGHT). */
 static game_adventure_drop_t ga_drops[GAME_ADVENTURE_MAX_DROPS];
 static uint8_t ga_confirm_yes;  /* Confirmation defaults to NO. */
+/* Blink only the [ ] selection brackets, not the action labels.  At 50 fps,
+   each half-period is ten frames (200 ms), and drawing does not change time. */
+static uint8_t ga_bracket_frames;
+static void ga_bracket_restart(void) { ga_bracket_frames=0u; }
+static uint8_t ga_brackets_visible(void) { return ga_bracket_frames < 10u; }
 /* Ten normal 24px rows plus header/footer fit inside a 480x320 LCD. */
 #define GA_INVENTORY_ROWS 10u
 static void ga_inventory_clamp_offset(void)
@@ -306,11 +328,14 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     memset(ga_completed_npcs, 0, sizeof(ga_completed_npcs));
     ga_choice_flags = 0;
     ga_completed_nodes = 0;
+    game_adventure_exchange_rules(0,0);
+    memset(ga_exchange_progress,0,sizeof(ga_exchange_progress));
     for (uint16_t i = 0; i < ga_item_count; ++i)
         ga_counts[i] = ga_items[i].initial > ga_items[i].capacity
             ? ga_items[i].capacity : ga_items[i].initial;
     ga_state = ga_choice = ga_inventory_offset = 0;
     ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
+    ga_bracket_restart();
     memset(ga_drops, 0, sizeof(ga_drops));
     ga_dialog_padding = 8u;
     /* Keep ga_prev_buttons across world travel: if FIRE2 opened a door and
@@ -382,6 +407,65 @@ static void ga_next_node(int16_t node)
     ga_choice = 0; ga_typed = 0; ga_ticks = 0;
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
+}
+static void ga_success_choice(const game_adventure_choice_t *c, uint16_t node, uint8_t choice)
+{
+    if (c->give >= 0) game_adventure_add((uint16_t)c->give,1u);
+    if (c->action >= 0 && ga_action) ga_action((uint16_t)c->action,ga_user);
+    const uint16_t flag_index=(uint16_t)(node*3u+choice);
+    const uint8_t flags=ga_choice_flags ? ga_choice_flags[flag_index] : 0u;
+    if (flags & 1u) ga_mark_choice_used(node,choice);
+    if ((flags & 2u) && ga_active_npc < ga_npc_count && ga_active_npc < 256u)
+        ga_completed_npcs[ga_active_npc]=1u;
+    ga_reply_then_next(c,c->next);
+}
+/* GIVE is a separate inventory mode. A wrong offer is never taken. Incremental
+ * deliveries consume one copy only when allowed, and remember their slot by
+ * dialogue choice. ALL-at-once commits all requirements atomically. */
+static void ga_offer_item(uint16_t offered)
+{
+    const game_adventure_exchange_t *r=ga_exchange_rule(ga_exchange_node,ga_exchange_choice);
+    if (!r || ga_exchange_node >= ga_node_count || offered >= ga_item_count) { ga_state=1u; return; }
+    const uint16_t key=(uint16_t)(ga_exchange_node*3u+ga_exchange_choice);
+    const game_adventure_choice_t *choice=&ga_nodes[ga_exchange_node].choices[ga_exchange_choice];
+    int slot=-1;
+    for (uint8_t i=0;i<r->count && i<4u;++i)
+        if (r->items[i]>=0 && (uint16_t)r->items[i]==offered) {slot=i;break;}
+    /* Re-offering an already delivered part is not another valid delivery. */
+    if (slot<0 || (r->incremental && (ga_exchange_progress[key] & (1u<<slot)))) {
+        if (r->wrong_action>=0 && ga_action) ga_action((uint16_t)r->wrong_action,ga_user);
+        if (r->wrong_next>=0) ga_next_node(r->wrong_next);
+        else ga_next_node((int16_t)ga_exchange_node);
+        return;
+    }
+    if (r->any) {
+        if (r->consume && !game_adventure_remove(offered,1u)) {ga_state=1u;return;}
+        ga_success_choice(choice,ga_exchange_node,ga_exchange_choice);
+        return;
+    }
+    if (r->incremental) {
+        if (r->consume && !game_adventure_remove(offered,1u)) {ga_state=1u;return;}
+        ga_exchange_progress[key] |= (uint8_t)(1u<<slot);
+        const uint8_t mask=(uint8_t)((1u<<r->count)-1u);
+        if ((ga_exchange_progress[key] & mask)==mask) {
+            ga_success_choice(choice,ga_exchange_node,ga_exchange_choice);
+        } else {
+            if (r->partial_action>=0 && ga_action) ga_action((uint16_t)r->partial_action,ga_user);
+            ga_next_node(r->partial_next>=0 ? r->partial_next : (int16_t)ga_exchange_node);
+        }
+        return;
+    }
+    /* All-at-once: every requested item must be present before anything is taken. */
+    for (uint8_t i=0;i<r->count;++i)
+        if (r->items[i]<0 || (uint16_t)r->items[i]>=ga_item_count ||
+            !ga_counts[r->items[i]]) {
+            if (r->partial_action>=0 && ga_action) ga_action((uint16_t)r->partial_action,ga_user);
+            ga_next_node(r->partial_next>=0 ? r->partial_next : (int16_t)ga_exchange_node);
+            return;
+        }
+    if (r->consume) for (uint8_t i=0;i<r->count;++i)
+        game_adventure_remove((uint16_t)r->items[i],1u);
+    ga_success_choice(choice,ga_exchange_node,ga_exchange_choice);
 }
 /* The dropped item is a physical collectible, not a silent delete.
    It starts unarmed while the player is touching it, so it cannot instantly
@@ -461,7 +545,25 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     const uint8_t right = (buttons & BTN_RIGHT) && !(ga_prev_buttons & BTN_RIGHT);
     ga_prev_buttons = buttons;
     ga_tick_animations(frames);
+    ga_bracket_frames=(uint8_t)(((uint32_t)ga_bracket_frames + frames) % 20u);
     ga_player_x = player_x; ga_player_y = player_y;
+    if (ga_state == 5u) {
+        const uint16_t visible=ga_visible_count();
+        if (ga_inventory_selection>=visible)
+            ga_inventory_selection=visible ? (uint8_t)(visible-1u) : 0u;
+        if (press) { ga_state=1u; ga_bracket_restart(); return 1; }
+        if (down && (uint16_t)ga_inventory_selection+1u<visible) ++ga_inventory_selection;
+        if (up && ga_inventory_selection) --ga_inventory_selection;
+        if (up || down) {
+            ga_bracket_restart();
+            if (ga_inventory_selection < ga_inventory_offset) ga_inventory_offset=ga_inventory_selection;
+            if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
+                ga_inventory_offset=(uint8_t)(ga_inventory_selection-GA_INVENTORY_ROWS+1u);
+            ga_inventory_clamp_offset();
+        }
+        if (fire && visible) ga_offer_item(ga_visible_item_id(ga_inventory_selection));
+        return 1;
+    }
     if (ga_state == 0) {
         ga_collect_drops(player_x, player_y, player_w, player_h);
         if (!press) return 0;
@@ -486,20 +588,27 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         if (ga_fire2_action && ga_fire2_action(player_x, player_y, player_w, player_h))
             return 0;
         ga_state = 2; ga_inventory_offset = ga_inventory_selection = ga_inventory_action = 0;
+        ga_bracket_restart();
         return 1;
     }
     if (ga_state == 4) {
         /* DESTROY confirmation: FIRE2 always cancels/closes a modal;
            FIRE1 confirms, and NO is the default. */
-        if (left || right || up || down) ga_confirm_yes ^= 1u;
-        if (press) { ga_state = 2u; ga_confirm_yes = 0u; return 1; }
+        if (left || right || up || down) {
+            ga_confirm_yes ^= 1u;
+            ga_bracket_restart();
+        }
+        if (press) { ga_state = 2u; ga_confirm_yes = 0u; ga_bracket_restart(); return 1; }
         if (fire) {
             const uint16_t id = ga_visible_item_id(ga_inventory_selection);
-            if (ga_confirm_yes && id < ga_item_count && ga_discardable(id))
-                game_adventure_remove(id, 1u);
+            /* Only confirmed destruction closes the backpack.  NO (or a
+               rejected action) returns to the inventory without losing it. */
+            const uint8_t removed=(uint8_t)(ga_confirm_yes && id < ga_item_count &&
+                ga_discardable(id) && game_adventure_remove(id, 1u));
             ga_confirm_yes = 0u;
-            ga_state = 2u;
+            ga_state = removed ? 0u : 2u;
             ga_inventory_clamp_offset();
+            ga_bracket_restart();
         }
         return 1;
     }
@@ -510,9 +619,11 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         if (press) { ga_state = 0; return 0; }
         if (down && (uint16_t)ga_inventory_selection+1u < visible) {
             ++ga_inventory_selection; ga_inventory_action=0u;
+            ga_bracket_restart();
         }
         if (up && ga_inventory_selection) {
             --ga_inventory_selection; ga_inventory_action=0u;
+            ga_bracket_restart();
         }
         /* USE is first when configured; protected quest items can still be USED.
          * DROP/DESTROY appear only if discard was explicitly enabled. */
@@ -521,8 +632,10 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         const uint8_t can_discard=ga_discardable(action_id);
         const uint8_t count=(uint8_t)(can_use + (can_discard ? 2u : 0u));
         if (count && ga_inventory_action >= count) ga_inventory_action=(uint8_t)(count-1u);
-        if (left && ga_inventory_action) --ga_inventory_action;
-        if (right && count && ga_inventory_action + 1u < count) ++ga_inventory_action;
+        if (left && ga_inventory_action) { --ga_inventory_action; ga_bracket_restart(); }
+        if (right && count && ga_inventory_action + 1u < count) {
+            ++ga_inventory_action; ga_bracket_restart();
+        }
         if (up || down) {
             if (ga_inventory_selection < ga_inventory_offset)
                 ga_inventory_offset = ga_inventory_selection;
@@ -537,13 +650,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
                 const uint8_t has_use=ga_can_use(id);
                 const uint8_t has_discard=ga_discardable(id);
                 if (has_use && ga_inventory_action==0u) {
-                    (void)ga_use_item(id);
+                    if (ga_use_item(id)) ga_state=0u;
                 } else if (has_discard) {
                     const uint8_t discard_action=(uint8_t)(ga_inventory_action - (has_use ? 1u : 0u));
                     if (discard_action==0u) {
-                        (void)ga_drop_item(id, player_x, player_y, player_w, player_h);
+                        if (ga_drop_item(id, player_x, player_y, player_w, player_h)) ga_state=0u;
                     } else if (discard_action==1u) {
                         ga_confirm_yes=0u; ga_state=4u;
+                        ga_bracket_restart();
                     }
                 }
                 if (ga_inventory_selection >= ga_visible_count() && ga_inventory_selection)
@@ -586,6 +700,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         if (!count) { ga_state = 0; return 0; }
         if (!ga_choice_visible(ga_node,ga_choice)) { ga_next_node((int16_t)ga_node); return 1; }
         const game_adventure_choice_t *c = &n->choices[ga_choice];
+        if (ga_exchange_rule(ga_node,ga_choice)) {
+            ga_exchange_node=ga_node;
+            ga_exchange_choice=ga_choice;
+            ga_inventory_offset=ga_inventory_selection=ga_inventory_action=0u;
+            ga_bracket_restart();
+            ga_state=5u;
+            return 1;
+        }
         if (!ga_allowed(c)) {
             /* No item: branch directly to the alternate NPC dialogue.
                Never display the successful answer's player-speech bubble,
@@ -595,15 +717,7 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
             return 1;
         }
         if (c->take >= 0 && !game_adventure_remove((uint16_t)c->take, 1)) return 1;
-        if (c->give >= 0) game_adventure_add((uint16_t)c->give, 1);
-        if (c->action >= 0 && ga_action) ga_action((uint16_t)c->action, ga_user);
-        /* Only mark successful actions. Missing requirements / items never consume the flag. */
-        const uint16_t flag_index = (uint16_t)(ga_node * 3u + ga_choice);
-        const uint8_t flags = ga_choice_flags ? ga_choice_flags[flag_index] : 0u;
-        if (flags & 1u) ga_mark_choice_used(ga_node,ga_choice);
-        if ((flags & 2u) && ga_active_npc < ga_npc_count && ga_active_npc < 256u)
-            ga_completed_npcs[ga_active_npc] = 1u;
-        ga_reply_then_next(c, c->next);
+        ga_success_choice(c,ga_node,ga_choice);
     }
     return 1;
 }
@@ -668,7 +782,7 @@ static void ga_text(int x, int y, const char *text)
 static void ga_fixed_action(int x, int y, const char *word, uint8_t selected)
 {
     ga_text(x,y,word);
-    if (selected) {
+    if (selected && ga_brackets_visible()) {
         ga_text(x-8,y,"[");
         ga_text(x+(int)strlen(word)*8,y,"]");
     }
@@ -758,7 +872,11 @@ static int ga_dialogue_required_height(const game_adventure_node_t *node,
     const uint8_t body_rows=ga_answer_rows(node->text,body_columns,64);
     const int choice_height=ga_two_choice_height(node,answer_columns,row);
     /* Name at y+9, body at y+32, answers after body+9, bottom 12px. */
-    return 24 + 2*ga_dialog_inset() + (int)body_rows*row + (choice_height?9+choice_height:0);
+    /* The earlier extra eight pixels sat between the text and the choices
+       (or between the name and body when no choices existed).  Reclaim that
+       space instead of removing the protective border/text inset. */
+    return (choice_height ? 24 : 16) + 2*ga_dialog_inset() +
+        (int)body_rows*row + (choice_height ? 1+choice_height : 0);
 }
 
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
@@ -794,7 +912,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y)
 {
     if (!ga_state) return;
-    if (ga_state == 2 || ga_state == 4) {
+    if (ga_state == 2 || ga_state == 4 || ga_state == 5) {
         const uint16_t visible = ga_visible_count();
         if (ga_inventory_selection >= visible)
             ga_inventory_selection = visible ? (uint8_t)(visible - 1u) : 0u;
@@ -806,7 +924,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         const int inset=(int)ga_frame_border()+8;
         const int row_step=inset>24 ? 20 : 22;
         const int box_w=464;
-        const int box_h=2*inset+40+(int)shown*row_step;
+        /* Move the footer up by 8px and trim 8px from the frame, keeping
+           the existing clear inset under the footer and every item row. */
+        const int box_h=2*inset+32+(int)shown*row_step;
         const int box_x=8, box_y=(320-box_h)/2;
         const int first_y=box_y+inset+20;
         const int selector_x=box_x+inset;
@@ -817,7 +937,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         const int drop_x=destroy_x-72;
         const int use_x=drop_x-56;
         ga_frame((int16_t)box_x,(int16_t)box_y,(uint16_t)box_w,(uint16_t)box_h);
-        ga_text(selector_x,box_y+inset,"Inventory:");
+        ga_text(selector_x,box_y+inset,ga_state==5u ? "Give an item:" : "Inventory:");
         if (ga_inventory_selection < ga_inventory_offset)
             ga_inventory_offset=ga_inventory_selection;
         if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
@@ -828,7 +948,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             if (id>=ga_item_count) break;
             char line[36];
             const char *name=ga_items[id].name?ga_items[id].name:"Item";
-            const int name_area_end=(ga_can_use(id)||ga_discardable(id))
+            const int name_area_end=(ga_state==5u || ga_can_use(id)||ga_discardable(id))
                 ? use_x-8 : box_x+box_w-inset;
             const int name_room=(name_area_end-label_x)/8-3; /* reserve x + quantity */
             const uint8_t limit=(uint8_t)(name_room<1?1:name_room>18?18:name_room);
@@ -843,20 +963,24 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             if (display==ga_inventory_selection) ga_text(selector_x,y,">");
             ga_draw_item_icon(id,icon_x,y);
             ga_text(label_x,y,line);
-            const uint8_t current=(uint8_t)(display==ga_inventory_selection);
-            const uint8_t use=ga_can_use(id);
-            if (use) ga_fixed_action(use_x,y,"USE",current && ga_inventory_action==0u);
-            if (ga_discardable(id)) {
-                ga_fixed_action(drop_x,y,"DROP",current && ga_inventory_action==(use?1u:0u));
-                ga_fixed_action(destroy_x,y,"DESTROY",current && ga_inventory_action==(use?2u:1u));
+            const uint8_t current=(uint8_t)((ga_state==2u || ga_state==5u) && display==ga_inventory_selection);
+            if (ga_state==5u) {
+                ga_fixed_action(destroy_x,y,"GIVE",current);
+            } else {
+                const uint8_t use=ga_can_use(id);
+                if (use) ga_fixed_action(use_x,y,"USE",current && ga_inventory_action==0u);
+                if (ga_discardable(id)) {
+                    ga_fixed_action(drop_x,y,"DROP",current && ga_inventory_action==(use?1u:0u));
+                    ga_fixed_action(destroy_x,y,"DESTROY",current && ga_inventory_action==(use?2u:1u));
+                }
             }
         }
         /* Footer is aligned eight pixels in from the INNER skin edge. */
-        ga_text(box_x+box_w-inset-(int)(12u*8u),box_y+box_h-inset-16,"FIRE2: CLOSE");
+        ga_text(box_x+box_w-inset-(int)(12u*8u),box_y+box_h-inset-16,ga_state==5u ? "FIRE2: BACK" : "FIRE2: CLOSE");
         if (ga_state == 4) {
             /* The confirmation box has the same eight pixels of CLEAR inner
                padding as the inventory, even with a 32px decorative border. */
-            const int cx=72, cy=84, cw=336, ch=152;
+            const int cx=72, cy=84, cw=336, ch=144;
             const int ci=(int)ga_frame_border()+8;
             ga_frame(cx,cy,cw,ch);
             ga_text(cx+ci,cy+ci,"Destroy ONE item?");
@@ -899,13 +1023,16 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     /* Right gutter is reserved for MORE arrows only; item ownership stays hidden. */
     const uint8_t answer_columns=(uint8_t)(((inner_width-34)/8)>GA_COLS?GA_COLS:(inner_width-34)/8);
     const int needed=ga_dialogue_required_height(node,body_columns,answer_columns,row);
-    const int bh=needed>(int)ga_dialog_h? (needed>320?320:needed) : ga_dialog_h;
+    /* The configured height was previously carrying an extra 8px of
+       bottom slack.  Keep enough room for the actual text/choices. */
+    const int preferred_h=(int)ga_dialog_h-8;
+    const int bh=needed>preferred_h? (needed>320?320:needed) : preferred_h;
     const int by=ga_dialog_y+bh>320?320-bh:ga_dialog_y;
     const int bottom=by+bh-pad;
-    const int text_y=by+pad+24;
     const int choice_height=ga_two_choice_height(node,answer_columns,row);
+    const int text_y=by+pad+(choice_height ? 24 : 16);
     const uint8_t desired_body=ga_answer_rows(node->text,body_columns,64);
-    int body_budget=bottom-text_y-(choice_height?9+choice_height:0);
+    int body_budget=bottom-text_y-(choice_height?1+choice_height:0);
     int body_rows=body_budget>0?body_budget/row:0;
     if (body_rows>desired_body) body_rows=desired_body;
     if (body_rows<0) body_rows=0;
@@ -914,7 +1041,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     ga_text(bx+pad,by+pad,node->speaker ? node->speaker : "");
     ga_wrapped(node->text,ga_typed,bx+pad,text_y,body_columns,(uint8_t)body_rows);
     if (!choice_height) return;
-    const int answers_y=text_y+body_rows*row+9;
+    const int answers_y=text_y+body_rows*row+1;
 
     uint8_t indexes[3], count=0;
     for (uint8_t i=0;i<3;++i)

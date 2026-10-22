@@ -49,6 +49,7 @@
 #include <QSize>
 #include <QStringList>
 #include <QVector>
+#include <QVariant>
 #include <functional>
 #include <array>
 #include <algorithm>
@@ -286,8 +287,11 @@ AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
     if(lengths.size()==1)m.answerHeight=lengths[0]*m.lineHeight;
     for(int i=0;i+1<lengths.size();++i)
         m.answerHeight=std::max(m.answerHeight,(lengths[i]+lengths[i+1])*m.lineHeight+4);
-    m.needed=24+2*padding+m.rows*m.lineHeight+(m.answerHeight?9+m.answerHeight:0);
-    m.height=std::min(320,std::max(minimumHeight,m.needed));
+    // Match the generated runtime: reclaim eight unused vertical pixels
+    // before the choices, or between the speaker and body with no choices.
+    m.needed=(m.answerHeight?24:16)+2*padding+m.rows*m.lineHeight+
+        (m.answerHeight?1+m.answerHeight:0);
+    m.height=std::min(320,std::max(minimumHeight-8,m.needed));
     m.overflow=m.needed>320;
     return m;
 }
@@ -533,6 +537,146 @@ QJsonArray defaultChoices()
     }
     return choices;
 }
+QString dialogueTitle(const QJsonObject &node, int index);
+/* Stage 5.34: A single GIVE exchange editor instead of a graphical circuit
+ * canvas. Up to four item predicates can be grouped as AND or OR. The
+ * incremental AND option remembers hand-ins across world visits. */
+QJsonObject editExchange(QWidget *parent, QJsonObject saved,
+                         const QJsonArray &items, const QJsonArray &nodes,
+                         const QVector<GameAdventureAsset> &objects)
+{
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QObject::tr("NPC Item Exchange / Quest Requirements"));
+    dlg.setMinimumSize(700,500);
+    QVBoxLayout *layout=new QVBoxLayout(&dlg);
+    QCheckBox *enabled=new QCheckBox(QObject::tr("Selecting this answer opens inventory in GIVE mode"),&dlg);
+    enabled->setChecked(saved.value("enabled").toBool(false));
+    layout->addWidget(enabled);
+    QLabel *help=new QLabel(QObject::tr(
+        "All owned items are shown without hints. Wrong offers are never consumed. "
+        "ALL = all required items; ANY = one matching item. In incremental ALL, "
+        "the NPC remembers delivered parts when you revisit or change worlds."),&dlg);
+    help->setWordWrap(true); layout->addWidget(help);
+    QFormLayout *modeForm=new QFormLayout;
+    QComboBox *logic=new QComboBox(&dlg);
+    logic->addItem(QObject::tr("ALL of these items (AND)"),QStringLiteral("all"));
+    logic->addItem(QObject::tr("ANY one item (OR)"),QStringLiteral("any"));
+    logic->setCurrentIndex(qMax(0,logic->findData(saved.value("logic").toString("all"))));
+    modeForm->addRow(QObject::tr("Requirements"),logic);
+    QCheckBox *incremental=new QCheckBox(QObject::tr("Accept one item per visit; remember previous hand-ins"),&dlg);
+    incremental->setChecked(saved.value("incremental").toBool(false));
+    modeForm->addRow(QObject::tr("Hand-ins"),incremental);
+    QCheckBox *consume=new QCheckBox(QObject::tr("Consume accepted items"),&dlg);
+    consume->setChecked(saved.value("consume").toBool(true));
+    modeForm->addRow(QObject::tr("Inventory"),consume);
+    layout->addLayout(modeForm);
+    auto *requirements=new QGroupBox(QObject::tr("Requested items (maximum four)"),&dlg);
+    auto *reqForm=new QFormLayout(requirements);
+    QComboBox *itemSlots[4];
+    const QJsonArray req=saved.value("items").toArray();
+    for(int i=0;i<4;++i) {
+        itemSlots[i]=new QComboBox(requirements);
+        itemSlots[i]->addItem(QObject::tr("None"),-1);
+        for(int k=0;k<items.size();++k)
+            itemSlots[i]->addItem(QStringLiteral("%1: %2").arg(k)
+                .arg(items[k].toObject().value("name").toString()),k);
+        itemSlots[i]->setCurrentIndex(qMax(0,itemSlots[i]->findData(i<req.size()?req[i].toInt(-1):-1)));
+        reqForm->addRow(QObject::tr("Item %1").arg(i+1),itemSlots[i]);
+    }
+    layout->addWidget(requirements);
+    auto *response=new QGroupBox(QObject::tr("Responses & optional actions"),&dlg);
+    auto *responseForm=new QFormLayout(response);
+    auto makeNode=[&](const char *key) {
+        QComboBox *combo=new QComboBox(response);
+        combo->addItem(QObject::tr("Keep current NPC dialogue"),-1);
+        for (int i=0;i<nodes.size();++i)
+            combo->addItem(dialogueTitle(nodes[i].toObject(),i),i);
+        combo->setCurrentIndex(qMax(0,combo->findData(saved.value(QLatin1String(key)).toInt(-1))));
+        return combo;
+    };
+    // DECLARATION of dialogueTitle appears below this editor in older versions;
+    // use its local presentation so item exchanges remain independent.
+    QComboBox *wrong=makeNode("wrongNext");
+    QComboBox *partial=makeNode("partialNext");
+    responseForm->addRow(QObject::tr("Wrong item → dialogue"),wrong);
+    responseForm->addRow(QObject::tr("Still missing items → dialogue"),partial);
+    struct Event { QComboBox *kind; QSpinBox *number; QComboBox *mode; } events[2];
+    const char *numberKeys[]={"wrongAction","partialAction"};
+    const char *targetKeys[]={"wrongTargetObjectId","partialTargetObjectId"};
+    const char *modeKeys[]={"wrongTargetAction","partialTargetAction"};
+    for(int i=0;i<2;++i) {
+        QWidget *line=new QWidget(response); QHBoxLayout *row=new QHBoxLayout(line);
+        row->setContentsMargins(0,0,0,0);
+        events[i].kind=new QComboBox(line);
+        events[i].kind->addItem(QObject::tr("No action"),QStringLiteral("none"));
+        for(const auto &obj:objects)
+            events[i].kind->addItem(QObject::tr("Game Object: %1").arg(obj.name),obj.id);
+        events[i].kind->addItem(QObject::tr("Custom event ID"),QStringLiteral("custom"));
+        const QString obj=saved.value(QLatin1String(targetKeys[i])).toString();
+        const int action=saved.value(QLatin1String(numberKeys[i])).toInt(-1);
+        const QString prev=!obj.isEmpty()?obj:action>=0?QStringLiteral("custom"):QStringLiteral("none");
+        events[i].kind->setCurrentIndex(qMax(0,events[i].kind->findData(prev)));
+        events[i].number=new QSpinBox(line); events[i].number->setRange(0,29999);
+        events[i].number->setValue(qMax(0,action));
+        events[i].mode=new QComboBox(line);
+        events[i].mode->addItem(QObject::tr("Activate"),QStringLiteral("enable"));
+        events[i].mode->addItem(QObject::tr("Deactivate"),QStringLiteral("disable"));
+        events[i].mode->addItem(QObject::tr("Toggle"),QStringLiteral("toggle"));
+        events[i].mode->setCurrentIndex(qMax(0,events[i].mode->findData(
+            saved.value(QLatin1String(modeKeys[i])).toString("enable"))));
+        row->addWidget(events[i].kind,1);row->addWidget(events[i].number);row->addWidget(events[i].mode);
+        auto refresh=[=](){
+            const QString kind=events[i].kind->currentData().toString();
+            events[i].number->setVisible(kind==QStringLiteral("custom"));
+            events[i].mode->setVisible(kind!=QStringLiteral("none") && kind!=QStringLiteral("custom"));
+        };
+        QObject::connect(events[i].kind,QOverload<int>::of(&QComboBox::currentIndexChanged),line,[refresh](int){refresh();});
+        refresh();
+        responseForm->addRow(i==0?QObject::tr("Wrong item action"):QObject::tr("Partial hand-in action"),line);
+    }
+    layout->addWidget(response);
+    QLabel *success=new QLabel(QObject::tr("Success uses this dialogue choice's existing Next, "
+        "event, item reward and NPC-completed settings."),&dlg);
+    success->setWordWrap(true);layout->addWidget(success);
+    QDialogButtonBox *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dlg);
+    layout->addWidget(buttons);
+    QObject::connect(buttons,&QDialogButtonBox::accepted,&dlg,[&](){
+        QJsonArray chosen;
+        QSet<int> unique;
+        for(QComboBox *slot:itemSlots){
+            const int index=slot->currentData().toInt();
+            if(index>=0 && !unique.contains(index)){ unique.insert(index);chosen.append(index); }
+        }
+        if(enabled->isChecked() && chosen.isEmpty()){
+            QMessageBox::warning(&dlg,QObject::tr("GIVE Requirements"),
+                QObject::tr("Select at least one item before enabling an exchange."));
+            return;
+        }
+        dlg.accept();
+    });
+    QObject::connect(buttons,&QDialogButtonBox::rejected,&dlg,&QDialog::reject);
+    if(dlg.exec()!=QDialog::Accepted) return saved;
+    QJsonArray chosen;QSet<int> unique;
+    for(QComboBox *slot:itemSlots){
+        const int index=slot->currentData().toInt();
+        if(index>=0 && !unique.contains(index)){ unique.insert(index);chosen.append(index); }
+    }
+    saved.insert("items",chosen);
+    saved.insert("enabled",enabled->isChecked());
+    saved.insert("logic",logic->currentData().toString());
+    saved.insert("incremental",incremental->isChecked());
+    saved.insert("consume",consume->isChecked());
+    saved.insert("wrongNext",wrong->currentData().toInt());
+    saved.insert("partialNext",partial->currentData().toInt());
+    for(int i=0;i<2;++i){
+        const QString kind=events[i].kind->currentData().toString();
+        saved.insert(QLatin1String(numberKeys[i]),kind==QStringLiteral("custom") ? events[i].number->value() : -1);
+        saved.insert(QLatin1String(targetKeys[i]),kind==QStringLiteral("custom")||kind==QStringLiteral("none") ? QString() : kind);
+        saved.insert(QLatin1String(modeKeys[i]),events[i].mode->currentData().toString());
+    }
+    return saved;
+}
+
 QString dialogueTitle(const QJsonObject &node, int index)
 {
     return QStringLiteral("%1: %2 — %3").arg(index)
@@ -566,6 +710,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
         QCheckBox *once, *completeNpc;
+        QPushButton *exchange;
     } fields[3];
     for (int i=0;i<3;++i) {
         const QJsonObject choice = choices[i].toObject();
@@ -618,7 +763,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
             cb->setToolTip(label); return cb;
         };
         fields[i].requires = combo(QObject::tr("Requires this item"), choice.value("requires").toInt(-1));
-        fields[i].give = combo(QObject::tr("Give this item"), choice.value("give").toInt(-1));
+        fields[i].give = combo(QObject::tr("NPC gives this item TO player"), choice.value("give").toInt(-1));
         fields[i].take = combo(QObject::tr("Take this item"), choice.value("take").toInt(-1));
         grid->addWidget(new QLabel(QObject::tr("Answer"),box),0,0);
         grid->addWidget(fields[i].label,0,1,1,3);
@@ -633,7 +778,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(fields[i].missingNext,3,1,1,3);
         grid->addWidget(new QLabel(QObject::tr("Needs"),box),4,0);
         grid->addWidget(fields[i].requires,4,1);
-        grid->addWidget(new QLabel(QObject::tr("Give"),box),4,2);
+        grid->addWidget(new QLabel(QObject::tr("NPC gives"),box),4,2);
         grid->addWidget(fields[i].give,4,3);
         grid->addWidget(new QLabel(QObject::tr("Take"),box),5,0);
         grid->addWidget(fields[i].take,5,1);
@@ -650,6 +795,26 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].completeNpc = new QCheckBox(QObject::tr("Mark this NPC as helped (use its completed dialogue next visit)"),box);
         fields[i].completeNpc->setChecked(choice.value("completeNpc").toBool(false));
         grid->addWidget(fields[i].completeNpc,8,0,1,4);
+        fields[i].exchange=new QPushButton(box);
+        const QJsonObject savedExchange=choice.value("exchange").toObject();
+        fields[i].exchange->setProperty("exchange",QVariant::fromValue(savedExchange));
+        auto updateExchangeLabel=[&,i]() {
+            const QJsonObject value=fields[i].exchange->property("exchange").toJsonObject();
+            const int n=value.value("items").toArray().size();
+            fields[i].exchange->setText(value.value("enabled").toBool(false)
+                ? QObject::tr("Edit GIVE exchange (%1 / %2 items)")
+                      .arg(value.value("logic").toString()=="any"?QObject::tr("OR"):QObject::tr("AND"))
+                      .arg(n)
+                : QObject::tr("Configure GIVE inventory / AND-OR requirements..."));
+        };
+        updateExchangeLabel();
+        QObject::connect(fields[i].exchange,&QPushButton::clicked,box,[&,i,updateExchangeLabel](){
+            const QJsonObject before=fields[i].exchange->property("exchange").toJsonObject();
+            fields[i].exchange->setProperty("exchange",QVariant::fromValue(editExchange(&dialog,before,items,nodes,objects)));
+            updateExchangeLabel();
+        });
+        grid->addWidget(new QLabel(QObject::tr("NPC item exchange"),box),9,0);
+        grid->addWidget(fields[i].exchange,9,1,1,3);
         detail->addWidget(box);
     }
 
@@ -723,6 +888,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         c.insert("targetObjectId",(eventSelection!=QStringLiteral("none") && eventSelection!=QStringLiteral("custom"))
             ?eventSelection:QString());
         c.insert("targetAction",fields[i].mode->currentData().toString());
+        c.insert("exchange",fields[i].exchange->property("exchange").toJsonObject());
         updated.append(c);
     }
     node.insert("choices",updated); nodes[row] = node;
@@ -794,6 +960,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 for (const char *key : {"requires", "take"}) {
                     const int index=choice.value(QLatin1String(key)).toInt(-1);
                     if (index>=0 && index<inventory.size())
+                        protectedItemNames.insert(inventory[index].toObject().value("name").toString().trimmed().toCaseFolded());
+                }
+                for(const QJsonValue &offered : choice.value("exchange").toObject().value("items").toArray()) {
+                    const int index=offered.toInt(-1);
+                    if(index>=0 && index<inventory.size())
                         protectedItemNames.insert(inventory[index].toObject().value("name").toString().trimmed().toCaseFolded());
                 }
             }
@@ -1005,6 +1176,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                         if(idx==row) c.insert(QLatin1String(field),-1);
                         else if(idx>row) c.insert(QLatin1String(field),idx-1);
                     }
+                    QJsonObject exchange=c.value("exchange").toObject();
+                    const QJsonArray requested=exchange.value("items").toArray();
+                    QJsonArray remapped;
+                    for(const QJsonValue &entry:requested) {
+                        const int index=entry.toInt(-1);
+                        if(index==row || index<0)continue;
+                        remapped.append(index>row?index-1:index);
+                    }
+                    exchange.insert("items",remapped);
+                    if(remapped.isEmpty())exchange.insert("enabled",false);
+                    if(!exchange.isEmpty())c.insert("exchange",exchange);
                     choices[j]=c;
                 }
                 node.insert("choices",choices);nodes[i]=node;
@@ -1565,6 +1747,16 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 QJsonObject choice=cs[c].toObject();const int next=choice.value("next").toInt(-1);
                 if(next==row)choice.insert("next",-1);
                 else if(next>row)choice.insert("next",next-1);
+                // Branch IDs are numerical and must follow dialogue deletion.
+                const auto remapNode=[&](int id){return id==row ? -1 : id>row ? id-1 : id;};
+                for(const char *key : {"missingNext"})
+                    choice.insert(QLatin1String(key),remapNode(choice.value(QLatin1String(key)).toInt(-1)));
+                QJsonObject exchange=choice.value("exchange").toObject();
+                if(!exchange.isEmpty()) {
+                    exchange.insert("wrongNext",remapNode(exchange.value("wrongNext").toInt(-1)));
+                    exchange.insert("partialNext",remapNode(exchange.value("partialNext").toInt(-1)));
+                    choice.insert("exchange",exchange);
+                }
                 cs[c]=choice;
             }
             node.insert("choices",cs);nodes[i]=node;
@@ -1874,8 +2066,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const int pad=previewInset();
         painter.drawText(x+pad,actualY+pad+12,node.value("speaker").toString().left(36));
         const auto body=adventurePreviewRows(node.value("text").toString().left(512),metrics.bodyColumns);
-        const int bodyY=actualY+pad+24;
-        const int choiceSpace=metrics.answerHeight?metrics.answerHeight+9:0;
+        const int bodyY=actualY+pad+(metrics.answerHeight?24:16);
+        const int choiceSpace=metrics.answerHeight?metrics.answerHeight+1:0;
         const int bottom=actualY+h-pad;
         const int visibleRows=std::clamp((bottom-bodyY-choiceSpace)/metrics.lineHeight,0,int(body.size()));
         for(int i=0;i<visibleRows;++i)
@@ -1890,7 +2082,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         for(int i=0;i<labels.size();++i)
             if(labels[i].first==previewAnswer->currentData().toInt())selectedPos=i;
         const int first=(labels.size()>2 && selectedPos>1)?selectedPos-1:0;
-        int cy=bodyY+visibleRows*metrics.lineHeight+9;
+        int cy=bodyY+visibleRows*metrics.lineHeight+1;
         for(int i=first;i<std::min(first+2,int(labels.size()));++i) {
             const auto rows=adventurePreviewRows(labels[i].second,metrics.answerColumns,32);
             const int lines=std::min(int(rows.size()),std::max(0,(bottom-cy)/metrics.lineHeight));
@@ -1906,10 +2098,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         painter.setClipping(false);
         // Dashed line makes the interior text budget visible independently of the frame.
         painter.setPen(QPen(metrics.overflow?QColor(255,83,83):QColor(96,190,128),1,Qt::DashLine));
-        painter.drawRect(QRect(x+pad,actualY+pad+22,w-2*pad,h-2*pad-24));
+        painter.drawRect(QRect(x+pad,actualY+pad+(metrics.answerHeight?22:14),
+            w-2*pad,h-2*pad-(metrics.answerHeight?24:16)));
         painter.end();
         screenPreview->setPixmap(QPixmap::fromImage(screen));
-        QString status=QObject::tr("Needed: %1 px  |  Box: %2 px (min %3)  |  %4 NPC text rows; at most 2 choices")
+        QString status=QObject::tr("Needed: %1 px  |  Box: %2 px (configured %3)  |  %4 NPC text rows; at most 2 choices")
             .arg(metrics.needed).arg(h).arg(dialogH->value()).arg(metrics.rows);
         if (actualY!=dialogY->value())
             status+=QObject::tr("  |  Auto-raised to Y=%1 to stay on screen").arg(actualY);

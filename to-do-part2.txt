@@ -1,3 +1,57 @@
+
+inventory, the bottom paddin is still too high, interestinly the text has moved up tho
+---------------------------------------
+[Talker]
+[content]
+[options]
+                            [close]
+this part here is 16px paddin its meant to be only 8px
+---------------------------------------
+
+also using, dropping, destroying, i have to hit FIRE1, when i do that, the player jumps xD
+the player shouldnt jump after the inventory closes. should only jump when the inventory has closed and IS closed already
+
+
+
+
+
+
+
+[done]
+am wonderin, for npcs askin for something, would it be easy to have the inventory window to show that has the inventory an instead of
+use  drop   destroy
+it uses "give",
+THIS might be fun so that if we give the wrong item to the NPC they can give other responses.
+
+that would mean that the adventure editor dialogs
+under if given the wrong item
+it does another dialog, and perhaps an action.
+
+
+
+eventually i might need NPCs to need more than one item to combin.
+SO might need some sort of Logic gate system. am not sure how to go about this tho
+like AND / OR options
+
+
+
+i think we need a "use" option in the inventory;
+that would mean that the adventure editor will need to have rules of something, so it should connect to the players stats... depending on what the item is, the row should be able to select something like "player health, ...." or what ever is in the initial stats.
+also the [  ]'s should surround the text, right now it moves the text
+[DROP]
+DROP
+
+it should be
+[DROP]
+ DROP
+
+same with the destroy item an the confirm box!!
+
+otherwise OMG THIS IS CRAZY FUN!!!
+
+
+
+
 i think the inventory popups first over the accessing the goto world.
 
 pressing fire2
@@ -7,6 +61,24 @@ DOOR:
 Inventory
 it could be a collision box issue?
 
+
+the padding should also work on the dialog boxes too, again with the 0px or 8px
+
+Inventory box:
+just use the term Inventory:
+dont need the Up/Down Select, FIRE:Discard,
+dont need "* protected",
+KEEP FIRE2: close (but right align in the box);
+dont need the "*" next to the protected inventory
+Normal disposable inventory should have a the option to bin it EG
+Burning Crystal x1   DROP   DESTROY
+and using the left and right will select them  [DROP] DESTROY
+also the > selector is too far to the left.
+push the content to the right by 8px (or at least cover the padding)
+the inventory box should always have the 8px padding anyway ;)
+Have the inventory box expand in height as the item count increases, ONLY if there are more than 10 items, should we be able to scroll through them
+
+THIS is a big list im really sorry!!!
 
 
 

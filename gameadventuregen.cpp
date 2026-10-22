@@ -91,6 +91,14 @@ QSet<QString> requiredItemNames(const QJsonObject &payload, const QString &root)
                     const QString name = items[index].toObject().value(QStringLiteral("name")).toString().trimmed().toCaseFolded();
                     if (!name.isEmpty()) required.insert(name);
                 }
+                for (const QJsonValue &offered : choice.value(QStringLiteral("exchange")).toObject()
+                                                     .value(QStringLiteral("items")).toArray()) {
+                    const int index=offered.toInt(-1);
+                    if (index>=0 && index<items.size()) {
+                        const QString name=items[index].toObject().value(QStringLiteral("name")).toString().trimmed().toCaseFolded();
+                        if (!name.isEmpty()) required.insert(name);
+                    }
+                }
             }
         }
     };
@@ -209,6 +217,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     }
     fields.insert(QStringLiteral("ITEM_USE_ROWS"),useRows.trimmed());
 
+    QStringList exchangeRows;
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
     if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1,-1}}},\n";
@@ -252,6 +261,56 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                     << clampInt(choice,"give",-1,itemList.size()-1,-1) << ","
                     << clampInt(choice,"take",-1,itemList.size()-1,-1) << ","
                     << action << "},\n";
+            const QJsonObject exchange=choice.value("exchange").toObject();
+            const QJsonArray exchangeItems=exchange.value("items").toArray();
+            QStringList requested;
+            QSet<int> seen;
+            for (const QJsonValue &v : exchangeItems) {
+                const int idx=v.toInt(-1);
+                if (idx<0 || idx>=itemList.size() || seen.contains(idx)) continue;
+                seen.insert(idx);
+                requested.append(QString::number(idx));
+                if (requested.size()>=4) break;
+            }
+            const bool active=exchange.value("enabled").toBool(false) && !requested.isEmpty();
+            const int wanted=active ? requested.size() : 0;
+            while (requested.size()<4) requested << QStringLiteral("-1");
+            // Alternate reactions can have independent custom event IDs.
+            auto exAction = [&](const char *key, const char *targetKey,
+                                const char *modeKey, int offset) {
+                int event=clampInt(exchange,key,-1,29999,-1);
+                const QString objectId=exchange.value(QLatin1String(targetKey)).toString();
+                if (objectId.isEmpty()) return event;
+                const auto target=std::find_if(worldObjects.begin(),worldObjects.end(),
+                    [&](const auto &item){ return item.id==objectId; });
+                if (target==worldObjects.end()) {
+                    if(error) *error=QStringLiteral("GIVE exchange references a deleted Game Object in dialogue %1.").arg(nodeIndex);
+                    return -2;
+                }
+                event=31000 + nodeIndex*6 + i*2 + offset;
+                const QString mode=exchange.value(QLatin1String(modeKey)).toString("enable");
+                const int modeNumber=mode=="disable"?0:mode=="toggle"?2:1;
+                QByteArray linked;
+                if (!GameHelperTemplates::renderFields(linkedActionRule,
+                    {{QStringLiteral("EVENT_ID"),QString::number(event)},
+                     {QStringLiteral("WORLD_SLOT"),QString::number(target->worldSlot)},
+                     {QStringLiteral("ACTION_MODE"),QString::number(modeNumber)}},
+                    ruleCPath+QStringLiteral(" / EXCHANGE_ACTION"),&linked,error))
+                    return -2;
+                linkedActions.append(QString::fromUtf8(linked));
+                return event;
+            };
+            const int wrongAction=active ? exAction("wrongAction","wrongTargetObjectId","wrongTargetAction",0) : -1;
+            const int partialAction=active ? exAction("partialAction","partialTargetObjectId","partialTargetAction",1) : -1;
+            if(wrongAction==-2 || partialAction==-2)return false;
+            exchangeRows << QStringLiteral("    {{%1},%2,%3,%4,%5,%6u,%7u,%8u,%9u},")
+                .arg(requested.join(','))
+                .arg(active ? clampInt(exchange,"wrongNext",-1,nodes.size()-1,-1) : -1)
+                .arg(active ? clampInt(exchange,"partialNext",-1,nodes.size()-1,-1) : -1)
+                .arg(active ? wrongAction : -1).arg(active ? partialAction : -1)
+                .arg(wanted).arg(exchange.value("logic").toString()=="any"?1:0)
+                .arg(exchange.value("incremental").toBool(false)?1:0)
+                .arg(exchange.value("consume").toBool(true)?1:0);
             const int flag = (choice.value("once").toBool(false) ? 1 : 0)
                            | (choice.value("completeNpc").toBool(false) ? 2 : 0);
             storyFlags.append(QString::number(flag));
@@ -260,6 +319,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         ++nodeIndex;
     }
     fields.insert(QStringLiteral("NODE_ROWS"), nodeRows.trimmed());
+    fields.insert(QStringLiteral("EXCHANGE_ROWS"),exchangeRows.isEmpty()
+        ? QStringLiteral("    {{-1,-1,-1,-1},-1,-1,-1,-1,0u,0u,0u,0u},")
+        : exchangeRows.join(QLatin1Char('\n')));
     fields.insert(QStringLiteral("CHOICE_FLAGS"),
         storyFlags.isEmpty() ? QStringLiteral("0") : storyFlags.join(QLatin1Char(',')));
     fields.insert(QStringLiteral("LINKED_ACTION_CASES"), linkedActions.join(QString()));
@@ -384,7 +446,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     QByteArray renderedC, renderedH;
     const QStringList requiredC = {
         QStringLiteral("ITEM_ROWS"),QStringLiteral("ITEM_STYLE_ROWS"),
-        QStringLiteral("ITEM_USE_ROWS"),
+        QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),

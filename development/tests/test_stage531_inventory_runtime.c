@@ -36,7 +36,7 @@ int main(void) {
     game_adventure_start(items,2,0,0,0,0,atlas,32,32,8,skin,1,0,0);
     game_adventure_item_styles(styles,2);
     assert(input(BTN_FIRE2));release();
-    draw(); assert(frame_h==116);
+    draw(); assert(frame_h==108);
     assert(strstr(words,"Inventory:"));
     assert(strstr(words,"FIRE2: CLOSE"));
     assert(strstr(words,"|DROP|") && strstr(words,"|[|"));
@@ -45,7 +45,9 @@ int main(void) {
     /* DROP is selected by default, drops 1 copy into the world. */
     key(BTN_FIRE);
     assert(game_adventure_quantity(0)==1);
-    draw();assert(frame_h==116);
+    assert(!game_adventure_open());
+    key(BTN_FIRE2); /* successful DROP now closes: reopen for inspection */
+    draw();assert(frame_h==108);
     assert(strstr(words,"Red thing x1"));
     /* A dropped item should still render on the world after inventory closes. */
     key(BTN_FIRE2);
@@ -66,8 +68,11 @@ int main(void) {
     key(BTN_FIRE);assert(game_adventure_quantity(0)==2);
     key(BTN_FIRE);key(BTN_RIGHT);key(BTN_FIRE);
     assert(game_adventure_quantity(0)==1);
+    assert(!game_adventure_open());
     /* Dropped progress roundtrip: world snapshot keeps an item between visits. */
-    key(BTN_LEFT);key(BTN_FIRE);assert(game_adventure_quantity(0)==0);
+    key(BTN_FIRE2); /* Reopen after successful DESTROY; DROP is default. */
+    key(BTN_FIRE);assert(game_adventure_quantity(0)==0);
+    assert(!game_adventure_open());
     game_adventure_drop_t saved[GAME_ADVENTURE_MAX_DROPS];
     game_adventure_save_drops(saved);
     assert(saved[0].active);
@@ -90,11 +95,11 @@ int main(void) {
     }
     game_adventure_start(many,11,0,0,0,0,atlas,32,32,8,skin,1,0,0);
     key(BTN_FIRE2);
-    draw(); assert(frame_h==292);
+    draw(); assert(frame_h==284);
     assert(strstr(words,"Thing 00 x1"));
     assert(!strstr(words,"Thing 10 x1"));
     for (unsigned i=0;i<10;++i) key(BTN_DOWN);
-    draw(); assert(frame_h==292);
+    draw(); assert(frame_h==284);
     assert(strstr(words,"Thing 10 x1"));
     assert(!strstr(words,"Thing 00 x1"));
     puts("Stage 5.31: inventory autoheight/scroll, actions, drop/pickup, protection, destroy, save/restore PASS");

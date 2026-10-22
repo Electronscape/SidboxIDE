@@ -49,6 +49,23 @@ typedef struct {
     int16_t action;    /* User action ID, -1 = none */
 } game_adventure_choice_t;
 
+/* Optional per-answer inventory exchange. The four item indices are local
+ * to this world's Adventure items. ALL requires all listed items; ANY only
+ * one. Incremental ALL stores delivered items between conversations/worlds.
+ * Wrong/partial events run without marking the NPC helped. */
+#define GAME_ADVENTURE_EXCHANGE_SLOTS 768u /* 256 nodes x three choices */
+#define GAME_ADVENTURE_EXCHANGE_ITEMS 4u
+typedef struct {
+    int16_t items[4]; /* -1 = unused */
+    int16_t wrong_next, partial_next;
+    int16_t wrong_action, partial_action;
+    uint8_t count, any, incremental, consume;
+} game_adventure_exchange_t;
+void game_adventure_exchange_rules(const game_adventure_exchange_t *rules,
+                                   uint16_t count);
+void game_adventure_save_exchanges(uint8_t out[GAME_ADVENTURE_EXCHANGE_SLOTS]);
+void game_adventure_restore_exchanges(const uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS]);
+
 typedef struct {
     const char *speaker;
     const char *text;

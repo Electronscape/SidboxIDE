@@ -28,5 +28,5 @@ assert 'DIALOG_PADDING' in gen and 'DIALOG_PADDING' in rule
 assert 'requiredItemNames(payload, projectRoot)' in gen
 assert 'game_adventure_item_styles(item_styles, GAME_ADVENTURE_STORY_ITEM_COUNT)' in rule
 assert 'game_adventure_text_padding(@IDE{DIALOG_PADDING}u)' in rule
-assert 'Build: 5.32.221026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.33.221026' in (root/'splashscreenwidget.cpp').read_text()
 print('Stage 5.30: editor+generator/runtime integration invariants PASS')

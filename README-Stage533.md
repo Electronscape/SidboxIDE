@@ -1,0 +1,1 @@
+Stage 5.33 (22 October 2026): Close inventory on successful USE / DROP / confirmed DESTROY, 10-frame flashing selection brackets with fixed labels, and trim 8 pixels of spare vertical box spacing (inventory and NPC dialogue). Editor preview matches runtime. No changes to user-owned main.c. See STAGE5.33-INVENTORY-CLOSE-BLINK-BOX-TRIM.md.

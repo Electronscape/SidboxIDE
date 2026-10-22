@@ -1,0 +1,1 @@
+Stage 5.34 (22 October 2026): NPC item exchange / GIVE inventory with correct, wrong and partial dialogue responses; optional outcome actions; up to four required items combined with AND/OR logic and incremental hand-ins; per-world partial-progress snapshots. Stage 5.33 features preserved. No changes to user-owned main.c. See STAGE5.34-NPC-GIVE-QUEST-LOGIC.md.
