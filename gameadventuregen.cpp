@@ -270,6 +270,27 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     }
     fields.insert(QStringLiteral("SKIN_CELLS"),skinCells.join(QLatin1Char(',')));
     fields.insert(QStringLiteral("SKIN_FLIPS"),skinFlips.join(QLatin1Char(',')));
+    // Every world must configure the ONE shared adventure renderer after its
+    // own story is activated. The common adventureruntime.c must not bake in
+    // the appearance and dialogue position of whichever .sbgm updated last.
+    // These are design DATA; gameadventure.rulec owns all generated C calls.
+    const struct { const char *field; const char *json; int lo, hi, fallback; } appearance[] = {
+        {"SKIN_TILE_SIZE", "tileSize", 4, 32, 8},
+        {"FRAMES_PER_CHAR", "framesPerChar", 1, 30, 2},
+        {"TEXT_COLOUR_INDEX", "textColourIndex", 0, 255, 15},
+        {"TEXT_OUTLINE_ENABLED", "textOutline", 0, 1, 0},
+        {"OUTLINE_COLOUR_INDEX", "outlineColourIndex", 0, 255, 1},
+        {"DIALOG_X", "dialogX", 0, 479, 20},
+        {"DIALOG_Y", "dialogY", 0, 319, 148},
+        {"DIALOG_WIDTH", "dialogWidth", 128, 480, 440},
+        {"DIALOG_HEIGHT", "dialogHeight", 96, 320, 96}
+    };
+    for (const auto &value : appearance) {
+        const int number = QByteArray(value.json) == "textOutline"
+            ? (payload.value(QStringLiteral("textOutline")).toBool(false) ? 1 : 0)
+            : clampInt(payload, value.json, value.lo, value.hi, value.fallback);
+        fields.insert(QLatin1String(value.field), QString::number(number));
+    }
     const QString skinId=payload.value("skinAtlasId").toString();
     const auto atlas=std::find_if(atlases.begin(),atlases.end(),
         [&](const auto &s) { return s.id == skinId; });
@@ -293,7 +314,11 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),
         QStringLiteral("SKIN_FLIPS"),QStringLiteral("LINKED_ACTION_CASES"),
-        QStringLiteral("SKIN_PATH")};
+        QStringLiteral("SKIN_PATH"),QStringLiteral("SKIN_TILE_SIZE"),
+        QStringLiteral("FRAMES_PER_CHAR"),QStringLiteral("TEXT_COLOUR_INDEX"),
+        QStringLiteral("TEXT_OUTLINE_ENABLED"),QStringLiteral("OUTLINE_COLOUR_INDEX"),
+        QStringLiteral("DIALOG_X"),QStringLiteral("DIALOG_Y"),
+        QStringLiteral("DIALOG_WIDTH"),QStringLiteral("DIALOG_HEIGHT")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),
                                    QStringLiteral("NPC_COUNT")};
     // Both rules are read, checked and fully expanded before writing either file.

@@ -74,11 +74,21 @@ void gameadventure_setup(void)
     game_adventure_start(items, GAME_ADVENTURE_STORY_ITEM_COUNT,
         nodes, GAME_ADVENTURE_STORY_NODE_COUNT,
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
-        skin, width, height, GAME_ADVENTURE_DEFAULT_TILE_SIZE, skin_cells,
-        GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR, on_event, 0);
+        skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
+        @IDE{FRAMES_PER_CHAR}u, on_event, 0);
+    /* Restore this world's appearance every time the world manager loads it.
+     * The shared Adventure renderer must never inherit forest's settings
+     * from world1 (or vice versa). Applied AFTER game_adventure_start(),
+     * because that call resets common renderer state.
+     * This includes the inventory window, not just NPC conversations. */
+    game_adventure_text_style(@IDE{TEXT_COLOUR_INDEX}u,
+        @IDE{TEXT_OUTLINE_ENABLED}u, @IDE{OUTLINE_COLOUR_INDEX}u);
+    game_adventure_dialogue_box(@IDE{DIALOG_X}, @IDE{DIALOG_Y},
+        @IDE{DIALOG_WIDTH}u, @IDE{DIALOG_HEIGHT}u);
     game_adventure_story_flags(story_choice_flags, npc_completed_nodes);
     game_adventure_skin_flips(skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);
+    (void)npc_animation_frames; /* Valid even when no NPC animations exist. */
 }
 
 /* Exported inventories use stable item names; world-local list positions
@@ -86,14 +96,16 @@ void gameadventure_setup(void)
 void gameadventure_store_inventory(gameworlds_inventory_put_t sink, void *user)
 {
     if (!sink) return;
-    for (uint16_t i = 0; i < GAME_ADVENTURE_STORY_ITEM_COUNT; ++i)
+    const uint16_t count = GAME_ADVENTURE_STORY_ITEM_COUNT;
+    for (uint16_t i = 0; i < count; ++i)
         if (items[i].name && *items[i].name)
             sink(items[i].name, game_adventure_quantity(i), user);
 }
 void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)
 {
     if (!lookup) return;
-    for (uint16_t i = 0; i < GAME_ADVENTURE_STORY_ITEM_COUNT; ++i) {
+    const uint16_t count = GAME_ADVENTURE_STORY_ITEM_COUNT;
+    for (uint16_t i = 0; i < count; ++i) {
         if (!items[i].name || !*items[i].name) continue;
         const uint32_t incoming = lookup(items[i].name, user);
         if (incoming == UINT32_MAX) continue;

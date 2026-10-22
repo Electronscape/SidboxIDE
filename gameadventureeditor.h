@@ -19,5 +19,6 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &atlases,
                        const QVector<GameAdventureAsset> &worldObjects,
                        const QVector<GameAdventureAsset> &collectables,
-                       const QVector<QRgb> &foregroundPalette);
+                       const QVector<QRgb> &foregroundPalette,
+                       const QString &currentDesignFilePath);
 #endif

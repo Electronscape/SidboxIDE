@@ -6981,9 +6981,18 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
 // Ordinary placed Sprite resources become NPCs by stable resource ID.
 bool SidboxGameDesigner::hasAdventure() const
 {
+    // Adventure presentation belongs to each WORLD, even when there are no
+    // NPCs or dialogue nodes yet. A saved dialogue atlas or positioned box
+    // must generate world-specific setup instead of the no-story stub;
+    // otherwise the shared Adventure runtime keeps another world's style.
     return !m_adventure.value(QStringLiteral("items")).toArray().isEmpty()
         || !m_adventure.value(QStringLiteral("nodes")).toArray().isEmpty()
-        || !m_adventure.value(QStringLiteral("npcs")).toArray().isEmpty();
+        || !m_adventure.value(QStringLiteral("npcs")).toArray().isEmpty()
+        || !m_adventure.value(QStringLiteral("skinAtlasId")).toString().isEmpty()
+        || m_adventure.contains(QStringLiteral("dialogX"))
+        || m_adventure.contains(QStringLiteral("dialogY"))
+        || m_adventure.contains(QStringLiteral("dialogWidth"))
+        || m_adventure.contains(QStringLiteral("dialogHeight"));
 }
 void SidboxGameDesigner::openAdventureEditor()
 {
@@ -7022,7 +7031,7 @@ void SidboxGameDesigner::openAdventureEditor()
         }
     }
     if (!editGameAdventure(this, &edited, sprites, atlases, worldObjects, collectables,
-                           activePalette(QStringLiteral("foreground")))) return;
+                           activePalette(QStringLiteral("foreground")), m_filePath)) return;
     m_adventure = edited;
     setDirty(true);
 }

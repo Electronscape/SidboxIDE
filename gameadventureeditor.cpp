@@ -36,6 +36,11 @@
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <QFileInfo>
+#include <QFile>
+#include <QDir>
+#include <QDirIterator>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSlider>
@@ -49,6 +54,129 @@
 #include <algorithm>
 
 namespace {
+// Stage 5.4h: copies only one group of saved Adventure settings from another
+// .sbgm. The source is read-only; NPCs, dialogue nodes and inventory never move.
+struct AdventureSavedWorld {
+    QString path;
+    QString displayName;
+    QJsonObject adventure;
+    QJsonArray resources;
+};
+
+bool chooseAdventureSavedWorld(QWidget *parent, const QString &currentDesignPath,
+                               const QString &section, const QStringList &requiredKeys,
+                               AdventureSavedWorld *chosen)
+{
+    if (!chosen || currentDesignPath.isEmpty()) return false;
+    const QDir project(QFileInfo(currentDesignPath).absolutePath());
+    const QString current = QDir::cleanPath(QFileInfo(currentDesignPath).absoluteFilePath());
+    QVector<AdventureSavedWorld> sources;
+    QDirIterator it(project.absolutePath(), QStringList{QStringLiteral("*.sbgm")},
+                    QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext() && sources.size() < 256) {
+        const QString path = QDir::cleanPath(QFileInfo(it.next()).absoluteFilePath());
+        if (path == current) continue;
+        const QString relative = QDir::fromNativeSeparators(project.relativeFilePath(path));
+        if (relative.startsWith(QStringLiteral(".codergirl/"))
+            || relative.startsWith(QStringLiteral("worlds/"))
+            || relative.startsWith(QStringLiteral("buildv1/"))) continue;
+        QFile input(path);
+        if (!input.open(QIODevice::ReadOnly) || input.size() > 16 * 1024 * 1024) continue;
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(input.readAll(), &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject()) continue;
+        const QJsonObject design = document.object();
+        if (design.value(QStringLiteral("format")).toString()
+                != QStringLiteral("SIDBOX-GAME-DESIGN")
+            || design.value(QStringLiteral("version")).toInt() != 1) continue;
+        const QJsonObject adventure = design.value(QStringLiteral("adventure")).toObject();
+        bool hasSettings = false;
+        for (const QString &key : requiredKeys)
+            if (adventure.contains(key)) { hasSettings = true; break; }
+        if (!hasSettings) continue;
+        sources.append({path, relative, adventure,
+                        design.value(QStringLiteral("resources")).toArray()});
+    }
+    if (sources.isEmpty()) {
+        QMessageBox::information(parent, QObject::tr("Copy Adventure Settings"),
+            QObject::tr("No other saved world has %1 settings to copy. "
+                        "Save the source world first, then try again.").arg(section));
+        return false;
+    }
+    std::sort(sources.begin(), sources.end(), [](const auto &a, const auto &b) {
+        return a.displayName.compare(b.displayName, Qt::CaseInsensitive) < 0;
+    });
+    QStringList names;
+    for (const auto &source : sources) names.append(source.displayName);
+    bool ok = false;
+    const QString name = QInputDialog::getItem(parent,
+        QObject::tr("Copy %1 from Another World").arg(section),
+        QObject::tr("Choose a SAVED .sbgm world (only %1 settings will be copied):")
+            .arg(section), names, 0, false, &ok);
+    if (!ok || name.isEmpty()) return false;
+    const int index = names.indexOf(name);
+    if (index < 0) return false;
+    *chosen = sources[index];
+    return true;
+}
+
+// Resource IDs are local to each world. Never paste one world's atlas ID into
+// another world: match the resolved PPB path, then a unique resource name.
+int matchAdventureAtlas(QWidget *parent, const AdventureSavedWorld &source,
+                        const QVector<GameAdventureAsset> &atlases)
+{
+    const QString sourceId = source.adventure.value(QStringLiteral("skinAtlasId")).toString();
+    if (sourceId.isEmpty()) return 0; // The source explicitly uses a simple box.
+    QJsonObject sourceAsset;
+    for (const QJsonValue &value : source.resources) {
+        const QJsonObject asset = value.toObject();
+        if (asset.value(QStringLiteral("id")).toString() == sourceId
+            && asset.value(QStringLiteral("kind")).toString() == QStringLiteral("tileatlas")) {
+            sourceAsset = asset;
+            break;
+        }
+    }
+    if (sourceAsset.isEmpty()) {
+        QMessageBox::warning(parent, QObject::tr("Copy Dialogue Box Atlas"),
+            QObject::tr("The source world no longer has the tile atlas used by its dialogue box."));
+        return -1;
+    }
+    const QString resourcePath = sourceAsset.value(QStringLiteral("path")).toString();
+    const QFileInfo sourceFile(QDir(QFileInfo(source.path).absolutePath()).filePath(resourcePath));
+    const QString wanted = QDir::cleanPath(sourceFile.canonicalFilePath().isEmpty()
+        ? sourceFile.absoluteFilePath() : sourceFile.canonicalFilePath());
+    for (int i=0; i<atlases.size(); ++i) {
+        const QFileInfo targetFile(atlases[i].path);
+        const QString target = QDir::cleanPath(targetFile.canonicalFilePath().isEmpty()
+            ? targetFile.absoluteFilePath() : targetFile.canonicalFilePath());
+        if (!resourcePath.isEmpty() && wanted == target) return i + 1;
+    }
+    const QString name = sourceAsset.value(QStringLiteral("name")).toString();
+    int match = -1;
+    for (int i=0; i<atlases.size(); ++i) {
+        if (!name.isEmpty() && atlases[i].name.compare(name, Qt::CaseInsensitive) == 0) {
+            if (match >= 0) { match = -1; break; } // Ambiguous; don't guess.
+            match = i;
+        }
+    }
+    if (match >= 0) {
+        const auto answer = QMessageBox::question(parent,
+            QObject::tr("Confirm Dialogue Tile Atlas"),
+            QObject::tr("The source and destination both have a Tile Atlas named '%1', "
+                        "but their PPB file paths differ. Copy the settings using the "
+                        "destination atlas '%2'? Verify the cell layout is identical.")
+                .arg(name, atlases[match].path),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        return answer == QMessageBox::Yes ? match + 1 : -1;
+    }
+    QMessageBox::information(parent, QObject::tr("Copy Dialogue Box Atlas"),
+        QObject::tr("The source uses the atlas '%1', which isn't present in this world's "
+                    "Tile Atlas resources. Import the same atlas into this world first, "
+                    "then copy its settings again. No settings have been changed.")
+            .arg(name.isEmpty() ? resourcePath : name));
+    return -1;
+}
+
 // Qt 6.9+ replacement for QImage::mirrored(horizontal, vertical).
 // Keep the original X/Y flip semantics for dialogue atlas cells.
 QImage adventureFlippedCell(const QImage &image, bool flipX, bool flipY)
@@ -507,7 +635,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &atlases,
                        const QVector<GameAdventureAsset> &worldObjects,
                        const QVector<GameAdventureAsset> &collectables,
-                       const QVector<QRgb> &foregroundPalette)
+                       const QVector<QRgb> &foregroundPalette,
+                       const QString &currentDesignFilePath)
 {
     if (!payload) return false;
     const QJsonObject old = *payload;
@@ -1331,6 +1460,37 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(skinAtlas,QOverload<int>::of(&QComboBox::currentIndexChanged),&dialog,[&](int){updatePreview();});
     QObject::connect(tileSize,QOverload<int>::of(&QSpinBox::valueChanged),&dialog,[&](int){updatePreview();});
     updatePreview();
+    auto *copyAtlas = new QPushButton(QObject::tr("Copy from Another World..."), skinPage);
+    copyAtlas->setToolTip(QObject::tr("Copy only the saved dialogue frame atlas, nine cells, flips, "
+                                        "colours, outline and typing speed. NPCs and dialogue are not copied."));
+    skinLayout->insertWidget(0, copyAtlas, 0, Qt::AlignLeft);
+    QObject::connect(copyAtlas, &QPushButton::clicked, &dialog, [&] {
+        AdventureSavedWorld source;
+        if (!chooseAdventureSavedWorld(&dialog, currentDesignFilePath,
+                QObject::tr("Dialogue Box Atlas"),
+                {QStringLiteral("skinAtlasId"), QStringLiteral("skinIndices"),
+                 QStringLiteral("tileSize")}, &source)) return;
+        const int atlasIndex = matchAdventureAtlas(&dialog, source, atlases);
+        if (atlasIndex < 0) return; // Don't partially copy an unavailable atlas.
+        const QJsonObject &settings = source.adventure;
+        skinAtlas->setCurrentIndex(atlasIndex);
+        tileSize->setValue(std::clamp(settings.value(QStringLiteral("tileSize")).toInt(8),4,32));
+        speed->setValue(std::clamp(settings.value(QStringLiteral("framesPerChar")).toInt(2),1,30));
+        chosenText = std::clamp(settings.value(QStringLiteral("textColourIndex")).toInt(15),0,255);
+        chosenOutline = std::clamp(settings.value(QStringLiteral("outlineColourIndex")).toInt(1),0,255);
+        decorateColour(textColour, chosenText);
+        decorateColour(outlineColour, chosenOutline);
+        outline->setChecked(settings.value(QStringLiteral("textOutline")).toBool(false));
+        const QJsonArray cells = settings.value(QStringLiteral("skinIndices")).toArray();
+        const QJsonArray flips = settings.value(QStringLiteral("skinFlips")).toArray();
+        for (int i=0; i<9; ++i) {
+            chosenTiles[i] = std::clamp(i<cells.size() ? cells[i].toInt(i) : i,0,65535);
+            const int flags = i<flips.size() ? flips[i].toInt() : 0;
+            tileFlipX[i]->setChecked((flags & 4) != 0);
+            tileFlipY[i]->setChecked((flags & 8) != 0);
+        }
+        updatePreview();
+    });
     tabs->addTab(skinPage,QObject::tr("Dialogue Box Atlas"));
 
     // Stage 4.33: Height is a minimum, not a fixed text budget. The preview
@@ -1374,6 +1534,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     positionFields->addWidget(new QLabel(QObject::tr("Minimum height"),positionPage),2,2);
     positionFields->addWidget(dialogH,2,3);
     positionLayout->addLayout(positionFields);
+    auto *copyPosition = new QPushButton(QObject::tr("Copy from Another World..."),positionPage);
+    copyPosition->setToolTip(QObject::tr("Copy only dialogue window X/Y, width and minimum height. "
+                                         "No dialogue text, choices or NPC settings are copied."));
+    positionLayout->insertWidget(1,copyPosition,0,Qt::AlignLeft);
     auto *screenPreview=new AdventureDialoguePositionPreview(positionPage);
     screenPreview->setAlignment(Qt::AlignCenter);
     auto *previewRow=new QHBoxLayout;
@@ -1478,6 +1642,20 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             status+=QObject::tr("  |  WARNING: Too much text for 320px. Widen the box or shorten the conversation.");
         positionStatus->setText(status);
     };
+    QObject::connect(copyPosition, &QPushButton::clicked, &dialog, [&] {
+        AdventureSavedWorld source;
+        if (!chooseAdventureSavedWorld(&dialog,currentDesignFilePath,
+                QObject::tr("Dialogue Position"),
+                {QStringLiteral("dialogX"), QStringLiteral("dialogY"),
+                 QStringLiteral("dialogWidth"), QStringLiteral("dialogHeight")}, &source)) return;
+        const QJsonObject &settings = source.adventure;
+        placement->setCurrentIndex(0); // Copied values are a custom placement.
+        dialogX->setValue(std::clamp(settings.value(QStringLiteral("dialogX")).toInt(20),0,479));
+        dialogY->setValue(std::clamp(settings.value(QStringLiteral("dialogY")).toInt(148),0,319));
+        dialogW->setValue(std::clamp(settings.value(QStringLiteral("dialogWidth")).toInt(440),128,480));
+        dialogH->setValue(std::clamp(settings.value(QStringLiteral("dialogHeight")).toInt(96),96,320));
+        refreshPosition();
+    });
     QObject::connect(placement,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int choice){
         if(!choice)return;
         const int w=dialogW->value();
