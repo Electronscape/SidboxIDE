@@ -163,6 +163,10 @@ uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
 uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,
                                     int32_t x, int32_t y, uint16_t w, uint16_t h,
                                     uint8_t pressed);
+/* Read-only FIRE2 trigger overlap. Does not modify trigger edge-latches or
+   activate objects, so normal game_world_objects_trigger() still owns firing. */
+uint8_t game_world_objects_fire2_action(const game_world_object_t *objects,
+    uint16_t count, int32_t x, int32_t y, uint16_t w, uint16_t h);
 /* Hazard contact is resolved separately AFTER ordinary platform collisions.
    Uses swept player vs moving object rectangles and an invulnerability timer. */
 void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,

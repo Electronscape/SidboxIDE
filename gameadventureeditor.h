@@ -20,5 +20,6 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &worldObjects,
                        const QVector<GameAdventureAsset> &collectables,
                        const QVector<QRgb> &foregroundPalette,
-                       const QString &currentDesignFilePath);
+                       const QString &currentDesignFilePath,
+                       const QString &focusNpcSpriteId = QString());
 #endif

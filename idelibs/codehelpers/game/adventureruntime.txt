@@ -10,7 +10,8 @@ on_pickup(); the default advanced-platformer starter shows this callback.
 
 Dialogue: press FIRE2 near a configured NPC. UP/DOWN selects an answer;
 FIRE2 confirms. The selected answer briefly types over the player sprite.
-Away from NPC, UP+FIRE2 opens inventory. FIRE2 closes it.
+Away from NPC and outside a FIRE2 door/switch, FIRE2 opens inventory.
+FIRE2 closes it. Nearby FIRE2 triggers take priority over the inventory.
 
 Text is rendered with SIDBOX's gfx_drawtext font; ASCII is recommended.
 Dialogue skin: supply a 3x3 arrangement of atlas cells using the Adventure

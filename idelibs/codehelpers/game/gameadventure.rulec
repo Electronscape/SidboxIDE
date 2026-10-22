@@ -6,6 +6,11 @@
 #include "gameadventure.h"
 #include "gameadventureruntime.h"
 #include "../gameassets/gameassets.h"
+#include <string.h>
+#include <stdint.h>
+@IDE_IF{HAS_SHARED_PLAYER}
+#include "gameplayer.h"
+@IDE_END
 @IDE_IF{HAS_WORLD_OBJECTS}
 #include "gameworlditems.h"
 @IDE_END
@@ -13,6 +18,46 @@
 static const game_adventure_item_t items[] = {
 @IDE{ITEM_ROWS}
 };
+
+static const game_adventure_item_style_t item_styles[] = {
+@IDE{ITEM_STYLE_ROWS}
+};
+static const game_adventure_item_use_t item_uses[] = {
+@IDE{ITEM_USE_ROWS}
+};
+/* This callback can be overridden in user game code if a custom main.c owns
+   the live health/score variables rather than reading gameworlds_state().
+   Returning 0 means using the item failed and it must not be consumed. */
+__attribute__((weak)) uint8_t gameadventure_apply_item_stat(const char *stat, int32_t delta)
+{
+    gameworlds_player_state_t *state=gameworlds_state();
+    if (!stat || !state) return 0;
+    uint32_t *built_in=0;
+    if (strcmp(stat,"health")==0) built_in=&state->health;
+    else if (strcmp(stat,"lives")==0) built_in=&state->lives;
+    else if (strcmp(stat,"score")==0) built_in=&state->score;
+    if (built_in) {
+        int64_t updated=(int64_t)*built_in+(int64_t)delta;
+        if (updated<0) updated=0;
+        if (updated>UINT32_MAX) updated=UINT32_MAX;
+        *built_in=(uint32_t)updated;
+        return 1;
+    }
+@IDE_IF{HAS_SHARED_PLAYER}
+    int32_t previous=0;
+    if (!gameplayer_stat_get(stat,&previous)) return 0;
+    int64_t updated=(int64_t)previous+(int64_t)delta;
+    if (updated<INT32_MIN) updated=INT32_MIN;
+    if (updated>INT32_MAX) updated=INT32_MAX;
+    return gameplayer_stat_set(stat,(int32_t)updated);
+@IDE_END
+    return 0;
+}
+static uint8_t on_use_item(const char *stat, int32_t delta, void *user)
+{
+    (void)user;
+    return gameadventure_apply_item_stat(stat,delta);
+}
 
 static const game_adventure_node_t nodes[] = {
 @IDE{NODE_ROWS}
@@ -68,15 +113,19 @@ static void on_event(uint16_t event_id, void *user)
 static uint8_t cg_saved_story_choices[GAME_ADVENTURE_USED_CHOICE_BYTES];
 static uint8_t cg_saved_story_npcs[GAME_ADVENTURE_COMPLETED_NPC_BYTES];
 static uint8_t cg_saved_story_valid;
+static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
 void gameadventure_save_progress(void)
 {
     game_adventure_save_progress(cg_saved_story_choices, cg_saved_story_npcs);
+    game_adventure_save_drops(cg_saved_world_drops);
     cg_saved_story_valid = 1;
 }
 void gameadventure_restore_progress(void)
 {
-    if (cg_saved_story_valid)
+    if (cg_saved_story_valid) {
         game_adventure_restore_progress(cg_saved_story_choices, cg_saved_story_npcs);
+        game_adventure_restore_drops(cg_saved_world_drops);
+    }
 }
 
 void gameadventure_setup(void)
@@ -91,6 +140,10 @@ void gameadventure_setup(void)
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
         skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
         @IDE{FRAMES_PER_CHAR}u, on_event, 0);
+@IDE_IF{HAS_WORLD_OBJECTS}
+    /* Let nearby FIRE2 doors/switches handle the button before inventory. */
+    game_adventure_set_fire2_action(gameworlditems_fire2_action);
+@IDE_END
     /* Restore this world's appearance every time the world manager loads it.
      * The shared Adventure renderer must never inherit forest's settings
      * from world1 (or vice versa). Applied AFTER game_adventure_start(),
@@ -100,6 +153,9 @@ void gameadventure_setup(void)
         @IDE{TEXT_OUTLINE_ENABLED}u, @IDE{OUTLINE_COLOUR_INDEX}u);
     game_adventure_dialogue_box(@IDE{DIALOG_X}, @IDE{DIALOG_Y},
         @IDE{DIALOG_WIDTH}u, @IDE{DIALOG_HEIGHT}u);
+    game_adventure_item_styles(item_styles, GAME_ADVENTURE_STORY_ITEM_COUNT);
+    game_adventure_use_effects(item_uses, GAME_ADVENTURE_STORY_ITEM_COUNT, on_use_item, 0);
+    game_adventure_text_padding(@IDE{DIALOG_PADDING}u);
     game_adventure_story_flags(story_choice_flags, npc_completed_nodes);
     game_adventure_skin_flips(skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);

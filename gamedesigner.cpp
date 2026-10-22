@@ -3126,7 +3126,37 @@ void SidboxGameDesigner::buildUi()
         }
         if (group == QStringLiteral("sprite") && item->data(0, Qt::UserRole).isValid()) {
             const int index = item->data(0, Qt::UserRole).toInt();
-            if (index >= 0 && index < m_sceneItems.size() && m_sceneItems.at(index) && m_view) {
+            if (index < 0 || index >= m_resources.size()) return;
+            const Resource &sprite = m_resources.at(index);
+            if (sprite.kind != QStringLiteral("sprite")) return;
+
+            // Shift+double-click jumps to this sprite's existing Game Objects
+            // alias. Do not create another object or modify the world data.
+            if (QApplication::keyboardModifiers() & Qt::ShiftModifier) {
+                if (sprite.objectType != QStringLiteral("decoration")) {
+                    for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+                        QTreeWidgetItem *alias = *it;
+                        if (alias->data(0, Qt::UserRole + 1).toString() != QStringLiteral("gameobject")
+                            || !alias->data(0, Qt::UserRole).isValid()
+                            || alias->data(0, Qt::UserRole).toInt() != index) continue;
+                        if (alias->parent()) alias->parent()->setExpanded(true);
+                        m_resourceTree->setCurrentItem(alias);
+                        m_resourceTree->scrollToItem(alias);
+                        return;
+                    }
+                }
+                return; // Shift on an ordinary sprite must not open Adventure.
+            }
+
+            // NPCs are referenced by a persistent sprite ID in the saved
+            // Adventure definitions, independent of position or display name.
+            for (const QJsonValue &value : m_adventure.value(QStringLiteral("npcs")).toArray()) {
+                if (value.toObject().value(QStringLiteral("spriteId")).toString() == sprite.id) {
+                    openAdventureEditor(sprite.id);
+                    return;
+                }
+            }
+            if (index < m_sceneItems.size() && m_sceneItems.at(index) && m_view) {
                 m_view->centerOn(m_sceneItems.at(index)->sceneBoundingRect().center());
                 // Editor navigation only: actual game camera and sprite coordinates unchanged.
                 setDirty(); // World viewport centre is persisted in .sbgm.
@@ -3564,11 +3594,23 @@ void SidboxGameDesigner::buildUi()
             const QVariant resource = item->data(0, Qt::UserRole);
             if (!resource.isValid() || resource.toInt() != index) continue;
             const QString group = item->data(0, Qt::UserRole + 1).toString();
-            if (m_resources.at(index).kind == QStringLiteral("sprite")
-                && m_resources.at(index).objectType != QStringLiteral("decoration"))
-                item->setText(0, tr("%1  [%2]").arg(text, m_resources.at(index).objectType));
-            else if (group != QStringLiteral("spline"))
+            if (group == QStringLiteral("sprite") || group == QStringLiteral("gameobject")) {
+                const Resource &r = m_resources.at(index);
+                QString title = text;
+                if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration"))
+                    title += QStringLiteral("  [%1]").arg(r.objectType);
+                if (group == QStringLiteral("sprite")) {
+                    for (const QJsonValue &value : m_adventure.value(QStringLiteral("npcs")).toArray()) {
+                        if (value.toObject().value(QStringLiteral("spriteId")).toString() == r.id) {
+                            title += QStringLiteral("  [NPC]");
+                            break;
+                        }
+                    }
+                }
+                item->setText(0, title);
+            } else if (group != QStringLiteral("spline")) {
                 item->setText(0, text);
+            }
         }
         if (index < m_sceneItems.size() && m_sceneItems.at(index)) {
             for (auto *child : m_sceneItems.at(index)->childItems())
@@ -3861,9 +3903,23 @@ void SidboxGameDesigner::refreshResources()
             child->setData(0, Qt::UserRole, index);
             child->setIcon(0, treeIcon(kind));
             child->setToolTip(0, r.path);
-            if (kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
-                child->setText(0, QStringLiteral("%1  [%2]").arg(r.name, r.objectType));
-                child->setToolTip(0, tr("Game object: %1\n%2").arg(r.objectType, r.path));
+            if (kind == QStringLiteral("sprite")) {
+                bool isNpc = false;
+                for (const QJsonValue &value : m_adventure.value(QStringLiteral("npcs")).toArray()) {
+                    if (value.toObject().value(QStringLiteral("spriteId")).toString() == r.id) {
+                        isNpc = true;
+                        break;
+                    }
+                }
+                QString title = r.name;
+                if (r.objectType != QStringLiteral("decoration"))
+                    title += QStringLiteral("  [%1]").arg(r.objectType);
+                if (isNpc) title += QStringLiteral("  [NPC]");
+                child->setText(0, title);
+                if (r.objectType != QStringLiteral("decoration"))
+                    child->setToolTip(0, tr("Game object: %1\n%2").arg(r.objectType, r.path));
+                if (isNpc)
+                    child->setToolTip(0, child->toolTip(0) + tr("\nNPC: Double-click to open Adventure Editor on this NPC."));
             }
             child->setData(0, Qt::UserRole + 1, kind);
             child->setData(0, Qt::UserRole + 2, r.plane);
@@ -7945,7 +8001,7 @@ bool SidboxGameDesigner::hasAdventure() const
         || m_adventure.contains(QStringLiteral("dialogWidth"))
         || m_adventure.contains(QStringLiteral("dialogHeight"));
 }
-void SidboxGameDesigner::openAdventureEditor()
+void SidboxGameDesigner::openAdventureEditor(const QString &focusNpcSpriteId)
 {
     QVector<GameAdventureAsset> sprites, atlases;
     for (const Resource &r : m_resources) {
@@ -7982,8 +8038,11 @@ void SidboxGameDesigner::openAdventureEditor()
         }
     }
     if (!editGameAdventure(this, &edited, sprites, atlases, worldObjects, collectables,
-                           activePalette(QStringLiteral("foreground")), m_filePath)) return;
+                           activePalette(QStringLiteral("foreground")), m_filePath,
+                           focusNpcSpriteId)) return;
     m_adventure = edited;
+    // Refresh tree labels immediately when NPCs are added/deleted.
+    refreshResources();
     setDirty(true);
 }
 bool SidboxGameDesigner::exportAdventure(QString *error)

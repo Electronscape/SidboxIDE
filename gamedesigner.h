@@ -180,7 +180,7 @@ private:
     void rebuildSplineOverlay();
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
-    void openAdventureEditor();
+    void openAdventureEditor(const QString &focusNpcSpriteId = QString());
     void editPlayerStartLocation(const QString &id);
     bool exportAdventure(QString *error);
     bool hasAdventure() const;

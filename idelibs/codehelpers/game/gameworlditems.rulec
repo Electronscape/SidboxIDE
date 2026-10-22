@@ -54,6 +54,9 @@ static uint8_t cg_pickup_was_inactive[@IDE{PICKUP_COUNT}];
 @IDE_END
 @IDE_IF{HAS_WORLDS}
 static game_world_object_t platforms[@IDE{WORLD_OBJECT_COUNT}];
+/* The FIRE2 priority probe must use exactly the same live collision rectangle
+   as gameworlditems_after() uses to activate the door, including offsets. */
+static const game_world_player_t *cg_fire2_player;
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
 static uint8_t cg_hazard_zone_contact;
@@ -267,6 +270,9 @@ void gameworlditems_restore_state(void)
 
 uint8_t gameworlditems_init(void)
 {
+@IDE_IF{HAS_WORLDS}
+    cg_fire2_player=0;
+@IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
     cg_hazard_zone_contact = 0;
 @IDE_END
@@ -382,8 +388,25 @@ static uint8_t cg_world_player_blocked(int32_t x, int32_t y,
 
 @IDE_END
 @IDE_IF{HAS_WORLDS}
+uint8_t gameworlditems_fire2_action(int32_t player_x, int32_t player_y,
+                                    uint16_t player_w, uint16_t player_h)
+{
+    if (cg_fire2_player && cg_fire2_player->x100 && cg_fire2_player->y100 &&
+        cg_fire2_player->width && cg_fire2_player->height) {
+        player_x=*cg_fire2_player->x100/100+cg_fire2_player->offset_x;
+        player_y=*cg_fire2_player->y100/100+cg_fire2_player->offset_y;
+        player_w=cg_fire2_player->width;
+        player_h=cg_fire2_player->height;
+    }
+    return game_world_objects_fire2_action(platforms, @IDE{WORLD_OBJECT_COUNT},
+        player_x, player_y, player_w, player_h);
+}
+
 void gameworlditems_before(game_world_player_t *player)
 {
+@IDE_IF{HAS_WORLDS}
+    cg_fire2_player=player;
+@IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
     if (game_death_is_dead()) return;
     if (player) {

@@ -1,0 +1,1 @@
+Stage 5.32 (22 October 2026): Border-aware 8px inventory/optional dialogue padding, new item USE stat effects (Health, Lives, Score, player custom stats), fixed action/confirmation brackets. Full source, no changes to user game main.c. See STAGE5.32-PADDING-AND-INVENTORY-USE.md.

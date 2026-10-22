@@ -1,3 +1,44 @@
+i think the inventory popups first over the accessing the goto world.
+
+pressing fire2
+priority should be
+NPC:
+DOOR:
+Inventory
+it could be a collision box issue?
+
+
+
+
+
+
+[in progress]
+some new stuff:
+runtime and IDE editor features: the ability to select an item in the inventory to either destroy, (confirm box, unless its a puzzle peace, so might need to have this figured out by NPCs that require items)
+runtime and ide editor features: also need to have options to padd the text with in the dialog boxes. Padding is either 8px, or off
+ALSO the icons in the inventory, might need to support 16x16 icons (or setup icons tiles so can build a 2x2 stamp: this might need to have an editor inside the adventure editor, the atlas selector BUt the ability to build up a 2x2 icon that can be used in the inventory runtime)
+this MIGHT need to thicken the ROWS table to make space for the icon, (also the ability to edit the 2x2 stamp for the icon)
+
+GOD i hope this made sense !
+
+
+
+
+[done]
+behaviour changes:
+IDE:
+Sprites Tree: if a sprite is set as an NPC in the adventure editor, COULD the Sprite have a tag next to it [NPC]
+an if i double click ON that sprite in the Sprites tree, it opens the adventure editor an highlights the NPC tab an the NPC row?
+HOLDING shift an double clickin on a sprite in the Sprites tree, IF its a game object, that it selects the game object in the game objects tree?
+Pleeeeeease??
+
+
+
+
+the dialogs if the player doesnt have the item, should go straight to the "i dont have that item" dialog id.
+also the options in the choices list, still has the "x" next to it, that gives things away ;)
+
+
 bug: door game objects dont get saved to the .proj (at least they get lost when i reload the project after restarting the IDE)
 
 move the Adventure Editor button to the top of the same row as the [centre view on LCD] [tilemap editor...] [create /edit player ...] [Adventure Editor]

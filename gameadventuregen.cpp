@@ -1,6 +1,8 @@
 #include "gameadventuregen.h"
 #include "gamehelpertemplates.h"
 #include <QDir>
+#include <QDirIterator>
+#include <QJsonDocument>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -71,6 +73,42 @@ bool loadRule(const QDir &folder, const QString &extension,
     return GameHelperTemplates::renderConditionals(source, fields, path, &conditional, error)
         && GameHelperTemplates::renderFields(conditional, fields, path, output, error);
 }
+// Resolve story requirements by ITEM NAME, not per-world list index.
+// Saved .sbgm files from other worlds are consulted as well, so a puzzle key
+// required by an NPC elsewhere cannot become discardable in this world.
+QSet<QString> requiredItemNames(const QJsonObject &payload, const QString &root)
+{
+    QSet<QString> required;
+    const auto scan = [&](const QJsonObject &adventure) {
+        const QJsonArray items = adventure.value(QStringLiteral("items")).toArray();
+        const QJsonArray nodes = adventure.value(QStringLiteral("nodes")).toArray();
+        for (const QJsonValue &nodeValue : nodes) {
+            for (const QJsonValue &choiceValue : nodeValue.toObject().value(QStringLiteral("choices")).toArray()) {
+                const QJsonObject choice = choiceValue.toObject();
+                for (const char *key : {"requires", "take"}) {
+                    const int index = choice.value(QLatin1String(key)).toInt(-1);
+                    if (index < 0 || index >= items.size()) continue;
+                    const QString name = items[index].toObject().value(QStringLiteral("name")).toString().trimmed().toCaseFolded();
+                    if (!name.isEmpty()) required.insert(name);
+                }
+            }
+        }
+    };
+    scan(payload);
+    QDirIterator it(root, QStringList{QStringLiteral("*.sbgm")}, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        const QString relative = QDir(root).relativeFilePath(path);
+        if (relative.startsWith(QStringLiteral("worlds/")) ||
+            relative.startsWith(QStringLiteral("buildv1/")) ||
+            relative.startsWith(QStringLiteral(".codergirl/"))) continue;
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly) || file.size() > 16*1024*1024) continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (doc.isObject()) scan(doc.object().value(QStringLiteral("adventure")).toObject());
+    }
+    return required;
+}
 } // namespace
 
 bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoot,
@@ -123,10 +161,14 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     fields.insert(QStringLiteral("NPC_COUNT"), QString::number(npcList.size()));
     fields.insert(QStringLiteral("HAS_WORLD_OBJECTS"),
         worldObjects.isEmpty() ? QStringLiteral("0") : QStringLiteral("1"));
+    fields.insert(QStringLiteral("HAS_SHARED_PLAYER"),
+        QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("players/player.sbpi")))
+            ? QStringLiteral("1") : QStringLiteral("0"));
 
+    const QSet<QString> puzzleItems = requiredItemNames(payload, projectRoot);
     QString items;
     QTextStream itemOut(&items);
-    if (itemList.isEmpty()) itemOut << "    {0,0,0,0,0},\n";
+    if (itemList.isEmpty()) itemOut << "    {0},\n";
     for (const QJsonValue &v : itemList) {
         const QJsonObject o = v.toObject();
         itemOut << "    {" << quoted(o.value("name").toString().left(36)) << ","
@@ -136,6 +178,36 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 << clampInt(o,"initial",0,65535,0) << "u},\n";
     }
     fields.insert(QStringLiteral("ITEM_ROWS"), items.trimmed());
+
+    QString styleRows;
+    QTextStream styleOut(&styleRows);
+    if (itemList.isEmpty()) styleOut << "    {{0u,0u,0u,0u},0u,0u},\n";
+    for (const QJsonValue &v : itemList) {
+        const QJsonObject o = v.toObject();
+        styleOut << "    {{";
+        const QJsonArray iconCells = o.value("iconCells").toArray();
+        for (int i=0; i<4; ++i) {
+            if (i) styleOut << ",";
+            styleOut << (iconCells.size()==4 ? std::clamp(iconCells[i].toInt(65535),0,65535)
+                       : clampInt(o,"icon",0,65535,65535)) << "u";
+        }
+        const bool disposable = o.value("discardable").toBool(false)
+            && !puzzleItems.contains(o.value("name").toString().trimmed().toCaseFolded());
+        styleOut << "}," << (o.value("icon2x2").toBool(false) ? "1" : "0")
+                 << "u," << (disposable ? "1" : "0") << "u},\n";
+    }
+    fields.insert(QStringLiteral("ITEM_STYLE_ROWS"),styleRows.trimmed());
+    QString useRows;
+    QTextStream useOut(&useRows);
+    if (itemList.isEmpty()) useOut << "    {0,0,0},\n";
+    for (const QJsonValue &v : itemList) {
+        const QJsonObject o=v.toObject();
+        const QString stat=o.value("useStat").toString().trimmed().left(64);
+        const int delta=clampInt(o,"useDelta",-1000000,1000000,0);
+        useOut << "    {" << (stat.isEmpty() || !delta ? QStringLiteral("0") : quoted(stat))
+               << "," << delta << "," << (o.value("useConsume").toBool(true) ? "1u" : "0u") << "},\n";
+    }
+    fields.insert(QStringLiteral("ITEM_USE_ROWS"),useRows.trimmed());
 
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
@@ -284,7 +356,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         {"DIALOG_X", "dialogX", 0, 479, 20},
         {"DIALOG_Y", "dialogY", 0, 319, 148},
         {"DIALOG_WIDTH", "dialogWidth", 128, 480, 440},
-        {"DIALOG_HEIGHT", "dialogHeight", 96, 320, 96}
+        {"DIALOG_HEIGHT", "dialogHeight", 96, 320, 96},
+        {"DIALOG_PADDING", "dialogPadding", 0, 8, 8}
     };
     for (const auto &value : appearance) {
         const int number = QByteArray(value.json) == "textOutline"
@@ -310,7 +383,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
 
     QByteArray renderedC, renderedH;
     const QStringList requiredC = {
-        QStringLiteral("ITEM_ROWS"),
+        QStringLiteral("ITEM_ROWS"),QStringLiteral("ITEM_STYLE_ROWS"),
+        QStringLiteral("ITEM_USE_ROWS"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),
@@ -319,7 +393,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("FRAMES_PER_CHAR"),QStringLiteral("TEXT_COLOUR_INDEX"),
         QStringLiteral("TEXT_OUTLINE_ENABLED"),QStringLiteral("OUTLINE_COLOUR_INDEX"),
         QStringLiteral("DIALOG_X"),QStringLiteral("DIALOG_Y"),
-        QStringLiteral("DIALOG_WIDTH"),QStringLiteral("DIALOG_HEIGHT")};
+        QStringLiteral("DIALOG_WIDTH"),QStringLiteral("DIALOG_HEIGHT"),
+        QStringLiteral("DIALOG_PADDING")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),
                                    QStringLiteral("NPC_COUNT")};
     // Both rules are read, checked and fully expanded before writing either file.

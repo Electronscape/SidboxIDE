@@ -1,14 +1,23 @@
 #include "adventureruntime.h"
 #include "apis.h"
 #include <string.h>
-
+/* Firmware defines BTN_FIRE; older host test mocks may not. */
+#ifndef BTN_FIRE
+#define BTN_FIRE 0x01u
+#endif
+/* Older host mocks may omit the directional button constants. */
+#ifndef BTN_LEFT
+#define BTN_LEFT 0x10u
+#endif
+#ifndef BTN_RIGHT
+#define BTN_RIGHT 0x20u
+#endif
 
 /* Bounded static memory: 64 inventory types, up to 3 choices per node. */
 #define GA_MAX_ITEMS GAME_ADVENTURE_MAX_ITEMS
 #define GA_COLS @IDE{GA_COLS} /* 8-pixel-wide glyphs, not 16-pixel glyphs. */
 #define GA_LINES @IDE{GA_LINES}
 
-/* Lets do a lot of sex! */
 /* Design-time values. These are filled from Adventure Editor when this
    .rulec is rendered into gameadventureruntime.c by Update Game Project.
    Runtime counters/pointers below are internal state, not project settings. */
@@ -25,7 +34,38 @@ static const game_adventure_item_t *ga_items;
 static const game_adventure_node_t *ga_nodes;
 static const game_adventure_npc_t *ga_npcs;
 static uint16_t ga_item_count, ga_node_count, ga_npc_count;
+static const game_adventure_item_style_t *ga_item_styles;
+static uint16_t ga_item_style_count;
+void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint16_t count)
+{ ga_item_styles = styles; ga_item_style_count = styles ? count : 0u; }
+static uint8_t ga_discardable(uint16_t id)
+{ return ga_item_styles && id < ga_item_style_count && ga_item_styles[id].discardable; }
 static uint16_t ga_counts[GA_MAX_ITEMS];
+static const game_adventure_item_use_t *ga_use_effects;
+static uint16_t ga_use_count;
+static game_adventure_use_stat_t ga_use_handler;
+static void *ga_use_user;
+void game_adventure_use_effects(const game_adventure_item_use_t *effects, uint16_t count,
+                               game_adventure_use_stat_t handler, void *user)
+{
+    ga_use_effects = effects; ga_use_count = effects ? count : 0u;
+    ga_use_handler = handler; ga_use_user = user;
+}
+static uint8_t ga_can_use(uint16_t id)
+{
+    return ga_use_effects && id < ga_use_count && ga_use_handler &&
+           ga_use_effects[id].stat && ga_use_effects[id].stat[0] &&
+           ga_use_effects[id].delta != 0;
+}
+static uint8_t ga_use_item(uint16_t id)
+{
+    if (!ga_can_use(id) || id >= ga_item_count || !ga_counts[id]) return 0;
+    const game_adventure_item_use_t *effect=&ga_use_effects[id];
+    if (!ga_use_handler(effect->stat,effect->delta,ga_use_user)) return 0;
+    if (effect->consume) --ga_counts[id];
+    return 1;
+}
+
 static game_adventure_item_visible_t ga_inventory_filter;
 void game_adventure_set_inventory_filter(game_adventure_item_visible_t filter)
 { ga_inventory_filter = filter; }
@@ -78,14 +118,30 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
     ga_completed_nodes = completed_nodes;
 }
 
-static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply */
+static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply, 4 confirm destroy */
+/* Optional query owned by the current world; only tests whether FIRE2 has
+ * an active trigger under the player, without activating that trigger. */
+static game_adventure_fire2_action_t ga_fire2_action;
+void game_adventure_set_fire2_action(game_adventure_fire2_action_t action)
+{ ga_fire2_action = action; }
 static uint8_t ga_prev_buttons, ga_choice, ga_inventory_offset;
+static uint8_t ga_inventory_selection; /* Index into owned/visible items. */
+static uint8_t ga_inventory_action; /* Among available USE, DROP, DESTROY (LEFT/RIGHT). */
+static game_adventure_drop_t ga_drops[GAME_ADVENTURE_MAX_DROPS];
+static uint8_t ga_confirm_yes;  /* Confirmation defaults to NO. */
+/* Ten normal 24px rows plus header/footer fit inside a 480x320 LCD. */
+#define GA_INVENTORY_ROWS 10u
 static void ga_inventory_clamp_offset(void)
 {
     const uint16_t visible = ga_visible_count();
-    const uint16_t max_offset = visible > GA_LINES ? (uint16_t)(visible - GA_LINES) : 0u;
+    const uint16_t max_offset = visible > GA_INVENTORY_ROWS
+        ? (uint16_t)(visible - GA_INVENTORY_ROWS) : 0u;
     if (ga_inventory_offset > max_offset) ga_inventory_offset = (uint8_t)max_offset;
 }
+void game_adventure_save_drops(game_adventure_drop_t out[GAME_ADVENTURE_MAX_DROPS])
+{ if (out) memcpy(out, ga_drops, sizeof(ga_drops)); }
+void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTURE_MAX_DROPS])
+{ if (saved) memcpy(ga_drops, saved, sizeof(ga_drops)); }
 static uint16_t ga_node, ga_typed, ga_ticks, ga_reply_typed, ga_reply_ticks;
 static int16_t ga_after_reply;
 static const char *ga_reply;
@@ -101,6 +157,9 @@ static uint8_t ga_outline_colour=GA_TEXT_DEFAULT_OUTLINE_COLOUR;
 /* Dialogue height is a MINIMUM: expanded at draw time for the current node. */
 static int16_t ga_dialog_x=GA_DIALOG_DEFAULT_X, ga_dialog_y=GA_DIALOG_DEFAULT_Y;
 static uint16_t ga_dialog_w=GA_DIALOG_DEFAULT_W, ga_dialog_h=GA_DIALOG_DEFAULT_H;
+static uint8_t ga_dialog_padding = 8u;
+void game_adventure_text_padding(uint8_t pixels)
+{ ga_dialog_padding = pixels == 8u ? 8u : 0u; }
 
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height)
 {
@@ -238,6 +297,8 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                           game_adventure_action_t action, void *user)
 {
     ga_items = items; ga_item_count = item_count > GA_MAX_ITEMS ? GA_MAX_ITEMS : item_count;
+    game_adventure_item_styles(0,0);
+    game_adventure_use_effects(0,0,0,0);
     ga_nodes = nodes; ga_node_count = node_count;
     ga_npcs = npcs; ga_npc_count = npc_count;
     memset(ga_counts, 0, sizeof(ga_counts));
@@ -248,7 +309,13 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     for (uint16_t i = 0; i < ga_item_count; ++i)
         ga_counts[i] = ga_items[i].initial > ga_items[i].capacity
             ? ga_items[i].capacity : ga_items[i].initial;
-    ga_state = ga_prev_buttons = ga_choice = ga_inventory_offset = 0;
+    ga_state = ga_choice = ga_inventory_offset = 0;
+    ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
+    memset(ga_drops, 0, sizeof(ga_drops));
+    ga_dialog_padding = 8u;
+    /* Keep ga_prev_buttons across world travel: if FIRE2 opened a door and
+       is still held during arrival, that hold must NOT reopen inventory. */
+    ga_fire2_action = 0; /* Every newly loaded world registers its own query. */
     ga_active_npc = 0xFFFFu;
     game_adventure_npc_animations(0,0);
     game_adventure_text_style(GA_TEXT_DEFAULT_COLOUR,
@@ -316,16 +383,87 @@ static void ga_next_node(int16_t node)
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
 }
+/* The dropped item is a physical collectible, not a silent delete.
+   It starts unarmed while the player is touching it, so it cannot instantly
+   jump back into the backpack on the next frame. */
+static uint8_t ga_drop_item(uint16_t item_id, int32_t player_x, int32_t player_y,
+                            uint16_t player_w, uint16_t player_h)
+{
+    if (item_id >= ga_item_count || !ga_counts[item_id] || !ga_discardable(item_id)) return 0;
+    for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
+        if (ga_drops[i].active) continue;
+        ga_drops[i].x = player_x + (int32_t)player_w/2 - 8;
+        ga_drops[i].y = player_y + (int32_t)player_h - 16;
+        ga_drops[i].item_id = item_id;
+        ga_drops[i].active = 1u;
+        ga_drops[i].armed = 0u;
+        game_adventure_remove(item_id, 1u);
+        return 1;
+    }
+    return 0; /* World drop slots full: leave the inventory unchanged. */
+}
+static void ga_collect_drops(int32_t x, int32_t y, uint16_t w, uint16_t h)
+{
+    if (!w || !h) return;
+    for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
+        game_adventure_drop_t *drop=&ga_drops[i];
+        if (!drop->active || drop->item_id >= ga_item_count) continue;
+        const uint8_t touching = (uint8_t)((int64_t)x < (int64_t)drop->x+16 &&
+            (int64_t)x+w > drop->x && (int64_t)y < (int64_t)drop->y+16 &&
+            (int64_t)y+h > drop->y);
+        if (!touching) { drop->armed=1u; continue; }
+        if (drop->armed && game_adventure_add(drop->item_id,1u)) drop->active=0u;
+    }
+}
+static void ga_draw_item_icon(uint16_t id, int x, int y)
+{
+    if (id >= ga_item_count) return;
+    if (!ga_skin_pixels || !ga_tile || ga_skin_w < ga_tile) {
+        /* Without an atlas, a dropped item must remain visible/recoverable. */
+        gfx_setcolour(ga_text_colour); gfx_rectf(x,y,16,16);
+        return;
+    }
+    const uint16_t columns=ga_skin_w/ga_tile;
+    const uint32_t total=(uint32_t)columns*(ga_skin_h/ga_tile);
+    const uint8_t composite=(uint8_t)(ga_item_styles && id < ga_item_style_count &&
+        ga_item_styles[id].icon_2x2);
+    const uint8_t cells=composite?4u:1u;
+    uint8_t drawn=0u;
+    /* Fit every icon in a 16px viewport, even when atlas cells are 16/32px. */
+    const uint16_t cell_size = composite ? 8u : 16u;
+    const uint16_t scale=(uint16_t)((100u*cell_size)/ga_tile);
+    for (uint8_t part=0; part<cells; ++part) {
+        const uint16_t cell=composite ? ga_item_styles[id].icon_cells[part] : ga_items[id].icon;
+        if (cell==65535u || cell>=total) continue;
+        gfxbob_t icon; memset(&icon,0,sizeof(icon));
+        icon.imgdat=ga_skin_pixels + (uint32_t)(cell/columns)*ga_tile*ga_skin_w
+                    + (uint32_t)(cell%columns)*ga_tile;
+        icon.atlas_stride=ga_skin_w;
+        icon.atlas_height=ga_tile; icon.width=ga_tile;
+        icon.height=ga_tile; icon.scale=scale; icon.index=0;
+        icon.drawx=(int16_t)(x+(composite?(part&1u)*cell_size:0));
+        icon.drawy=(int16_t)(y+(composite?(part>>1)*cell_size:0));
+        gfx_drawbob(&icon);
+        drawn=1u;
+    }
+    if (!drawn) {
+        gfx_setcolour(ga_text_colour); gfx_rectf(x,y,16,16);
+    }
+}
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames)
 {
     const uint8_t press = (buttons & BTN_FIRE2) && !(ga_prev_buttons & BTN_FIRE2);
+    const uint8_t fire = (buttons & BTN_FIRE) && !(ga_prev_buttons & BTN_FIRE);
     const uint8_t up = (buttons & BTN_UP) && !(ga_prev_buttons & BTN_UP);
     const uint8_t down = (buttons & BTN_DOWN) && !(ga_prev_buttons & BTN_DOWN);
+    const uint8_t left = (buttons & BTN_LEFT) && !(ga_prev_buttons & BTN_LEFT);
+    const uint8_t right = (buttons & BTN_RIGHT) && !(ga_prev_buttons & BTN_RIGHT);
     ga_prev_buttons = buttons;
     ga_tick_animations(frames);
     ga_player_x = player_x; ga_player_y = player_y;
     if (ga_state == 0) {
+        ga_collect_drops(player_x, player_y, player_w, player_h);
         if (!press) return 0;
         const int32_t pcx = player_x + player_w / 2, pcy = player_y + player_h / 2;
         for (uint16_t i = 0; i < ga_npc_count; ++i) {
@@ -343,14 +481,76 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
                 return 1;
             }
         }
-        if (buttons & BTN_UP) { ga_state = 2; ga_inventory_offset = 0; return 1; }
-        return 0;
+        /* A nearby FIRE2 door/switch has priority over opening the bag.
+         * The query is read-only; normal gameworlds_after() still fires it. */
+        if (ga_fire2_action && ga_fire2_action(player_x, player_y, player_w, player_h))
+            return 0;
+        ga_state = 2; ga_inventory_offset = ga_inventory_selection = ga_inventory_action = 0;
+        return 1;
+    }
+    if (ga_state == 4) {
+        /* DESTROY confirmation: FIRE2 always cancels/closes a modal;
+           FIRE1 confirms, and NO is the default. */
+        if (left || right || up || down) ga_confirm_yes ^= 1u;
+        if (press) { ga_state = 2u; ga_confirm_yes = 0u; return 1; }
+        if (fire) {
+            const uint16_t id = ga_visible_item_id(ga_inventory_selection);
+            if (ga_confirm_yes && id < ga_item_count && ga_discardable(id))
+                game_adventure_remove(id, 1u);
+            ga_confirm_yes = 0u;
+            ga_state = 2u;
+            ga_inventory_clamp_offset();
+        }
+        return 1;
     }
     if (ga_state == 2) {
-        ga_inventory_clamp_offset();
+        const uint16_t visible = ga_visible_count();
+        if (ga_inventory_selection >= visible)
+            ga_inventory_selection = visible ? (uint8_t)(visible-1u) : 0u;
         if (press) { ga_state = 0; return 0; }
-        if (down && ga_inventory_offset + GA_LINES < ga_visible_count()) ++ga_inventory_offset;
-        if (up && ga_inventory_offset) --ga_inventory_offset;
+        if (down && (uint16_t)ga_inventory_selection+1u < visible) {
+            ++ga_inventory_selection; ga_inventory_action=0u;
+        }
+        if (up && ga_inventory_selection) {
+            --ga_inventory_selection; ga_inventory_action=0u;
+        }
+        /* USE is first when configured; protected quest items can still be USED.
+         * DROP/DESTROY appear only if discard was explicitly enabled. */
+        const uint16_t action_id=ga_visible_item_id(ga_inventory_selection);
+        const uint8_t can_use=ga_can_use(action_id);
+        const uint8_t can_discard=ga_discardable(action_id);
+        const uint8_t count=(uint8_t)(can_use + (can_discard ? 2u : 0u));
+        if (count && ga_inventory_action >= count) ga_inventory_action=(uint8_t)(count-1u);
+        if (left && ga_inventory_action) --ga_inventory_action;
+        if (right && count && ga_inventory_action + 1u < count) ++ga_inventory_action;
+        if (up || down) {
+            if (ga_inventory_selection < ga_inventory_offset)
+                ga_inventory_offset = ga_inventory_selection;
+            if ((uint16_t)ga_inventory_selection >=
+                (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
+                ga_inventory_offset=(uint8_t)(ga_inventory_selection-GA_INVENTORY_ROWS+1u);
+            ga_inventory_clamp_offset();
+        }
+        if (fire && visible) {
+            const uint16_t id = ga_visible_item_id(ga_inventory_selection);
+            if (id < ga_item_count) {
+                const uint8_t has_use=ga_can_use(id);
+                const uint8_t has_discard=ga_discardable(id);
+                if (has_use && ga_inventory_action==0u) {
+                    (void)ga_use_item(id);
+                } else if (has_discard) {
+                    const uint8_t discard_action=(uint8_t)(ga_inventory_action - (has_use ? 1u : 0u));
+                    if (discard_action==0u) {
+                        (void)ga_drop_item(id, player_x, player_y, player_w, player_h);
+                    } else if (discard_action==1u) {
+                        ga_confirm_yes=0u; ga_state=4u;
+                    }
+                }
+                if (ga_inventory_selection >= ga_visible_count() && ga_inventory_selection)
+                    --ga_inventory_selection;
+                ga_inventory_clamp_offset();
+            }
+        }
         return 1;
     }
     if (ga_state == 3) {
@@ -408,6 +608,17 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     return 1;
 }
 
+/* A 9-slice frame has a full outer tile around its usable interior.
+   Padding is measured from the INSIDE edge of that decorative border,
+   not from the sprite frame's outside corner. No skin => no tile border. */
+static uint8_t ga_frame_border(void)
+{
+    return (ga_skin_pixels && ga_tile && ga_skin_w >= 3u*ga_tile &&
+            ga_skin_h >= 3u*ga_tile) ? ga_tile : 0u;
+}
+static int ga_dialog_inset(void)
+{ return (int)ga_frame_border() + (int)ga_dialog_padding; }
+
 /* Draw the nine atlas cells as a stretched tiled frame. The LCD canvas is
    assumed to be 480x320; the frame is drawn last, after all world sprites. */
 static void ga_frame(int16_t x, int16_t y, uint16_t width, uint16_t height)
@@ -451,6 +662,16 @@ static void ga_text(int x, int y, const char *text)
     }
     gfx_setcolour(ga_text_colour);
     gfx_drawtext(x,y,text);
+}
+/* Brackets are drawn around a fixed-label origin. Selecting an action must
+   never move the words themselves (same for the confirmation dialogue). */
+static void ga_fixed_action(int x, int y, const char *word, uint8_t selected)
+{
+    ga_text(x,y,word);
+    if (selected) {
+        ga_text(x-8,y,"[");
+        ga_text(x+(int)strlen(word)*8,y,"]");
+    }
 }
 /* The font is 8x16. This routine is shared by NPC text and answer choices.
    It returns the number of displayed lines and never prints outside the
@@ -537,11 +758,21 @@ static int ga_dialogue_required_height(const game_adventure_node_t *node,
     const uint8_t body_rows=ga_answer_rows(node->text,body_columns,64);
     const int choice_height=ga_two_choice_height(node,answer_columns,row);
     /* Name at y+9, body at y+32, answers after body+9, bottom 12px. */
-    return 32 + (int)body_rows*row + (choice_height?9+choice_height:0) + 12;
+    return 24 + 2*ga_dialog_inset() + (int)body_rows*row + (choice_height?9+choice_height:0);
 }
 
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
 {
+    /* World-local backpack drops are also drawn through this already-wired
+       game draw call; user-owned main.c needs no changes. */
+    for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
+        const game_adventure_drop_t *drop=&ga_drops[i];
+        if (!drop->active || drop->item_id>=ga_item_count) continue;
+        const int32_t sx=drop->x-camera_x, sy=drop->y-camera_y;
+        if (sx < -16 || sy < -16 || sx >= 480 || sy >= 320) continue;
+        ga_draw_item_icon(drop->item_id,(int)sx,(int)sy);
+    }
+
     /* NPCs use the SAME BOB used by the animation system. World locations
        come from regenerated adventure data, not a hand-edited main.c. */
     for (uint16_t i = 0; i < ga_npc_count && i < ga_animation_count; ++i) {
@@ -563,35 +794,75 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y)
 {
     if (!ga_state) return;
-    if (ga_state == 2) {
+    if (ga_state == 2 || ga_state == 4) {
+        const uint16_t visible = ga_visible_count();
+        if (ga_inventory_selection >= visible)
+            ga_inventory_selection = visible ? (uint8_t)(visible - 1u) : 0u;
         ga_inventory_clamp_offset();
-        ga_frame(40, 34, 400, 172);
-        ga_text(56, 48, "INVENTORY");
-        for (uint8_t i = 0; i < GA_LINES; ++i) {
-            uint16_t id = ga_visible_item_id((uint16_t)(ga_inventory_offset + i));
-            if (id >= ga_item_count) break;
-            char line[60];
-            /* bounded display: no heap allocation and no variable precision libc */
-            const char *name = ga_items[id].name ? ga_items[id].name : "Item";
-            uint8_t n = 0; while (name[n] && n < 34) { line[n] = name[n]; ++n; }
-            line[n++] = ' '; line[n++] = 'x';
-            uint16_t qty = ga_counts[id]; char tmp[6]; uint8_t digits = 0;
-            do { tmp[digits++] = (char)('0' + qty % 10); qty /= 10; } while (qty && digits < 6);
-            while (digits) line[n++] = tmp[--digits];
-            line[n] = 0;
-            if (ga_skin_pixels && ga_items[id].icon < (ga_skin_w/ga_tile)*(ga_skin_h/ga_tile)) {
-                gfxbob_t icon; memset(&icon,0,sizeof(icon));
-                const uint16_t columns=ga_skin_w/ga_tile;
-                const uint16_t cell=ga_items[id].icon;
-                icon.imgdat=ga_skin_pixels + (uint32_t)(cell/columns)*ga_tile*ga_skin_w
-                            + (uint32_t)(cell%columns)*ga_tile;
-                icon.atlas_stride=ga_skin_w;
-                icon.atlas_height=ga_tile; icon.width=ga_tile;
-                icon.height=ga_tile; icon.scale=100; icon.index=0;
-                icon.drawx=56; icon.drawy=68+i*22;
-                gfx_drawbob(&icon);
+        const uint8_t shown=(uint8_t)(visible>GA_INVENTORY_ROWS ? GA_INVENTORY_ROWS : visible);
+        /* ALWAYS eight clear pixels beyond the inner edge of the skin frame.
+           Compress inter-row spacing for 32px skin tiles to keep 10 items
+           and the close footer within the 480x320 display. */
+        const int inset=(int)ga_frame_border()+8;
+        const int row_step=inset>24 ? 20 : 22;
+        const int box_w=464;
+        const int box_h=2*inset+40+(int)shown*row_step;
+        const int box_x=8, box_y=(320-box_h)/2;
+        const int first_y=box_y+inset+20;
+        const int selector_x=box_x+inset;
+        const int icon_x=selector_x+16;
+        const int label_x=selector_x+40;
+        /* Stable word origins. Brackets extend outward, never shift labels. */
+        const int destroy_x=box_x+box_w-inset-8-(int)(7u*8u);
+        const int drop_x=destroy_x-72;
+        const int use_x=drop_x-56;
+        ga_frame((int16_t)box_x,(int16_t)box_y,(uint16_t)box_w,(uint16_t)box_h);
+        ga_text(selector_x,box_y+inset,"Inventory:");
+        if (ga_inventory_selection < ga_inventory_offset)
+            ga_inventory_offset=ga_inventory_selection;
+        if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
+            ga_inventory_offset=(uint8_t)(ga_inventory_selection-GA_INVENTORY_ROWS+1u);
+        for (uint8_t i=0; i<shown; ++i) {
+            const uint16_t display=(uint16_t)(ga_inventory_offset+i);
+            const uint16_t id=ga_visible_item_id(display);
+            if (id>=ga_item_count) break;
+            char line[36];
+            const char *name=ga_items[id].name?ga_items[id].name:"Item";
+            const int name_area_end=(ga_can_use(id)||ga_discardable(id))
+                ? use_x-8 : box_x+box_w-inset;
+            const int name_room=(name_area_end-label_x)/8-3; /* reserve x + quantity */
+            const uint8_t limit=(uint8_t)(name_room<1?1:name_room>18?18:name_room);
+            uint8_t n=0;
+            while (name[n] && n<limit) { line[n]=name[n]; ++n; }
+            line[n++]=' '; line[n++]='x';
+            uint16_t qty=ga_counts[id]; char tmp[6]; uint8_t digits=0;
+            do {tmp[digits++]=(char)('0'+qty%10); qty/=10;} while(qty && digits<6);
+            while(digits) line[n++]=tmp[--digits];
+            line[n]=0;
+            const int y=first_y+(int)i*row_step;
+            if (display==ga_inventory_selection) ga_text(selector_x,y,">");
+            ga_draw_item_icon(id,icon_x,y);
+            ga_text(label_x,y,line);
+            const uint8_t current=(uint8_t)(display==ga_inventory_selection);
+            const uint8_t use=ga_can_use(id);
+            if (use) ga_fixed_action(use_x,y,"USE",current && ga_inventory_action==0u);
+            if (ga_discardable(id)) {
+                ga_fixed_action(drop_x,y,"DROP",current && ga_inventory_action==(use?1u:0u));
+                ga_fixed_action(destroy_x,y,"DESTROY",current && ga_inventory_action==(use?2u:1u));
             }
-            ga_text(76, 68 + i * 22, line);
+        }
+        /* Footer is aligned eight pixels in from the INNER skin edge. */
+        ga_text(box_x+box_w-inset-(int)(12u*8u),box_y+box_h-inset-16,"FIRE2: CLOSE");
+        if (ga_state == 4) {
+            /* The confirmation box has the same eight pixels of CLEAR inner
+               padding as the inventory, even with a 32px decorative border. */
+            const int cx=72, cy=84, cw=336, ch=152;
+            const int ci=(int)ga_frame_border()+8;
+            ga_frame(cx,cy,cw,ch);
+            ga_text(cx+ci,cy+ci,"Destroy ONE item?");
+            ga_fixed_action(cx+ci+8,cy+ci+40,"NO",!ga_confirm_yes);
+            ga_fixed_action(cx+ci+120,cy+ci+40,"YES",ga_confirm_yes);
+            ga_text(cx+ci,cy+ch-ci-16,"FIRE: SELECT   FIRE2: BACK");
         }
         return;
     }
@@ -600,17 +871,18 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         const int screen_x = player_x - camera_x, screen_y = player_y - camera_y;
         const uint16_t letters=ga_reply ? (uint16_t)strlen(ga_reply) : 0;
         const int bubble_w=letters > 23u ? 280 : 205;
-        const uint8_t columns=(uint8_t)((bubble_w-20)/8);
+        const int inset=ga_dialog_inset();
+        const uint8_t columns=(uint8_t)((bubble_w-2*inset)/8);
         const uint8_t rows=ga_answer_rows(ga_reply,columns,5);
         const int line_h=ga_outline_enabled ? 20 : 16;
-        const int bubble_h=18+(rows ? rows : 1)*line_h;
+        const int bubble_h=2*inset+(rows ? rows : 1)*line_h;
         const int bubble_x=screen_x-10<4 ? 4 : screen_x-10>480-bubble_w-4
             ? 480-bubble_w-4 : screen_x-10;
         const int tentative_y=screen_y-bubble_h-8;
         const int bubble_y=tentative_y >= 4 ? tentative_y
             : (screen_y+28+bubble_h < 316 ? screen_y+28 : 4);
         ga_frame((int16_t)bubble_x,(int16_t)bubble_y,(uint16_t)bubble_w,(uint16_t)bubble_h);
-        ga_wrapped(ga_reply,ga_reply_typed,bubble_x+10,bubble_y+9,columns,5);
+        ga_wrapped(ga_reply,ga_reply_typed,bubble_x+inset,bubble_y+inset,columns,5);
         return;
     }
     if (ga_node >= ga_node_count) return;
@@ -621,7 +893,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
        than cutting off the choices. No heap allocations or text clipping. */
     const int bx=ga_dialog_x, bw=ga_dialog_w;
     const int row=ga_outline_enabled ? 20 : 16;
-    const int pad=12;
+    const int pad=ga_dialog_inset();
     const int inner_width=bw-2*pad;
     const uint8_t body_columns=(uint8_t)((inner_width/8)>50?50:inner_width/8);
     /* Right gutter is reserved for MORE arrows only; item ownership stays hidden. */
@@ -630,7 +902,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     const int bh=needed>(int)ga_dialog_h? (needed>320?320:needed) : ga_dialog_h;
     const int by=ga_dialog_y+bh>320?320-bh:ga_dialog_y;
     const int bottom=by+bh-pad;
-    const int text_y=by+32;
+    const int text_y=by+pad+24;
     const int choice_height=ga_two_choice_height(node,answer_columns,row);
     const uint8_t desired_body=ga_answer_rows(node->text,body_columns,64);
     int body_budget=bottom-text_y-(choice_height?9+choice_height:0);
@@ -639,7 +911,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     if (body_rows<0) body_rows=0;
 
     ga_frame((int16_t)bx,(int16_t)by,(uint16_t)bw,(uint16_t)bh);
-    ga_text(bx+pad,by+9,node->speaker ? node->speaker : "");
+    ga_text(bx+pad,by+pad,node->speaker ? node->speaker : "");
     ga_wrapped(node->text,ga_typed,bx+pad,text_y,body_columns,(uint8_t)body_rows);
     if (!choice_height) return;
     const int answers_y=text_y+body_rows*row+9;

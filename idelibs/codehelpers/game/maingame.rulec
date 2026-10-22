@@ -54,7 +54,7 @@
 @IDE_IF{HAS_ADVENTURE}
  * Adventure Editor: NPCs, inventory and dialogue enabled.
  * FIRE2 near NPC = talk, UP/DOWN chooses, FIRE2 confirms.
- * UP+FIRE2 away from NPC = inventory.
+ * FIRE2 away from NPC and FIRE2-trigger objects = inventory.
  * User-owned main.c remains protected: copy integration from this guide.
 @IDE_END
 @IDE_IF{HAS_LOOPS}

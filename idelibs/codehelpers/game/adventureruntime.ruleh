@@ -22,6 +22,22 @@ typedef struct {
     uint16_t capacity, initial;
 } game_adventure_item_t;
 
+/* Optional per-item style table supplied by generated world data. Kept
+   separate so existing game_adventure_item_t initializers remain valid. */
+typedef struct {
+    uint16_t icon_cells[4]; /* TL, TR, BL, BR */
+    uint8_t icon_2x2;
+    uint8_t discardable; /* 0 is protected: safe default */
+} game_adventure_item_style_t;
+void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint16_t count);
+/* Optional USE effect per item: a named shared-player stat and signed delta.
+ * No effect if stat is empty or callback fails. Consume one copy only on success.
+ * This is deliberately separate from the stable item/style ABI. */
+typedef struct { const char *stat; int32_t delta; uint8_t consume; } game_adventure_item_use_t;
+typedef uint8_t (*game_adventure_use_stat_t)(const char *stat, int32_t delta, void *user);
+void game_adventure_use_effects(const game_adventure_item_use_t *effects, uint16_t count,
+                                game_adventure_use_stat_t handler, void *user);
+
 typedef struct {
     const char *label;
     const char *reply; /* Player's response above their head */
@@ -71,10 +87,16 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                           uint16_t atlas_height, uint8_t tile_size,
                           const uint16_t skin_indices[9], uint8_t frames_per_char,
                           game_adventure_action_t action, void *user);
-/* Uses BTN_FIRE2 to talk/choose; BTN_UP/DOWN to change choice;
-   BTN_UP + BTN_FIRE2 away from NPC toggles the inventory screen.
-   Input edge-latched, so holding FIRE2 never chooses multiple responses.
+/* FIRE2 talks to an NPC in range; otherwise opens inventory, except when
+   a nearby FIRE2 trigger (door/switch) has priority. FIRE2 closes inventory.
+   BTN_UP/DOWN navigate choices or inventory. FIRE2 uses edge detection.
    Return 1 while gameplay must be paused. */
+/* Read-only priority query for a world-specific FIRE2 door/switch.  A positive
+   return means normal game input should handle FIRE2 rather than inventory.
+   The world registers its query during its Adventure setup. */
+typedef uint8_t (*game_adventure_fire2_action_t)(int32_t x, int32_t y,
+                                                  uint16_t w, uint16_t h);
+void game_adventure_set_fire2_action(game_adventure_fire2_action_t action);
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames);
 /* Appearance settings (foreground CLUT indices). Defaults: text 15, no outline. */
@@ -86,6 +108,10 @@ void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
    If it would run off the bottom, its Y is raised to keep the frame visible.
    Existing designs retain their saved minimum and position. */
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height);
+/* Extra clear space INSIDE the skin's border for NPC dialogue and
+   player reply bubbles: 0 or 8 pixels. Without a skin, measured from
+   the plain box edge. Inventory always gets 8px beyond its skin border. */
+void game_adventure_text_padding(uint8_t pixels);
 /* Optional per-node flags: 1 = once-only, 2 = mark talking NPC completed.
    These separate tables preserve compatibility with older dialogue structs. */
 void game_adventure_story_flags(const uint8_t *choice_flags,
@@ -114,6 +140,17 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
 uint16_t game_adventure_quantity(uint16_t index);
 uint16_t game_adventure_add(uint16_t index, uint16_t amount);
 uint8_t game_adventure_remove(uint16_t index, uint16_t amount);
+/* World-local dropped collectibles (no allocations; at most 16 objects).
+   Dropped items can be recovered by leaving their position then touching
+   them again; progress hooks preserve drops when changing worlds. */
+#define GAME_ADVENTURE_MAX_DROPS 16u
+typedef struct {
+    int32_t x, y;
+    uint16_t item_id;
+    uint8_t active, armed;
+} game_adventure_drop_t;
+void game_adventure_save_drops(game_adventure_drop_t out[GAME_ADVENTURE_MAX_DROPS]);
+void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTURE_MAX_DROPS]);
 /* Bridge existing Collectable callback: matching pickup_kind gains ONE item.
    Returns number of inventory definitions matched, 0 if none. */
 uint16_t game_adventure_collect(uint16_t pickup_kind);
