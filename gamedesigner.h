@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QVector>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QString>
 #include <QHash>
 #include <QDateTime>
@@ -179,6 +180,14 @@ private:
     void openAdventureEditor();
     bool exportAdventure(QString *error);
     bool hasAdventure() const;
+    // Snapshot of project-global stamp bank at last world load/save.
+    // Never overwrite changes saved from another open world tab.
+    QJsonArray m_loadedGlobalCollisionBank;
+    QJsonArray m_loadedGlobalLoopBank;
+    QJsonObject m_loadedTileStampBanks;
+    // Keep atlas-owned tile stamps current in every open world of this project.
+    // No world tabs need closing and a world save cannot undo another tab's stamps.
+    void syncProjectTileStampBanks(const QJsonObject &banks);
     void openTilemapEditor();
     void openPlayerAnimationEditor(int resourceIndex = -1);
     void openPlayerEditor();
@@ -208,7 +217,7 @@ private:
     void importDroppedFiles(const QStringList &paths, const QString &targetKind,
                             const QString &targetPlane);
     void deleteSelectedResource();
-    void copySelectedSprite();
+    void copySelectedSprite(int resourceIndex = -1);
     void pasteCopiedSprite();
     void undoResourceEdit();
     void redoResourceEdit();
@@ -321,8 +330,20 @@ private:
     // Resource-only undo history: never snapshots bitmap data or actual files.
     QVector<QVector<Resource>> m_undoResources;
     QVector<QVector<Resource>> m_redoResources;
-    Resource m_copiedSprite;
-    bool m_hasCopiedSprite = false;
+    // Keep imported object splines in the same Ctrl+Z transaction.
+    QVector<QVector<SplinePath>> m_undoResourceSplines;
+    QVector<QVector<SplinePath>> m_redoResourceSplines;
+    // Imported Adventure items and pickup types belong to the same Ctrl+Z step.
+    QVector<QJsonObject> m_undoResourceAdventures;
+    QVector<QJsonObject> m_redoResourceAdventures;
+    // Stage 5.13: one application-wide clipboard survives world-tab changes.
+    // The Resource copy retains every gameplay field, not merely its artwork.
+    static Resource s_copiedWorldObject;
+    static QVector<Resource> s_copiedWorldResources;
+    static QVector<SplinePath> s_copiedWorldSplines;
+    static QJsonObject s_copiedWorldAdventure;
+    static QString s_copiedWorldSource;
+    static bool s_hasCopiedWorldObject;
     int m_dragResourceIndex = -1;
     QPoint m_dragResourceStart;
     QVector<Resource> m_dragBefore;

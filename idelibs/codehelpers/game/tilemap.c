@@ -1277,7 +1277,8 @@ static int32_t cg_loop_abs(int32_t x) { return x < 0 ? -x : x; }
  * momentum projected onto the tangent. No teleports from other parts of map. */
 static uint8_t cg_loop_try_attach(game_tile_player_t *p, int32_t w, int32_t h)
 {
-    if (!p->map->loops || !p->map->loop_count || p->loop_cooldown) return 0;
+    if ((!p->map->loops && (!p->map->loop_placements || !p->map->loop_stamps)) ||
+        !p->map->loop_count || p->loop_cooldown) return 0;
     const int32_t px = p->x100 / 100 + p->hitbox_x + w/2,
                   feet = p->y100 / 100 + p->hitbox_y + h;
     const int32_t vx = (int32_t)p->slide_velocity100 +
@@ -1287,7 +1288,21 @@ static uint8_t cg_loop_try_attach(game_tile_player_t *p, int32_t w, int32_t h)
     if (!p->on_ground && cg_loop_abs(p->vy100) > cg_loop_abs(vx)/2)
         return 0;
     for (uint8_t i=0; i<p->map->loop_count; ++i) {
-        const game_tile_loop_t *loop = p->map->loops + i;
+        game_tile_loop_t expanded;
+        const game_tile_loop_t *loop = p->map->loops ? p->map->loops + i : NULL;
+        if (!loop) {
+            const game_tile_loop_placement_t *place = &p->map->loop_placements[i];
+            if (place->stamp >= p->map->loop_stamp_count) continue;
+            const game_tile_loop_stamp_t *stamp = &p->map->loop_stamps[place->stamp];
+            expanded.center_x = place->center_x;
+            expanded.center_y = place->center_y;
+            expanded.radius = stamp->radius;
+            expanded.entry_speed100 = stamp->entry_speed100;
+            expanded.downhill_boost100 = stamp->downhill_boost100;
+            expanded.coast_after_exit = stamp->coast_after_exit;
+            expanded.coast_falloff_permille = stamp->coast_falloff_permille;
+            loop = &expanded;
+        }
         if (loop->radius < 16 || !loop->entry_speed100 ||
             cg_loop_abs(vx) < loop->entry_speed100) continue;
         const int32_t previousX = px - vx/100;
@@ -1333,9 +1348,29 @@ static void cg_loop_detach(game_tile_player_t *p, int32_t s, int32_t c)
 static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
                             int32_t w, int32_t h)
 {
-    if (!p->loop_index || !p->map->loops ||
+    if (!p->loop_index ||
+        (!p->map->loops && (!p->map->loop_placements || !p->map->loop_stamps)) ||
         p->loop_index > p->map->loop_count) { p->loop_index = 0; return 0; }
-    const game_tile_loop_t *loop = p->map->loops + p->loop_index - 1;
+    game_tile_loop_t expanded;
+    const game_tile_loop_t *loop = p->map->loops
+        ? p->map->loops + p->loop_index - 1 : NULL;
+    if (!loop) {
+        const game_tile_loop_placement_t *place =
+            &p->map->loop_placements[p->loop_index - 1];
+        if (place->stamp >= p->map->loop_stamp_count) {
+            p->loop_index = 0;
+            return 0;
+        }
+        const game_tile_loop_stamp_t *stamp = &p->map->loop_stamps[place->stamp];
+        expanded.center_x = place->center_x;
+        expanded.center_y = place->center_y;
+        expanded.radius = stamp->radius;
+        expanded.entry_speed100 = stamp->entry_speed100;
+        expanded.downhill_boost100 = stamp->downhill_boost100;
+        expanded.coast_after_exit = stamp->coast_after_exit;
+        expanded.coast_falloff_permille = stamp->coast_falloff_permille;
+        loop = &expanded;
+    }
     const int32_t s = cg_loop_sin(p->loop_phase);
     const int32_t c = cg_loop_sin(p->loop_phase + 16384);
     /* External knocks while attached are projected onto the track tangent. */

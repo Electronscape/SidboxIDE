@@ -26,11 +26,8 @@ const uint8_t @IDE{WORLD_SYMBOL}_slopes[] __attribute__((aligned(32))) = {
 const uint16_t @IDE{WORLD_SYMBOL}_shape_refs[] = {
 @IDE{SHAPE_REF_ROWS}};
 
-const game_tile_shape_t @IDE{WORLD_SYMBOL}_shape_defs[] = {
-@IDE{SHAPE_DEF_ROWS}};
-
-const game_tile_shape_point_t @IDE{WORLD_SYMBOL}_shape_points[] = {
-@IDE{SHAPE_POINT_ROWS}};
+extern const game_tile_shape_t game_global_collision_stamps[];
+extern const game_tile_shape_point_t game_global_collision_points[];
 
 const game_tile_shape_instance_t @IDE{WORLD_SYMBOL}_shape_instances[] = {
 @IDE{SHAPE_INSTANCE_ROWS}};
@@ -41,8 +38,9 @@ const game_tile_animation_t @IDE{WORLD_SYMBOL}_animations[] = {
 
 @IDE_END
 @IDE_IF{HAS_LOOPS}
-/* Level-only loop tracks. Available with embedded OR TFCard tilemaps. */
-static const game_tile_loop_t @IDE{WORLD_SYMBOL}_loops[] = {
+/* Only world centres and global stamp IDs live in each level. */
+extern const game_tile_loop_stamp_t game_global_loop_stamps[];
+static const game_tile_loop_placement_t @IDE{WORLD_SYMBOL}_loop_placements[] = {
 @IDE{LOOP_ROWS}};
 
 @IDE_END
@@ -59,7 +57,8 @@ game_tilemap_t @IDE{WORLD_SYMBOL} = {
     @IDE{SHAPE_REF_POINTER}, @IDE{SHAPE_INSTANCE_POINTER},
     @IDE{SHAPE_DEF_POINTER}, @IDE{SHAPE_POINTS_POINTER},
     @IDE{SHAPE_INSTANCE_COUNT}, @IDE{SHAPE_DEF_COUNT},
-    @IDE{LOOP_POINTER}, @IDE{LOOP_COUNT}
+    0, @IDE{LOOP_COUNT},
+    @IDE{LOOP_POINTER}, @IDE{LOOP_STAMP_POINTER}, @IDE{LOOP_STAMP_COUNT}
 };
 
 @IDE_IF{EXTERNAL}

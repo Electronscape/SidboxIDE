@@ -122,6 +122,19 @@ typedef struct {
     uint16_t coast_falloff_permille; /* 0..200 = 0.0..20.0% per physics frame while coasting */
 } game_tile_loop_t;
 
+/* Project-global loop physics; worlds store only centre+stamp index. */
+typedef struct {
+    uint16_t radius;
+    uint16_t entry_speed100;
+    uint16_t downhill_boost100;
+    uint8_t coast_after_exit;
+    uint16_t coast_falloff_permille;
+} game_tile_loop_stamp_t;
+typedef struct {
+    int32_t center_x, center_y;
+    uint8_t stamp; /* index into loop_stamps, stable across world switches */
+} game_tile_loop_placement_t;
+
 typedef struct {
     const uint16_t *graphics;
     const uint8_t *collision;
@@ -146,6 +159,9 @@ typedef struct {
     uint8_t shape_count;
     const game_tile_loop_t *loops; /* Optional auto-generated loop tracks */
     uint8_t loop_count;
+    const game_tile_loop_placement_t *loop_placements; /* world-only positions */
+    const game_tile_loop_stamp_t *loop_stamps; /* shared project definitions */
+    uint8_t loop_stamp_count;
 } game_tilemap_t;
 
 /* Redraw visible tiles using the V1 BOB atlas renderer and whichever

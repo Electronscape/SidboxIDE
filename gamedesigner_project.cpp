@@ -1,5 +1,6 @@
 // Stage 3.69: split from gamedesigner.cpp. Method bodies are unchanged.
 #include "gamedesigner.h"
+#include "gameglobalstamps.h"
 #include "gameworldsnapshot.h"
 #include "gameplayerprofile.h"
 #include "gamedesigner_limits.h"
@@ -346,15 +347,67 @@ bool SidboxGameDesigner::loadDesign()
     m_tilemapEnabled = false;
     m_tilemapExternal = obj.value(QStringLiteral("tilemapExternal")).toBool(false);
     m_tilemap = SidboxTilemap();
+    // Even an empty/new world must inherit the existing project-wide bank.
+    // Otherwise creating its first map could overwrite the shared definitions.
+    GameGlobalStamps::Bank bank;
+    QString bankError;
+    if (!bank.open(m_filePath, &bankError)) {
+        m_loading = false;
+        QMessageBox::warning(this, tr("Project Stamps"), bankError);
+        return false;
+    }
+    m_loadedGlobalCollisionBank = bank.collisions;
+    m_loadedGlobalLoopBank = bank.loopStamps;
+    m_loadedTileStampBanks = bank.tileStampBanks;
     if (obj.contains(QStringLiteral("tilemap"))) {
-        if (!m_tilemap.fromJson(obj.value(QStringLiteral("tilemap")).toObject())) {
+        QJsonObject tileData = obj.value(QStringLiteral("tilemap")).toObject();
+        QVector<int> loopIndexes;
+        if (!bank.expand(&tileData, &loopIndexes, &bankError)) {
+            m_loading = false;
+            QMessageBox::warning(this, tr("Project Stamps"),
+                bankError.isEmpty() ? tr("Invalid project-global stamp references.") : bankError);
+            return false;
+        }
+        if (!m_tilemap.fromJson(tileData)) {
             m_loading = false;
             QMessageBox::warning(this, tr("Tilemap Editor"),
                 tr("The saved tilemap data is damaged or exceeds the size limits. No tilemap changes were applied."));
             return false;
         }
+        bank.installLoopStamps(&m_tilemap);
+        for (int i = 0; i < m_tilemap.loops.size(); ++i)
+            m_tilemap.loops[i].stamp = loopIndexes.at(i);
         m_tilemapEnabled = true;
+    } else {
+        QJsonObject tileData = m_tilemap.toJson();
+        tileData.insert(QStringLiteral("collisionStamps"), bank.collisions);
+        if (!m_tilemap.fromJson(tileData)) {
+            m_loading = false;
+            QMessageBox::warning(this, tr("Project Stamps"),
+                tr("The global collision bank could not be loaded into this new world."));
+            return false;
+        }
+        bank.installLoopStamps(&m_tilemap);
     }
+    // The atlas owns its design-time stamp bank, not the world. On the first
+    // post-upgrade open, inherit older inline stamps for an atlas that does not
+    // have a bank yet. Once the atlas exists in .proj it is authoritative.
+    const QString atlasKey = GameGlobalStamps::Bank::atlasKey(m_tilemap.atlasPath);
+    const QJsonValue savedAtlasBank = bank.tileStampBanks.value(atlasKey);
+    if (savedAtlasBank.isArray()) {
+        if (!SidboxTilemap::stampsFromJson(savedAtlasBank.toArray(), &m_tilemap.stamps)) {
+            m_loading = false;
+            QMessageBox::warning(this, tr("Tile Stamps"),
+                tr("The project-wide tile stamp bank is invalid."));
+            return false;
+        }
+    } else if (!m_tilemap.stamps.isEmpty()) {
+        bank.tileStampBanks.insert(atlasKey, SidboxTilemap::stampsToJson(m_tilemap.stamps));
+    }
+    m_tilemap.tileStampBanks = bank.tileStampBanks;
+    m_tilemap.collisionOriginalIndices.clear();
+    for (int i = 0; i < m_tilemap.collisionStamps.size(); ++i)
+        m_tilemap.collisionOriginalIndices.append(i < m_loadedGlobalCollisionBank.size() ? i : -1);
     m_splinePaths.clear();
     for (const QJsonValue &entry : obj.value(QStringLiteral("splinePaths")).toArray()) {
         if (!entry.isObject() || m_splinePaths.size() >= 128) continue;
@@ -398,12 +451,39 @@ bool SidboxGameDesigner::loadDesign()
     m_loading = false;
     m_undoResources.clear();
     m_redoResources.clear();
-    m_hasCopiedSprite = false;
+    m_undoResourceSplines.clear();
+    m_redoResourceSplines.clear();
+    m_undoResourceAdventures.clear();
+    m_redoResourceAdventures.clear();
     rebuildScene();
     refreshResources();
     refreshProperties();
     setDirty(seededBackgroundPalette); // prompt to save new reference, never silently save
     return true;
+}
+
+void SidboxGameDesigner::syncProjectTileStampBanks(const QJsonObject &banks)
+{
+    // During the one-time Stage 5.7 migration, a world may still have an
+    // inline bank not yet committed to .proj. Preserve only those new keys;
+    // existing .proj banks ALWAYS take precedence over old world copies.
+    QJsonObject merged = banks;
+    for (auto it = m_tilemap.tileStampBanks.constBegin();
+         it != m_tilemap.tileStampBanks.constEnd(); ++it) {
+        if (!merged.contains(it.key()) && !m_loadedTileStampBanks.contains(it.key()))
+            merged.insert(it.key(), it.value());
+    }
+    m_loadedTileStampBanks = banks;
+    m_tilemap.tileStampBanks = merged;
+    const QString key = GameGlobalStamps::Bank::atlasKey(m_tilemap.atlasPath);
+    const QJsonValue value = merged.value(key);
+    QVector<SidboxTileStamp> stamps;
+    if (value.isArray() && SidboxTilemap::stampsFromJson(value.toArray(), &stamps))
+        m_tilemap.stamps = stamps;
+    else
+        m_tilemap.stamps.clear();
+    // Tile stamps are a design-time brush bank; no painted cells have changed.
+    // Keep the tab's existing unsaved world changes/dirty flag untouched.
 }
 
 bool SidboxGameDesigner::saveDesign()
@@ -595,7 +675,88 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("splinePaths"), pathList);
     obj.insert(QStringLiteral("activeSpline"), m_activeSpline);
     if (m_tilemapEnabled) {
-        obj.insert(QStringLiteral("tilemap"), m_tilemap.toJson());
+        GameGlobalStamps::Bank bank;
+        QString stampError;
+        if (!bank.open(m_filePath, &stampError)) {
+            QMessageBox::warning(this, tr("Project Stamps"), stampError);
+            return false;
+        }
+        // A world never saves its own definition copies: it saves only
+        // placement indices, and the project stores the shared bank.
+        for (const SidboxLoopTrack &loop : m_tilemap.loops)
+            if (loop.stamp < 0 || loop.stamp >= m_tilemap.loopStamps.size()) {
+                QMessageBox::warning(this, tr("Project Stamps"),
+                    tr("Loop placement has no valid global stamp index."));
+                return false;
+            }
+        if (bank.collisions != m_loadedGlobalCollisionBank ||
+            bank.loopStamps != m_loadedGlobalLoopBank) {
+            QMessageBox::warning(this, tr("Project Stamps"),
+                tr("Another world has changed the project stamp bank since this "
+                   "design was opened. Close and reopen this world before saving "
+                   "to avoid replacing its global stamps."));
+            return false;
+        }
+        // The current atlas may have unswitched edits. Keep its current
+        // stamp cells alongside all other atlas banks changed in this session.
+        QJsonObject requestedTileBanks = m_tilemap.tileStampBanks;
+        const QString currentAtlasKey = GameGlobalStamps::Bank::atlasKey(m_tilemap.atlasPath);
+        requestedTileBanks.insert(currentAtlasKey,
+                                  SidboxTilemap::stampsToJson(m_tilemap.stamps));
+        // Only submit atlas banks actually edited in this world. A stale
+        // snapshot of another atlas must never overwrite its newer .proj bank.
+        // Open tabs receive fresh definitions after each save; changes made
+        // by another IDE process still get a proper conflict warning.
+        for (auto it = requestedTileBanks.constBegin(); it != requestedTileBanks.constEnd(); ++it) {
+            const QJsonValue oldValue = m_loadedTileStampBanks.value(it.key());
+            const QJsonValue liveValue = bank.tileStampBanks.value(it.key());
+            if (it.value() == oldValue) continue;
+            if (oldValue != liveValue && it.value() != liveValue) {
+                QMessageBox::warning(this, tr("Tile Stamps"),
+                    tr("The stamp bank for atlas '%1' was edited by another "
+                       "IDE process while you were editing it. Reopen only "
+                       "the Tilemap Editor to review the newer bank.").arg(it.key()));
+                return false;
+            }
+            bank.tileStampBanks.insert(it.key(), it.value());
+        }
+        // The editor retains old-to-new identities through Add, Remove,
+        // Undo and Redo. Reindex other worlds before committing the bank.
+        QVector<int> oldToNew(bank.collisions.size(), -1);
+        if (m_tilemap.collisionOriginalIndices.size() != m_tilemap.collisionStamps.size()) {
+            QMessageBox::warning(this, tr("Project Stamps"),
+                tr("Global slope index history is missing. Reopen this world before saving."));
+            return false;
+        }
+        for (int i = 0; i < m_tilemap.collisionOriginalIndices.size(); ++i) {
+            const int old = m_tilemap.collisionOriginalIndices.at(i);
+            if (old < 0) continue; // Newly added definition
+            if (old >= oldToNew.size() || oldToNew.at(old) >= 0) {
+                QMessageBox::warning(this, tr("Project Stamps"),
+                    tr("The global slope index mapping is inconsistent."));
+                return false;
+            }
+            oldToNew[old] = i;
+        }
+        bank.takeDefinitions(m_tilemap);
+        // If no other world changed this bank, it is now project-owned.
+        if (!bank.remapOtherWorlds(m_filePath, m_loadedGlobalCollisionBank,
+                                   oldToNew, &stampError)) {
+            QMessageBox::warning(this, tr("Project Stamps"), stampError);
+            return false;
+        }
+        if (!bank.save(&stampError)) {
+            QMessageBox::warning(this, tr("Project Stamps"), stampError);
+            return false;
+        }
+        m_loadedGlobalCollisionBank = bank.collisions;
+        m_loadedGlobalLoopBank = bank.loopStamps;
+        m_loadedTileStampBanks = bank.tileStampBanks;
+        m_tilemap.tileStampBanks = bank.tileStampBanks;
+        m_tilemap.collisionOriginalIndices.clear();
+        for (int i = 0; i < m_tilemap.collisionStamps.size(); ++i)
+            m_tilemap.collisionOriginalIndices.append(i);
+        obj.insert(QStringLiteral("tilemap"), GameGlobalStamps::Bank::worldReferences(m_tilemap));
         obj.insert(QStringLiteral("tilemapExternal"), m_tilemapExternal);
     }
     QSaveFile output(m_filePath);
@@ -617,9 +778,21 @@ bool SidboxGameDesigner::saveDesign()
         && QFileInfo::exists(pathHeader) && !exportSplinePaths(false)) return false;
     const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
     const QString tileHeader = QDir(QFileInfo(m_filePath).absolutePath())
-        .filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h"));
+        .filePath(QStringLiteral("worlds/") + worldBase + QStringLiteral("/gamelevels/")
+                  + worldBase + QStringLiteral(".h"));
     if (m_tilemapEnabled && QFileInfo::exists(tileHeader) && !exportTilemap(false)) return false;
     setDirty(false);
+    if (m_tilemapEnabled) {
+        // The .proj save succeeded: instantly refresh the shared atlas bank in
+        // every open world tab of this SAME game project (without reloading
+        // or discarding their world-specific, possibly unsaved, map changes).
+        const QString projectDir = QFileInfo(m_filePath).absolutePath();
+        for (QWidget *widget : QApplication::allWidgets()) {
+            auto *other = dynamic_cast<SidboxGameDesigner *>(widget);
+            if (other && QFileInfo(other->m_filePath).absolutePath() == projectDir)
+                other->syncProjectTileStampBanks(m_loadedTileStampBanks);
+        }
+    }
     return true;
 }
 

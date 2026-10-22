@@ -13,8 +13,7 @@ extern const uint8_t @IDE{WORLD_SYMBOL}_collisions[];
 extern const uint8_t @IDE{WORLD_SYMBOL}_flips[];
 extern const uint8_t @IDE{WORLD_SYMBOL}_slopes[];
 extern const uint16_t @IDE{WORLD_SYMBOL}_shape_refs[];
-extern const game_tile_shape_t @IDE{WORLD_SYMBOL}_shape_defs[];
-extern const game_tile_shape_point_t @IDE{WORLD_SYMBOL}_shape_points[];
+/* Shape definitions and point arrays live once in gameglobalstamps.c. */
 extern const game_tile_shape_instance_t @IDE{WORLD_SYMBOL}_shape_instances[];
 extern const game_tile_animation_t @IDE{WORLD_SYMBOL}_animations[];
 @IDE_END

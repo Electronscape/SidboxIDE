@@ -101,6 +101,64 @@ void SidboxTilemap::resizeMap(int w, int h)
         if (quint8(collisions.at(i)) == 8 && !covered.at(i)) collisions[i] = 0;
 }
 
+QJsonArray SidboxTilemap::stampsToJson(const QVector<SidboxTileStamp> &source)
+{
+    QJsonArray stampList;
+    for (const SidboxTileStamp &stamp : source) {
+        QJsonObject item;
+        item.insert(QStringLiteral("name"), stamp.name);
+        item.insert(QStringLiteral("width"), stamp.width);
+        item.insert(QStringLiteral("height"), stamp.height);
+        item.insert(QStringLiteral("tileSize"), stamp.tileSize);
+        item.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(stamp.graphics, 9).toBase64()));
+        item.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(stamp.collisions, 9).toBase64()));
+        item.insert(QStringLiteral("flipsZ"), QString::fromLatin1(qCompress(stamp.flips, 9).toBase64()));
+        stampList.append(item);
+    }
+    return stampList;
+}
+
+bool SidboxTilemap::stampsFromJson(const QJsonArray &items, QVector<SidboxTileStamp> *output)
+{
+    if (!output) return false;
+    QVector<SidboxTileStamp> decodedStamps;
+    if (items.size() > 128) return false;
+    for (const QJsonValue &value : items) {
+        if (!value.isObject()) return false;
+        const QJsonObject item = value.toObject();
+        SidboxTileStamp stamp;
+        stamp.name = item.value(QStringLiteral("name")).toString();
+        stamp.width = item.value(QStringLiteral("width")).toInt(0);
+        stamp.height = item.value(QStringLiteral("height")).toInt(0);
+        stamp.tileSize = item.value(QStringLiteral("tileSize")).toInt(0);
+        if (stamp.name.isEmpty() || stamp.name.size() > 80 || stamp.width < 1 ||
+            stamp.width > 16 || stamp.height < 1 || stamp.height > 16 ||
+            (stamp.tileSize != 8 && stamp.tileSize != 16 && stamp.tileSize != 32)) return false;
+        const auto decode = [](const QString &base64, int size) -> QByteArray {
+            if (base64.size() > 4000) return {};
+            const QByteArray encoded = QByteArray::fromBase64(base64.toLatin1());
+            if (encoded.size() < 4) return {};
+            const auto *p = reinterpret_cast<const unsigned char *>(encoded.constData());
+            const quint32 length = (quint32(p[0]) << 24) | (quint32(p[1]) << 16)
+                                 | (quint32(p[2]) << 8) | p[3];
+            if (length != quint32(size)) return {};
+            return qUncompress(encoded);
+        };
+        const int count = stamp.width * stamp.height;
+        stamp.graphics = decode(item.value(QStringLiteral("graphics16Z")).toString(), count * 2);
+        stamp.collisions = decode(item.value(QStringLiteral("collisionsZ")).toString(), count);
+        const QJsonValue flipsValue = item.value(QStringLiteral("flipsZ"));
+        stamp.flips = flipsValue.isUndefined() ? QByteArray(count, char(0))
+            : decode(flipsValue.toString(), count);
+        if (stamp.graphics.size() != count * 2 || stamp.collisions.size() != count ||
+            stamp.flips.size() != count) return false;
+        for (char f : stamp.flips) if ((quint8(f) & ~quint8(7)) != 0) return false;
+        decodedStamps.append(std::move(stamp));
+    }
+    *output = std::move(decodedStamps);
+    return true;
+}
+
 QJsonObject SidboxTilemap::toJson() const
 {
     QJsonObject result;
@@ -134,19 +192,7 @@ QJsonObject SidboxTilemap::toJson() const
         animated.append(item);
     }
     result.insert(QStringLiteral("animations"), animated);
-    QJsonArray stampList;
-    for (const SidboxTileStamp &stamp : stamps) {
-        QJsonObject item;
-        item.insert(QStringLiteral("name"), stamp.name);
-        item.insert(QStringLiteral("width"), stamp.width);
-        item.insert(QStringLiteral("height"), stamp.height);
-        item.insert(QStringLiteral("tileSize"), stamp.tileSize);
-        item.insert(QStringLiteral("graphics16Z"), QString::fromLatin1(qCompress(stamp.graphics, 9).toBase64()));
-        item.insert(QStringLiteral("collisionsZ"), QString::fromLatin1(qCompress(stamp.collisions, 9).toBase64()));
-        item.insert(QStringLiteral("flipsZ"), QString::fromLatin1(qCompress(stamp.flips, 9).toBase64()));
-        stampList.append(item);
-    }
-    result.insert(QStringLiteral("stamps"), stampList);
+    result.insert(QStringLiteral("stamps"), stampsToJson(stamps));
     QJsonArray collisionStampList;
     for (const SidboxCollisionStamp &stamp : collisionStamps) {
         QJsonObject item;
@@ -287,40 +333,7 @@ bool SidboxTilemap::fromJson(const QJsonObject &object)
     QVector<SidboxTileStamp> decodedStamps;
     const QJsonValue stampValue = object.value(QStringLiteral("stamps"));
     if (!stampValue.isUndefined() && !stampValue.isArray()) return false;
-    const QJsonArray stampItems = stampValue.toArray();
-    if (stampItems.size() > 128) return false;
-    for (const QJsonValue &value : stampItems) {
-        if (!value.isObject()) return false;
-        const QJsonObject item = value.toObject();
-        SidboxTileStamp stamp;
-        stamp.name = item.value(QStringLiteral("name")).toString();
-        stamp.width = item.value(QStringLiteral("width")).toInt(0);
-        stamp.height = item.value(QStringLiteral("height")).toInt(0);
-        stamp.tileSize = item.value(QStringLiteral("tileSize")).toInt(0);
-        if (stamp.name.isEmpty() || stamp.name.size() > 80 || stamp.width < 1 ||
-            stamp.width > 16 || stamp.height < 1 || stamp.height > 16 ||
-            (stamp.tileSize != 8 && stamp.tileSize != 16 && stamp.tileSize != 32)) return false;
-        const auto decode = [](const QString &base64, int size) -> QByteArray {
-            if (base64.size() > 4000) return {};
-            const QByteArray encoded = QByteArray::fromBase64(base64.toLatin1());
-            if (encoded.size() < 4) return {};
-            const auto *p = reinterpret_cast<const unsigned char *>(encoded.constData());
-            const quint32 length = (quint32(p[0]) << 24) | (quint32(p[1]) << 16)
-                                 | (quint32(p[2]) << 8) | p[3];
-            if (length != quint32(size)) return {};
-            return qUncompress(encoded);
-        };
-        const int count = stamp.width * stamp.height;
-        stamp.graphics = decode(item.value(QStringLiteral("graphics16Z")).toString(), count * 2);
-        stamp.collisions = decode(item.value(QStringLiteral("collisionsZ")).toString(), count);
-        const QJsonValue flipsValue = item.value(QStringLiteral("flipsZ"));
-        stamp.flips = flipsValue.isUndefined() ? QByteArray(count, char(0))
-            : decode(flipsValue.toString(), count);
-        if (stamp.graphics.size() != count * 2 || stamp.collisions.size() != count ||
-            stamp.flips.size() != count) return false;
-        for (char f : stamp.flips) if ((quint8(f) & ~quint8(7)) != 0) return false;
-        decodedStamps.append(std::move(stamp));
-    }
+    if (!stampsFromJson(stampValue.toArray(), &decodedStamps)) return false;
     QVector<SidboxCollisionStamp> decodedCollisionStamps;
     const QJsonValue collisionValue = object.value(QStringLiteral("collisionStamps"));
     if (!collisionValue.isUndefined() && !collisionValue.isArray()) return false;

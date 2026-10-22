@@ -2141,9 +2141,11 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
         || a.collisions != b.collisions || a.customZoneNames != b.customZoneNames
         || a.animations.size() != b.animations.size()
         || a.stamps.size() != b.stamps.size() || a.flips != b.flips
+        || a.tileStampBanks != b.tileStampBanks
         || a.slopes != b.slopes || a.collisionStamps.size() != b.collisionStamps.size()
         || a.collisionPlacements.size() != b.collisionPlacements.size()
         || a.loops.size() != b.loops.size()
+        || a.loopStamps.size() != b.loopStamps.size()
         || a.referencePlayerPositionSet != b.referencePlayerPositionSet
         || (a.referencePlayerPositionSet &&
             (a.referencePlayerX != b.referencePlayerX || a.referencePlayerY != b.referencePlayerY)))
@@ -2173,11 +2175,18 @@ static bool sameTilemap(const SidboxTilemap &a, const SidboxTilemap &b)
     }
     for (int i = 0; i < a.loops.size(); ++i) {
         const auto &l=a.loops.at(i), &r=b.loops.at(i);
-        if (l.centerX!=r.centerX || l.centerY!=r.centerY ||
+        if (l.stamp!=r.stamp || l.centerX!=r.centerX || l.centerY!=r.centerY ||
             l.radius!=r.radius || l.entrySpeed100!=r.entrySpeed100 ||
             l.downhillBoost100!=r.downhillBoost100 ||
             l.coastAfterExit!=r.coastAfterExit ||
             l.coastFalloffPermille!=r.coastFalloffPermille) return false;
+    }
+    for (int i = 0; i < a.loopStamps.size(); ++i) {
+        const auto &l = a.loopStamps.at(i), &r = b.loopStamps.at(i);
+        if (l.radius != r.radius || l.entrySpeed100 != r.entrySpeed100 ||
+            l.downhillBoost100 != r.downhillBoost100 ||
+            l.coastAfterExit != r.coastAfterExit ||
+            l.coastFalloffPermille != r.coastFalloffPermille) return false;
     }
     for (int i = 0; i < a.collisionPlacements.size(); ++i) {
         const auto &left = a.collisionPlacements.at(i);
@@ -2282,7 +2291,7 @@ void SidboxTilemapEditor::restoreMap(const SidboxTilemap &snapshot)
             : QDir(m_designDirectory).absoluteFilePath(m_map.atlasPath);
         const int index = m_atlasCombo->findData(full);
         m_atlasCombo->setCurrentIndex(index >= 0 ? index : 0);
-        setAtlas(full);
+        setAtlas(full, false); // snapshot already contains this atlas's bank
     }
     if (m_canvas) {
         m_canvas->adjust();
@@ -2314,6 +2323,27 @@ void SidboxTilemapEditor::redoEdit()
     m_undoStack.append(m_map);
     restoreMap(next);
     updateHistoryActions();
+}
+
+void SidboxTilemapEditor::acknowledgeGlobalStampSave()
+{
+    m_map.collisionOriginalIndices.clear();
+    for (int i = 0; i < m_map.collisionStamps.size(); ++i)
+        m_map.collisionOriginalIndices.append(i);
+    m_map.tileStampBanks.insert(m_map.atlasPath.isEmpty() ? QString() :
+                                    QDir::cleanPath(QDir::fromNativeSeparators(m_map.atlasPath)),
+                                SidboxTilemap::stampsToJson(m_map.stamps));
+    m_undoStack.clear();
+    m_redoStack.clear();
+    updateHistoryActions();
+}
+
+void SidboxTilemapEditor::syncCommittedTileStampBanks(const QJsonObject &banks)
+{
+    m_map.tileStampBanks = banks;
+    const QString key = m_map.atlasPath.isEmpty() ? QString() :
+        QDir::cleanPath(QDir::fromNativeSeparators(m_map.atlasPath));
+    m_map.tileStampBanks.insert(key, SidboxTilemap::stampsToJson(m_map.stamps));
 }
 
 void SidboxTilemapEditor::setSaveCallback(
@@ -2880,7 +2910,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *bankPane = new QWidget(stampSidebar);
     auto *bankLayout = new QVBoxLayout(bankPane);
     bankLayout->setContentsMargins(4, 0, 4, 4);
-    auto *bankTitle = new QLabel(tr("Stamp Bank"), bankPane);
+    auto *bankTitle = new QLabel(tr("Tile Atlas Stamp Bank (shared)"), bankPane);
     bankTitle->setFont(sectionFont);
     bankLayout->addWidget(bankTitle);
     m_stampList = new QListWidget(bankPane);
@@ -2973,6 +3003,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *collisionActions = new QHBoxLayout;
     auto *addCollision = new QPushButton(tr("Add"), collisionBankPane);
     auto *removeCollision = new QPushButton(tr("Remove"), collisionBankPane);
+    m_removeCollisionStamp = removeCollision;
     collisionActions->addWidget(addCollision);
     collisionActions->addWidget(removeCollision);
     collisionBankLayout->addLayout(collisionActions);
@@ -3350,16 +3381,52 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     auto *loopLayout = new QVBoxLayout(loopPane);
     loopLayout->setContentsMargins(6, 6, 6, 6);
     loopLayout->setSpacing(6);
-    // The tab already says Loop Tracks; no extra title or third-party name.
+    // Global definitions and this world's placements are deliberately TWO
+    // visible lists. The global bank stays visible even in an empty world.
+    loopLayout->addWidget(new QLabel(tr("Global Loop Stamp Bank (all worlds)"), loopPane));
+    auto *globalLoopList = new QListWidget(loopPane);
+    globalLoopList->setObjectName(QStringLiteral("GGGlobalLoopStampBank"));
+    globalLoopList->setMinimumHeight(105);
+    globalLoopList->setToolTip(tr("Project-owned loop definitions. Select one, then Place Stamp."));
+    loopLayout->addWidget(globalLoopList, 1);
+    loopLayout->addWidget(new QLabel(tr("Placed Loops (this world only)"), loopPane));
     auto *loopList = new QListWidget(loopPane);
     loopList->setObjectName(QStringLiteral("GGLoopTrackBank"));
     loopList->setSpacing(2);
     loopLayout->addWidget(loopList, 1);
     auto *loopActions = new QHBoxLayout;
-    auto *loopAdd = new QPushButton(tr("Add Loop"), loopPane);
-    auto *loopRemove = new QPushButton(tr("Remove Loop"), loopPane);
-    loopActions->addWidget(loopAdd); loopActions->addWidget(loopRemove);
+    auto *loopAdd = new QPushButton(tr("New Stamp + Place"), loopPane);
+    auto *loopPlace = new QPushButton(tr("Place Stamp"), loopPane);
+    auto *loopRemove = new QPushButton(tr("Remove Placement"), loopPane);
+    loopActions->addWidget(loopAdd); loopActions->addWidget(loopPlace);
+    loopActions->addWidget(loopRemove);
     loopLayout->addLayout(loopActions);
+    auto *loopStampPicker = new QComboBox(loopPane);
+    loopStampPicker->setToolTip(tr("Reusable project-wide loop definitions. "
+        "Place the selected stamp into the current world."));
+    loopStampPicker->hide(); // internal selection mirror for existing placement logic
+    connect(globalLoopList, &QListWidget::currentRowChanged, loopStampPicker,
+            &QComboBox::setCurrentIndex);
+    const auto updateLoopBank = [this, loopStampPicker, loopPlace, globalLoopList]() {
+        const int selected = globalLoopList->currentRow();
+        const QSignalBlocker comboBlock(loopStampPicker);
+        const QSignalBlocker listBlock(globalLoopList);
+        loopStampPicker->clear();
+        globalLoopList->clear();
+        for (int i = 0; i < m_map.loopStamps.size(); ++i) {
+            const auto &s = m_map.loopStamps.at(i);
+            loopStampPicker->addItem(tr("Loop Stamp %1  (R%2)")
+                .arg(i + 1).arg(s.radius), i);
+            globalLoopList->addItem(tr("Loop Stamp %1   R%2   Speed %3 px/f")
+                .arg(i + 1).arg(s.radius).arg(s.entrySpeed100 / 100.0, 0, 'f', 1));
+        }
+        if (loopStampPicker->count()) {
+            const int row = qBound(0, selected, loopStampPicker->count() - 1);
+            loopStampPicker->setCurrentIndex(row);
+            globalLoopList->setCurrentRow(row);
+        }
+        loopPlace->setEnabled(!m_map.loopStamps.isEmpty());
+    };
     auto *loopForm = new QFormLayout;
     loopForm->setContentsMargins(0, 0, 0, 0);
     loopForm->setSpacing(5);
@@ -3459,8 +3526,8 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         for (int i=0;i<m_map.loops.size();++i) {
             const auto &l=m_map.loops.at(i);
             auto *item = new QListWidgetItem(loopIcon,
-                tr("Loop %1  (%2, %3)  R%4")
-                .arg(i+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
+                tr("Loop %1  Stamp #%2  (%3, %4)  R%5")
+                .arg(i+1).arg(l.stamp+1).arg(l.centerX).arg(l.centerY).arg(l.radius));
             item->setSizeHint(QSize(0, 34)); // Room for the bordered card.
             loopList->addItem(item);
         }
@@ -3508,18 +3575,57 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     };
     connect(loopList,&QListWidget::currentRowChanged,this,
             [updateLoopEditors](int){updateLoopEditors();});
-    connect(loopAdd,&QPushButton::clicked,this,[this,loopList,updateLoopList,updateLoopEditors]() {
+    connect(loopAdd,&QPushButton::clicked,this,[this,loopList,updateLoopList,updateLoopEditors,updateLoopBank,loopStampPicker,globalLoopList]() {
         if (m_map.loops.size()>=32) {
             QMessageBox::warning(this,tr("Loop tracks"),tr("Maximum 32 loops per level.")); return;
+        }
+        if (m_map.loopStamps.size() >= 128) {
+            QMessageBox::warning(this, tr("Loop stamps"), tr("Maximum 128 project loop stamps."));
+            return;
         }
         SidboxLoopTrack l;
         const int maxX=m_map.width*m_map.tileSize, maxY=m_map.height*m_map.tileSize;
         l.radius=qMin(64,qMin(maxX,maxY)/4);
+        l.stamp = m_map.loopStamps.size();
         l.centerX=qBound(l.radius,(m_canvas->horizontalScrollBar()->value()+
             m_canvas->viewport()->width()/2)/m_canvas->zoom,maxX-l.radius-1);
         l.centerY=qBound(l.radius,(m_canvas->verticalScrollBar()->value()+
             m_canvas->viewport()->height()/2)/m_canvas->zoom,maxY-l.radius-1);
         const SidboxTilemap before=m_map;
+        m_map.loopStamps.append(l);
+        m_map.loops.append(l);
+        recordChange(before);
+        updateLoopBank();
+        globalLoopList->setCurrentRow(l.stamp);
+        loopStampPicker->setCurrentIndex(l.stamp);
+        updateLoopList();
+        loopList->setCurrentRow(m_map.loops.size()-1);
+        updateLoopEditors();
+    });
+    connect(loopPlace, &QPushButton::clicked, this,
+        [this,loopStampPicker,loopList,updateLoopList,updateLoopEditors]() {
+        if (m_map.loops.size() >= 32) {
+            QMessageBox::warning(this, tr("Loop tracks"), tr("Maximum 32 loops per world."));
+            return;
+        }
+        const int stamp = loopStampPicker->currentData().toInt();
+        if (stamp < 0 || stamp >= m_map.loopStamps.size()) return;
+        SidboxLoopTrack l = m_map.loopStamps.at(stamp);
+        l.stamp = stamp;
+        const int maxX = m_map.width * m_map.tileSize;
+        const int maxY = m_map.height * m_map.tileSize;
+        if (maxX <= 2*l.radius || maxY <= 2*l.radius) {
+            QMessageBox::warning(this, tr("Loop stamps"),
+                tr("This loop stamp is too large for this world."));
+            return;
+        }
+        l.centerX = qBound(l.radius,
+            (m_canvas->horizontalScrollBar()->value() + m_canvas->viewport()->width()/2)
+              / m_canvas->zoom, maxX-l.radius-1);
+        l.centerY = qBound(l.radius,
+            (m_canvas->verticalScrollBar()->value() + m_canvas->viewport()->height()/2)
+              / m_canvas->zoom, maxY-l.radius-1);
+        const SidboxTilemap before = m_map;
         m_map.loops.append(l);
         recordChange(before);
         updateLoopList();
@@ -3538,7 +3644,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     });
     const auto updateLoop = [this,loopList,loopX,loopY,loopRadius,loopSpeed,
                              loopBoostSlider,loopCoast,loopFalloffSlider,
-                             updateLoopList,updateLoopEditors]() {
+                             updateLoopList,updateLoopEditors,updateLoopBank]() {
         const int i=loopList->currentRow();
         if (i<0 || i>=m_map.loops.size()) return;
         auto l=m_map.loops.at(i);
@@ -3550,9 +3656,29 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         if (l.centerX<l.radius || l.centerY<l.radius ||
             l.centerX+l.radius>=m_map.width*m_map.tileSize ||
             l.centerY+l.radius>=m_map.height*m_map.tileSize) return;
+        if (l.stamp < 0 || l.stamp >= m_map.loopStamps.size()) return;
+        // Edits to physics/radius belong to the reusable stamp. Verify every
+        // local placement still fits before updating all of its instances.
+        for (const SidboxLoopTrack &other : m_map.loops) {
+            if (other.stamp != l.stamp || &other == &m_map.loops[i]) continue;
+            if (other.centerX < l.radius || other.centerY < l.radius ||
+                other.centerX + l.radius >= m_map.width*m_map.tileSize ||
+                other.centerY + l.radius >= m_map.height*m_map.tileSize) return;
+        }
         const SidboxTilemap before=m_map;
         m_map.loops[i]=l;
+        m_map.loopStamps[l.stamp] = l;
+        for (int n = 0; n < m_map.loops.size(); ++n) {
+            if (n == i || m_map.loops.at(n).stamp != l.stamp) continue;
+            auto &other = m_map.loops[n];
+            other.radius=l.radius;
+            other.entrySpeed100=l.entrySpeed100;
+            other.downhillBoost100=l.downhillBoost100;
+            other.coastAfterExit=l.coastAfterExit;
+            other.coastFalloffPermille=l.coastFalloffPermille;
+        }
         recordChange(before);
+        updateLoopBank();
         updateLoopList(); updateLoopEditors();
     };
     for (QSpinBox *spin : {loopX,loopY,loopRadius,loopSpeed})
@@ -3566,10 +3692,37 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
             [updateLoop](bool){updateLoop();});
     connect(loopFalloffSlider,&QSlider::valueChanged,this,
             [updateLoop](int){updateLoop();});
-    m_canvas->loopEdited=[updateLoopList,updateLoopEditors]() {
-        updateLoopList(); updateLoopEditors();
+    m_canvas->loopEdited=[this,updateLoopList,updateLoopEditors,updateLoopBank]() {
+        const int i = m_canvas->selectedLoop;
+        if (i >= 0 && i < m_map.loops.size()) {
+            const SidboxLoopTrack l = m_map.loops.at(i);
+            if (l.stamp >= 0 && l.stamp < m_map.loopStamps.size()) {
+                bool fits = true;
+                for (const SidboxLoopTrack &other : m_map.loops)
+                    if (other.stamp == l.stamp &&
+                        (other.centerX < l.radius || other.centerY < l.radius ||
+                         other.centerX + l.radius >= m_map.width*m_map.tileSize ||
+                         other.centerY + l.radius >= m_map.height*m_map.tileSize))
+                        fits = false;
+                if (fits) {
+                    m_map.loopStamps[l.stamp] = l;
+                    for (int n = 0; n < m_map.loops.size(); ++n) {
+                        if (n == i || m_map.loops.at(n).stamp != l.stamp) continue;
+                        auto &other = m_map.loops[n];
+                        other.radius = l.radius;
+                        other.entrySpeed100 = l.entrySpeed100;
+                        other.downhillBoost100 = l.downhillBoost100;
+                        other.coastAfterExit = l.coastAfterExit;
+                        other.coastFalloffPermille = l.coastFalloffPermille;
+                    }
+                } else {
+                    m_map.loops[i].radius = m_map.loopStamps.at(l.stamp).radius;
+                }
+            }
+        }
+        updateLoopBank(); updateLoopList(); updateLoopEditors();
     };
-    updateLoopList(); updateLoopEditors();
+    updateLoopBank(); updateLoopList(); updateLoopEditors();
     connect(m_stampTabs, &QTabWidget::currentChanged, this, [this](int tab) {
         m_canvas->collisionStampIndex = -1;
         m_canvas->stampIndex = -1;
@@ -3587,7 +3740,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         [this](QListWidgetItem *item) { selectCollisionStamp(m_collisionList->row(item)); });
     connect(m_collisionList, &QListWidget::itemDoubleClicked, this,
         [this](QListWidgetItem *item) { openCollisionStampEditor(m_collisionList->row(item)); });
-    connect(addCollision, &QPushButton::clicked, this, [this]() {
+    connect(addCollision, &QPushButton::clicked, this, [this, removeCollision]() {
         if (m_map.collisionStamps.size() >= 128) {
             QMessageBox::warning(this, tr("Collision stamps"), tr("Maximum of 128 collision stamps."));
             return;
@@ -3598,11 +3751,18 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         stamp.tileSize = m_map.tileSize;
         stamp.resizeStamp(2, 2);
         m_map.collisionStamps.append(stamp);
+        m_map.collisionOriginalIndices.append(-1);
         recordChange(before);
         updateCollisionList(m_map.collisionStamps.size() - 1);
+        removeCollision->setEnabled(true);
         selectCollisionStamp(m_collisionList->currentRow());
     });
-    connect(removeCollision, &QPushButton::clicked, this, [this]() {
+    removeCollision->setEnabled(false);
+    removeCollision->setToolTip(tr("Remove this shared slope from the project and all worlds. "
+        "Remaining global stamp indexes will be adjusted on Save."));
+    connect(m_collisionList, &QListWidget::currentRowChanged, removeCollision,
+        [removeCollision](int row) { removeCollision->setEnabled(row >= 0); });
+    connect(removeCollision, &QPushButton::clicked, this, [this, removeCollision]() {
         const int row = m_collisionList->currentRow();
         if (row < 0 || row >= m_map.collisionStamps.size()) return;
         const SidboxTilemap before = m_map;
@@ -3613,22 +3773,31 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
                 m_map.collisionPlacements[i].stamp--;
         }
         m_map.collisionStamps.removeAt(row);
+        if (row < m_map.collisionOriginalIndices.size())
+            m_map.collisionOriginalIndices.removeAt(row);
+        m_canvas->collisionStampIndex = -1;
         m_canvas->viewport()->update();
         recordChange(before);
         updateCollisionList(m_map.collisionStamps.isEmpty() ? -1 :
                             qMin(row, int(m_map.collisionStamps.size()) - 1));
+        removeCollision->setEnabled(m_collisionList->currentRow() >= 0);
         selectCollisionStamp(m_collisionList->currentRow());
     });
-    connect(m_collisionName, &QLineEdit::editingFinished, this, [this]() {
+    // Return must commit before the dialog's default-button handling or a
+    // focus change has an opportunity to repopulate the line edit.
+    const auto commitCollisionName = [this]() {
         const int row = m_collisionList->currentRow();
         if (row < 0 || row >= m_map.collisionStamps.size()) return;
         const QString name = m_collisionName->text().trimmed();
-        if (name.isEmpty()) return;
+        if (name.isEmpty()) { updateCollisionEditorControls(); return; }
+        if (name == m_map.collisionStamps.at(row).name) return;
         const SidboxTilemap before = m_map;
         m_map.collisionStamps[row].name = name;
         recordChange(before);
         updateCollisionList(row);
-    });
+    };
+    connect(m_collisionName, &QLineEdit::returnPressed, this, commitCollisionName);
+    connect(m_collisionName, &QLineEdit::editingFinished, this, commitCollisionName);
     connect(m_collisionPassive, &QCheckBox::toggled, this, [this](bool enabled) {
         const int row = m_collisionList->currentRow();
         if (row < 0 || row >= m_map.collisionStamps.size()) return;
@@ -3829,6 +3998,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(m_saveButton, &QPushButton::clicked, this, [this]() {
         if (!m_saveCallback) return;
         if (m_canvas && m_canvas->painting) return;
+        // Committing while the slope sub-editor is open must not leave a
+        // Cancel snapshot that can restore an already-saved global bank.
+        if (m_collisionEditActive) finishCollisionStampEdit(true);
         // The saved project must contain the CURRENT pan, not the pan from
         // the last time the editor was opened.
         if (m_canvas) {
@@ -3865,13 +4037,20 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     connect(removeStamp, &QPushButton::clicked, this, [this]() {
         const int row = m_stampList->currentRow();
         if (row < 0 || row >= m_map.stamps.size()) return;
+        if (QMessageBox::question(this, tr("Remove Tile Stamp"),
+                tr("Remove tile stamp '%1' from the shared atlas bank?\n\n"
+                   "All worlds using this atlas will lose this stamp definition. "
+                   "Already-painted map tiles will remain unchanged.")
+                    .arg(m_map.stamps.at(row).name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
         const SidboxTilemap before = m_map;
         m_map.stamps.removeAt(row);
         recordChange(before);
         updateStampList(m_map.stamps.isEmpty() ? -1 : qMin(row, int(m_map.stamps.size()) - 1));
         selectStamp(m_stampList->currentRow());
     });
-    connect(m_stampName, &QLineEdit::editingFinished, this, [this]() {
+    const auto commitTileStampName = [this]() {
         const int row = m_stampList->currentRow();
         if (row < 0 || row >= m_map.stamps.size()) return;
         const QString name = m_stampName->text().trimmed();
@@ -3880,7 +4059,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         m_map.stamps[row].name = name;
         recordChange(before);
         updateStampList(row);
-    });
+    };
+    connect(m_stampName, &QLineEdit::returnPressed, this, commitTileStampName);
+    connect(m_stampName, &QLineEdit::editingFinished, this, commitTileStampName);
     connect(m_stampWidth, qOverload<int>(&QSpinBox::valueChanged), this,
         [this](int width) {
             const int row = m_stampList->currentRow();
@@ -4112,10 +4293,24 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_animationTimer->start();
 }
 
-void SidboxTilemapEditor::setAtlas(const QString &absolutePath)
+void SidboxTilemapEditor::setAtlas(const QString &absolutePath, bool switchBank)
 {
-    m_map.atlasPath = absolutePath.isEmpty() ? QString()
-        : QDir(m_designDirectory).relativeFilePath(absolutePath);
+    const QString nextPath = absolutePath.isEmpty() ? QString()
+        : QDir::cleanPath(QDir(m_designDirectory).relativeFilePath(absolutePath));
+    if (switchBank && m_map.atlasPath != nextPath) {
+        const QString previousKey = QDir::cleanPath(QDir::fromNativeSeparators(m_map.atlasPath));
+        m_map.tileStampBanks.insert(m_map.atlasPath.isEmpty() ? QString() : previousKey,
+                                    SidboxTilemap::stampsToJson(m_map.stamps));
+        const QString nextKey = nextPath.isEmpty() ? QString() :
+            QDir::cleanPath(QDir::fromNativeSeparators(nextPath));
+        QVector<SidboxTileStamp> bank;
+        if (m_map.tileStampBanks.value(nextKey).isArray() &&
+            SidboxTilemap::stampsFromJson(m_map.tileStampBanks.value(nextKey).toArray(), &bank))
+            m_map.stamps = std::move(bank);
+        else m_map.stamps.clear();
+        if (m_canvas) m_canvas->stampIndex = -1;
+    }
+    m_map.atlasPath = nextPath;
     m_atlas = QImage();
     if (!absolutePath.isEmpty()) {
         SidboxPpb::Picture picture;
@@ -4339,6 +4534,7 @@ void SidboxTilemapEditor::updateCollisionList(int wantedRow)
     }
     const int selected = wantedRow >= 0 && wantedRow < m_map.collisionStamps.size() ? wantedRow : -1;
     m_collisionList->setCurrentRow(selected);
+    if (m_removeCollisionStamp) m_removeCollisionStamp->setEnabled(selected >= 0);
     updateCollisionEditorControls();
 }
 
@@ -4655,6 +4851,14 @@ void SidboxTilemapEditor::done(int result)
 
 void SidboxTilemapEditor::keyPressEvent(QKeyEvent *event)
 {
+    // The name's returnPressed commits the text. Do not let QDialog treat
+    // that same Enter as "Apply to Design" and close the whole tile editor.
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+        ((m_collisionName && m_collisionName->hasFocus()) ||
+         (m_stampName && m_stampName->hasFocus()))) {
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape && m_canvas && m_canvas->temporaryActive) {
         m_canvas->deactivateTemporary();
         event->accept();
@@ -4784,7 +4988,7 @@ QString sidboxTilemapWorldBaseName(const QString &designFilePath)
 
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
                          QString *error, bool externalMap, const QString &designFilePath,
-                         const QString &rulesDirectory)
+                         const QString &rulesDirectory, const QString &outputDirectory)
 {
     if (map.width < 30 || map.width > SIDBOX_MAP_MAX_AXIS ||
         map.height < 20 || map.height > SIDBOX_MAP_MAX_AXIS ||
@@ -4866,7 +5070,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
                 if (error) *error = QStringLiteral("Invalid point-defined collision stamp.");
                 return false;
             }
-            shapeRemap[place.stamp] = usedShapes.size();
+            // Embedded maps reference the project-global stamp index directly.
+            // TFCard .map v4 retains its existing compact per-file shape table.
+            shapeRemap[place.stamp] = externalMap ? usedShapes.size() : place.stamp;
             usedShapes.append(place.stamp);
         }
     }
@@ -4967,7 +5173,8 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         }
         seenAnimated.insert(a.graphicId);
     }
-    const QString folder = QDir(designDirectory).filePath(QStringLiteral("gamelevels"));
+    const QString folder = QDir(outputDirectory.isEmpty() ? designDirectory : outputDirectory)
+        .filePath(QStringLiteral("gamelevels"));
     const QString worldBase = sidboxTilemapWorldBaseName(designFilePath);
     const QString worldSymbol = QStringLiteral("game_") + worldBase;
     const QString worldHeader = worldBase + QStringLiteral(".h");
@@ -5086,10 +5293,14 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
             .arg(a.graphicId).arg(a.frames).arg(a.frameTicks)
             .arg((a.loop ? 1 : 0) | (a.bounce ? 2 : 0));
     QString loopRows;
-    for (const SidboxLoopTrack &l : map.loops)
-        loopRows += QStringLiteral("    {%1, %2, %3, %4, %5, %6, %7},\n")
-            .arg(l.centerX).arg(l.centerY).arg(l.radius).arg(l.entrySpeed100)
-            .arg(l.downhillBoost100).arg(l.coastAfterExit ? 1 : 0).arg(l.coastFalloffPermille);
+    for (const SidboxLoopTrack &l : map.loops) {
+        if (l.stamp < 0 || l.stamp >= map.loopStamps.size()) {
+            if (error) *error = QStringLiteral("Loop placement references a missing global stamp.");
+            return false;
+        }
+        loopRows += QStringLiteral("    {%1, %2, %3},\n")
+            .arg(l.centerX).arg(l.centerY).arg(l.stamp);
+    }
     QByteArray atlasPath = QDir::cleanPath(QDir::fromNativeSeparators(map.atlasPath)).toUtf8();
     atlasPath.replace("\\", "\\\\");
     atlasPath.replace("\"", "\\\"");
@@ -5121,11 +5332,13 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         {QStringLiteral("SLOPE_POINTER"), embedded && custom ? worldSymbol + QStringLiteral("_slopes") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_REF_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_refs") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_INSTANCE_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_instances") : QStringLiteral("0")},
-        {QStringLiteral("SHAPE_DEF_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_defs") : QStringLiteral("0")},
-        {QStringLiteral("SHAPE_POINTS_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_points") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_DEF_POINTER"), embedded && pointShapes ? QStringLiteral("game_global_collision_stamps") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_POINTS_POINTER"), embedded && pointShapes ? QStringLiteral("game_global_collision_points") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_INSTANCE_COUNT"), embedded && pointShapes ? num(map.collisionPlacements.size()) : QStringLiteral("0")},
-        {QStringLiteral("SHAPE_DEF_COUNT"), embedded && pointShapes ? num(usedShapes.size()) : QStringLiteral("0")},
-        {QStringLiteral("LOOP_POINTER"), map.loops.isEmpty() ? QStringLiteral("0") : worldSymbol + QStringLiteral("_loops")},
+        {QStringLiteral("SHAPE_DEF_COUNT"), embedded && pointShapes ? num(map.collisionStamps.size()) : QStringLiteral("0")},
+        {QStringLiteral("LOOP_POINTER"), map.loops.isEmpty() ? QStringLiteral("0") : worldSymbol + QStringLiteral("_loop_placements")},
+        {QStringLiteral("LOOP_STAMP_POINTER"), map.loops.isEmpty() ? QStringLiteral("0") : QStringLiteral("game_global_loop_stamps")},
+        {QStringLiteral("LOOP_STAMP_COUNT"), num(map.loopStamps.size())},
         {QStringLiteral("LOOP_COUNT"), num(map.loops.size())},
         {QStringLiteral("ATLAS_PATH"), QStringLiteral("\"") + QString::fromUtf8(atlasPath) + QStringLiteral("\"")},
         {QStringLiteral("ATLAS_HASH"), num(atlasHash)},
@@ -5220,6 +5433,51 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         if (!atomic(QDir(folder).filePath(worldMap), bytes))
             return false;
     }
+    QString globalC = QStringLiteral(
+        "/* CoderGirl project-owned collision and loop stamps. Generated: do not edit. */\n"
+        "#include \"gametilemap.h\"\n"
+        "const game_tile_shape_t game_global_collision_stamps[] = {\n");
+    int pointOffset = 0;
+    for (const SidboxCollisionStamp &shape : map.collisionStamps) {
+        if (!validSlopePoints(shape) || pointOffset + shape.points.size() > 65535) {
+            if (error) *error = QStringLiteral("Invalid project-global slope geometry.");
+            return false;
+        }
+        globalC += QStringLiteral("    {%1, %2, %3, %4, %5, %6},\n")
+            .arg(shape.width).arg(shape.height).arg(pointOffset).arg(shape.points.size())
+            .arg(shape.passiveSurface ? shape.dampingPercent : 0)
+            .arg(shape.passiveSurface ? 1 : 0);
+        pointOffset += shape.points.size();
+    }
+    if (map.collisionStamps.isEmpty()) globalC += QStringLiteral("    {0},\n");
+    globalC += QStringLiteral("};\nconst game_tile_shape_point_t game_global_collision_points[] = {\n");
+    for (const SidboxCollisionStamp &shape : map.collisionStamps)
+        for (const QPoint &pt : shape.points)
+            globalC += QStringLiteral("    {%1, %2},\n").arg(pt.x()).arg(pt.y());
+    if (pointOffset == 0) globalC += QStringLiteral("    {0},\n");
+    globalC += QStringLiteral("};\nconst game_tile_loop_stamp_t game_global_loop_stamps[] = {\n");
+    if (map.loopStamps.size() > 128) {
+        if (error) *error = QStringLiteral("Too many project loop stamps.");
+        return false;
+    }
+    for (const SidboxLoopTrack &loop : map.loopStamps) {
+        if (loop.radius < 16 || loop.radius > 512 ||
+            loop.entrySpeed100 < 100 || loop.entrySpeed100 > 3200 ||
+            loop.downhillBoost100 < 0 || loop.downhillBoost100 > 200 ||
+            loop.coastFalloffPermille < 0 || loop.coastFalloffPermille > 200) {
+            if (error) *error = QStringLiteral("Invalid project-global loop geometry.");
+            return false;
+        }
+        globalC += QStringLiteral("    {%1, %2, %3, %4, %5},\n")
+            .arg(loop.radius).arg(loop.entrySpeed100).arg(loop.downhillBoost100)
+            .arg(loop.coastAfterExit ? 1 : 0).arg(loop.coastFalloffPermille);
+    }
+    if (map.loopStamps.isEmpty()) globalC += QStringLiteral("    {0},\n");
+    globalC += QStringLiteral("};\n");
+    const QDir globalDir(designDirectory);
+    if (!QDir().mkpath(globalDir.filePath(QStringLiteral("gamehelpers"))) ||
+        !atomic(globalDir.filePath(QStringLiteral("gamehelpers/gameglobalstamps.c")),
+                globalC.toUtf8())) return false;
     return atomic(QDir(folder).filePath(worldHeader), header)
         && atomic(QDir(folder).filePath(worldSource), source);
 }

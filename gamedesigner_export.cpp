@@ -1172,19 +1172,26 @@ bool SidboxGameDesigner::regenerateBuildFiles()
     if (m_dirty && !saveDesign()) return false;
 
     bool embedPixels = false;
-    const QString generatedSource = GameWorldSnapshot::isActive(m_filePath)
-        ? QDir(QFileInfo(m_filePath).absolutePath())
-            .filePath(QStringLiteral("gameassets/gameassets.c"))
-        : QDir(QFileInfo(m_filePath).absolutePath())
-            .filePath(QStringLiteral(".codergirl/worlds/")
-                + sidboxTilemapWorldBaseName(m_filePath)
-                + QStringLiteral("/gameassets/gameassets.c"));
-    QFile current(generatedSource);
-    if (current.open(QIODevice::ReadOnly)) {
+    // Stage 5.12: root gameassets/ is temporary export staging and is
+    // removed after publishing. Read this WORLD's private snapshot first;
+    // otherwise F5 would forget the embedded-PPB selection on the next build.
+    const QDir project(QFileInfo(m_filePath).absolutePath());
+    const QString world = sidboxTilemapWorldBaseName(m_filePath);
+    const QStringList generatedSources = {
+        project.filePath(QStringLiteral(".codergirl/worlds/") + world
+                         + QStringLiteral("/gameassets/gameassets.c")),
+        project.filePath(QStringLiteral("worlds/") + world
+                         + QStringLiteral("/gameassets/gameassets.c")),
+        project.filePath(QStringLiteral("gameassets/gameassets.c"))
+    };
+    for (const QString &source : generatedSources) {
+        QFile current(source);
+        if (!current.open(QIODevice::ReadOnly)) continue;
         // The embed writer marks each bitmap; the normal PPB loader does not.
         // Read only enough of the generated source to find the first bitmap.
         const QByteArray prefix = current.read(256 * 1024);
         embedPixels = prefix.contains("/* Original PPB indexed pixels, unchanged;");
+        break;
     }
     if (m_tilemapEnabled && tilemapBuildFilesMissing()
         && !exportTilemap(false, true)) return false;
@@ -1206,13 +1213,14 @@ void SidboxGameDesigner::generateGameCode()
         QMessageBox::Yes);
     if (choice == QMessageBox::Cancel) return;
 
-    const QString output = QDir(QFileInfo(m_filePath).absolutePath())
-        .filePath(QStringLiteral("gameassets"));
-    const QString cPath = QDir(output).filePath(QStringLiteral("gameassets.c"));
-    const QString hPath = QDir(output).filePath(QStringLiteral("gameassets.h"));
+    const QDir project(QFileInfo(m_filePath).absolutePath());
+    const QDir output(project.filePath(QStringLiteral("worlds/")
+        + sidboxTilemapWorldBaseName(m_filePath) + QStringLiteral("/gameassets")));
+    const QString cPath = output.filePath(QStringLiteral("gameassets.c"));
+    const QString hPath = output.filePath(QStringLiteral("gameassets.h"));
     if (QFileInfo::exists(cPath) || QFileInfo::exists(hPath)) {
         if (QMessageBox::warning(this, tr("Regenerate V1 Game Code"),
-            tr("The generated gameassets.c/.h files already exist.\n\n"
+            tr("This world's generated gameassets.c/.h files already exist.\n\n"
                "Regenerating replaces these files. A verified IDE-owned main.c may "
                "also be refreshed; user-owned main.c is never replaced.\n\n"
                "Continue?"), QMessageBox::Yes | QMessageBox::Cancel,
@@ -1242,7 +1250,9 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         QMessageBox::warning(this, tr("Game Object Dependencies"), integrationError);
         return false;
     }
-    if (m_tilemapEnabled && tilemapBuildFilesMissing() && !exportTilemap(false, true))
+    // Always refresh this world's private map staging before publishing.
+    // It is consumed during publication; root gamelevels/ is never generated.
+    if (m_tilemapEnabled && !exportTilemap(false, true))
         return false;
     if (anySpline && !exportSplinePaths(false)) return false;
 
@@ -1366,8 +1376,8 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
                          "including projects with only one world.\n"
                          "Call gameworlds_start(\"%1\") after SIDBOX display/memory setup.\n"
                          "Use gameworlds_update()/draw()/shutdown() as shown\n"
-                         "in maingame.c.txt. The old root gameassets/gameworlditems\n"
-                         "modules are export staging only and are NOT linked.")
+                         "in maingame.c.txt. Temporary root gameassets/gameworlditems\n"
+                         "exports are removed after publication and are NOT linked.")
         .arg(sidboxTilemapWorldBaseName(m_filePath));
     if (anyWorldObject)
         message += tr("\n\nWorld object files and guide were generated for this world.");

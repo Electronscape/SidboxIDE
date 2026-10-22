@@ -4,8 +4,8 @@
 // Stage 5.1: each .sbgm has BOTH a private .codergirl snapshot and a visible
 // worlds/<name>/ build tree. The tree compiles simultaneously with other
 // worlds; public per-world C identifiers are renamed by a generated header.
-// Root-level generated outputs remain as temporary exporter inputs only;
-// Stage 5.2d never links them and never uses a single-world runtime.
+// Map output is staged privately in .codergirl/tilemap-staging/<world>/.
+// Project-root gamelevels/ is obsolete and is never compiled.
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -544,9 +544,12 @@ inline bool publish(const QString &designPath, const QString &worldName,
         files << base + QStringLiteral(".c") << base + QStringLiteral(".h");
         if (externalMap) files << base + QStringLiteral(".map");
     }
+    const QDir mapStaging(project.filePath(
+        QStringLiteral(".codergirl/tilemap-staging/") + worldName));
     QJsonArray copied;
     for (const QString &relative : files) {
-        const QString src = project.filePath(relative);
+        const QString src = relative.startsWith(QStringLiteral("gamelevels/"))
+            ? mapStaging.filePath(relative) : project.filePath(relative);
         if (!QFileInfo(src).isFile()) {
             // World-items stubs and a first-time starter may be absent in
             // legacy projects. Never accidentally archive another world's
@@ -607,6 +610,126 @@ inline bool publish(const QString &designPath, const QString &worldName,
     // Update the shared registry after the committed world is active.
     if (!publishWorldRegistry(project, QDir(rulesDirectory), error))
         return false;
+    QDir(mapStaging).removeRecursively();
+    // Stage 5.11: gameworlditems, gameadventure and splinepaths are WORLD
+    // modules, not project-wide helpers. Their canonical generation still
+    // takes place in project/gamehelpers/ until the world bundle is built,
+    // but no duplicate is needed afterwards. Remove ONLY exact copies of
+    // published world files. Keep actual shared engine helpers untouched,
+    // and preserve an edited root file which differs from every world.
+    {
+        const QDir rootHelpers(project.filePath(QStringLiteral("gamehelpers")));
+        const QDir publishedWorlds(project.filePath(QStringLiteral("worlds")));
+        const QStringList generatedNames = {
+            QStringLiteral("gameworlditems.c"),
+            QStringLiteral("gameworlditems.h"),
+            QStringLiteral("gameworlditems.txt"),
+            QStringLiteral("gameadventure.c"),
+            QStringLiteral("gameadventure.h"),
+            QStringLiteral("splinepaths.c"),
+            QStringLiteral("splinepaths.h")
+        };
+        const QByteArray namespaceInclude = "#include \"../world_symbols.h\"\n";
+        const QStringList names = publishedWorlds.entryList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString &filename : generatedNames) {
+            const QString rootFile = rootHelpers.filePath(filename);
+            QFile original(rootFile);
+            if (!original.open(QIODevice::ReadOnly)) continue;
+            const QByteArray rootBytes = original.readAll();
+            original.close();
+            for (const QString &name : names) {
+                if (name.startsWith(QLatin1Char('.'))) continue;
+                const QDir world(publishedWorlds.filePath(name));
+                if (!QFileInfo::exists(world.filePath(QStringLiteral("world-build.json"))))
+                    continue;
+                QFile published(world.filePath(QStringLiteral("gamehelpers/") + filename));
+                if (!published.open(QIODevice::ReadOnly)) continue;
+                QByteArray worldBytes = published.readAll();
+                if (filename.endsWith(QStringLiteral(".c"))) {
+                    // Namespaced world .c modules have precisely one added
+                    // include at the beginning, inserted by publishBuildTree.
+                    if (!worldBytes.startsWith(namespaceInclude)) continue;
+                    worldBytes.remove(0, namespaceInclude.size());
+                }
+                if (rootBytes == worldBytes) {
+                    QFile::remove(rootFile);
+                    break;
+                }
+            }
+        }
+    }
+    // Stage 5.12: gameassets.c/.h are generated for ONE world and already
+    // published at worlds/<world>/gameassets/. Never keep a redundant root
+    // export after successful publication. Compare bytes against ANY valid
+    // published world before removing them, so regeneration of Forest does
+    // not depend on which world was generated last. The buildable .c adds
+    // exactly one namespace include; generated .h is unchanged.
+    {
+        const QDir rootAssets(project.filePath(QStringLiteral("gameassets")));
+        const QDir publishedWorlds(project.filePath(QStringLiteral("worlds")));
+        const QByteArray namespaceInclude = "#include \"../world_symbols.h\"\n";
+        const QStringList names = publishedWorlds.entryList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString &filename : {QStringLiteral("gameassets.c"),
+                                        QStringLiteral("gameassets.h")}) {
+            const QString rootFile = rootAssets.filePath(filename);
+            QFile original(rootFile);
+            if (!original.open(QIODevice::ReadOnly)) continue;
+            const QByteArray rootBytes = original.readAll();
+            original.close();
+            for (const QString &name : names) {
+                if (name.startsWith(QLatin1Char('.'))) continue;
+                const QDir world(publishedWorlds.filePath(name));
+                if (!QFileInfo::exists(world.filePath(QStringLiteral("world-build.json"))))
+                    continue;
+                QFile published(world.filePath(QStringLiteral("gameassets/") + filename));
+                if (!published.open(QIODevice::ReadOnly)) continue;
+                QByteArray worldBytes = published.readAll();
+                if (filename.endsWith(QStringLiteral(".c"))) {
+                    if (!worldBytes.startsWith(namespaceInclude)) continue;
+                    worldBytes.remove(0, namespaceInclude.size());
+                }
+                if (rootBytes == worldBytes) {
+                    QFile::remove(rootFile);
+                    break;
+                }
+            }
+        }
+        // Never delete unrelated files that users placed in gameassets/.
+        project.rmdir(QStringLiteral("gameassets")); // Only when empty.
+    }
+    // Clean only recognisable legacy tilemap exports after successful
+    // publication. Preserve non-generated files in a user's gamelevels/.
+    {
+        const QDir root(project.filePath(QStringLiteral("gamelevels")));
+        if (root.exists()) {
+            const QStringList designs = project.entryList(
+                {QStringLiteral("*.sbgm")}, QDir::Files, QDir::Name);
+            for (const QString &design : designs) {
+                const QString name = sidboxTilemapWorldBaseName(project.filePath(design));
+                const QString worldLevels = project.filePath(
+                    QStringLiteral("worlds/") + name + QStringLiteral("/gamelevels/"));
+                if (!QFileInfo::exists(QDir(worldLevels).filePath(name + QStringLiteral(".c")))
+                    || !QFileInfo::exists(QDir(worldLevels).filePath(name + QStringLiteral(".h"))))
+                    continue;
+                for (const QString &ext : {QStringLiteral(".c"), QStringLiteral(".h"), QStringLiteral(".map")}) {
+                    const QString legacy = root.filePath(name + ext);
+                    QFile check(legacy);
+                    if (!check.open(QIODevice::ReadOnly)) continue;
+                    const QByteArray prefix = check.read(4096);
+                    const bool generated = ext == QStringLiteral(".c")
+                        ? prefix.startsWith(QByteArray("#include \"") + name.toUtf8() + QByteArray(".h\""))
+                        : ext == QStringLiteral(".h")
+                            ? prefix.contains("Generated from Tilemap Editor")
+                            : prefix.startsWith("SBMP");
+                    check.close();
+                    if (generated) QFile::remove(legacy);
+                }
+            }
+            project.rmdir(QStringLiteral("gamelevels")); // Succeeds only if empty.
+        }
+    }
     return true;
 }
 

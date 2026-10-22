@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QImage>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QStringList>
 #include <QString>
 #include <QVector>
@@ -64,6 +65,7 @@ struct SidboxCollisionPlacement {
  * is guided around the circle while moving fast enough, and drops back
  * to ordinary tile physics if speed is insufficient. World PIXEL units. */
 struct SidboxLoopTrack {
+    int stamp = -1; // global loop definition index; -1 for old, unmigrated designs
     int centerX = 0;
     int centerY = 0;
     int radius = 64;
@@ -98,12 +100,22 @@ struct SidboxTilemap {
     QStringList customZoneNames; /* 8 optional design names; exported as level1.h C aliases */
     QVector<SidboxTileAnimation> animations;
     QVector<SidboxTileStamp> stamps;
+    // Editor/project-only banks, keyed by the relative PPB atlas path.
+    // .sbgm worlds never store these banks; switching atlases switches banks.
+    QJsonObject tileStampBanks;
     QVector<SidboxCollisionStamp> collisionStamps;
+    // Editor-only: for each current collision stamp, its index in the bank
+    // when this world opened. -1 means a newly created stamp. Undo copies it.
+    // Used to remap the OTHER worlds when a global definition is removed.
+    QVector<int> collisionOriginalIndices;
     QVector<SidboxCollisionPlacement> collisionPlacements;
-    QVector<SidboxLoopTrack> loops; /* Editor overlay + generated level data */
+    QVector<SidboxLoopTrack> loops; /* level placements with resolved shared definitions */
+    QVector<SidboxLoopTrack> loopStamps; /* project-global definitions, centres ignored */
     QByteArray slopes = QByteArray(10000 * 16, char(0)); // tileSize bytes/cell, custom type 7
 
     void resizeMap(int w, int h);
+    static QJsonArray stampsToJson(const QVector<SidboxTileStamp> &stamps);
+    static bool stampsFromJson(const QJsonArray &items, QVector<SidboxTileStamp> *output);
     QJsonObject toJson() const;
     bool fromJson(const QJsonObject &object);
 };
@@ -143,6 +155,10 @@ public:
                             const QRect &hitbox = QRect());
     // Commit the editor's current working copy to the parent project without closing.
     void setSaveCallback(const std::function<bool(const SidboxTilemap &)> &callback);
+    // Called after the IDE commits the global bank; resets temporary index
+    // mappings and history so the next Save starts from the new bank.
+    void acknowledgeGlobalStampSave();
+    void syncCommittedTileStampBanks(const QJsonObject &banks);
 protected:
     bool eventFilter(QObject *target, QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -158,6 +174,7 @@ private:
     StampCanvas *m_stampCanvas = nullptr;
     CollisionCanvas *m_collisionCanvas = nullptr;
     QListWidget *m_collisionList = nullptr;
+    QPushButton *m_removeCollisionStamp = nullptr;
     QStackedWidget *m_collisionViews = nullptr;
     QTabWidget *m_stampTabs = nullptr;
     QLineEdit *m_collisionName = nullptr;
@@ -243,7 +260,7 @@ private:
     void restoreMap(const SidboxTilemap &snapshot);
     void undoEdit();
     void redoEdit();
-    void setAtlas(const QString &absolutePath);
+    void setAtlas(const QString &absolutePath, bool switchBank = true);
     void updateAtlasPicker();
     void updateStampList(int row = -2);
     void updateStampEditor();
@@ -269,11 +286,13 @@ QString sidboxTilemapZoneMacroName(const SidboxTilemap &map, int zone);
 // Result is sanitised to a legal C/file identifier and falls back to "level1".
 QString sidboxTilemapWorldBaseName(const QString &designFilePath);
 
-// Exported level data always lives in gamelevels/. This function does not
-// create helper templates, modify gameassets, or touch main.c.
+// The IDE stages world-specific output outside the project root, then publishes
+// it to worlds/<world>/gamelevels/. Atlas paths and shared runtime helpers still
+// resolve against designDirectory. Standalone exporters may omit outputDirectory.
 bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirectory,
                          QString *error, bool externalMap = false,
                          const QString &designFilePath = QString(),
-                         const QString &rulesDirectory = QString());
+                         const QString &rulesDirectory = QString(),
+                         const QString &outputDirectory = QString());
 
 #endif

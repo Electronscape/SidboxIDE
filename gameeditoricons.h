@@ -46,8 +46,9 @@ inline QIcon gameEditorExternalIcon(const QString &fileName)
 inline QString gameEditorIconUrl(const QString &fileName)
 {
     const QString file = gameEditorIconOverride(fileName);
+    // Qt stylesheets expect a local path, not a file:/// URL.
     return file.isEmpty() ? QStringLiteral(":/icons/") + fileName
-                          : QUrl::fromLocalFile(file).toString();
+                          : QDir::fromNativeSeparators(file);
 }
 
 inline QString gameEditorCheckmarkUrl()

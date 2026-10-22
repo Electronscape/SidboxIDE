@@ -6791,7 +6791,7 @@ void MainWindow::setupInterface()
             border-radius: 0px;
         }
         QTabBar::close-button {
-                image: url(:/icons/close_tab.png);   /* optional – only if you have a custom icon */
+                image: url(:/icons/close_tab.png);   /* Built-in fallback, independent of launch folder. */
                 border-radius: 0px;
                 subcontrol-position: right;
                 subcontrol-origin: padding;
@@ -12371,6 +12371,31 @@ bool MainWindow::saveProjectFile(const QString &filePath)
         addProjectFile(projectFile);
     }
 
+    // Stages 5.9/5.11/5.12: after publishing a world, root-level generated
+    // map, helper and gameassets duplicates disappear. Prune ONLY missing paths
+    // from the project manifest. Preserve references to user-owned helpers
+    // and every other missing resource.
+    if (normalizedProjectType(m_projectType) == GameProjectType) {
+        const QStringList generatedWorldHelpers = {
+            QStringLiteral("gamehelpers/gameworlditems.c"),
+            QStringLiteral("gamehelpers/gameworlditems.h"),
+            QStringLiteral("gamehelpers/gameworlditems.txt"),
+            QStringLiteral("gamehelpers/gameadventure.c"),
+            QStringLiteral("gamehelpers/gameadventure.h"),
+            QStringLiteral("gamehelpers/splinepaths.c"),
+            QStringLiteral("gamehelpers/splinepaths.h")
+        };
+        for (auto it = m_projectFilesInProject.begin(); it != m_projectFilesInProject.end();) {
+            const QString relative = QDir(m_projectPath).relativeFilePath(*it);
+            if ((relative.startsWith(QStringLiteral("gamelevels/"))
+                 || generatedWorldHelpers.contains(relative)
+                 || relative == QStringLiteral("gameassets/gameassets.c")
+                 || relative == QStringLiteral("gameassets/gameassets.h"))
+                && !QFileInfo::exists(*it))
+                it = m_projectFilesInProject.erase(it);
+            else ++it;
+        }
+    }
     QJsonArray files;
     for (const QString &projectFile : std::as_const(m_projectFilesInProject)) {
         files.append(toProjectRelativePath(projectFile));
@@ -12423,6 +12448,21 @@ bool MainWindow::saveProjectFile(const QString &filePath)
     compiler.insert(QStringLiteral("stackUsage"), m_compilerStackUsage);
     compiler.insert(QStringLiteral("extraFlags"), m_extraCompilerFlags);
     root.insert(QStringLiteral("compiler"), compiler);
+
+    // Game stamps belong to the .proj, not individual .sbgm worlds.
+    // Preserve the latest bank when ordinary Project Save rewrites settings.
+    if (m_projectType == GameProjectType) {
+        QFile existing(m_projectFilePath);
+        if (existing.open(QIODevice::ReadOnly)) {
+            const QJsonDocument prior = QJsonDocument::fromJson(existing.readAll());
+            if (prior.isObject()) {
+                for (const QString &key : {QStringLiteral("gameCollisionStamps"),
+                                           QStringLiteral("gameLoopStamps"),
+                                           QStringLiteral("gameTileStampBanks")})
+                    if (prior.object().contains(key)) root.insert(key, prior.object().value(key));
+            }
+        }
+    }
 
     QFile file(m_projectFilePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
@@ -14919,16 +14959,12 @@ QStringList MainWindow::projectFilesForCompile() const
              || relativePath == QStringLiteral("gamehelpers/gameadventure.c")
              || relativePath == QStringLiteral("gamehelpers/splinepaths.c")))
             continue;
-        // Root tilemaps are staging outputs too. Their world-folder copy
-        // is the only one used when the published world is available.
+        // Stage 5.9: no root tilemap exists in the generator. Skip any
+        // left-over root C source unconditionally; only published world modules
+        // are linkable, even if a world has not been published yet.
         if (gameProject && relativePath.startsWith(QStringLiteral("gamelevels/"))
-            && relativePath.endsWith(QStringLiteral(".c"), Qt::CaseInsensitive)) {
-            const QString base = QFileInfo(filePath).completeBaseName();
-            const QString copy = QDir(m_projectPath).filePath(
-                QStringLiteral("worlds/") + base + QStringLiteral("/gamelevels/")
-                + base + QStringLiteral(".c"));
-            if (QFileInfo::exists(copy)) continue;
-        }
+            && relativePath.endsWith(QStringLiteral(".c"), Qt::CaseInsensitive))
+            continue;
         // Regeneration can remove obsolete world modules (e.g. splinepaths).
         // Stale entries in older project manifests must not reach the compiler.
         if (QFileInfo(filePath).isFile() && isCompilableSource(filePath)) {
@@ -15605,7 +15641,7 @@ void MainWindow::applyTheme()
             " border-bottom:none; border-radius:0px; padding:6px 12px; margin-right:-6px; }"
             "QTabBar::tab:selected { background:%4; color:%5; border-radius:0px; }"
             "QTabBar::tab:hover:!selected { background:%6; border-radius:0px; }"
-            "QTabBar::close-button { image:url(%8); border-radius:0px; "
+            "QTabBar::close-button { image:url(\"%8\"); border-radius:0px; "
             " subcontrol-position:right; subcontrol-origin:padding; width:14px; height:14px; background:transparent; }"
             "QTabBar::close-button:hover { background:%7; border-radius:0px; }")
             .arg(C(m_theme.treeBorder),

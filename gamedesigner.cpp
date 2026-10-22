@@ -1,4 +1,5 @@
 #include "gamedesigner.h"
+#include "gameglobalstamps.h"
 #include "gameworldsnapshot.h"
 #include "gameplayerprofile.h"
 #include "gamenpcitemindex.h"
@@ -607,6 +608,15 @@ QPixmap missingImage(const QString &kind)
     return result;
 }
 }
+
+// Shared between open Game Designer tabs. Clipboard owns value snapshots, so
+// closing the source tab cannot invalidate a pending paste.
+SidboxGameDesigner::Resource SidboxGameDesigner::s_copiedWorldObject;
+QVector<SidboxGameDesigner::Resource> SidboxGameDesigner::s_copiedWorldResources;
+QVector<SidboxGameDesigner::SplinePath> SidboxGameDesigner::s_copiedWorldSplines;
+QJsonObject SidboxGameDesigner::s_copiedWorldAdventure;
+QString SidboxGameDesigner::s_copiedWorldSource;
+bool SidboxGameDesigner::s_hasCopiedWorldObject = false;
 
 SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *parent)
     : QWidget(parent), m_filePath(QFileInfo(designFilePath).absoluteFilePath())
@@ -1565,6 +1575,15 @@ void SidboxGameDesigner::editPlayerStart()
 
 void SidboxGameDesigner::openTilemapEditor()
 {
+    // Refresh project-owned stamp definitions when a tab opens its tilemap.
+    // This also picks up saves from another running IDE instance.
+    GameGlobalStamps::Bank liveBank;
+    QString liveBankError;
+    if (!liveBank.open(m_filePath, &liveBankError)) {
+        QMessageBox::warning(this, tr("Tile Stamps"), liveBankError);
+        return;
+    }
+    syncProjectTileStampBanks(liveBank.tileStampBanks);
     QVector<QPair<QString, QString>> atlases;
     for (const Resource &r : m_resources) {
         // Show ONLY Game Resources -> Tile Atlases here. Previously, a legacy
@@ -1630,10 +1649,11 @@ void SidboxGameDesigner::openTilemapEditor()
         }
     }
     }
-    // "Save" commits this editor's working copy immediately while keeping
-    // the tile editor open. "Apply" still closes and follows the old export
-    // prompt; "Cancel" discards changes since the last successful Save.
-    const auto applyChanges = [this, &editor](const SidboxTilemap &map, bool saveEvenWithoutExport) -> bool {
+    // Both Save and Apply persist the shared atlas stamp bank directly into
+    // .proj, refreshing all world tabs. No Update Game Project is required.
+    // Save keeps this editor open; Apply closes it and optionally offers to
+    // generate MISSING runtime files (stamp-brush edits alone need no rebuild).
+    const auto applyChanges = [this, &editor](const SidboxTilemap &map, bool fromSaveButton) -> bool {
         // GameTilemapOverlay::boundingRect() reads dimensions from m_tilemap.
         // Remove it from QGraphicsScene *before* changing the map geometry;
         // otherwise the scene's spatial index may hold an invalid old rect.
@@ -1645,29 +1665,23 @@ void SidboxGameDesigner::openTilemapEditor()
         m_tilemapEnabled = true;
         rebuildTilemapOverlay();
         refreshFrame();
-        // Tilemap dimensions affect neither the designer world nor the physical viewport.
         setDirty();
-        const auto answer = QMessageBox::question(
-            saveEvenWithoutExport ? static_cast<QWidget *>(&editor) : this,
-            tr("Apply Tilemap"),
-            tr("Apply these tilemap changes and export the C level files now?\n\n"
-               "Yes: Save the game design, export gamelevels/<world>.c/.h, "
-               "and add any missing tilemap helper files.\n"
-               "No: With Save, save the .sbgm (and refresh existing exports); "
-               "with Apply to Design, keep the changes in memory."),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-        if (answer == QMessageBox::Yes) {
-            const bool needsExport = tilemapBuildFilesMissing();
-            if (!saveDesign()) return false;
-            if (needsExport && !exportTilemap(false, true)) return false;
-        } else if (saveEvenWithoutExport) {
-            // Unlike Apply's original "No", Save must persist the .sbgm.
-            if (!saveDesign()) return false;
-        }
+        const bool needsExport = !fromSaveButton && tilemapBuildFilesMissing();
+        // saveDesign writes .sbgm and .proj and refreshes existing exports.
+        if (!saveDesign()) return false;
+        if (needsExport && QMessageBox::question(&editor, tr("Publish Game World"),
+                tr("This world's generated runtime files are missing. Publish the "
+                   "complete world now?\n\n"
+                   "This is not needed to share Tile Stamp Banks in the IDE."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes
+            && !regenerateBuildFiles()) return false;
         return true;
     };
-    editor.setSaveCallback([&applyChanges](const SidboxTilemap &map) {
-        return applyChanges(map, true);
+    editor.setSaveCallback([this, &applyChanges, &editor](const SidboxTilemap &map) {
+        if (!applyChanges(map, true)) return false;
+        editor.acknowledgeGlobalStampSave();
+        editor.syncCommittedTileStampBanks(m_tilemap.tileStampBanks);
+        return true;
     });
     // The preview uses the configured Idle animation frame and initial
     // facing. No world-owned duplicate player resource is required.
@@ -1685,10 +1699,13 @@ bool SidboxGameDesigner::tilemapBuildFilesMissing() const
     if (!m_tilemapEnabled) return false;
     const QDir dir(QFileInfo(m_filePath).absolutePath());
     const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
-    return !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".c")))
-        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h")))
+    const QString levelPath = QStringLiteral("worlds/") + worldBase
+        + QStringLiteral("/gamelevels/") + worldBase;
+    return !QFileInfo::exists(dir.filePath(levelPath + QStringLiteral(".c")))
+        || !QFileInfo::exists(dir.filePath(levelPath + QStringLiteral(".h")))
         || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.c")))
-        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.h")));
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gametilemap.h")))
+        || !QFileInfo::exists(dir.filePath(QStringLiteral("gamehelpers/gameglobalstamps.c")));
 }
 
 bool SidboxGameDesigner::exportTilemapForCompile()
@@ -1714,7 +1731,7 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         choice.setText(tr("Choose where the tilemap graphics and collision data live."));
         choice.setInformativeText(tr("Embedded .c: map bytes become part of the .app.\n"
             "SD .map: map bytes load from gamelevels/<world>.map at runtime.\n"
-            "Both generate gamelevels/<world>.c/.h using the .sbgm world name.\n"
+            "Both publish worlds/<world>/gamelevels/<world>.c/.h using the .sbgm world name.\n"
             "The .map stores tile data and animations; placed game objects stay compiled."));
         choice.setStyleSheet(QStringLiteral("QMessageBox, QPushButton { border-radius:0px; }"));
         auto *embedded = choice.addButton(tr("Export embedded .c"), QMessageBox::AcceptRole);
@@ -1791,15 +1808,14 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
             }
         }
     }
-    // Custom collision stamps require the v3 SD map parser and per-pixel
-    // surface sampler. Never silently replace a programmer's custom helpers.
-    // Offer an explicit backup-and-upgrade when old V1 helpers are present.
+    // Every generated level now uses the global loop-placement fields in
+    // game_tilemap_t, even when this particular map places no loops. Require
+    // the new helper ABI and offer a backup before any helper replacement.
     const bool needsFrontTiles = std::any_of(m_tilemap.flips.cbegin(), m_tilemap.flips.cend(),
         [](char flags) { return (quint8(flags) & 4u) != 0; });
     const bool needsCustomZones = std::any_of(m_tilemap.collisions.cbegin(), m_tilemap.collisions.cend(),
         [](char type) { return quint8(type) >= 9 && quint8(type) <= 24; });
-    if (m_tilemap.collisions.contains(char(7)) ||
-        !m_tilemap.collisionPlacements.isEmpty() || needsFrontTiles || needsCustomZones) {
+    if (m_tilemapEnabled) {
         const QDir helperSourceDir(QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")));
         const QString helperFolder = QDir(directory).filePath(QStringLiteral("gamehelpers"));
         if (!QDir().mkpath(helperFolder)) {
@@ -1815,6 +1831,8 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
             const QByteArray existingH = hCheck.readAll();
             current = existingC.contains("cg_map_load_v4") &&
                 existingH.contains("GAME_TILE_POINT_SLOPE") &&
+                existingH.contains("game_tile_loop_placement_t") &&
+                existingC.contains("loop_placements") &&
                 (!needsFrontTiles || (existingC.contains("game_tilemap_blit_view_front") &&
                                        existingH.contains("GAME_TILE_DRAW_FRONT"))) &&
                 (!needsCustomZones || (existingC.contains("game_zone_at_player") &&
@@ -1823,8 +1841,8 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         cCheck.close(); hCheck.close();
         if (!current) {
             if (QMessageBox::question(this, tr("Upgrade Tilemap Helpers"),
-                    tr("This level uses custom slopes, foreground tiles or programmable zones, but this "
-                       "project's gametilemap.c/.h need updating.\n\n"
+                    tr("Generated levels now use project-global slope and loop stamps. "
+                       "This project's gametilemap.c/.h need updating.\n\n"
                        "Back up the existing helper files and install the new "
                        "versions from the IDE? Your edited helpers will be "
                        "preserved in timestamped .bak files."),
@@ -1858,24 +1876,31 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
         }
     }
     QString error;
+    // Export into a hidden per-world staging folder, never project/gamelevels/.
+    // GameWorldSnapshot::publish consumes this staging after generating assets.
+    const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
+    const QString staging = QDir(directory).filePath(
+        QStringLiteral(".codergirl/tilemap-staging/") + worldBase);
     if (!sidboxExportTilemap(m_tilemap, directory, &error, m_tilemapExternal,
-                             m_filePath, QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")))) {
+                             m_filePath, QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")),
+                             staging)) {
         QMessageBox::warning(this, tr("Tilemap Export"), error);
         return false;
     }
     if (assetFilesChanged) assetFilesChanged();
     if (showMessage) {
-        const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
         const QString worldSymbol = QStringLiteral("game_") + worldBase;
         QMessageBox::information(this, tr("Tilemap Exported"),
             m_tilemapExternal
-                ? tr("Created gamelevels/%1.map plus %1.c/.h.\n"
-                     "Copy gamelevels/%1.map to the same SD-card path.\n"
+                ? tr("Staged %1.map plus its C/H files for publication.\n"
+                     "After Update Game Project, copy worlds/%1/gamelevels/%1.map "
+                     "to gamelevels/%1.map on the TFCard.\n"
                      "Call %2_load_map(\"gamelevels/%1.map\") after initMalloc(), BEFORE %2_load_atlas().\n"
                      "Object/sprite placement remains part of generated C.\n"
                      "Use Update Project to refresh older installed tilemap helpers.")
                       .arg(worldBase, worldSymbol)
-                : tr("Map exported into gamelevels/%1.c and %1.h.\n"
+                : tr("Staged tilemap %1.c/.h for worlds/%1/gamelevels/.\n"
+                     "Update Game Project to publish these files.\n"
                      "Call %2_load_atlas() once after initMalloc().\n"
                      "Copyable instructions: gamehelpers/gametilemap.txt.")
                       .arg(worldBase, worldSymbol));
@@ -2674,6 +2699,15 @@ void SidboxGameDesigner::buildUi()
             configureObject = menu.addAction(tr("Configure Game Object..."));
             configureObject->setToolTip(tr("Choose collectable, moving lift, conveyor or spring, plus animation and spline."));
         }
+        QAction *copyWorldObject = nullptr;
+        if (hasResource && m_resources.at(resourceIndex).kind == QStringLiteral("sprite")
+            && m_resources.at(resourceIndex).objectType != QStringLiteral("decoration")) {
+            copyWorldObject = menu.addAction(tr("Copy Game Object"));
+            copyWorldObject->setToolTip(tr("Copy this object's behaviour and linked assets for another world."));
+        }
+        QAction *pasteWorldObject = menu.addAction(tr("Paste Game Object"));
+        pasteWorldObject->setEnabled(s_hasCopiedWorldObject);
+        pasteWorldObject->setToolTip(tr("Paste the copied object and import its linked sounds, music and spline."));
         QAction *editThisSpline = nullptr;
         const QString hitSplineId = hit ? hit->data(0, Qt::UserRole + 3).toString() : QString();
         if (category == QStringLiteral("spline") && !hitSplineId.isEmpty()) {
@@ -2712,6 +2746,8 @@ void SidboxGameDesigner::buildUi()
             const QString ref = chosen->data().toString().mid(11);
             addCodeHelper(ref.section(QLatin1Char('/'), 0, 0), ref.section(QLatin1Char('/'), 1));
         }
+        else if (copyWorldObject && chosen == copyWorldObject) copySelectedSprite(resourceIndex);
+        else if (chosen == pasteWorldObject) pasteCopiedSprite();
         else if (configureObject && chosen == configureObject) configureGameObject(resourceIndex);
         else if (moveToAtlas && chosen == moveToAtlas) {
             if (QMessageBox::question(this, tr("Move Sprite to Tile Atlases"),
@@ -4012,9 +4048,17 @@ void SidboxGameDesigner::refreshProperties()
 void SidboxGameDesigner::rememberResourceEdit()
 {
     if (m_loading) return;
-    if (m_undoResources.size() >= 64) m_undoResources.removeFirst();
+    if (m_undoResources.size() >= 64) {
+        m_undoResources.removeFirst();
+        m_undoResourceSplines.removeFirst();
+        m_undoResourceAdventures.removeFirst();
+    }
     m_undoResources.append(m_resources);
+    m_undoResourceSplines.append(m_splinePaths);
+    m_undoResourceAdventures.append(m_adventure);
     m_redoResources.clear();
+    m_redoResourceSplines.clear();
+    m_redoResourceAdventures.clear();
 }
 
 void SidboxGameDesigner::restoreResourceSnapshot(const QVector<Resource> &snapshot)
@@ -4036,38 +4080,61 @@ void SidboxGameDesigner::restoreResourceSnapshot(const QVector<Resource> &snapsh
 void SidboxGameDesigner::undoResourceEdit()
 {
     if (m_undoResources.isEmpty()) return;
-    if (m_redoResources.size() >= 64) m_redoResources.removeFirst();
+    if (m_redoResources.size() >= 64) {
+        m_redoResources.removeFirst();
+        m_redoResourceSplines.removeFirst();
+        m_redoResourceAdventures.removeFirst();
+    }
     m_redoResources.append(m_resources);
+    m_redoResourceSplines.append(m_splinePaths);
+    m_redoResourceAdventures.append(m_adventure);
     const QVector<Resource> snapshot = m_undoResources.takeLast();
+    m_splinePaths = m_undoResourceSplines.takeLast();
+    m_adventure = m_undoResourceAdventures.takeLast();
     restoreResourceSnapshot(snapshot);
 }
 
 void SidboxGameDesigner::redoResourceEdit()
 {
     if (m_redoResources.isEmpty()) return;
-    if (m_undoResources.size() >= 64) m_undoResources.removeFirst();
+    if (m_undoResources.size() >= 64) {
+        m_undoResources.removeFirst();
+        m_undoResourceSplines.removeFirst();
+        m_undoResourceAdventures.removeFirst();
+    }
     m_undoResources.append(m_resources);
+    m_undoResourceSplines.append(m_splinePaths);
+    m_undoResourceAdventures.append(m_adventure);
     const QVector<Resource> snapshot = m_redoResources.takeLast();
+    m_splinePaths = m_redoResourceSplines.takeLast();
+    m_adventure = m_redoResourceAdventures.takeLast();
     restoreResourceSnapshot(snapshot);
 }
 
-void SidboxGameDesigner::copySelectedSprite()
+void SidboxGameDesigner::copySelectedSprite(int resourceIndex)
 {
-    const int index = selectedIndex();
-    if (index < 0 || m_resources.at(index).kind != QStringLiteral("sprite")) return;
-    m_copiedSprite = m_resources.at(index);
-    m_hasCopiedSprite = true;
+    const int index = resourceIndex >= 0 ? resourceIndex : selectedIndex();
+    if (index < 0 || index >= m_resources.size()
+        || m_resources.at(index).kind != QStringLiteral("sprite")) return;
+
+    // Value copies: source tab can be closed, edited or deleted after copying.
+    s_copiedWorldObject = m_resources.at(index);
+    s_copiedWorldResources = m_resources;
+    s_copiedWorldSplines = m_splinePaths;
+    s_copiedWorldAdventure = m_adventure;
+    s_copiedWorldSource = m_filePath;
+    s_hasCopiedWorldObject = true;
 }
 
 void SidboxGameDesigner::pasteCopiedSprite()
 {
-    if (!m_hasCopiedSprite || m_resources.size() >= 8192) return;
-    rememberResourceEdit();
-    Resource copy = m_copiedSprite;
+    if (!s_hasCopiedWorldObject || m_resources.size() >= 8192) return;
+    const bool crossWorld = QDir::cleanPath(s_copiedWorldSource)
+        != QDir::cleanPath(m_filePath);
+    Resource copy = s_copiedWorldObject;
     copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QString base = copy.name;
     base.remove(QRegularExpression(QStringLiteral("_copy\\[\\d+\\]$")));
-    // Keep numbered clones together, making it obvious they form instances.
     int next = 0;
     const QRegularExpression series(QStringLiteral("^%1_copy\\[(\\d+)\\]$")
         .arg(QRegularExpression::escape(base)));
@@ -4078,19 +4145,456 @@ void SidboxGameDesigner::pasteCopiedSprite()
     copy.name = QStringLiteral("%1_copy[%2]").arg(base).arg(next);
     copy.x = qBound(-MAX_WORLD, copy.x + 8, MAX_WORLD);
     copy.y = qBound(-MAX_WORLD, copy.y + 8, MAX_WORLD);
-    copy.locked = false; // A duplicate is immediately movable.
-    // Preserve EXACT scroll-bar pixels rather than round-tripping through
-    // mapToScene()/centerOn(). The latter introduces 1-2px drift on each paste.
-    // Restoring after selecting avoids tree/scene updates nudging the viewport.
+    copy.locked = false;
+    // Reward metadata is prepared before the undo boundary, then committed
+    // alongside the imported resources in one transaction.
+    int rewardSourceKind = 0;
+    int rewardDestinationKind = 0;
+    bool registerReward = false;
+    bool addPickupDefinition = false;
+    QJsonObject importedPickupDefinition;
+    QJsonObject importedInventoryItem;
+
+    if (crossWorld) {
+        // Keep cross-world paste visible: World 1 may be thousands of pixels
+        // wide while Forest is only 800 px. Otherwise the new object can be
+        // placed beyond the target world and appear to have vanished.
+        const QPointF centre = m_view->mapToScene(m_view->viewport()->rect().center());
+        const int right = qMax(0, m_worldWidth->value() - qMax(1, copy.hitWidth));
+        const int bottom = qMax(0, m_worldHeight->value() - qMax(1, copy.hitHeight));
+        const QRectF viewport = m_view->mapToScene(m_view->viewport()->rect()).boundingRect();
+        if (copy.x < 0 || copy.x > right || !viewport.contains(QPointF(copy.x, copy.y)))
+            copy.x = qBound(0, qRound(centre.x()), right);
+        if (copy.y < 0 || copy.y > bottom)
+            copy.y = qBound(0, qRound(centre.y()), bottom);
+        // Apply the same translation to any imported spline/linked object.
+        const int deltaX = copy.x - s_copiedWorldObject.x;
+        const int deltaY = copy.y - s_copiedWorldObject.y;
+
+        // World designs for this IDE live beside their common .proj file.
+        // Never turn a copied object into a silent link to a foreign project.
+        if (QFileInfo(s_copiedWorldSource).absolutePath() !=
+            QFileInfo(m_filePath).absolutePath()) {
+            QMessageBox::warning(this, tr("Paste Game Object"),
+                tr("Copying objects is supported between worlds of the same game project."));
+            return;
+        }
+        // Both .sbgm worlds share a project resource directory, but paths are
+        // RELATIVE TO THE DESIGN FILE. Rebase every referenced file path.
+        const QDir sourceDir(QFileInfo(s_copiedWorldSource).absolutePath());
+        const auto sourceFile = [&](const QString &path) -> QString {
+            return path.isEmpty() ? QString() :
+                QFileInfo(sourceDir.absoluteFilePath(path)).absoluteFilePath();
+        };
+        const auto rebase = [&](Resource &r) {
+            if (!r.path.isEmpty()) r.path = storedPath(sourceFile(r.path));
+            if (!r.animationFile.isEmpty())
+                r.animationFile = storedPath(sourceFile(r.animationFile));
+        };
+
+        // Copying a sprite also copies its implicit animation sidecar if one
+        // was saved under the default ID-based name.
+        const auto attachAnimation = [&](Resource &r, const QString &originalId) {
+            if (!r.animationFile.isEmpty()) return;
+            const QString implicit = sourceDir.filePath(
+                QStringLiteral("gameanimations/%1.sbanim").arg(originalId));
+            if (QFileInfo(implicit).isFile()) r.animationFile = sourceDir.relativeFilePath(implicit);
+        };
+
+        // Validate all reachable references before changing the destination.
+        // Sounds/music, triggered objects and breakable rewards are part of
+        // the object; a missing required file must not produce a broken paste.
+        QStringList missingFiles;
+        QSet<QString> visited;
+        const auto sourceById = [&](const QString &id) -> const Resource * {
+            for (const Resource &r : s_copiedWorldResources)
+                if (r.id == id) return &r;
+            return nullptr;
+        };
+        QString Resource::* soundFields[] = {
+            &Resource::sfxPickup, &Resource::sfxRespawn, &Resource::sfxStart,
+            &Resource::sfxMove, &Resource::sfxStop, &Resource::sfxReverse,
+            &Resource::sfxSpring, &Resource::sfxAmbient,
+            &Resource::sfxBreakHit, &Resource::sfxBreakBounce,
+            &Resource::sfxBreakFinish, &Resource::sfxHazardHit,
+            &Resource::sfxHazardBounce, &Resource::sfxHazardAmbient
+        };
+        std::function<void(const Resource &)> checkDependencies;
+        checkDependencies = [&](const Resource &r) {
+            if (visited.contains(r.id)) return;
+            visited.insert(r.id);
+            const QString file = sourceFile(r.path);
+            if (!file.isEmpty() && !QFileInfo(file).isFile())
+                missingFiles.append(file);
+            if (!r.animationFile.isEmpty() && !QFileInfo(sourceFile(r.animationFile)).isFile())
+                missingFiles.append(sourceFile(r.animationFile));
+            const auto checkId = [&](const QString &id) {
+                if (id.isEmpty()) return;
+                const Resource *dep = sourceById(id);
+                if (dep) checkDependencies(*dep);
+                else missingFiles.append(tr("Missing linked resource ID: %1").arg(id));
+            };
+            for (const auto field : soundFields) checkId(r.*field);
+            checkId(r.triggerMusicId);
+            checkId(r.targetObjectId);
+            checkId(r.breakDropCollectableId);
+            if (!r.objectSplineId.isEmpty()) {
+                bool foundSpline = false;
+                for (const SplinePath &path : s_copiedWorldSplines)
+                    if (path.id == r.objectSplineId) { foundSpline = true; break; }
+                if (!foundSpline)
+                    missingFiles.append(tr("Missing spline ID: %1").arg(r.objectSplineId));
+            }
+        };
+        checkDependencies(copy);
+        missingFiles.removeDuplicates();
+        if (!missingFiles.isEmpty()) {
+            QMessageBox::warning(this, tr("Paste Game Object"),
+                tr("Cannot import the object because required assets are missing:\n\n%1")
+                    .arg(missingFiles.join(QLatin1Char('\n'))));
+            return;
+        }
+        if (m_resources.size() + visited.size() > 8192) {
+            QMessageBox::warning(this, tr("Paste Game Object"),
+                tr("This object and its linked assets exceed the world resource limit."));
+            return;
+        }
+
+        // Stage 5.14: An enemy/breakable may drop a collectable whose pickup
+        // type is not registered in this world's Adventure Inventory. Capture
+        // the source Adventure metadata at COPY time, not when its tab closes.
+        // Only an explicit linked collectable reward triggers the question.
+        if ((copy.objectType == QStringLiteral("enemy") ||
+             copy.objectType == QStringLiteral("breakable")) &&
+            !copy.breakDropCollectableId.isEmpty()) {
+            const Resource *reward = sourceById(copy.breakDropCollectableId);
+            if (reward && reward->kind == QStringLiteral("sprite") &&
+                reward->objectType == QStringLiteral("collectable") &&
+                reward->pickupKind >= 1 && reward->pickupKind <= 255) {
+                rewardSourceKind = reward->pickupKind;
+                rewardDestinationKind = rewardSourceKind;
+                const QJsonArray sourceItems = s_copiedWorldAdventure.value(
+                    QStringLiteral("items")).toArray();
+                const QJsonArray targetItems = m_adventure.value(
+                    QStringLiteral("items")).toArray();
+                const QJsonArray targetTypes = m_adventure.value(
+                    QStringLiteral("pickupTypes")).toArray();
+                QJsonObject sourceItem;
+                for (const QJsonValue &entry : sourceItems) {
+                    const QJsonObject item = entry.toObject();
+                    if (item.value(QStringLiteral("pickupKind")).toInt() == rewardSourceKind) {
+                        sourceItem = item;
+                        break;
+                    }
+                }
+                QString kindName;
+                if (rewardSourceKind > 4) {
+                    for (const QJsonValue &entry : s_copiedWorldAdventure.value(
+                             QStringLiteral("pickupTypes")).toArray()) {
+                        const QJsonObject def = entry.toObject();
+                        if (def.value(QStringLiteral("id")).toInt() == rewardSourceKind) {
+                            kindName = def.value(QStringLiteral("name")).toString().trimmed();
+                            break;
+                        }
+                    }
+                    if (kindName.isEmpty())
+                        kindName = sourceItem.value(QStringLiteral("name")).toString().trimmed();
+                    if (kindName.isEmpty()) kindName = reward->name;
+                    kindName = kindName.left(36);
+
+                    // Reuse an existing named custom type even if its numeric
+                    // ID differs from the source world. Never change a type
+                    // that another object or inventory entry already uses.
+                    bool foundNamedType = false;
+                    for (const QJsonValue &entry : targetTypes) {
+                        const QJsonObject def = entry.toObject();
+                        if (def.value(QStringLiteral("name")).toString().trimmed().compare(
+                                kindName, Qt::CaseInsensitive) == 0 &&
+                            def.value(QStringLiteral("id")).toInt() >= 5 &&
+                            def.value(QStringLiteral("id")).toInt() <= 255) {
+                            rewardDestinationKind = def.value(QStringLiteral("id")).toInt();
+                            foundNamedType = true;
+                            break;
+                        }
+                    }
+                    if (!foundNamedType) {
+                        // An existing inventory item with the exact same name
+                        // is already the user's item: link to its custom type.
+                        const QString sourceName = sourceItem.value(
+                            QStringLiteral("name")).toString().trimmed();
+                        if (!sourceName.isEmpty()) {
+                            for (const QJsonValue &entry : targetItems) {
+                                const QJsonObject item = entry.toObject();
+                                if (item.value(QStringLiteral("name")).toString().trimmed().compare(
+                                        sourceName, Qt::CaseInsensitive) == 0 &&
+                                    item.value(QStringLiteral("pickupKind")).toInt() >= 5 &&
+                                    item.value(QStringLiteral("pickupKind")).toInt() <= 255) {
+                                    rewardDestinationKind = item.value(QStringLiteral("pickupKind")).toInt();
+                                    foundNamedType = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (foundNamedType) {
+                        // A legacy world may have an inventory item with a
+                        // custom pickup number but no matching named type yet.
+                        // Restore its definition so the Adventure editor can
+                        // show the correct name instead of "missing type".
+                        bool hasDefinition = false;
+                        for (const QJsonValue &entry : targetTypes)
+                            if (entry.toObject().value(QStringLiteral("id")).toInt() ==
+                                rewardDestinationKind) hasDefinition = true;
+                        if (!hasDefinition) {
+                            addPickupDefinition = true;
+                            importedPickupDefinition.insert(QStringLiteral("id"), rewardDestinationKind);
+                            importedPickupDefinition.insert(QStringLiteral("name"), kindName);
+                        }
+                    }
+                    if (!foundNamedType) {
+                        QSet<int> used;
+                        for (const QJsonValue &entry : targetTypes)
+                            used.insert(entry.toObject().value(QStringLiteral("id")).toInt());
+                        for (const QJsonValue &entry : targetItems)
+                            used.insert(entry.toObject().value(QStringLiteral("pickupKind")).toInt());
+                        for (const Resource &existing : m_resources)
+                            if (existing.kind == QStringLiteral("sprite") &&
+                                existing.objectType == QStringLiteral("collectable"))
+                                used.insert(existing.pickupKind);
+                        if (used.contains(rewardDestinationKind)) {
+                            rewardDestinationKind = 5;
+                            while (rewardDestinationKind <= 255 && used.contains(rewardDestinationKind))
+                                ++rewardDestinationKind;
+                        }
+                        if (rewardDestinationKind > 255) {
+                            QMessageBox::warning(this, tr("Paste Game Object"),
+                                tr("There are no free custom pickup types (5-255) in this world."));
+                            return;
+                        }
+                        addPickupDefinition = true;
+                        importedPickupDefinition.insert(QStringLiteral("id"), rewardDestinationKind);
+                        importedPickupDefinition.insert(QStringLiteral("name"), kindName);
+                    }
+                }
+
+                bool inventoryExists = false;
+                for (const QJsonValue &entry : targetItems) {
+                    const QJsonObject item = entry.toObject();
+                    if (item.value(QStringLiteral("pickupKind")).toInt() == rewardDestinationKind) {
+                        inventoryExists = true;
+                        break;
+                    }
+                }
+                if (!inventoryExists) {
+                    QString itemName = sourceItem.value(QStringLiteral("name")).toString().trimmed();
+                    if (itemName.isEmpty()) itemName = kindName.isEmpty() ? reward->name : kindName;
+                    itemName = itemName.left(36);
+                    // For unnamed classic types, copy the Adventure editor's
+                    // familiar labels. Names are editable after paste.
+                    if (itemName.isEmpty()) itemName = tr("Reward %1").arg(rewardDestinationKind);
+                    // A name collision with a different pickup type isn't
+                    // the same registered item. Keep both distinguishable;
+                    // never silently hijack the existing inventory row.
+                    QSet<QString> occupiedNames;
+                    for (const QJsonValue &entry : targetItems)
+                        occupiedNames.insert(entry.toObject().value(QStringLiteral("name"))
+                            .toString().trimmed().toCaseFolded());
+                    if (occupiedNames.contains(itemName.toCaseFolded())) {
+                        const QString baseName = itemName.left(22);
+                        int suffix = 1;
+                        do {
+                            itemName = tr("%1 (import %2)").arg(baseName).arg(suffix++);
+                        } while (occupiedNames.contains(itemName.toCaseFolded()));
+                    }
+                    if (targetItems.size() >= 64) {
+                        QMessageBox::information(this, tr("Adventure Inventory Full"),
+                            tr("The destination world already has 64 inventory items. "
+                               "The reward will be pasted, but cannot be added to inventory."));
+                    } else {
+                        const QMessageBox::StandardButton choice = QMessageBox::question(
+                            this, tr("Import Collectable into Inventory?"),
+                            tr("'%1' drops the collectable '%2'.\n\n"
+                               "Add '%3' to this world's Adventure Inventory?\n"
+                               "The reward will still be pasted if you choose No.")
+                                .arg(s_copiedWorldObject.name, reward->name, itemName),
+                            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+                            QMessageBox::Yes);
+                        if (choice == QMessageBox::Cancel) return;
+                        registerReward = (choice == QMessageBox::Yes);
+                        if (registerReward) {
+                            importedInventoryItem.insert(QStringLiteral("name"), itemName);
+                            importedInventoryItem.insert(QStringLiteral("pickupKind"), rewardDestinationKind);
+                            importedInventoryItem.insert(QStringLiteral("capacity"),
+                                qBound(1, sourceItem.value(QStringLiteral("capacity")).toInt(1), 65535));
+                            importedInventoryItem.insert(QStringLiteral("initial"), 0);
+                            // Icon indices belong to the destination dialogue
+                            // atlas; copying the source index would show garbage.
+                            importedInventoryItem.insert(QStringLiteral("icon"), 65535);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remap all stable references, including dependency-to-dependency
+        // links. Insert the map entry FIRST, so cycles cannot recurse forever.
+        QHash<QString, QString> remapped;
+        remapped.insert(s_copiedWorldObject.id, copy.id);
+        // Save one undo boundary before changing resources or splines.
+        rememberResourceEdit();
+        // All new dependency resources are appended after this position.
+        const int importedBegin = m_resources.size();
+        std::function<QString(const QString &)> importById;
+        importById = [&](const QString &id) -> QString {
+            if (id.isEmpty()) return {};
+            if (remapped.contains(id)) return remapped.value(id);
+            const Resource *original = sourceById(id);
+            if (!original) return {}; // already validated above
+
+            // Reuse an existing identical audio resource instead of adding
+            // a second reference to the same sound in every copied enemy.
+            if (original->kind == QStringLiteral("sound") ||
+                original->kind == QStringLiteral("music")) {
+                const QString absolute = sourceFile(original->path);
+                for (const Resource &existing : m_resources) {
+                    if (absolute.isEmpty() || existing.kind != original->kind ||
+                        QDir::cleanPath(resolvedPath(existing.path)) != QDir::cleanPath(absolute))
+                        continue;
+                    const SidboxAudioSettings &a = original->audio;
+                    const SidboxAudioSettings &b = existing.audio;
+                    if (a.channel == b.channel && a.frequency == b.frequency &&
+                        a.volume == b.volume && a.pan == b.pan && a.loop == b.loop &&
+                        a.loopStart == b.loopStart && a.loopLength == b.loopLength &&
+                        a.subsong == b.subsong) {
+                        remapped.insert(id, existing.id);
+                        return existing.id;
+                    }
+                }
+            }
+            Resource dep = *original;
+            dep.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            if (dep.kind == QStringLiteral("sprite")) {
+                dep.x = qBound(-MAX_WORLD, dep.x + deltaX, MAX_WORLD);
+                dep.y = qBound(-MAX_WORLD, dep.y + deltaY, MAX_WORLD);
+            }
+            if (dep.kind == QStringLiteral("sprite") &&
+                dep.objectType == QStringLiteral("collectable") &&
+                rewardSourceKind != 0 && dep.pickupKind == rewardSourceKind)
+                dep.pickupKind = rewardDestinationKind;
+            dep.musicPlayOnStart = false; // never create a surprise second autoplay
+            remapped.insert(id, dep.id);
+            attachAnimation(dep, original->id);
+            rebase(dep);
+            const auto remapFields = [&](Resource &r) {
+                for (const auto field : soundFields)
+                    r.*field = importById(r.*field);
+                r.triggerMusicId = importById(r.triggerMusicId);
+                r.targetObjectId = importById(r.targetObjectId);
+                r.breakDropCollectableId = importById(r.breakDropCollectableId);
+            };
+            remapFields(dep);
+            m_resources.append(dep);
+            return dep.id;
+        };
+
+        const auto remapRootFields = [&](Resource &r) {
+            for (const auto field : soundFields)
+                r.*field = importById(r.*field);
+            r.triggerMusicId = importById(r.triggerMusicId);
+            r.targetObjectId = importById(r.targetObjectId);
+            r.breakDropCollectableId = importById(r.breakDropCollectableId);
+        };
+        attachAnimation(copy, s_copiedWorldObject.id);
+        rebase(copy);
+        remapRootFields(copy);
+
+        // Spline definitions are local to a world. Import a referenced one
+        // once; keep existing identical paths rather than multiplying copies.
+        QHash<QString, QString> splineRemap;
+        for (int dependencyIndex = importedBegin; dependencyIndex < m_resources.size(); ++dependencyIndex) {
+            Resource &r = m_resources[dependencyIndex];
+            if (!r.objectSplineId.isEmpty()) {
+                const QString oldId = r.objectSplineId;
+                if (!splineRemap.contains(oldId)) {
+                    for (const SplinePath &path : s_copiedWorldSplines) {
+                        if (path.id != oldId) continue;
+                        SplinePath shifted = path;
+                        for (QPoint &point : shifted.points)
+                            point += QPoint(deltaX, deltaY);
+                        QString destinationId;
+                        for (const SplinePath &existing : m_splinePaths)
+                            if (existing.name == shifted.name && existing.points == shifted.points &&
+                                existing.pointPauses == shifted.pointPauses &&
+                                existing.durationFrames == shifted.durationFrames &&
+                                existing.loop == shifted.loop) {
+                                destinationId = existing.id;
+                                break;
+                            }
+                        if (destinationId.isEmpty()) {
+                            SplinePath cloned = shifted;
+                            cloned.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                            destinationId = cloned.id;
+                            m_splinePaths.append(cloned);
+                        }
+                        splineRemap.insert(oldId, destinationId);
+                        break;
+                    }
+                }
+                if (splineRemap.contains(oldId)) r.objectSplineId = splineRemap.value(oldId);
+            }
+        }
+        if (!copy.objectSplineId.isEmpty()) {
+            const QString oldId = copy.objectSplineId;
+            if (!splineRemap.contains(oldId)) {
+                for (const SplinePath &path : s_copiedWorldSplines) {
+                    if (path.id != oldId) continue;
+                    SplinePath shifted = path;
+                    for (QPoint &point : shifted.points)
+                        point += QPoint(deltaX, deltaY);
+                    QString destinationId;
+                    for (const SplinePath &existing : m_splinePaths)
+                        if (existing.name == shifted.name && existing.points == shifted.points &&
+                            existing.pointPauses == shifted.pointPauses &&
+                            existing.durationFrames == shifted.durationFrames &&
+                            existing.loop == shifted.loop) { destinationId = existing.id; break; }
+                    if (destinationId.isEmpty()) {
+                        SplinePath cloned = shifted;
+                        cloned.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                        destinationId = cloned.id;
+                        m_splinePaths.append(cloned);
+                    }
+                    splineRemap.insert(oldId, destinationId);
+                    break;
+                }
+            }
+            copy.objectSplineId = splineRemap.value(oldId);
+        }
+    } else {
+        rememberResourceEdit();
+    }
+
     const int previousHorizontalScroll = m_view->horizontalScrollBar()->value();
     const int previousVerticalScroll = m_view->verticalScrollBar()->value();
     m_resources.append(copy);
+    if (crossWorld && rewardSourceKind != 0) {
+        if (addPickupDefinition) {
+            QJsonArray types = m_adventure.value(QStringLiteral("pickupTypes")).toArray();
+            types.append(importedPickupDefinition);
+            m_adventure.insert(QStringLiteral("pickupTypes"), types);
+        }
+        if (registerReward) {
+            QJsonArray items = m_adventure.value(QStringLiteral("items")).toArray();
+            items.append(importedInventoryItem);
+            m_adventure.insert(QStringLiteral("items"), items);
+        }
+    }
     rebuildScene();
     refreshResources();
     selectResource(m_resources.size() - 1);
     m_view->horizontalScrollBar()->setValue(previousHorizontalScroll);
     m_view->verticalScrollBar()->setValue(previousVerticalScroll);
     setDirty();
+    if (assetFilesChanged) assetFilesChanged();
 }
 
 // PPB stores atlas dimensions and palette, NOT sprite cell metadata. A 64x64
@@ -6964,9 +7468,17 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                     }
                 }
                 if (changed) {
-                    if (m_undoResources.size() >= 64) m_undoResources.removeFirst();
+                    if (m_undoResources.size() >= 64) {
+                        m_undoResources.removeFirst();
+                        m_undoResourceSplines.removeFirst();
+                        m_undoResourceAdventures.removeFirst();
+                    }
                     m_undoResources.append(m_dragBefore);
+                    m_undoResourceSplines.append(m_splinePaths);
+                    m_undoResourceAdventures.append(m_adventure);
                     m_redoResources.clear();
+                    m_redoResourceSplines.clear();
+                    m_redoResourceAdventures.clear();
                 }
                 m_dragResourceIndex = -1;
                 m_dragBefore.clear();

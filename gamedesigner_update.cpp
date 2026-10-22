@@ -381,6 +381,13 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     // exist in the snapshot; user-owned main.c is backed up, never replaced.
     QSet<QString> outputs;
     outputs.insert(QFileInfo(m_filePath).absoluteFilePath());
+    // Global definitions now belong to the project and the shared runtime
+    // module is regenerated during a world export. Both must roll back too.
+    const QDir currentProject(QFileInfo(m_filePath).absolutePath());
+    const QStringList projectFiles = currentProject.entryList(
+        {QStringLiteral("*.proj")}, QDir::Files, QDir::Name);
+    if (projectFiles.size() == 1) outputs.insert(projectFiles.first());
+    outputs.insert(QStringLiteral("gamehelpers/gameglobalstamps.c"));
     const QDir gameProject(QFileInfo(m_filePath).absolutePath());
     if (QFileInfo::exists(gameProject.filePath(QStringLiteral("players/player.sbpi")))) {
         outputs.insert(QStringLiteral("gamehelpers/gameplayer.c"));
@@ -388,6 +395,9 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     }
     outputs.insert(QStringLiteral("gameassets/gameassets.c"));
     outputs.insert(QStringLiteral("gameassets/gameassets.h"));
+    // These generated world modules are temporarily written at the project
+    // root, published to worlds/<name>/gamehelpers/, then cleaned up. Include
+    // old root copies in the rollback ZIP before the publisher removes them.
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.c"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlditems.txt"));
@@ -411,11 +421,15 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         outputs.insert(QStringLiteral("gamehelpers/splinepaths.c"));
         outputs.insert(QStringLiteral("gamehelpers/splinepaths.h"));
     }
-    if (m_tilemapEnabled) {
-        const QString worldBase = sidboxTilemapWorldBaseName(m_filePath);
-        outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".c"));
-        outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".h"));
-        if (m_tilemapExternal) outputs.insert(QStringLiteral("gamelevels/") + worldBase + QStringLiteral(".map"));
+    // Back up any obsolete root-level exports from earlier IDE stages before
+    // the publisher removes them. Nothing new is written to project/gamelevels/.
+    for (const QString &design : project.entryList(
+             {QStringLiteral("*.sbgm")}, QDir::Files, QDir::Name)) {
+        const QString base = sidboxTilemapWorldBaseName(project.filePath(design));
+        for (const QString &ext : {QStringLiteral(".c"), QStringLiteral(".h"), QStringLiteral(".map")}) {
+            const QString legacy = QStringLiteral("gamelevels/") + base + ext;
+            if (QFileInfo::exists(project.filePath(legacy))) outputs.insert(legacy);
+        }
     }
     for (const QString &base : helperNames) {
         const QString targetBase = QStringLiteral("gamehelpers/game") + base;

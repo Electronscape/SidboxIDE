@@ -4,6 +4,13 @@ CODERGIRL V1 — ADVANCED TILEMAP + PLATFORMER
 The editor stores two separate maps: 16-bit graphics IDs and 8-bit collision
 IDs. Atlas animations are shared by graphics ID; no per-tile timers are needed.
 
+CURRENT WORLD-MANAGER PROJECTS (Stage 5.9):
+Generated C/H tilemap files are published into worlds/<world>/gamelevels/.
+The project-root gamelevels/ directory is obsolete. Some examples below
+show the older standalone one-world API and are retained as references.
+For an external TFCard .map, copy worlds/<world>/gamelevels/<world>.map to
+TFCard: gamelevels/<world>.map (the runtime path remains unchanged).
+
 1. Draw the level in the Game Designer Tilemap Editor and choose Export
    Tilemap. This writes gamelevels/level1.c and gamelevels/level1.h.
    Atlas pixels are NOT embedded in the C level: the PPB is read from SD

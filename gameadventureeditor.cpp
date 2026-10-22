@@ -673,6 +673,34 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     itemsLayout->addWidget(items,1);
     const QJsonArray oldItems = old.value("items").toArray();
     const QJsonArray customKinds = old.value("pickupTypes").toArray();
+    // Inventory icon numbers are saved in Adventure data. Their QTableWidget
+    // pictures are transient UI state, so rebuild them when the editor opens
+    // and whenever the selected dialogue atlas or tile size changes.
+    const auto refreshInventoryIcons = [&] {
+        const QString atlasId = skinAtlas ? skinAtlas->currentData().toString()
+                                          : old.value("skinAtlasId").toString();
+        const auto atlas = std::find_if(atlases.begin(), atlases.end(),
+            [&](const GameAdventureAsset &a) { return a.id == atlasId; });
+        const int size = tileSize ? tileSize->value() : std::clamp(old.value("tileSize").toInt(8),4,32);
+        const QImage image = atlas != atlases.end()
+            ? indexedPreview(atlas->path, foregroundPalette) : QImage();
+        const int columns = !image.isNull() && size > 0 ? image.width() / size : 0;
+        const int rows = !image.isNull() && size > 0 ? image.height() / size : 0;
+        for (int row = 0; row < items->rowCount(); ++row) {
+            auto *entry = items->item(row,4);
+            if (!entry) continue;
+            entry->setIcon(QIcon());
+            const int index = entry->data(Qt::UserRole).toInt();
+            if (index == 65535 || columns == 0 || rows == 0 || index < 0 || index >= columns * rows)
+                continue;
+            const QImage picture = image.copy((index % columns) * size,
+                                              (index / columns) * size, size, size);
+            if (!picture.isNull()) {
+                entry->setIcon(QIcon(QPixmap::fromImage(picture.scaled(
+                    28, 28, Qt::KeepAspectRatio, Qt::FastTransformation))));
+            }
+        }
+    };
     auto appendItem = [&](const QJsonObject &o) {
         const int row=items->rowCount(); items->insertRow(row);
         const QStringList v{ o.value("name").toString("New Item"),
@@ -732,8 +760,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         auto *cell=items->item(row,4);
         cell->setData(Qt::UserRole,chosen);
         cell->setText(QObject::tr("Cell %1 — double-click to change").arg(chosen));
-        QImage crop=image.copy((chosen%(image.width()/size))*size,(chosen/(image.width()/size))*size,size,size);
-        cell->setIcon(QIcon(QPixmap::fromImage(crop.scaled(28,28,Qt::KeepAspectRatio,Qt::FastTransformation))));
+        refreshInventoryIcons();
     });
     auto *itemButtons = new QHBoxLayout;
     auto *itemAdd = new QPushButton(QObject::tr("+ Item"), itemsPage);
@@ -1457,9 +1484,16 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         QObject::connect(tileFlipX[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
         QObject::connect(tileFlipY[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
     }
-    QObject::connect(skinAtlas,QOverload<int>::of(&QComboBox::currentIndexChanged),&dialog,[&](int){updatePreview();});
-    QObject::connect(tileSize,QOverload<int>::of(&QSpinBox::valueChanged),&dialog,[&](int){updatePreview();});
+    QObject::connect(skinAtlas,QOverload<int>::of(&QComboBox::currentIndexChanged),&dialog,[&](int){
+        updatePreview();
+        refreshInventoryIcons();
+    });
+    QObject::connect(tileSize,QOverload<int>::of(&QSpinBox::valueChanged),&dialog,[&](int){
+        updatePreview();
+        refreshInventoryIcons();
+    });
     updatePreview();
+    refreshInventoryIcons();
     auto *copyAtlas = new QPushButton(QObject::tr("Copy from Another World..."), skinPage);
     copyAtlas->setToolTip(QObject::tr("Copy only the saved dialogue frame atlas, nine cells, flips, "
                                         "colours, outline and typing speed. NPCs and dialogue are not copied."));
