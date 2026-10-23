@@ -21,6 +21,9 @@ uint8_t game_collectable_start(game_collectable_t *item, gfxbob_t *sprite,
     item->height = sprite->height;
     item->kind = kind;
     item->value = value;
+    item->tracking_configured = 0;
+    item->show_in_inventory = 0;
+    item->show_in_hud = 0;
     item->active = 1;
     item->can_collect = 1;
     item->draw_behind_tiles = 0;

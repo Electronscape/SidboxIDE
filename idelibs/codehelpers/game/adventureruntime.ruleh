@@ -30,6 +30,9 @@ typedef struct {
     uint8_t discardable; /* 0 is protected: safe default */
 } game_adventure_item_style_t;
 void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint16_t count);
+/* Override one item's icon source independently of the dialogue skin. */
+void game_adventure_item_atlas(uint16_t item, const uint8_t *pixels,
+                               uint16_t width,uint16_t height,uint8_t tile_size);
 /* Optional USE effect per item: a named shared-player stat and signed delta.
  * No effect if stat is empty or callback fails. Consume one copy only on success.
  * This is deliberately separate from the stable item/style ABI. */
@@ -116,6 +119,10 @@ typedef uint8_t (*game_adventure_fire2_action_t)(int32_t x, int32_t y,
 void game_adventure_set_fire2_action(game_adventure_fire2_action_t action);
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames);
+/* Mask FIRE1 while Adventure owns input and until a consumed press is
+   released. Physics helpers use this automatically when linked. Custom
+   physics can call it directly before reading jump input. */
+uint8_t game_adventure_gameplay_buttons(uint8_t buttons);
 /* Appearance settings (foreground CLUT indices). Defaults: text 15, no outline. */
 void game_adventure_skin_flips(const uint8_t flips[9]);
 void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
@@ -155,6 +162,11 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y);
 /* Inventory API: indexes are zero-based in the Adventure Editor Items list. */
 uint16_t game_adventure_quantity(uint16_t index);
+/* Sum the CURRENT inventory balance for one collectible type.
+ * Returns 1 if an inventory definition exists (even when the balance is zero);
+ * returns 0 if this pickup type is not represented in this world's bag.
+ * The output counts owned ITEMS, never Pickup Value/score. */
+uint8_t game_adventure_pickup_quantity(uint16_t kind, uint32_t *total);
 uint16_t game_adventure_add(uint16_t index, uint16_t amount);
 uint8_t game_adventure_remove(uint16_t index, uint16_t amount);
 /* World-local dropped collectibles (no allocations; at most 16 objects).
@@ -171,4 +183,9 @@ void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTU
 /* Bridge existing Collectable callback: matching pickup_kind gains ONE item.
    Returns number of inventory definitions matched, 0 if none. */
 uint16_t game_adventure_collect(uint16_t pickup_kind);
+/* The managed pickup bridge adds the actual value before the user's callback.
+   These helpers prevent legacy callbacks adding another +1 to the same item. */
+uint16_t game_adventure_collect_amount(uint16_t pickup_kind, uint16_t amount);
+void game_adventure_managed_pickup_begin(uint16_t pickup_kind);
+void game_adventure_managed_pickup_end(void);
 #endif

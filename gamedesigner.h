@@ -16,6 +16,7 @@
 #include "gameaudio.h"
 #include "gamepalette.h"
 #include "gametilemap.h"
+#include "gamespritestamp.h"
 #include "idetheme.h"
 #include <functional>
 
@@ -92,12 +93,18 @@ private:
         int cellWidth = 0;  // 0 = whole image (old Stage 52 files stay compatible)
         int cellHeight = 0;
         int frame = 0;
+        SidboxSpriteStamp spriteStamp; // design-time 8x8 composite; baked to generated PPB
         QString animationFile; // optional .sbanim sidecar with named player animation states
         bool locked = false;
         // Stage 3.0B: optional behaviours on each placed sprite instance.
         QString objectType = QStringLiteral("decoration");
         int pickupKind = 1;
         int objectValue = 10;
+        // Older worlds retain their authored on_pickup callback rules.
+        bool pickupTrackingConfigured = false;
+        bool pickupShowInventory = false;
+        bool pickupShowHud = false;
+        bool pickupPersistent = false; // never respawn after pickup, including world visits
         int hitWidth = 16, hitHeight = 16;
         int conveyorSpeed = 2, springStrength = 11;
         int springLaunchX = 0; // Signed horizontal spring launch in pixels/frame; 0 = straight up.
@@ -241,6 +248,7 @@ private:
 
     bool generateGameCodeCore(bool embedPixels, bool batchMode);
     void configureGameObject(int index);
+    bool updateSpriteStamp(Resource &resource, QString *error);
     void refreshObjectHitbox();
     bool installMissingWorldHelpers(QString *error, bool prompt = true);
     bool exportWorldItems(QString *error);

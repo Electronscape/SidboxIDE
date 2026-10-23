@@ -25,5 +25,5 @@ assert 'game_adventure_restore_drops(cg_saved_world_drops)' in story
 assert 'game_adventure_text_padding(@IDE{DIALOG_PADDING}u)' in story
 editor=(root/'gameadventureeditor.cpp').read_text()
 assert 'Dialogue box padding (0 / 8 px)' in editor
-assert 'Build: 5.33.221026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.34.2.221026' in (root/'splashscreenwidget.cpp').read_text()
 print('Stage 5.31: collision geometry and generated-world integrations PASS')

@@ -7,11 +7,11 @@
 #ifndef BTN_FIRE
 #define BTN_FIRE 8u
 #endif
-static int last_action, wrong_hits, partial_hits, success_hits, draw_give;
+static int last_action, wrong_hits, partial_hits, success_hits, draw_give, give_prompt;
 void test_colour(uint8_t c){(void)c;}
 void test_rect(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 void test_bob(gfxbob_t *b){(void)b;}
-void test_text(int x,int y,const char *s){(void)x;(void)y;if(!strcmp(s,"GIVE"))++draw_give;}
+void test_text(int x,int y,const char *s){(void)x;(void)y;if(!strcmp(s,"GIVE"))++draw_give; if(strstr(s,"FIRE1: CONFIRM"))++give_prompt;}
 static void action(uint16_t id,void *user){(void)user;last_action=id;
     if(id==20)++wrong_hits;
     if(id==21)++partial_hits;
@@ -42,7 +42,7 @@ static void setup(int any,int incremental){
 }
 static void open_give(void){
     tap(BTN_FIRE2); tick(0,90); tap(BTN_FIRE2); assert(game_adventure_open());
-    draw_give=0;game_adventure_draw(0,0,100,100);assert(draw_give>0);
+    draw_give=give_prompt=0;game_adventure_draw(0,0,100,100);assert(draw_give>0 && give_prompt>0);
 }
 static void close_dialogue(void){tick(0,90);tap(BTN_FIRE2);}
 int main(void){
@@ -63,11 +63,11 @@ int main(void){
     setup(0,0);
     game_adventure_remove(1,1);
     open_give();tap(BTN_FIRE);
-    assert(last_action==21 && partial_hits==1);
+    assert(last_action==22 && partial_hits==0); /* no hint/event on an incomplete exchange */
     assert(game_adventure_quantity(0)==1 && game_adventure_quantity(1)==0);
     /* Incremental AND: Ruby delivered now, Sapphire after world re-entry. */
     setup(0,1);open_give();tap(BTN_FIRE);
-    assert(last_action==21 && partial_hits==2);
+    assert(last_action==22 && partial_hits==0); /* hand-in remembered silently */
     assert(game_adventure_quantity(0)==0 && game_adventure_quantity(1)==1);
     uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS];
     game_adventure_save_exchanges(saved);
@@ -81,6 +81,6 @@ int main(void){
     /* Re-offering the already delivered Ruby is rejected without consuming. */
     setup(0,1);game_adventure_restore_exchanges(saved);open_give();tap(BTN_FIRE);
     assert(last_action==20 && game_adventure_quantity(0)==1);
-    puts("Stage 5.34: GIVE/AND/OR/wrong/partial/world-restore PASS");
+    puts("Stage 5.34.2: GIVE/AND/OR/wrong/silent hand-ins/world-restore PASS");
     return 0;
 }

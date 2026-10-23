@@ -25,6 +25,10 @@ typedef struct {
     int32_t x, y;                   /* Current WORLD top-left position. */
     uint16_t width, height;         /* Pickup hitbox (not rendered). */
     uint16_t kind, value;           /* Game-specific kind and amount. */
+    uint8_t tracking_configured;    /* 0 = preserve legacy callback rules. */
+    uint8_t show_in_inventory;      /* Add value to matching inventory item(s). */
+    uint8_t show_in_hud;            /* Count individual pickups for shared HUD. */
+    uint8_t persistent;             /* Stay collected across world reloads. */
     uint8_t active;                 /* 0 = already collected / hidden. */
     uint8_t can_collect;            /* 0 = currently dropping, not yet landed. */
     uint8_t draw_behind_tiles; /* Draw before tilemap rather than after. */

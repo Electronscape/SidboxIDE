@@ -11,6 +11,7 @@
 #include "gamecodegen.h"
 #include "gamehelpertemplates.h"
 #include "gameadventureeditor.h"
+#include "gamehudeditor.h"
 #include "gameadventuregen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
@@ -2120,16 +2121,19 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
                 existingH.contains("GAME_TILE_POINT_SLOPE") &&
                 existingH.contains("game_tile_loop_placement_t") &&
                 existingC.contains("loop_placements") &&
+                existingC.contains("GAME_TILEMAP_RUNTIME_HEADER_ONLY_V1") &&
                 (!needsFrontTiles || (existingC.contains("game_tilemap_blit_view_front") &&
                                        existingH.contains("GAME_TILE_DRAW_FRONT"))) &&
                 (!needsCustomZones || (existingC.contains("game_zone_at_player") &&
-                                        existingH.contains("GAME_ZONE_ENTERED")));
+                                        existingH.contains("GAME_ZONE_ENTERED"))) &&
+                (!hasAdventure() || existingC.contains("GAME_ADVENTURE_FIRE1_INPUT_GUARD_V1"));
         }
         cCheck.close(); hCheck.close();
         if (!current) {
             if (QMessageBox::question(this, tr("Upgrade Tilemap Helpers"),
-                    tr("Generated levels now use project-global slope and loop stamps. "
-                       "This project's gametilemap.c/.h need updating.\n\n"
+                    tr("This project's tilemap helper is older than the current runtime "
+                       "and may still reject modified PPB/.map assets by checksum. "
+                       "Update its gamehelpers/gametilemap.c/.h now?\n\n"
                        "Back up the existing helper files and install the new "
                        "versions from the IDE? Your edited helpers will be "
                        "preserved in timestamped .bak files."),
@@ -2780,6 +2784,18 @@ void SidboxGameDesigner::buildUi()
     adventureButton->setToolTip(tr("Advanced Platformer: design inventory, NPC dialogue, choices and a nine-tile box frame."));
     topActions->addWidget(adventureButton);
     connect(adventureButton, &QPushButton::clicked, this, [this] { openAdventureEditor(); });
+    auto *hudButton = new QPushButton(tr("HUD Editor..."), this);
+    hudButton->setToolTip(tr("Design a project-wide HUD with atlas tiles, labels and collectible counters."));
+    topActions->addWidget(hudButton);
+    connect(hudButton, &QPushButton::clicked, this, [this] {
+        const QString root = QFileInfo(m_filePath).absolutePath();
+        QString error;
+        if (editGameHud(this, root, &error)) {
+            if (assetFilesChanged) assetFilesChanged();
+        } else if (!error.isEmpty()) {
+            QMessageBox::warning(this, tr("HUD Editor"), error);
+        }
+    });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -4551,16 +4567,33 @@ void SidboxGameDesigner::pasteCopiedSprite()
         != QDir::cleanPath(m_filePath);
     Resource copy = s_copiedWorldObject;
     copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    QString base = copy.name;
-    base.remove(QRegularExpression(QStringLiteral("_copy\\[\\d+\\]$")));
-    int next = 0;
-    const QRegularExpression series(QStringLiteral("^%1_copy\\[(\\d+)\\]$")
-        .arg(QRegularExpression::escape(base)));
-    for (const Resource &existing : m_resources) {
-        const auto match = series.match(existing.name);
-        if (match.hasMatch()) next = qMax(next, match.captured(1).toInt() + 1);
+    // Treat names already ending in [index] as an authored array. A copy of
+    // Fright[0] becomes Fright[1], not Fright[0]_copy[0]. Search the
+    // destination world for the highest occupied index to avoid collisions.
+    const QRegularExpression numbered(QStringLiteral("^(.*)\\[(\\d+)\\]$"));
+    const auto numberedName = numbered.match(copy.name);
+    if (numberedName.hasMatch()) {
+        const QString base = numberedName.captured(1);
+        int next = numberedName.captured(2).toInt() + 1;
+        const QRegularExpression series(QStringLiteral("^%1\\[(\\d+)\\]$")
+            .arg(QRegularExpression::escape(base)));
+        for (const Resource &existing : m_resources) {
+            const auto match = series.match(existing.name);
+            if (match.hasMatch()) next = qMax(next, match.captured(1).toInt() + 1);
+        }
+        copy.name = QStringLiteral("%1[%2]").arg(base).arg(next);
+    } else {
+        QString base = copy.name;
+        base.remove(QRegularExpression(QStringLiteral("_copy\\[\\d+\\]$")));
+        int next = 0;
+        const QRegularExpression series(QStringLiteral("^%1_copy\\[(\\d+)\\]$")
+            .arg(QRegularExpression::escape(base)));
+        for (const Resource &existing : m_resources) {
+            const auto match = series.match(existing.name);
+            if (match.hasMatch()) next = qMax(next, match.captured(1).toInt() + 1);
+        }
+        copy.name = QStringLiteral("%1_copy[%2]").arg(base).arg(next);
     }
-    copy.name = QStringLiteral("%1_copy[%2]").arg(base).arg(next);
     copy.x = qBound(-MAX_WORLD, copy.x + 8, MAX_WORLD);
     copy.y = qBound(-MAX_WORLD, copy.y + 8, MAX_WORLD);
     copy.locked = false;
@@ -4608,6 +4641,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
             if (!r.path.isEmpty()) r.path = storedPath(sourceFile(r.path));
             if (!r.animationFile.isEmpty())
                 r.animationFile = storedPath(sourceFile(r.animationFile));
+            if (r.spriteStamp.active())
+                r.spriteStamp.sourcePath = storedPath(sourceFile(r.spriteStamp.sourcePath));
         };
 
         // Copying a sprite also copies its implicit animation sidecar if one
@@ -4646,6 +4681,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
                 missingFiles.append(file);
             if (!r.animationFile.isEmpty() && !QFileInfo(sourceFile(r.animationFile)).isFile())
                 missingFiles.append(sourceFile(r.animationFile));
+            if (r.spriteStamp.active() && !QFileInfo(sourceFile(r.spriteStamp.sourcePath)).isFile())
+                missingFiles.append(sourceFile(r.spriteStamp.sourcePath));
             const auto checkId = [&](const QString &id) {
                 if (id.isEmpty()) return;
                 const Resource *dep = sourceById(id);
@@ -5059,8 +5096,13 @@ void SidboxGameDesigner::addResource(const QString &kind, const QString &plane)
     r.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     r.name = QFileInfo(path).completeBaseName();
     r.path = storedPath(path);
-    r.x = m_cameraX->value() + 40;
-    r.y = m_cameraY->value() + 40;
+    // Imported graphics appear where the editor is currently looking,
+    // irrespective of the running game's camera position.
+    const QPointF centre = m_view
+        ? m_view->mapToScene(m_view->viewport()->rect().center())
+        : QPointF(m_cameraX->value() + 40, m_cameraY->value() + 40);
+    r.x = qBound(0, qRound(centre.x()), qMax(0, m_worldWidth->value()-1));
+    r.y = qBound(0, qRound(centre.y()), qMax(0, m_worldHeight->value()-1));
     suggestSpriteCells(r);
     rememberResourceEdit();
     m_resources.append(r);
@@ -5147,8 +5189,11 @@ void SidboxGameDesigner::importDroppedFiles(const QStringList &paths, const QStr
         r.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         r.name = info.completeBaseName();
         r.path = storedPath(info.absoluteFilePath());
-        r.x = m_cameraX->value() + 40;
-        r.y = m_cameraY->value() + 40;
+        const QPointF visibleCentre = m_view
+            ? m_view->mapToScene(m_view->viewport()->rect().center())
+            : QPointF(m_cameraX->value() + 40, m_cameraY->value() + 40);
+        r.x = qBound(0, qRound(visibleCentre.x()), qMax(0, m_worldWidth->value()-1));
+        r.y = qBound(0, qRound(visibleCentre.y()), qMax(0, m_worldHeight->value()-1));
         suggestSpriteCells(r);
         if (!recorded) { rememberResourceEdit(); recorded = true; }
         m_resources.append(r);
@@ -5180,8 +5225,13 @@ void SidboxGameDesigner::addPlaceholder()
     r.kind = QStringLiteral("sprite");
     r.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     r.name = QStringLiteral("sprite_%1").arg(m_resources.size() + 1);
-    r.x = m_cameraX->value() + 40;
-    r.y = m_cameraY->value() + 40;
+    // Imported graphics appear where the editor is currently looking,
+    // irrespective of the running game's camera position.
+    const QPointF centre = m_view
+        ? m_view->mapToScene(m_view->viewport()->rect().center())
+        : QPointF(m_cameraX->value() + 40, m_cameraY->value() + 40);
+    r.x = qBound(0, qRound(centre.x()), qMax(0, m_worldWidth->value()-1));
+    r.y = qBound(0, qRound(centre.y()), qMax(0, m_worldHeight->value()-1));
     rememberResourceEdit();
     m_resources.append(r);
     rebuildScene();
@@ -5548,6 +5598,44 @@ void SidboxGameDesigner::exportSelectedC()
 }
 
 
+// Stage 5.36: bake one arranged 8x8 source sheet into a normal PPB BOB.
+// No firmware or gametilemap helper change is necessary. The source and
+// arrangement stay editable in the world .sbgm, output stays generated-only.
+bool SidboxGameDesigner::updateSpriteStamp(Resource &resource, QString *error)
+{
+    if (!resource.spriteStamp.active()) return true;
+    const QString sourcePath = resolvedPath(resource.spriteStamp.sourcePath);
+    SidboxPpb::Picture source;
+    if (!SidboxPpb::read(sourcePath, &source, error)) return false;
+    const QImage composed = resource.spriteStamp.compose(source.indexed, error);
+    if (composed.isNull()) return false;
+    const QString id = SidboxPpb::identifier(resource.id);
+    const QDir root(QFileInfo(m_filePath).absolutePath());
+    const QString folder = root.filePath(QStringLiteral("gamesprites/generated"));
+    if (!QDir().mkpath(folder)) {
+        if (error) *error = tr("Cannot create generated sprite directory: %1").arg(folder);
+        return false;
+    }
+    const QString destination = QDir(folder).filePath(QStringLiteral("stamp_%1.ppb").arg(id));
+    SidboxPpb::Picture picture;
+    picture.indexed = composed;
+    if (!SidboxPpb::write(destination, picture, error)) return false;
+    // A fast overwrite can keep the same filesystem timestamp and byte count.
+    // Evict explicitly so the preview never shows the previous stamp picture.
+    const auto cached = m_imageCache.constFind(destination);
+    if (cached != m_imageCache.constEnd()) {
+        m_imageCacheBytes -= cached->memoryBytes;
+        m_imageCache.remove(destination);
+        m_imageCacheOrder.removeAll(destination);
+    }
+    resource.path = storedPath(destination);
+    resource.cellWidth = composed.width();
+    resource.cellHeight = composed.height();
+    resource.frame = 0;
+    resource.objectAnimated = false; // one baked frame, not a sprite-sheet animation
+    return true;
+}
+
 // Game object editing deliberately lives alongside the existing sprite tree.
 // The sprite remains the authoritative WORLD placement and bitmap reference.
 void SidboxGameDesigner::configureGameObject(int index)
@@ -5757,6 +5845,266 @@ void SidboxGameDesigner::configureGameObject(int index)
     // cards are shown only for the matching object type.
     const PropertyCard generalCard = makeCard(tr("General"));
     const PropertyCard visualCard = makeCard(tr("Visual & Movements"));
+    SidboxSpriteStamp draftSpriteStamp = old.spriteStamp;
+    auto *editSpriteStampButton = new QPushButton(tr("Arrange Sprite Stamp..."), &dialog);
+    editSpriteStampButton->setToolTip(tr("Arrange 8x8 tiles from an indexed PPB sheet into one collectible or object sprite. No game runtime stamp cost."));
+    visualCard.form->addRow(tr("Sprite Stamp"), editSpriteStampButton);
+    connect(editSpriteStampButton, &QPushButton::clicked, &dialog, [&]() {
+        // A source sheet can be any imported indexed PPB, not just the world's
+        // collision tile atlas. The selected source is kept in the stamp data.
+        QDialog editor(&dialog);
+        editor.setWindowTitle(tr("Sprite Stamp - %1").arg(old.name));
+        editor.setMinimumSize(900, 610);
+        editor.resize(1060, 725);
+        editor.setStyleSheet(dialog.styleSheet() + QStringLiteral(
+            "QDialog, QTableWidget, QPushButton, QSpinBox, QComboBox { border-radius:0px; }"));
+        QVBoxLayout box(&editor);
+        auto *sourceRow = new QHBoxLayout;
+        sourceRow->addWidget(new QLabel(tr("8 x 8 source PPB sheet:"), &editor));
+        auto *sourceChoice = new QComboBox(&editor);
+        sourceChoice->setMinimumWidth(280);
+        QSet<QString> offered;
+        const auto offer = [&](const QString &relative, const QString &caption) {
+            if (relative.isEmpty() || offered.contains(relative)) return;
+            const QString absolute = resolvedPath(relative);
+            if (QFileInfo(absolute).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive)) return;
+            offered.insert(relative);
+            sourceChoice->addItem(caption, relative);
+        };
+        offer(draftSpriteStamp.sourcePath, tr("Current sheet: %1").arg(QFileInfo(draftSpriteStamp.sourcePath).fileName()));
+        offer(old.spriteStamp.active() ? old.spriteStamp.sourcePath : old.path,
+              tr("Object sprite: %1").arg(QFileInfo(old.path).fileName()));
+        for (const Resource &candidate : m_resources)
+            if (candidate.kind == QStringLiteral("tileatlas") || candidate.kind == QStringLiteral("sprite"))
+                offer(candidate.path, candidate.name);
+        sourceRow->addWidget(sourceChoice, 1);
+        auto *browse = new QPushButton(tr("Choose PPB..."), &editor);
+        sourceRow->addWidget(browse);
+        auto *copyStamp = new QPushButton(tr("Copy stamp from..."), &editor);
+        sourceRow->addWidget(copyStamp);
+        box.addLayout(sourceRow);
+        auto *dimensions = new QHBoxLayout;
+        auto *widthSpin = new QSpinBox(&editor), *heightSpin = new QSpinBox(&editor);
+        for (auto *spin : {widthSpin, heightSpin}) spin->setRange(1, 16);
+        SidboxSpriteStamp working = draftSpriteStamp;
+        if (!working.active()) {
+            working.sourcePath = sourceChoice->currentData().toString();
+            working.resize(2, 2);
+        }
+        widthSpin->setValue(working.width);
+        heightSpin->setValue(working.height);
+        dimensions->addWidget(new QLabel(tr("Width (cells)"), &editor));
+        dimensions->addWidget(widthSpin);
+        dimensions->addWidget(new QLabel(tr("Height (cells)"), &editor));
+        dimensions->addWidget(heightSpin);
+        auto *flipX = new QCheckBox(tr("Flip X on paint"), &editor);
+        auto *flipY = new QCheckBox(tr("Flip Y on paint"), &editor);
+        auto *erase = new QCheckBox(tr("Erase cell"), &editor);
+        dimensions->addWidget(flipX); dimensions->addWidget(flipY); dimensions->addWidget(erase);
+        dimensions->addStretch(1);
+        box.addLayout(dimensions);
+        auto *views = new QHBoxLayout;
+        auto *sheetBox = new QVBoxLayout;
+        sheetBox->addWidget(new QLabel(tr("1. Select source tile"), &editor));
+        auto *sourceTable = new QTableWidget(&editor);
+        sheetBox->addWidget(sourceTable, 1);
+        views->addLayout(sheetBox, 1);
+        auto *stampBox = new QVBoxLayout;
+        stampBox->addWidget(new QLabel(tr("2. Click arrangement cells to paint"), &editor));
+        auto *stampTable = new QTableWidget(&editor);
+        stampBox->addWidget(stampTable, 1);
+        auto *mirrorRow = new QHBoxLayout;
+        auto *mirrorX = new QPushButton(tr("Mirror stamp X"), &editor);
+        auto *mirrorY = new QPushButton(tr("Mirror stamp Y"), &editor);
+        auto *clear = new QPushButton(tr("Clear all"), &editor);
+        mirrorRow->addWidget(mirrorX); mirrorRow->addWidget(mirrorY); mirrorRow->addWidget(clear);
+        stampBox->addLayout(mirrorRow);
+        views->addLayout(stampBox, 1);
+        box.addLayout(views, 1);
+        auto *help = new QLabel(tr("Index 0 is transparent. Empty cells are transparent. "
+            "Each placed cell keeps its own X/Y flips; whole-stamp mirrors reverse both cell positions and flips. "
+            "The finished sprite is generated as one PPB with no SIDBOX runtime overhead."), &editor);
+        help->setWordWrap(true);
+        box.addWidget(help);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &editor);
+        auto *remove = buttons->addButton(tr("Remove stamp"), QDialogButtonBox::ResetRole);
+        box.addWidget(buttons);
+        QImage source;
+        int selectedTile = 0;
+        auto updateCells = [&]() {
+            stampTable->setRowCount(working.height);
+            stampTable->setColumnCount(working.width);
+            stampTable->horizontalHeader()->setVisible(false);
+            stampTable->verticalHeader()->setVisible(false);
+            stampTable->horizontalHeader()->setDefaultSectionSize(46);
+            stampTable->verticalHeader()->setDefaultSectionSize(46);
+            stampTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            const int sourceCols = source.width() / 8;
+            for (int y = 0; y < working.height; ++y)
+                for (int x = 0; x < working.width; ++x) {
+                    const int offset = y * working.width + x;
+                    const int encoded = offset < working.cells.size() ? working.cells.at(offset) : -1;
+                    auto *item = new QTableWidgetItem;
+                    if (encoded >= 0 && sourceCols > 0) {
+                        const int n = encoded & SidboxSpriteStamp::tileMask;
+                        if (n < sourceCols * (source.height() / 8)) {
+                            QImage cell = source.copy((n % sourceCols) * 8, (n / sourceCols) * 8, 8, 8);
+                            Qt::Orientations flags;
+                            if (encoded & SidboxSpriteStamp::flipX) flags |= Qt::Horizontal;
+                            if (encoded & SidboxSpriteStamp::flipY) flags |= Qt::Vertical;
+                            if (flags) cell = cell.flipped(flags);
+                            item->setIcon(QIcon(QPixmap::fromImage(cell.scaled(40, 40,
+                                Qt::IgnoreAspectRatio, Qt::FastTransformation))));
+                        }
+                        item->setToolTip(tr("Tile %1, flip X: %2, flip Y: %3")
+                            .arg(n).arg(bool(encoded & SidboxSpriteStamp::flipX))
+                            .arg(bool(encoded & SidboxSpriteStamp::flipY)));
+                    } else item->setText(QStringLiteral("·"));
+                    stampTable->setItem(y, x, item);
+                }
+        };
+        auto selectSource = [&](const QString &path) {
+            SidboxPpb::Picture picture;
+            QString error;
+            if (!SidboxPpb::read(resolvedPath(path), &picture, &error) ||
+                picture.indexed.width() % 8 || picture.indexed.height() % 8) {
+                QMessageBox::warning(&editor, tr("Sprite Stamp"),
+                    error.isEmpty() ? tr("The source sheet dimensions must be divisible by 8.") : error);
+                return false;
+            }
+            const QImage candidate = picture.indexed;
+            const int tileCount = (candidate.width() / 8) * (candidate.height() / 8);
+            if (tileCount > 4096) {
+                QMessageBox::warning(&editor, tr("Sprite Stamp"),
+                    tr("Source sheet exceeds 4096 cells. Please use a smaller 8x8 PPB sheet."));
+                return false;
+            }
+            if (!working.sourcePath.isEmpty() && working.sourcePath != path)
+                working.cells.fill(-1, working.width * working.height);
+            source = candidate;
+            const QVector<QRgb> bank = activePalette(QStringLiteral("foreground"));
+            if (bank.size() == 256) source.setColorTable(colourPreviewBank(bank, true, true));
+            working.sourcePath = path;
+            const int cols = qMin(12, candidate.width() / 8);
+            sourceTable->setColumnCount(cols);
+            sourceTable->setRowCount((tileCount + cols - 1) / cols);
+            sourceTable->horizontalHeader()->setVisible(false);
+            sourceTable->verticalHeader()->setVisible(false);
+            sourceTable->horizontalHeader()->setDefaultSectionSize(38);
+            sourceTable->verticalHeader()->setDefaultSectionSize(38);
+            sourceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            for (int i = 0; i < tileCount; ++i) {
+                const int sourceCols = candidate.width() / 8;
+                const QImage cell = source.copy((i % sourceCols) * 8, (i / sourceCols) * 8, 8, 8);
+                auto *item = new QTableWidgetItem;
+                item->setIcon(QIcon(QPixmap::fromImage(cell.scaled(32, 32,
+                    Qt::IgnoreAspectRatio, Qt::FastTransformation))));
+                item->setToolTip(tr("Source tile %1").arg(i));
+                sourceTable->setItem(i / cols, i % cols, item);
+            }
+            selectedTile = 0;
+            sourceTable->setCurrentCell(0, 0);
+            updateCells();
+            return true;
+        };
+        connect(sourceTable, &QTableWidget::cellClicked, &editor,
+                [&](int row, int col) {
+            const int id = row * sourceTable->columnCount() + col;
+            if (id < (source.width() / 8) * (source.height() / 8)) selectedTile = id;
+        });
+        connect(stampTable, &QTableWidget::cellClicked, &editor,
+                [&](int row, int col) {
+            const int cell = row * working.width + col;
+            if (cell < 0 || cell >= working.cells.size()) return;
+            working.cells[cell] = erase->isChecked() ? -1
+                : selectedTile | (flipX->isChecked() ? SidboxSpriteStamp::flipX : 0)
+                               | (flipY->isChecked() ? SidboxSpriteStamp::flipY : 0);
+            updateCells();
+        });
+        connect(widthSpin, qOverload<int>(&QSpinBox::valueChanged), &editor,
+                [&](int value) { working.resize(value, working.height); updateCells(); });
+        connect(heightSpin, qOverload<int>(&QSpinBox::valueChanged), &editor,
+                [&](int value) { working.resize(working.width, value); updateCells(); });
+        connect(mirrorX, &QPushButton::clicked, &editor,
+                [&]() { working.mirror(true); updateCells(); });
+        connect(mirrorY, &QPushButton::clicked, &editor,
+                [&]() { working.mirror(false); updateCells(); });
+        connect(clear, &QPushButton::clicked, &editor,
+                [&]() { working.cells.fill(-1, working.width * working.height); updateCells(); });
+        connect(copyStamp, &QPushButton::clicked, &editor, [&]() {
+            QStringList names;
+            QVector<int> indices;
+            for (int i = 0; i < m_resources.size(); ++i) {
+                if (m_resources.at(i).id == old.id || !m_resources.at(i).spriteStamp.active()) continue;
+                names.append(m_resources.at(i).name);
+                indices.append(i);
+            }
+            if (indices.isEmpty()) {
+                QMessageBox::information(&editor, tr("Sprite Stamp"),
+                    tr("No other game object has a saved sprite stamp yet."));
+                return;
+            }
+            bool accepted = false;
+            const QString selected = QInputDialog::getItem(&editor, tr("Copy Sprite Stamp"),
+                tr("Choose a Game Object:"), names, 0, false, &accepted);
+            if (!accepted) return;
+            const int chosen = names.indexOf(selected);
+            if (chosen < 0) return;
+            const SidboxSpriteStamp previous = working;
+            working = m_resources.at(indices.at(chosen)).spriteStamp;
+            widthSpin->setValue(working.width);
+            heightSpin->setValue(working.height);
+            if (!selectSource(working.sourcePath)) {
+                working = previous;
+                widthSpin->setValue(working.width);
+                heightSpin->setValue(working.height);
+                selectSource(working.sourcePath);
+                return;
+            }
+            const int option = sourceChoice->findData(working.sourcePath);
+            if (option < 0) sourceChoice->addItem(QFileInfo(working.sourcePath).fileName(), working.sourcePath);
+            sourceChoice->setCurrentIndex(qMax(0, sourceChoice->findData(working.sourcePath)));
+            updateCells();
+        });
+        connect(sourceChoice, qOverload<int>(&QComboBox::currentIndexChanged), &editor,
+                [&](int) { selectSource(sourceChoice->currentData().toString()); });
+        connect(browse, &QPushButton::clicked, &editor, [&]() {
+            const QString filename = QFileDialog::getOpenFileName(&editor, tr("Select 8x8 tile sheet"),
+                QFileInfo(m_filePath).absolutePath(), tr("SIDBOX PPB (*.ppb)"));
+            if (filename.isEmpty()) return;
+            const QString relative = storedPath(filename);
+            if (selectSource(relative)) {
+                sourceChoice->addItem(QFileInfo(filename).fileName(), relative);
+                sourceChoice->setCurrentIndex(sourceChoice->count() - 1);
+            }
+        });
+        connect(buttons, &QDialogButtonBox::rejected, &editor, &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, &editor, [&]() {
+            QString error;
+            if (working.sourcePath.isEmpty() || working.compose(
+                    [&]() { SidboxPpb::Picture p;
+                        if (!SidboxPpb::read(resolvedPath(working.sourcePath), &p, &error)) return QImage();
+                        return p.indexed; }(), &error).isNull()) {
+                QMessageBox::warning(&editor, tr("Sprite Stamp"),
+                    error.isEmpty() ? tr("Choose a valid 8x8 indexed PPB sheet first.") : error);
+                return;
+            }
+            editor.accept();
+        });
+        bool removeStamp = false;
+        connect(remove, &QPushButton::clicked, &editor, [&]() {
+            removeStamp = true; editor.accept();
+        });
+        if (sourceChoice->count() > 0) selectSource(sourceChoice->currentData().toString());
+        else help->setText(tr("Choose an 8x8-aligned PPB sheet using Choose PPB..."));
+        if (editor.exec() != QDialog::Accepted) return;
+        if (removeStamp) draftSpriteStamp = SidboxSpriteStamp();
+        else draftSpriteStamp = working;
+        editSpriteStampButton->setText(draftSpriteStamp.active()
+            ? tr("Edit Sprite Stamp (%1 x %2 tiles)...")
+                .arg(draftSpriteStamp.width).arg(draftSpriteStamp.height)
+            : tr("Arrange Sprite Stamp..."));
+    });
     const PropertyCard animationCard = makeCard(tr("Animation Frames"));
     const PropertyCard collisionCard = makeCard(tr("Physics / Collision"));
     const PropertyCard collectCard = makeCard(tr("Collectable"));
@@ -5966,7 +6314,27 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *value = spin(0, 65535, old.objectValue);
     value->setMaximumWidth(110);
     pickup->setMinimumWidth(120);
+    value->setToolTip(tr("How many units this pickup grants (e.g. 10 coins). Your existing on_pickup callback can still use the value."));
     form->addRow(pairFields(tr("Pickup Type"), pickup, tr("Pickup Value"), value));
+    auto *pickupShowInventory = new QCheckBox(tr("Show in Inventory"), &dialog);
+    auto *pickupShowHud = new QCheckBox(tr("Show in HUD (track total)"), &dialog);
+    auto *pickupPersistent = new QCheckBox(tr("Persistent collectible (stay collected across worlds)"), &dialog);
+    pickupPersistent->setChecked(old.pickupPersistent);
+    pickupPersistent->setToolTip(tr("Once collected, this placed object stays gone when you return to its world. Its inventory quantity can travel with the player when this pickup type is shared between worlds."));
+    pickupShowInventory->setChecked(old.pickupShowInventory);
+    pickupShowHud->setChecked(old.pickupShowHud);
+    // Opening/saving an existing object must not silently replace its custom
+    // on_pickup() rules. Only opting into these controls enables auto-tracking.
+    bool pickupOptionsTouched = false;
+    connect(pickupShowInventory, &QCheckBox::toggled, &dialog,
+            [&](bool) { pickupOptionsTouched = true; });
+    connect(pickupShowHud, &QCheckBox::toggled, &dialog,
+            [&](bool) { pickupOptionsTouched = true; });
+    pickupShowInventory->setToolTip(tr("Add Pickup Value to this type in the Adventure Inventory. CoderGirl creates a matching Inventory Item automatically if missing (icon can be chosen later)."));
+    pickupShowHud->setToolTip(tr("Count collected objects of this type for the shared HUD. One pickup = one count; Pickup Value is still available for your own game rules."));
+    collectCard.form->addRow(QString(), pickupShowInventory);
+    collectCard.form->addRow(QString(), pickupShowHud);
+    collectCard.form->addRow(QString(), pickupPersistent);
     auto *pickupActions=new QWidget(&dialog);auto *pickupActionsRow=new QHBoxLayout(pickupActions);
     pickupActionsRow->setContentsMargins(0,0,0,0);
     pickupActionsRow->addWidget(addPickupType);pickupActionsRow->addWidget(managePickupTypes);
@@ -6933,6 +7301,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         // They are intangible sensors; hitW/hitH define the lethal area.
         pickup->setEnabled(behaviour == QStringLiteral("collectable"));
         value->setEnabled(behaviour == QStringLiteral("collectable"));
+        pickupShowInventory->setEnabled(behaviour == QStringLiteral("collectable"));
+        pickupShowHud->setEnabled(behaviour == QStringLiteral("collectable"));
+        pickupPersistent->setEnabled(behaviour == QStringLiteral("collectable"));
         const bool isTrigger = behaviour == QStringLiteral("trigger");
         const bool isGoto = behaviour == QStringLiteral("goto_world");
         gotoWorld->setEnabled(isGoto);
@@ -7066,12 +7437,73 @@ void SidboxGameDesigner::configureGameObject(int index)
             tr("Choose another world in this project before saving this door."));
         return false;
     }
+    // Validate the draft BEFORE adding to the undo history or mutating the
+    // actual object. A missing sheet cannot partially commit an object.
+    Resource stamped = old;
+    stamped.spriteStamp = draftSpriteStamp;
+    if (stamped.spriteStamp.active()) {
+        QString stampError;
+        if (!updateSpriteStamp(stamped, &stampError)) {
+            QMessageBox::warning(&dialog, tr("Sprite Stamp"), stampError);
+            return false;
+        }
+    } else if (old.spriteStamp.active()) {
+        stamped.path = old.spriteStamp.sourcePath;
+        stamped.cellWidth = 8; stamped.cellHeight = 8; stamped.frame = 0;
+    }
+    // A checked Inventory option should actually work without forcing a
+    // second visit to Adventure Editor. Existing item definitions (and their
+    // puzzle dependencies, capacities and icons) are NEVER modified.
+    QJsonArray inventoryDefinitions = m_adventure.value(QStringLiteral("items")).toArray();
+    bool createInventoryDefinition = false;
+    if (newType == QStringLiteral("collectable") && pickupShowInventory->isChecked()) {
+        const int selectedKind = pickup->currentData().toInt();
+        bool found = false;
+        for (const QJsonValue &entry : inventoryDefinitions)
+            if (entry.toObject().value(QStringLiteral("pickupKind")).toInt() == selectedKind) {
+                found = true; break;
+            }
+        if (!found) {
+            if (inventoryDefinitions.size() >= 64) {
+                QMessageBox::warning(&dialog, tr("Inventory full"),
+                    tr("The Adventure Inventory has 64 item types already. Remove an unused type or link an existing item to this pickup type before enabling Show in Inventory."));
+                return false;
+            }
+            createInventoryDefinition = true;
+        }
+    }
     rememberResourceEdit();
     m_adventure.insert(QStringLiteral("pickupTypes"),customPickupTypes);
+    if (createInventoryDefinition) {
+        QString name = pickup->currentText().trimmed();
+        if (pickup->currentData().toInt() >= 5 && name.contains(QStringLiteral(": ")))
+            name = name.section(QStringLiteral(": "), 1);
+        if (pickup->currentData().toInt() == 1) name = tr("Coins");
+        if (name.isEmpty()) name = old.name.trimmed();
+        if (name.isEmpty()) name = tr("Pickup");
+        QJsonObject item;
+        item.insert(QStringLiteral("name"), name);
+        item.insert(QStringLiteral("pickupKind"), pickup->currentData().toInt());
+        item.insert(QStringLiteral("capacity"), 65535);
+        item.insert(QStringLiteral("initial"), 0);
+        item.insert(QStringLiteral("icon"), 65535);
+        inventoryDefinitions.append(item);
+        m_adventure.insert(QStringLiteral("items"), inventoryDefinitions);
+    }
     Resource &r = m_resources[index];
+    r.spriteStamp = stamped.spriteStamp;
+    r.path = stamped.path;
+    r.cellWidth = stamped.cellWidth;
+    r.cellHeight = stamped.cellHeight;
+    r.frame = stamped.frame;
     r.objectType = newType;
     r.pickupKind = pickup->currentData().toInt();
     r.objectValue = value->value();
+    r.pickupTrackingConfigured = newType == QStringLiteral("collectable") &&
+        (old.pickupTrackingConfigured || pickupOptionsTouched);
+    r.pickupShowInventory = pickupShowInventory->isChecked();
+    r.pickupShowHud = pickupShowHud->isChecked();
+    r.pickupPersistent = pickupPersistent->isChecked();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
     r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
     r.springLaunchX = springLaunchX->value();
@@ -7143,12 +7575,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.sfxHazardHit = sfxHazardHit->currentData().toString();
     r.sfxHazardBounce = sfxHazardBounce->currentData().toString();
     r.sfxHazardAmbient = sfxHazardAmbient->currentData().toString();
-    r.respawnFrames = collectOnce->isChecked() ? 0 : respawn->value();
+    r.respawnFrames = (r.pickupPersistent || collectOnce->isChecked()) ? 0 : respawn->value();
     r.audioRadius = radius->value();
     r.audioFadeFrames = fade->value();
     r.objectSplineId = spline->currentData().toString();
     r.objectSplineStartDelay = splineDelay->value();
-    r.objectAnimated = animated->isChecked();
+    r.objectAnimated = !r.spriteStamp.active() && animated->isChecked();
     r.animFirst = first->value(); r.animCount = count->value();
     r.animTicks = ticks->value(); r.animMode = mode->currentData().toString();
     rebuildScene(); // Show updated mirroring on the live world canvas immediately.
@@ -7162,6 +7594,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const auto showObject = [&](int selectedIndex) {
         index = selectedIndex;
         old = m_resources.at(index);
+        draftSpriteStamp = old.spriteStamp;
+        editSpriteStampButton->setText(draftSpriteStamp.active()
+            ? tr("Edit Sprite Stamp (%1 x %2 tiles)...").arg(draftSpriteStamp.width).arg(draftSpriteStamp.height)
+            : tr("Arrange Sprite Stamp..."));
         dialog.setUpdatesEnabled(false);
         dialog.setWindowTitle(tr("Game Object Properties - %1").arg(old.name));
         objectName->setText(old.name);
@@ -7170,6 +7606,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
         refillPickup(old.pickupKind);
         value->setValue(old.objectValue);
+        pickupShowInventory->setChecked(old.pickupShowInventory);
+        pickupShowHud->setChecked(old.pickupShowHud);
+        pickupPersistent->setChecked(old.pickupPersistent);
         initiallyActive->setChecked(old.objectInitiallyActive);
         hiddenCollectable->setChecked(!old.objectInitiallyActive ||
             (old.objectType == QStringLiteral("collectable") &&
@@ -7984,6 +8423,59 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
 }
 
 
+// Persistent inventory types are project-wide. A world may have no NPCs or
+// its own Adventure items, yet the player still needs to SEE items picked up
+// in another world. Read only saved source worlds, never change .sbgm files.
+static QJsonArray persistentItemsFromSavedWorlds(const QString &root)
+{
+    QMap<int,QJsonObject> byKind;
+    const QDir dir(root);
+    for(const QString &world:dir.entryList({QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+        QFile file(dir.filePath(world));
+        if(!file.open(QIODevice::ReadOnly)||file.size()>16*1024*1024)continue;
+        const QJsonObject design=QJsonDocument::fromJson(file.readAll()).object();
+        if(design.value(QStringLiteral("format")).toString()!=QStringLiteral("SIDBOX-GAME-DESIGN"))continue;
+        const QJsonArray items=design.value(QStringLiteral("adventure")).toObject().value(QStringLiteral("items")).toArray();
+        for(const QJsonValue &value:design.value(QStringLiteral("resources")).toArray()) {
+            const QJsonObject resource=value.toObject();
+            const QJsonObject object=resource.value(QStringLiteral("gameObject")).toObject();
+            if(object.value(QStringLiteral("type")).toString()!=QStringLiteral("collectable") ||
+               !object.value(QStringLiteral("pickupPersistent")).toBool(false) ||
+               !object.value(QStringLiteral("pickupShowInventory")).toBool(false))continue;
+            const int kind=object.value(QStringLiteral("pickupKind")).toInt();
+            if(kind<1 || kind>255 || byKind.contains(kind))continue;
+            QJsonObject item;
+            for(const QJsonValue &v:items) {
+                const QJsonObject candidate=v.toObject();
+                if(candidate.value(QStringLiteral("pickupKind")).toInt()==kind) {
+                    item=candidate;break;
+                }
+            }
+            if(item.isEmpty()){
+                item.insert(QStringLiteral("name"),kind==1?QStringLiteral("Coins"):
+                    resource.value(QStringLiteral("name")).toString(QStringLiteral("Item")));
+                item.insert(QStringLiteral("pickupKind"),kind);
+                item.insert(QStringLiteral("capacity"),65535);
+                item.insert(QStringLiteral("initial"),0);
+                item.insert(QStringLiteral("icon"),65535);
+            }
+            // The item can be carried into other worlds, but it must not be
+            // granted a second time merely because a world defines it.
+            item.insert(QStringLiteral("initial"),0);
+            // Resource UUIDs are local to each world. A foreign world icon
+            // atlas ID is not a valid reference in this destination world.
+            item.remove(QStringLiteral("iconAtlasId"));
+            item.insert(QStringLiteral("icon"),65535);
+            item.insert(QStringLiteral("icon2x2"),false);
+            item.remove(QStringLiteral("iconCells"));
+            byKind.insert(kind,item);
+        }
+    }
+    QJsonArray result;
+    for(auto it=byKind.cbegin();it!=byKind.cend();++it)result.append(it.value());
+    return result;
+}
+
 // Advanced Platformer adventure definitions are stored only in .sbgm.
 // Ordinary placed Sprite resources become NPCs by stable resource ID.
 bool SidboxGameDesigner::hasAdventure() const
@@ -7992,7 +8484,8 @@ bool SidboxGameDesigner::hasAdventure() const
     // NPCs or dialogue nodes yet. A saved dialogue atlas or positioned box
     // must generate world-specific setup instead of the no-story stub;
     // otherwise the shared Adventure runtime keeps another world's style.
-    return !m_adventure.value(QStringLiteral("items")).toArray().isEmpty()
+    return !persistentItemsFromSavedWorlds(QFileInfo(m_filePath).absolutePath()).isEmpty()
+        || !m_adventure.value(QStringLiteral("items")).toArray().isEmpty()
         || !m_adventure.value(QStringLiteral("nodes")).toArray().isEmpty()
         || !m_adventure.value(QStringLiteral("npcs")).toArray().isEmpty()
         || !m_adventure.value(QStringLiteral("skinAtlasId")).toString().isEmpty()
@@ -8018,7 +8511,8 @@ void SidboxGameDesigner::openAdventureEditor(const QString &focusNpcSpriteId)
         if (r.kind == QStringLiteral("sprite") && r.objectType == QStringLiteral("decoration")
             && r.plane == QStringLiteral("foreground") && r.name.compare(QStringLiteral("player"),Qt::CaseInsensitive))
             sprites.append(a);
-        else if (r.kind == QStringLiteral("tileatlas")) atlases.append(a);
+        if (r.kind == QStringLiteral("tileatlas") || r.kind == QStringLiteral("sprite"))
+            atlases.append(a);
     }
     QVector<GameAdventureAsset> worldObjects;
     int slot = 0;
@@ -8097,7 +8591,10 @@ bool SidboxGameDesigner::exportAdventure(QString *error)
             ? qBound(1, (image.width() / a.width) * (image.height() / a.height), 256) : 1;
         if (r.kind == QStringLiteral("sprite") && r.objectType == QStringLiteral("decoration")
             && r.plane == QStringLiteral("foreground")) sprites.append(a);
-        else if (r.kind == QStringLiteral("tileatlas")) atlases.append(a);
+        // Inventory icons can use ANY PPB registered in this world, not just
+        // the dialogue skin or a tilemap atlas.
+        if (r.kind == QStringLiteral("sprite") || r.kind == QStringLiteral("tileatlas"))
+            atlases.append(a);
     }
     QVector<GameAdventureAsset> worldObjects;
     int slot = 0;
@@ -8107,7 +8604,25 @@ bool SidboxGameDesigner::exportAdventure(QString *error)
         GameAdventureAsset object; object.id = r.id; object.name = r.name;
         object.worldSlot = slot++; worldObjects.append(object);
     }
-    return generateGameAdventure(m_adventure, QFileInfo(m_filePath).absolutePath(), sprites,
+    QJsonObject effectiveAdventure=m_adventure;
+    QJsonArray effectiveItems=effectiveAdventure.value(QStringLiteral("items")).toArray();
+    // Append only, so all existing NPC dialogue/quest inventory indices stay
+    // stable. A new world automatically exposes persistent pickup TYPES owned
+    // by another world. Counts still travel through gameworlds' name registry.
+    for(const QJsonValue &value:persistentItemsFromSavedWorlds(QFileInfo(m_filePath).absolutePath())) {
+        const QJsonObject item=value.toObject();
+        const int kind=item.value(QStringLiteral("pickupKind")).toInt();
+        bool exists=false;
+        for(const QJsonValue &v:effectiveItems)
+            if(v.toObject().value(QStringLiteral("pickupKind")).toInt()==kind) {exists=true;break;}
+        if(!exists)effectiveItems.append(item);
+    }
+    if(effectiveItems.size()>64){
+        if(error)*error=tr("Project-wide persistent inventory exceeds 64 item types.");
+        return false;
+    }
+    effectiveAdventure.insert(QStringLiteral("items"),effectiveItems);
+    return generateGameAdventure(effectiveAdventure, QFileInfo(m_filePath).absolutePath(), sprites,
                                  atlases, worldObjects,
                                  QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")), error);
 }

@@ -46,7 +46,7 @@ static void check(int tile,int optional,int has_skin) {
     assert(header_x==8+i_pad);
     assert(header_y==inventory_frame_y+i_pad);
     assert(footer_x==8+464-i_pad-12*8);
-    assert(footer_y==inventory_frame_y+inventory_frame_h-i_pad-16);
+    assert(footer_y==inventory_frame_y+inventory_frame_h-i_pad-8);
     assert(inventory_frame_h<=320);
     assert(header_y>=inventory_frame_y+border+8);
     press(2,2); /* close inventory */

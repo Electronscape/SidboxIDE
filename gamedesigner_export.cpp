@@ -644,6 +644,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         value("Y", r.y);
         value("RESPAWN_FRAMES", r.respawnFrames);
         value("PICKUP_VALUE", r.objectValue);
+        value("PICKUP_TRACKING", r.pickupTrackingConfigured ? 1 : 0);
+        value("PICKUP_INVENTORY", r.pickupShowInventory ? 1 : 0);
+        value("PICKUP_HUD", r.pickupShowHud ? 1 : 0);
+        value("PICKUP_PERSISTENT", r.pickupPersistent ? 1 : 0);
         const QStringList pickupsKinds{QString(), QStringLiteral("GAME_PICKUP_COIN"),
             QStringLiteral("GAME_PICKUP_HEALTH"), QStringLiteral("GAME_PICKUP_KEY"),
             QStringLiteral("GAME_PICKUP_GEM")};
@@ -986,6 +990,21 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         return false;
     }
     const bool hasPhysics = hasMap && (player || hasSharedPlayer);
+    // One starter drives ALL worlds. A collectible in another .sbgm still
+    // needs gameworlds_check() every frame after the player travels there.
+    bool anyWorldPickups = pickups > 0;
+    for (const QString &world : gameProject.entryList({QStringLiteral("*.sbgm")}, QDir::Files)) {
+        QFile candidate(gameProject.filePath(world));
+        if (!candidate.open(QIODevice::ReadOnly)) continue;
+        const QJsonDocument json = QJsonDocument::fromJson(candidate.readAll());
+        for (const QJsonValue &entry : json.object().value(QStringLiteral("resources")).toArray()) {
+            const QJsonObject item = entry.toObject();
+            if (item.value(QStringLiteral("kind")).toString() == QStringLiteral("sprite") &&
+                item.value(QStringLiteral("gameObject")).toObject().value(QStringLiteral("type")).toString()
+                    == QStringLiteral("collectable")) { anyWorldPickups = true; break; }
+        }
+        if (anyWorldPickups) break;
+    }
     const bool hasObjects = pickups || worldObjects;
     const bool hasMapOnly = hasMap && !player && !hasSharedPlayer;
     const QString playerName = player ? spriteSymbol(*player) : QString();
@@ -1035,7 +1054,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFlag("HAS_PHYSICS", hasPhysics);
     mainFlag("HAS_SHARED_PLAYER", hasSharedPlayer);
     mainFlag("HAS_WORLD_PLAYER", hasPhysics && worldObjects);
-    mainFlag("HAS_PICKUPS", hasPhysics && pickups);
+    mainFlag("HAS_PICKUPS", hasPhysics && anyWorldPickups);
     mainFlag("HAS_ATTACHED_SPLINES", hasObjects && !attachedSplineDescriptions.isEmpty());
     mainFlag("HAS_PLAYER_HAZARDS", hasPhysics && hasHazards);
     mainFlag("HAS_MURDER_OBJECTS", hasMurderObjects);
@@ -1056,6 +1075,10 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFlag("HAS_CUSTOM_COLLISION_SURFACES", hasMap &&
         (m_tilemap.collisions.contains(char(7)) || !m_tilemap.collisionPlacements.isEmpty()));
     mainFlag("HAS_LOOPS", hasMap && !m_tilemap.loops.isEmpty());
+    // HUD is project-owned. An authored main.c is never overwritten;
+    // the regenerated maingame.c.txt demonstrates the one-line call.
+    mainFlag("HAS_HUD", QFileInfo::exists(gameProject.filePath(QStringLiteral("gamehud.sbhud")))
+        && QFileInfo::exists(gameProject.filePath(QStringLiteral("gamehelpers/gamehud.h"))));
     mainFlag("HAS_NO_MAP", !hasMap);
     mainFlag("HAS_MAP_ONLY", hasMapOnly);
     mainFlag("HAS_OBJECTS_NO_PHYSICS", !hasPhysics && hasObjects);

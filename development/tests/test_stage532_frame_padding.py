@@ -18,5 +18,5 @@ src=(root/'gameadventureeditor.cpp').read_text()
 assert 'auto previewInset=[&]' in src
 assert src.count('outline->isChecked(),previewInset()')>=2
 assert 'const int pad=previewInset();' in src
-assert 'Build: 5.33.221026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.34.2.221026' in (root/'splashscreenwidget.cpp').read_text()
 print('Stage 5.32: generated templates + IDE preview alignment PASS')

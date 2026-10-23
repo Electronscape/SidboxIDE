@@ -147,6 +147,7 @@ void gameadventure_setup(void)
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
         skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
         @IDE{FRAMES_PER_CHAR}u, on_event, 0);
+@IDE{ITEM_ICON_SETUP}
 @IDE_IF{HAS_WORLD_OBJECTS}
     /* Let nearby FIRE2 doors/switches handle the button before inventory. */
     game_adventure_set_fire2_action(gameworlditems_fire2_action);

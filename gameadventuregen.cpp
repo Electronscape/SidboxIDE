@@ -301,12 +301,14 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 return event;
             };
             const int wrongAction=active ? exAction("wrongAction","wrongTargetObjectId","wrongTargetAction",0) : -1;
-            const int partialAction=active ? exAction("partialAction","partialTargetObjectId","partialTargetAction",1) : -1;
-            if(wrongAction==-2 || partialAction==-2)return false;
+            /* Partial progress is intentionally silent: do not expose
+               undiscovered quest requirements through a hint node/event. */
+            const int partialAction=-1;
+            if(wrongAction==-2)return false;
             exchangeRows << QStringLiteral("    {{%1},%2,%3,%4,%5,%6u,%7u,%8u,%9u},")
                 .arg(requested.join(','))
                 .arg(active ? clampInt(exchange,"wrongNext",-1,nodes.size()-1,-1) : -1)
-                .arg(active ? clampInt(exchange,"partialNext",-1,nodes.size()-1,-1) : -1)
+                .arg(-1)
                 .arg(active ? wrongAction : -1).arg(active ? partialAction : -1)
                 .arg(wanted).arg(exchange.value("logic").toString()=="any"?1:0)
                 .arg(exchange.value("incremental").toBool(false)?1:0)
@@ -439,12 +441,38 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         rel=QDir(projectRoot).relativeFilePath(atlas->path);
         if (rel.startsWith("../") || QDir::isAbsolutePath(rel)) rel=QFileInfo(atlas->path).fileName();
     }
+    // Individual inventory items may draw their icon from any PPB registered
+    // in THIS world. Dialogue box skins remain completely independent.
+    QString iconSetup;
+    QTextStream iconOut(&iconSetup);
+    for(int i=0;i<itemList.size();++i) {
+        const QJsonObject item=itemList.at(i).toObject();
+        const QString chosen=item.value(QStringLiteral("iconAtlasId")).toString();
+        if(chosen.isEmpty())continue; // legacy item uses the dialogue skin
+        const auto iconAtlas=std::find_if(atlases.begin(),atlases.end(),
+            [&](const auto &resource){return resource.id==chosen;});
+        if(iconAtlas==atlases.end() || !QFileInfo::exists(iconAtlas->path)) {
+            if(error)*error=QStringLiteral("Inventory item '%1' needs its Icon Atlas registered in this world. Reopen Inventory Items and choose an atlas.")
+                .arg(item.value(QStringLiteral("name")).toString());
+            return false;
+        }
+        QString relative=QDir(projectRoot).relativeFilePath(iconAtlas->path);
+        if(relative.startsWith("../") || QDir::isAbsolutePath(relative))
+            relative=QFileInfo(iconAtlas->path).fileName();
+        iconOut << "    { uint16_t icon_w=0,icon_h=0; const uint8_t *pixels=gameassets_find_ppb("
+                << quoted(relative) << ",&icon_w,&icon_h);\n"
+                << "      game_adventure_item_atlas(" << i << "u,pixels,icon_w,icon_h,"
+                << std::clamp(item.value(QStringLiteral("iconTileSize")).toInt(8),4,64)
+                << "u); }\n";
+    }
+    fields.insert(QStringLiteral("ITEM_ICON_SETUP"),iconSetup);
     fields.insert(QStringLiteral("HAS_SKIN"),
         rel.isEmpty() ? QStringLiteral("0") : QStringLiteral("1"));
     fields.insert(QStringLiteral("SKIN_PATH"), quoted(rel));
 
     QByteArray renderedC, renderedH;
     const QStringList requiredC = {
+        QStringLiteral("ITEM_ICON_SETUP"),
         QStringLiteral("ITEM_ROWS"),QStringLiteral("ITEM_STYLE_ROWS"),
         QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),

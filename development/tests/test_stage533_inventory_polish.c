@@ -69,8 +69,8 @@ int main(void) {
        8px block after its actual rows and footer. */
     tap(BTN_FIRE2); assert(game_adventure_open());
     draw_reset();
-    assert(inv_h==2*8+32+2*22);
-    assert(footer_y==inv_y+inv_h-8-16);
+    assert(inv_h==2*8+24+2*22);
+    assert(footer_y==inv_y+inv_h-8-8);
     assert(bracket_open==1 && bracket_close==1);
     const int initial_use_x=use_x;
     tick(0,10);draw_reset();assert(bracket_open==0 && bracket_close==0);
@@ -114,7 +114,7 @@ int main(void) {
       tick(0,32);
       dlg_h=body_x=answer_x=0;
       game_adventure_draw(0,0,100,100);
-      assert(dlg_h>=88 && dlg_h<=96);
+      assert(dlg_h>=80 && dlg_h<=96);
       assert(body_x==28 && answer_x==42);
     }
     puts("Stage 5.33: action closing, failed/cancelled action, 10-frame blinking, and box trim PASS");

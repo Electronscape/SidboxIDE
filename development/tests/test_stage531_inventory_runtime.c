@@ -36,7 +36,7 @@ int main(void) {
     game_adventure_start(items,2,0,0,0,0,atlas,32,32,8,skin,1,0,0);
     game_adventure_item_styles(styles,2);
     assert(input(BTN_FIRE2));release();
-    draw(); assert(frame_h==108);
+    draw(); assert(frame_h==100);
     assert(strstr(words,"Inventory:"));
     assert(strstr(words,"FIRE2: CLOSE"));
     assert(strstr(words,"|DROP|") && strstr(words,"|[|"));
@@ -47,7 +47,7 @@ int main(void) {
     assert(game_adventure_quantity(0)==1);
     assert(!game_adventure_open());
     key(BTN_FIRE2); /* successful DROP now closes: reopen for inspection */
-    draw();assert(frame_h==108);
+    draw();assert(frame_h==100);
     assert(strstr(words,"Red thing x1"));
     /* A dropped item should still render on the world after inventory closes. */
     key(BTN_FIRE2);
@@ -95,11 +95,11 @@ int main(void) {
     }
     game_adventure_start(many,11,0,0,0,0,atlas,32,32,8,skin,1,0,0);
     key(BTN_FIRE2);
-    draw(); assert(frame_h==284);
+    draw(); assert(frame_h==276);
     assert(strstr(words,"Thing 00 x1"));
     assert(!strstr(words,"Thing 10 x1"));
     for (unsigned i=0;i<10;++i) key(BTN_DOWN);
-    draw(); assert(frame_h==284);
+    draw(); assert(frame_h==276);
     assert(strstr(words,"Thing 10 x1"));
     assert(!strstr(words,"Thing 00 x1"));
     puts("Stage 5.31: inventory autoheight/scroll, actions, drop/pickup, protection, destroy, save/restore PASS");

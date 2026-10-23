@@ -1,5 +1,6 @@
 // Stage 3.69: game project update, transactional ZIP backup and rollback.
 #include "gamedesigner.h"
+#include "gamehudeditor.h"
 #include "ppbcodec.h"
 #include "pngpaletteimport.h"
 #include "gamepalette.h"
@@ -406,6 +407,11 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
     outputs.insert(QStringLiteral("gamehelpers/gameadventure.h"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlds.c"));
     outputs.insert(QStringLiteral("gamehelpers/gameworlds.h"));
+    if (QFileInfo::exists(project.filePath(QStringLiteral("gamehud.sbhud")))) {
+        outputs.insert(QStringLiteral("gamehud.sbhud"));
+        outputs.insert(QStringLiteral("gamehelpers/gamehud.c"));
+        outputs.insert(QStringLiteral("gamehelpers/gamehud.h"));
+    }
     outputs.insert(QStringLiteral("maingame.c.txt"));
     // Main generation may create a missing file or transfer a dirty external
     // file. Back up/track BOTH source and metadata for full rollback. User
@@ -561,6 +567,10 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         error = tr("Spline export failed.");
     if (error.isEmpty() && m_tilemapEnabled && !exportTilemap(false, true))
         error = tr("Tilemap export failed.");
+    if (error.isEmpty() && !regenerateGameHud(project.absolutePath(), &error)) {
+        // Rebuild the shared HUD from its latest atlas and icon resources.
+        // The normal update rollback restores the previous generated C/H.
+    }
     if (error.isEmpty() && !generateGameCodeCore(embedPixels, true))
         error = tr("V1 game code generation failed.");
     if (!error.isEmpty()) {

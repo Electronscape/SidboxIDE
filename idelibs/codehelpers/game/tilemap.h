@@ -1,3 +1,7 @@
+/* GAME_TILEMAP_RUNTIME_HEADER_ONLY_V1
+ * Runtime validates PPB/.map format, bounds and lengths, but not exporter checksums.
+ * This permits replacing compatible graphics on the TFCard without rebuilding.
+ */
 #ifndef CODERGIRL_V1_GAMETILEMAP_H
 #define CODERGIRL_V1_GAMETILEMAP_H
 
@@ -171,15 +175,15 @@ typedef struct {
  * Both buffers then use the same animation frame. Call reset on level start.
  */
 /* GAME_TILEMAP_BOB_SD_ATLAS_V1: retain normal PPB pixel layout.
-   Load the complete pixel data once, validate its FNV-1a checksum and use
+   Load the complete pixel data once, validate its PPB header/dimensions and use
    gfx_drawbob() to pick tiles by their atlas positions. No repacking.
-   Return 1 on success; 0 on bad/missing/stale file or allocation failure.
+   Return 1 on success; 0 on bad/missing/truncated file or allocation failure.
    map->atlas starts NULL. Call unload before reloading/leaving the level. */
 uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
                                    uint16_t atlas_width, uint16_t atlas_height,
                                    uint32_t expected_hash);
-/* Borrow an already-loaded, path-matched sprite PPB if its exact pixel
-   checksum/dimensions match the level. Caller MUST unload tilemap before
+/* Borrow an already-loaded, path-matched sprite PPB if its dimensions and tile layout
+   match the level. Caller MUST unload tilemap before
    gameassets_shutdown(); gameassets owns the borrowed allocation. */
 uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
                                             const uint8_t *pixels,
@@ -187,7 +191,7 @@ uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
                                             uint32_t expected_hash);
 void game_tilemap_unload_ppb_atlas(game_tilemap_t *map);
 /* SD .map v1/v2/v3/v4: tile graphics, collisions and tile animations (not sprites,
-   object placements or atlas PPB pixels). All fields checked before swap.
+   object placements or atlas PPB pixels). Header, bounds and payload fields checked before swap.
    Call after initMalloc(); optionally replace an already loaded SD map.
    A failed load leaves the current map intact. Atlas must match tile size
    and tile count. Unload the map allocation when leaving the level. */

@@ -99,6 +99,8 @@ typedef struct {
     uint8_t animation_playing, animation_finished;
 } cg_world_pickup_state_t;
 static cg_world_pickup_state_t cg_saved_pickups[@IDE{PICKUP_COUNT}];
+/* Per-world static progression: survives unloading/reloading the world. */
+static uint8_t cg_pickup_permanently_collected[@IDE{PICKUP_COUNT}];
 @IDE_END
 @IDE_IF{HAS_REWARDS}
 static uint8_t cg_saved_reward_falling[@IDE{PICKUP_COUNT}];
@@ -229,7 +231,7 @@ void gameworlditems_restore_state(void)
     for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
         game_collectable_t *o = &pickups[i];
         const cg_world_pickup_state_t *d = &cg_saved_pickups[i];
-        o->active = d->active;
+        o->active = (uint8_t)(d->active && !cg_pickup_permanently_collected[i]);
         o->can_collect = d->can_collect;
         o->respawn_left = d->respawn_left;
         o->x = d->x; o->y = d->y;
@@ -282,7 +284,12 @@ uint8_t gameworlditems_init(void)
 @IDE_IF{HAS_AUDIO_WORLDS}
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }
 @IDE_END
-@IDE{INIT_BODY}    return 1;
+@IDE{INIT_BODY}@IDE_IF{HAS_PICKUPS}
+    for (uint16_t i=0;i<@IDE{PICKUP_COUNT};++i)
+        if (cg_pickup_permanently_collected[i] && pickups[i].persistent)
+            pickups[i].active=0;
+@IDE_END
+    return 1;
 }
 
 @IDE_IF{HAS_WORLDS}
@@ -463,7 +470,15 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
     uint8_t was_active[@IDE{PICKUP_COUNT}];
     for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) was_active[i] = pickups[i].active;
 @IDE_END
+    uint8_t persistent_was_active[@IDE{PICKUP_COUNT}];
+    for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i)
+        persistent_was_active[i]=pickups[i].active;
     uint16_t count = game_collectables_check(pickups, @IDE{PICKUP_COUNT}, x, y, w, h, callback, user);
+    for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i){
+        /* Ignore hidden rewards that have not actually been picked up. */
+        if(persistent_was_active[i] && !pickups[i].active && pickups[i].persistent)
+            cg_pickup_permanently_collected[i]=1;
+    }
 @IDE{CHECK_ACTIONS}    return count;
 }
 
@@ -535,6 +550,10 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     if (!game_collectable_start(&pickups[@IDE{INDEX}], &@IDE{SPRITE_SYMBOL}, @IDE{PICKUP_KIND}, @IDE{PICKUP_VALUE})) return 0;
     pickups[@IDE{INDEX}].width = @IDE{WIDTH};
     pickups[@IDE{INDEX}].height = @IDE{HEIGHT};
+    pickups[@IDE{INDEX}].tracking_configured = @IDE{PICKUP_TRACKING};
+    pickups[@IDE{INDEX}].show_in_inventory = @IDE{PICKUP_INVENTORY};
+    pickups[@IDE{INDEX}].show_in_hud = @IDE{PICKUP_HUD};
+    pickups[@IDE{INDEX}].persistent = @IDE{PICKUP_PERSISTENT};
     pickups[@IDE{INDEX}].respawn_frames = @IDE{RESPAWN_FRAMES};
     pickups[@IDE{INDEX}].active = @IDE{INIT_ACTIVE};
     pickups[@IDE{INDEX}].draw_behind_tiles = @IDE{DRAW_BEHIND};

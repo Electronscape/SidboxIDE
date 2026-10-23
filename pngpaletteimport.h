@@ -24,6 +24,7 @@ struct Options {
     int last = 255;
     bool buildColours = true;     // false = reuse existing range unchanged
     bool startFresh = false;      // start with blank CLUT, not project palette
+    bool reuseMatchingColours = false; // retain existing nontransparent CLUT indices for exact RGB matches
     bool keyColourEnabled = false; // map this exact RGB colour to transparent index 0
     QRgb keyColour = qRgb(255, 0, 255);
     QVector<QRgb> protectedColours; // exact opaque RGB colours reserved in output CLUT
@@ -32,7 +33,8 @@ struct Options {
 struct Result {
     SidboxPpb::Picture picture;
     QVector<QRgb> palette;
-    int paletteColours = 0;
+    int paletteColours = 0; // newly generated entries (or selected-range entries in Match mode)
+    int reusedColours = 0;  // distinct source RGBs mapped to existing CLUT indices
 };
 bool convert(const QImage &source, const QVector<QRgb> &current,
              const Options &options, Result *result, QString *error = nullptr);
@@ -65,6 +67,7 @@ private:
     QSpinBox *m_first = nullptr;
     QSpinBox *m_last = nullptr;
     QCheckBox *m_fresh = nullptr;
+    QCheckBox *m_reuse = nullptr;
     QCheckBox *m_transparentKey = nullptr;
     QLabel *m_transparentColourPreview = nullptr;
     QListWidget *m_sourceColours = nullptr;

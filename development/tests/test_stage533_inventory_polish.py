@@ -16,9 +16,9 @@ with tempfile.TemporaryDirectory(prefix='stage533-') as td:
         str(out/'adventureruntime.c'),str(tests/'test_stage533_inventory_polish.c'),
         '-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
-assert 'Build: 5.33.221026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.34.2.221026' in (root/'splashscreenwidget.cpp').read_text()
 print('Stage 5.33: generated C and splash checks PASS')
 
 preview=(root/'gameadventureeditor.cpp').read_text()
-assert 'm.height=std::min(320,std::max(minimumHeight-8,m.needed));' in preview
+assert 'm.height=std::min(320,std::max(minimumHeight-16,m.needed));' in preview
 assert 'const int choiceSpace=metrics.answerHeight?metrics.answerHeight+1:0;' in preview

@@ -251,6 +251,19 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                               QDirIterator::Subdirectories);
         while (iterator.hasNext()) {
             const QString existing = QDir(destination).relativeFilePath(iterator.next());
+            // Stage 5.36.2: Stage 5.36.1 accidentally generated a TFCard
+            // checklist *outside* world-build.json's owned file set. Do not
+            // block regeneration on our own abandoned artifact. The staging
+            // swap discards it only after publication succeeds; every other
+            // unowned file remains protected as before. Require our header so
+            // a user-written file with the same name is not silently deleted.
+            if (existing == QStringLiteral("TFCard-REQUIRED-FILES.txt")) {
+                QFile generatedChecklist(QDir(destination).filePath(existing));
+                if (generatedChecklist.open(QIODevice::ReadOnly) &&
+                    generatedChecklist.readLine().trimmed() ==
+                        QByteArray("# CoderGirl TFCard dependency checklist (generated, do not edit)"))
+                    continue;
+            }
             if (!ownedFiles.contains(existing))
                 return abort(QStringLiteral("World %1 contains an additional file '%2'. "
                     "Move custom code outside the generated world folder before updating.")

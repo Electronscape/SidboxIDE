@@ -1,3 +1,7 @@
+/* GAME_TILEMAP_RUNTIME_HEADER_ONLY_V1
+ * Runtime validates PPB/.map format, bounds and lengths, but not exporter checksums.
+ * This permits replacing compatible graphics on the TFCard without rebuilding.
+ */
 #include "tilemap.h"
 #include <string.h>
 #include <stdlib.h>
@@ -53,7 +57,7 @@ void game_death_rearm(void) { cg_player_dead = 0; }
    Load an indexed PPB into RAM in its ORIGINAL row-major pixel layout.
    gfx_drawbob() already understands an atlas stride and selected cell.
    Keeping the atlas unchanged avoids a second graphics representation.
-   The content hash catches stale SD files, even when dimensions match.
+   Compare dimensions and payload lengths for safety; pixel content may change.
    Load once at level startup, never once per frame. */
 uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
                                    uint16_t atlas_width, uint16_t atlas_height,
@@ -63,7 +67,7 @@ uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
     uint8_t *pixels = NULL;
     uint32_t got = 0;
     uint8_t ok = 0;
-    uint32_t hash = 2166136261u; /* FNV-1a, as exported by CoderGirl. */
+    (void)expected_hash; /* IDE tracks versions; runtime permits changed artwork. */
     if (!map || !file || !file[0] || map->atlas || !map->tile_size ||
         !atlas_width || !atlas_height || !map->atlas_count ||
         (map->tile_size != 8u && map->tile_size != 16u && map->tile_size != 32u) ||
@@ -91,11 +95,11 @@ uint8_t game_tilemap_load_ppb_atlas(game_tilemap_t *map, const char *file,
         got = 0;
         if (sfread(0, pixels, count, &got) != F_OK || got != count) break;
 
-        for (uint32_t i = 0; i < count; ++i) {
-            hash ^= pixels[i];
-            hash *= 16777619u;
-        }
-        if (hash != expected_hash) break;
+        /* File identity is deliberately NOT checked: allow art replacement
+           without regenerating the whole world (provided layout still fits). */
+        uint8_t trailing = 0;
+        got = 0;
+        if (sfread(0, &trailing, 1u, &got) != F_OK || got != 0u) break;
 
         map->atlas = pixels;
         map->atlas_width = atlas_width;
@@ -122,13 +126,7 @@ uint8_t game_tilemap_attach_shared_ppb_atlas(game_tilemap_t *map,
         (uint32_t)atlas_width * atlas_height > 4u * 1024u * 1024u)
         return 0;
 
-    uint32_t hash = 2166136261u;
-    const uint32_t count = (uint32_t)atlas_width * atlas_height;
-    for (uint32_t i = 0; i < count; ++i) {
-        hash ^= pixels[i];
-        hash *= 16777619u;
-    }
-    if (hash != expected_hash) return 0;
+    (void)expected_hash; /* Dimensions have already been verified. */
     map->atlas = pixels;
     map->atlas_width = atlas_width;
     map->atlas_height = atlas_height;
@@ -149,33 +147,23 @@ void game_tilemap_unload_ppb_atlas(game_tilemap_t *map)
 
 /* GamerGirl / SIDBOX binary map versions 1 and 2. Header 20 bytes, LE:
    "SBMP", version, tile size, width, height, atlas count, animation count,
-   FNV-1a checksum, reserved. Payload: graphics (LE u16 per cell), collision
+   Legacy checksum field (not enforced), reserved. Payload: graphics (LE u16 per cell), collision
    bytes, (version 2 only) flips per cell, animations (6 bytes: LE ID, frames, ticks, flags, reserved).
    Store no raw pointers in files; all allocations are under our control. */
 static uint16_t cg_map_u16(const uint8_t *b)
 {
     return (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
 }
-static uint32_t cg_map_u32(const uint8_t *b)
-{
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
-static uint32_t cg_map_hash(uint32_t h, const uint8_t *b, uint32_t length)
-{
-    while (length--) { h ^= *b++; h *= 16777619u; }
-    return h;
-}
 /* SD .map v4: compact shared shapes and whole placements, no dense profile
  * unless a pre-v4 design still contains legacy type-7 slope cells.
  * Header[18] = number of shapes; header[19] = legacy-profile-present flag.
  * Payload: graphics, collision, flips, [legacy heights], u16 cell references,
  * u16 instance count, 8-byte shape descriptors, 4-byte points, 6-byte
- * instances, 6-byte tile animations. Hash covers the entire payload. */
+ * instances, 6-byte tile animations. Structural fields are validated. */
 static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
 {
     uint8_t *metadata = NULL, *memory = NULL;
-    uint32_t got = 0, hash = 2166136261u;
+    uint32_t got = 0;
     uint8_t ok = 0;
     const uint16_t w = cg_map_u16(hdr + 6), h = cg_map_u16(hdr + 8);
     const uint16_t count = cg_map_u16(hdr + 12);
@@ -221,11 +209,9 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     if (!memory || sflseek(0, 20u) != F_OK ||
         sfread(0, memory, fixed, &got) != F_OK || got != fixed)
         goto finish;
-    hash = cg_map_hash(hash, memory, fixed);
     free(metadata); metadata = NULL;
     if (sfread(0, memory + points_at, end_data - points_at, &got) != F_OK ||
         got != end_data - points_at) goto finish;
-    hash = cg_map_hash(hash, memory + points_at, end_data - points_at);
     const game_tile_shape_t *defs = (const game_tile_shape_t *)(const void *)(memory + defs_at);
     const game_tile_shape_point_t *points =
         (const game_tile_shape_point_t *)(const void *)(memory + points_at);
@@ -281,7 +267,6 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
     for (uint16_t i = 0; i < count; ++i) {
         uint8_t b[6];
         if (sfread(0, b, sizeof(b), &got) != F_OK || got != sizeof(b)) goto finish;
-        hash = cg_map_hash(hash, b, sizeof(b));
         animations[i].graphic_id = cg_map_u16(b);
         animations[i].frames = b[2]; animations[i].frame_ticks = b[3];
         animations[i].flags = b[4];
@@ -292,7 +277,7 @@ static uint8_t cg_map_load_v4(game_tilemap_t *map, const uint8_t hdr[20])
             goto finish;
     }
     uint8_t extra = 0;
-    if (sfread(0, &extra, 1, &got) != F_OK || got || hash != cg_map_u32(hdr+14))
+    if (sfread(0, &extra, 1, &got) != F_OK || got)
         goto finish;
     game_tilemap_unload_map(map);
     map->map_storage = memory;
@@ -340,7 +325,7 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
 {
     uint8_t hdr[20], extra;
     uint8_t *memory = NULL;
-    uint32_t read_bytes = 0, hash = 2166136261u;
+    uint32_t read_bytes = 0;
     uint8_t ok = 0;
     if (!map || !filename || !filename[0] || !map->tile_size) return 0;
     if (sfopen(0, (char *)filename, SD_READ) != F_OK) return 0;
@@ -355,7 +340,6 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         const uint16_t height = cg_map_u16(hdr + 8);
         const uint16_t atlas_count = cg_map_u16(hdr + 10);
         const uint16_t animation_count = cg_map_u16(hdr + 12);
-        const uint32_t checksum = cg_map_u32(hdr + 14);
         if (!width || !height || width > GAME_TILEMAP_MAX_AXIS ||
             height > GAME_TILEMAP_MAX_AXIS ||
             (uint32_t)width * height > GAME_TILEMAP_MAX_CELLS ||
@@ -372,7 +356,6 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
         if (!memory) break;
         if (sfread(0, memory, payload_bytes, &read_bytes) != F_OK ||
             read_bytes != payload_bytes) break;
-        hash = cg_map_hash(hash, memory, payload_bytes);
         for (uint32_t i = 0; i < cells; ++i) {
             const uint16_t id = cg_map_u16(memory + i * 2u);
             if (id > atlas_count ||
@@ -397,8 +380,7 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
             uint8_t b[6];
             if (sfread(0, b, sizeof(b), &read_bytes) != F_OK ||
                 read_bytes != sizeof(b)) goto map_done;
-            hash = cg_map_hash(hash, b, sizeof(b));
-            animations[i].graphic_id = cg_map_u16(b);
+                animations[i].graphic_id = cg_map_u16(b);
             animations[i].frames = b[2];
             animations[i].frame_ticks = b[3];
             animations[i].flags = b[4];
@@ -408,7 +390,7 @@ uint8_t game_tilemap_load_map(game_tilemap_t *map, const char *filename)
                 (uint32_t)animations[i].graphic_id + animations[i].frames - 1u > atlas_count)
                 goto map_done;
         }
-        if (sfread(0, &extra, 1, &read_bytes) != F_OK || read_bytes != 0 || hash != checksum)
+        if (sfread(0, &extra, 1, &read_bytes) != F_OK || read_bytes != 0)
             break;
         /* Commit only after COMPLETE validation. Retain the loaded PPB atlas. */
         game_tilemap_unload_map(map);
@@ -1450,9 +1432,19 @@ static uint8_t cg_loop_tick(game_tile_player_t *p, uint8_t buttons,
 uint8_t game_tile_player_on_loop(const game_tile_player_t *p)
 { return p && p->loop_index != 0; }
 
+/* GAME_ADVENTURE_FIRE1_INPUT_GUARD_V1
+   Optional link-time hook, so plain platformers need no Adventure dependency.
+   Masking happens inside physics, including for user-customised main.c. */
+#if defined(__GNUC__)
+extern uint8_t game_adventure_gameplay_buttons(uint8_t buttons) __attribute__((weak));
+#endif
 void game_tile_player_run(game_tile_player_t *p, uint8_t buttons, uint16_t frames)
 {
     if (!p || !p->sprite || !p->map || game_death_is_dead()) return;
+#if defined(__GNUC__)
+    if (game_adventure_gameplay_buttons)
+        buttons=game_adventure_gameplay_buttons(buttons);
+#endif
     if (frames > 60) frames = 60;
     const game_tilemap_t *m = p->map;
     const int32_t w = p->hitbox_w ? p->hitbox_w : p->sprite->width;

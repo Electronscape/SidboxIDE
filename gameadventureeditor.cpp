@@ -289,9 +289,10 @@ AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
         m.answerHeight=std::max(m.answerHeight,(lengths[i]+lengths[i+1])*m.lineHeight+4);
     // Match the generated runtime: reclaim eight unused vertical pixels
     // before the choices, or between the speaker and body with no choices.
-    m.needed=(m.answerHeight?24:16)+2*padding+m.rows*m.lineHeight+
+    const int bottomInset=std::max(0,padding-8);
+    m.needed=(m.answerHeight?24:16)+padding+bottomInset+m.rows*m.lineHeight+
         (m.answerHeight?1+m.answerHeight:0);
-    m.height=std::min(320,std::max(minimumHeight-8,m.needed));
+    m.height=std::min(320,std::max(minimumHeight-16,m.needed));
     m.overflow=m.needed>320;
     return m;
 }
@@ -516,6 +517,8 @@ QJsonArray tableItems(QTableWidget *table)
         const auto *iconEntry = table->item(r,4);
         item.insert("iconCells",iconEntry ? iconEntry->data(Qt::UserRole+1).toJsonArray() : QJsonArray());
         item.insert("icon2x2",iconEntry && iconEntry->data(Qt::UserRole+2).toBool());
+        item.insert("iconAtlasId",iconEntry ? iconEntry->data(Qt::UserRole+3).toString() : QString());
+        item.insert("iconTileSize",iconEntry ? (iconEntry->data(Qt::UserRole+4).isValid() ? iconEntry->data(Qt::UserRole+4).toInt() : 8) : 8);
         auto *discard = qobject_cast<QCheckBox*>(table->cellWidget(r,5));
         item.insert("discardable",discard && discard->isChecked() && discard->isEnabled());
         auto *use=qobject_cast<QPushButton*>(table->cellWidget(r,6));
@@ -597,14 +600,12 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     // DECLARATION of dialogueTitle appears below this editor in older versions;
     // use its local presentation so item exchanges remain independent.
     QComboBox *wrong=makeNode("wrongNext");
-    QComboBox *partial=makeNode("partialNext");
     responseForm->addRow(QObject::tr("Wrong item → dialogue"),wrong);
-    responseForm->addRow(QObject::tr("Still missing items → dialogue"),partial);
-    struct Event { QComboBox *kind; QSpinBox *number; QComboBox *mode; } events[2];
+    struct Event { QComboBox *kind; QSpinBox *number; QComboBox *mode; } events[1];
     const char *numberKeys[]={"wrongAction","partialAction"};
     const char *targetKeys[]={"wrongTargetObjectId","partialTargetObjectId"};
     const char *modeKeys[]={"wrongTargetAction","partialTargetAction"};
-    for(int i=0;i<2;++i) {
+    for(int i=0;i<1;++i) {
         QWidget *line=new QWidget(response); QHBoxLayout *row=new QHBoxLayout(line);
         row->setContentsMargins(0,0,0,0);
         events[i].kind=new QComboBox(line);
@@ -632,7 +633,7 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
         };
         QObject::connect(events[i].kind,QOverload<int>::of(&QComboBox::currentIndexChanged),line,[refresh](int){refresh();});
         refresh();
-        responseForm->addRow(i==0?QObject::tr("Wrong item action"):QObject::tr("Partial hand-in action"),line);
+        responseForm->addRow(QObject::tr("Wrong item action"),line);
     }
     layout->addWidget(response);
     QLabel *success=new QLabel(QObject::tr("Success uses this dialogue choice's existing Next, "
@@ -667,8 +668,11 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     saved.insert("incremental",incremental->isChecked());
     saved.insert("consume",consume->isChecked());
     saved.insert("wrongNext",wrong->currentData().toInt());
-    saved.insert("partialNext",partial->currentData().toInt());
-    for(int i=0;i<2;++i){
+    /* Retire the old partial dialogue; existing quest hand-in state remains. */
+    saved.insert("partialNext",-1);
+    saved.insert("partialAction",-1);
+    saved.insert("partialTargetObjectId",QString());
+    for(int i=0;i<1;++i){
         const QString kind=events[i].kind->currentData().toString();
         saved.insert(QLatin1String(numberKeys[i]),kind==QStringLiteral("custom") ? events[i].number->value() : -1);
         saved.insert(QLatin1String(targetKeys[i]),kind==QStringLiteral("custom")||kind==QStringLiteral("none") ? QString() : kind);
@@ -922,6 +926,9 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     // Both inventory icons and dialogue frame tiles use the selected atlas.
     QComboBox *skinAtlas = nullptr;
     QSpinBox *tileSize = nullptr;
+    QComboBox *inventoryIconAtlas = nullptr;
+    QSpinBox *inventoryIconCell = nullptr;
+    bool editingIconControls = false;
     auto *itemsPage = new QWidget(tabs); auto *itemsLayout = new QVBoxLayout(itemsPage);
     auto *items = new QTableWidget(0,7,itemsPage);
     items->setHorizontalHeaderLabels({QObject::tr("Item name (e.g. Brass Key)"),QObject::tr("Pick up from..."),
@@ -942,12 +949,26 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "Pick up from... matches the named collectable TYPE in World Designer (classic kinds 1–4, or your custom kinds 5–255). "
         "A name like Kim_copy[1] is the placed object's name, NOT an inventory item. "
         "Choosing type 2 means EVERY Health-type collectable adds this row's item. "
-        "Important for custom main.c: in on_pickup(), add game_adventure_collect(item->kind); "
-        "after your existing score logic. Without that line, pickups will NOT enter inventory. "
-        "Icon artwork comes from the Dialogue Box Tile Atlas; double-click it to assemble a 2×2 stamp. "
+        "When Show in Inventory is ticked on a placed collectable, the generated world "
+        "adds one per object picked up automatically. Legacy untracked pickups may "
+        "still use game_adventure_collect(item->kind) in a custom on_pickup() callback. "
+        "Choose each item's own Icon Atlas and cell size above the table, then double-click the artwork to pick cells or a 2×2 stamp. "
+        "Make that PPB available in every other world where this inventory icon should appear. "
         "Discarding is OFF by default. NPC quest-required items are protected automatically, "
         "even if a quest NPC lives in another SAVED world."),itemsPage);
     collectionHelp->setWordWrap(true);itemsLayout->addWidget(collectionHelp);
+    auto *itemAtlasRow = new QHBoxLayout;
+    inventoryIconAtlas = new QComboBox(itemsPage);
+    inventoryIconAtlas->addItem(QObject::tr("Dialogue atlas (legacy default)"),QString());
+    for(const auto &a:atlases) inventoryIconAtlas->addItem(a.name,a.id);
+    inventoryIconCell = new QSpinBox(itemsPage);
+    inventoryIconCell->setRange(4,64);inventoryIconCell->setValue(8);
+    itemAtlasRow->addWidget(new QLabel(QObject::tr("Selected item's Icon Atlas:"),itemsPage));
+    itemAtlasRow->addWidget(inventoryIconAtlas,1);
+    itemAtlasRow->addWidget(new QLabel(QObject::tr("Stamp cell size:"),itemsPage));
+    itemAtlasRow->addWidget(inventoryIconCell);
+    itemsLayout->addLayout(itemAtlasRow);
+    itemsLayout->addWidget(new QLabel(QObject::tr("Choose an inventory row, then its atlas. Other worlds need the same PPB registered in their Game Resources."),itemsPage));
     itemsLayout->addWidget(items,1);
     const QJsonArray oldItems = old.value("items").toArray();
     const QJsonArray customKinds = old.value("pickupTypes").toArray();
@@ -1009,30 +1030,54 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     // pictures are transient UI state, so rebuild them when the editor opens
     // and whenever the selected dialogue atlas or tile size changes.
     const auto refreshInventoryIcons = [&] {
-        const QString atlasId = skinAtlas ? skinAtlas->currentData().toString()
-                                          : old.value("skinAtlasId").toString();
-        const auto atlas = std::find_if(atlases.begin(), atlases.end(),
-            [&](const GameAdventureAsset &a) { return a.id == atlasId; });
-        const int size = tileSize ? tileSize->value() : std::clamp(old.value("tileSize").toInt(8),4,32);
-        const QImage image = atlas != atlases.end()
-            ? indexedPreview(atlas->path, foregroundPalette) : QImage();
-        const int columns = !image.isNull() && size > 0 ? image.width() / size : 0;
-        const int rows = !image.isNull() && size > 0 ? image.height() / size : 0;
-        for (int row = 0; row < items->rowCount(); ++row) {
-            auto *entry = items->item(row,4);
-            if (!entry) continue;
+        const QString dialogueId = skinAtlas ? skinAtlas->currentData().toString()
+                                             : old.value("skinAtlasId").toString();
+        const int dialogueSize = tileSize ? tileSize->value() : std::clamp(old.value("tileSize").toInt(8),4,32);
+        for(int row=0;row<items->rowCount();++row) {
+            auto *entry=items->item(row,4);
+            if(!entry)continue;
             entry->setIcon(QIcon());
-            if (!columns || !rows) continue;
-            const QImage picture = adventureInventoryIcon(image,size,
+            const QString chosen=entry->data(Qt::UserRole+3).toString();
+            const QString id=chosen.isEmpty()?dialogueId:chosen;
+            const int size=chosen.isEmpty()?dialogueSize:qBound(4,(entry->data(Qt::UserRole+4).isValid() ? entry->data(Qt::UserRole+4).toInt() : 8),64);
+            const auto atlas=std::find_if(atlases.begin(),atlases.end(),
+                [&](const GameAdventureAsset &a){return a.id==id;});
+            if(atlas==atlases.end())continue;
+            const QImage image=indexedPreview(atlas->path,foregroundPalette);
+            if(image.isNull()||image.width()/size==0||image.height()/size==0)continue;
+            const QImage picture=adventureInventoryIcon(image,size,
                 entry->data(Qt::UserRole).toInt(),
                 entry->data(Qt::UserRole+1).toJsonArray(),
                 entry->data(Qt::UserRole+2).toBool());
-            if (!picture.isNull()) {
-                entry->setIcon(QIcon(QPixmap::fromImage(picture.scaled(
-                    36, 36, Qt::KeepAspectRatio, Qt::FastTransformation))));
-            }
+            if(!picture.isNull()) entry->setIcon(QIcon(QPixmap::fromImage(picture.scaled(
+                36,36,Qt::KeepAspectRatio,Qt::FastTransformation))));
         }
     };
+    const auto selectItemAtlas = [&] {
+        const int row=items->currentRow();
+        const auto *entry=row>=0?items->item(row,4):nullptr;
+        editingIconControls=true;
+        inventoryIconAtlas->setEnabled(entry!=nullptr);
+        inventoryIconCell->setEnabled(entry!=nullptr);
+        if(entry){
+            const QString id=entry->data(Qt::UserRole+3).toString();
+            inventoryIconAtlas->setCurrentIndex(qMax(0,inventoryIconAtlas->findData(id)));
+            inventoryIconCell->setValue(qBound(4,(entry->data(Qt::UserRole+4).isValid() ? entry->data(Qt::UserRole+4).toInt() : 8),64));
+        }
+        editingIconControls=false;
+    };
+    QObject::connect(items,&QTableWidget::currentCellChanged,&dialog,
+        [&](int,int,int,int){selectItemAtlas();});
+    QObject::connect(inventoryIconAtlas,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int){
+        if(editingIconControls||items->currentRow()<0||!items->item(items->currentRow(),4))return;
+        items->item(items->currentRow(),4)->setData(Qt::UserRole+3,inventoryIconAtlas->currentData());
+        refreshInventoryIcons();
+    });
+    QObject::connect(inventoryIconCell,qOverload<int>(&QSpinBox::valueChanged),&dialog,[&](int n){
+        if(editingIconControls||items->currentRow()<0||!items->item(items->currentRow(),4))return;
+        items->item(items->currentRow(),4)->setData(Qt::UserRole+4,n);
+        refreshInventoryIcons();
+    });
     auto appendItem = [&](const QJsonObject &o) {
         const int row=items->rowCount(); items->insertRow(row);
         const QStringList v{ o.value("name").toString("New Item"),
@@ -1046,6 +1091,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         iconCell->setData(Qt::UserRole,iconIndex);
         iconCell->setData(Qt::UserRole+1,o.value("iconCells").toArray());
         iconCell->setData(Qt::UserRole+2,o.value("icon2x2").toBool(false));
+        iconCell->setData(Qt::UserRole+3,o.value("iconAtlasId").toString());
+        iconCell->setData(Qt::UserRole+4,o.value("iconTileSize").toInt(8));
         iconCell->setText(o.value("icon2x2").toBool(false)
             ? QObject::tr("2×2 stamp — double-click to edit")
             : (iconIndex==65535?QObject::tr("No icon — double-click to pick")
@@ -1126,21 +1173,27 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         });
         items->setCellWidget(row,6,use);
         refreshInventoryIcons();
+        items->setCurrentCell(row,0);
+        selectItemAtlas();
     };
     for (const auto &v:oldItems) appendItem(v.toObject());
     QObject::connect(items,&QTableWidget::cellDoubleClicked,&dialog,[&](int row,int column){
         if(column!=4 || row<0 || !items->item(row,4)) return;
-        const QString id=skinAtlas?skinAtlas->currentData().toString():old.value("skinAtlasId").toString();
+        auto *iconEntry=items->item(row,4);
+        const QString selected=iconEntry->data(Qt::UserRole+3).toString();
+        const QString id=selected.isEmpty()
+            ? (skinAtlas?skinAtlas->currentData().toString():old.value("skinAtlasId").toString())
+            : selected;
         const auto at=std::find_if(atlases.begin(),atlases.end(),[&](const auto &a){return a.id==id;});
         if(at==atlases.end()){
             QMessageBox::information(&dialog,QObject::tr("Choose inventory artwork"),
-                QObject::tr("First select a Dialogue Tile Atlas in the 'Dialogue Box Atlas' tab. "
-                            "Inventory icons currently use that same atlas."));
+                QObject::tr("Choose an Icon Atlas above Inventory Items, or set a Dialogue Tile Atlas as the default."));
             return;
         }
         const QImage image=indexedPreview(at->path,foregroundPalette);
-        const int size=tileSize?tileSize->value():old.value("tileSize").toInt(8);
-        auto *iconEntry=items->item(row,4);
+        const int size=selected.isEmpty()
+            ? (tileSize?tileSize->value():old.value("tileSize").toInt(8))
+            : qBound(4,(iconEntry->data(Qt::UserRole+4).isValid() ? iconEntry->data(Qt::UserRole+4).toInt() : 8),64);
         int chosen=iconEntry->data(Qt::UserRole).toInt();
         QJsonArray quadrants=iconEntry->data(Qt::UserRole+1).toJsonArray();
         bool stamp=iconEntry->data(Qt::UserRole+2).toBool();
@@ -1716,7 +1769,21 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(nodeAdd,&QPushButton::clicked,&dialog,[&] {
         if(nodes.size()>=256)return;
         const QString folder=selectedFolder();
-        QJsonObject node;node.insert("speaker","NPC");node.insert("text","Hello!");
+        // Stage 5.34.3: A new dialogue in an NPC's folder tree starts with
+        // the TOP-LEVEL folder name as Speaker. Nested story folders inherit
+        // the same NPC name; Unfiled keeps the original "NPC" default.
+        QString speaker=QStringLiteral("NPC");
+        QTreeWidgetItem *root=nodeTree->currentItem();
+        if(root && root->data(0,Qt::UserRole+1).toString()==QStringLiteral("node"))
+            root=root->parent();
+        while(root && root->parent()
+              && root->parent()->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder"))
+            root=root->parent();
+        if(root && root->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder")) {
+            const QString name=root->text(0).trimmed();
+            if(!name.isEmpty()) speaker=name.left(36); // Speaker field limit
+        }
+        QJsonObject node;node.insert("speaker",speaker);node.insert("text","Hello!");
         node.insert("choices",defaultChoices());
         if(!folder.isEmpty())node.insert("folderId",folder);
         nodes.append(node);
@@ -2068,7 +2135,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const auto body=adventurePreviewRows(node.value("text").toString().left(512),metrics.bodyColumns);
         const int bodyY=actualY+pad+(metrics.answerHeight?24:16);
         const int choiceSpace=metrics.answerHeight?metrics.answerHeight+1:0;
-        const int bottom=actualY+h-pad;
+        const int bottom=actualY+h-std::max(0,pad-8);
         const int visibleRows=std::clamp((bottom-bodyY-choiceSpace)/metrics.lineHeight,0,int(body.size()));
         for(int i=0;i<visibleRows;++i)
             painter.drawText(x+pad,bodyY+i*metrics.lineHeight+12,body[i]);

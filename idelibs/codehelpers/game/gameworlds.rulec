@@ -259,6 +259,9 @@ uint8_t gameworlds_apply_pending(void)
 }
 void gameworlds_shutdown(void)
 {
+@IDE_IF{HAS_PICKUPS}
+    gameworlds_hud_reset();
+@IDE_END
     if (active_world && save_player) {
         save_player(&persistent, player_context);
         saved_player_is_valid = 1;
@@ -284,10 +287,65 @@ void gameworlds_after(game_world_player_t *p)
 { if (active_world && active_world->after) active_world->after(p); }
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
+/* HUD-only pickups retain their lifetime "number collected" counter.
+ * Inventory-linked HUD pickups display the CURRENT backpack quantity, which
+ * changes on USE, DROP, DESTROY, NPC hand-in, and game-specific removals.
+ * Pickup Value stays separate (score, gold, reward value, etc.). */
+static uint32_t gameworlds_hud_totals[256];
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+static uint8_t gameworlds_hud_inventory_kinds[256];
+@IDE_END
+uint32_t gameworlds_hud_total(uint16_t kind)
+{
+    if (kind >= 256u) return 0u;
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    if (gameworlds_hud_inventory_kinds[kind]) {
+        uint32_t owned = 0u;
+        if (game_adventure_pickup_quantity(kind, &owned)) return owned;
+    }
+@IDE_END
+    return gameworlds_hud_totals[kind];
+}
+void gameworlds_hud_reset(void)
+{
+    memset(gameworlds_hud_totals,0,sizeof(gameworlds_hud_totals));
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    memset(gameworlds_hud_inventory_kinds,0,sizeof(gameworlds_hud_inventory_kinds));
+@IDE_END
+}
+typedef struct { game_pickup_callback_t cb; void *user; } gameworlds_pickup_context_t;
+static void gameworlds_pickup_bridge(game_collectable_t *item, void *context)
+{
+    gameworlds_pickup_context_t *ctx = (gameworlds_pickup_context_t *)context;
+    if (!item) return;
+    if (item->tracking_configured && item->show_in_hud && item->kind < 256u) {
+        uint32_t *count = &gameworlds_hud_totals[item->kind];
+        *count = (*count == UINT32_MAX ? UINT32_MAX : *count + 1u);
+    }
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    if (item->tracking_configured) {
+        if (item->show_in_inventory) {
+            /* Link HUD to inventory only if this world has a matching item.
+             * HUD-only pickups continue to use the independent count. */
+            if (game_adventure_collect_amount(item->kind, 1u) &&
+                item->show_in_hud && item->kind < 256u)
+                gameworlds_hud_inventory_kinds[item->kind] = 1u;
+        }
+        game_adventure_managed_pickup_begin(item->kind);
+    }
+@IDE_END
+    if (ctx && ctx->cb) ctx->cb(item, ctx->user);
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    if (item->tracking_configured) game_adventure_managed_pickup_end();
+@IDE_END
+}
 uint16_t gameworlds_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
                           game_pickup_callback_t cb, void *user)
-{ return active_world && active_world->check
-    ? active_world->check(x,y,w,h,cb,user) : 0; }
+{
+    if (!active_world || !active_world->check) return 0;
+    gameworlds_pickup_context_t context = {cb,user};
+    return active_world->check(x,y,w,h,gameworlds_pickup_bridge,&context);
+}
 @IDE_END
 void gameworlds_draw_foreground(void)
 { if (active_world) active_world->assets_foreground(); }

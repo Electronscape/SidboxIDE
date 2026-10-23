@@ -1,3 +1,39 @@
+MIGHT be nice to have a debugger something visual, so like lines going from something to something...
+basic looking so looks like cards, that connect to another card that does something. That way we can trace the progress of the game.
+THIS one is going to be a nightmare to work out though.
+COULD this be another button next to HUD Editor?
+
+when using the items, if its in the hud, it seems to be unlinked. So using something, its number doesnt reduce... IS this currently just increasing the number when collected, but never going back down when used/or destroyed, or taken?
+
+
+[working on it]
+HUD fixes:
+The palette source, should cover everything, The ttilemap, the text, the collectables..
+
+Dropping items, seems to use the tilemap instead of the original ppb. so the colours are iffy (iffy colours mean, your palettes arent done, forces the artist to correct things)
+
+
+Inventory Items in the ADvanced Platformer,
+When changing the Icon Artwork, above the stamp size, we need to be able to select the correct atlas in the current map (might need a note to remind the designer to add the same atlas in the other worlds)
+
+collected items dont seem to carry across worlds,
+when i go BACk to the original world i collected the items from, it returns back to the inventory
+SOOO maybe we should have a "persistant" mode
+in the Game Object Properties from the collectables?
+
+the copy and paste game objects, when they're in an array look, eg, "Fright[0]" copying that should be array aware, so pasting would paste "Fright[1]" paste again "Fright[2]"...
+WHEN importing a graphics from the Files in project to the game resource, it should spawn at the current screen pan. currently i have to go to the top left to grab it to reposition
+
+
+[done]
+the dialog choices, with the trees.
+I name them according to the NPCs name, When i add one inside the selected Root Tree, COULD we have it auto fill the NPCs name? "Speaker"
+
+
+
+
+
+
 
 inventory, the bottom paddin is still too high, interestinly the text has moved up tho
 ---------------------------------------

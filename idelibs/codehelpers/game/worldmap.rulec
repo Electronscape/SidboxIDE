@@ -80,7 +80,7 @@ uint8_t @IDE{WORLD_SYMBOL}_load_atlas(void)
 {
     if (@IDE{WORLD_SYMBOL}.atlas) return 1;
 #ifdef GAMEASSETS_HAS_PPB_LOOKUP
-    /* Share ONLY an identical PPB with a matching pixel checksum. */
+    /* Share a path-matched PPB when its dimensions fit; art may be modded. */
     uint16_t shared_w = 0, shared_h = 0;
     const uint8_t *shared = gameassets_find_ppb(@IDE{ATLAS_PATH}, &shared_w, &shared_h);
     if (shared)

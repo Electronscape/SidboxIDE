@@ -224,6 +224,7 @@ bool SidboxGameDesigner::loadDesign()
         r.cellWidth = qBound(0, a.value(QStringLiteral("cellWidth")).toInt(0), 16384);
         r.cellHeight = qBound(0, a.value(QStringLiteral("cellHeight")).toInt(0), 16384);
         r.frame = qBound(0, a.value(QStringLiteral("frame")).toInt(0), 65535);
+        r.spriteStamp = SidboxSpriteStamp::fromJson(a.value(QStringLiteral("spriteStamp")).toObject());
         r.animationFile = a.value(QStringLiteral("animationFile")).toString();
         r.locked = a.value(QStringLiteral("locked")).toBool(false);
         const QJsonObject object = a.value(QStringLiteral("gameObject")).toObject();
@@ -236,6 +237,10 @@ bool SidboxGameDesigner::loadDesign()
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
+        r.pickupTrackingConfigured = object.value(QStringLiteral("pickupTrackingConfigured")).toBool(false);
+        r.pickupShowInventory = object.value(QStringLiteral("pickupShowInventory")).toBool(false);
+        r.pickupShowHud = object.value(QStringLiteral("pickupShowHud")).toBool(false);
+        r.pickupPersistent = object.value(QStringLiteral("pickupPersistent")).toBool(false);
         r.hitWidth = qBound(1, object.value(QStringLiteral("hitWidth")).toInt(16), 1024);
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
         r.conveyorSpeed = qBound(-100, object.value(QStringLiteral("conveyorSpeed")).toInt(2), 100);
@@ -507,6 +512,16 @@ void SidboxGameDesigner::syncProjectTileStampBanks(const QJsonObject &banks)
 
 bool SidboxGameDesigner::saveDesign()
 {
+    // Sprite stamps are authoring metadata; refresh the generated PPB when
+    // the source tile sheet changes, without touching game source or main.c.
+    for (Resource &r : m_resources) {
+        if (!r.spriteStamp.active()) continue;
+        QString error;
+        if (!updateSpriteStamp(r, &error)) {
+            QMessageBox::warning(this, tr("Sprite Stamp"), error);
+            return false;
+        }
+    }
     QJsonObject obj;
     obj.insert(QStringLiteral("format"), QStringLiteral("SIDBOX-GAME-DESIGN"));
     obj.insert(QStringLiteral("version"), 1);
@@ -578,6 +593,8 @@ bool SidboxGameDesigner::saveDesign()
         a.insert(QStringLiteral("cellWidth"), r.cellWidth);
         a.insert(QStringLiteral("cellHeight"), r.cellHeight);
         a.insert(QStringLiteral("frame"), r.frame);
+        if (r.kind == QStringLiteral("sprite") && r.spriteStamp.active())
+            a.insert(QStringLiteral("spriteStamp"), r.spriteStamp.toJson());
         if (r.kind == QStringLiteral("sprite") && !r.animationFile.isEmpty())
             a.insert(QStringLiteral("animationFile"), r.animationFile);
         a.insert(QStringLiteral("locked"), r.locked);
@@ -591,6 +608,10 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("type"), r.objectType);
             object.insert(QStringLiteral("pickupKind"), r.pickupKind);
             object.insert(QStringLiteral("value"), r.objectValue);
+            object.insert(QStringLiteral("pickupTrackingConfigured"), r.pickupTrackingConfigured);
+            object.insert(QStringLiteral("pickupShowInventory"), r.pickupShowInventory);
+            object.insert(QStringLiteral("pickupShowHud"), r.pickupShowHud);
+            object.insert(QStringLiteral("pickupPersistent"), r.pickupPersistent);
             object.insert(QStringLiteral("hitWidth"), r.hitWidth);
             object.insert(QStringLiteral("hitHeight"), r.hitHeight);
             object.insert(QStringLiteral("conveyorSpeed"), r.conveyorSpeed);

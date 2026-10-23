@@ -94,6 +94,10 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
         if (error) *error = QStringLiteral("Invalid PNG, palette range or image size (16M pixels maximum).");
         return false;
     }
+    if (opt.reuseMatchingColours && (!opt.buildColours || opt.startFresh || current.size() != 256)) {
+        if (error) *error = QStringLiteral("Reuse matching colours requires Generate mode and an existing 256-entry palette (not Start Fresh).");
+        return false;
+    }
     if (!opt.buildColours && (opt.startFresh || current.size() != 256)) {
         if (error) *error = QStringLiteral("Mapping to existing colours requires a selected 256-entry project palette.");
         return false;
@@ -114,26 +118,77 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
         protectedSet.insert(rgb, true);
         protectedColours.append(rgb);
     }
-    if ((!opt.buildColours && !protectedColours.isEmpty()) || protectedColours.size() > paletteSlotCount) {
-        if (error) *error = QStringLiteral("Protected colours require Generate mode and must fit inside the selected palette range.");
+    if (!opt.buildColours && !protectedColours.isEmpty()) {
+        if (error) *error = QStringLiteral("Protected colours require Generate mode.");
         return false;
     }
-    const int automaticCapacity = paletteSlotCount - protectedColours.size();
     QVector<QRgb> palette = palette256(opt.startFresh ? QVector<QRgb>() : current);
     int builtColours = 0;
+    int reusedColours = 0;
     QHash<QRgb, int> exactMapping;
     QHash<QRgb, int> protectedMapping;
-    if (opt.buildColours) {
-        // Protected entries occupy the beginning of the selected range; the
-        // automatic palette fills only the remaining entries.
+    QVector<int> candidateIndices; // Only colours belonging to this imported image.
+    QVector<int> writableSlots;
+    QVector<QRgb> newProtectedColours;
+
+    if (opt.buildColours && opt.reuseMatchingColours) {
+        // A matching colour can live anywhere in the existing CLUT, not just
+        // inside the selected writable range. Prefer an index OUTSIDE that
+        // range, because importing must never need to rewrite it.
+        QHash<QRgb, int> existing;
+        auto considerIndex = [&](int i) {
+            if (i == 0 || qAlpha(palette[i]) < 128) return;
+            const QRgb rgb = qRgb(qRed(palette[i]), qGreen(palette[i]), qBlue(palette[i]));
+            if (!existing.contains(rgb)) existing.insert(rgb, i);
+        };
+        for (int i = 1; i < 256; ++i)
+            if (i < opt.first || i > opt.last) considerIndex(i);
+        for (int i = opt.first; i <= opt.last; ++i) considerIndex(i);
+
+        QHash<int, bool> lockedSlots;
+        for (int y = 0; y < img.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+            for (int x = 0; x < img.width(); ++x) {
+                if (isTransparentPixel(row[x], opt)) continue;
+                const QRgb rgb = qRgb(qRed(row[x]), qGreen(row[x]), qBlue(row[x]));
+                if (exactMapping.contains(rgb)) continue;
+                const auto matched = existing.constFind(rgb);
+                if (matched == existing.constEnd()) continue;
+                const int index = matched.value();
+                exactMapping.insert(rgb, index);
+                candidateIndices.append(index);
+                ++reusedColours;
+                if (index >= opt.first && index <= opt.last) lockedSlots.insert(index, true);
+            }
+        }
+        // Respect existing protected RGBs too, without consuming a second slot.
         for (QRgb rgb : protectedColours) {
-            const int index = opt.first + builtColours++;
+            const auto reused = exactMapping.constFind(rgb);
+            if (reused != exactMapping.constEnd()) protectedMapping.insert(rgb, reused.value());
+            else newProtectedColours.append(rgb);
+        }
+        for (int i = opt.first; i <= opt.last; ++i)
+            if (!lockedSlots.contains(i)) writableSlots.append(i);
+    } else {
+        for (int i = opt.first; i <= opt.last; ++i) writableSlots.append(i);
+        newProtectedColours = protectedColours;
+    }
+    if (newProtectedColours.size() > writableSlots.size()) {
+        if (error) *error = QStringLiteral("Protected colours require more unreserved indices in the selected palette range.");
+        return false;
+    }
+    const int automaticCapacity = writableSlots.size() - newProtectedColours.size();
+    if (opt.buildColours) {
+        // Protected new colours occupy the first available writable slots.
+        for (QRgb rgb : newProtectedColours) {
+            const int index = writableSlots[builtColours++];
             palette[index] = rgb;
             exactMapping.insert(rgb, index);
             protectedMapping.insert(rgb, index);
+            candidateIndices.append(index);
         }
-        // Lossless when the PNG fits in the requested slot count, otherwise
-        // weighted median cut on a bounded RGB555 histogram (32K bins).
+        // Lossless when new PNG colours fit; otherwise median-cut only the
+        // as-yet-unmatched colours. Exact existing CLUT colours stay untouched.
         QHash<QRgb, int> exact;
         QVector<QRgb> order;
         bool tooMany = false;
@@ -142,7 +197,7 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             for (int x = 0; x < img.width(); ++x) {
                 if (isTransparentPixel(row[x], opt)) continue;
                 const QRgb rgb = qRgb(qRed(row[x]), qGreen(row[x]), qBlue(row[x]));
-                if (protectedSet.contains(rgb) || exact.contains(rgb)) continue;
+                if (exactMapping.contains(rgb) || protectedSet.contains(rgb) || exact.contains(rgb)) continue;
                 if (order.size() == automaticCapacity) { tooMany = true; break; }
                 exact.insert(rgb, order.size());
                 order.append(rgb);
@@ -151,8 +206,10 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
         if (!tooMany) {
             const int offset = builtColours;
             for (int i = 0; i < order.size(); ++i) {
-                palette[opt.first + offset + i] = order[i];
-                exactMapping.insert(order[i], opt.first + offset + i);
+                const int index = writableSlots[offset + i];
+                palette[index] = order[i];
+                exactMapping.insert(order[i], index);
+                candidateIndices.append(index);
             }
             builtColours += order.size();
         } else {
@@ -162,7 +219,7 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
                 for (int x = 0; x < img.width(); ++x) {
                     if (isTransparentPixel(row[x], opt)) continue;
                     const QRgb rgb = qRgb(qRed(row[x]), qGreen(row[x]), qBlue(row[x]));
-                    if (protectedSet.contains(rgb)) continue;
+                    if (exactMapping.contains(rgb) || protectedSet.contains(rgb)) continue;
                     Bin &b = histogram[binOf(row[x])];
                     ++b.count;
                     b.red += qRed(row[x]); b.green += qGreen(row[x]); b.blue += qBlue(row[x]);
@@ -170,7 +227,7 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             }
             Box initial;
             for (int i = 0; i < 32768; ++i) if (histogram[i].count) initial.bins.append(i);
-            if (initial.bins.isEmpty() || automaticCapacity == 0) { /* no automatic palette entries */ }
+            if (initial.bins.isEmpty() || automaticCapacity == 0) { /* nearest match uses existing/reused palette */ }
             else {
                 measure(initial, histogram);
                 QVector<Box> boxes{initial};
@@ -211,18 +268,24 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
                         count += bin.count;
                         r += bin.red; g += bin.green; b += bin.blue;
                     }
-                    if (count) palette[opt.first + offset + i] = qRgb(int(r / count), int(g / count), int(b / count));
+                    const int index = writableSlots[offset + i];
+                    if (count) palette[index] = qRgb(int(r / count), int(g / count), int(b / count));
+                    candidateIndices.append(index);
                 }
                 builtColours += boxes.size();
             }
         }
     } else {
         builtColours = paletteSlotCount;
+        candidateIndices = writableSlots;
     }
+    // In reuse mode, the candidates include existing indices anywhere in the
+    // CLUT and newly generated entries, which need not be contiguous.
+    // Never add index 0, and never treat unused CLUT entries as pixel colours.
     QImage output(img.size(), QImage::Format_Indexed8);
     if (output.isNull()) { if (error) *error = QStringLiteral("Not enough memory for indexed image."); return false; }
     output.setColorTable(palette);
-    if (builtColours > 0) {
+    if (!candidateIndices.isEmpty()) {
         // Cache nearest entries per 15-bit bin for large images. Exact RGB
         // colours are preserved by the palette when the source fits the range.
         std::array<short, 32768> nearest;
@@ -231,8 +294,8 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             red = clampByte(red); green = clampByte(green); blue = clampByte(blue);
             const int key = ((red >> 3) << 10) | ((green >> 3) << 5) | (blue >> 3);
             if (nearest[key] >= 0) return nearest[key];
-            int choice = opt.first, best = std::numeric_limits<int>::max();
-            for (int i = opt.first; i < opt.first + builtColours; ++i) {
+            int choice = candidateIndices.first(), best = std::numeric_limits<int>::max();
+            for (int i : candidateIndices) {
                 const int dist = colourDistance(palette[i], red, green, blue);
                 if (dist < best) { best = dist; choice = i; }
             }
@@ -247,12 +310,19 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
             uchar *target = output.scanLine(y);
             for (int x = 0; x < img.width(); ++x) {
                 if (isTransparentPixel(input[x], opt)) { target[x] = 0; continue; }
-                // Preserve locked RGBs even when a dither mode is active.
+                // Existing exact CLUT matches and protected colours survive dithering unchanged.
                 const QRgb original = qRgb(qRed(input[x]), qGreen(input[x]), qBlue(input[x]));
                 const auto protectedPixel = protectedMapping.constFind(original);
                 if (protectedPixel != protectedMapping.constEnd()) {
                     target[x] = uchar(protectedPixel.value());
                     continue;
+                }
+                if (opt.reuseMatchingColours) {
+                    const auto reusedPixel = exactMapping.constFind(original);
+                    if (reusedPixel != exactMapping.constEnd()) {
+                        target[x] = uchar(reusedPixel.value());
+                        continue;
+                    }
                 }
                 int r = qRed(input[x]), g = qGreen(input[x]), b = qBlue(input[x]);
                 if (opt.dither == Dither::Ordered) {
@@ -297,6 +367,7 @@ bool convert(const QImage &source, const QVector<QRgb> &current,
     result->picture.indexed = output;
     result->palette = palette;
     result->paletteColours = builtColours;
+    result->reusedColours = reusedColours;
     return true;
 }
 } // namespace SidboxPngImport
@@ -518,6 +589,11 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
 
     m_fresh = new QCheckBox(tr("Start with a blank palette (otherwise preserve existing colours)"), this);
     settings->addWidget(m_fresh, 4, 0, 1, 3);
+    m_reuse = new QCheckBox(tr("Reuse matching colours (only add new unique colours)"), this);
+    m_reuse->setObjectName(QStringLiteral("pngReuseMatchingColours"));
+    m_reuse->setToolTip(tr("Reuse exact opaque RGB matches from the existing palette, even outside the selected range. "
+        "Only new colours use writable indices in the selected range. Index 0 is never reused."));
+    settings->addWidget(m_reuse, 5, 0, 1, 3);
     layout->addLayout(settings);
     // Both inspectors display actual source pixels, at any zoom. Drag one
     // picture to pan; the other follows for an exact before/after comparison.
@@ -647,7 +723,8 @@ PngPaletteImportDialog::PngPaletteImportDialog(const QImage &source,
     connect(m_dither, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { queuePreview(); });
     connect(m_first, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { queuePreview(); });
     connect(m_last, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { queuePreview(); });
-    connect(m_fresh, &QCheckBox::toggled, this, [this]() { queuePreview(); });
+    connect(m_fresh, &QCheckBox::toggled, this, [this]() { updateControls(); });
+    connect(m_reuse, &QCheckBox::toggled, this, [this]() { queuePreview(); });
     connect(m_transparentKey, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled && m_protectedColours.removeAll(m_keyColour) > 0) updateProtectedColourUi();
         updateTransparentColourUi();
@@ -759,6 +836,7 @@ SidboxPngImport::Options PngPaletteImportDialog::options() const {
     opt.first = m_first->value(); opt.last = m_last->value();
     opt.buildColours = m_mode->currentData().toBool();
     opt.startFresh = m_fresh->isChecked();
+    opt.reuseMatchingColours = m_reuse->isChecked();
     opt.keyColourEnabled = m_transparentKey && m_transparentKey->isChecked();
     opt.keyColour = m_keyColour;
     if (opt.buildColours) opt.protectedColours = m_protectedColours;
@@ -851,6 +929,8 @@ void PngPaletteImportDialog::updateControls() {
     m_bank->setEnabled(!fixedBank);
     m_fresh->setEnabled(m_mode->currentData().toBool());
     if (!m_fresh->isEnabled()) m_fresh->setChecked(false);
+    m_reuse->setEnabled(m_mode->currentData().toBool() && !m_fresh->isChecked());
+    if (!m_reuse->isEnabled()) m_reuse->setChecked(false);
     updateTransparentColourUi();
     updateProtectedColourUi();
     queuePreview();
@@ -875,9 +955,13 @@ void PngPaletteImportDialog::updatePreview() {
         ? tr("%1 exact colours protected; up to %2 other palette entries available.")
             .arg(opt.protectedColours.size()).arg(std::max(0, opt.last - opt.first + 1 - int(opt.protectedColours.size())))
         : tr("Colour protection is inactive in Match existing mode.");
-    m_status->setText(ok ? tr("Output indices %1–%2: %3 palette entries generated. %4 %5 %6")
-                        .arg(opt.first).arg(opt.last).arg(result.paletteColours)
-                        .arg(paletteNote, keyNote, protectedNote) : error);
+    m_status->setText(ok ? (opt.reuseMatchingColours
+        ? tr("Palette: %1 existing colours reused, %2 new entries generated in indices %3–%4. %5 %6 %7")
+            .arg(result.reusedColours).arg(result.paletteColours).arg(opt.first).arg(opt.last)
+            .arg(paletteNote, keyNote, protectedNote)
+        : tr("Output indices %1–%2: %3 palette entries generated. %4 %5 %6")
+            .arg(opt.first).arg(opt.last).arg(result.paletteColours)
+            .arg(paletteNote, keyNote, protectedNote)) : error);
     if (m_sourceColourNote && m_sourceColours) {
         int removed = 0;
         if (opt.keyColourEnabled) {

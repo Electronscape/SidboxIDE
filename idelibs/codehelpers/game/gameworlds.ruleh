@@ -74,6 +74,10 @@ void gameworlds_before(game_world_player_t *player);
 void gameworlds_after(game_world_player_t *player);
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
+/* HUD: current bag quantity for inventory-linked pickups; lifetime objects for HUD-only pickups.
+ * Pickup Value (score/gold reward) does not affect these counts. */
+uint32_t gameworlds_hud_total(uint16_t pickup_kind);
+void gameworlds_hud_reset(void);
 uint16_t gameworlds_check(int32_t x, int32_t y, uint16_t width, uint16_t height,
                           game_pickup_callback_t callback, void *user);
 @IDE_END

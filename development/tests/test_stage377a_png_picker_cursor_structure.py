@@ -11,7 +11,7 @@ assert 'm_before->enableSourcePickCursor();' in source
 assert 'm_before->setObjectName(QStringLiteral("pngOriginalPreview"));' in source
 assert 'm_after->enableSourcePickCursor();' not in source
 assert 'sourcePixelSelected(at, bool(event->modifiers() & Qt::ShiftModifier))' in source
-assert 'automaticCapacity = paletteSlotCount - protectedColours.size()' in source
+assert 'automaticCapacity = writableSlots.size() - newProtectedColours.size()' in source
 if old_source is not None:
     marker = '} // namespace SidboxPngImport'
     assert source.split('namespace SidboxPngImport {', 1)[1].split(marker)[0] == old_source.split('namespace SidboxPngImport {', 1)[1].split(marker)[0], 'Palette conversion unexpectedly changed'
