@@ -1811,6 +1811,36 @@ void SidboxGameDesigner::editPlayerStart()
     auto *face=new QComboBox(&dialog);
     face->addItem(tr("Left"),0);face->addItem(tr("Right"),1);
     face->setCurrentIndex(m_playerFacing);form->addRow(tr("Initial facing"),face);
+    auto addTransitionOptions = [](QComboBox *combo, bool entering) {
+        combo->addItem(QObject::tr("None (instant cut)"), QStringLiteral("none"));
+        combo->addItem(entering ? QObject::tr("Fade in") : QObject::tr("Fade out"), QStringLiteral("fade"));
+        combo->addItem(QObject::tr("Swipe left"), QStringLiteral("left"));
+        combo->addItem(QObject::tr("Swipe right"), QStringLiteral("right"));
+        combo->addItem(QObject::tr("Swipe up"), QStringLiteral("up"));
+        combo->addItem(QObject::tr("Swipe down"), QStringLiteral("down"));
+        combo->addItem(entering ? QObject::tr("Circle open") : QObject::tr("Circle close"), QStringLiteral("circle"));
+    };
+    auto *transitionIn = new QComboBox(&dialog);
+    auto *transitionOut = new QComboBox(&dialog);
+    addTransitionOptions(transitionIn, true);
+    addTransitionOptions(transitionOut, false);
+    transitionIn->setCurrentIndex(qMax(0, transitionIn->findData(m_playerTransitionIn)));
+    transitionOut->setCurrentIndex(qMax(0, transitionOut->findData(m_playerTransitionOut)));
+    form->addRow(tr("Transition IN"), transitionIn);
+    form->addRow(tr("Transition OUT"), transitionOut);
+    auto *circleOrigin = new QComboBox(&dialog);
+    circleOrigin->addItem(tr("Screen centre"), QStringLiteral("center"));
+    circleOrigin->addItem(tr("Door / Player Start"), QStringLiteral("location"));
+    circleOrigin->setToolTip(tr("For Circle Close: centre on the departing Goto World doorway. "
+        "For Circle Open: centre on the destination Player Start. "
+        "Screen centre retains the original behaviour."));
+    form->addRow(tr("Circle centre"), circleOrigin);
+    auto *transitionFrames = new QSpinBox(&dialog);
+    transitionFrames->setRange(1, 150);
+    transitionFrames->setSuffix(tr(" frames at 50 FPS"));
+    circleOrigin->setCurrentIndex(qMax(0, circleOrigin->findData(m_playerCircleOrigin)));
+    transitionFrames->setValue(m_playerTransitionFrames);
+    form->addRow(tr("Transition duration"), transitionFrames);
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);
     layout->addWidget(buttons);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
@@ -1818,6 +1848,10 @@ void SidboxGameDesigner::editPlayerStart()
     if (dialog.exec()!=QDialog::Accepted) return;
     m_playerStartX=x->value();m_playerStartY=y->value();
     m_playerFacing=face->currentData().toInt();
+    m_playerTransitionIn=transitionIn->currentData().toString();
+    m_playerTransitionOut=transitionOut->currentData().toString();
+    m_playerCircleOrigin=circleOrigin->currentData().toString();
+    m_playerTransitionFrames=transitionFrames->value();
     m_playerEntry=entry->text().trimmed().isEmpty()?QStringLiteral("default"):entry->text().trimmed();
     setDirty();refreshResources();rebuildScene();
 }
@@ -1848,6 +1882,36 @@ void SidboxGameDesigner::editPlayerStartLocation(const QString &id)
     facing->addItem(tr("Left"), 0); facing->addItem(tr("Right"), 1);
     facing->setCurrentIndex(old.facing);
     form->addRow(tr("Facing"), facing);
+    auto addTransitionOptions = [](QComboBox *combo, bool entering) {
+        combo->addItem(QObject::tr("None (instant cut)"), QStringLiteral("none"));
+        combo->addItem(entering ? QObject::tr("Fade in") : QObject::tr("Fade out"), QStringLiteral("fade"));
+        combo->addItem(QObject::tr("Swipe left"), QStringLiteral("left"));
+        combo->addItem(QObject::tr("Swipe right"), QStringLiteral("right"));
+        combo->addItem(QObject::tr("Swipe up"), QStringLiteral("up"));
+        combo->addItem(QObject::tr("Swipe down"), QStringLiteral("down"));
+        combo->addItem(entering ? QObject::tr("Circle open") : QObject::tr("Circle close"), QStringLiteral("circle"));
+    };
+    auto *transitionIn = new QComboBox(&dialog);
+    auto *transitionOut = new QComboBox(&dialog);
+    addTransitionOptions(transitionIn, true);
+    addTransitionOptions(transitionOut, false);
+    transitionIn->setCurrentIndex(qMax(0, transitionIn->findData(old.transitionIn)));
+    transitionOut->setCurrentIndex(qMax(0, transitionOut->findData(old.transitionOut)));
+    form->addRow(tr("Transition IN"), transitionIn);
+    form->addRow(tr("Transition OUT"), transitionOut);
+    auto *circleOrigin = new QComboBox(&dialog);
+    circleOrigin->addItem(tr("Screen centre"), QStringLiteral("center"));
+    circleOrigin->addItem(tr("Door / Player Start"), QStringLiteral("location"));
+    circleOrigin->setToolTip(tr("For Circle Close: centre on the departing Goto World doorway. "
+        "For Circle Open: centre on the destination Player Start. "
+        "Screen centre retains the original behaviour."));
+    form->addRow(tr("Circle centre"), circleOrigin);
+    auto *transitionFrames = new QSpinBox(&dialog);
+    transitionFrames->setRange(1, 150);
+    transitionFrames->setSuffix(tr(" frames at 50 FPS"));
+    circleOrigin->setCurrentIndex(qMax(0, circleOrigin->findData(old.circleOrigin)));
+    transitionFrames->setValue(old.transitionFrames);
+    form->addRow(tr("Transition duration"), transitionFrames);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -1858,6 +1922,10 @@ void SidboxGameDesigner::editPlayerStartLocation(const QString &id)
     PlayerStartLocation &location = m_otherPlayerStarts[index];
     location.name = label; location.x = x->value(); location.y = y->value();
     location.facing = facing->currentData().toInt();
+    location.transitionIn = transitionIn->currentData().toString();
+    location.transitionOut = transitionOut->currentData().toString();
+    location.circleOrigin = circleOrigin->currentData().toString();
+    location.transitionFrames = transitionFrames->value();
     setDirty(); refreshResources(); rebuildScene();
 }
 
@@ -2831,6 +2899,8 @@ void SidboxGameDesigner::buildUi()
     m_resourceTree->setHeaderHidden(true);
     m_resourceTree->setIconSize(QSize(20, 20));
     m_resourceTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Never sort the whole tree: the nine top-level categories have a fixed order.
+    m_resourceTree->setSortingEnabled(false);
     resourcesLayout->addWidget(m_resourceTree, 1);
     auto *frontClutLabel = new QLabel(tr("Preview foreground CLUT"), resourcesPanel);
     frontClutLabel->setWordWrap(true);
@@ -3605,6 +3675,8 @@ void SidboxGameDesigner::buildUi()
         m_resources[index].name = text;
         // The same configured sprite is visible under Sprites and Game Objects.
         // Rename both entries without rebuilding the tree on each keystroke.
+        // Resort only the affected child groups after the iterator finishes.
+        QSet<QTreeWidgetItem *> renamedParents;
         for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
             QTreeWidgetItem *item = *it;
             const QVariant resource = item->data(0, Qt::UserRole);
@@ -3627,7 +3699,12 @@ void SidboxGameDesigner::buildUi()
             } else if (group != QStringLiteral("spline")) {
                 item->setText(0, text);
             }
+            if (item->parent()) renamedParents.insert(item->parent());
         }
+        // Do not let visual row moves trigger a canvas/tree selection sync.
+        QSignalBlocker blockTreeWhileSorting(m_resourceTree);
+        for (QTreeWidgetItem *parent : renamedParents)
+            parent->sortChildren(0, Qt::AscendingOrder);
         if (index < m_sceneItems.size() && m_sceneItems.at(index)) {
             for (auto *child : m_sceneItems.at(index)->childItems())
                 if (auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(child))
@@ -3689,7 +3766,7 @@ int SidboxGameDesigner::selectedIndex() const
 // not a change to the exported game or the undo history.
 void SidboxGameDesigner::syncCanvasSelection()
 {
-    if (m_syncSelection || !m_scene || !m_resourceTree) return;
+    if (m_syncSelection || m_loading || !m_scene || !m_resourceTree) return;
     const QList<QGraphicsItem *> selected = m_scene->selectedItems();
     const int preferred = selectedIndex();
     int primary = -1;
@@ -3882,6 +3959,7 @@ void SidboxGameDesigner::refreshResources()
         entry->setIcon(0, treeIcon(QStringLiteral("playerstart")));
         entry->setToolTip(0, tr("Double-click to edit. Right-click to remove with confirmation."));
     }
+    startsRoot->sortChildren(0, Qt::AscendingOrder);
     for (const QString &kind : {QStringLiteral("sprite"), QStringLiteral("tileatlas"),
                                  QStringLiteral("background"), QStringLiteral("palette"),
                                  QStringLiteral("sound"), QStringLiteral("music")}) {
@@ -3940,6 +4018,13 @@ void SidboxGameDesigner::refreshResources()
             child->setData(0, Qt::UserRole + 1, kind);
             child->setData(0, Qt::UserRole + 2, r.plane);
         }
+        // Alphabetise children, not the nine fixed top-level categories.
+        // Under Palettes, sort the two plane groups and their own resources.
+        if (frontRoot) {
+            frontRoot->sortChildren(0, Qt::AscendingOrder);
+            backRoot->sortChildren(0, Qt::AscendingOrder);
+        }
+        root->sortChildren(0, Qt::AscendingOrder);
         if (kind == QStringLiteral("music")) {
             qint64 largest = 0;
             int count = 0;
@@ -3972,6 +4057,7 @@ void SidboxGameDesigner::refreshResources()
         item->setData(0, Qt::UserRole + 1, QStringLiteral("gameobject"));
         item->setToolTip(0, tr("Select and centre the canvas on %1").arg(r.name));
     }
+    objectsRoot->sortChildren(0, Qt::AscendingOrder);
     objectsRoot->setExpanded(expandedGroups.value(QStringLiteral("gameobject"), false));
 
     auto *splinesRoot = new QTreeWidgetItem(m_resourceTree, QStringList{tr("Splines")});
@@ -3985,6 +4071,7 @@ void SidboxGameDesigner::refreshResources()
         item->setIcon(0, treeIcon(QStringLiteral("spline")));
         item->setToolTip(0, tr("Select this spline and centre its points in the canvas"));
     }
+    splinesRoot->sortChildren(0, Qt::AscendingOrder);
     splinesRoot->setExpanded(expandedGroups.value(QStringLiteral("spline"), false));
 
     refreshPaletteSelectors();
@@ -4078,6 +4165,10 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
     // The direct_convert mode already starts from an upright source and must
     // NOT receive this display transform.
     QImage visible = source;
+    if (r.kind == QStringLiteral("sprite") && r.spriteStamp.active()) {
+        visible = r.spriteStamp.compose(source, &error);
+        if (visible.isNull()) { if (details) *details = error; return {}; }
+    }
     if (r.kind == QStringLiteral("background") && r.backgroundMode == QStringLiteral("direct_ready")
         && source.format() == QImage::Format_Indexed8) {
         QImage upright(source.height(), source.width(), QImage::Format_Indexed8);
@@ -4091,8 +4182,10 @@ QImage SidboxGameDesigner::resourcePreview(const Resource &r, QString *details) 
             visible = upright;
         }
     }
-    const int cw = r.cellWidth > 0 ? qMin(r.cellWidth, visible.width()) : visible.width();
-    const int ch = r.cellHeight > 0 ? qMin(r.cellHeight, visible.height()) : visible.height();
+    const int cw = r.spriteStamp.active() ? visible.width()
+        : (r.cellWidth > 0 ? qMin(r.cellWidth, visible.width()) : visible.width());
+    const int ch = r.spriteStamp.active() ? visible.height()
+        : (r.cellHeight > 0 ? qMin(r.cellHeight, visible.height()) : visible.height());
     const int cols = qMax(1, visible.width() / cw);
     const int rows = qMax(1, visible.height() / ch);
     const int frames = cols * rows;
@@ -4431,7 +4524,9 @@ void SidboxGameDesigner::refreshProperties()
     for (QSpinBox *spin : {m_propX, m_propY})
         spin->setEnabled(visual && !r.locked);
     for (QSpinBox *spin : {m_propScale, m_propCellWidth, m_propCellHeight, m_propFrame})
-        spin->setEnabled(visual);
+        spin->setEnabled(visual && (!r.spriteStamp.active() || spin == m_propScale));
+    // Sprite Stamp controls its own 8x8 source cells; these raw BOB fields
+    // must not accidentally override the lookup layout.
     if (!visual) {
         m_propFrame->setRange(0, 0);
         if (r.kind == QStringLiteral("tileatlas")) {
@@ -5598,41 +5693,21 @@ void SidboxGameDesigner::exportSelectedC()
 }
 
 
-// Stage 5.36: bake one arranged 8x8 source sheet into a normal PPB BOB.
-// No firmware or gametilemap helper change is necessary. The source and
-// arrangement stay editable in the world .sbgm, output stays generated-only.
+// Sprite Stamps are lookup tables over their ORIGINAL PPB sheet. Never write
+// a second PPB: generated gameworlditems.c holds the cell IDs and flip flags.
 bool SidboxGameDesigner::updateSpriteStamp(Resource &resource, QString *error)
 {
     if (!resource.spriteStamp.active()) return true;
     const QString sourcePath = resolvedPath(resource.spriteStamp.sourcePath);
     SidboxPpb::Picture source;
     if (!SidboxPpb::read(sourcePath, &source, error)) return false;
-    const QImage composed = resource.spriteStamp.compose(source.indexed, error);
-    if (composed.isNull()) return false;
-    const QString id = SidboxPpb::identifier(resource.id);
-    const QDir root(QFileInfo(m_filePath).absolutePath());
-    const QString folder = root.filePath(QStringLiteral("gamesprites/generated"));
-    if (!QDir().mkpath(folder)) {
-        if (error) *error = tr("Cannot create generated sprite directory: %1").arg(folder);
-        return false;
-    }
-    const QString destination = QDir(folder).filePath(QStringLiteral("stamp_%1.ppb").arg(id));
-    SidboxPpb::Picture picture;
-    picture.indexed = composed;
-    if (!SidboxPpb::write(destination, picture, error)) return false;
-    // A fast overwrite can keep the same filesystem timestamp and byte count.
-    // Evict explicitly so the preview never shows the previous stamp picture.
-    const auto cached = m_imageCache.constFind(destination);
-    if (cached != m_imageCache.constEnd()) {
-        m_imageCacheBytes -= cached->memoryBytes;
-        m_imageCache.remove(destination);
-        m_imageCacheOrder.removeAll(destination);
-    }
-    resource.path = storedPath(destination);
-    resource.cellWidth = composed.width();
-    resource.cellHeight = composed.height();
+    // Validate every cell against the PPB now, without exporting/compressing it.
+    if (resource.spriteStamp.compose(source.indexed, error).isNull()) return false;
+    resource.path = storedPath(sourcePath);
+    resource.cellWidth = SidboxSpriteStamp::cellPixels;
+    resource.cellHeight = SidboxSpriteStamp::cellPixels;
     resource.frame = 0;
-    resource.objectAnimated = false; // one baked frame, not a sprite-sheet animation
+    resource.objectAnimated = false;
     return true;
 }
 
@@ -5847,7 +5922,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard visualCard = makeCard(tr("Visual & Movements"));
     SidboxSpriteStamp draftSpriteStamp = old.spriteStamp;
     auto *editSpriteStampButton = new QPushButton(tr("Arrange Sprite Stamp..."), &dialog);
-    editSpriteStampButton->setToolTip(tr("Arrange 8x8 tiles from an indexed PPB sheet into one collectible or object sprite. No game runtime stamp cost."));
+    editSpriteStampButton->setToolTip(tr("Arrange 8x8 tiles from an indexed PPB sheet into one collectible or object sprite. Runtime draws the selected cells directly from that PPB; no extra PPB file is created."));
     visualCard.form->addRow(tr("Sprite Stamp"), editSpriteStampButton);
     connect(editSpriteStampButton, &QPushButton::clicked, &dialog, [&]() {
         // A source sheet can be any imported indexed PPB, not just the world's
@@ -5923,7 +5998,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         box.addLayout(views, 1);
         auto *help = new QLabel(tr("Index 0 is transparent. Empty cells are transparent. "
             "Each placed cell keeps its own X/Y flips; whole-stamp mirrors reverse both cell positions and flips. "
-            "The finished sprite is generated as one PPB with no SIDBOX runtime overhead."), &editor);
+            "Runtime reads the arranged 8x8 cells directly from the existing PPB sheet; no extra PPB is generated."), &editor);
         help->setWordWrap(true);
         box.addWidget(help);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &editor);
@@ -7136,7 +7211,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *previewTimer = new QTimer(&dialog);
     // Keep preview linked to whichever object is currently selected; the
     // dialog stays OPEN while the previous/next arrows reload its controls.
-    const auto updatePreview = [this, &previewFrame, &atlas, &old, animated,
+    const auto updatePreview = [this, &previewFrame, &atlas, &old, &draftSpriteStamp, animated,
                                 first, count, mode, type, hitW, hitH,
                                 enemyStompX, enemyStompY, enemyStompW, enemyStompH,
                                 objectFlipX, objectFlipY, spritePreview, collisionPreview,
@@ -7164,6 +7239,12 @@ void SidboxGameDesigner::configureGameObject(int index)
         const int selected = qBound(0, from + frameInClip, available - 1);
         QImage frame = atlas.isNull() ? QImage() :
             atlas.copy((selected % cols) * cw, (selected / cols) * ch, cw, ch);
+        if (draftSpriteStamp.active()) {
+            QString stampError;
+            SidboxPpb::Picture sheet;
+            if (SidboxPpb::read(resolvedPath(draftSpriteStamp.sourcePath), &sheet, &stampError))
+                frame = draftSpriteStamp.compose(sheet.indexed, &stampError);
+        }
         if (!frame.isNull() && (objectFlipX->isChecked() || objectFlipY->isChecked())) {
             Qt::Orientations flipDirections;
             if (objectFlipX->isChecked()) flipDirections |= Qt::Horizontal;
@@ -7585,6 +7666,21 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.animTicks = ticks->value(); r.animMode = mode->currentData().toString();
     rebuildScene(); // Show updated mirroring on the live world canvas immediately.
     refreshResources();
+    // Keep the edited object under Game Objects, never jump to its Sprites alias.
+    if (r.objectType != QStringLiteral("decoration")) {
+        for (QTreeWidgetItemIterator it(m_resourceTree); *it; ++it) {
+            QTreeWidgetItem *entry=*it;
+            if (entry->data(0,Qt::UserRole).isValid()
+                && entry->data(0,Qt::UserRole).toInt()==index
+                && entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("gameobject")) {
+                QSignalBlocker block(m_resourceTree);
+                if (entry->parent()) entry->parent()->setExpanded(true);
+                m_resourceTree->setCurrentItem(entry);
+                m_resourceTree->scrollToItem(entry);
+                break;
+            }
+        }
+    }
     selectResource(index);
     setDirty();
     return true;
@@ -8459,15 +8555,36 @@ static QJsonArray persistentItemsFromSavedWorlds(const QString &root)
                 item.insert(QStringLiteral("initial"),0);
                 item.insert(QStringLiteral("icon"),65535);
             }
-            // The item can be carried into other worlds, but it must not be
-            // granted a second time merely because a world defines it.
+            // The item's name, 8x8 cell/stamp indices and chosen PPB belong
+            // to the backpack across worlds, not to any destination map.
+            // Resolve world-local resource UUIDs to the ORIGINAL project PPB
+            // filename while we still have the source world's .sbgm.
             item.insert(QStringLiteral("initial"),0);
-            // Resource UUIDs are local to each world. A foreign world icon
-            // atlas ID is not a valid reference in this destination world.
-            item.remove(QStringLiteral("iconAtlasId"));
-            item.insert(QStringLiteral("icon"),65535);
-            item.insert(QStringLiteral("icon2x2"),false);
-            item.remove(QStringLiteral("iconCells"));
+            QString atlasId=item.value(QStringLiteral("iconAtlasId")).toString();
+            if(atlasId.isEmpty())
+                atlasId=design.value(QStringLiteral("adventure")).toObject()
+                              .value(QStringLiteral("skinAtlasId")).toString();
+            QString atlasPath;
+            for(const QJsonValue &sourceValue:design.value(QStringLiteral("resources")).toArray()) {
+                const QJsonObject source=sourceValue.toObject();
+                if(source.value(QStringLiteral("id")).toString()==atlasId && !atlasId.isEmpty()) {
+                    atlasPath=source.value(QStringLiteral("path")).toString();
+                    break;
+                }
+            }
+            // A pickup without a separate Inventory Items artwork selection
+            // may use its own sprite sheet. Do not make the designer duplicate
+            // that PPB as a Tile Atlas in every new world.
+            if(atlasPath.isEmpty()) {
+                atlasPath=resource.value(QStringLiteral("path")).toString();
+                const int size=resource.value(QStringLiteral("cellWidth")).toInt(8);
+                item.insert(QStringLiteral("iconTileSize"),qBound(4,size,64));
+                item.insert(QStringLiteral("icon"),resource.value(QStringLiteral("frame")).toInt(0));
+                item.insert(QStringLiteral("icon2x2"),false);
+                item.remove(QStringLiteral("iconCells"));
+            }
+            item.remove(QStringLiteral("iconAtlasId")); // never carry source UUIDs
+            if(!atlasPath.isEmpty())item.insert(QStringLiteral("iconPpbPath"),atlasPath);
             byKind.insert(kind,item);
         }
     }

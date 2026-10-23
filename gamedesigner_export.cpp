@@ -192,6 +192,19 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if (error) *error = tr("Game object '%1' must use a PPB sprite at 100%% scale.").arg(r.name);
             return false;
         }
+        if (r.spriteStamp.active()) {
+            if (QDir::cleanPath(resolvedPath(r.spriteStamp.sourcePath)) !=
+                QDir::cleanPath(resolvedPath(r.path))) {
+                if (error) *error = tr("Stamp '%1' must reference its original PPB sheet. Save the world to migrate it.").arg(r.name);
+                return false;
+            }
+            QString stampError;
+            const QImage sheet = cachedImage(resolvedPath(r.spriteStamp.sourcePath));
+            if (r.spriteStamp.compose(sheet, &stampError).isNull()) {
+                if (error) *error = tr("Invalid stamp '%1': %2").arg(r.name, stampError);
+                return false;
+            }
+        }
         if (r.objectAnimated) {
             const QImage bitmap = cachedImage(resolvedPath(r.path));
             const int cw = r.cellWidth > 0 ? r.cellWidth : bitmap.width();
@@ -353,9 +366,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     QHash<QString, QString> objectSlot; // Stable object ID -> generated live runtime instance.
     for (int i = 0; i < np; ++i)
-        objectSlot.insert(pickups.at(i)->id, QStringLiteral("pickups[%1]").arg(i));
+        objectSlot.insert(pickups.at(i)->id, QStringLiteral("cg_gwi_pickups[%1]").arg(i));
     for (int i = 0; i < nw; ++i)
-        objectSlot.insert(platforms.at(i)->id, QStringLiteral("platforms[%1]").arg(i));
+        objectSlot.insert(platforms.at(i)->id, QStringLiteral("cg_gwi_platforms[%1]").arg(i));
     // A reward is a real Collectable resource, referenced by stable ID.
     // Keep one owner per dormant pickup to avoid duplicate spawning.
     QHash<QString, int> breakRewardOwner;
@@ -584,6 +597,36 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         return f;
     };
 
+    // Metadata is just a tile index / flip lookup into the ORIGINAL PPB.
+    // No stamp bitmaps, allocations, copied PPBs, or added project files.
+    QString stampDeclarations;
+    bool hasSpriteStamps = false;
+    const auto appendStampTables = [&](const QVector<const Resource *> &objects,
+                                       const QString &group) {
+        if (objects.isEmpty()) return;
+        QStringList lookups;
+        for (int i = 0; i < objects.size(); ++i) {
+            const SidboxSpriteStamp &stamp = objects.at(i)->spriteStamp;
+            if (!stamp.active()) {
+                lookups.append(QStringLiteral("{ 0, 0, 0 }"));
+                continue;
+            }
+            hasSpriteStamps = true;
+            const QString symbol = QStringLiteral("cg_stamp_%1_%2").arg(group).arg(i);
+            QStringList codes;
+            for (int cell : stamp.cells)
+                codes.append(cell < 0 ? QStringLiteral("0xFFFFFFFFu") :
+                    QStringLiteral("0x%1u").arg(quint32(cell), 8, 16, QLatin1Char('0')));
+            stampDeclarations += QStringLiteral("static const uint32_t %1[] = { %2 };\n")
+                .arg(symbol, codes.join(QStringLiteral(", ")));
+            lookups.append(QStringLiteral("{ %1, %2u, %3u }")
+                .arg(symbol).arg(stamp.width).arg(stamp.height));
+        }
+        stampDeclarations += QStringLiteral("static const cg_stamp_t cg_%1_stamps[%2] = { %3 };\n")
+            .arg(group).arg(objects.size()).arg(lookups.join(QStringLiteral(", ")));
+    };
+    appendStampTables(pickups, QStringLiteral("pickup"));
+    appendStampTables(platforms, QStringLiteral("platform"));
     QString audioWrappers, worldDeclarations, worldInitBody, worldUpdateBody;
     QString rewardSpawnActions, eventActions, checkBody, triggerBody, drawBody;
     QString drawBehindBody;
@@ -606,7 +649,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         const int ix = collect ? i : i - np;
         const Resource &r = *(collect ? pickups.at(ix) : platforms.at(ix));
         const int path = collect ? pickupPaths.at(ix) : platformPaths.at(ix);
-        const QString array = collect ? QStringLiteral("pickups") : QStringLiteral("platforms");
+        const QString array = collect ? QStringLiteral("cg_gwi_pickups") : QStringLiteral("cg_gwi_platforms");
         const QString type = r.objectType;
         const bool enemy = type == QStringLiteral("enemy");
         const bool activePath = path >= 0 && !(enemy && r.enemyRoam);
@@ -820,8 +863,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             r.objectType != QStringLiteral("goto_world")) continue;
         QString action;
         if (r.objectType == QStringLiteral("goto_world")) {
-            action = QStringLiteral("        gameworlds_request_at(\"%1\", \"%2\");\n")
-                .arg(r.gotoWorldName, r.gotoStartId.isEmpty() ? QStringLiteral("default") : r.gotoStartId);
+            action = QStringLiteral("        gameworlds_request_at_from(\"%1\", \"%2\", "
+                "cg_gwi_platforms[%3].x + cg_gwi_platforms[%3].width / 2, "
+                "cg_gwi_platforms[%3].y + cg_gwi_platforms[%3].height / 2);\n")
+                .arg(r.gotoWorldName, r.gotoStartId.isEmpty() ? QStringLiteral("default") : r.gotoStartId)
+                .arg(i);
         } else if (!targetAction(r, &action)) return false;
         const bool stop = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("stop");
         const bool play = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("play") && musicById.contains(r.triggerMusicId);
@@ -878,6 +924,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("DRAW_BEHIND_BODY"), drawBehindBody);
     sourceFields.insert(QStringLiteral("DRAW_BODY"), drawBody);
     sourceFields.insert(QStringLiteral("WORLD_DECLARATIONS"), worldDeclarations);
+    sourceFields.insert(QStringLiteral("STAMP_DECLARATIONS"), stampDeclarations);
+    sourceFields.insert(QStringLiteral("HAS_STAMPS"), flag(hasSpriteStamps));
     sourceFields.insert(QStringLiteral("AUDIO_WRAPPERS"), audioWrappers);
     sourceFields.insert(QStringLiteral("INIT_BODY"), worldInitBody);
     sourceFields.insert(QStringLiteral("UPDATE_BODY"), worldUpdateBody);
@@ -1108,8 +1156,20 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         if (name.isEmpty()) name = QStringLiteral("Custom %1").arg(i+1);
         mainFields.insert(QStringLiteral("ZONE_NAME_") + suffix, safeCommentValue(name));
     }
+    // Scenery uses maingame.rulec, while managed pickups/platforms use
+    // gameworlditems.rulec. Both must resolve stamps from the ORIGINAL PPB.
+    const bool hasSceneryStamps = hasMap && std::any_of(m_resources.cbegin(), m_resources.cend(),
+        [&](const Resource &r) {
+            return r.kind == QStringLiteral("sprite") && !r.path.isEmpty() &&
+                   r.objectType == QStringLiteral("decoration") && r.spriteStamp.active() &&
+                   r.plane != QStringLiteral("background") &&
+                   !adventureNpcIds.contains(r.id) && !(hasPhysics && &r == player);
+        });
+    mainFlag("HAS_SCENERY_STAMPS", hasSceneryStamps);
+    mainFields.insert(QStringLiteral("SCENERY_STAMP_TABLES"), QString());
     mainFlag("PART_MAIN", true);
     mainFlag("PART_SPRITE_DRAW", false);
+    mainFlag("SPRITE_STAMP_DRAW", false);
     // renderConditionals validates all @IDE_IF flags, even in inactive blocks.
     // Sprite-specific values are filled later, but full-starter rendering must
     // already have a valid boolean for the nested SPRITE_FLIPPED condition.
@@ -1124,8 +1184,36 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
         return true;
     };
     // Repeated scenery placements are also sourced from maingame.rulec.
-    // No gfx calls, sprite flags, or draw statements are assembled in Qt.
+    // Each stamped decoration contributes lookup DATA only, never a PPB.
+    QString sceneryStampTables;
+    int sceneryStampNumber = 0;
     const auto appendSpriteRule = [&](const Resource &r, QString *buffer) -> bool {
+        const bool stamped = r.spriteStamp.active();
+        mainFlag("SPRITE_STAMP_DRAW", stamped);
+        if (stamped) {
+            if (QDir::cleanPath(resolvedPath(r.spriteStamp.sourcePath)) !=
+                QDir::cleanPath(resolvedPath(r.path))) {
+                if (error) *error = tr("Decoration stamp '%1' must reference its original PPB. Save the design to migrate it.").arg(r.name);
+                return false;
+            }
+            QString stampError;
+            if (r.spriteStamp.compose(cachedImage(resolvedPath(r.path)), &stampError).isNull()) {
+                if (error) *error = tr("Invalid decoration stamp '%1': %2").arg(r.name, stampError);
+                return false;
+            }
+            const QString symbol = QStringLiteral("gg_scenery_stamp_%1").arg(sceneryStampNumber++);
+            QStringList cells;
+            for (int cell : r.spriteStamp.cells)
+                cells.append(cell < 0 ? QStringLiteral("0xFFFFFFFFu") :
+                    QStringLiteral("0x%1u").arg(quint32(cell), 8, 16, QLatin1Char('0')));
+            sceneryStampTables += QStringLiteral("static const uint32_t %1[] = { %2 };\n")
+                .arg(symbol, cells.join(QStringLiteral(", ")));
+            mainFields.insert(QStringLiteral("SPRITE_STAMP_ARRAY"), symbol);
+            mainFields.insert(QStringLiteral("SPRITE_STAMP_COLUMNS"),
+                QString::number(r.spriteStamp.width));
+            mainFields.insert(QStringLiteral("SPRITE_STAMP_ROWS"),
+                QString::number(r.spriteStamp.height));
+        }
         mainFields.insert(QStringLiteral("SPRITE_SYMBOL"), spriteSymbol(r));
         mainFields.insert(QStringLiteral("SPRITE_X"), QString::number(r.x));
         mainFields.insert(QStringLiteral("SPRITE_Y"), QString::number(r.y));
@@ -1184,6 +1272,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
             if (!appendSpriteRule(r, &sceneryInFront)) return false;
         }
     }
+    mainFields.insert(QStringLiteral("SCENERY_STAMP_TABLES"), sceneryStampTables);
     mainFields.insert(QStringLiteral("SCENERY_BEHIND_TILES"), sceneryBehind);
     mainFields.insert(QStringLiteral("SCENERY_IN_FRONT_OF_TILES"), sceneryInFront);
     // Render the complete starter only ONCE, after its data fields are ready.
@@ -1340,7 +1429,8 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         }
         const QByteArray headerBytes = headerFile.readAll();
         if (!headerBytes.contains("GAME_ADVENTURE_DEFAULT_TILE_SIZE")
-            || !headerBytes.contains("GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR")) {
+            || !headerBytes.contains("GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR")
+            || !headerBytes.contains("game_adventure_item_atlas_file")) {
             QMessageBox::warning(this, tr("Adventure Runtime Rules"),
                 tr("The installed Adventure runtime is from an earlier version.\n"
                    "Use Update Game Project to back up the game and install the "
@@ -1361,12 +1451,19 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
     request.backgroundCycle = {m_backColourCycle.enabled, m_backColourCycle.start,
                                m_backColourCycle.length, m_backColourCycle.speed};
     const QString adventureSkinId = m_adventure.value(QStringLiteral("skinAtlasId")).toString();
+    QSet<QString> adventureIconAtlases;
+    for (const QJsonValue &item : m_adventure.value(QStringLiteral("items")).toArray()) {
+        const QString id = item.toObject().value(QStringLiteral("iconAtlasId")).toString();
+        if (!id.isEmpty()) adventureIconAtlases.insert(id);
+    }
     const QString activeAtlasPath = m_tilemapEnabled && !m_tilemap.atlasPath.isEmpty()
         ? QDir::cleanPath(resolvedPath(m_tilemap.atlasPath)) : QString();
     for (const Resource &r : m_resources) {
-        // Tile Atlases are a library of possible sheets. Only the selected
-        // tilemap atlas is loaded, avoiding unused SDRAM allocations.
+        // Every inventory icon atlas must be loaded into gameassets too.
+        // Otherwise gameassets_find_ppb() returns null and DROP renders the
+        // dialogue skin instead of the selected Inventory Items atlas.
         if (r.kind == QStringLiteral("tileatlas") && r.id != adventureSkinId &&
+            !adventureIconAtlases.contains(r.id) &&
             (activeAtlasPath.isEmpty() || r.path.isEmpty() ||
              QDir::cleanPath(resolvedPath(r.path)) != activeAtlasPath)) continue;
         SidboxGameCodeGen::Asset a;

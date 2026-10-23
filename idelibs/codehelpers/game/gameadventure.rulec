@@ -168,6 +168,8 @@ void gameadventure_setup(void)
     game_adventure_exchange_rules(exchanges, GAME_ADVENTURE_STORY_NODE_COUNT*3u);
     game_adventure_skin_flips(skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);
+    /* Starting items may be owned before any cross-world inventory restore. */
+    game_adventure_prepare_owned_icons();
     (void)npc_animation_frames; /* Valid even when no NPC animations exist. */
 }
 
@@ -194,6 +196,8 @@ void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)
         if (target > current) game_adventure_add(i, (uint16_t)(target - current));
         else if (current > target) game_adventure_remove(i, (uint16_t)(current - target));
     }
+    /* Load only art actually carried into this world, not every world PPB. */
+    game_adventure_prepare_owned_icons();
 }
 
 @IDE_SECTION{LINKED_ACTION}

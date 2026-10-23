@@ -103,6 +103,7 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
     // Mandatory public functions also cover pointer-return types without
     // whitespace before the asterisk, and empty-world rule stubs.
     for (const char *name : {"gameassets_init", "gameassets_shutdown",
+            "gameassets_front_palette", "gameassets_back_palette",
             "gameassets_find_ppb", "gameassets_draw_foreground",
             "gameassets_draw_background", "gameassets_draw_layers",
             "gameassets_show_background", "drawworld",
@@ -193,6 +194,8 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "#include \"../../gamehelpers/gameworlds.h\"\n"
                      "int " + id + "_gameassets_init(void);\n"
                      "void " + id + "_gameassets_shutdown(void);\n"
+                     "const uint32_t *" + id + "_gameassets_front_palette(void);\n"
+                     "const uint32_t *" + id + "_gameassets_back_palette(void);\n"
                      "void " + id + "_gameassets_draw_foreground(void);\n"
                      "void " + id + "_gameassets_draw_background(void);\n"
                      "void " + id + "_drawworld(void);\n"
@@ -314,7 +317,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     for (const QJsonValue &value : GamePlayerProfile::physicsProfiles(sharedPlayer))
         availableProfiles.insert(value.toObject().value(QStringLiteral("id")).toInt(-1));
     QStringList beforeFns, afterFns, checkFns, spawnFields, namedStartFields;
-    QStringList spawnDeclarations;
+    QStringList spawnDeclarations, defaultTransitionIn, defaultTransitionOut, defaultTransitionFrames, defaultCircleOrigin;
+    QStringList frontPaletteFns, backPaletteFns;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
         if (name.startsWith(QLatin1Char('.'))) continue;
@@ -349,6 +353,12 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         const bool behind = exposed.contains("gameworlditems_draw_behind");
         const bool inventoryApi = exposed.contains("gameadventure_store_inventory");
         const bool showBackground = exposed.contains("gameassets_show_background");
+        // Old published worlds might still be Stage 5.45 while the user
+        // regenerates them one by one. Never reference absent new symbols.
+        frontPaletteFns << (exposed.contains("gameassets_front_palette")
+            ? name + QStringLiteral("_gameassets_front_palette") : QStringLiteral("0"));
+        backPaletteFns << (exposed.contains("gameassets_back_palette")
+            ? name + QStringLiteral("_gameassets_back_palette") : QStringLiteral("0"));
         const bool hasWorldPhysics = exposed.contains("gameworlditems_before");
         const bool hasPickup = exposed.contains("gameworlditems_check");
         anyWorldPhysics |= hasWorldPhysics;
@@ -402,6 +412,20 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
                 .arg(name).arg(worldPhysicsId);
             return false;
         }
+        const auto transitionMode = [](const QString &key) {
+            static const QStringList modes = {QStringLiteral("none"), QStringLiteral("fade"),
+                QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("up"),
+                QStringLiteral("down"), QStringLiteral("circle")};
+            return qMax(0, modes.indexOf(key));
+        };
+        const int outMode = transitionMode(start.value(QStringLiteral("transitionOut")).toString());
+        const int inMode = transitionMode(start.value(QStringLiteral("transitionIn")).toString());
+        const int transitionFrames = qBound(1, start.value(QStringLiteral("transitionFrames")).toInt(30), 150);
+        defaultTransitionIn << QString::number(inMode);
+        defaultTransitionOut << QString::number(outMode);
+        defaultTransitionFrames << QString::number(transitionFrames);
+        defaultCircleOrigin << (start.value(QStringLiteral("circleOrigin")).toString() == QStringLiteral("location")
+            ? QStringLiteral("1") : QStringLiteral("0"));
         spawnFields << QStringLiteral(", %1, %2, %3, %4")
             .arg(spawnX).arg(spawnY).arg(facing).arg(worldPhysicsId);
         QStringList entries;
@@ -415,11 +439,15 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
                 return false;
             }
             knownIds.insert(id);
-            entries << QStringLiteral("{\"%1\", %2, %3, %4}")
+            entries << QStringLiteral("{\"%1\", %2, %3, %4, %5, %6, %7, %8}")
                 .arg(id)
                 .arg(qBound(0, entry.value(QStringLiteral("x")).toInt(), 32767))
                 .arg(qBound(0, entry.value(QStringLiteral("y")).toInt(), 32767))
-                .arg(qBound(0, entry.value(QStringLiteral("facing")).toInt(1), 1));
+                .arg(qBound(0, entry.value(QStringLiteral("facing")).toInt(1), 1))
+                .arg(transitionMode(entry.value(QStringLiteral("transitionIn")).toString()))
+                .arg(transitionMode(entry.value(QStringLiteral("transitionOut")).toString()))
+                .arg(qBound(1, entry.value(QStringLiteral("transitionFrames")).toInt(30), 150))
+                .arg(entry.value(QStringLiteral("circleOrigin")).toString() == QStringLiteral("location") ? 1 : 0);
         }
         if (entries.isEmpty()) namedStartFields << QStringLiteral(", 0, 0");
         else {
@@ -453,6 +481,12 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             entry += QStringLiteral(", ") + checkFns.at(i);
         entry += spawnFields.at(i);
         entry += namedStartFields.at(i);
+        // Transition defaults belong to the saved world's default entrance.
+        // Each named entrance overrides them in its own generated row.
+        entry += QStringLiteral(", %1, %2, %3, %4").arg(defaultTransitionIn.at(i))
+            .arg(defaultTransitionOut.at(i)).arg(defaultTransitionFrames.at(i)).arg(defaultCircleOrigin.at(i));
+        entry += QStringLiteral(", %1, %2")
+            .arg(frontPaletteFns.at(i), backPaletteFns.at(i));
         const QString id = published.at(i);
         entry += QStringLiteral(", %1_gameworlditems_save_state, %1_gameworlditems_restore_state, "
                                 "%1_gameadventure_save_progress, %1_gameadventure_restore_progress")

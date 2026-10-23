@@ -155,6 +155,46 @@ extern gfxbob_t @IDE{WORLD_BASE}_@IDE{PLAYER_SYMBOL};
 #define VIEW_W 480
 #define VIEW_H 320
 
+@IDE_IF{HAS_SCENERY_STAMPS}
+/* Decoration Sprite Stamps are 8x8 cell lookup tables into their original PPB.
+   No stamp-specific PPB or additional TFCard transfer is necessary. */
+@IDE{SCENERY_STAMP_TABLES}
+static int16_t gg_stamp_clamp(int64_t n)
+{ return (int16_t)(n < -32768 ? -32768 : n > 32767 ? 32767 : n); }
+
+static void gg_draw_scenery_stamp(const gfxbob_t *source, const uint32_t *cells,
+        uint8_t columns, uint8_t rows, int32_t x, int32_t y,
+        int32_t camera_x, int32_t camera_y, uint8_t flips)
+{
+    if (!source || !source->imgdat || !cells) return;
+    const uint16_t sheet_columns = source->atlas_stride / 8u;
+    const uint16_t sheet_rows = source->atlas_height / 8u;
+    if (!sheet_columns || !sheet_rows) return;
+    const uint8_t mx = !!(flips & BLIT_FLAG_FLIP_X);
+    const uint8_t my = !!(flips & BLIT_FLAG_FLIP_Y);
+    const int32_t left = x-camera_x, top = y-camera_y;
+    for (uint16_t cy=0; cy<rows; ++cy)
+        for (uint16_t cx=0; cx<columns; ++cx) {
+            const uint32_t code = cells[cy*columns+cx];
+            if (code == 0xFFFFFFFFu) continue;
+            const uint32_t index = code & 0xFFFFu;
+            if (index >= (uint32_t)sheet_columns*sheet_rows) continue;
+            const int32_t dx = left+(int32_t)(mx ? columns-1u-cx : cx)*8;
+            const int32_t dy = top +(int32_t)(my ? rows-1u-cy : cy)*8;
+            if (dx <= -8 || dy <= -8 || dx >= VIEW_W || dy >= VIEW_H) continue;
+            gfxbob_t bob = *source;
+            bob.imgdat = source->imgdat + (index/sheet_columns)*8u*source->atlas_stride
+                                         + (index%sheet_columns)*8u;
+            bob.width=8; bob.height=8; bob.atlas_height=8; bob.index=0;
+            bob.drawx=gg_stamp_clamp(dx); bob.drawy=gg_stamp_clamp(dy);
+            bob.flags = (uint8_t)((source->flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y))
+                | ((mx ^ !!(code & 0x10000u)) ? BLIT_FLAG_FLIP_X : 0)
+                | ((my ^ !!(code & 0x20000u)) ? BLIT_FLAG_FLIP_Y : 0));
+            gfx_drawbob(&bob);
+        }
+}
+@IDE_END
+
 /* Two independent foreground buffers, swapped after each frame. */
 static gfx_bitmap_t *front[2];
 static uint8_t draw_index = 0;
@@ -546,6 +586,9 @@ int main(int argc, char *argv[])
        Music triggers configured on objects work automatically. */
 @IDE_END
 
+    /* Start effects only after player/buffers exist. Old hand-owned main.c
+       remains compatible: without this opt-in its doors still instant-cut. */
+    gameworlds_transitions_enable(1);
     /* 3. The frame loop. Leave the helper calls in this order. */
     const char *running_world = gameworlds_active();
     while (1) {
@@ -622,6 +665,9 @@ int main(int argc, char *argv[])
             gfx_scrollb(0, 0);
             gfx_scrollf(0, 0);
         }
+        /* Freeze gameplay during entrance/exit effects. World objects stay
+           visible; music and the 50 FPS rendering loop keep running. */
+        if (!gameworlds_transition_busy()) {
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_ADVENTURE}
         const uint8_t adventure_buttons = getjoyport();
@@ -732,6 +778,7 @@ int main(int argc, char *argv[])
         } /* Resume physics after conversation. */
 @IDE_END
 @IDE_END
+        } /* End of transition-paused gameplay update. */
 /* SCREEN RENDERING ORDER -- defined by this rule, not by Qt.
  * Qt supplies only generated scenery placements at the marked positions.
  * Keep back scenery before tilemap and player before front-layer tiles. */
@@ -848,6 +895,11 @@ int main(int argc, char *argv[])
 @IDE_END
         /* YOUR GAME LOGIC: scoring UI, effects and custom HUD go here.
            To exit, add your input check with break; cleanup is below. */
+        /* Overlay OUT/IN swipes/circles AFTER the HUD and dialogue. Fades
+           update temporary CLUT copies (both layers), never source pixels. */
+        gfx_usebuffer(front[draw_index]); /* Effects always mask the foreground. */
+        gameworlds_transition_camera(camera_x, camera_y);
+        gameworlds_transition_frame(VIEW_W, VIEW_H);
         gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
         gfx_displaynow();
         draw_index ^= 1u;
@@ -867,10 +919,17 @@ cleanup:
 @IDE_IF{PART_SPRITE_DRAW}
         /* This decoration is compiled under the selected world's namespace. */
         extern gfxbob_t @IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL};
+@IDE_IF{SPRITE_STAMP_DRAW}
+        gg_draw_scenery_stamp(&@IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL},
+            @IDE{SPRITE_STAMP_ARRAY}, @IDE{SPRITE_STAMP_COLUMNS}u, @IDE{SPRITE_STAMP_ROWS}u,
+            @IDE{SPRITE_X}, @IDE{SPRITE_Y}, camera_x, camera_y,
+            (uint8_t)(@IDE{SPRITE_FLIP_X} | @IDE{SPRITE_FLIP_Y}));
+@IDE_ELSE
 @IDE_IF{SPRITE_FLIPPED}
         @IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL}.flags = (uint8_t)((@IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL}.flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | @IDE{SPRITE_FLIP_X} | @IDE{SPRITE_FLIP_Y});
 @IDE_END
         @IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL}.drawx = @IDE{SPRITE_X} - camera_x;
         @IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL}.drawy = @IDE{SPRITE_Y} - camera_y;
         gfx_drawbob(&@IDE{WORLD_BASE}_@IDE{SPRITE_SYMBOL});
+@IDE_END
 @IDE_END

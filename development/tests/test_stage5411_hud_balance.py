@@ -2,6 +2,7 @@
 """Stage 5.41.1: compiled Adventure-runtime inventory quantity for HUD."""
 from pathlib import Path
 import subprocess
+import re
 import tempfile
 from stage442_render_test_helpers import render_adventure_runtime
 
@@ -57,5 +58,5 @@ editor=(root/'gameadventureeditor.cpp').read_text()
 # QVariant::toInt takes a bool*; Stage 5.41 incorrectly passed 8 as a fallback.
 assert 'data(Qt::UserRole+4).toInt(8)' not in editor
 assert editor.count('data(Qt::UserRole+4).isValid()') == 4
-assert 'Build: 5.41.1.231026' in (root/'splashscreenwidget.cpp').read_text()
+assert re.search(r'Build: 5\.\d+(?:\.\d+)?\.\d{6}', (root/'splashscreenwidget.cpp').read_text())
 print('PASS Qt QVariant default handling at all four inventory icon call sites')

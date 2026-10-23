@@ -129,6 +129,10 @@ bool SidboxGameDesigner::loadDesign()
     m_playerFacing = qBound(0, start.value(QStringLiteral("facing")).toInt(1), 1);
     m_playerStartX = qMax(0,start.value(QStringLiteral("x")).toInt(0));
     m_playerStartY = qMax(0,start.value(QStringLiteral("y")).toInt(0));
+    m_playerTransitionIn = start.value(QStringLiteral("transitionIn")).toString(QStringLiteral("none"));
+    m_playerTransitionOut = start.value(QStringLiteral("transitionOut")).toString(QStringLiteral("none"));
+    m_playerCircleOrigin = start.value(QStringLiteral("circleOrigin")).toString(QStringLiteral("center"));
+    m_playerTransitionFrames = qBound(1, start.value(QStringLiteral("transitionFrames")).toInt(30), 150);
     m_otherPlayerStarts.clear();
     QSet<QString> seenStartIds{QStringLiteral("default")};
     for (const QJsonValue &v : obj.value(QStringLiteral("playerStarts")).toArray()) {
@@ -141,6 +145,10 @@ bool SidboxGameDesigner::loadDesign()
         location.x = qBound(0, entry.value(QStringLiteral("x")).toInt(), 32767);
         location.y = qBound(0, entry.value(QStringLiteral("y")).toInt(), 32767);
         location.facing = qBound(0, entry.value(QStringLiteral("facing")).toInt(1), 1);
+        location.transitionIn = entry.value(QStringLiteral("transitionIn")).toString(QStringLiteral("none"));
+        location.transitionOut = entry.value(QStringLiteral("transitionOut")).toString(QStringLiteral("none"));
+        location.circleOrigin = entry.value(QStringLiteral("circleOrigin")).toString(QStringLiteral("center"));
+        location.transitionFrames = qBound(1, entry.value(QStringLiteral("transitionFrames")).toInt(30), 150);
         if (location.name.isEmpty()) location.name = tr("Door start");
         m_otherPlayerStarts.push_back(location);
     }
@@ -225,6 +233,11 @@ bool SidboxGameDesigner::loadDesign()
         r.cellHeight = qBound(0, a.value(QStringLiteral("cellHeight")).toInt(0), 16384);
         r.frame = qBound(0, a.value(QStringLiteral("frame")).toInt(0), 65535);
         r.spriteStamp = SidboxSpriteStamp::fromJson(a.value(QStringLiteral("spriteStamp")).toObject());
+        if (r.kind == QStringLiteral("sprite") && r.spriteStamp.active()) {
+            r.path = r.spriteStamp.sourcePath; // migrate Stage 5.36 stamp_*.ppb projects
+            r.cellWidth = r.cellHeight = SidboxSpriteStamp::cellPixels;
+            r.frame = 0;
+        }
         r.animationFile = a.value(QStringLiteral("animationFile")).toString();
         r.locked = a.value(QStringLiteral("locked")).toBool(false);
         const QJsonObject object = a.value(QStringLiteral("gameObject")).toObject();
@@ -512,8 +525,8 @@ void SidboxGameDesigner::syncProjectTileStampBanks(const QJsonObject &banks)
 
 bool SidboxGameDesigner::saveDesign()
 {
-    // Sprite stamps are authoring metadata; refresh the generated PPB when
-    // the source tile sheet changes, without touching game source or main.c.
+    // Sprite stamp metadata stores cell lookups over the original PPB only.
+    // Validate source tile IDs without generating any new PPB file.
     for (Resource &r : m_resources) {
         if (!r.spriteStamp.active()) continue;
         QString error;
@@ -565,6 +578,10 @@ bool SidboxGameDesigner::saveDesign()
     start.insert(QStringLiteral("x"), m_playerStartX);
     start.insert(QStringLiteral("y"), m_playerStartY);
     start.insert(QStringLiteral("facing"), m_playerFacing);
+    start.insert(QStringLiteral("transitionIn"), m_playerTransitionIn);
+    start.insert(QStringLiteral("transitionOut"), m_playerTransitionOut);
+    start.insert(QStringLiteral("circleOrigin"), m_playerCircleOrigin);
+    start.insert(QStringLiteral("transitionFrames"), m_playerTransitionFrames);
     obj.insert(QStringLiteral("playerStart"), start);
     QJsonArray otherStarts;
     for (const PlayerStartLocation &location : m_otherPlayerStarts) {
@@ -574,6 +591,10 @@ bool SidboxGameDesigner::saveDesign()
         point.insert(QStringLiteral("x"), location.x);
         point.insert(QStringLiteral("y"), location.y);
         point.insert(QStringLiteral("facing"), location.facing);
+        point.insert(QStringLiteral("transitionIn"), location.transitionIn);
+        point.insert(QStringLiteral("transitionOut"), location.transitionOut);
+        point.insert(QStringLiteral("circleOrigin"), location.circleOrigin);
+        point.insert(QStringLiteral("transitionFrames"), location.transitionFrames);
         otherStarts.append(point);
     }
     obj.insert(QStringLiteral("playerStarts"), otherStarts);

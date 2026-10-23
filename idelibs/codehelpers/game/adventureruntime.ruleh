@@ -33,6 +33,12 @@ void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint1
 /* Override one item's icon source independently of the dialogue skin. */
 void game_adventure_item_atlas(uint16_t item, const uint8_t *pixels,
                                uint16_t width,uint16_t height,uint8_t tile_size);
+/* A persistent item can carry its ORIGINAL PPB filename across worlds even
+   when that atlas is not a resource on the current map. Only owned items are
+   loaded into RAM, and multiple icons can borrow the same single PPB load. */
+void game_adventure_item_atlas_file(uint16_t item,const char *path,
+                                    uint16_t width,uint16_t height,uint8_t tile_size);
+void game_adventure_prepare_owned_icons(void);
 /* Optional USE effect per item: a named shared-player stat and signed delta.
  * No effect if stat is empty or callback fails. Consume one copy only on success.
  * This is deliberately separate from the stable item/style ABI. */

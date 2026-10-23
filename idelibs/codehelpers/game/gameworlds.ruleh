@@ -55,10 +55,27 @@ uint8_t gameworlds_request(const char *name);
 /* Request a specific named entrance in the destination world.
  * "default" preserves the original Player Start behaviour. */
 uint8_t gameworlds_request_at(const char *name, const char *start_id);
+/* Door-trigger requests carry their world-space exit centre, for an optional
+ * Circle Close around the doorway. Older callers use request_at() safely. */
+uint8_t gameworlds_request_at_from(const char *name, const char *start_id,
+                                   int32_t exit_x, int32_t exit_y);
 /* Call OUTSIDE the frame's collision, object and drawing passes.
  * 0 = failed; 1 = no change or successful transition. */
 uint8_t gameworlds_apply_pending(void);
 void gameworlds_shutdown(void);
+/* Player Start transition modes: 0 None; 1 Fade; 2 Left; 3 Right;
+ * 4 Up; 5 Down; 6 Circle.  Duration is measured in rendered frames.
+ * The generated main loop calls frame() AFTER drawing HUD/dialogue and BEFORE
+ * gfx_dispfbuffer(). During an effect, skip physics/input and object updates.
+ * Neither PPB cell indices nor the source CLUTs are ever edited. */
+/* Existing user-owned main.c keeps instant cuts until it opts in. Without
+ * frame() calls a transition could otherwise never finish. */
+void gameworlds_transitions_enable(uint8_t enabled);
+uint8_t gameworlds_transition_busy(void);
+/* Update current camera origin before transition_frame() when using the
+ * optional Player Start/door centre. No camera update = screen-centred mask. */
+void gameworlds_transition_camera(int32_t camera_x, int32_t camera_y);
+void gameworlds_transition_frame(uint16_t view_width, uint16_t view_height);
 /* Seed project-wide starting items BEFORE gameworlds_start(); never resets on travel. */
 void gameworlds_seed_inventory(const char *name, uint16_t initial);
 /* The current map may be NULL for a scenery-only world. */

@@ -1,6 +1,24 @@
 #ifndef TEST_APIS_H
 #define TEST_APIS_H
 #include <stdint.h>
+/* In host tests there is no SIDBOX TFCard. Portable PPB reads must fail
+   cleanly unless a test supplies a disk backend of its own. */
+#define SD_READ 1
+#define FR_OK 0
+#ifdef TEST_PORTABLE_PPB
+int sfopen(int slot,char *path,int mode);
+int sfread(int slot,void *buf,uint32_t count,uint32_t *got);
+int sflseek(int slot,uint32_t pos);
+int sfclose(int slot);
+#else
+static inline int sfopen(int slot, char *path, int mode)
+{(void)slot;(void)path;(void)mode;return 1;}
+static inline int sfread(int slot, void *buf, uint32_t count, uint32_t *got)
+{(void)slot;(void)buf;(void)count;if(got)*got=0;return 1;}
+static inline int sflseek(int slot, uint32_t at)
+{(void)slot;(void)at;return 1;}
+static inline int sfclose(int slot) {(void)slot;return 0;}
+#endif
 #define BTN_FIRE2 0x01u
 #define BTN_UP 0x02u
 #define BTN_DOWN 0x04u

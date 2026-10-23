@@ -10,10 +10,10 @@
 
 // Game Object Sprite Stamps are IDE-only arrangements of indexed PPB 8x8 cells.
 // 0-based tile IDs; -1 = transparent empty cell. Bits 16/17 are per-cell X/Y flips.
-// At export the arrangement is baked into ONE ordinary indexed PPB sprite.
-// The STM32 runtime has no stamp structures, allocations or extra draw calls.
+// At export the arrangement becomes a C lookup table of cell IDs and flips.
+// The STM32 reads the original PPB pixels and draws those cells directly.
 struct SidboxSpriteStamp {
-    QString sourcePath; // project-relative PPB atlas; NOT the generated output
+    QString sourcePath; // original project-relative PPB sheet; no generated PPB
     int width = 2, height = 2; // units of 8x8 pixels, 1..16 each
     QVector<int> cells; // encoded tile IDs + flips, row major
     bool active() const { return !sourcePath.isEmpty(); }

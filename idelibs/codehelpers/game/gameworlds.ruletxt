@@ -92,3 +92,35 @@ For single-world projects simply call gameworlds_start(NULL) once, and
 use gameworlds_shutdown() at exit. During migration old main.c continues to
 compile, but it still runs through the legacy root-level resources until
 YOU change it to use the new gameworlds API.
+
+STAGE 5.48: DOOR-SELECTED TRANSITIONS AND LOCATION CIRCLES
+--------------------------------------------------------
+Each saved default/named Player Start configures the pair of effects used by
+Goto World doors THAT TARGET THAT START: OUT plays over the departing world,
+and IN plays after the destination world and player have loaded. Both may be
+None (instant), Fade, Swipe Left/Right/Up/Down or Circle. Duration is 1-150
+frames. At startup only the initial world's default IN mode is used.
+
+Circle centre defaults to Screen centre (backwards compatible). Set it to
+"Door / Player Start" in the destination Player Start editor if Circle Close
+should centre on the exiting Goto World object and Circle Open should centre
+on that arrival Player Start. Screen positioning follows the actual camera
+scroll, not raw world pixels. Handwritten gameworlds_request_at() calls have
+no doorway position; in that case the outgoing effect uses the last active
+Player Start instead. For an explicit outgoing position, call
+ gameworlds_request_at_from(world, start_id, exit_world_x, exit_world_y).
+
+IDE-owned main.c contains all integration. For user-owned main.c, use the
+regenerated maingame.c.txt and include these FOUR integration points:
+  1. After player/buffer setup: gameworlds_transitions_enable(1);
+  2. Gate physics/input/updates with if (!gameworlds_transition_busy()).
+  3. After all drawing, before gfx_dispfbuffer, while camera_x/y are current:
+         gameworlds_transition_camera(camera_x, camera_y);
+  4. Immediately after that: gameworlds_transition_frame(VIEW_W, VIEW_H);
+
+Old user-owned main.c continues to compile. No opt-in means instant cuts;
+omitting just the camera call means location circles fall back to centre.
+Fade uses temporary front/back CLUT copies (original PPB pixel indices are
+unchanged). Spatial effects use foreground index 255 temporarily as black;
+reserve that index if you want clean wipes. Regenerate ALL world designs and
+the project-level registry when upgrading. No extra PPB files are created.

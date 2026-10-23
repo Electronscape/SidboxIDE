@@ -425,32 +425,64 @@ QImage adventureInventoryIcon(const QImage &atlas, int tile, int single,
     }
     return image;
 }
-bool editAdventureInventoryIcon(QWidget *parent, const QImage &atlas, int tile,
+bool editAdventureInventoryIcon(QWidget *parent, const QVector<GameAdventureAsset> &atlases,
+                                const QVector<QRgb> &foregroundPalette,
+                                const QString &dialogueAtlasId, int dialogueTileSize,
+                                QString *iconAtlasId, int *iconTileSize,
                                 int *single, QJsonArray *cells, bool *stamp)
 {
-    if (!single || !cells || !stamp || atlas.isNull() || tile <= 0) return false;
+    if (!single || !cells || !stamp || !iconAtlasId || !iconTileSize) return false;
     QDialog dlg(parent);
-    dlg.setWindowTitle(QObject::tr("Inventory Icon: Single or 2×2 Tile Stamp"));
+    dlg.setWindowTitle(QObject::tr("Inventory Icon Artwork"));
     auto *layout = new QVBoxLayout(&dlg);
+    auto *sourceRow = new QHBoxLayout;
+    auto *atlasSelect = new QComboBox(&dlg);
+    atlasSelect->addItem(QObject::tr("Dialogue PPB (legacy default)"),QString());
+    for (const auto &resource : atlases) {
+        if (QFileInfo(resource.path).suffix().compare(QStringLiteral("ppb"),Qt::CaseInsensitive)!=0)
+            continue;
+        atlasSelect->addItem(QStringLiteral("%1 (%2)").arg(resource.name,QFileInfo(resource.path).fileName()), resource.id);
+    }
+    if (!iconAtlasId->isEmpty() && atlasSelect->findData(*iconAtlasId)<0)
+        atlasSelect->addItem(QObject::tr("Missing PPB resource (%1)").arg(*iconAtlasId),*iconAtlasId);
+    atlasSelect->setCurrentIndex(qMax(0,atlasSelect->findData(*iconAtlasId)));
+    auto *tileSize = new QSpinBox(&dlg);
+    tileSize->setRange(4,64);
+    tileSize->setValue(qBound(4,*iconTileSize,64));
+    sourceRow->addWidget(new QLabel(QObject::tr("Icon PPB atlas:"),&dlg));
+    sourceRow->addWidget(atlasSelect,1);
+    sourceRow->addWidget(new QLabel(QObject::tr("Cell size:"),&dlg));
+    sourceRow->addWidget(tileSize);
+    layout->addLayout(sourceRow);
     auto *mode = new QComboBox(&dlg);
     mode->addItem(QObject::tr("Single atlas cell"),false);
     mode->addItem(QObject::tr("2×2 stamp (four independent cells)"),true);
     mode->setCurrentIndex(*stamp ? 1 : 0);
     layout->addWidget(mode);
-    auto *hint = new QLabel(QObject::tr("Click a quadrant to choose its tile from the atlas. "
-                                      "A 2×2 stamp is 16×16 pixels when atlas cells are 8×8."),&dlg);
+    auto *hint = new QLabel(QObject::tr("Choose the PPB sheet this item uses when carried or dropped. "
+                                      "Click a quadrant to pick a cell. Indices are preserved without making another PPB."),&dlg);
     hint->setWordWrap(true); layout->addWidget(hint);
     auto *grid = new QGridLayout;
     std::array<QPushButton *,4> buttons{};
     int chosen = *single;
     QJsonArray quadrants = *cells;
-    if (quadrants.size()!=4) {
-        quadrants = QJsonArray{chosen,chosen,chosen,chosen};
-    }
+    if (quadrants.size()!=4) quadrants=QJsonArray{chosen,chosen,chosen,chosen};
+    QImage image;
+    int effectiveSize=8;
     auto *preview=new QLabel(&dlg);
     preview->setMinimumSize(110,110);
     preview->setAlignment(Qt::AlignCenter);
-    auto refresh = [&] {
+    const auto readAtlas=[&] {
+        const QString id=atlasSelect->currentData().toString();
+        const QString selected=id.isEmpty()?dialogueAtlasId:id;
+        const auto it=std::find_if(atlases.begin(),atlases.end(),
+            [&](const GameAdventureAsset &a){return a.id==selected;});
+        tileSize->setEnabled(!id.isEmpty()); // Default uses Dialogue tile size, not this override.
+        effectiveSize=id.isEmpty()?dialogueTileSize:tileSize->value();
+        image=it==atlases.end()?QImage():indexedPreview(it->path,foregroundPalette);
+        if (!image.isNull() && (effectiveSize>image.width() || effectiveSize>image.height())) image=QImage();
+    };
+    const auto refresh = [&] {
         const bool composite = mode->currentData().toBool();
         for (int i=0; i<4; ++i) {
             buttons[i]->setVisible(composite || i==0);
@@ -461,17 +493,28 @@ bool editAdventureInventoryIcon(QWidget *parent, const QImage &atlas, int tile,
                     .arg(quadrants[i].toInt(65535))
                 : QObject::tr("Cell %1").arg(chosen));
         }
-        const QImage icon = adventureInventoryIcon(atlas,tile,chosen,quadrants,composite);
-        preview->setPixmap(icon.isNull()?QPixmap():QPixmap::fromImage(icon.scaled(
-            96,96,Qt::KeepAspectRatio,Qt::FastTransformation)));
+        const QImage icon = adventureInventoryIcon(image,effectiveSize,chosen,quadrants,composite);
+        if (icon.isNull()) {
+            preview->setPixmap(QPixmap());
+            preview->setText(QObject::tr("Select a valid PPB atlas"));
+        } else {
+            preview->setText(QString());
+            preview->setPixmap(QPixmap::fromImage(icon.scaled(
+                96,96,Qt::KeepAspectRatio,Qt::FastTransformation)));
+        }
     };
     for (int i=0;i<4;++i) {
         buttons[i]=new QPushButton(&dlg);
         grid->addWidget(buttons[i],i/2,i%2);
         QObject::connect(buttons[i],&QPushButton::clicked,&dlg,[&,i]{
+            if(image.isNull()) {
+                QMessageBox::information(&dlg,QObject::tr("Choose a PPB"),
+                    QObject::tr("Choose a valid Icon PPB atlas first."));
+                return;
+            }
             const bool composite=mode->currentData().toBool();
             const int previous = composite ? quadrants[i].toInt(65535) : chosen;
-            const int value = chooseAdventureAtlasCell(&dlg,atlas,tile,
+            const int value = chooseAdventureAtlasCell(&dlg,image,effectiveSize,
                                   previous==65535?0:previous);
             if (value<0) return;
             if (composite) quadrants[i]=value;
@@ -482,14 +525,30 @@ bool editAdventureInventoryIcon(QWidget *parent, const QImage &atlas, int tile,
     layout->addLayout(grid);layout->addWidget(preview);
     auto *bottom=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dlg);
     layout->addWidget(bottom);
-    QObject::connect(bottom,&QDialogButtonBox::accepted,&dlg,&QDialog::accept);
+    QObject::connect(bottom,&QDialogButtonBox::accepted,&dlg,[&] {
+        if (image.isNull()) {
+            QMessageBox::warning(&dlg,QObject::tr("Inventory Icon"),
+                QObject::tr("Choose a PPB resource present in this world."));
+            return;
+        }
+        dlg.accept();
+    });
     QObject::connect(bottom,&QDialogButtonBox::rejected,&dlg,&QDialog::reject);
     QObject::connect(mode,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[&](int){refresh();});
-    refresh();
+    QObject::connect(atlasSelect,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[&](int){
+        // An atlas is a different index coordinate system: don't reuse old cell IDs.
+        chosen=0; quadrants=QJsonArray{0,0,0,0}; readAtlas();refresh();
+    });
+    QObject::connect(tileSize,qOverload<int>(&QSpinBox::valueChanged),&dlg,[&](int){
+        chosen=0; quadrants=QJsonArray{0,0,0,0}; readAtlas();refresh();
+    });
+    readAtlas();refresh();
     if (dlg.exec()!=QDialog::Accepted) return false;
     *single=chosen;
     *cells=quadrants;
     *stamp=mode->currentData().toBool();
+    *iconAtlasId=atlasSelect->currentData().toString();
+    *iconTileSize=tileSize->value();
     return true;
 }
 QTableWidgetItem *cell(const QString &s) { return new QTableWidgetItem(s); }
@@ -952,7 +1011,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "When Show in Inventory is ticked on a placed collectable, the generated world "
         "adds one per object picked up automatically. Legacy untracked pickups may "
         "still use game_adventure_collect(item->kind) in a custom on_pickup() callback. "
-        "Choose each item's own Icon Atlas and cell size above the table, then double-click the artwork to pick cells or a 2×2 stamp. "
+        "Double-click Icon artwork to choose that item's PPB atlas, cell size, and Single or 2×2 stamp. "
         "Make that PPB available in every other world where this inventory icon should appear. "
         "Discarding is OFF by default. NPC quest-required items are protected automatically, "
         "even if a quest NPC lives in another SAVED world."),itemsPage);
@@ -968,7 +1027,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     itemAtlasRow->addWidget(new QLabel(QObject::tr("Stamp cell size:"),itemsPage));
     itemAtlasRow->addWidget(inventoryIconCell);
     itemsLayout->addLayout(itemAtlasRow);
-    itemsLayout->addWidget(new QLabel(QObject::tr("Choose an inventory row, then its atlas. Other worlds need the same PPB registered in their Game Resources."),itemsPage));
+    itemsLayout->addWidget(new QLabel(QObject::tr("Double-click Icon artwork to choose the PPB atlas and tiles together. The controls above also edit the selected item. Other worlds need the PPB registered in Game Resources."),itemsPage));
     itemsLayout->addWidget(items,1);
     const QJsonArray oldItems = old.value("items").toArray();
     const QJsonArray customKinds = old.value("pickupTypes").toArray();
@@ -1180,24 +1239,19 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(items,&QTableWidget::cellDoubleClicked,&dialog,[&](int row,int column){
         if(column!=4 || row<0 || !items->item(row,4)) return;
         auto *iconEntry=items->item(row,4);
-        const QString selected=iconEntry->data(Qt::UserRole+3).toString();
-        const QString id=selected.isEmpty()
-            ? (skinAtlas?skinAtlas->currentData().toString():old.value("skinAtlasId").toString())
-            : selected;
-        const auto at=std::find_if(atlases.begin(),atlases.end(),[&](const auto &a){return a.id==id;});
-        if(at==atlases.end()){
-            QMessageBox::information(&dialog,QObject::tr("Choose inventory artwork"),
-                QObject::tr("Choose an Icon Atlas above Inventory Items, or set a Dialogue Tile Atlas as the default."));
-            return;
-        }
-        const QImage image=indexedPreview(at->path,foregroundPalette);
-        const int size=selected.isEmpty()
-            ? (tileSize?tileSize->value():old.value("tileSize").toInt(8))
-            : qBound(4,(iconEntry->data(Qt::UserRole+4).isValid() ? iconEntry->data(Qt::UserRole+4).toInt() : 8),64);
+        QString selected=iconEntry->data(Qt::UserRole+3).toString();
+        int size=qBound(4,(iconEntry->data(Qt::UserRole+4).isValid()
+            ? iconEntry->data(Qt::UserRole+4).toInt() : 8),64);
         int chosen=iconEntry->data(Qt::UserRole).toInt();
         QJsonArray quadrants=iconEntry->data(Qt::UserRole+1).toJsonArray();
         bool stamp=iconEntry->data(Qt::UserRole+2).toBool();
-        if (!editAdventureInventoryIcon(&dialog,image,size,&chosen,&quadrants,&stamp)) return;
+        if (!editAdventureInventoryIcon(&dialog,atlases,foregroundPalette,
+                skinAtlas?skinAtlas->currentData().toString():old.value("skinAtlasId").toString(),
+                tileSize?tileSize->value():old.value("tileSize").toInt(8),
+                &selected,&size,&chosen,&quadrants,&stamp)) return;
+        iconEntry->setData(Qt::UserRole+3,selected);
+        iconEntry->setData(Qt::UserRole+4,size);
+        selectItemAtlas();
         iconEntry->setData(Qt::UserRole,chosen);
         iconEntry->setData(Qt::UserRole+1,quadrants);
         iconEntry->setData(Qt::UserRole+2,stamp);

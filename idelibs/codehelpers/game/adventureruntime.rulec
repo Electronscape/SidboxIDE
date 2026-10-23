@@ -1,6 +1,7 @@
 #include "adventureruntime.h"
 #include "apis.h"
 #include <string.h>
+#include <stdlib.h>
 /* Firmware defines BTN_FIRE; older host test mocks may not. */
 #ifndef BTN_FIRE
 #define BTN_FIRE 0x01u
@@ -37,12 +38,79 @@ static uint16_t ga_item_count, ga_node_count, ga_npc_count;
 static const game_adventure_item_style_t *ga_item_styles;
 static uint16_t ga_item_style_count;
 static const uint8_t *ga_icon_atlas[GA_MAX_ITEMS];
+/* Distinguish "no custom atlas" from "custom atlas missing at runtime". */
+static uint8_t ga_icon_registered[GA_MAX_ITEMS];
 static uint16_t ga_icon_width[GA_MAX_ITEMS],ga_icon_height[GA_MAX_ITEMS];
 static uint8_t ga_icon_tile[GA_MAX_ITEMS];
+static const char *ga_icon_file[GA_MAX_ITEMS];
+/* Share one allocation between all carried icons using the same PPB file.
+   These buffers never belong to gameassets and are released on world travel. */
+typedef struct {
+    const char *path;
+    uint8_t *pixels;
+    uint16_t width, height;
+} ga_owned_ppb_t;
+static ga_owned_ppb_t ga_loaded_ppbs[GA_MAX_ITEMS];
+static uint16_t ga_loaded_ppb_count;
+static void ga_release_owned_ppbs(void)
+{
+    for(uint16_t i=0;i<ga_loaded_ppb_count;++i) free(ga_loaded_ppbs[i].pixels);
+    memset(ga_loaded_ppbs,0,sizeof(ga_loaded_ppbs));
+    ga_loaded_ppb_count=0;
+}
+/* Validate exact PPB dimensions and payload length. The legacy LoadPPB()
+   returns void and cannot report a short read, so it is unsafe here. */
+static const uint8_t *ga_load_ppb(const char *path,uint16_t width,uint16_t height)
+{
+    if(!path || !*path || !width || !height) return 0;
+    for(uint16_t i=0;i<ga_loaded_ppb_count;++i)
+        if(strcmp(path,ga_loaded_ppbs[i].path)==0) {
+            return ga_loaded_ppbs[i].width==width && ga_loaded_ppbs[i].height==height
+                ? ga_loaded_ppbs[i].pixels : 0;
+        }
+    if(ga_loaded_ppb_count>=GA_MAX_ITEMS) return 0;
+    ga_owned_ppb_t *entry=&ga_loaded_ppbs[ga_loaded_ppb_count++];
+    entry->path=path; entry->width=width; entry->height=height;
+    const uint32_t size=(uint32_t)width*height;
+    if(size>4u*1024u*1024u || sfopen(0,(char *)path,SD_READ)!=FR_OK) return 0;
+    do {
+        uint8_t hdr[16]; uint32_t got=0;
+        if(sfread(0,hdr,16u,&got)!=FR_OK || got!=16u) break;
+        const uint32_t w=((uint32_t)hdr[1]<<8)|hdr[2];
+        const uint32_t h=((uint32_t)hdr[3]<<8)|hdr[4];
+        const uint32_t len=((uint32_t)hdr[5]<<24)|((uint32_t)hdr[6]<<16)|
+                           ((uint32_t)hdr[7]<<8)|hdr[8];
+        if(w!=width || h!=height || len!=size) break;
+        entry->pixels=(uint8_t *)malloc(size);
+        if(!entry->pixels || sflseek(0,1040u)!=FR_OK) break;
+        got=0;
+        if(sfread(0,entry->pixels,size,&got)!=FR_OK || got!=size) break;
+        uint8_t trailing=0; got=0;
+        if(sfread(0,&trailing,1u,&got)!=FR_OK || got!=0u) break;
+        sfclose(0);
+        return entry->pixels;
+    } while(0);
+    sfclose(0);
+    free(entry->pixels); entry->pixels=0;
+    return 0;
+}
+void game_adventure_item_atlas_file(uint16_t item,const char *path,
+                                    uint16_t width,uint16_t height,uint8_t tile_size)
+{
+    if(item>=GA_MAX_ITEMS || !path || !*path) return;
+    ga_icon_registered[item]=1u;
+    ga_icon_file[item]=path;
+    ga_icon_atlas[item]=0;
+    ga_icon_width[item]=width;
+    ga_icon_height[item]=height;
+    ga_icon_tile[item]=tile_size;
+}
 void game_adventure_item_atlas(uint16_t item,const uint8_t *pixels,
                                uint16_t width,uint16_t height,uint8_t tile_size)
 {
     if(item>=GA_MAX_ITEMS)return;
+    ga_icon_registered[item]=1u;
+    ga_icon_file[item]=0;
     ga_icon_atlas[item]=pixels;
     ga_icon_width[item]=width;
     ga_icon_height[item]=height;
@@ -53,6 +121,15 @@ void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint1
 static uint8_t ga_discardable(uint16_t id)
 { return ga_item_styles && id < ga_item_style_count && ga_item_styles[id].discardable; }
 static uint16_t ga_counts[GA_MAX_ITEMS];
+static void ga_load_item_icon(uint16_t item)
+{
+    if(item>=ga_item_count || !ga_counts[item] || !ga_icon_file[item] || ga_icon_atlas[item]) return;
+    ga_icon_atlas[item]=ga_load_ppb(ga_icon_file[item],ga_icon_width[item],ga_icon_height[item]);
+}
+void game_adventure_prepare_owned_icons(void)
+{
+    for(uint16_t i=0;i<ga_item_count;++i) ga_load_item_icon(i);
+}
 static const game_adventure_item_use_t *ga_use_effects;
 static uint16_t ga_use_count;
 static game_adventure_use_stat_t ga_use_handler;
@@ -328,6 +405,7 @@ uint16_t game_adventure_add(uint16_t i, uint16_t n)
     const uint16_t old = ga_counts[i], max = ga_items[i].capacity;
     const uint32_t wanted = (uint32_t)old + n;
     ga_counts[i] = (uint16_t)(wanted > max ? max : wanted);
+    if(ga_counts[i]>old) ga_load_item_icon(i);
     return ga_counts[i] - old;
 }
 uint8_t game_adventure_remove(uint16_t i, uint16_t n)
@@ -366,12 +444,15 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                           const uint16_t skin_indices[9], uint8_t frames_per_char,
                           game_adventure_action_t action, void *user)
 {
+    ga_release_owned_ppbs(); /* BEFORE old world assets are destroyed. */
     ga_items = items; ga_item_count = item_count > GA_MAX_ITEMS ? GA_MAX_ITEMS : item_count;
     game_adventure_item_styles(0,0);
     memset(ga_icon_atlas,0,sizeof(ga_icon_atlas));
+    memset(ga_icon_registered,0,sizeof(ga_icon_registered));
     memset(ga_icon_width,0,sizeof(ga_icon_width));
     memset(ga_icon_height,0,sizeof(ga_icon_height));
     memset(ga_icon_tile,0,sizeof(ga_icon_tile));
+    memset(ga_icon_file,0,sizeof(ga_icon_file));
     game_adventure_use_effects(0,0,0,0);
     ga_nodes = nodes; ga_node_count = node_count;
     ga_npcs = npcs; ga_npc_count = npc_count;
@@ -556,10 +637,12 @@ static void ga_collect_drops(int32_t x, int32_t y, uint16_t w, uint16_t h)
 static void ga_draw_item_icon(uint16_t id, int x, int y)
 {
     if (id >= ga_item_count) return;
-    const uint8_t *pixels=ga_icon_atlas[id] ? ga_icon_atlas[id] : ga_skin_pixels;
-    const uint16_t atlas_w=ga_icon_atlas[id] ? ga_icon_width[id] : ga_skin_w;
-    const uint16_t atlas_h=ga_icon_atlas[id] ? ga_icon_height[id] : ga_skin_h;
-    const uint16_t tile=ga_icon_atlas[id] ? ga_icon_tile[id] : ga_tile;
+    /* A configured custom icon source must NEVER silently draw skin tiles.
+       Missing custom PPBs show a fallback rectangle until fixed. */
+    const uint8_t *pixels=ga_icon_registered[id] ? ga_icon_atlas[id] : ga_skin_pixels;
+    const uint16_t atlas_w=ga_icon_registered[id] ? ga_icon_width[id] : ga_skin_w;
+    const uint16_t atlas_h=ga_icon_registered[id] ? ga_icon_height[id] : ga_skin_h;
+    const uint16_t tile=ga_icon_registered[id] ? ga_icon_tile[id] : ga_tile;
     if (!pixels || !tile || atlas_w < tile || atlas_h < tile) {
         /* Without an atlas, a dropped item must remain visible/recoverable. */
         gfx_setcolour(ga_text_colour); gfx_rectf(x,y,16,16);

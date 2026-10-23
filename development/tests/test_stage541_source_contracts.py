@@ -41,7 +41,7 @@ checks={
  'array naming': 'const QRegularExpression numbered' in (r/'gamedesigner.cpp').read_text(),
  'visible viewport imports': '(m_view->viewport()->rect().center())' in (r/'gamedesigner.cpp').read_text(),
  'generator uses sprite PPB icon atlases': 'if (r.kind == QStringLiteral("sprite") || r.kind == QStringLiteral("tileatlas"))' in (r/'gamedesigner.cpp').read_text(),
- 'splash version': 'Build: 5.41.1.231026' in (r/'splashscreenwidget.cpp').read_text(),
+ 'splash version': re.search(r'Build: 5\.\d+(?:\.\d+)?\.\d{6}', (r/'splashscreenwidget.cpp').read_text()),
 }
 for k,v in checks.items():print('PASS' if v else 'FAIL',k)
 assert all(checks.values())

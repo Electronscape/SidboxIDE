@@ -447,6 +447,47 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     QTextStream iconOut(&iconSetup);
     for(int i=0;i<itemList.size();++i) {
         const QJsonObject item=itemList.at(i).toObject();
+        // Portable collectables already have a project-relative PPB filename.
+        // They must not depend on a destination world's local resource UUID.
+        const QString portable=item.value(QStringLiteral("iconPpbPath")).toString();
+        if(!portable.isEmpty()) {
+            const QString absolute=QFileInfo(portable).isAbsolute() ? portable
+                : QDir(projectRoot).filePath(portable);
+            const QString relative=QDir::cleanPath(QDir(projectRoot).relativeFilePath(absolute));
+            if(relative==QStringLiteral("..") || relative.startsWith(QStringLiteral("../")) ||
+               QDir::isAbsolutePath(relative) || !QFileInfo::exists(absolute)) {
+                if(error)*error=QStringLiteral("Persistent inventory item '%1' needs PPB '%2' inside this project. Check the source world artwork.")
+                    .arg(item.value(QStringLiteral("name")).toString(),portable);
+                return false;
+            }
+            QFile image(absolute);
+            if(!image.open(QIODevice::ReadOnly)) {
+                if(error)*error=QStringLiteral("Cannot read inventory PPB: %1").arg(absolute);
+                return false;
+            }
+            const QByteArray hdr=image.read(16);
+            if(hdr.size()!=16 || QFileInfo(absolute).size()<1040) {
+                if(error)*error=QStringLiteral("Invalid inventory PPB header: %1").arg(absolute);
+                return false;
+            }
+            const auto byte=[&hdr](int n){return static_cast<unsigned char>(hdr.at(n));};
+            const int width=(byte(1)<<8)|byte(2),height=(byte(3)<<8)|byte(4);
+            const quint32 payload=(quint32(byte(5))<<24)|(quint32(byte(6))<<16)|
+                                  (quint32(byte(7))<<8)|quint32(byte(8));
+            if(!width || !height || quint32(width)*quint32(height)!=payload ||
+               payload>4u*1024u*1024u || image.size()!=1040+qint64(payload)) {
+                if(error)*error=QStringLiteral("Invalid dimensions or length for inventory PPB: %1").arg(absolute);
+                return false;
+            }
+            const int size=std::clamp(item.value(QStringLiteral("iconTileSize")).toInt(8),4,64);
+            iconOut << "    { uint16_t icon_w=0,icon_h=0; const uint8_t *pixels=gameassets_find_ppb("
+                    << quoted(relative) << ",&icon_w,&icon_h);\n"
+                    << "      if (pixels && icon_w==" << width << "u && icon_h==" << height
+                    << "u) game_adventure_item_atlas(" << i << "u,pixels,icon_w,icon_h," << size << "u);\n"
+                    << "      else game_adventure_item_atlas_file(" << i << "u,"
+                    << quoted(relative) << "," << width << "u," << height << "u," << size << "u); }\n";
+            continue;
+        }
         const QString chosen=item.value(QStringLiteral("iconAtlasId")).toString();
         if(chosen.isEmpty())continue; // legacy item uses the dialogue skin
         const auto iconAtlas=std::find_if(atlases.begin(),atlases.end(),

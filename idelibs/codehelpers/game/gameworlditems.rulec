@@ -39,7 +39,7 @@ static int8_t cg_audio_pan(int base, int32_t x, int radius)
 @IDE_END
 @IDE{AUDIO_WRAPPERS}
 @IDE_IF{HAS_PICKUPS}
-static game_collectable_t pickups[@IDE{PICKUP_COUNT}];
+static game_collectable_t cg_gwi_pickups[@IDE{PICKUP_COUNT}];
 @IDE_END
 @IDE_IF{HAS_REWARDS}
 /* Per-reward falling state; world position uses hundredths of a pixel. */
@@ -53,7 +53,7 @@ static int32_t cg_reward_vy100[@IDE{PICKUP_COUNT}];
 static uint8_t cg_pickup_was_inactive[@IDE{PICKUP_COUNT}];
 @IDE_END
 @IDE_IF{HAS_WORLDS}
-static game_world_object_t platforms[@IDE{WORLD_OBJECT_COUNT}];
+static game_world_object_t cg_gwi_platforms[@IDE{WORLD_OBJECT_COUNT}];
 /* The FIRE2 priority probe must use exactly the same live collision rectangle
    as gameworlditems_after() uses to activate the door, including offsets. */
 static const game_world_player_t *cg_fire2_player;
@@ -69,6 +69,14 @@ static uint16_t cg_loop_gain[@IDE{WORLD_OBJECT_COUNT}];
 static uint16_t cg_loop_target[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
 @IDE{WORLD_DECLARATIONS}
+@IDE_IF{HAS_STAMPS}
+/* Stage 5.42: compact, read-only 8x8 cell lookup into existing PPB pixels. */
+typedef struct {
+    const uint32_t *cells; /* 0 = ordinary sprite; 0xFFFFFFFF = empty cell */
+    uint8_t columns, rows;
+} cg_stamp_t;
+@IDE{STAMP_DECLARATIONS}
+@IDE_END
 /* Stage 5.21: per-world RAM snapshot. Each generated world module keeps its
  * own copy, even while another world's graphics and collision data are loaded.
  * Store values ONLY, never gfxbob/animation/spline pointers. */
@@ -115,7 +123,7 @@ void gameworlditems_save_state(void)
 {
 @IDE_IF{HAS_WORLDS}
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) {
-        const game_world_object_t *o = &platforms[i];
+        const game_world_object_t *o = &cg_gwi_platforms[i];
         cg_world_object_state_t *d = &cg_saved_objects[i];
         d->active = o->active;
         d->hits = o->break_hits_done;
@@ -147,7 +155,7 @@ void gameworlditems_save_state(void)
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
     for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
-        const game_collectable_t *o = &pickups[i];
+        const game_collectable_t *o = &cg_gwi_pickups[i];
         cg_world_pickup_state_t *d = &cg_saved_pickups[i];
         d->active = o->active;
         d->can_collect = o->can_collect;
@@ -192,7 +200,7 @@ void gameworlditems_restore_state(void)
     if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
 @IDE_IF{HAS_WORLDS}
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) {
-        game_world_object_t *o = &platforms[i];
+        game_world_object_t *o = &cg_gwi_platforms[i];
         const cg_world_object_state_t *d = &cg_saved_objects[i];
         o->active = d->active;
         o->break_hits_done = d->hits;
@@ -229,7 +237,7 @@ void gameworlditems_restore_state(void)
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
     for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) {
-        game_collectable_t *o = &pickups[i];
+        game_collectable_t *o = &cg_gwi_pickups[i];
         const cg_world_pickup_state_t *d = &cg_saved_pickups[i];
         o->active = (uint8_t)(d->active && !cg_pickup_permanently_collected[i]);
         o->can_collect = d->can_collect;
@@ -284,10 +292,11 @@ uint8_t gameworlditems_init(void)
 @IDE_IF{HAS_AUDIO_WORLDS}
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }
 @IDE_END
-@IDE{INIT_BODY}@IDE_IF{HAS_PICKUPS}
+@IDE{INIT_BODY}
+@IDE_IF{HAS_PICKUPS}
     for (uint16_t i=0;i<@IDE{PICKUP_COUNT};++i)
-        if (cg_pickup_permanently_collected[i] && pickups[i].persistent)
-            pickups[i].active=0;
+        if (cg_pickup_permanently_collected[i] && cg_gwi_pickups[i].persistent)
+            cg_gwi_pickups[i].active=0;
 @IDE_END
     return 1;
 }
@@ -296,7 +305,7 @@ uint8_t gameworlditems_init(void)
 void gameworlditems_set_active(uint16_t index, uint8_t state)
 {
     if (index >= GAMEWORLDITEMS_PLATFORM_COUNT) return;
-    platforms[index].active = state == 2 ? (uint8_t)!platforms[index].active : (uint8_t)(state != 0);
+    cg_gwi_platforms[index].active = state == 2 ? (uint8_t)!cg_gwi_platforms[index].active : (uint8_t)(state != 0);
 }
 
 @IDE_END
@@ -309,16 +318,16 @@ static uint8_t cg_enemy_tile_blocked(int32_t x, int32_t y, uint16_t w, uint16_t 
 void gameworlditems_update(uint16_t frames)
 {
 @IDE_IF{HAS_WORLDS}
-    game_world_objects_update(platforms, @IDE{WORLD_OBJECT_COUNT}, frames);
+    game_world_objects_update(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, frames);
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
-    game_world_objects_roam(platforms, @IDE{WORLD_OBJECT_COUNT}, frames, cg_enemy_tile_blocked, &@IDE{WORLD_SYMBOL});
+    game_world_objects_roam(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, frames, cg_enemy_tile_blocked, &@IDE{WORLD_SYMBOL});
 @IDE_END
 @IDE_IF{HAS_AUDIO_PICKUPS}
-    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) cg_pickup_was_inactive[i] = (uint8_t)!pickups[i].active;
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) cg_pickup_was_inactive[i] = (uint8_t)!cg_gwi_pickups[i].active;
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
-    game_collectables_update(pickups, @IDE{PICKUP_COUNT}, frames);
+    game_collectables_update(cg_gwi_pickups, @IDE{PICKUP_COUNT}, frames);
 @IDE_END
 @IDE_IF{HAS_REWARDS}
     /* Prize launch: optional X/Y impulse, then gravity. Sweep each axis
@@ -327,8 +336,8 @@ void gameworlditems_update(uint16_t frames)
     for (uint16_t i = 0; i < GAMEWORLDITEMS_PICKUP_COUNT; ++i) {
         if (!cg_reward_falling[i]) continue;
         for (uint16_t tick = 0; tick < frames; ++tick) {
-            int32_t x = pickups[i].x;
-            int32_t y = pickups[i].y;
+            int32_t x = cg_gwi_pickups[i].x;
+            int32_t y = cg_gwi_pickups[i].y;
             int32_t next_x100 = cg_reward_x100[i] + cg_reward_vx100[i];
             int32_t next_y100;
             int32_t vx = cg_reward_vx100[i];
@@ -341,7 +350,7 @@ void gameworlditems_update(uint16_t frames)
             while (x != target_x) {
                 int32_t step = target_x > x ? 1 : -1;
                 if (game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x + step, y,
-                        pickups[i].width, pickups[i].height)) {
+                        cg_gwi_pickups[i].width, cg_gwi_pickups[i].height)) {
                     vx = 0;
                     next_x100 = x * 100;
                     break;
@@ -359,7 +368,7 @@ void gameworlditems_update(uint16_t frames)
             while (y != target_y) {
                 int32_t step = target_y > y ? 1 : -1;
                 if (game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x, y + step,
-                        pickups[i].width, pickups[i].height)) {
+                        cg_gwi_pickups[i].width, cg_gwi_pickups[i].height)) {
                     if (step > 0) landed = 1;
                     cg_reward_vy100[i] = 0;
                     next_y100 = y * 100;
@@ -368,14 +377,14 @@ void gameworlditems_update(uint16_t frames)
                 y += step;
             }
             cg_reward_y100[i] = next_y100;
-            game_collectable_set_position(&pickups[i], x, y);
+            game_collectable_set_position(&cg_gwi_pickups[i], x, y);
             if (landed || (cg_reward_vy100[i] >= 0 &&
                     game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL}, x, y + 1,
-                        pickups[i].width, pickups[i].height))) {
+                        cg_gwi_pickups[i].width, cg_gwi_pickups[i].height))) {
                 cg_reward_falling[i] = 0;
                 cg_reward_vx100[i] = 0;
                 cg_reward_vy100[i] = 0;
-                pickups[i].can_collect = 1;
+                cg_gwi_pickups[i].can_collect = 1;
                 break;
             }
         }
@@ -405,7 +414,7 @@ uint8_t gameworlditems_fire2_action(int32_t player_x, int32_t player_y,
         player_w=cg_fire2_player->width;
         player_h=cg_fire2_player->height;
     }
-    return game_world_objects_fire2_action(platforms, @IDE{WORLD_OBJECT_COUNT},
+    return game_world_objects_fire2_action(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT},
         player_x, player_y, player_w, player_h);
 }
 
@@ -421,7 +430,7 @@ void gameworlditems_before(game_world_player_t *player)
         player->collision_context = &@IDE{WORLD_SYMBOL};
     }
 @IDE_END
-    game_world_objects_before(platforms, @IDE{WORLD_OBJECT_COUNT}, player);
+    game_world_objects_before(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 }
 
 void gameworlditems_after(game_world_player_t *player)
@@ -429,14 +438,14 @@ void gameworlditems_after(game_world_player_t *player)
 @IDE_IF{HAS_TILEMAP_WORLDS}
     if (game_death_is_dead()) return;
 @IDE_END
-    game_world_objects_after(platforms, @IDE{WORLD_OBJECT_COUNT}, player);
-    game_world_objects_hazards(platforms, @IDE{WORLD_OBJECT_COUNT}, player);
+    game_world_objects_after(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
+    game_world_objects_hazards(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 @IDE{REWARD_SPAWN_ACTIONS}
 @IDE_IF{HAS_TILEMAP_WORLDS}
     /* Hazard Zone: ENTERED once, INSIDE each frame, EXITED on leaving. */
     uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&
         player->width && player->height &&
-        game_world_objects_death_zone(platforms, @IDE{WORLD_OBJECT_COUNT}, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y, player->width, player->height));
+        game_world_objects_death_zone(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y, player->width, player->height));
     uint8_t was_in_hazard_zone = cg_hazard_zone_contact;
     cg_hazard_zone_contact = in_hazard_zone;
     if (player && player->x100 && player->y100) {
@@ -468,15 +477,15 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
 @IDE_END
 @IDE_IF{SAVE_PICKUP_ACTIVE}
     uint8_t was_active[@IDE{PICKUP_COUNT}];
-    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) was_active[i] = pickups[i].active;
+    for (uint16_t i = 0; i < @IDE{PICKUP_COUNT}; ++i) was_active[i] = cg_gwi_pickups[i].active;
 @IDE_END
     uint8_t persistent_was_active[@IDE{PICKUP_COUNT}];
     for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i)
-        persistent_was_active[i]=pickups[i].active;
-    uint16_t count = game_collectables_check(pickups, @IDE{PICKUP_COUNT}, x, y, w, h, callback, user);
+        persistent_was_active[i]=cg_gwi_pickups[i].active;
+    uint16_t count = game_collectables_check(cg_gwi_pickups, @IDE{PICKUP_COUNT}, x, y, w, h, callback, user);
     for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i){
         /* Ignore hidden rewards that have not actually been picked up. */
-        if(persistent_was_active[i] && !pickups[i].active && pickups[i].persistent)
+        if(persistent_was_active[i] && !cg_gwi_pickups[i].active && cg_gwi_pickups[i].persistent)
             cg_pickup_permanently_collected[i]=1;
     }
 @IDE{CHECK_ACTIONS}    return count;
@@ -487,30 +496,103 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
 /* Deferred world changes are implemented by the shared world manager. */
 uint8_t gameworlds_request(const char *name);
 uint8_t gameworlds_request_at(const char *name, const char *start_id);
+uint8_t gameworlds_request_at_from(const char *name, const char *start_id, int32_t exit_x, int32_t exit_y);
 uint16_t gameworlditems_trigger(int32_t x, int32_t y, uint16_t w, uint16_t h, uint8_t pressed)
 {
-    uint16_t fired = game_world_objects_trigger(platforms, @IDE{WORLD_OBJECT_COUNT}, x, y, w, h, pressed);
+    uint16_t fired = game_world_objects_trigger(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, x, y, w, h, pressed);
 @IDE{TRIGGER_ACTIONS}    return fired;
 }
 
 @IDE_END
-void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y)
+@IDE_IF{HAS_STAMPS}
+/* Address the source tile DIRECTLY: index is 16-bit in the design and can
+   exceed gfxbob_t.index's 8-bit limit. The PPB pixels remain shared. */
+static int16_t cg_stamp_clamp(int64_t n)
+{ return (int16_t)(n < -32768 ? -32768 : n > 32767 ? 32767 : n); }
+
+static void cg_draw_stamp(const gfxbob_t *source, const cg_stamp_t *stamp,
+                          int32_t x, int32_t y, int32_t camera_x, int32_t camera_y)
+{
+    if (!source || !source->imgdat) return;
+    if (!stamp->cells) {
+        gfxbob_t bob = *source;
+        bob.drawx = cg_stamp_clamp((int64_t)x-camera_x);
+        bob.drawy = cg_stamp_clamp((int64_t)y-camera_y);
+        gfx_drawbob(&bob);
+        return;
+    }
+    const uint16_t columns = source->atlas_stride/8u;
+    const uint16_t rows = source->atlas_height/8u;
+    if (!columns || !rows) return;
+    const uint8_t mirror_x = !!(source->flags & BLIT_FLAG_FLIP_X);
+    const uint8_t mirror_y = !!(source->flags & BLIT_FLAG_FLIP_Y);
+    const int32_t left = x-camera_x, top = y-camera_y;
+    for (uint16_t cy=0; cy<stamp->rows; ++cy)
+        for (uint16_t cx=0; cx<stamp->columns; ++cx) {
+            const uint32_t code = stamp->cells[cy*stamp->columns+cx];
+            if (code == 0xFFFFFFFFu) continue;
+            const uint32_t index = code & 0xFFFFu;
+            if (index >= (uint32_t)columns*rows) continue;
+            const int32_t dx = left+(int32_t)(mirror_x ? stamp->columns-1u-cx : cx)*8;
+            const int32_t dy = top +(int32_t)(mirror_y ? stamp->rows-1u-cy : cy)*8;
+            if (dx <= -8 || dy <= -8 || dx >= 480 || dy >= 320) continue;
+            gfxbob_t bob = *source;
+            bob.imgdat = source->imgdat + (index/columns)*8u*source->atlas_stride
+                                         + (index%columns)*8u;
+            bob.width=8; bob.height=8; bob.atlas_height=8; bob.index=0;
+            bob.drawx=cg_stamp_clamp(dx); bob.drawy=cg_stamp_clamp(dy);
+            bob.flags = (uint8_t)((source->flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y))
+                | ((mirror_x ^ !!(code & 0x10000u)) ? BLIT_FLAG_FLIP_X : 0)
+                | ((mirror_y ^ !!(code & 0x20000u)) ? BLIT_FLAG_FLIP_Y : 0));
+            gfx_drawbob(&bob);
+        }
+}
+/* Replaces only drawing, not the world-object/pickup physics helpers.
+   Non-stamped objects still receive their original single BOB draw. */
+static void cg_draw_world_layer(int32_t camera_x, int32_t camera_y, uint8_t behind)
 {
 @IDE_IF{HAS_WORLDS}
-    game_world_objects_draw_layer(platforms, @IDE{WORLD_OBJECT_COUNT}, camera_x, camera_y, 1);
+    for (uint16_t i=0; i<@IDE{WORLD_OBJECT_COUNT}; ++i) {
+        const game_world_object_t *o=&cg_gwi_platforms[i];
+        if ((!o->active && !o->enemy_dying) || !o->sprite ||
+            !!o->draw_behind_tiles != !!behind) continue;
+        cg_draw_stamp(o->sprite,&cg_platform_stamps[i],o->x,o->y,camera_x,camera_y);
+    }
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
-    game_collectables_draw_layer(pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 1);
+    for (uint16_t i=0; i<@IDE{PICKUP_COUNT}; ++i) {
+        const game_collectable_t *o=&cg_gwi_pickups[i];
+        if (!o->active || !o->sprite || !!o->draw_behind_tiles != !!behind) continue;
+        cg_draw_stamp(o->sprite,&cg_pickup_stamps[i],o->x,o->y,camera_x,camera_y);
+    }
+@IDE_END
+}
+@IDE_END
+void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y)
+{
+@IDE_IF{HAS_STAMPS}
+    cg_draw_world_layer(camera_x, camera_y, 1);
+@IDE_ELSE
+@IDE_IF{HAS_WORLDS}
+    game_world_objects_draw_layer(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, camera_x, camera_y, 1);
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    game_collectables_draw_layer(cg_gwi_pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 1);
+@IDE_END
 @IDE_END
 @IDE{DRAW_BEHIND_BODY}}
 
 void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 {
+@IDE_IF{HAS_STAMPS}
+    cg_draw_world_layer(camera_x, camera_y, 0);
+@IDE_ELSE
 @IDE_IF{HAS_WORLDS}
-    game_world_objects_draw_layer(platforms, @IDE{WORLD_OBJECT_COUNT}, camera_x, camera_y, 0);
+    game_world_objects_draw_layer(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, camera_x, camera_y, 0);
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
-    game_collectables_draw_layer(pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 0);
+    game_collectables_draw_layer(cg_gwi_pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 0);
+@IDE_END
 @IDE_END
 @IDE_IF{HAS_AUDIO}
     cg_audio_camera_x = camera_x;
@@ -547,82 +629,82 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_SECTION{OBJECT_INIT}
     /* @IDE{OBJECT_LABEL} @IDE{INDEX}: @IDE{OBJECT_NAME} */
 @IDE_IF{IS_PICKUP}
-    if (!game_collectable_start(&pickups[@IDE{INDEX}], &@IDE{SPRITE_SYMBOL}, @IDE{PICKUP_KIND}, @IDE{PICKUP_VALUE})) return 0;
-    pickups[@IDE{INDEX}].width = @IDE{WIDTH};
-    pickups[@IDE{INDEX}].height = @IDE{HEIGHT};
-    pickups[@IDE{INDEX}].tracking_configured = @IDE{PICKUP_TRACKING};
-    pickups[@IDE{INDEX}].show_in_inventory = @IDE{PICKUP_INVENTORY};
-    pickups[@IDE{INDEX}].show_in_hud = @IDE{PICKUP_HUD};
-    pickups[@IDE{INDEX}].persistent = @IDE{PICKUP_PERSISTENT};
-    pickups[@IDE{INDEX}].respawn_frames = @IDE{RESPAWN_FRAMES};
-    pickups[@IDE{INDEX}].active = @IDE{INIT_ACTIVE};
-    pickups[@IDE{INDEX}].draw_behind_tiles = @IDE{DRAW_BEHIND};
+    if (!game_collectable_start(&cg_gwi_pickups[@IDE{INDEX}], &@IDE{SPRITE_SYMBOL}, @IDE{PICKUP_KIND}, @IDE{PICKUP_VALUE})) return 0;
+    cg_gwi_pickups[@IDE{INDEX}].width = @IDE{WIDTH};
+    cg_gwi_pickups[@IDE{INDEX}].height = @IDE{HEIGHT};
+    cg_gwi_pickups[@IDE{INDEX}].tracking_configured = @IDE{PICKUP_TRACKING};
+    cg_gwi_pickups[@IDE{INDEX}].show_in_inventory = @IDE{PICKUP_INVENTORY};
+    cg_gwi_pickups[@IDE{INDEX}].show_in_hud = @IDE{PICKUP_HUD};
+    cg_gwi_pickups[@IDE{INDEX}].persistent = @IDE{PICKUP_PERSISTENT};
+    cg_gwi_pickups[@IDE{INDEX}].respawn_frames = @IDE{RESPAWN_FRAMES};
+    cg_gwi_pickups[@IDE{INDEX}].active = @IDE{INIT_ACTIVE};
+    cg_gwi_pickups[@IDE{INDEX}].draw_behind_tiles = @IDE{DRAW_BEHIND};
 @IDE_ELSE
-    if (!game_world_object_start(&platforms[@IDE{INDEX}], @IDE{OBJECT_KIND}, &@IDE{SPRITE_SYMBOL}, @IDE{X}, @IDE{Y}, @IDE{WIDTH}, @IDE{HEIGHT})) return 0;
-    platforms[@IDE{INDEX}].active = @IDE{INIT_ACTIVE};
-    platforms[@IDE{INDEX}].draw_behind_tiles = @IDE{DRAW_BEHIND};
+    if (!game_world_object_start(&cg_gwi_platforms[@IDE{INDEX}], @IDE{OBJECT_KIND}, &@IDE{SPRITE_SYMBOL}, @IDE{X}, @IDE{Y}, @IDE{WIDTH}, @IDE{HEIGHT})) return 0;
+    cg_gwi_platforms[@IDE{INDEX}].active = @IDE{INIT_ACTIVE};
+    cg_gwi_platforms[@IDE{INDEX}].draw_behind_tiles = @IDE{DRAW_BEHIND};
 @IDE_IF{IS_TRIGGER}
-    platforms[@IDE{INDEX}].trigger_press = @IDE{TRIGGER_PRESS};
-    platforms[@IDE{INDEX}].trigger_one_shot = @IDE{TRIGGER_ONESHOT};
+    cg_gwi_platforms[@IDE{INDEX}].trigger_press = @IDE{TRIGGER_PRESS};
+    cg_gwi_platforms[@IDE{INDEX}].trigger_one_shot = @IDE{TRIGGER_ONESHOT};
 @IDE_END
 @IDE_IF{IS_CONVEYOR}
-    platforms[@IDE{INDEX}].conveyor_speed = @IDE{CONVEYOR_SPEED};
+    cg_gwi_platforms[@IDE{INDEX}].conveyor_speed = @IDE{CONVEYOR_SPEED};
 @IDE_END
 @IDE_IF{IS_BREAKABLE}
-    platforms[@IDE{INDEX}].break_hits_required = @IDE{BREAK_HITS};
-    platforms[@IDE{INDEX}].break_touch_mode = @IDE{BREAK_TOUCH};
-    platforms[@IDE{INDEX}].break_bounce = @IDE{BREAK_BOUNCE};
-    platforms[@IDE{INDEX}].break_from_below = @IDE{BREAK_BELOW};
-    platforms[@IDE{INDEX}].break_strength = @IDE{BREAK_STRENGTH};
-    platforms[@IDE{INDEX}].break_launch_x = @IDE{BREAK_LAUNCH_X};
+    cg_gwi_platforms[@IDE{INDEX}].break_hits_required = @IDE{BREAK_HITS};
+    cg_gwi_platforms[@IDE{INDEX}].break_touch_mode = @IDE{BREAK_TOUCH};
+    cg_gwi_platforms[@IDE{INDEX}].break_bounce = @IDE{BREAK_BOUNCE};
+    cg_gwi_platforms[@IDE{INDEX}].break_from_below = @IDE{BREAK_BELOW};
+    cg_gwi_platforms[@IDE{INDEX}].break_strength = @IDE{BREAK_STRENGTH};
+    cg_gwi_platforms[@IDE{INDEX}].break_launch_x = @IDE{BREAK_LAUNCH_X};
 @IDE_END
 @IDE_IF{IS_ENEMY}
-    platforms[@IDE{INDEX}].break_hits_required = @IDE{BREAK_HITS};
-    platforms[@IDE{INDEX}].break_bounce = @IDE{BREAK_BOUNCE};
-    platforms[@IDE{INDEX}].break_strength = @IDE{BREAK_STRENGTH};
-    platforms[@IDE{INDEX}].break_launch_x = @IDE{BREAK_LAUNCH_X};
-    platforms[@IDE{INDEX}].enemy_stomp_side_kick = @IDE{ENEMY_SIDE_KICK};
-    platforms[@IDE{INDEX}].enemy_attack_direction = @IDE{ENEMY_ATTACK_DIRECTION};
-    platforms[@IDE{INDEX}].enemy_hurts_on_touch = @IDE{ENEMY_HURT_TOUCH};
-    platforms[@IDE{INDEX}].hazard_damage = @IDE{ENEMY_DAMAGE};
-    platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
-    platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
-    platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
-    platforms[@IDE{INDEX}].hazard_hurt_animation = @IDE{HAZARD_HURT_ANIM};
-    platforms[@IDE{INDEX}].hazard_flash = @IDE{HAZARD_FLASH};
-    platforms[@IDE{INDEX}].hazard_flash_colour = @IDE{HAZARD_FLASH_COLOUR};
-    platforms[@IDE{INDEX}].hazard_flash_count = @IDE{HAZARD_FLASH_COUNT};
-    platforms[@IDE{INDEX}].hazard_flash_frames = @IDE{HAZARD_FLASH_FRAMES};
-    platforms[@IDE{INDEX}].enemy_roam = @IDE{ENEMY_ROAM};
-    platforms[@IDE{INDEX}].enemy_roam_speed = @IDE{ENEMY_ROAM_SPEED};
-    platforms[@IDE{INDEX}].enemy_step_height = @IDE{ENEMY_STEP_HEIGHT};
-    platforms[@IDE{INDEX}].enemy_roam_direction = @IDE{ENEMY_ROAM_DIRECTION};
-    platforms[@IDE{INDEX}].enemy_defeat_frame = @IDE{ENEMY_DEFEAT_FRAME};
-    platforms[@IDE{INDEX}].enemy_defeat_frames = @IDE{ENEMY_DEFEAT_DELAY};
-    platforms[@IDE{INDEX}].enemy_defeat_count = @IDE{ENEMY_DEFEAT_COUNT};
-    platforms[@IDE{INDEX}].enemy_defeat_delay = @IDE{ENEMY_DEFEAT_DELAY};
-    platforms[@IDE{INDEX}].enemy_stomp_offset_x = @IDE{ENEMY_STOMP_X};
-    platforms[@IDE{INDEX}].enemy_stomp_offset_y = @IDE{ENEMY_STOMP_Y};
-    platforms[@IDE{INDEX}].enemy_stomp_width = @IDE{ENEMY_STOMP_WIDTH};
-    platforms[@IDE{INDEX}].enemy_stomp_height = @IDE{ENEMY_STOMP_HEIGHT};
+    cg_gwi_platforms[@IDE{INDEX}].break_hits_required = @IDE{BREAK_HITS};
+    cg_gwi_platforms[@IDE{INDEX}].break_bounce = @IDE{BREAK_BOUNCE};
+    cg_gwi_platforms[@IDE{INDEX}].break_strength = @IDE{BREAK_STRENGTH};
+    cg_gwi_platforms[@IDE{INDEX}].break_launch_x = @IDE{BREAK_LAUNCH_X};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_side_kick = @IDE{ENEMY_SIDE_KICK};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_attack_direction = @IDE{ENEMY_ATTACK_DIRECTION};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hurts_on_touch = @IDE{ENEMY_HURT_TOUCH};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_damage = @IDE{ENEMY_DAMAGE};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_hurt_animation = @IDE{HAZARD_HURT_ANIM};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash = @IDE{HAZARD_FLASH};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_colour = @IDE{HAZARD_FLASH_COLOUR};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_count = @IDE{HAZARD_FLASH_COUNT};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_frames = @IDE{HAZARD_FLASH_FRAMES};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_roam = @IDE{ENEMY_ROAM};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_roam_speed = @IDE{ENEMY_ROAM_SPEED};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_step_height = @IDE{ENEMY_STEP_HEIGHT};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_roam_direction = @IDE{ENEMY_ROAM_DIRECTION};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_frame = @IDE{ENEMY_DEFEAT_FRAME};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_frames = @IDE{ENEMY_DEFEAT_DELAY};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_count = @IDE{ENEMY_DEFEAT_COUNT};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_delay = @IDE{ENEMY_DEFEAT_DELAY};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_offset_x = @IDE{ENEMY_STOMP_X};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_offset_y = @IDE{ENEMY_STOMP_Y};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_width = @IDE{ENEMY_STOMP_WIDTH};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_height = @IDE{ENEMY_STOMP_HEIGHT};
 @IDE_END
 @IDE_IF{IS_HAZARD}
-    platforms[@IDE{INDEX}].hazard_damage = @IDE{HAZARD_DAMAGE};
-    platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
-    platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
-    platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
-    platforms[@IDE{INDEX}].hazard_hurt_animation = @IDE{HAZARD_HURT_ANIM};
-    platforms[@IDE{INDEX}].hazard_flash = @IDE{HAZARD_FLASH};
-    platforms[@IDE{INDEX}].hazard_flash_colour = @IDE{HAZARD_FLASH_COLOUR};
-    platforms[@IDE{INDEX}].hazard_flash_count = @IDE{HAZARD_FLASH_COUNT};
-    platforms[@IDE{INDEX}].hazard_flash_frames = @IDE{HAZARD_FLASH_FRAMES};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_damage = @IDE{HAZARD_DAMAGE};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_hurt_animation = @IDE{HAZARD_HURT_ANIM};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash = @IDE{HAZARD_FLASH};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_colour = @IDE{HAZARD_FLASH_COLOUR};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_count = @IDE{HAZARD_FLASH_COUNT};
+    cg_gwi_platforms[@IDE{INDEX}].hazard_flash_frames = @IDE{HAZARD_FLASH_FRAMES};
 @IDE_END
 @IDE_IF{IS_SPRING}
-    platforms[@IDE{INDEX}].spring_strength = @IDE{SPRING_STRENGTH};
-    platforms[@IDE{INDEX}].spring_launch_x = @IDE{SPRING_LAUNCH_X};
-    platforms[@IDE{INDEX}].touch_activation = @IDE{SPRING_TOUCH};
-    platforms[@IDE{INDEX}].spring_slide = @IDE{SPRING_SLIDE};
-    platforms[@IDE{INDEX}].allow_jump_boost = @IDE{SPRING_JUMP_BOOST};
+    cg_gwi_platforms[@IDE{INDEX}].spring_strength = @IDE{SPRING_STRENGTH};
+    cg_gwi_platforms[@IDE{INDEX}].spring_launch_x = @IDE{SPRING_LAUNCH_X};
+    cg_gwi_platforms[@IDE{INDEX}].touch_activation = @IDE{SPRING_TOUCH};
+    cg_gwi_platforms[@IDE{INDEX}].spring_slide = @IDE{SPRING_SLIDE};
+    cg_gwi_platforms[@IDE{INDEX}].allow_jump_boost = @IDE{SPRING_JUMP_BOOST};
 @IDE_END
 @IDE_END
     @IDE{SPRITE_SYMBOL}.flags = (uint8_t)((@IDE{SPRITE_SYMBOL}.flags & ~(BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y)) | @IDE{FLIP_X} | @IDE{FLIP_Y});
@@ -633,7 +715,7 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     @IDE{ARRAY_NAME}[@IDE{INDEX}].spline_start_delay = @IDE{SPLINE_DELAY};
 @IDE_END
 @IDE_IF{IS_ENEMY}
-    platforms[@IDE{INDEX}].enemy_base_flip_x = @IDE{FLIP_X_BOOL};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_base_flip_x = @IDE{FLIP_X_BOOL};
 @IDE_END
 @IDE_IF{HAS_ANIMATION}
     if (!start_animation(&@IDE{ANIM_VAR}, &@IDE{SPRITE_SYMBOL}, @IDE{ANIM_FIRST}, @IDE{ANIM_COUNT}, @IDE{ANIM_TICKS}, @IDE{ANIM_MODE})) return 0;
@@ -642,8 +724,8 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_SECTION_END
 
 @IDE_SECTION{AMBIENT_INIT}
-    if (platforms[@IDE{INDEX}].active) {
-        cg_sound_@IDE{SOUND_SYMBOL}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+    if (cg_gwi_platforms[@IDE{INDEX}].active) {
+        cg_sound_@IDE{SOUND_SYMBOL}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
         sound_setvolume(@IDE{SOUND_CHANNEL}, 0);
         cg_loop_playing[@IDE{INDEX}] = 1;
         cg_loop_gain[@IDE{INDEX}] = 0;
@@ -652,39 +734,39 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_SECTION_END
 
 @IDE_SECTION{RESPAWN_SOUND}
-    if (pickups[@IDE{INDEX}].active && pickups[@IDE{INDEX}].respawn_frames && pickups[@IDE{INDEX}].respawn_left == 0 && frames && cg_pickup_was_inactive[@IDE{INDEX}]) {
-        cg_sound_@IDE{SOUND_SYMBOL}(pickups[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+    if (cg_gwi_pickups[@IDE{INDEX}].active && cg_gwi_pickups[@IDE{INDEX}].respawn_frames && cg_gwi_pickups[@IDE{INDEX}].respawn_left == 0 && frames && cg_pickup_was_inactive[@IDE{INDEX}]) {
+        cg_sound_@IDE{SOUND_SYMBOL}(cg_gwi_pickups[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
     }
 @IDE_SECTION_END
 
 @IDE_SECTION{AMBIENT_UPDATE}
-    if (platforms[@IDE{INDEX}].active && !cg_loop_playing[@IDE{INDEX}]) {
-        cg_sound_@IDE{SOUND_SYMBOL}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+    if (cg_gwi_platforms[@IDE{INDEX}].active && !cg_loop_playing[@IDE{INDEX}]) {
+        cg_sound_@IDE{SOUND_SYMBOL}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
         sound_setvolume(@IDE{SOUND_CHANNEL}, 0);
         cg_loop_playing[@IDE{INDEX}] = 1;
         cg_loop_gain[@IDE{INDEX}] = 0;
     }
-    cg_loop_target[@IDE{INDEX}] = platforms[@IDE{INDEX}].active ? 255 : 0;
+    cg_loop_target[@IDE{INDEX}] = cg_gwi_platforms[@IDE{INDEX}].active ? 255 : 0;
 @IDE_SECTION_END
 
 @IDE_SECTION{LIFT_UPDATE}
     {
-        int32_t dx = platforms[@IDE{INDEX}].x - platforms[@IDE{INDEX}].previous_x;
-        int32_t dy = platforms[@IDE{INDEX}].y - platforms[@IDE{INDEX}].previous_y;
+        int32_t dx = cg_gwi_platforms[@IDE{INDEX}].x - cg_gwi_platforms[@IDE{INDEX}].previous_x;
+        int32_t dy = cg_gwi_platforms[@IDE{INDEX}].y - cg_gwi_platforms[@IDE{INDEX}].previous_y;
         uint8_t moving = dx != 0 || dy != 0;
         int8_t dir = (dx ? (dx > 0 ? 1 : -1) : (dy ? (dy > 0 ? 1 : -1) : 0));
 @IDE_IF{HAS_SFX_START}
-        if (moving && !cg_was_moving[@IDE{INDEX}]) cg_sound_@IDE{SFX_START}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+        if (moving && !cg_was_moving[@IDE{INDEX}]) cg_sound_@IDE{SFX_START}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
 @IDE_END
 @IDE_IF{HAS_SFX_REVERSE}
-        if (moving && cg_previous_direction[@IDE{INDEX}] && dir != cg_previous_direction[@IDE{INDEX}]) cg_sound_@IDE{SFX_REVERSE}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+        if (moving && cg_previous_direction[@IDE{INDEX}] && dir != cg_previous_direction[@IDE{INDEX}]) cg_sound_@IDE{SFX_REVERSE}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
 @IDE_END
 @IDE_IF{HAS_SFX_STOP}
-        if (!moving && cg_was_moving[@IDE{INDEX}]) cg_sound_@IDE{SFX_STOP}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+        if (!moving && cg_was_moving[@IDE{INDEX}]) cg_sound_@IDE{SFX_STOP}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
 @IDE_END
 @IDE_IF{HAS_SFX_MOVE}
         if (moving && !cg_was_moving[@IDE{INDEX}]) {
-            cg_sound_@IDE{SFX_MOVE}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+            cg_sound_@IDE{SFX_MOVE}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
             sound_setvolume(@IDE{MOVE_CHANNEL}, 0);
             cg_loop_playing[@IDE{INDEX}] = 1;
             cg_loop_gain[@IDE{INDEX}] = 0;
@@ -697,13 +779,13 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_SECTION_END
 
 @IDE_SECTION{REWARD_SPAWN}
-    if (platforms[@IDE{INDEX}].break_triggered) {
-        pickups[@IDE{REWARD_INDEX}].active = 1;
-        pickups[@IDE{REWARD_INDEX}].can_collect = 0;
-        pickups[@IDE{REWARD_INDEX}].respawn_left = 0;
-        game_collectable_set_position(&pickups[@IDE{REWARD_INDEX}], platforms[@IDE{INDEX}].x + (platforms[@IDE{INDEX}].width - pickups[@IDE{REWARD_INDEX}].width) / 2, platforms[@IDE{INDEX}].y);
-        cg_reward_x100[@IDE{REWARD_INDEX}] = pickups[@IDE{REWARD_INDEX}].x * 100;
-        cg_reward_y100[@IDE{REWARD_INDEX}] = pickups[@IDE{REWARD_INDEX}].y * 100;
+    if (cg_gwi_platforms[@IDE{INDEX}].break_triggered) {
+        cg_gwi_pickups[@IDE{REWARD_INDEX}].active = 1;
+        cg_gwi_pickups[@IDE{REWARD_INDEX}].can_collect = 0;
+        cg_gwi_pickups[@IDE{REWARD_INDEX}].respawn_left = 0;
+        game_collectable_set_position(&cg_gwi_pickups[@IDE{REWARD_INDEX}], cg_gwi_platforms[@IDE{INDEX}].x + (cg_gwi_platforms[@IDE{INDEX}].width - cg_gwi_pickups[@IDE{REWARD_INDEX}].width) / 2, cg_gwi_platforms[@IDE{INDEX}].y);
+        cg_reward_x100[@IDE{REWARD_INDEX}] = cg_gwi_pickups[@IDE{REWARD_INDEX}].x * 100;
+        cg_reward_y100[@IDE{REWARD_INDEX}] = cg_gwi_pickups[@IDE{REWARD_INDEX}].y * 100;
         cg_reward_vx100[@IDE{REWARD_INDEX}] = @IDE{REWARD_VX};
         cg_reward_vy100[@IDE{REWARD_INDEX}] = @IDE{REWARD_VY};
         cg_reward_falling[@IDE{REWARD_INDEX}] = 1;
@@ -723,25 +805,25 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_SECTION_END
 
 @IDE_SECTION{ENEMY_DEFEAT_ACTION}
-    if (platforms[@IDE{INDEX}].break_triggered) {
+    if (cg_gwi_platforms[@IDE{INDEX}].break_triggered) {
 @IDE{ACTION_BODY}    }
 @IDE_SECTION_END
 
 @IDE_SECTION{WORLD_EVENT_SOUND}
-    if (platforms[@IDE{INDEX}].@IDE{EVENT_FIELD}) cg_sound_@IDE{SOUND_SYMBOL}(platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+    if (cg_gwi_platforms[@IDE{INDEX}].@IDE{EVENT_FIELD}) cg_sound_@IDE{SOUND_SYMBOL}(cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
 @IDE_SECTION_END
 
 @IDE_SECTION{PICKUP_TARGET_ACTION}
-    if (was_active[@IDE{INDEX}] && !pickups[@IDE{INDEX}].active) {
+    if (was_active[@IDE{INDEX}] && !cg_gwi_pickups[@IDE{INDEX}].active) {
 @IDE{ACTION_BODY}    }
 @IDE_SECTION_END
 
 @IDE_SECTION{PICKUP_EVENT_SOUND}
-    if (was_active[@IDE{INDEX}] && !pickups[@IDE{INDEX}].active) cg_sound_@IDE{SOUND_SYMBOL}(pickups[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
+    if (was_active[@IDE{INDEX}] && !cg_gwi_pickups[@IDE{INDEX}].active) cg_sound_@IDE{SOUND_SYMBOL}(cg_gwi_pickups[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS});
 @IDE_SECTION_END
 
 @IDE_SECTION{TRIGGER_ACTION}
-    if (platforms[@IDE{INDEX}].trigger_fired) {
+    if (cg_gwi_platforms[@IDE{INDEX}].trigger_fired) {
 @IDE{ACTION_BODY}
 @IDE_IF{MUSIC_STOP}
         music_stop();
@@ -760,8 +842,8 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
         } else if (cg_loop_gain[@IDE{INDEX}] > cg_loop_target[@IDE{INDEX}]) {
             cg_loop_gain[@IDE{INDEX}] = cg_loop_gain[@IDE{INDEX}] > @IDE{FADE_STEP} ? cg_loop_gain[@IDE{INDEX}] - @IDE{FADE_STEP} : 0;
         }
-        sound_setvolume(@IDE{SOUND_CHANNEL}, (uint16_t)(cg_audio_volume(@IDE{SOUND_VOLUME}, platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}) * cg_loop_gain[@IDE{INDEX}] / 255));
-        sound_setpanning(@IDE{SOUND_CHANNEL}, cg_audio_pan(@IDE{SOUND_PAN}, platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}));
+        sound_setvolume(@IDE{SOUND_CHANNEL}, (uint16_t)(cg_audio_volume(@IDE{SOUND_VOLUME}, cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}) * cg_loop_gain[@IDE{INDEX}] / 255));
+        sound_setpanning(@IDE{SOUND_CHANNEL}, cg_audio_pan(@IDE{SOUND_PAN}, cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}));
         if (cg_loop_gain[@IDE{INDEX}] == 0 && cg_loop_target[@IDE{INDEX}] == 0) {
             sound_stop(@IDE{SOUND_CHANNEL});
             cg_loop_playing[@IDE{INDEX}] = 0;

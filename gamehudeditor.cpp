@@ -1,6 +1,7 @@
 #include "gamehudeditor.h"
 #include "ppbcodec.h"
 #include "gamepalette.h"
+#include "gamespritestamp.h"
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
@@ -56,8 +57,25 @@ namespace {
 const char *kMime = "application/x-codergirl-hud-pickup";
 struct Tile { int index=-1; bool fx=false, fy=false; };
 struct HudLabel { QString text; int x=0,y=0; };
-struct HudCounter { int kind=0,x=0,y=0,iw=16,ih=16; QString name,source; };
-struct Pickup { int kind=0,iw=16,ih=16; QString name,source; QImage icon; };
+// A HUD counter keeps the exact source-PPB lookup, not a cropped first frame.
+struct HudCounter {
+    int kind=0,x=0,y=0,iw=16,ih=16;
+    QString name,source;
+    int icon=0,iconTileSize=8;
+    bool icon2x2=false;
+    QJsonArray iconCells;
+    QJsonObject spriteStamp;
+};
+struct Pickup {
+    int kind=0,iw=16,ih=16;
+    QString name,source;
+    QImage iconImage;
+    int artPriority=0; // prefer an explicit inventory icon over a sprite fallback
+    int icon=0,iconTileSize=8;
+    bool icon2x2=false;
+    QJsonArray iconCells;
+    QJsonObject spriteStamp;
+};
 struct HudDoc {
     int columns=30, rows=5, cw=8, ch=8, colour=15, outlineColour=0;
     bool outlineEnabled=false;
@@ -89,7 +107,9 @@ struct HudDoc {
         j.insert("labels",l);
         QJsonArray cnt;
         for (const HudCounter &v:counters) cnt.append(QJsonObject{{"kind",v.kind},{"x",v.x},{"y",v.y},
-            {"source",v.source},{"name",v.name},{"iconWidth",v.iw},{"iconHeight",v.ih}});
+            {"source",v.source},{"name",v.name},{"iconWidth",v.iw},{"iconHeight",v.ih},
+            {"icon",v.icon},{"iconTileSize",v.iconTileSize},{"icon2x2",v.icon2x2},
+            {"iconCells",v.iconCells},{"spriteStamp",v.spriteStamp}});
         j.insert("counters",cnt);
         return j;
     }
@@ -121,7 +141,11 @@ struct HudDoc {
         for (const QJsonValue &v:j.value("counters").toArray()) {
             const QJsonObject o=v.toObject();
             if(counters.size()<32) counters.append({o.value("kind").toInt(),o.value("x").toInt(),o.value("y").toInt(),
-                o.value("iconWidth").toInt(16),o.value("iconHeight").toInt(16),o.value("name").toString(),o.value("source").toString()});
+                o.value("iconWidth").toInt(16),o.value("iconHeight").toInt(16),
+                o.value("name").toString(),o.value("source").toString(),
+                o.value("icon").toInt(0),o.value("iconTileSize").toInt(8),
+                o.value("icon2x2").toBool(false),o.value("iconCells").toArray(),
+                o.value("spriteStamp").toObject()});
         }
         return true;
     }
@@ -132,10 +156,61 @@ static QImage loadIndexed(const QString &file) {
     if(!SidboxPpb::read(file,&picture)) return {};
     return picture.indexed;
 }
-static QImage firstIcon(const QString &file,int w,int h) {
-    const QImage src=loadIndexed(file);
-    if(src.isNull()) return {};
-    return src.copy(0,0,qMin(src.width(),qBound(1,w,64)),qMin(src.height(),qBound(1,h,64)));
+// Sample individual indexed cells from the *existing* PPB. Never re-quantise
+// to ARGB, change CLUT indices, or create an extra graphics file.
+static QImage pickupIcon(const QString &root, const QString &path, int icon, int tileSize,
+                         bool is2x2, const QJsonArray &cells, const QJsonObject &stamp)
+{
+    if (path.isEmpty()) return {};
+    const QImage atlas=loadIndexed(QDir(root).filePath(path));
+    if (atlas.isNull() || atlas.format()!=QImage::Format_Indexed8) return {};
+    if (!stamp.isEmpty()) {
+        const SidboxSpriteStamp sprite=SidboxSpriteStamp::fromJson(stamp);
+        return sprite.active() ? sprite.compose(atlas) : QImage();
+    }
+    const int tile=qBound(4,tileSize,64);
+    const int columns=atlas.width()/tile;
+    const int rows=atlas.height()/tile;
+    if (columns<=0 || rows<=0) return {};
+    const int size=is2x2 ? tile*2 : tile;
+    QImage result(size,size,QImage::Format_Indexed8);
+    if (result.isNull()) return {};
+    result.setColorTable(atlas.colorTable());
+    result.fill(0);
+    bool valid=false;
+    for (int part=0;part<(is2x2 ? 4 : 1);++part) {
+        const int index=(is2x2 && cells.size()==4) ? cells.at(part).toInt(65535) : icon;
+        if (index<0 || index>=columns*rows) continue;
+        valid=true;
+        const int sx=(index%columns)*tile,sy=(index/columns)*tile;
+        const int dx=(is2x2 ? part%2 : 0)*tile;
+        const int dy=(is2x2 ? part/2 : 0)*tile;
+        for (int y=0;y<tile;++y) {
+            const uchar *src=atlas.constScanLine(sy+y)+sx;
+            uchar *dst=result.scanLine(dy+y)+dx;
+            std::copy_n(src,tile,dst);
+        }
+    }
+    return valid ? result : QImage();
+}
+static QImage pickupIcon(const QString &root, const HudCounter &c) {
+    return pickupIcon(root,c.source,c.icon,c.iconTileSize,c.icon2x2,c.iconCells,c.spriteStamp);
+}
+static QImage pickupIcon(const QString &root, const Pickup &p) {
+    return pickupIcon(root,p.source,p.icon,p.iconTileSize,p.icon2x2,p.iconCells,p.spriteStamp);
+}
+static void updateCounterArtwork(HudDoc &doc, const QVector<Pickup> &found) {
+    for (HudCounter &counter : doc.counters) {
+        for (const Pickup &pickup : found) {
+            if (pickup.kind != counter.kind) continue;
+            counter.iw=pickup.iw; counter.ih=pickup.ih;
+            counter.name=pickup.name; counter.source=pickup.source;
+            counter.icon=pickup.icon; counter.iconTileSize=pickup.iconTileSize;
+            counter.icon2x2=pickup.icon2x2; counter.iconCells=pickup.iconCells;
+            counter.spriteStamp=pickup.spriteStamp;
+            break;
+        }
+    }
 }
 static QImage visible(QImage image) {
     if(image.isNull()) return image;
@@ -146,28 +221,88 @@ static QImage visible(QImage image) {
     return image;
 }
 static QVector<Pickup> discover(const QString &root) {
-    QVector<Pickup> out; QMap<int,Pickup> byKind;
+    QMap<int,Pickup> byKind;
     const QStringList worlds=QDir(root).entryList({"*.sbgm"},QDir::Files,QDir::Name);
     for(const QString &world:worlds) {
         QFile file(QDir(root).filePath(world));
         if(!file.open(QIODevice::ReadOnly)) continue;
-        const QJsonDocument d=QJsonDocument::fromJson(file.readAll());
-        if(!d.isObject()) continue;
-        for(const QJsonValue &value:d.object().value("resources").toArray()) {
-            const QJsonObject r=value.toObject(), object=r.value("gameObject").toObject();
+        const QJsonObject design=QJsonDocument::fromJson(file.readAll()).object();
+        if(design.isEmpty()) continue;
+        const QJsonArray resources=design.value("resources").toArray();
+        const QJsonObject adventure=design.value("adventure").toObject();
+        const QJsonArray items=adventure.value("items").toArray();
+        for(const QJsonValue &value:resources) {
+            const QJsonObject r=value.toObject(),object=r.value("gameObject").toObject();
             if(r.value("kind").toString()!="sprite" || object.value("type").toString()!="collectable" ||
                !object.value("pickupShowHud").toBool()) continue;
             const int kind=object.value("pickupKind").toInt();
-            if(kind<1 || kind>255 || byKind.contains(kind)) continue;
-            const QString source=QDir::cleanPath(r.value("path").toString());
-            Pickup p; p.kind=kind; p.name=r.value("name").toString(); p.source=source;
+            if(kind<1 || kind>255) continue;
+            Pickup p; p.kind=kind; p.name=r.value("name").toString();
+            p.source=QDir::cleanPath(r.value("path").toString());
             p.iw=qBound(1,r.value("cellWidth").toInt(16),64);
             p.ih=qBound(1,r.value("cellHeight").toInt(16),64);
-            p.icon=firstIcon(QDir(root).filePath(source),p.iw,p.ih);
-            byKind.insert(kind,p);
+            p.icon=qMax(0,r.value("frame").toInt(0));
+            p.iconTileSize=p.iw; // ordinary sprite cell before Inventory Items override
+            p.spriteStamp=r.value("spriteStamp").toObject();
+            if (!p.spriteStamp.isEmpty()) {
+                const int sw=qBound(1,p.spriteStamp.value("width").toInt(2),16);
+                const int sh=qBound(1,p.spriteStamp.value("height").toInt(2),16);
+                p.iw=sw*8; p.ih=sh*8;
+                p.source=QDir::cleanPath(p.spriteStamp.value("source").toString(p.source));
+                p.iconTileSize=8;
+            }
+            // An Inventory Items icon selection takes precedence over the
+            // placed object's frame/stamp. This is also the artwork used
+            // by the game's inventory and cross-world DROP renderer.
+            for(const QJsonValue &itemValue:items) {
+                const QJsonObject item=itemValue.toObject();
+                if(item.value("pickupKind").toInt()!=kind) continue;
+                const int picked=item.value("icon").toInt(65535);
+                if (picked==65535 && !item.value("icon2x2").toBool()) break;
+                QString source=item.value("iconPpbPath").toString();
+                if (source.isEmpty()) {
+                    QString atlasId=item.value("iconAtlasId").toString();
+                    if(atlasId.isEmpty())atlasId=adventure.value("skinAtlasId").toString();
+                    for(const QJsonValue &candidateValue:resources) {
+                        const QJsonObject candidate=candidateValue.toObject();
+                        if(candidate.value("id").toString()==atlasId && !atlasId.isEmpty()) {
+                            source=candidate.value("path").toString();
+                            break;
+                        }
+                    }
+                }
+                if (!source.isEmpty()) {
+                    p.source=QDir::cleanPath(source);
+                    p.icon=picked;
+                    // The legacy dialogue atlas has its own tile size. The
+                    // per-item size applies only to explicitly selected PPBs.
+                    const bool usesDialogue=item.value("iconAtlasId").toString().isEmpty()
+                        && item.value("iconPpbPath").toString().isEmpty();
+                    p.iconTileSize=qBound(4,usesDialogue
+                        ? adventure.value("tileSize").toInt(8)
+                        : item.value("iconTileSize").toInt(8),64);
+                    p.icon2x2=item.value("icon2x2").toBool();
+                    p.iconCells=item.value("iconCells").toArray();
+                    p.spriteStamp=QJsonObject();
+                    p.artPriority=item.value("iconAtlasId").toString().isEmpty() &&
+                        item.value("iconPpbPath").toString().isEmpty() ? 1 : 2;
+                    p.iw=p.iconTileSize*(p.icon2x2?2:1);
+                    p.ih=p.iw;
+                }
+                break;
+            }
+            p.iconImage=pickupIcon(root,p);
+            // A matching type can appear in multiple worlds. Prefer the
+            // explicit Inventory Items icon, but never replace readable art
+            // with a missing/invalid atlas from a different world.
+            if(!byKind.contains(kind) || (!p.iconImage.isNull() &&
+                (byKind.value(kind).iconImage.isNull() ||
+                 p.artPriority > byKind.value(kind).artPriority)))
+                byKind.insert(kind,p);
         }
     }
-    for(auto it=byKind.cbegin();it!=byKind.cend();++it) out.append(it.value());
+    QVector<Pickup> out;
+    for(auto it=byKind.cbegin();it!=byKind.cend();++it)out.append(it.value());
     return out;
 }
 class HudZoomScroll : public QScrollArea {
@@ -196,51 +331,17 @@ protected:
 static QColor paletteColour(const QVector<QRgb> &palette, int index, QColor fallback) {
     return index>=0 && index<palette.size() ? QColor::fromRgba(palette.at(index)) : fallback;
 }
-// The HUD is one indexed foreground layer: all tile and sprite pixels must
-// refer to the SAME active foreground CLUT. Preserve PPB source colours by
-// mapping them into the selected HUD palette at export time. An exact colour
-// wins; if the bank lacks it, choose the closest available opaque colour.
-// Index zero is always reserved for foreground transparency.
+// The HUD shares the selected foreground CLUT. Pixel numbers are absolute
+// indices: NEVER recolour/reorder/map them to another PPB's palette.
 static QVector<QRgb> textPaletteFor(const QString &root, const QString &paletteSource,
                                    const QImage &atlas) {
     if (paletteSource.isEmpty()) return atlas.colorTable();
     return SidboxGamePalette::readPalette(QDir(root).filePath(paletteSource),false);
 }
-static QVector<uchar> hudColourMap(const QImage &source, const QVector<QRgb> &target) {
-    QVector<uchar> lookup(256);
-    for (int i=0;i<256;++i) lookup[i]=(uchar)i;
-    if (source.isNull() || target.size()!=256) return lookup;
-    const auto colours=source.colorTable();
-    if (colours.isEmpty()) return lookup;
-    lookup[0]=0;
-    for (int i=1;i<256;++i) {
-        if(i>=colours.size()) {lookup[i]=0;continue;}
-        const QRgb wanted=colours.at(i);
-        // In indexed foreground art, only index 0 is transparent. Older
-        // PPBs sometimes carry zero alpha in otherwise valid colour slots.
-        int choice=1, distance=INT_MAX;
-        for(int j=1;j<256;++j) {
-            const QRgb candidate=target.at(j);
-            const int dr=qRed(wanted)-qRed(candidate);
-            const int dg=qGreen(wanted)-qGreen(candidate);
-            const int db=qBlue(wanted)-qBlue(candidate);
-            const int score=dr*dr+dg*dg+db*db;
-            if(score<distance){distance=score;choice=j;if(!score)break;}
-        }
-        lookup[i]=(uchar)choice;
-    }
-    return lookup;
-}
 static QImage hudPreview(const QImage &source,const QVector<QRgb> &target) {
     if(source.isNull()||target.size()!=256||source.format()!=QImage::Format_Indexed8)return source;
     QImage result=source;
-    result.detach();
-    const auto mapping=hudColourMap(source,target);
-    for(int y=0;y<result.height();++y) {
-        uchar *line=result.scanLine(y);
-        for(int x=0;x<result.width();++x)line[x]=mapping[line[x]];
-    }
-    result.setColorTable(target);
+    result.setColorTable(target); // preview palette ONLY, leave pixel indices untouched
     return result;
 }
 static int choosePaletteIndex(QWidget *parent, const QVector<QRgb> &palette, int current,
@@ -333,7 +434,10 @@ public:
         if(cols<=0 || tile.index>=cols*rows) return {};
         QImage img=hudPreview(atlasImage.copy((tile.index%cols)*doc->cw,
             (tile.index/cols)*doc->ch,doc->cw,doc->ch),textColors);
-        return visible(img.mirrored(tile.fx,tile.fy));
+        Qt::Orientations flips;
+        if (tile.fx) flips |= Qt::Horizontal;
+        if (tile.fy) flips |= Qt::Vertical;
+        return visible(flips ? img.flipped(flips) : img);
     }
     void paintEvent(QPaintEvent*) override {
         if(!doc)return;
@@ -357,7 +461,7 @@ public:
         }
         for(int i=0;i<doc->counters.size();++i) {
             const HudCounter &c=doc->counters[i];
-            QImage icon=visible(hudPreview(firstIcon(QDir(root).filePath(c.source),c.iw,c.ih),textColors));
+            QImage icon=visible(hudPreview(pickupIcon(root,c),textColors));
             if(!icon.isNull())p.drawImage(QRect(c.x*s,c.y*s,icon.width()*s,icon.height()*s),icon);
             if(selectedCounter==i) {p.setPen(Qt::yellow);p.drawRect(c.x*s,c.y*s,icon.width()*s+3,icon.height()*s+3);p.setPen(Qt::white);}
             previewText(p,QStringLiteral("0"),c.x+c.iw+2,c.y,s,fg,doc->outlineEnabled,outline);
@@ -484,7 +588,10 @@ public:
         const QPoint q=pixelPoint(e->position().toPoint());
         if(q.x()<0||q.y()<0||q.x()>=doc->columns*doc->cw||q.y()>=doc->rows*doc->ch)return;
         doc->counters.append({o.value("kind").toInt(),q.x(),q.y(),o.value("iw").toInt(16),
-            o.value("ih").toInt(16),o.value("name").toString(),o.value("source").toString()});
+            o.value("ih").toInt(16),o.value("name").toString(),o.value("source").toString(),
+            o.value("icon").toInt(0),o.value("iconTileSize").toInt(8),
+            o.value("icon2x2").toBool(false),o.value("iconCells").toArray(),
+            o.value("spriteStamp").toObject()});
         if(changed)changed();update();e->acceptProposedAction();
     }
 };
@@ -605,8 +712,6 @@ static bool exportHud(const QString &root,const HudDoc &doc,QString *error) {
     const QImage atlas=loadIndexed(QDir(root).filePath(doc.atlas));
     const int w=doc.columns*doc.cw,h=doc.rows*doc.ch;
     QByteArray pixels(w*h,char(0));
-    const QVector<QRgb> hudPalette=textPaletteFor(root,doc.textPalette,atlas);
-    const QVector<uchar> tileRemap=hudColourMap(atlas,hudPalette);
     if(!atlas.isNull()){
         const int ncols=atlas.width()/doc.cw;
         const int nrows=atlas.height()/doc.ch;
@@ -619,7 +724,7 @@ static bool exportHud(const QString &root,const HudDoc &doc,QString *error) {
             for(int iy=0;iy<doc.ch;++iy)for(int ix=0;ix<doc.cw;++ix){
                 const int px=sx+(tile.fx?(doc.cw-1-ix):ix);
                 const int py=sy+(tile.fy?(doc.ch-1-iy):iy);
-                pixels[(ry*doc.ch+iy)*w+rx*doc.cw+ix]=char(tileRemap[atlas.pixelIndex(px,py)]);
+                pixels[(ry*doc.ch+iy)*w+rx*doc.cw+ix]=char(atlas.pixelIndex(px,py));
             }
         }
     }else {
@@ -634,15 +739,14 @@ static bool exportHud(const QString &root,const HudDoc &doc,QString *error) {
     QString iconDraws;
     int i=0;
     for(const HudCounter &cnt:doc.counters) {
-        const QImage icon=firstIcon(QDir(root).filePath(cnt.source),cnt.iw,cnt.ih);
+        const QImage icon=pickupIcon(root,cnt);
         if(icon.isNull() || icon.format()!=QImage::Format_Indexed8) {
             if(error)*error=QStringLiteral("Missing HUD icon PPB: %1").arg(cnt.source);
             return false;
         }
-        const QVector<uchar> iconRemap=hudColourMap(icon,hudPalette);
         QByteArray bytes;bytes.reserve(icon.width()*icon.height());
         for(int yy=0;yy<icon.height();++yy)for(int xx=0;xx<icon.width();++xx)
-            bytes.append(char(iconRemap[icon.pixelIndex(xx,yy)]));
+            bytes.append(char(icon.pixelIndex(xx,yy)));
         const QString sym=QStringLiteral("icon_%1").arg(i++);
         c+=QStringLiteral("static const unsigned char %1[%2] __attribute__((aligned(32))) = {%3};\n")
             .arg(sym).arg(bytes.size()).arg(cArray(bytes));
@@ -706,6 +810,7 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
         }
     }else doc.resize(doc.columns,doc.rows);
     const QVector<Pickup> pickups=discover(projectRoot);
+    updateCounterArtwork(doc,pickups); // migrate old first-cell HUD placements
     QDialog dialog(parent);dialog.setWindowTitle(QObject::tr("Shared HUD Designer"));dialog.resize(1130,740);
     auto *outer=new QVBoxLayout(&dialog);
     auto *geometry=new QHBoxLayout;
@@ -716,8 +821,8 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
                     qMakePair(QObject::tr("Cell W"),cw),qMakePair(QObject::tr("Cell H"),ch)}){
         geometry->addWidget(new QLabel(pair.first,&dialog));geometry->addWidget(pair.second);
     }
-    // A single HUD palette governs background tiles, text AND icons. Pixels
-    // imported from other PPBs are mapped into its foreground CLUT indices.
+    // The selected HUD palette affects display only. All PPB pixel indices
+    // stay exactly as stored, including tiles and collectable icons.
     auto *paletteRow=new QHBoxLayout;
     auto *textPaletteCombo=new QComboBox(&dialog);
     textPaletteCombo->addItem(QObject::tr("HUD tile atlas palette (default)"),QString());
@@ -801,9 +906,11 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
     auto *list=new PickupList(side);
     list->setIconSize(QSize(28,28));
     for(const Pickup &p:pickups){
-        auto *item=new QListWidgetItem(QIcon(QPixmap::fromImage(visible(p.icon)).scaled(28,28)),
+        auto *item=new QListWidgetItem(QIcon(QPixmap::fromImage(visible(p.iconImage)).scaled(28,28)),
             QStringLiteral("%1 (type %2)").arg(p.name).arg(p.kind),list);
-        const QJsonObject data{{"kind",p.kind},{"name",p.name},{"source",p.source},{"iw",p.iw},{"ih",p.ih}};
+        const QJsonObject data{{"kind",p.kind},{"name",p.name},{"source",p.source},
+            {"iw",p.iw},{"ih",p.ih},{"icon",p.icon},{"iconTileSize",p.iconTileSize},
+            {"icon2x2",p.icon2x2},{"iconCells",p.iconCells},{"spriteStamp",p.spriteStamp}};
         item->setData(Qt::UserRole,QJsonDocument(data).toJson(QJsonDocument::Compact));
     }
     sideLayout->addWidget(list,2);
@@ -864,7 +971,7 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
         picker->source=hudPreview(src,canvas->textColors);
         picker->cw=doc.cw;picker->ch=doc.ch;picker->index=0;picker->refresh();
         for(int n=0;n<pickups.size();++n){
-            QImage image=visible(hudPreview(pickups[n].icon,canvas->textColors));
+            QImage image=visible(hudPreview(pickups[n].iconImage,canvas->textColors));
             list->item(n)->setIcon(QIcon(QPixmap::fromImage(image).scaled(28,28)));
         }
         canvas->refresh();updateSwatches();
@@ -876,7 +983,7 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
         picker->source=hudPreview(canvas->atlasImage,canvas->textColors);
         picker->refresh();
         for(int n=0;n<pickups.size();++n){
-            QImage image=visible(hudPreview(pickups[n].icon,canvas->textColors));
+            QImage image=visible(hudPreview(pickups[n].iconImage,canvas->textColors));
             list->item(n)->setIcon(QIcon(QPixmap::fromImage(image).scaled(28,28)));
         }
         canvas->update();updateSwatches();
@@ -976,5 +1083,6 @@ bool regenerateGameHud(const QString &projectRoot,QString *error) {
     if(!d.load(QJsonDocument::fromJson(f.readAll()).object())) {
         if(error)*error=QStringLiteral("Invalid shared HUD layout");return false;
     }
+    updateCounterArtwork(d,discover(projectRoot));
     return exportHud(projectRoot,d,error);
 }

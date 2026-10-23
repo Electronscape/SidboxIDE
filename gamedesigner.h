@@ -93,7 +93,7 @@ private:
         int cellWidth = 0;  // 0 = whole image (old Stage 52 files stay compatible)
         int cellHeight = 0;
         int frame = 0;
-        SidboxSpriteStamp spriteStamp; // design-time 8x8 composite; baked to generated PPB
+        SidboxSpriteStamp spriteStamp; // indexed 8x8 cell lookup into original PPB
         QString animationFile; // optional .sbanim sidecar with named player animation states
         bool locked = false;
         // Stage 3.0B: optional behaviours on each placed sprite instance.
@@ -275,11 +275,19 @@ private:
     QString m_playerEntry = QStringLiteral("default");
     int m_playerStartX = 0, m_playerStartY = 0;
     int m_playerFacing = 1; // 0=left, 1=right
+    QString m_playerTransitionIn = QStringLiteral("none");
+    QString m_playerTransitionOut = QStringLiteral("none");
+    QString m_playerCircleOrigin = QStringLiteral("center");
+    int m_playerTransitionFrames = 30;
     // Additional, named destination entrances belong to this world only.
     struct PlayerStartLocation {
         QString id;
         QString name;
         int x = 0, y = 0, facing = 1;
+        QString transitionIn = QStringLiteral("none");
+        QString transitionOut = QStringLiteral("none");
+        QString circleOrigin = QStringLiteral("center");
+        int transitionFrames = 30;
     };
     QVector<PlayerStartLocation> m_otherPlayerStarts;
     QGraphicsItem *m_playerStartMarker = nullptr;

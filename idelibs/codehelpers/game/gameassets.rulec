@@ -47,6 +47,23 @@ const uint8_t *gameassets_find_ppb(const char *sd_path, uint16_t *width, uint16_
     return NULL;
 }
 
+const uint32_t *gameassets_front_palette(void)
+{
+@IDE_IF{HAS_FRONT_PALETTE}
+    return gameassets_front_clut;
+@IDE_ELSE
+    return NULL;
+@IDE_END
+}
+const uint32_t *gameassets_back_palette(void)
+{
+@IDE_IF{HAS_BACK_PALETTE}
+    return gameassets_back_clut;
+@IDE_ELSE
+    return NULL;
+@IDE_END
+}
+
 void gameassets_shutdown(void)
 {
 @IDE_IF{HAS_FOREGROUND_CYCLE}
