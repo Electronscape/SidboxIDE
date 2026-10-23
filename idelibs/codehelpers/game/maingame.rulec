@@ -81,6 +81,7 @@
 @IDE_END
  */
 #include <stdint.h>
+#include <limits.h>
 #include <stddef.h>
 #include "apis.h"
 #include "main.h"
@@ -154,6 +155,11 @@ extern gfxbob_t @IDE{WORLD_BASE}_@IDE{PLAYER_SYMBOL};
 
 #define VIEW_W 480
 #define VIEW_H 320
+@IDE_IF{HAS_HUD}
+#define GAME_PLAY_H (VIEW_H - gamehud_dock_height())
+@IDE_ELSE
+#define GAME_PLAY_H VIEW_H
+@IDE_END
 
 @IDE_IF{HAS_SCENERY_STAMPS}
 /* Decoration Sprite Stamps are 8x8 cell lookup tables into their original PPB.
@@ -236,6 +242,10 @@ static void on_pickup(game_collectable_t *item, void *user)
     uint32_t *points = (uint32_t *)user;
     if (!item || !points) return;
     *points += item->value;  /* Replace with your own key/health/score rules. */
+    /* Keep the designer HUD bound to the persistent score, not the demo variable. */
+    if (gameworlds_state()->score <= UINT32_MAX - item->value)
+        gameworlds_state()->score += item->value;
+    else gameworlds_state()->score = UINT32_MAX;
 
 @IDE_IF{HAS_ADVENTURE}
     /* Older pickups: +1 inventory item as before. Opt-in managed pickups
@@ -483,6 +493,13 @@ int main(int argc, char *argv[])
      * Custom stats live in the shared gameplayer module, not in any world. */
 @IDE_END
     if (!gameworlds_start("@IDE{WORLD_BASE}")) { result = 1; goto cleanup; }
+@IDE_IF{HAS_MURDER_OBJECTS}
+@IDE_IF{HAS_SHARED_PLAYER}
+    player_health=gameworlds_state()->health;
+@IDE_ELSE
+    gameworlds_state()->health=player_health; /* Legacy games without shared player. */
+@IDE_END
+@IDE_END
 @IDE_IF{HAS_MAP}
     game_tilemap_animation_reset();
 @IDE_END
@@ -716,10 +733,35 @@ int main(int argc, char *argv[])
         /* Once per accepted spike/hazard hit; invulnerability prevents
            repeated damage while flashing. You own game-over/health rules. */
         if (world_player.hurt_triggered) {
-            if (player_health > world_player.hurt_damage_this_frame)
-                player_health -= world_player.hurt_damage_this_frame;
-            else player_health = 0;
-            /* TODO: if player_health == 0, run your death/respawn logic. */
+            const int64_t delta = world_player.hurt_stat_delta;
+            uint32_t *target = 0;
+            switch(world_player.hurt_stat_target) {
+                case 0: target = &gameworlds_state()->health; break;
+                case 1: target = &gameworlds_state()->lives; break;
+                case 2: target = &gameworlds_state()->score; break;
+                case 3: gameworlds_adjust_pickup(1u,(int32_t)delta); break;
+                case 4:
+@IDE_IF{HAS_SHARED_PLAYER}
+                    if(world_player.hurt_stat_name) {
+                        int32_t previous=0;
+                        if(gameplayer_stat_get(world_player.hurt_stat_name,&previous)) {
+                            int64_t next=(int64_t)previous+delta;
+                            if(next<INT32_MIN)next=INT32_MIN;
+                            if(next>INT32_MAX)next=INT32_MAX;
+                            gameplayer_stat_set(world_player.hurt_stat_name,(int32_t)next);
+                        }
+                    }
+@IDE_END
+                    break;
+            }
+            if(target) {
+                int64_t next=(int64_t)*target+delta;
+                if(next<0)next=0;
+                if(next>UINT32_MAX)next=UINT32_MAX;
+                *target=(uint32_t)next;
+            }
+            player_health=gameworlds_state()->health;
+            /* TODO: handle death when gameworlds_state()->health == 0. */
         }
 @IDE_END
 @IDE_IF{HAS_PLAYER_ANIMATION}
@@ -786,9 +828,10 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_PHYSICS}
         /* Follow the player in WORLD pixels, clamped to the level bounds. */
         camera_x = player_physics.x100 / 100 - VIEW_W / 2;
-        camera_y = player_physics.y100 / 100 - VIEW_H / 2;
+        /* Keep the player centred in the reduced playable area when HUD is docked. */
+        camera_y = player_physics.y100 / 100 - GAME_PLAY_H / 2;
         int32_t max_x = (int32_t)((game_tilemap_t *)gameworlds_map())->width * ((game_tilemap_t *)gameworlds_map())->tile_size - VIEW_W;
-        int32_t max_y = (int32_t)((game_tilemap_t *)gameworlds_map())->height * ((game_tilemap_t *)gameworlds_map())->tile_size - VIEW_H;
+        int32_t max_y = (int32_t)((game_tilemap_t *)gameworlds_map())->height * ((game_tilemap_t *)gameworlds_map())->tile_size - GAME_PLAY_H;
         if (max_x < 0) max_x = 0;
         if (max_y < 0) max_y = 0;
         if (camera_x < 0) camera_x = 0;
@@ -828,7 +871,7 @@ int main(int argc, char *argv[])
 @IDE_END
 @IDE{SCENERY_BEHIND_TILES}
 @IDE_IF{HAS_MAP}
-        game_tilemap_blit_view_cleared((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, VIEW_H);
+        game_tilemap_blit_view_cleared((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, GAME_PLAY_H);
 @IDE_END
 @IDE_IF{HAS_OBJECTS}
         gameworlds_draw(camera_x, camera_y);
@@ -880,9 +923,13 @@ int main(int argc, char *argv[])
 @IDE_END
 @IDE_IF{HAS_MAP}
         /* Foreground tiles are deliberately drawn AFTER the player. */
-        game_tilemap_blit_view_front((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, VIEW_H);
+        game_tilemap_blit_view_front((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, GAME_PLAY_H);
 @IDE_END
 @IDE_IF{HAS_HUD}
+        /* The scene has been rendered into the full framebuffer. Crop it to
+           the docked playfield here, before drawing any HUD pixels. A top
+           HUD shifts the playfield down; bottom docks clip its last rows. */
+        gamehud_apply_dock(front[draw_index]);
         /* HUD coordinates are LCD-relative, never camera-relative.
            (0,0) uses the saved HUD Designer screen position.
            Use game_show_hud_at(x,y) for an explicit position, even (0,0).
@@ -898,7 +945,12 @@ int main(int argc, char *argv[])
         /* Overlay OUT/IN swipes/circles AFTER the HUD and dialogue. Fades
            update temporary CLUT copies (both layers), never source pixels. */
         gfx_usebuffer(front[draw_index]); /* Effects always mask the foreground. */
+@IDE_IF{HAS_HUD}
+        gameworlds_transition_camera(camera_x, camera_y -
+            (gamehud_dock_top() ? gamehud_dock_height() : 0));
+@IDE_ELSE
         gameworlds_transition_camera(camera_x, camera_y);
+@IDE_END
         gameworlds_transition_frame(VIEW_W, VIEW_H);
         gfx_dispfbuffer(front[draw_index], front[draw_index ^ 1u]);
         gfx_displaynow();

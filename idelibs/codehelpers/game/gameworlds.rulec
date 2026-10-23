@@ -595,6 +595,19 @@ uint32_t gameworlds_hud_total(uint16_t kind)
 @IDE_END
     return gameworlds_hud_totals[kind];
 }
+void gameworlds_adjust_pickup(uint16_t kind, int32_t delta)
+{
+    if(kind>=256u || !delta)return;
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+    if(game_adventure_adjust_pickup(kind,delta)) {
+        gameworlds_hud_inventory_kinds[kind]=1u;
+        return;
+    }
+@IDE_END
+    const int64_t next=(int64_t)gameworlds_hud_totals[kind]+delta;
+    gameworlds_hud_totals[kind]=next<=0 ? 0u :
+        next>=UINT32_MAX ? UINT32_MAX : (uint32_t)next;
+}
 void gameworlds_hud_reset(void)
 {
     memset(gameworlds_hud_totals,0,sizeof(gameworlds_hud_totals));

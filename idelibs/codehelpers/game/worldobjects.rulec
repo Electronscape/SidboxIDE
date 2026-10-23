@@ -23,6 +23,9 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->width = width;
     object->height = height;
     object->type = type;
+    object->damage_target = 0;
+    object->damage_delta = -1;
+    object->damage_stat_name = 0;
     object->conveyor_speed = 0;
     object->spring_strength = @IDE{SPRING_STRENGTH_DEFAULT};
     object->spring_launch_x = 0; /* Default remains a straight-up bounce. */
@@ -229,6 +232,9 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
     p->before_jump_held = p->jump_held ? *p->jump_held : 0;
     p->hurt_triggered = 0;
     p->hurt_damage_this_frame = 0;
+    p->hurt_stat_delta = 0;
+    p->hurt_stat_target = 0;
+    p->hurt_stat_name = 0;
     if (p->hurt_ticks_remaining) {
         --p->hurt_ticks_remaining;
         ++p->hurt_elapsed;
@@ -829,6 +835,9 @@ void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
         o->hazard_hit_triggered = 1;
         p->hurt_triggered = 1;
         p->hurt_damage_this_frame = o->hazard_damage;
+        p->hurt_stat_delta = o->damage_delta;
+        p->hurt_stat_target = o->damage_target;
+        p->hurt_stat_name = o->damage_stat_name;
         p->hurt_anim_active = o->hazard_hurt_animation;
         p->hurt_flash_active = o->hazard_flash;
         p->hurt_flash_colour = o->hazard_flash_colour;

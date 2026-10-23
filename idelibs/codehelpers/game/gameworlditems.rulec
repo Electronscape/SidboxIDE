@@ -667,6 +667,9 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     cg_gwi_platforms[@IDE{INDEX}].enemy_attack_direction = @IDE{ENEMY_ATTACK_DIRECTION};
     cg_gwi_platforms[@IDE{INDEX}].enemy_hurts_on_touch = @IDE{ENEMY_HURT_TOUCH};
     cg_gwi_platforms[@IDE{INDEX}].hazard_damage = @IDE{ENEMY_DAMAGE};
+    cg_gwi_platforms[@IDE{INDEX}].damage_target = @IDE{DAMAGE_TARGET};
+    cg_gwi_platforms[@IDE{INDEX}].damage_delta = @IDE{DAMAGE_DELTA};
+    cg_gwi_platforms[@IDE{INDEX}].damage_stat_name = @IDE{DAMAGE_NAME};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
@@ -690,6 +693,9 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
 @IDE_END
 @IDE_IF{IS_HAZARD}
     cg_gwi_platforms[@IDE{INDEX}].hazard_damage = @IDE{HAZARD_DAMAGE};
+    cg_gwi_platforms[@IDE{INDEX}].damage_target = @IDE{DAMAGE_TARGET};
+    cg_gwi_platforms[@IDE{INDEX}].damage_delta = @IDE{DAMAGE_DELTA};
+    cg_gwi_platforms[@IDE{INDEX}].damage_stat_name = @IDE{DAMAGE_NAME};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};

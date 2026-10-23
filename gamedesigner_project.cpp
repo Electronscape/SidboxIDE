@@ -298,6 +298,13 @@ bool SidboxGameDesigner::loadDesign()
         r.enemyStompHeight = qBound(1, object.value(QStringLiteral("enemyStompHeight")).toInt(1), 64);
         r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
         r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
+        r.damageConfigured = object.contains(QStringLiteral("damageTarget"));
+        r.damageTarget = object.value(QStringLiteral("damageTarget")).toString(QStringLiteral("health"));
+        if (r.damageTarget != QStringLiteral("health") && r.damageTarget != QStringLiteral("lives") &&
+            r.damageTarget != QStringLiteral("score") && r.damageTarget != QStringLiteral("coins") &&
+            !r.damageTarget.startsWith(QStringLiteral("stat:"))) r.damageTarget = QStringLiteral("health");
+        r.damageDelta = qBound(-65535,object.value(QStringLiteral("damageDelta"))
+            .toInt(-r.hazardDamage),65535);
         r.hazardKickX = qBound(-40, object.value(QStringLiteral("hazardKickX")).toInt(0), 40);
         r.hazardKickY = qBound(-40, object.value(QStringLiteral("hazardKickY")).toInt(-11), 40);
         r.hazardKick = object.value(QStringLiteral("hazardKick")).toBool(true);
@@ -669,6 +676,8 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("enemyStompHeight"), r.enemyStompHeight);
             object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
             object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
+            object.insert(QStringLiteral("damageTarget"), r.damageTarget);
+            object.insert(QStringLiteral("damageDelta"), r.damageConfigured ? r.damageDelta : -r.hazardDamage);
             object.insert(QStringLiteral("hazardKickX"), r.hazardKickX);
             object.insert(QStringLiteral("hazardKickY"), r.hazardKickY);
             object.insert(QStringLiteral("hazardKick"), r.hazardKick);

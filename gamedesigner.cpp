@@ -12,6 +12,7 @@
 #include "gamehelpertemplates.h"
 #include "gameadventureeditor.h"
 #include "gamehudeditor.h"
+#include "gamefloweditor.h"
 #include "gameadventuregen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
@@ -2863,6 +2864,13 @@ void SidboxGameDesigner::buildUi()
         } else if (!error.isEmpty()) {
             QMessageBox::warning(this, tr("HUD Editor"), error);
         }
+    });
+    auto *flowButton = new QPushButton(tr("Logic Flow..."), this);
+    flowButton->setToolTip(tr("Read-only logic map of all saved worlds, inventory, NPC dialogue and links."));
+    flowButton->setMaximumWidth(108);
+    topActions->addWidget(flowButton);
+    connect(flowButton, &QPushButton::clicked, this, [this] {
+        openGameFlowEditor(this, QFileInfo(m_filePath).absolutePath());
     });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
@@ -6878,7 +6886,34 @@ void SidboxGameDesigner::configureGameObject(int index)
                               "this PPB's colours. Palette index 0 is usually transparent."));
     auto *hazardFlashes = spin(1, 32, old.hazardFlashCount);
     auto *hazardFlashFrames = spin(1, 255, old.hazardFlashFrames);
-    form->addRow(tr("Damage per hit"), quickValue(hazardDamage));
+    hazardDamage->hide(); // Historical magnitude retained for old runtime source only.
+    auto *damageTarget = new GameComboBox(&dialog);
+    damageTarget->addItem(tr("Health"), QStringLiteral("health"));
+    damageTarget->addItem(tr("Lives"), QStringLiteral("lives"));
+    damageTarget->addItem(tr("Score"), QStringLiteral("score"));
+    damageTarget->addItem(tr("Coins (inventory pickup type 1)"), QStringLiteral("coins"));
+    const QDir playerRoot(QFileInfo(m_filePath).absolutePath());
+    const QStringList playerDefs = QDir(playerRoot.filePath(QStringLiteral("players")))
+        .entryList({QStringLiteral("*.sbpi")}, QDir::Files, QDir::Name);
+    for (const QString &playerFile:playerDefs) {
+        QFile pf(playerRoot.filePath(QStringLiteral("players/")+playerFile));
+        if (!pf.open(QIODevice::ReadOnly)) continue;
+        const QJsonArray custom=QJsonDocument::fromJson(pf.readAll()).object().value(QStringLiteral("customStats")).toArray();
+        for (const QJsonValue &entry:custom) {
+            const QString name=entry.toObject().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty() && damageTarget->findData(QStringLiteral("stat:")+name)<0)
+                damageTarget->addItem(tr("Custom stat: %1").arg(name),QStringLiteral("stat:")+name);
+        }
+    }
+    if (damageTarget->findData(old.damageTarget)<0)
+        damageTarget->addItem(old.damageTarget,old.damageTarget);
+    damageTarget->setCurrentIndex(qMax(0,damageTarget->findData(old.damageTarget)));
+    auto *damageDelta=spin(-65535,65535,old.damageConfigured ? old.damageDelta :
+        -(old.objectType==QStringLiteral("enemy") ? old.enemyDamage : old.hazardDamage));
+    damageDelta->setToolTip(tr("Signed value applied ONCE per accepted enemy/hazard hit. "
+                              "Negative removes, positive rewards or heals."));
+    form->addRow(tr("Damage target stat"),damageTarget);
+    form->addRow(tr("Stat change (+/-)"),damageDelta);
     form->addRow(QString(), hazardKick);
     form->addRow(tr("Knockback X"), quickValue(hazardKickX));
     form->addRow(tr("Knockback Y"), quickValue(hazardKickY));
@@ -6891,7 +6926,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         const bool hazard = type->currentData().toString() == QStringLiteral("hazard") ||
                             type->currentData().toString() == QStringLiteral("enemy");
         for (QWidget *w : {static_cast<QWidget *>(hazardDamage), static_cast<QWidget *>(hazardKick),
-                           static_cast<QWidget *>(hazardHurtAnim), static_cast<QWidget *>(hazardFlash)})
+                           static_cast<QWidget *>(hazardHurtAnim), static_cast<QWidget *>(hazardFlash),
+                           static_cast<QWidget *>(damageTarget), static_cast<QWidget *>(damageDelta)})
             w->setEnabled(hazard);
         hazardKickX->setEnabled(hazard && hazardKick->isChecked());
         hazardKickY->setEnabled(hazard && hazardKick->isChecked());
@@ -7606,7 +7642,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.enemyStompSideKick = enemyStompSideKick->isChecked();
     r.enemyAttackDirection = enemyAttackDirection->currentData().toInt();
     r.enemyHurtsOnTouch = enemyHurt->isChecked();
-    r.enemyDamage = newType == QStringLiteral("enemy") ? hazardDamage->value() : enemyDamage->value();
+    r.enemyDamage = newType == QStringLiteral("enemy") ? qAbs(damageDelta->value()) : enemyDamage->value();
     r.enemyRoam = enemyRoam->isChecked();
     r.enemyRoamSpeed = enemyRoamSpeed->value();
     r.enemyStepHeight = enemyStepHeight->value();
@@ -7624,7 +7660,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.drawBehindTiles = behindTiles->isChecked();
     r.objectFlipX = objectFlipX->isChecked();
     r.objectFlipY = objectFlipY->isChecked();
-    r.hazardDamage = hazardDamage->value();
+    r.hazardDamage = qAbs(damageDelta->value());
+    r.damageTarget = damageTarget->currentData().toString();
+    r.damageDelta = damageDelta->value();
+    r.damageConfigured = true;
     r.hazardKick = hazardKick->isChecked();
     r.hazardKickX = hazardKickX->value();
     r.hazardKickY = hazardKickY->value();

@@ -65,6 +65,9 @@ typedef struct {
     uint8_t type, active;
     uint8_t draw_behind_tiles; /* 1 = draw before tilemap */
     uint16_t hazard_damage;
+    int32_t damage_delta; /* signed stat change; negative loses, positive gains */
+    uint8_t damage_target; /* 0 health, 1 lives, 2 score, 3 coins, 4 custom */
+    const char *damage_stat_name;
     int16_t hazard_kick_x, hazard_kick_y; /* Signed px/frame; Y up is negative. */
     uint8_t hazard_kick;
     uint8_t hazard_hurt_animation, hazard_flash;
@@ -104,6 +107,9 @@ typedef struct {
     /* Player damage events: bind once, read after gameworlditems_after().
        Game owns actual health/lives. Event fires ONCE per accepted impact. */
     uint16_t hurt_damage_this_frame;
+    int32_t hurt_stat_delta;
+    uint8_t hurt_stat_target;
+    const char *hurt_stat_name;
     uint8_t hurt_triggered;
     uint8_t hurt_anim_active;
     uint8_t hurt_flash_active;

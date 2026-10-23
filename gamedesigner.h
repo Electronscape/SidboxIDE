@@ -139,7 +139,10 @@ private:
         bool objectInitiallyActive = true; // Default for all old designs.
         bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
         bool objectFlipX = false, objectFlipY = false; // Optional BOB mirroring; hitbox stays in place.
-        int hazardDamage = 1; // Per contact; game owns its health/score rules.
+        int hazardDamage = 1; // Legacy damage magnitude.
+        QString damageTarget = QStringLiteral("health"); // health/lives/score/coins/stat:<name>
+        int damageDelta = -1; // Signed change on an accepted hit. Positive heals.
+        bool damageConfigured = false; // Older files retain their historic hazardDamage setting.
         int hazardKickX = 0, hazardKickY = -11; // Signed px/frame; Y negative is UP.
         bool hazardKick = true;
         bool hazardHurtAnimation = true;

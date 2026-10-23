@@ -21,7 +21,7 @@ checks={
     'HUD regeneration refreshed': 'updateCounterArtwork(d,discover(projectRoot))' in s,
     'HUD v1 compatibility': '{"format", "SIDBOX-SHARED-HUD"}, {"version",1}' in s,
     'no palette index remapping': 'char(icon.pixelIndex(xx,yy))' in s and 'iconRemap' not in s,
-    'splash version': 'Build: 5.48.231026' in (root/'splashscreenwidget.cpp').read_text()
+    'splash version': 'Build: 5.57.231026' in (root/'splashscreenwidget.cpp').read_text()
 }
 for desc, ok in checks.items():
     print(('PASS' if ok else 'FAIL'), desc)

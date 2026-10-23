@@ -192,6 +192,8 @@ uint16_t game_adventure_collect(uint16_t pickup_kind);
 /* The managed pickup bridge adds the actual value before the user's callback.
    These helpers prevent legacy callbacks adding another +1 to the same item. */
 uint16_t game_adventure_collect_amount(uint16_t pickup_kind, uint16_t amount);
+/* Change the quantity of a pickup type once, respecting capacity/zero. */
+uint8_t game_adventure_adjust_pickup(uint16_t pickup_kind, int32_t delta);
 void game_adventure_managed_pickup_begin(uint16_t pickup_kind);
 void game_adventure_managed_pickup_end(void);
 #endif

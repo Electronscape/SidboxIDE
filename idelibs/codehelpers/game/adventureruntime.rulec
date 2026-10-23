@@ -428,6 +428,28 @@ uint16_t game_adventure_collect_amount(uint16_t kind, uint16_t amount)
         }
     return matched;
 }
+uint8_t game_adventure_adjust_pickup(uint16_t kind, int32_t delta)
+{
+    /* Change the total of this pickup KIND, not every matching item by the
+       requested amount. Some adventures contain several items of one kind. */
+    uint8_t found=0;
+    int64_t remaining=delta < 0 ? -(int64_t)delta : delta;
+    if(remaining>65535) remaining=65535;
+    for (uint16_t i=0;i<ga_item_count;++i) if(kind && ga_items[i].pickup_kind==kind) {
+        found=1;
+        if(!remaining)continue;
+        if(delta>0) {
+            uint16_t available=ga_items[i].capacity>ga_counts[i] ?
+                (uint16_t)(ga_items[i].capacity-ga_counts[i]) : (uint16_t)0;
+            uint16_t amount=(uint16_t)(remaining<available?remaining:available);
+            remaining-=game_adventure_add(i,amount);
+        } else if(delta<0) {
+            uint16_t amount=(uint16_t)(remaining<ga_counts[i]?remaining:ga_counts[i]);
+            if(amount && game_adventure_remove(i,amount))remaining-=amount;
+        }
+    }
+    return found;
+}
 uint16_t game_adventure_collect(uint16_t kind)
 {
     /* Legacy main.c often calls collect(kind) in on_pickup(). For a new

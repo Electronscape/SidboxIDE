@@ -719,6 +719,16 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         value("ENEMY_ATTACK_DIRECTION", r.enemyAttackDirection);
         boolValue("ENEMY_HURT_TOUCH", r.enemyHurtsOnTouch);
         value("ENEMY_DAMAGE", r.enemyDamage);
+        const QString statTarget=r.damageTarget;
+        const int statKind=statTarget==QStringLiteral("health") ? 0 :
+            statTarget==QStringLiteral("lives") ? 1 :
+            statTarget==QStringLiteral("score") ? 2 :
+            statTarget==QStringLiteral("coins") ? 3 : 4;
+        value("DAMAGE_TARGET",statKind);
+        value("DAMAGE_DELTA",r.damageConfigured ? r.damageDelta :
+            -(type==QStringLiteral("enemy") ? r.enemyDamage : r.hazardDamage));
+        f.insert(QStringLiteral("DAMAGE_NAME"),statKind==4 ? QString::fromUtf8(QJsonDocument(QJsonArray{statTarget.mid(5)})
+            .toJson(QJsonDocument::Compact)).mid(1).chopped(1) : QStringLiteral("0"));
         boolValue("HAZARD_KICK", r.hazardKick);
         value("HAZARD_KICK_X", r.hazardKickX);
         value("HAZARD_KICK_Y", r.hazardKickY);

@@ -15,7 +15,7 @@ checks={
  'door generated code uses the exit object centre': 'gameworlds_request_at_from(' in export and 'cg_gwi_platforms[%3].width / 2' in export,
  'world manager uses selected target before OUT': 'transition_entry(target, pending_spawn_id' in world and 'transition_entry(active_world, active_spawn_id, &in, &out, &frames, &origin, &x, &y)' in world,
  'generated game loop provides camera': 'gameworlds_transition_camera(camera_x, camera_y);' in main,
- 'splash build': 'Build: 5.48.231026' in (root/'splashscreenwidget.cpp').read_text(),
+ 'splash build': 'Build: 5.57.231026' in (root/'splashscreenwidget.cpp').read_text(),
 }
 for key,passed in checks.items(): print(('PASS' if passed else 'FAIL'),key)
 assert all(checks.values())
