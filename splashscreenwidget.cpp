@@ -101,7 +101,7 @@ void SplashScreenWidget::buildUi()
         .arg(ideThemeColorName(m_theme.text)));
 
     // Bump the stage and release date (DDMMYY) when publishing a new IDE build.
-    auto *buildLabel = new QLabel(QStringLiteral("Build: 5.57.231026"), panel);
+    auto *buildLabel = new QLabel(QStringLiteral("Build: 5.62.231026"), panel);
     buildLabel->setStyleSheet(QStringLiteral(
         "QLabel { background:transparent; border:none; border-radius:0px; "
         "font-size:15px; font-weight:bold; color:%1; }")

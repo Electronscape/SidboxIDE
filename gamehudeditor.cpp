@@ -1,6 +1,7 @@
 #include "gamehudeditor.h"
 #include "ppbcodec.h"
 #include "gamepalette.h"
+#include "guidesigner_detail.h"
 #include "gamespritestamp.h"
 #include <QAbstractItemView>
 #include <QApplication>
@@ -20,9 +21,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDirIterator>
-#include <QFontDatabase>
 #include <QWheelEvent>
-#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHash>
@@ -461,19 +460,23 @@ static int choosePaletteIndex(QWidget *parent, const QVector<QRgb> &palette, int
 static void previewText(QPainter &p, const QString &text, int x, int y, int zoom,
                         QColor foreground, bool outline, QColor outlineColour) {
     if(text.isEmpty())return;
-    const int baseWidth=qMax(8,8*int(text.size()));
-    QFont font=QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPixelSize(15);font.setFixedPitch(true);
-    const QFontMetrics fm(font);
-    // Rasterise at Qt's native mono width, then fit exactly eight pixels per
-    // character and sixteen pixels high, matching SIDBOX's character grid.
-    QImage glyphs(qMax(baseWidth,fm.horizontalAdvance(text)+2),16,QImage::Format_ARGB32_Premultiplied);
+    // Render the real SIDBOX 8x16 font, matching GUI Designer and Title Screen.
+    // Do not rasterise and stretch the desktop's QFontDatabase::FixedFont:
+    // it uses different glyph shapes despite having the same character grid.
+    const QByteArray bytes=text.toLatin1();
+    int columns=0, lineColumns=0, lines=1;
+    for(const char ch:bytes) {
+        if(ch=='\n') {columns=qMax(columns,lineColumns);lineColumns=0;++lines;}
+        else ++lineColumns;
+    }
+    columns=qMax(columns,lineColumns);
+    QImage glyphs(qMax(8,columns*8),lines*16,QImage::Format_ARGB32_Premultiplied);
     glyphs.fill(Qt::transparent);
     {
-        QPainter t(&glyphs);t.setFont(font);t.setPen(foreground);
-        t.drawText(glyphs.rect(),Qt::AlignLeft|Qt::AlignVCenter,text);
+        QPainter gp(&glyphs);
+        GuiDesignerDetail::drawCoderGirlText(gp,0,0,text,foreground);
     }
-    const QRect target(x*zoom,y*zoom,baseWidth*zoom,16*zoom);
+    const QRect target(x*zoom,y*zoom,glyphs.width()*zoom,glyphs.height()*zoom);
     if(outline) {
         QImage edges=glyphs;
         {

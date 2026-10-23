@@ -13,6 +13,7 @@
 #include "gameadventureeditor.h"
 #include "gamehudeditor.h"
 #include "gamefloweditor.h"
+#include "gametitlescreeneditor.h"
 #include "gameadventuregen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
@@ -2871,6 +2872,18 @@ void SidboxGameDesigner::buildUi()
     topActions->addWidget(flowButton);
     connect(flowButton, &QPushButton::clicked, this, [this] {
         openGameFlowEditor(this, QFileInfo(m_filePath).absolutePath());
+    });
+    auto *titleScreenButton = new QPushButton(tr("Title Screen..."), this);
+    titleScreenButton->setToolTip(tr("Design an optional project-wide title/menu screen with menu actions such as Start Game, Load Game and Goto World."));
+    titleScreenButton->setMaximumWidth(116);
+    topActions->addWidget(titleScreenButton);
+    connect(titleScreenButton, &QPushButton::clicked, this, [this] {
+        QString error;
+        if (editGameTitleScreen(this, QFileInfo(m_filePath).absolutePath(), &error)) {
+            if (assetFilesChanged) assetFilesChanged();
+        } else if (!error.isEmpty()) {
+            QMessageBox::warning(this, tr("Title Screen Designer"), error);
+        }
     });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);

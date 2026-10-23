@@ -1,12 +1,9 @@
-SIDBOX / CoderGirl IDE source - Stage 5.57.231026
+SIDBOX / CoderGirl IDE source — Stage 5.62.231026
 
-Adds draggable numeric HUD statistics, signed enemy/hazard stat changes
-(health, lives, score, coins, shared custom stats) and opt-in top/bottom
-HUD docking with an appropriately reduced tilemap playfield. Overlay remains
-the default; original PPBs and palette cell indices are not modified.
+HUD Designer uses the same native SIDBOX glyph preview as GUI Designer and
+Title Screen Designer. Labels, numeric stats and collectable counters render
+from the shared 256-character 8×16 firmware-style font, not the desktop Qt font.
+See STAGE5.62-HUD-SIDBOX-FONT-PREVIEW.md.
 
-See STAGE5.57-HUD-STATS-SIGNED-DAMAGE-DOCKING.md, especially the integration
-steps for user-owned main.c and the full-width dock requirement.
-
-Native regression tests pass; Qt6 GUI build and STM32 hardware tests are
-outstanding. Do not assume the new HUD dock has been performance-accepted.
+The generated game HUD runtime and all saved project/PPB assets are unchanged.
+Full Qt6 GUI compilation and visual confirmation still need Fedora testing.
