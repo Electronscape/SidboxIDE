@@ -20,6 +20,6 @@ assert 'new DialogueTreeCombo(npcs,&nodes,&dialogueFolders)' in s
 assert 'new DialogueTreeCombo(positionPage,&nodes,&dialogueFolders)' in s
 assert 'editExchange(&dialog,before,items,nodes,objects,folders)' in s
 assert 'editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders)' in s
-assert 'Build: 5.70.241026' in (p/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.71.4.241026' in (p/'splashscreenwidget.cpp').read_text()
 assert '2048' in (p/'mainwindow.cpp').read_text()
 print('Stage 5.70 folder tree selectors / ID preservation wiring PASS')

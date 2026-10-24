@@ -1,3 +1,7 @@
-# CoderGirl Stage 5.70.1.241026 hotfix
+# CoderGirl IDE / SIDBOX Stage 5.71.5.241026
 
-Apply this drop-in over **Stage 5.70.241026** at the IDE source root, preserving relative paths. Rebuild the IDE, run **Update Game Project**, and **rebuild the SIDBOX game** so regenerated `gameadventureruntime.c/.h` use the corrected unsigned reveal-action event ID. No edits to handwritten `main.c`. See STAGE5.70.1-REPEAT-ACTION-ID-HOTFIX.md.
+**Gift-to-HUD hotfix:** Inventory grants from dialogue-close now display immediately in HUD inventory-linked pickup counts, even before any floor pickup. Stage 5.71.4 dialogue gifts and NPC visibility remain intact. No additional per-frame or TFCard work.
+
+Apply the drop-in over Stage 5.71.4, rebuild the IDE, use **Update Game Project** to regenerate `gamehelpers/gameworlds.c` and `gamehelpers/gameadventureruntime.c`, then rebuild the SIDBOX game. Leave handwritten `main.c` untouched.
+
+See `STAGE5.71.5-DIALOGUE-GIFT-HUD.md` for diagnosis and tests.

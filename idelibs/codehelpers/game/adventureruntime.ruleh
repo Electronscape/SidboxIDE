@@ -119,6 +119,34 @@ typedef struct {
     uint8_t flip_flags; /* BLIT_FLAG_FLIP_X | BLIT_FLAG_FLIP_Y */
 } game_adventure_npc_animation_t;
 
+/* Optional dialogue-choice NPC appearance actions. Applied only after the
+ * selected choice succeeds, not on a rejected GIVE exchange. Each configured
+ * choice has up to two independent targets. No per-frame lookups. */
+#define GAME_ADVENTURE_NPC_HIDE 0u
+#define GAME_ADVENTURE_NPC_SHOW 1u
+#define GAME_ADVENTURE_NPC_TOGGLE 2u
+typedef struct {
+    uint16_t choice_id; /* node*3+answer, or node_count*3+node for no-answer close */
+    uint16_t npc_a, npc_b; /* UINT16_MAX = no target */
+    uint8_t action_a, action_b;
+} game_adventure_npc_choice_action_t;
+void game_adventure_npc_choice_actions(const game_adventure_npc_choice_action_t *rules,
+                                       uint16_t count);
+/* Optional ONE-TIME reward on closing a dialogue node with no answers.
+ * Kept separate from game_adventure_choice_t to preserve its ABI. */
+#define GAME_ADVENTURE_CLOSE_GIFT_BYTES 32u /* up to 256 dialogue nodes */
+typedef struct { uint16_t node_id, item_id; } game_adventure_close_gift_t;
+void game_adventure_close_gifts(const game_adventure_close_gift_t *rules,uint16_t count);
+void game_adventure_save_close_gifts(uint8_t out[GAME_ADVENTURE_CLOSE_GIFT_BYTES]);
+void game_adventure_restore_close_gifts(const uint8_t saved[GAME_ADVENTURE_CLOSE_GIFT_BYTES]);
+/* Apply project defaults once, immediately AFTER game_adventure_start().
+ * Separate from game_adventure_npc_t to preserve existing source/ABI layout. */
+void game_adventure_npc_initial_visibility(const uint8_t *defaults, uint16_t count);
+void game_adventure_set_npc_visible(uint16_t npc, uint8_t visible);
+uint8_t game_adventure_npc_visible(uint16_t npc);
+void game_adventure_npc_action(uint16_t npc, uint8_t action);
+
+
 typedef void (*game_adventure_action_t)(uint16_t action, void *user);
 
 /* Call after gameassets_init(). skin_pixels is optional; cells are a 3x3
@@ -169,6 +197,10 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
 #define GAME_ADVENTURE_COMPLETED_NPC_BYTES 256u
 void game_adventure_save_progress(uint8_t used_choices[96], uint8_t completed_npcs[256]);
 void game_adventure_restore_progress(const uint8_t used_choices[96], const uint8_t completed_npcs[256]);
+/* Saved per world in generated gameadventure.c. Not yet TFCard save-game data. */
+#define GAME_ADVENTURE_NPC_VISIBILITY_BYTES 256u
+void game_adventure_save_npc_visibility(uint8_t out[GAME_ADVENTURE_NPC_VISIBILITY_BYTES]);
+void game_adventure_restore_npc_visibility(const uint8_t saved[GAME_ADVENTURE_NPC_VISIBILITY_BYTES]);
 /* Optional NPC idle/talking atlas sequences. Called AFTER game_adventure_start.
    Animated Sprite BOBs are still drawn by the game's regular sprite draw calls. */
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,

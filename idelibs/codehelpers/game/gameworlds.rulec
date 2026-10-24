@@ -583,6 +583,14 @@ void gameworlds_after(game_world_player_t *p)
 static uint32_t gameworlds_hud_totals[256];
 @IDE_IF{HAS_ADVENTURE_RUNTIME}
 static uint8_t gameworlds_hud_inventory_kinds[256];
+/* Strong implementation of the Adventure runtime's optional HUD hook.
+ * No per-frame refresh is required: inventory kinds are registered at
+ * Adventure start and when items are awarded by dialogue or scripts. */
+void game_adventure_inventory_kind_changed(uint16_t pickup_kind)
+{
+    if (pickup_kind > 0u && pickup_kind < 256u)
+        gameworlds_hud_inventory_kinds[pickup_kind] = 1u;
+}
 @IDE_END
 uint32_t gameworlds_hud_total(uint16_t kind)
 {

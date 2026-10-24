@@ -30,6 +30,7 @@ typedef void (*game_pickup_callback_t)(game_collectable_t*,void*);
 ''')
     (out/'gameadventureruntime.h').write_text('''#include <stdint.h>
 uint16_t game_adventure_collect_amount(uint16_t,uint16_t);
+uint8_t game_adventure_adjust_pickup(uint16_t,int32_t);
 uint16_t game_adventure_collect(uint16_t);
 uint8_t game_adventure_pickup_quantity(uint16_t,uint32_t*);
 void game_adventure_managed_pickup_begin(uint16_t);
@@ -85,6 +86,12 @@ uint8_t game_adventure_pickup_quantity(uint16_t kind,uint32_t *owned){
   if(kind!=1) return 0;
   *owned=(uint32_t)collected;
   return 1;
+}
+uint8_t game_adventure_adjust_pickup(uint16_t kind,int32_t delta){
+ if(kind!=1) return 0;
+ if(delta<0 && (unsigned)(-delta)>(unsigned)collected)collected=0;
+ else collected+=delta;
+ return 1;
 }
 uint16_t game_adventure_collect(uint16_t kind){
   return scope && scopekind==kind ? 0 : game_adventure_collect_amount(kind,1);

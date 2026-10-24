@@ -48,6 +48,7 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSlider>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QIcon>
 #include <QSize>
@@ -1020,9 +1021,34 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     detail->addLayout(form);
     QJsonArray choices = node.value("choices").toArray();
     while (choices.size() < 3) choices.append(defaultChoices().at(choices.size()));
+    bool noAnswers=true;
+    for (const QJsonValue &v: choices)
+        if (!v.toObject().value("text").toString().trimmed().isEmpty()) noAnswers=false;
+    /* Migration for Stage 5.71: appearance actions on an EMPTY answer could
+     * never fire. For a terminal speech node, populate the new close fields
+     * from those old selections automatically, without changing the project
+     * until the user presses OK. */
+    QString legacyCloseSprite[2], legacyCloseMode[2];
+    int legacyCloseGive=-1;
+    if (noAnswers) for (const QJsonValue &v: choices) {
+        const int gift=v.toObject().value("give").toInt(-1);
+        if (gift>=0 && gift<items.size()) { legacyCloseGive=gift; break; }
+    }
+    if (noAnswers) for (int effect=0; effect<2; ++effect) {
+        const QString prefix=QStringLiteral("npcAction%1").arg(effect+1);
+        for (const QJsonValue &v: choices) {
+            const QJsonObject c=v.toObject();
+            const QString sprite=c.value(prefix+QStringLiteral("SpriteId")).toString();
+            if (sprite.isEmpty()) continue;
+            legacyCloseSprite[effect]=sprite;
+            legacyCloseMode[effect]=c.value(prefix+QStringLiteral("Mode")).toString("hide");
+            break;
+        }
+    }
     struct EditorFields {
         QTextEdit *label, *reply;
         QComboBox *next, *missingNext, *event, *mode;
+        QComboBox *npcTargets[2], *npcModes[2];
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
         QCheckBox *once, *completeNpc;
@@ -1094,7 +1120,9 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(fields[i].missingNext,3,1,1,3);
         grid->addWidget(new QLabel(QObject::tr("Needs"),box),4,0);
         grid->addWidget(fields[i].requires,4,1);
-        grid->addWidget(new QLabel(QObject::tr("NPC gives"),box),4,2);
+        auto *giveLabel = new QLabel(QObject::tr("NPC gives"),box);
+        giveLabel->setToolTip(QObject::tr("With an Answer, grant the gift when that answer is selected. With no answers anywhere in this node, this edits the one-time 'Give item when dialogue closes' reward."));
+        grid->addWidget(giveLabel,4,2);
         grid->addWidget(fields[i].give,4,3);
         grid->addWidget(new QLabel(QObject::tr("Take"),box),5,0);
         grid->addWidget(fields[i].take,5,1);
@@ -1111,6 +1139,29 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].completeNpc = new QCheckBox(QObject::tr("Mark this NPC as helped (use its completed dialogue next visit)"),box);
         fields[i].completeNpc->setChecked(choice.value("completeNpc").toBool(false));
         grid->addWidget(fields[i].completeNpc,8,0,1,4);
+        /* Two independent appearance actions can accompany a Game Object or
+         * custom event. Targets are stored by placed Sprite ID, not row index. */
+        for (int effect = 0; effect < 2; ++effect) {
+            const QString prefix = QStringLiteral("npcAction%1").arg(effect + 1);
+            fields[i].npcTargets[effect] = new QComboBox(box);
+            auto *target = fields[i].npcTargets[effect];
+            target->addItem(QObject::tr("No NPC change"),QString());
+            target->setToolTip(QObject::tr("Runs ONLY when the player selects this answer successfully. For a final speech node with no answers, use the separate When dialogue closes actions below."));
+            if (npcTable) for (int n = 0; n < npcTable->rowCount(); ++n) {
+                const QTableWidgetItem *entry = npcTable->item(n,0);
+                if (entry) target->addItem(entry->text(),entry->data(Qt::UserRole).toString());
+            }
+            target->setCurrentIndex(std::max(0,target->findData(choice.value(prefix + QStringLiteral("SpriteId")).toString())));
+            fields[i].npcModes[effect] = new QComboBox(box);
+            auto *mode = fields[i].npcModes[effect];
+            mode->addItem(QObject::tr("Hide NPC"),QStringLiteral("hide"));
+            mode->addItem(QObject::tr("Show NPC"),QStringLiteral("show"));
+            mode->addItem(QObject::tr("Toggle NPC"),QStringLiteral("toggle"));
+            mode->setCurrentIndex(std::max(0,mode->findData(choice.value(prefix + QStringLiteral("Mode")).toString("hide"))));
+            grid->addWidget(new QLabel(QObject::tr("NPC action %1").arg(effect + 1),box),10+effect,0);
+            grid->addWidget(target,10+effect,1,1,2);
+            grid->addWidget(mode,10+effect,3);
+        }
         fields[i].exchange=new QPushButton(box);
         const QJsonObject savedExchange=choice.value("exchange").toObject();
         fields[i].exchange->setProperty("exchange",QVariant::fromValue(savedExchange));
@@ -1133,6 +1184,182 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(fields[i].exchange,9,1,1,3);
         detail->addWidget(box);
     }
+
+    /* A final dialogue node can have no answers. Choice actions do not fire
+     * in that case, so offer explicit ON-CLOSE actions independently of any
+     * answer. This is exactly the case for Big Steve's "See ya!" node. */
+    auto *onCloseGroup = new QGroupBox(QObject::tr("When this dialogue closes (no answers)"), &dialog);
+    auto *onCloseLayout = new QGridLayout(onCloseGroup);
+    auto *onCloseHint = new QLabel(QObject::tr(
+        "After the final line is read, FIRE2 closes this dialogue and runs these actions. "
+        "Only nodes without visible answer choices use them. On an answerless node, "
+        "NPC action 1/2 inside the blank Choice panels edit these same settings too."), onCloseGroup);
+    onCloseHint->setWordWrap(true);
+    onCloseLayout->addWidget(onCloseHint,0,0,1,4);
+    QComboBox *onCloseNpcTarget[2] = {nullptr,nullptr};
+    QComboBox *onCloseNpcMode[2] = {nullptr,nullptr};
+    for (int effect=0; effect<2; ++effect) {
+        const QString prefix=QStringLiteral("closeNpcAction%1").arg(effect+1);
+        onCloseNpcTarget[effect]=new QComboBox(onCloseGroup);
+        auto *target=onCloseNpcTarget[effect];
+        target->addItem(QObject::tr("No NPC change"),QString());
+        if (npcTable) for (int r=0; r<npcTable->rowCount(); ++r) {
+            const auto *entry=npcTable->item(r,0);
+            if (entry) target->addItem(entry->text(),entry->data(Qt::UserRole).toString());
+        }
+        const QString savedSprite=node.value(prefix+QStringLiteral("SpriteId")).toString();
+        target->setCurrentIndex(std::max(0,target->findData(savedSprite.isEmpty() && noAnswers
+            ? legacyCloseSprite[effect] : savedSprite)));
+        onCloseNpcMode[effect]=new QComboBox(onCloseGroup);
+        auto *mode=onCloseNpcMode[effect];
+        mode->addItem(QObject::tr("Hide NPC"),QStringLiteral("hide"));
+        mode->addItem(QObject::tr("Show NPC"),QStringLiteral("show"));
+        mode->addItem(QObject::tr("Toggle NPC"),QStringLiteral("toggle"));
+        const QString closeMode=node.value(prefix+QStringLiteral("Mode")).toString();
+        mode->setCurrentIndex(std::max(0,mode->findData(closeMode.isEmpty() && noAnswers
+            && !legacyCloseSprite[effect].isEmpty() ? legacyCloseMode[effect]
+            : (closeMode.isEmpty() ? QStringLiteral("hide") : closeMode))));
+        onCloseLayout->addWidget(new QLabel(QObject::tr("On close action %1").arg(effect+1),onCloseGroup),1+effect,0);
+        onCloseLayout->addWidget(target,1+effect,1,1,2);
+        onCloseLayout->addWidget(mode,1+effect,3);
+    }
+    auto *onCloseGift = new QComboBox(onCloseGroup);
+    onCloseGift->addItem(QObject::tr("No item"),-1);
+    for (int k=0;k<items.size();++k)
+        onCloseGift->addItem(QStringLiteral("%1: %2").arg(k)
+            .arg(items[k].toObject().value("name").toString()),k);
+    const int savedCloseGift=node.value("closeGiveItem").toInt(-1);
+    onCloseGift->setCurrentIndex(std::max(0,onCloseGift->findData(savedCloseGift>=0
+        ? savedCloseGift : (noAnswers ? legacyCloseGive : -1))));
+    onCloseGift->setToolTip(QObject::tr("Grant ONE inventory item when an answerless final dialogue closes. One-time and preserved across world transitions. NPC gives on the blank Choice panels edits this same value."));
+    onCloseLayout->addWidget(new QLabel(QObject::tr("Give item when dialogue closes"),onCloseGroup),3,0,1,2);
+    onCloseLayout->addWidget(onCloseGift,3,2,1,2);
+    /* Keep NPC Hide/Show/Toggle EDITABLE even when a terminal node has no
+     * answer text. For an answerless node the three familiar choice-row NPC
+     * controls are live mirrors of the two real on-close NPC actions. Updating
+     * either place updates the other, and only the node-level close fields are
+     * saved for such a node. This prevents the Stage 5.71.2 disabled-combo
+     * regression and the earlier disappearing selection after reopen.
+     *
+     * When an answer exists, each choice retains its own independent NPC
+     * actions; the on-close actions are inactive until the node is terminal. */
+    const auto hasAnyAnswer = [&fields]() {
+        for (const EditorFields &f : fields)
+            if (!f.label->toPlainText().trimmed().isEmpty()) return true;
+        return false;
+    };
+    /* Terminal dialogue nodes have no selectable answers. The familiar
+     * 'NPC gives' controls must therefore edit the SAME node-level gift as
+     * 'Give item when dialogue closes', rather than being disabled. Keep all
+     * three blank Choice panels in sync, and block signals during mirroring.
+     * For non-terminal nodes, the choice gifts remain independent. */
+    bool syncingCloseGift = false;
+    const auto mirrorCloseGift = [&]() {
+        if (syncingCloseGift || hasAnyAnswer()) return;
+        syncingCloseGift = true;
+        const int giftId = onCloseGift->currentData().toInt();
+        for (EditorFields &f : fields) {
+            const QSignalBlocker blockGift(f.give);
+            f.give->setCurrentIndex(std::max(0,f.give->findData(giftId)));
+        }
+        syncingCloseGift = false;
+    };
+    const auto chooseCloseGiftFromChoice = [&](int i) {
+        if (syncingCloseGift || hasAnyAnswer()) return;
+        syncingCloseGift = true;
+        {
+            const QSignalBlocker blockGift(onCloseGift);
+            onCloseGift->setCurrentIndex(std::max(0,
+                onCloseGift->findData(fields[i].give->currentData())));
+        }
+        syncingCloseGift = false;
+        mirrorCloseGift();
+    };
+    QObject::connect(onCloseGift,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     &dialog,[&](int){ mirrorCloseGift(); });
+    bool syncingCloseNpc = false;
+    const auto mirrorCloseNpc = [&](int effect) {
+        if (syncingCloseNpc || hasAnyAnswer()) return;
+        syncingCloseNpc = true;
+        const QString targetId = onCloseNpcTarget[effect]->currentData().toString();
+        const QString modeId = onCloseNpcMode[effect]->currentData().toString();
+        for (EditorFields &f : fields) {
+            const QSignalBlocker blockTarget(f.npcTargets[effect]);
+            const QSignalBlocker blockMode(f.npcModes[effect]);
+            f.npcTargets[effect]->setCurrentIndex(std::max(0,f.npcTargets[effect]->findData(targetId)));
+            f.npcModes[effect]->setCurrentIndex(std::max(0,f.npcModes[effect]->findData(modeId)));
+        }
+        syncingCloseNpc = false;
+    };
+    const auto chooseCloseNpcFromChoice = [&](int i, int effect) {
+        if (syncingCloseNpc || hasAnyAnswer()) return;
+        syncingCloseNpc = true;
+        {
+            const QSignalBlocker blockTarget(onCloseNpcTarget[effect]);
+            const QSignalBlocker blockMode(onCloseNpcMode[effect]);
+            onCloseNpcTarget[effect]->setCurrentIndex(std::max(0,
+                onCloseNpcTarget[effect]->findData(fields[i].npcTargets[effect]->currentData())));
+            onCloseNpcMode[effect]->setCurrentIndex(std::max(0,
+                onCloseNpcMode[effect]->findData(fields[i].npcModes[effect]->currentData())));
+        }
+        syncingCloseNpc = false;
+        mirrorCloseNpc(effect);
+    };
+    for (int effect=0; effect<2; ++effect) {
+        QObject::connect(onCloseNpcTarget[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&,effect](int){ mirrorCloseNpc(effect); });
+        QObject::connect(onCloseNpcMode[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&,effect](int){ mirrorCloseNpc(effect); });
+    }
+    const auto refreshChoiceControls = [&]() {
+        const bool terminal = !hasAnyAnswer();
+        for (EditorFields &f : fields) {
+            const bool hasAnswer=!f.label->toPlainText().trimmed().isEmpty();
+            /* On answerless nodes, this is a live editor for closeGiveItem.
+             * On nodes with actual answers, keep the normal per-choice rule. */
+            f.give->setEnabled(terminal || hasAnswer);
+            f.give->setToolTip(terminal
+                ? QObject::tr("No answers: this sets 'Give item when dialogue closes'. All three NPC gives selectors mirror that one-time gift.")
+                : hasAnswer
+                    ? QObject::tr("Award this item when the player selects this answer.")
+                    : QObject::tr("Enter an Answer to enable this choice's inventory gift."));
+            f.exchange->setEnabled(hasAnswer);
+            for (int effect=0;effect<2;++effect) {
+                /* Never grey out the NPC action selectors. Blank rows are
+                 * editable, and terminal-node rows mirror the close action. */
+                f.npcTargets[effect]->setEnabled(true);
+                f.npcModes[effect]->setEnabled(true);
+                const QString hint = terminal
+                    ? QObject::tr("This edits the ON-CLOSE NPC action too. All blank rows mirror the same setting.")
+                    : hasAnswer
+                        ? QObject::tr("Runs when this answer is selected.")
+                        : QObject::tr("Editable for later: this choice action runs once you enter an Answer.");
+                f.npcTargets[effect]->setToolTip(hint);
+                f.npcModes[effect]->setToolTip(hint);
+            }
+        }
+        if (terminal) {
+            mirrorCloseGift();
+            mirrorCloseNpc(0);
+            mirrorCloseNpc(1);
+        }
+    };
+    for (int i=0;i<3;++i) {
+        QObject::connect(fields[i].label,&QTextEdit::textChanged,&dialog,
+                         [&,i] { Q_UNUSED(i); refreshChoiceControls(); });
+        QObject::connect(fields[i].give,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&,i](int){ chooseCloseGiftFromChoice(i); });
+        for (int effect=0;effect<2;++effect) {
+            QObject::connect(fields[i].npcTargets[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                             &dialog,[&,i,effect](int){ chooseCloseNpcFromChoice(i,effect); });
+            QObject::connect(fields[i].npcModes[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                             &dialog,[&,i,effect](int){ chooseCloseNpcFromChoice(i,effect); });
+        }
+    }
+    refreshChoiceControls();
+    /* A terminal node's active controls must not be buried below three
+     * unused Choice panels. The same controls remain visible inside choices. */
+    detail->insertWidget(1,onCloseGroup);
 
     // The completed dialogue is an NPC setting, not a property of a shared
     // dialogue node. Offer an intuitive shortcut from the NPC's opening node,
@@ -1204,8 +1431,37 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         c.insert("targetObjectId",(eventSelection!=QStringLiteral("none") && eventSelection!=QStringLiteral("custom"))
             ?eventSelection:QString());
         c.insert("targetAction",fields[i].mode->currentData().toString());
+        for (int effect = 0; effect < 2; ++effect) {
+            const QString prefix = QStringLiteral("npcAction%1").arg(effect + 1);
+            c.insert(prefix + QStringLiteral("SpriteId"),fields[i].npcTargets[effect]->currentData().toString());
+            c.insert(prefix + QStringLiteral("Mode"),fields[i].npcModes[effect]->currentData().toString());
+        }
         c.insert("exchange",fields[i].exchange->property("exchange").toJsonObject());
         updated.append(c);
+    }
+    node.insert("closeGiveItem",onCloseGift->currentData().toInt());
+    for (int effect=0; effect<2; ++effect) {
+        const QString prefix=QStringLiteral("closeNpcAction%1").arg(effect+1);
+        node.insert(prefix+QStringLiteral("SpriteId"),onCloseNpcTarget[effect]->currentData().toString());
+        node.insert(prefix+QStringLiteral("Mode"),onCloseNpcMode[effect]->currentData().toString());
+    }
+    /* Retire the unreachable empty-answer action once its setting has been
+     * migrated to the no-answer dialogue-close event. */
+    bool noAnswersAfterEdit=true;
+    for (const QJsonValue &v: updated)
+        if (!v.toObject().value("text").toString().trimmed().isEmpty()) noAnswersAfterEdit=false;
+    if (noAnswersAfterEdit) for (int c=0; c<updated.size(); ++c) {
+        QJsonObject choice=updated[c].toObject();
+        /* The reward is now on the terminal node, not an unreachable answer. */
+        choice.insert("give",-1); /* empty answers cannot award items */
+        for (int effect=0; effect<2; ++effect) {
+            const QString prefix=QStringLiteral("npcAction%1").arg(effect+1);
+            /* Always retire empty-answer legacy actions, including when the
+             * user explicitly resets the closing target to "No NPC change".
+             * Otherwise an old ghost action would be migrated back next time. */
+            choice.insert(prefix+QStringLiteral("SpriteId"),QString());
+        }
+        updated[c]=choice;
     }
     node.insert("choices",updated); nodes[row] = node;
     if (npcTable && linkedNpc->count()) {
@@ -1561,16 +1817,24 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     tabs->addTab(itemsPage,QObject::tr("Inventory Items"));
 
     auto *npcPage = new QWidget(tabs); auto *npcLayout = new QVBoxLayout(npcPage);
-    npcLayout->addWidget(new QLabel(QObject::tr("NPCs use existing placed Sprite resources. Move their sprites in the World Editor."),npcPage));
-    auto *npcs = new QTableWidget(0,4,npcPage);
+    auto *npcHelp = new QLabel(QObject::tr(
+        "NPCs use placed Sprites from the World Editor. Uncheck Initially visible to "
+        "start an NPC hidden. Successful dialogue choices can Show/Hide/Toggle up "
+        "to two NPCs; visibility survives world travel."),npcPage);
+    npcHelp->setWordWrap(true);
+    npcLayout->addWidget(npcHelp);
+    auto *npcs = new QTableWidget(0,5,npcPage);
     npcs->setHorizontalHeaderLabels({QObject::tr("Sprite"),QObject::tr("Start node"),
-        QObject::tr("Talk radius (px)"),QObject::tr("After helped (optional)")});
+        QObject::tr("Talk radius (px)"),QObject::tr("After helped (optional)"),
+        QObject::tr("Initially visible")});
     // Give the two dialogue selectors their full selected titles. Sprite uses
     // the space left over; horizontal scrolling remains available on small screens.
     npcs->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     npcs->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Interactive);
     npcs->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Interactive);
     npcs->horizontalHeader()->setSectionResizeMode(3,QHeaderView::Interactive);
+    npcs->horizontalHeader()->setSectionResizeMode(4,QHeaderView::Interactive);
+    npcs->setColumnWidth(4,140);
     npcs->horizontalHeader()->setMinimumSectionSize(100);
     npcs->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     npcLayout->addWidget(npcs,1);
@@ -1592,7 +1856,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         npcs->setColumnWidth(2,145);
         npcs->setColumnWidth(3,std::max(250,helpedWidth));
     };
-    auto appendNpc = [&](const QString &id,int node,int radius, const QJsonObject &animation = QJsonObject(), int doneNode = -1) {
+    auto appendNpc = [&](const QString &id,int node,int radius, const QJsonObject &animation = QJsonObject(), int doneNode = -1, bool initiallyVisible = true) {
         const int row=npcs->rowCount(); npcs->insertRow(row);
         auto it=std::find_if(sprites.begin(),sprites.end(),[&](const auto &s){return s.id==id;});
         auto *name=cell(it==sprites.end() ? QObject::tr("Missing Sprite") : it->name);
@@ -1610,6 +1874,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         for(int i=0;i<nodes.size();++i) completed->addItem(dialogueTitle(nodes[i].toObject(),i),i);
         completed->setCurrentIndex(std::max(0,completed->findData(doneNode)));
         npcs->setCellWidget(row,3,completed);
+        auto *visible = cell(QString());
+        visible->setFlags((visible->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+        visible->setCheckState(initiallyVisible ? Qt::Checked : Qt::Unchecked);
+        visible->setTextAlignment(Qt::AlignCenter);
+        npcs->setItem(row,4,visible);
         QObject::connect(startNode,QOverload<int>::of(&QComboBox::currentIndexChanged),npcs,[&,startNode](int){
             startNode->setToolTip(startNode->currentText());sizeNpcColumns();
         });
@@ -1619,7 +1888,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         sizeNpcColumns();
     };
     for(const auto &v: old.value("npcs").toArray()) {
-        const QJsonObject o=v.toObject(); appendNpc(o.value("spriteId").toString(),o.value("node").toInt(),o.value("radius").toInt(48),o.value("animation").toObject(),o.value("doneNode").toInt(-1));
+        const QJsonObject o=v.toObject(); appendNpc(o.value("spriteId").toString(),o.value("node").toInt(),o.value("radius").toInt(48),o.value("animation").toObject(),o.value("doneNode").toInt(-1),o.value("initiallyVisible").toBool(true));
     }
     auto refreshNpcNodes=[&] {
         for(int r=0;r<npcs->rowCount();++r){
@@ -1645,13 +1914,19 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(npcAdd,&QPushButton::clicked,&dialog,[&] {
         QDialog picker(&dialog); picker.setWindowTitle(QObject::tr("Choose Placed Sprite"));
         auto *v=new QVBoxLayout(&picker); auto *cb=new QComboBox(&picker);
-        for(const auto &s:sprites) cb->addItem(s.name,s.id);
+        for(const auto &s:sprites) {
+            bool alreadyUsed=false;
+            for (int i=0;i<npcs->rowCount();++i)
+                if (npcs->item(i,0) && npcs->item(i,0)->data(Qt::UserRole).toString()==s.id)
+                    {alreadyUsed=true;break;}
+            if (!alreadyUsed) cb->addItem(s.name,s.id);
+        }
         v->addWidget(cb);
         auto *b=new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,&picker);
         v->addWidget(b);
         QObject::connect(b,&QDialogButtonBox::accepted,&picker,&QDialog::accept);
         QObject::connect(b,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
-        if(!sprites.isEmpty() && picker.exec()==QDialog::Accepted)
+        if(cb->count() && picker.exec()==QDialog::Accepted)
             appendNpc(cb->currentData().toString(),0,48);
     });
     QObject::connect(npcAnim,&QPushButton::clicked,&dialog,[&] {
@@ -1861,7 +2136,31 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(QMessageBox::question(&dialog,QObject::tr("Delete NPC?"),
               QObject::tr("Remove '%1' from Adventure NPCs?\n\nIts placed sprite and any dialogue nodes will be kept.").arg(name),
               QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes) return;
+        const QString removedId=npcs->item(row,0)->data(Qt::UserRole).toString();
         npcs->removeRow(row);
+        /* Clear only now-invalid appearance links, preserving ordinary
+         * dialogue and Game Object events. IDs are stable under row reorder. */
+        bool stillExists=false;
+        for(int n=0;n<npcs->rowCount();++n)
+            if(npcs->item(n,0) && npcs->item(n,0)->data(Qt::UserRole).toString()==removedId)
+                {stillExists=true;break;}
+        if(!stillExists) for(int n=0;n<nodes.size();++n) {
+            QJsonObject node=nodes[n].toObject();
+            QJsonArray choices=node.value("choices").toArray();
+            for(int choice=0;choice<choices.size();++choice) {
+                QJsonObject c=choices[choice].toObject();
+                for(int e=1;e<=2;++e) {
+                    const QString key=QStringLiteral("npcAction%1SpriteId").arg(e);
+                    if(c.value(key).toString()==removedId)c.insert(key,QString());
+                }
+                choices[choice]=c;
+            }
+            for (int e=1;e<=2;++e) {
+                const QString key=QStringLiteral("closeNpcAction%1SpriteId").arg(e);
+                if(node.value(key).toString()==removedId) node.insert(key,QString());
+            }
+            node.insert("choices",choices);nodes[n]=node;
+        }
     });
     tabs->addTab(npcPage,QObject::tr("NPCs"));
     QObject::connect(tabs,&QTabWidget::currentChanged,npcs,[&](int){sizeNpcColumns();});
@@ -2564,6 +2863,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         o.insert("radius",std::clamp(intAt(npcs,row,2,48),8,512));
         auto *done=qobject_cast<QComboBox*>(npcs->cellWidget(row,3));
         o.insert("doneNode",done?done->currentData().toInt():-1);
+        o.insert("initiallyVisible",!npcs->item(row,4) || npcs->item(row,4)->checkState()==Qt::Checked);
         o.insert("animation",npcs->item(row,0)->data(Qt::UserRole + 1).toJsonObject());
         outNpcs.append(o);
     }
