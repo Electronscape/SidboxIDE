@@ -12,6 +12,12 @@
 #include "../gamelevels/@IDE{WORLD_HEADER_FILENAME}"
 @IDE_END
 @IDE_IF{HAS_AUDIO}
+/* Optional title-menu SFX preferences. Applied after existing distance gain. */
+extern uint16_t gametitle_scale_sfx(uint16_t raw_volume) __attribute__((weak));
+static uint16_t cg_title_sfx_gain(uint16_t volume)
+{
+    return gametitle_scale_sfx ? gametitle_scale_sfx(volume) : volume;
+}
 /* Automatic object audio. WAVs and channels are defined in gameassets.
    Object sounds are OPTIONAL. Each sound uses its assigned SIDBOX channel.
    For spatial audio, 480 pixels is the V1 LCD width. */
@@ -612,7 +618,7 @@ void gameworlditems_restore_state(void) {}
 static void cg_sound_@IDE{SOUND_SYMBOL}(int32_t x, int radius)
 {
     playsound@IDE{SOUND_SYMBOL}();
-    sound_setvolume(@IDE{SOUND_CHANNEL}, cg_audio_volume(@IDE{SOUND_VOLUME}, x, radius));
+    sound_setvolume(@IDE{SOUND_CHANNEL}, cg_title_sfx_gain((uint16_t)cg_audio_volume(@IDE{SOUND_VOLUME}, x, radius)));
     sound_setpanning(@IDE{SOUND_CHANNEL}, cg_audio_pan(@IDE{SOUND_PAN}, x, radius));
 }
 @IDE_SECTION_END
@@ -848,7 +854,7 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
         } else if (cg_loop_gain[@IDE{INDEX}] > cg_loop_target[@IDE{INDEX}]) {
             cg_loop_gain[@IDE{INDEX}] = cg_loop_gain[@IDE{INDEX}] > @IDE{FADE_STEP} ? cg_loop_gain[@IDE{INDEX}] - @IDE{FADE_STEP} : 0;
         }
-        sound_setvolume(@IDE{SOUND_CHANNEL}, (uint16_t)(cg_audio_volume(@IDE{SOUND_VOLUME}, cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}) * cg_loop_gain[@IDE{INDEX}] / 255));
+        sound_setvolume(@IDE{SOUND_CHANNEL}, cg_title_sfx_gain((uint16_t)(cg_audio_volume(@IDE{SOUND_VOLUME}, cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}) * cg_loop_gain[@IDE{INDEX}] / 255)));
         sound_setpanning(@IDE{SOUND_CHANNEL}, cg_audio_pan(@IDE{SOUND_PAN}, cg_gwi_platforms[@IDE{INDEX}].x, @IDE{AUDIO_RADIUS}));
         if (cg_loop_gain[@IDE{INDEX}] == 0 && cg_loop_target[@IDE{INDEX}] == 0) {
             sound_stop(@IDE{SOUND_CHANNEL});

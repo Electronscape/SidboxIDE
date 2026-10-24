@@ -20,7 +20,9 @@ assert '#include "guidesigner_detail.h"' in title
 assert 'GuiDesignerDetail::drawCoderGirlText(gp,0,0,text,Qt::white);' in renderer
 assert 'QFontDatabase::systemFont' not in renderer
 assert 'gp.drawText(' not in renderer
-assert 'QImage glyphs(width,16,' in renderer
+assert 'QImage guiGlyphs(width,16,' in renderer
+assert 'guiGlyphs.scaled(width,8,Qt::IgnoreAspectRatio' in renderer
+assert 'Qt::FastTransformation' in renderer
 assert 'text.toLatin1().size())*8' in renderer
 assert 'qBound(1,a.fontSizeX,4)' in renderer
 assert 'qBound(1,a.fontSizeY,4)' in renderer
@@ -30,7 +32,7 @@ assert 'glyph[column]' in guide and 'y + row * 2' in guide
 assert 'void drawCoderGirlText(' in header
 assert 'guidesigner_graphics.cpp' in cmake
 assert 'fontSizeX' in title and 'fontSizeY' in title
-assert 'Build: 5.61.1.231026' in splash
+assert 'Build: 5.64.1.231026' in splash
 
 block = guide.split('kCoderGirlSystemFont[256][8] = {', 1)[1].split('};', 1)[0]
 entries = re.findall(r'^\s*\{\s*(?:0x[0-9a-fA-F]{2}\s*,\s*){7}0x[0-9a-fA-F]{2}\s*\}', block, re.M)

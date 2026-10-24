@@ -1,4 +1,11 @@
-[ FOOD FOR THOUGHT ]
+
+
+
+
+
+
+
+[IN PROGRESS!!!!]
 MIGHT be nice to have a debugger something visual, so like lines going from something to something...
 basic looking so looks like cards, that connect to another card that does something. That way we can trace the progress of the game.
 THIS one is going to be a nightmare to work out though.

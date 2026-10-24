@@ -412,6 +412,8 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         outputs.insert(QStringLiteral("gamehelpers/gamehud.c"));
         outputs.insert(QStringLiteral("gamehelpers/gamehud.h"));
     }
+    outputs.insert(QStringLiteral("gamehelpers/gametitle.c"));
+    outputs.insert(QStringLiteral("gamehelpers/gametitle.h"));
     outputs.insert(QStringLiteral("maingame.c.txt"));
     // Main generation may create a missing file or transfer a dirty external
     // file. Back up/track BOTH source and metadata for full rollback. User

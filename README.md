@@ -1,9 +1,11 @@
-SIDBOX / CoderGirl IDE source — Stage 5.62.231026
+SIDBOX / CoderGirl IDE source — Stage 5.68.241026
 
-HUD Designer uses the same native SIDBOX glyph preview as GUI Designer and
-Title Screen Designer. Labels, numeric stats and collectable counters render
-from the shared 256-character 8×16 firmware-style font, not the desktop Qt font.
-See STAGE5.62-HUD-SIDBOX-FONT-PREVIEW.md.
+Title-screen runtime: fixed main-menu rectangle geometry and separated the
+PPB background onto the hardware BACK layer, leaving the title text and menu
+selector on the foreground with their editable ARGB CLUT. The Options background
+has its own opaque PPB-derived CLUT, restored on submenu exit.
 
-The generated game HUD runtime and all saved project/PPB assets are unchanged.
-Full Qt6 GUI compilation and visual confirmation still need Fedora testing.
+See STAGE5.68-TITLE-RECT-AND-ALPHA-LAYERS.md for details and hardware limitations.
+
+Regenerate gamehelpers/gametitle.c with Update Game Project and rebuild the game.
+No change to user-owned main.c, game worlds, PPBs, or the audio mixer.

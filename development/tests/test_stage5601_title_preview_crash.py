@@ -27,7 +27,7 @@ assert 'if(it.key()->isSelected()!=shouldSelect)' in target_handler
 
 # Full rebuild is still allowed when artwork or content actually changes.
 assert 'scene->clear();' in src
-assert 'QObject::connect(titleEdit,&QLineEdit::textChanged,&dialog,[&](const QString &){render();});' in src
-assert 'if(changed)updateProperties();' in src
-assert 'Build: 5.60.1.231026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'QObject::connect(titleEdit,&QLineEdit::textChanged,&dialog,[&](const QString &){render();if(remember)remember();});' in src
+assert 'if(changed) {' in src and 'updateProperties();' in src and 'if(remember)remember();' in src
+assert 'Build: 5.63.231026' in (root/'splashscreenwidget.cpp').read_text()
 print('Stage 5.60.1 title preview selection source regression: PASS')

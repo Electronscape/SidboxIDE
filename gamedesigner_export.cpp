@@ -10,6 +10,7 @@
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
 #include "gameplayerprofile.h"
+#include "gametitleruntime.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -1135,6 +1136,7 @@ bool SidboxGameDesigner::exportExampleMain(QString *error)
     mainFlag("HAS_LOOPS", hasMap && !m_tilemap.loops.isEmpty());
     // HUD is project-owned. An authored main.c is never overwritten;
     // the regenerated maingame.c.txt demonstrates the one-line call.
+    mainFlag("HAS_TITLE", GameTitleRuntime::enabled(gameProject.absolutePath()));
     mainFlag("HAS_HUD", QFileInfo::exists(gameProject.filePath(QStringLiteral("gamehud.sbhud")))
         && QFileInfo::exists(gameProject.filePath(QStringLiteral("gamehelpers/gamehud.h"))));
     mainFlag("HAS_NO_MAP", !hasMap);
@@ -1508,6 +1510,12 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
     }
     if (!exportAdventure(&integrationError)) {
         QMessageBox::warning(this, tr("Adventure Generation"), integrationError);
+        return false;
+    }
+    if (!GameTitleRuntime::generate(QFileInfo(m_filePath).absolutePath(),
+            sidboxTilemapWorldBaseName(m_filePath),
+            QDir(helperTemplatesRoot()).filePath(QStringLiteral("game")), &integrationError)) {
+        QMessageBox::warning(this, tr("Title Screen Runtime Generation"), integrationError);
         return false;
     }
     if (!exportExampleMain(&integrationError)) {

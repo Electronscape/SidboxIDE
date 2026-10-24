@@ -2,6 +2,10 @@
 #include "gameassets.h"
 #include <stdlib.h>
 #include <string.h>
+/* Optional title settings. Weak declarations preserve games without a title
+   module, and avoid duplicating or shadowing the SIDBOX sound API. */
+extern uint16_t gametitle_scale_sfx(uint16_t raw_volume) __attribute__((weak));
+extern uint8_t gametitle_music_enabled(void) __attribute__((weak));
 
 @IDE_IF{DUAL_PLANE}
 /* Dual-plane: call gameassets_draw_background() with a BACKGROUND target set,
@@ -208,7 +212,8 @@ static uint32_t gameassets_sfx_length_@IDE{SYMBOL} = 0;
 @IDE_SECTION_END
 @IDE_SECTION{MUSIC_START}
     /* Music resource: Play on game start. */
-    music_play((char *)@IDE{MUSIC_PATH}, @IDE{SUBSONG});
+    if (!gametitle_music_enabled || gametitle_music_enabled())
+        music_play((char *)@IDE{MUSIC_PATH}, @IDE{SUBSONG});
 @IDE_SECTION_END
 @IDE_SECTION{BITMAP_LOOKUP}
     if (strcmp(sd_path, @IDE{PPB_PATH}) == 0@IDE{LOAD_GUARD}) {
@@ -254,7 +259,7 @@ void playsound@IDE{SYMBOL}(void)
     sound_stop(@IDE{CHANNEL});
     sound_assign(@IDE{CHANNEL}, gameassets_sfx_@IDE{SYMBOL}, gameassets_sfx_length_@IDE{SYMBOL}@IDE{LENGTH_DIVISOR}, @IDE{BITS_FLAG});
     sound_setfrequency(@IDE{CHANNEL}, @IDE{FREQUENCY});
-    sound_setvolume(@IDE{CHANNEL}, @IDE{VOLUME});
+    sound_setvolume(@IDE{CHANNEL}, gametitle_scale_sfx ? gametitle_scale_sfx(@IDE{VOLUME}) : @IDE{VOLUME});
     sound_setpanning(@IDE{CHANNEL}, @IDE{PAN});
     sound_setloop(@IDE{CHANNEL}, @IDE{LOOP_START}, @IDE{LOOP_LENGTH});
     sound_enableloop(@IDE{CHANNEL}, @IDE{LOOP_ENABLED});
@@ -265,7 +270,8 @@ void playsound@IDE{SYMBOL}(void)
 @IDE_SECTION{MUSIC_FUNCTION}
 void playmusic@IDE{SYMBOL}(void)
 {
-    music_play((char *)@IDE{MUSIC_PATH}, @IDE{SUBSONG});
+    if (!gametitle_music_enabled || gametitle_music_enabled())
+        music_play((char *)@IDE{MUSIC_PATH}, @IDE{SUBSONG});
 }
 
 @IDE_SECTION_END

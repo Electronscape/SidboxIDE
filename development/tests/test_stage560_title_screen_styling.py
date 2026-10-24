@@ -15,16 +15,17 @@ assert 'SidboxGamePalette::readPalette' in s
 assert 'chooseTitleColour' in s and 'Foreground colour' in s and 'Outline colour' in s
 assert 'Enable outline' in s
 assert 'gfx_drawtextf' in (root/'idelibs/api/graphics/graphics.h').read_text()
-assert '1<<(qBound(1,a.fontSize,4)-1)' in s
+assert '1<<(qBound(1,a.fontSizeX,4)-1)' in s
+assert '1<<(qBound(1,a.fontSizeY,4)-1)' in s
 for key in ('foreground','outline','outlineEnabled','fontSize','background','textPalette'):
     assert f'QStringLiteral("{key}")' in s
 assert 'QJsonValue(QJsonValue::Null)' in s
 assert 'const bool hasDestination=(e.action==QStringLiteral("start")||e.action==QStringLiteral("goto"))' in s
 assert 'worldCombo->setEnabled(destination)' in s and 'startCombo->setEnabled(destination)' in s
 assert '(Not used)' in s
-assert 'obj.insert(QStringLiteral("version"),3)' in s
+assert 'obj.insert(QStringLiteral("version"),5)' in s
 assert 'obj.insert(QStringLiteral("saveSlots"),10)' in s
-assert 'Build: 5.60.1.231026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.63.231026' in (root/'splashscreenwidget.cpp').read_text()
 # Stage 5.59 entries without new fields remain readable via artFromJson fallback.
 assert 'if (obj.isEmpty()) return a;' in s
 assert 'a.foreground = qBound(0,obj.value(' in s

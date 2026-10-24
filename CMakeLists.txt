@@ -53,6 +53,8 @@ qt_add_executable(SidboxIDE
     gamefloweditor.h
     gametitlescreeneditor.cpp
     gametitlescreeneditor.h
+    gametitleruntime.cpp
+    gametitleruntime.h
     gameadventuregen.cpp
     gamedesigner_update.cpp
     gamedesigner.h

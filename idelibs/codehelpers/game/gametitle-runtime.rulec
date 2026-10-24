@@ -1,0 +1,426 @@
+/* GENERATED SIDBOX TITLE SCREEN RUNTIME — Stage 5.68.
+ * Origin: .sidbox-title-screen.json. Never hand-edit this file.
+ * Load Game remains a no-op; Options opens the second 480x320 screen.
+ */
+#include "gametitle.h"
+#include "apis.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#define TITLE_IMAGE_COUNT @TITLE_IMAGE_COUNT@
+#define TITLE_MENU_COUNT @TITLE_MENU_COUNT@
+#define TITLE_SELECTOR @TITLE_SELECTOR@
+#define TITLE_SELECTOR_COLOUR @TITLE_SELECTOR_COLOUR@
+
+typedef struct { const char *path; uint16_t width,height; uint8_t *pixels; } title_image_t;
+typedef struct {
+    const char *text;
+    int16_t x,y;
+    int16_t image; /* -1 -> text, otherwise an index into title_images */
+    uint16_t cell; uint16_t frame;
+    uint8_t foreground,outline,outlined,size_x,size_y,outline_thickness;
+} title_art_t;
+typedef struct { title_art_t art; uint8_t action; const char *world,*start; } title_item_t;
+
+static title_image_t title_images[TITLE_IMAGE_COUNT] = {
+@TITLE_IMAGES@
+};
+static const uint32_t title_clut[256] __attribute__((aligned(32))) = {
+@TITLE_PALETTE@
+};
+/* Independent background palettes: alpha belongs to the FRONT plane. */
+static const uint32_t title_background_clut[256] __attribute__((aligned(32))) = {
+@TITLE_BACKGROUND_PALETTE@
+};
+static const uint32_t title_options_background_clut[256] __attribute__((aligned(32))) = {
+@TITLE_OPTIONS_BACKGROUND_PALETTE@
+};
+static const title_art_t title_heading = @TITLE_HEADING@;
+static const title_art_t title_subtitle = @TITLE_SUBTITLE@;
+static const title_item_t title_menu[TITLE_MENU_COUNT] = {
+@TITLE_MENU@
+};
+static const int title_menu_length = @TITLE_MENU_LENGTH@;
+static const int title_background_image = @TITLE_BACKGROUND_INDEX@;
+/* 0 sprite / blit, 1 prepared column-major, 2 convert row-major. */
+static const int title_background_mode = @TITLE_BACKGROUND_MODE@;
+static const char *title_music_file = @TITLE_MUSIC@;
+static const char *title_default_world = @TITLE_DEFAULT_WORLD@;
+static const title_art_t title_options_heading = @TITLE_OPTIONS_HEADING@;
+static const title_art_t title_options_items[8] = {
+    @TITLE_OPTIONS_ITEMS@
+};
+static const uint8_t title_options_visible[8] = {@TITLE_OPTIONS_VISIBLE@};
+/* Independent volume/text-speed bar origin and foreground CLUT index. */
+static const int16_t title_options_bar_pos[3][2] = {@TITLE_OPTIONS_BAR_POS@};
+static const uint8_t title_options_bar_colour[3] = {@TITLE_OPTIONS_BAR_COLOURS@};
+static const int title_options_background = @TITLE_OPTIONS_BACKGROUND@;
+static const int title_options_bg_mode = @TITLE_OPTIONS_BG_MODE@;
+static uint8_t opt_music = @TITLE_OPT_DEFAULT_MUSIC@;
+static uint8_t opt_music_volume = @TITLE_OPT_DEFAULT_MUSIC_VOL@;
+static uint8_t opt_sfx = @TITLE_OPT_DEFAULT_SFX@;
+static uint8_t opt_sfx_volume = @TITLE_OPT_DEFAULT_SFX_VOL@;
+static uint8_t opt_shake = @TITLE_OPT_DEFAULT_SHAKE@;
+static uint8_t opt_text_speed = @TITLE_OPT_DEFAULT_SPEED@;
+static uint8_t opt_difficulty = @TITLE_OPT_DEFAULT_DIFFICULTY@;
+
+uint8_t gametitle_music_enabled(void) {return opt_music;}
+uint8_t gametitle_sfx_enabled(void) {return opt_sfx;}
+uint8_t gametitle_shake_enabled(void) {return opt_shake;}
+uint8_t gametitle_music_volume(void) {return opt_music_volume;}
+uint8_t gametitle_sfx_volume(void) {return opt_sfx_volume;}
+uint8_t gametitle_text_speed(void) {return opt_text_speed;}
+uint8_t gametitle_difficulty(void) {return opt_difficulty;}
+uint16_t gametitle_difficulty_percent(void) {
+    return opt_difficulty==0 ? @TITLE_OPT_EASY_MULT@ :
+           opt_difficulty==2 ? @TITLE_OPT_HARD_MULT@ : 100u;
+}
+uint16_t gametitle_scale_sfx(uint16_t raw_volume) {
+    if(!opt_sfx) return 0;
+    const uint32_t scaled=((uint32_t)raw_volume*opt_sfx_volume)/100u;
+    return (uint16_t)(scaled>65535u?65535u:scaled);
+}
+
+
+static void title_release_images(void)
+{
+    for (unsigned i=0;i<TITLE_IMAGE_COUNT;++i) {
+        free(title_images[i].pixels);
+        title_images[i].pixels=0;
+    }
+}
+static uint8_t title_load_images(void)
+{
+    for (unsigned i=0;i<TITLE_IMAGE_COUNT;++i) {
+        title_image_t *im=&title_images[i];
+        const uint32_t bytes=(uint32_t)im->width*im->height;
+        uint32_t got=0;
+        uint8_t header[16];
+        /* A text-only title has a single empty sentinel entry. */
+        if (!im->path || !*im->path) continue;
+        if (!bytes || bytes>2097152u) goto fail;
+        if (sfopen(0,(char*)im->path,SD_READ)!=FR_OK) goto fail;
+        if (sfread(0,header,16u,&got)!=FR_OK || got!=16u ||
+            (((uint32_t)header[1]<<8)|header[2])!=im->width ||
+            (((uint32_t)header[3]<<8)|header[4])!=im->height ||
+            (((uint32_t)header[5]<<24)|((uint32_t)header[6]<<16)|((uint32_t)header[7]<<8)|header[8])!=bytes) {
+            sfclose(0); goto fail;
+        }
+        im->pixels=(uint8_t*)malloc(bytes);
+        if (!im->pixels) { sfclose(0); goto fail; }
+        if (sflseek(0,1040u)!=FR_OK || sfread(0,im->pixels,bytes,&got)!=FR_OK || got!=bytes) {
+            sfclose(0); goto fail;
+        }
+        /* A short/malformed TFCard copy must not display stale SDRAM data. */
+        uint8_t trailing=0; got=0;
+        if (sfread(0,&trailing,1u,&got)!=FR_OK || got!=0u) {
+            sfclose(0); goto fail;
+        }
+        sfclose(0);
+    }
+    return 1;
+fail:
+    title_release_images();
+    return 0;
+}
+static int title_width(const title_art_t *a)
+{
+    if (a->image>=0 && a->image<TITLE_IMAGE_COUNT) {
+        const title_image_t *im=&title_images[a->image];
+        return a->cell ? a->cell : im->width;
+    }
+    /* The SIDBOX drawtextf() arguments are literal X/Y multipliers.
+       Use precisely the same character-cell dimensions for selectors. */
+    return (int)strlen(a->text)*8*(a->size_x ? a->size_x : 1);
+}
+static int title_height(const title_art_t *a)
+{
+    if (a->image>=0 && a->image<TITLE_IMAGE_COUNT) {
+        const title_image_t *im=&title_images[a->image];
+        return a->cell ? a->cell : im->height;
+    }
+    /* Hardware gfx_drawtextf size_y=1 draws the native 8px glyph height. */
+    return 8*(a->size_y ? a->size_y : 1);
+}
+static void title_draw_art(const title_art_t *a)
+{
+    if (a->image>=0 && a->image<TITLE_IMAGE_COUNT) {
+        const title_image_t *im=&title_images[a->image];
+        if (!im->pixels) return;
+        gfxbob_t bob;
+        memset(&bob,0,sizeof(bob));
+        bob.imgdat=im->pixels;
+        bob.atlas_stride=im->width;
+        bob.atlas_height=im->height;
+        bob.width=a->cell ? a->cell : im->width;
+        bob.height=a->cell ? a->cell : im->height;
+        bob.index=(uint8_t)a->frame;
+        bob.drawx=a->x; bob.drawy=a->y; bob.scale=100;
+        gfx_drawbob(&bob);
+        return;
+    }
+    if (!a->text || !*a->text) return;
+    if (a->outlined) {
+        gfx_setcolour(a->outline);
+        /* Manhattan-distance outline in physical pixels. Default radius 1
+           retains the original four draw calls. Larger radii cost more. */
+        const int radius=a->outline_thickness>=1 && a->outline_thickness<=4 ? a->outline_thickness : 1;
+        for(int dy=-radius;dy<=radius;++dy)
+            for(int dx=-radius;dx<=radius;++dx)
+                if((dx || dy) && abs(dx)+abs(dy)<=radius)
+                    gfx_drawtextf(a->x+dx,a->y+dy,a->text,a->size_x,a->size_y);
+    }
+    gfx_setcolour(a->foreground);
+    gfx_drawtextf(a->x,a->y,a->text,a->size_x,a->size_y);
+}
+static void title_draw_background(gfx_bitmap_t *target,int image,int mode)
+{
+    if (image<0 || image>=TITLE_IMAGE_COUNT) return;
+    const title_image_t *im=&title_images[image];
+    if (!im->pixels) return;
+    if (mode==1 && im->width>=320 && im->height>=480 &&
+        target->bitmap && target->memspacelen>=480u*320u && target->stride==320) {
+        /* Already column-major. Width in the saved PPB is the column stride.
+           Larger screens are clipped to the upper-left 480 x 320 area. */
+        for (uint32_t x=0;x<480u;++x)
+            memcpy(target->bitmap+x*320u,im->pixels+x*im->width,320u);
+    } else if (mode==2 && im->width>=480 && im->height>=320 &&
+               target->bitmap && target->memspacelen>=480u*320u && target->stride==320) {
+        /* Conventional row-major PPB converted for SIDBOX framebuffer. */
+        for (uint32_t y=0;y<320u;++y)
+            for (uint32_t x=0;x<480u;++x)
+                target->bitmap[x*320u+y]=im->pixels[y*im->width+x];
+    } else {
+        title_art_t art={"",0,0,image,0,0,0,0,0,1,1,1};
+        title_draw_art(&art);
+    }
+}
+/* Render a background image on the hardware BACK layer only on screen
+ * changes. No TFCard reads, pixel copy, or background drawing per frame. */
+static void title_set_background(gfx_bitmap_t *back,uint8_t options_screen)
+{
+    if (!back || !back->bitmap) return;
+    const int override=options_screen && title_options_background>=0;
+    const int image=override ? title_options_background : title_background_image;
+    const int mode=override ? title_options_bg_mode : title_background_mode;
+    gfx_usebpalette((uint32_t *)(override ? title_options_background_clut
+                                            : title_background_clut));
+    gfx_usebuffer(back);
+    gfx_cls();
+    title_draw_background(back,image,mode);
+    gfx_showbbuffer(back);
+}
+
+static void title_draw_selector(const title_art_t *art,int behind)
+{
+    const int x=art->x, y=art->y;
+    const int w=title_width(art), h=title_height(art);
+    gfx_setcolour(TITLE_SELECTOR_COLOUR);
+    if (TITLE_SELECTOR==1) { /* filled rectangular highlight, behind content */
+        /* Shared Title and Options selector geometry: text origin X/Y,
+           strlen(text)*8*size_x by 8*size_y, plus 8px on each side. */
+        if (behind) gfx_rectf(x-8,y-8,w+16,h+16);
+    } else if (!behind && TITLE_SELECTOR==0) { /* [   ] */
+        gfx_drawtextf(x-12,y,"[",1,art->size_y);
+        gfx_drawtextf(x+w+4,y,"]",1,art->size_y);
+    } else if (!behind && TITLE_SELECTOR==2) { /* > pointer */
+        gfx_drawtextf(x-12,y,">",1,art->size_y);
+    } else if (!behind && TITLE_SELECTOR==3) { /* underline */
+        gfx_rectf(x,y+h+1,w,1);
+    }
+}
+static void title_frame(gfx_bitmap_t *front, uint16_t selected, uint8_t dual_layer)
+{
+    gfx_usebuffer(front);
+    gfx_cls();
+    /* In dual-layer mode the background lives on BACK, not here.
+       On single-layer setups retain the original opaque fallback. */
+    if (!dual_layer)
+        title_draw_background(front,title_background_image,title_background_mode);
+    title_draw_art(&title_heading);
+    title_draw_art(&title_subtitle);
+    for (int i=0;i<title_menu_length;++i) {
+        if (i==(int)selected) title_draw_selector(&title_menu[i].art,1);
+        title_draw_art(&title_menu[i].art);
+        if (i==(int)selected) title_draw_selector(&title_menu[i].art,0);
+    }
+}
+/* The live options menu deliberately avoids disk writes. If a game wants
+ * persistent preferences, it should save these from a controlled point after
+ * streaming is stopped, not from the 50Hz menu render loop. */
+static void title_options_frame(gfx_bitmap_t *front,uint8_t selected,uint8_t dual_layer)
+{
+    gfx_usebuffer(front);
+    gfx_cls();
+    if (!dual_layer)
+        title_draw_background(front,
+            title_options_background<0 ? title_background_image : title_options_background,
+            title_options_background<0 ? title_background_mode : title_options_bg_mode);
+    title_draw_art(&title_options_heading);
+    for(int i=0;i<8;++i) {
+        if (!title_options_visible[i]) continue;
+        title_art_t art=title_options_items[i];
+        if(i==selected) title_draw_selector(&art,1);
+        title_draw_art(&art);
+        if(i==selected) title_draw_selector(&art,0);
+        if(i==1 || i==3 || i==5) {
+            const unsigned val=i==1 ? opt_music_volume : i==3 ? opt_sfx_volume : opt_text_speed;
+            const unsigned bi=i==1 ? 0u : i==3 ? 1u : 2u;
+            const int barx=title_options_bar_pos[bi][0];
+            const int bary=title_options_bar_pos[bi][1];
+            gfx_setcolour(0);
+            gfx_rectf(barx,bary,102,8);
+            gfx_setcolour(title_options_bar_colour[bi]);
+            gfx_rectf(barx+1,bary+1,(int)val,6);
+        } else if(i<7) {
+            const char *value="";
+            if(i==0)value=opt_music?"ON":"OFF";
+            if(i==2)value=opt_sfx?"ON":"OFF";
+            if(i==4)value=opt_shake?"ON":"OFF";
+            if(i==6)value=opt_difficulty==0?"EASY":opt_difficulty==2?"HARD":"NORMAL";
+            title_art_t v=art;
+            /* Place ON/OFF and difficulty just after the label, not 175px away. */
+            v.x=(int16_t)(art.x+title_width(&art)+16);
+            v.text=value;
+            title_draw_art(&v);
+        }
+    }
+}
+/* Skip invisible rows, keeping menu navigation and highlight in sync. */
+static uint8_t title_visible_option(uint8_t current,int direction)
+{
+    uint8_t index=current;
+    for(unsigned i=0;i<8;++i) {
+        index=(uint8_t)((index+8+(direction>0?1:7))%8);
+        if(title_options_visible[index]) return index;
+    }
+    return current;
+}
+static uint8_t title_first_option(void)
+{
+    for(uint8_t i=0;i<8;++i)if(title_options_visible[i])return i;
+    return 0;
+}
+static void title_adjust_option(uint8_t which,int direction)
+{
+    const int step=5;
+    int value;
+    switch(which) {
+    case 0: opt_music=!opt_music; break;
+    case 1:
+        value=(int)opt_music_volume+direction*step;
+        opt_music_volume=(uint8_t)(value<0?0:value>100?100:value);break;
+    case 2: opt_sfx=!opt_sfx;break;
+    case 3:
+        value=(int)opt_sfx_volume+direction*step;
+        opt_sfx_volume=(uint8_t)(value<0?0:value>100?100:value);break;
+    case 4: opt_shake=!opt_shake;break;
+    case 5:
+        value=(int)opt_text_speed+direction*step;
+        opt_text_speed=(uint8_t)(value<0?0:value>100?100:value);break;
+    case 6:
+        value=(int)opt_difficulty+direction;
+        opt_difficulty=(uint8_t)(value<0?2:value>2?0:value);break;
+    default:break;
+    }
+}
+uint8_t gametitle_run(const char **world, const char **start)
+{
+    gfx_bitmap_t *buffers[2];
+    unsigned drawn=0;
+    uint16_t selected=0;
+    uint8_t options_selected=title_first_option();
+    uint8_t options_open=0;
+    uint8_t previous=0;
+    uint8_t playing=0;
+    if (!world || !start) return 0;
+    *world=title_default_world; *start="default";
+    buffers[0]=gfx_getfbuffer1(); buffers[1]=gfx_getfbuffer2();
+    if (!buffers[0] || !buffers[1] || !buffers[0]->bitmap || !buffers[1]->bitmap)
+        return 0;
+    if (!title_load_images()) return 0;
+    /* Foreground CLUT alpha can blend with a separate background plane,
+       but cannot blend two indexed primitives drawn into the same plane. */
+    gfx_usefpalette((uint32_t *)title_clut);
+    gfx_bitmap_t *back=gfx_getbbuffer1();
+    const uint8_t dual_layer=(back && back->bitmap) ? 1u : 0u;
+    if (dual_layer) {
+        title_set_background(back,0);
+        gfx_usebuffer(buffers[0]);
+    }
+    gfx_scrollb(0,0);
+    gfx_scrollf(0,0);
+    if (title_music_file && *title_music_file && opt_music) {
+        set_audio_dma(512);
+        set_music_dma=1;
+        music_play((char*)title_music_file,0);
+        playing=1;
+    }
+    for (;;) {
+        gfx_lcdwait();
+        const uint8_t buttons=getjoyport();
+        const uint8_t pressed=(uint8_t)(buttons & (uint8_t)~previous);
+        previous=buttons;
+        if(options_open) {
+            if(pressed & BTN_FIRE2) {
+                options_open=0;
+                if(dual_layer) title_set_background(back,0);
+            }
+            else {
+                if(pressed & BTN_UP) options_selected=title_visible_option(options_selected,-1);
+                if(pressed & BTN_DOWN) options_selected=title_visible_option(options_selected,+1);
+                if((pressed & BTN_FIRE) && title_options_visible[options_selected] && options_selected==7) {
+                    options_open=0;
+                    if(dual_layer) title_set_background(back,0);
+                }
+                else if((pressed & BTN_FIRE) && title_options_visible[options_selected] && options_selected<7)
+                    title_adjust_option(options_selected,1);
+                else if((pressed & BTN_LEFT) && title_options_visible[options_selected] && options_selected<7)
+                    title_adjust_option(options_selected,-1);
+                else if((pressed & BTN_RIGHT) && title_options_visible[options_selected] && options_selected<7)
+                    title_adjust_option(options_selected,1);
+                /* Starting/stopping an MP3 is only done on explicit user
+                   changes, never as a side effect of drawing the screen. */
+                if(!opt_music && playing){music_stop();playing=0;}
+                if(opt_music && !playing && title_music_file && *title_music_file){
+                    music_play((char*)title_music_file,0);playing=1;
+                }
+            }
+        } else {
+            if (pressed & BTN_UP) selected=selected ? selected-1u : (uint16_t)(title_menu_length-1);
+            if (pressed & BTN_DOWN) selected=(uint16_t)((selected+1u)%title_menu_length);
+            if (pressed & BTN_FIRE) {
+                const title_item_t *item=&title_menu[selected];
+                if (item->action==1 || item->action==2) {
+                    *world=(item->world && *item->world) ? item->world : title_default_world;
+                    *start=(item->start && *item->start) ? item->start : "default";
+                    break;
+                }
+                if (item->action==4) {
+                    options_open=1;
+                    options_selected=title_first_option();
+                    if(dual_layer) title_set_background(back,1);
+                }
+                if (item->action==5) {
+                    if (playing) music_stop();
+                    title_release_images();
+                    return 0;
+                }
+                /* Load Game remains inactive until the save-slot system exists. */
+            }
+        }
+        if(options_open)title_options_frame(buffers[drawn],options_selected,dual_layer);
+        else title_frame(buffers[drawn],selected,dual_layer);
+        gfx_dispfbuffer(buffers[drawn],buffers[drawn^1u]);
+        gfx_displaynow();
+        drawn^=1u;
+        music_update();
+    }
+    if (playing) music_stop();
+    title_release_images();
+    gfx_usebuffer(buffers[drawn]);
+    gfx_cls();
+    return 1;
+}

@@ -1434,7 +1434,7 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("s3m") || lower == QStringLiteral("xm")
         || lower == QStringLiteral("med") || lower == QStringLiteral("tfmx")
         || lower == QStringLiteral("sid") || lower == QStringLiteral("sba")
-        || lower == QStringLiteral("spc");
+        || lower == QStringLiteral("spc") || lower == QStringLiteral("mp3");
 }
 
 // Stage 3.70: editorTabIconForFile moved to mainwindow_uiicons.cpp.
@@ -9459,6 +9459,38 @@ bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
             return true;
     }
     built = generated.lastModified();
+    // Title-screen design and generated runtime are PROJECT-wide. A title
+    // edit must prompt for regeneration even when no .sbgm has changed.
+    const QFileInfo titleConfig(project.filePath(QStringLiteral(".sidbox-title-screen.json")));
+    if (titleConfig.isFile()) {
+        QFile titleFile(titleConfig.absoluteFilePath());
+        if (!titleFile.open(QIODevice::ReadOnly)) return true;
+        const QJsonObject title=QJsonDocument::fromJson(titleFile.readAll()).object();
+        if (title.value(QStringLiteral("enabled")).toBool()) {
+            const QFileInfo titleC(project.filePath(QStringLiteral("gamehelpers/gametitle.c")));
+            const QFileInfo titleH(project.filePath(QStringLiteral("gamehelpers/gametitle.h")));
+            if (!titleC.isFile() || !titleH.isFile() ||
+                titleConfig.lastModified()>titleC.lastModified()) return true;
+            // Embedded CLUT values come from the saved PPB/PAL sources. They
+            // must be regenerated when those external assets are edited.
+            QStringList titleAssets;
+            titleAssets << title.value(QStringLiteral("textPalette")).toString()
+                        << title.value(QStringLiteral("background")).toObject()
+                                .value(QStringLiteral("path")).toString()
+                        << title.value(QStringLiteral("titleArt")).toObject()
+                                .value(QStringLiteral("path")).toString()
+                        << title.value(QStringLiteral("subtitleArt")).toObject()
+                                .value(QStringLiteral("path")).toString();
+            for (const QJsonValue &item : title.value(QStringLiteral("menuItems")).toArray())
+                titleAssets << item.toObject().value(QStringLiteral("display")).toObject()
+                                  .value(QStringLiteral("path")).toString();
+            for (const QString &name : std::as_const(titleAssets)) {
+                if (name.isEmpty()) continue;
+                const QFileInfo asset(project.filePath(name));
+                if (!asset.isFile() || asset.lastModified()>titleC.lastModified()) return true;
+            }
+        } else if (titleConfig.lastModified()>built) return true;
+    }
     if (design.lastModified() > built) return true;
     const QFileInfo playerFile(project.filePath(QStringLiteral("players/player.sbpi")));
     if (playerFile.isFile()) {
@@ -9597,12 +9629,15 @@ bool MainWindow::checkGameBuildGeneration()
             return false;
         }
         const QString mainCode = QString::fromUtf8(entryPoint.readAll());
-        const QRegularExpression managerCall(QStringLiteral(R"(\bgameworlds_start\s*\()"));
+        // With a title screen, the starter can enter its first world through
+        // request_at() + apply_pending() instead of gameworlds_start().
+        const QRegularExpression managerCall(QStringLiteral(
+            R"(\b(?:gameworlds_start|gameworlds_request_at)\s*\()"));
         if (!mainCode.contains(QStringLiteral("gamehelpers/gameworlds.h"))
             || !managerCall.match(mainCode).hasMatch()) {
             QMessageBox::warning(this, tr("Compile — Multi-World Migration Required"),
                 tr("This game still has a single-world main.c, or it has not been "
-                   "connected to gameworlds_start().\n\n"
+                   "connected to the gameworlds manager.\n\n"
                    "GamerGirl now builds ALL published .sbgm worlds, even in a "
                    "one-world game. The old gameassets_init() / single-world "
                    "startup is no longer compiled.\n\n"
@@ -11716,17 +11751,24 @@ bool MainWindow::openFile(const QString &filePath)
 
     // Do not accidentally interpret binary SIDBOX game assets as UTF-8 C source.
     const QString assetSuffix = QFileInfo(filePath).suffix().toLower();
-    if (QStringList{QStringLiteral("pal"), QStringLiteral("act"),
-                    QStringLiteral("png"), QStringLiteral("bmp"), QStringLiteral("jpg"),
-                    QStringLiteral("jpeg"), QStringLiteral("gif"), QStringLiteral("wav"),
-                    QStringLiteral("mod"), QStringLiteral("s3m"), QStringLiteral("xm"),
-                    QStringLiteral("med"), QStringLiteral("tfmx"),
-                    QStringLiteral("sid"), QStringLiteral("sba"),
-                    QStringLiteral("spc")}.contains(assetSuffix)) {
-        QMessageBox::information(this, tr("Game Asset"),
-            tr("%1 is a game resource, not source code.\n\n"
-               "Open your .sbgm Game Designer to preview PPB/PNG assets and manage resources.")
-               .arg(QFileInfo(filePath).fileName()));
+    const bool isAudioAsset = QStringList{
+        QStringLiteral("wav"), QStringLiteral("mod"), QStringLiteral("s3m"),
+        QStringLiteral("xm"), QStringLiteral("med"), QStringLiteral("tfmx"),
+        QStringLiteral("sid"), QStringLiteral("sba"), QStringLiteral("spc"),
+        QStringLiteral("mp3")}.contains(assetSuffix);
+    if (isAudioAsset || QStringList{
+            QStringLiteral("pal"), QStringLiteral("act"),
+            QStringLiteral("png"), QStringLiteral("bmp"), QStringLiteral("jpg"),
+            QStringLiteral("jpeg"), QStringLiteral("gif")}.contains(assetSuffix)) {
+        QMessageBox::information(this, isAudioAsset ? tr("Project Audio") : tr("Game Asset"),
+            isAudioAsset
+                ? tr("%1 is an audio project asset, not C source code.\n\n"
+                     "The file is recognised in Files in Project. "
+                     "Playback on SIDBOX depends on the available firmware decoder.")
+                      .arg(QFileInfo(filePath).fileName())
+                : tr("%1 is a graphics resource, not source code.\n\n"
+                     "Open your .sbgm Game Designer to preview graphics and manage resources.")
+                      .arg(QFileInfo(filePath).fileName()));
         return false;
     }
 
@@ -12564,11 +12606,9 @@ void MainWindow::rescanProjectFiles()
     }
 
     /*
-     * projectFolderSourceFiles() is deliberately the single source of truth
-     * for what belongs in the Files in Project tree.  At present that means:
-     *
-     *   .c  .h  .inc  .res  .txt  .md
-     *
+     * projectFolderSourceFiles() is the shared discovery list for source,
+     * graphics, sound and music assets in the Files in Project tree.
+     * Audio files such as .mp3 and .sba belong here without becoming C inputs.
      * It scans subdirectories recursively and skips generated build/ and
      * buildv1/ directories.  Linker scripts (.ld) stay out of the file tree because they
      * are managed separately in Project Settings.
@@ -12760,8 +12800,8 @@ void MainWindow::refreshProjectFiles()
                    || suffix == QStringLiteral("s3m") || suffix == QStringLiteral("xm")
                    || suffix == QStringLiteral("med") || suffix == QStringLiteral("tfmx")
                    || suffix == QStringLiteral("sid") || suffix == QStringLiteral("sba")
-                   || suffix == QStringLiteral("spc")) {
-            fileIcon = gameEditorIcon(QStringLiteral("tree_file_unknown.png"));
+                   || suffix == QStringLiteral("spc") || suffix == QStringLiteral("mp3")) {
+            fileIcon = gameEditorIcon(QStringLiteral("gr_icon_audio.png"));
         } else {
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_unknown.png"));
         }
@@ -14871,7 +14911,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.wav"), QStringLiteral("*.mod"), QStringLiteral("*.s3m"),
         QStringLiteral("*.xm"), QStringLiteral("*.med"), QStringLiteral("*.tfmx"),
         QStringLiteral("*.sid"), QStringLiteral("*.sba"),
-        QStringLiteral("*.spc")
+        QStringLiteral("*.spc"), QStringLiteral("*.mp3")
     };
 
     std::function<void(const QDir &)> visit;

@@ -87,6 +87,9 @@
 #include "main.h"
 #include <string.h>
 #include "gamehelpers/gameworlds.h"
+@IDE_IF{HAS_TITLE}
+#include "gamehelpers/gametitle.h"  /* Optional title screen generated from project design. */
+@IDE_END
 @IDE_IF{HAS_HUD}
 #include "gamehelpers/gamehud.h"  /* Project-shared HUD, not world-local. */
 @IDE_END
@@ -469,6 +472,15 @@ int main(int argc, char *argv[])
     gfx_mode(VIEW_W, VIEW_H, VIEW_W, VIEW_H, DISPFLAG_SINGLELAYER | DISPFLAG_SCROLLABLE);
 @IDE_END
 
+@IDE_IF{HAS_TITLE}
+    /* Play the project title BEFORE any world is loaded. FIRE1 starts the
+       selected destination, FIRE2 is reserved, Quit returns to the desktop.
+       Load Game and Options are deliberately inactive in Stage 5.64. */
+    const char *title_world = "@IDE{WORLD_BASE}";
+    const char *title_start = "default";
+    if (!gametitle_run(&title_world, &title_start)) goto cleanup;
+@IDE_END
+
     /* 2. One loader for ONE or MANY published worlds. It initialises the
      * chosen world's graphics, atlas/map, splines, objects and Adventure.
      * Do not separately call gameassets_init() or gameworlditems_init(). */
@@ -492,7 +504,14 @@ int main(int argc, char *argv[])
      *     gameplayer_stat_set("Mana", mana + 1);
      * Custom stats live in the shared gameplayer module, not in any world. */
 @IDE_END
+@IDE_IF{HAS_TITLE}
+    /* Queueing the FIRST world preserves its selected named Player Start.
+       gameworlds_start() alone always resets the spawn to Default. */
+    if (!gameworlds_request_at(title_world, title_start) ||
+        !gameworlds_apply_pending()) { result = 1; goto cleanup; }
+@IDE_ELSE
     if (!gameworlds_start("@IDE{WORLD_BASE}")) { result = 1; goto cleanup; }
+@IDE_END
 @IDE_IF{HAS_MURDER_OBJECTS}
 @IDE_IF{HAS_SHARED_PLAYER}
     player_health=gameworlds_state()->health;

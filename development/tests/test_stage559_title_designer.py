@@ -23,7 +23,7 @@ assert 's.value(QStringLiteral("id"))' in src
 assert 'e.start=startCombo->currentData()' not in src  # Actual source uses entries[row]
 assert 'startCombo->currentData().toString()' in src
 assert 'QStringLiteral("audio")' in src and 'QStringLiteral("music")' in src
-assert 'Build: 5.60.1.231026' in (base / 'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.63.231026' in (base / 'splashscreenwidget.cpp').read_text()
 assert 'gametitlescreeneditor.cpp' in (base / 'CMakeLists.txt').read_text()
 
 # Exercise the schema contract with the uploaded two-world design.
