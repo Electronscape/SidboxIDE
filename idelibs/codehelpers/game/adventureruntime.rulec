@@ -211,6 +211,26 @@ static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply, 4 destroy,
 static const game_adventure_exchange_t *ga_exchanges;
 static uint16_t ga_exchange_count;
 static uint8_t ga_exchange_progress[GAME_ADVENTURE_EXCHANGE_SLOTS];
+/* Each dialogue-answer has at most one tracked wrong item. Four replies;
+ * repeat after the third offer saturates at state 4. No heap allocations. */
+static const game_adventure_wrong_repeat_t *ga_wrong_repeats;
+static uint16_t ga_wrong_repeat_count;
+static uint8_t ga_wrong_repeat_counts[GAME_ADVENTURE_EXCHANGE_SLOTS];
+void game_adventure_wrong_repeat_rules(const game_adventure_wrong_repeat_t *rules,
+                                       uint16_t count)
+{ ga_wrong_repeats=rules; ga_wrong_repeat_count=rules ? count : 0u; }
+void game_adventure_save_wrong_repeats(uint8_t out[GAME_ADVENTURE_EXCHANGE_SLOTS])
+{ if (out) memcpy(out,ga_wrong_repeat_counts,sizeof(ga_wrong_repeat_counts)); }
+void game_adventure_restore_wrong_repeats(const uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS])
+{ if (saved) memcpy(ga_wrong_repeat_counts,saved,sizeof(ga_wrong_repeat_counts)); }
+static const game_adventure_wrong_repeat_t *ga_find_wrong_repeat(uint16_t key, uint16_t item)
+{
+    for (uint16_t i=0; i<ga_wrong_repeat_count; ++i) {
+        const game_adventure_wrong_repeat_t *r=&ga_wrong_repeats[i];
+        if (r->exchange_index==key && r->item>=0 && (uint16_t)r->item==item) return r;
+    }
+    return 0;
+}
 static uint16_t ga_exchange_node;
 static uint8_t ga_exchange_choice;
 void game_adventure_exchange_rules(const game_adventure_exchange_t *rules, uint16_t count)
@@ -485,6 +505,8 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_completed_nodes = 0;
     game_adventure_exchange_rules(0,0);
     memset(ga_exchange_progress,0,sizeof(ga_exchange_progress));
+    game_adventure_wrong_repeat_rules(0,0);
+    memset(ga_wrong_repeat_counts,0,sizeof(ga_wrong_repeat_counts));
     for (uint16_t i = 0; i < ga_item_count; ++i)
         ga_counts[i] = ga_items[i].initial > ga_items[i].capacity
             ? ga_items[i].capacity : ga_items[i].initial;
@@ -588,6 +610,21 @@ static void ga_offer_item(uint16_t offered)
         if (r->items[i]>=0 && (uint16_t)r->items[i]==offered) {slot=i;break;}
     /* Re-offering an already delivered part is not another valid delivery. */
     if (slot<0 || (r->incremental && (ga_exchange_progress[key] & (1u<<slot)))) {
+        /* A configured wrong item can have escalating replies. No successful
+         * hand-in, completion flag or inventory consumption occurs here. */
+        const game_adventure_wrong_repeat_t *repeat=ga_find_wrong_repeat(key,offered);
+        if (repeat) {
+            uint8_t *count=&ga_wrong_repeat_counts[key];
+            if (*count>4u) *count=4u; /* clamp invalid restored values */
+            if (*count<4u) ++*count; /* saturate, never wrap */
+            const uint8_t step=(uint8_t)(*count-1u);
+            /* UINT16_MAX is the no-action sentinel; generated Game Object
+             * events (33000+) must NOT be treated as signed int16_t. */
+            if (*count==3u && repeat->reveal_action!=UINT16_MAX && ga_action)
+                ga_action(repeat->reveal_action,ga_user);
+            const int16_t next=repeat->replies[step];
+            if (next>=0 && (uint16_t)next<ga_node_count) { ga_next_node(next);return; }
+        }
         if (r->wrong_action>=0 && ga_action) ga_action((uint16_t)r->wrong_action,ga_user);
         if (r->wrong_next>=0) ga_next_node(r->wrong_next);
         else ga_next_node((int16_t)ga_exchange_node);

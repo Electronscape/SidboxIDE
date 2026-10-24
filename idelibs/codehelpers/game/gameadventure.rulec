@@ -62,6 +62,10 @@ static uint8_t on_use_item(const char *stat, int32_t delta, void *user)
 static const game_adventure_exchange_t exchanges[] = {
 @IDE{EXCHANGE_ROWS}
 };
+/* Only configured repeated wrong-item interactions get table entries. */
+static const game_adventure_wrong_repeat_t wrong_repeat_rules[] = {
+@IDE{WRONG_REPEAT_ROWS}
+};
 
 static const game_adventure_node_t nodes[] = {
 @IDE{NODE_ROWS}
@@ -119,11 +123,13 @@ static uint8_t cg_saved_story_npcs[GAME_ADVENTURE_COMPLETED_NPC_BYTES];
 static uint8_t cg_saved_story_valid;
 static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
 static uint8_t cg_saved_exchanges[GAME_ADVENTURE_EXCHANGE_SLOTS];
+static uint8_t cg_saved_wrong_repeats[GAME_ADVENTURE_EXCHANGE_SLOTS];
 void gameadventure_save_progress(void)
 {
     game_adventure_save_progress(cg_saved_story_choices, cg_saved_story_npcs);
     game_adventure_save_drops(cg_saved_world_drops);
     game_adventure_save_exchanges(cg_saved_exchanges);
+    game_adventure_save_wrong_repeats(cg_saved_wrong_repeats);
     cg_saved_story_valid = 1;
 }
 void gameadventure_restore_progress(void)
@@ -132,6 +138,7 @@ void gameadventure_restore_progress(void)
         game_adventure_restore_progress(cg_saved_story_choices, cg_saved_story_npcs);
         game_adventure_restore_drops(cg_saved_world_drops);
         game_adventure_restore_exchanges(cg_saved_exchanges);
+        game_adventure_restore_wrong_repeats(cg_saved_wrong_repeats);
     }
 }
 
@@ -166,6 +173,7 @@ void gameadventure_setup(void)
     game_adventure_text_padding(@IDE{DIALOG_PADDING}u);
     game_adventure_story_flags(story_choice_flags, npc_completed_nodes);
     game_adventure_exchange_rules(exchanges, GAME_ADVENTURE_STORY_NODE_COUNT*3u);
+    game_adventure_wrong_repeat_rules(wrong_repeat_rules, @IDE{WRONG_REPEAT_COUNT}u);
     game_adventure_skin_flips(skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);
     /* Starting items may be owned before any cross-world inventory restore. */

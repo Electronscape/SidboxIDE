@@ -218,6 +218,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     fields.insert(QStringLiteral("ITEM_USE_ROWS"),useRows.trimmed());
 
     QStringList exchangeRows;
+    QStringList wrongRepeatRows;
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
     if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1,-1}}},\n";
@@ -305,6 +306,43 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                undiscovered quest requirements through a hint node/event. */
             const int partialAction=-1;
             if(wrongAction==-2)return false;
+            const bool repeatEnabled=active && exchange.value("wrongRepeatEnabled").toBool(false);
+            const int tracked=clampInt(exchange,"wrongRepeatItem",-1,itemList.size()-1,-1);
+            if (repeatEnabled && tracked>=0) {
+                /* One tracked item per exchange; only wrong offers reach the
+                 * repeat handler (required items retain their quest behaviour). */
+                int reveal=clampInt(exchange,"wrongRepeatAction",-1,29999,-1);
+                const QString objId=exchange.value("wrongRepeatTargetObjectId").toString();
+                if (!objId.isEmpty()) {
+                    const auto obj=std::find_if(worldObjects.begin(),worldObjects.end(),
+                        [&](const auto &entry) {return entry.id==objId;});
+                    if (obj==worldObjects.end()) {
+                        if(error) *error=QStringLiteral("Repeated wrong-item clue refers to a deleted Game Object in dialogue %1.").arg(nodeIndex);
+                        return false;
+                    }
+                    /* Keep auto IDs separate from ordinary custom IDs. They
+                     * exceed INT16_MAX, so the runtime stores them as uint16_t. */
+                    reveal=33000 + nodeIndex*3 + i;
+                    const QString mode=exchange.value("wrongRepeatTargetAction").toString("enable");
+                    const int modeNumber=mode=="disable"?0:mode=="toggle"?2:1;
+                    QByteArray linked;
+                    if (!GameHelperTemplates::renderFields(linkedActionRule,
+                        {{QStringLiteral("EVENT_ID"),QString::number(reveal)},
+                         {QStringLiteral("WORLD_SLOT"),QString::number(obj->worldSlot)},
+                         {QStringLiteral("ACTION_MODE"),QString::number(modeNumber)}},
+                        ruleCPath+QStringLiteral(" / WRONG_REPEAT_ACTION"),&linked,error))
+                        return false;
+                    linkedActions.append(QString::fromUtf8(linked));
+                }
+                const int index=nodeIndex*3+i;
+                wrongRepeatRows << QStringLiteral("    {%1u,%2,{%3,%4,%5,%6},%7},")
+                    .arg(index).arg(tracked)
+                    .arg(clampInt(exchange,"wrongRepeatFirst",-1,nodes.size()-1,-1))
+                    .arg(clampInt(exchange,"wrongRepeatSecond",-1,nodes.size()-1,-1))
+                    .arg(clampInt(exchange,"wrongRepeatThird",-1,nodes.size()-1,-1))
+                    .arg(clampInt(exchange,"wrongRepeatLater",-1,nodes.size()-1,-1))
+                    .arg(reveal);
+            }
             exchangeRows << QStringLiteral("    {{%1},%2,%3,%4,%5,%6u,%7u,%8u,%9u},")
                 .arg(requested.join(','))
                 .arg(active ? clampInt(exchange,"wrongNext",-1,nodes.size()-1,-1) : -1)
@@ -321,6 +359,10 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         ++nodeIndex;
     }
     fields.insert(QStringLiteral("NODE_ROWS"), nodeRows.trimmed());
+    fields.insert(QStringLiteral("WRONG_REPEAT_ROWS"),wrongRepeatRows.isEmpty()
+        ? QStringLiteral("    {0u,-1,{-1,-1,-1,-1},-1},")
+        : wrongRepeatRows.join(QLatin1Char('\n')));
+    fields.insert(QStringLiteral("WRONG_REPEAT_COUNT"),QString::number(wrongRepeatRows.size()));
     fields.insert(QStringLiteral("EXCHANGE_ROWS"),exchangeRows.isEmpty()
         ? QStringLiteral("    {{-1,-1,-1,-1},-1,-1,-1,-1,0u,0u,0u,0u},")
         : exchangeRows.join(QLatin1Char('\n')));
@@ -516,6 +558,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("ITEM_ICON_SETUP"),
         QStringLiteral("ITEM_ROWS"),QStringLiteral("ITEM_STYLE_ROWS"),
         QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
+        QStringLiteral("WRONG_REPEAT_ROWS"),QStringLiteral("WRONG_REPEAT_COUNT"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),

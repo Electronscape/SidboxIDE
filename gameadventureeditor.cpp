@@ -2,6 +2,10 @@
 #include "ppbcodec.h"
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QFrame>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QPointer>
 #include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -600,17 +604,184 @@ QJsonArray defaultChoices()
     return choices;
 }
 QString dialogueTitle(const QJsonObject &node, int index);
+// Stage 5.70: folder-aware dialogue drop-down.  Keep the QComboBox's flat
+// (label, numeric dialogue ID) model unchanged: every existing currentData(),
+// findData() and currentIndexChanged user remains binary/source compatible.
+// Only its popup is a searchable expandable tree, built from the *existing*
+// editor-only dialogueFolders/folderId metadata.
+class DialogueTreeCombo final : public QComboBox {
+public:
+    explicit DialogueTreeCombo(QWidget *parent, const QJsonArray *nodes,
+                               const QJsonArray *folders)
+        : QComboBox(parent), m_nodes(nodes), m_folders(folders) {}
+
+    void showPopup() override {
+        if (m_popup) { m_popup->raise(); m_popup->activateWindow(); return; }
+        if (!m_nodes || !m_folders || count() == 0) { QComboBox::showPopup(); return; }
+        auto *popup = new QFrame(this, Qt::Popup);
+        popup->setAttribute(Qt::WA_DeleteOnClose);
+        popup->setObjectName(QStringLiteral("dialogueTreePopup"));
+        popup->setStyleSheet(QStringLiteral(
+            "QFrame#dialogueTreePopup, QTreeWidget, QLineEdit { border-radius: 0px; }"));
+        m_popup = popup;
+        auto *layout = new QVBoxLayout(popup);
+        layout->setContentsMargins(5,5,5,5);
+        layout->setSpacing(4);
+        auto *search = new QLineEdit(popup);
+        search->setPlaceholderText(tr("Find dialogue, speaker or folder..."));
+        search->setClearButtonEnabled(true);
+        layout->addWidget(search);
+        auto *tree = new QTreeWidget(popup);
+        tree->setHeaderHidden(true);
+        tree->setUniformRowHeights(true);
+        tree->setSelectionMode(QAbstractItemView::SingleSelection);
+        tree->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        layout->addWidget(tree,1);
+        auto *help = new QLabel(tr("Expand folders, or type to search. Enter selects a dialogue."), popup);
+        help->setWordWrap(true);
+        layout->addWidget(help);
+        QTreeWidgetItem *selected = nullptr;
+        const QVariant chosenData = currentData();
+        const int chosenRow = currentIndex();
+
+        // Special actions such as "Close conversation" or "Use normal..."
+        // remain at the top and retain their original negative IDs.
+        for (int row=0; row<count(); ++row) {
+            const int id=itemData(row).toInt();
+            if (id>=0 && id<m_nodes->size()) continue;
+            auto *entry = new QTreeWidgetItem(tree);
+            entry->setText(0,itemText(row));
+            entry->setData(0,Qt::UserRole,row);
+            entry->setData(0,Qt::UserRole+1,QStringLiteral("node"));
+            if (row==chosenRow) selected=entry;
+        }
+        QHash<QString,QTreeWidgetItem*> folderItems;
+        QSet<QString> processed;
+        // Resolve parent references independent of the saved array order;
+        // invalid or cyclic parents fall back to the root of the popup.
+        for (int pass=0; pass<=m_folders->size(); ++pass) {
+            for (const QJsonValue &v : *m_folders) {
+                const QJsonObject folder=v.toObject();
+                const QString id=folder.value(QStringLiteral("id")).toString();
+                const QString parentId=folder.value(QStringLiteral("parentId")).toString();
+                if (id.isEmpty() || processed.contains(id)) continue;
+                if (!parentId.isEmpty() && !folderItems.contains(parentId)
+                    && pass<m_folders->size()) continue;
+                auto *parent=folderItems.value(parentId,nullptr);
+                auto *entry=parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
+                entry->setText(0,folder.value(QStringLiteral("name")).toString(tr("Unnamed folder")));
+                entry->setIcon(0,QIcon::fromTheme(QStringLiteral("folder")));
+                entry->setData(0,Qt::UserRole+1,QStringLiteral("folder"));
+                folderItems.insert(id,entry);
+                processed.insert(id);
+            }
+            if (processed.size()>=m_folders->size()) break;
+        }
+        auto *unfiled=new QTreeWidgetItem(tree);
+        unfiled->setText(0,tr("Unfiled dialogues"));
+        unfiled->setIcon(0,QIcon::fromTheme(QStringLiteral("folder-open")));
+        unfiled->setData(0,Qt::UserRole+1,QStringLiteral("folder"));
+        int unfiledCount=0;
+        for(int row=0;row<count();++row) {
+            const int id=itemData(row).toInt();
+            if(id<0 || id>=m_nodes->size()) continue;
+            const QString folderId=(*m_nodes)[id].toObject().value(QStringLiteral("folderId")).toString();
+            auto *parent=folderItems.value(folderId,unfiled);
+            if(parent==unfiled) ++unfiledCount;
+            auto *entry=new QTreeWidgetItem(parent);
+            entry->setText(0,itemText(row));
+            entry->setData(0,Qt::UserRole,row);
+            entry->setData(0,Qt::UserRole+1,QStringLiteral("node"));
+            entry->setToolTip(0,tr("Dialogue ID %1").arg(id));
+            if(row==chosenRow && itemData(row)==chosenData) selected=entry;
+        }
+        if(unfiledCount==0) delete unfiled;
+        tree->collapseAll();
+        if(selected) {
+            for(auto *ancestor=selected->parent(); ancestor;ancestor=ancestor->parent())
+                ancestor->setExpanded(true);
+            tree->setCurrentItem(selected);
+            tree->scrollToItem(selected);
+        }
+        const auto choose = [this,popup](QTreeWidgetItem *entry) {
+            if(!entry || entry->data(0,Qt::UserRole+1).toString()!=QStringLiteral("node")) return;
+            const int row=entry->data(0,Qt::UserRole).toInt();
+            if(row>=0 && row<count()) setCurrentIndex(row);
+            popup->close();
+        };
+        connect(tree,&QTreeWidget::itemClicked,popup,[choose](QTreeWidgetItem *entry,int){choose(entry);});
+        connect(tree,&QTreeWidget::itemActivated,popup,[choose](QTreeWidgetItem *entry,int){choose(entry);});
+        connect(search,&QLineEdit::textChanged,popup,[tree,selected](const QString &raw) {
+            const QString query=raw.trimmed();
+            // Folder-name matches reveal all of that folder's descendants.
+            std::function<bool(QTreeWidgetItem*,bool)> apply = [&](QTreeWidgetItem *entry,bool parentMatch) {
+                const bool self=parentMatch || entry->text(0).contains(query,Qt::CaseInsensitive);
+                bool found=self;
+                for(int i=0;i<entry->childCount();++i)
+                    found=apply(entry->child(i),self) || found;
+                entry->setHidden(!found);
+                return found;
+            };
+            for(int i=0;i<tree->topLevelItemCount();++i) apply(tree->topLevelItem(i),false);
+            if(!query.isEmpty()) tree->expandAll();
+            else {
+                tree->collapseAll();
+                if(selected) for(auto *p=selected->parent();p;p=p->parent())p->setExpanded(true);
+            }
+        });
+        connect(search,&QLineEdit::returnPressed,popup,[tree,choose]() {
+            auto *current=tree->currentItem();
+            if(current && !current->isHidden() && current->data(0,Qt::UserRole+1).toString()==QStringLiteral("node")) {
+                choose(current);return;
+            }
+            // Pick the first visible dialogue in tree order.
+            for(QTreeWidgetItemIterator it(tree);*it;++it) {
+                auto *entry=*it;
+                if(!entry->isHidden() && entry->data(0,Qt::UserRole+1).toString()==QStringLiteral("node")) {
+                    choose(entry);return;
+                }
+            }
+        });
+        const QPoint anchor=mapToGlobal(QPoint(0,height()));
+        const QScreen *screen=QGuiApplication::screenAt(anchor);
+        const QRect space=screen ? screen->availableGeometry() : QRect(anchor,QSize(600,400));
+        const int popW=qMin(qMax(width(),440),space.width());
+        const int popH=qMin(390,space.height());
+        const int left=qBound(space.left(),anchor.x(),space.right()-popW+1);
+        int top=anchor.y();
+        if(top+popH>space.bottom()+1)top=mapToGlobal(QPoint(0,0)).y()-popH;
+        top=qBound(space.top(),top,space.bottom()-popH+1);
+        popup->setGeometry(left,top,popW,popH);
+        popup->show();
+        search->setFocus();
+    }
+    void hidePopup() override {
+        if(m_popup) m_popup->close();
+        else QComboBox::hidePopup();
+    }
+private:
+    const QJsonArray *m_nodes=nullptr;
+    const QJsonArray *m_folders=nullptr;
+    QPointer<QFrame> m_popup;
+};
 /* Stage 5.34: A single GIVE exchange editor instead of a graphical circuit
  * canvas. Up to four item predicates can be grouped as AND or OR. The
  * incremental AND option remembers hand-ins across world visits. */
 QJsonObject editExchange(QWidget *parent, QJsonObject saved,
                          const QJsonArray &items, const QJsonArray &nodes,
-                         const QVector<GameAdventureAsset> &objects)
+                         const QVector<GameAdventureAsset> &objects, const QJsonArray &folders)
 {
     QDialog dlg(parent);
     dlg.setWindowTitle(QObject::tr("NPC Item Exchange / Quest Requirements"));
-    dlg.setMinimumSize(700,500);
-    QVBoxLayout *layout=new QVBoxLayout(&dlg);
+    dlg.setMinimumSize(710,560);
+    /* Keep the growing Adventure controls usable on laptop-sized screens. */
+    QVBoxLayout *outerLayout=new QVBoxLayout(&dlg);
+    auto *scroll=new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);
+    auto *contents=new QWidget(scroll);
+    QVBoxLayout *layout=new QVBoxLayout(contents);
+    scroll->setWidget(contents);
+    outerLayout->addWidget(scroll,1);
     QCheckBox *enabled=new QCheckBox(QObject::tr("Selecting this answer opens inventory in GIVE mode"),&dlg);
     enabled->setChecked(saved.value("enabled").toBool(false));
     layout->addWidget(enabled);
@@ -648,8 +819,8 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     layout->addWidget(requirements);
     auto *response=new QGroupBox(QObject::tr("Responses & optional actions"),&dlg);
     auto *responseForm=new QFormLayout(response);
-    auto makeNode=[&](const char *key) {
-        QComboBox *combo=new QComboBox(response);
+    auto makeNode=[&](const char *key, QWidget *owner=nullptr) {
+        QComboBox *combo=new DialogueTreeCombo(owner ? owner : response,&nodes,&folders);
         combo->addItem(QObject::tr("Keep current NPC dialogue"),-1);
         for (int i=0;i<nodes.size();++i)
             combo->addItem(dialogueTitle(nodes[i].toObject(),i),i);
@@ -695,11 +866,70 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
         responseForm->addRow(QObject::tr("Wrong item action"),line);
     }
     layout->addWidget(response);
+    auto *repeated=new QGroupBox(QObject::tr("Repeated WRONG item (optional puzzle clue)"),&dlg);
+    auto *repeatForm=new QFormLayout(repeated);
+    QCheckBox *repeatEnabled=new QCheckBox(QObject::tr("Give one wrong item escalating dialogue on repeated offers"),repeated);
+    repeatEnabled->setChecked(saved.value("wrongRepeatEnabled").toBool(false));
+    repeatForm->addRow(repeatEnabled);
+    auto *repeatItem=new QComboBox(repeated);
+    repeatItem->addItem(QObject::tr("Choose an item..."),-1);
+    for (int i=0;i<items.size();++i)
+        repeatItem->addItem(QStringLiteral("%1: %2").arg(i).arg(items[i].toObject().value("name").toString()),i);
+    repeatItem->setCurrentIndex(qMax(0,repeatItem->findData(saved.value("wrongRepeatItem").toInt(-1))));
+    repeatForm->addRow(QObject::tr("Wrong item to remember"),repeatItem);
+    const char *repeatKeys[]={"wrongRepeatFirst","wrongRepeatSecond","wrongRepeatThird","wrongRepeatLater"};
+    const char *repeatLabels[]={"First offer dialogue","Second offer dialogue","Third offer (clue) dialogue","Fourth+ offer dialogue"};
+    QComboBox *repeatNodes[4];
+    for(int i=0;i<4;++i) {
+        repeatNodes[i]=makeNode(repeatKeys[i],repeated);
+        repeatForm->addRow(QObject::tr(repeatLabels[i]),repeatNodes[i]);
+    }
+    auto *repeatActionLine=new QWidget(repeated);
+    auto *repeatActionRow=new QHBoxLayout(repeatActionLine);
+    repeatActionRow->setContentsMargins(0,0,0,0);
+    QComboBox *repeatActionKind=new QComboBox(repeatActionLine);
+    repeatActionKind->addItem(QObject::tr("No action"),QStringLiteral("none"));
+    for (const auto &obj:objects) repeatActionKind->addItem(QObject::tr("Game Object: %1").arg(obj.name),obj.id);
+    repeatActionKind->addItem(QObject::tr("Custom event ID"),QStringLiteral("custom"));
+    const QString repeatTarget=saved.value("wrongRepeatTargetObjectId").toString();
+    const int repeatEvent=saved.value("wrongRepeatAction").toInt(-1);
+    repeatActionKind->setCurrentIndex(qMax(0,repeatActionKind->findData(!repeatTarget.isEmpty()
+        ? repeatTarget : repeatEvent>=0 ? QStringLiteral("custom") : QStringLiteral("none"))));
+    QSpinBox *repeatEventId=new QSpinBox(repeatActionLine);
+    repeatEventId->setRange(0,29999);repeatEventId->setValue(qMax(0,repeatEvent));
+    QComboBox *repeatActionMode=new QComboBox(repeatActionLine);
+    repeatActionMode->addItem(QObject::tr("Activate"),QStringLiteral("enable"));
+    repeatActionMode->addItem(QObject::tr("Deactivate"),QStringLiteral("disable"));
+    repeatActionMode->addItem(QObject::tr("Toggle"),QStringLiteral("toggle"));
+    repeatActionMode->setCurrentIndex(qMax(0,repeatActionMode->findData(saved.value("wrongRepeatTargetAction").toString("enable"))));
+    repeatActionRow->addWidget(repeatActionKind,1);
+    repeatActionRow->addWidget(repeatEventId);
+    repeatActionRow->addWidget(repeatActionMode);
+    repeatForm->addRow(QObject::tr("Action on third offer (once)"),repeatActionLine);
+    auto *repeatDoorHint=new QLabel(QObject::tr(
+        "For a Door / Solid blocker: Deactivate opens/removes the barrier; "
+        "Activate makes it solid/visible. A solid tilemap tile remains blocked "
+        "even when the Game Object is deactivated."),repeated);
+    repeatDoorHint->setWordWrap(true);
+    repeatForm->addRow(repeatDoorHint);
+    auto refreshRepeat=[=](){
+        const bool active=repeatEnabled->isChecked();
+        repeatItem->setEnabled(active);
+        for(QComboBox *node:repeatNodes)node->setEnabled(active);
+        repeatActionKind->setEnabled(active);
+        repeatEventId->setVisible(active && repeatActionKind->currentData().toString()==QStringLiteral("custom"));
+        repeatActionMode->setVisible(active && repeatActionKind->currentData().toString()!=QStringLiteral("none")
+            && repeatActionKind->currentData().toString()!=QStringLiteral("custom"));
+    };
+    QObject::connect(repeatEnabled,&QCheckBox::toggled,repeated,[=](bool){refreshRepeat();});
+    QObject::connect(repeatActionKind,QOverload<int>::of(&QComboBox::currentIndexChanged),repeated,[=](int){refreshRepeat();});
+    refreshRepeat();
+    layout->addWidget(repeated);
     QLabel *success=new QLabel(QObject::tr("Success uses this dialogue choice's existing Next, "
         "event, item reward and NPC-completed settings."),&dlg);
     success->setWordWrap(true);layout->addWidget(success);
     QDialogButtonBox *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dlg);
-    layout->addWidget(buttons);
+    outerLayout->addWidget(buttons);
     QObject::connect(buttons,&QDialogButtonBox::accepted,&dlg,[&](){
         QJsonArray chosen;
         QSet<int> unique;
@@ -711,6 +941,19 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
             QMessageBox::warning(&dlg,QObject::tr("GIVE Requirements"),
                 QObject::tr("Select at least one item before enabling an exchange."));
             return;
+        }
+        if(repeatEnabled->isChecked()) {
+            const int tracked=repeatItem->currentData().toInt();
+            if(!enabled->isChecked() || tracked<0) {
+                QMessageBox::warning(&dlg,QObject::tr("Repeated Wrong Item"),
+                    QObject::tr("Enable GIVE and choose the wrong item to track."));
+                return;
+            }
+            if(unique.contains(tracked)) {
+                QMessageBox::warning(&dlg,QObject::tr("Repeated Wrong Item"),
+                    QObject::tr("Choose an item NOT requested by this exchange. Required items follow the normal hand-in path."));
+                return;
+            }
         }
         dlg.accept();
     });
@@ -727,6 +970,15 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     saved.insert("incremental",incremental->isChecked());
     saved.insert("consume",consume->isChecked());
     saved.insert("wrongNext",wrong->currentData().toInt());
+    saved.insert("wrongRepeatEnabled",repeatEnabled->isChecked());
+    saved.insert("wrongRepeatItem",repeatItem->currentData().toInt());
+    for(int i=0;i<4;++i)
+        saved.insert(QLatin1String(repeatKeys[i]),repeatNodes[i]->currentData().toInt());
+    const QString repeatKind=repeatActionKind->currentData().toString();
+    saved.insert("wrongRepeatAction",repeatKind==QStringLiteral("custom") ? repeatEventId->value() : -1);
+    saved.insert("wrongRepeatTargetObjectId",repeatKind==QStringLiteral("none") || repeatKind==QStringLiteral("custom")
+        ? QString() : repeatKind);
+    saved.insert("wrongRepeatTargetAction",repeatActionMode->currentData().toString());
     /* Retire the old partial dialogue; existing quest hand-in state remains. */
     saved.insert("partialNext",-1);
     saved.insert("partialAction",-1);
@@ -746,7 +998,8 @@ QString dialogueTitle(const QJsonObject &node, int index)
         .arg(node.value("speaker").toString().left(24), node.value("text").toString().left(35));
 }
 void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &items,
-              const QVector<GameAdventureAsset> &objects, QTableWidget *npcTable)
+              const QVector<GameAdventureAsset> &objects, QTableWidget *npcTable,
+              const QJsonArray &folders)
 {
     if (row < 0 || row >= nodes.size()) return;
     QJsonObject node = nodes[row].toObject();
@@ -791,12 +1044,12 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].reply->setPlainText(choice.value("reply").toString());
         fields[i].reply->setMaximumHeight(65);
         fields[i].reply->setToolTip(QObject::tr("The selected player reply appears above the player's head. Up to five wrapped rows are supported."));
-        fields[i].next=new QComboBox(box);
+        fields[i].next=new DialogueTreeCombo(box,&nodes,&folders);
         fields[i].next->addItem(QObject::tr("Close conversation"),-1);
         for(int target=0;target<nodes.size();++target)
             fields[i].next->addItem(dialogueTitle(nodes[target].toObject(),target),target);
         fields[i].next->setCurrentIndex(std::max(0,fields[i].next->findData(choice.value("next").toInt(-1))));
-        fields[i].missingNext = new QComboBox(box);
+        fields[i].missingNext = new DialogueTreeCombo(box,&nodes,&folders);
         fields[i].missingNext->addItem(QObject::tr("Keep current behaviour (do nothing)"), -1);
         for(int target=0;target<nodes.size();++target)
             fields[i].missingNext->addItem(dialogueTitle(nodes[target].toObject(),target),target);
@@ -873,7 +1126,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         updateExchangeLabel();
         QObject::connect(fields[i].exchange,&QPushButton::clicked,box,[&,i,updateExchangeLabel](){
             const QJsonObject before=fields[i].exchange->property("exchange").toJsonObject();
-            fields[i].exchange->setProperty("exchange",QVariant::fromValue(editExchange(&dialog,before,items,nodes,objects)));
+            fields[i].exchange->setProperty("exchange",QVariant::fromValue(editExchange(&dialog,before,items,nodes,objects,folders)));
             updateExchangeLabel();
         });
         grid->addWidget(new QLabel(QObject::tr("NPC item exchange"),box),9,0);
@@ -893,7 +1146,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     helpText->setWordWrap(true);
     afterHelpForm->addRow(helpText);
     auto *linkedNpc = new QComboBox(afterHelp);
-    auto *nextVisit = new QComboBox(afterHelp);
+    auto *nextVisit = new DialogueTreeCombo(afterHelp,&nodes,&folders);
     if (npcTable) {
         for (int r = 0; r < npcTable->rowCount(); ++r) {
             auto *start = qobject_cast<QComboBox*>(npcTable->cellWidget(r,1));
@@ -1292,6 +1545,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                         remapped.append(index>row?index-1:index);
                     }
                     exchange.insert("items",remapped);
+                    const int tracked=exchange.value("wrongRepeatItem").toInt(-1);
+                    if(tracked==row) {
+                        exchange.insert("wrongRepeatEnabled",false);
+                        exchange.insert("wrongRepeatItem",-1);
+                    } else if(tracked>row) exchange.insert("wrongRepeatItem",tracked-1);
                     if(remapped.isEmpty())exchange.insert("enabled",false);
                     if(!exchange.isEmpty())c.insert("exchange",exchange);
                     choices[j]=c;
@@ -1341,13 +1599,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         name->setData(Qt::UserRole,id);
         name->setData(Qt::UserRole + 1,animation); name->setFlags(name->flags() & ~Qt::ItemIsEditable);
         npcs->setItem(row,0,name);
-        auto *startNode=new QComboBox(npcs);
+        auto *startNode=new DialogueTreeCombo(npcs,&nodes,&dialogueFolders);
         for(int i=0;i<nodes.size();++i) startNode->addItem(dialogueTitle(nodes[i].toObject(),i),i);
         if(startNode->count()==0)startNode->addItem(QObject::tr("Create a dialogue node first"),0);
         startNode->setCurrentIndex(std::max(0,startNode->findData(node)));
         npcs->setCellWidget(row,1,startNode);
         npcs->setItem(row,2,cell(QString::number(radius)));
-        auto *completed = new QComboBox(npcs);
+        auto *completed = new DialogueTreeCombo(npcs,&nodes,&dialogueFolders);
         completed->addItem(QObject::tr("Use normal opening dialogue"),-1);
         for(int i=0;i<nodes.size();++i) completed->addItem(dialogueTitle(nodes[i].toObject(),i),i);
         completed->setCurrentIndex(std::max(0,completed->findData(doneNode)));
@@ -1848,7 +2106,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(row<0){
             QMessageBox::information(&dialog,QObject::tr("Edit Dialogue"),QObject::tr("Select a dialogue node first."));return;
         }
-        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs);
+        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders);
         redrawNodes(row);refreshNpcNodes();sizeNpcColumns();
     };
     QObject::connect(nodeEdit,&QPushButton::clicked,&dialog,doNodeEdit);
@@ -1876,6 +2134,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 if(!exchange.isEmpty()) {
                     exchange.insert("wrongNext",remapNode(exchange.value("wrongNext").toInt(-1)));
                     exchange.insert("partialNext",remapNode(exchange.value("partialNext").toInt(-1)));
+                    for(const char *repeatKey:{"wrongRepeatFirst","wrongRepeatSecond","wrongRepeatThird","wrongRepeatLater"})
+                        exchange.insert(QLatin1String(repeatKey),remapNode(exchange.value(QLatin1String(repeatKey)).toInt(-1)));
                     choice.insert("exchange",exchange);
                 }
                 cs[c]=choice;
@@ -2069,7 +2329,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "dialogue and rises on screen when needed. Use Up/Down to reach other answers."),positionPage);
     positionHelp->setWordWrap(true);positionLayout->addWidget(positionHelp);
     auto *previewSelectors=new QHBoxLayout;
-    auto *previewNode=new QComboBox(positionPage);
+    auto *previewNode=new DialogueTreeCombo(positionPage,&nodes,&dialogueFolders);
     auto *previewAnswer=new QComboBox(positionPage);
     previewSelectors->addWidget(new QLabel(QObject::tr("Preview dialogue"),positionPage));
     previewSelectors->addWidget(previewNode,2);

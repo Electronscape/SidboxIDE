@@ -1,11 +1,3 @@
-SIDBOX / CoderGirl IDE source — Stage 5.68.241026
+# CoderGirl Stage 5.70.1.241026 hotfix
 
-Title-screen runtime: fixed main-menu rectangle geometry and separated the
-PPB background onto the hardware BACK layer, leaving the title text and menu
-selector on the foreground with their editable ARGB CLUT. The Options background
-has its own opaque PPB-derived CLUT, restored on submenu exit.
-
-See STAGE5.68-TITLE-RECT-AND-ALPHA-LAYERS.md for details and hardware limitations.
-
-Regenerate gamehelpers/gametitle.c with Update Game Project and rebuild the game.
-No change to user-owned main.c, game worlds, PPBs, or the audio mixer.
+Apply this drop-in over **Stage 5.70.241026** at the IDE source root, preserving relative paths. Rebuild the IDE, run **Update Game Project**, and **rebuild the SIDBOX game** so regenerated `gameadventureruntime.c/.h` use the corrected unsigned reveal-action event ID. No edits to handwritten `main.c`. See STAGE5.70.1-REPEAT-ACTION-ID-HOTFIX.md.

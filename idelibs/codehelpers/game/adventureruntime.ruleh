@@ -74,6 +74,24 @@ void game_adventure_exchange_rules(const game_adventure_exchange_t *rules,
                                    uint16_t count);
 void game_adventure_save_exchanges(uint8_t out[GAME_ADVENTURE_EXCHANGE_SLOTS]);
 void game_adventure_restore_exchanges(const uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS]);
+/* Optional repeated wrong-item response for a single item on a GIVE answer.
+ * The four reply nodes cover first, second, third and fourth-or-later offers.
+ * A -1 node falls back to the normal wrong-item reply. reveal_action triggers
+ * ONCE on the third offer; the wrong item is never consumed. */
+typedef struct {
+    uint16_t exchange_index; /* dialogue_node * 3 + dialogue_choice */
+    int16_t item;
+    int16_t replies[4];
+    /* Generated Game Object event IDs are 33000..33767, above INT16_MAX.
+     * An unsigned event ID is essential: -1 (no action) maps to UINT16_MAX.
+     * Otherwise the signed conversion turns valid IDs negative and the third
+     * response plays without ever executing its linked action. */
+    uint16_t reveal_action;
+} game_adventure_wrong_repeat_t;
+void game_adventure_wrong_repeat_rules(const game_adventure_wrong_repeat_t *rules,
+                                       uint16_t count);
+void game_adventure_save_wrong_repeats(uint8_t out[GAME_ADVENTURE_EXCHANGE_SLOTS]);
+void game_adventure_restore_wrong_repeats(const uint8_t saved[GAME_ADVENTURE_EXCHANGE_SLOTS]);
 
 typedef struct {
     const char *speaker;
