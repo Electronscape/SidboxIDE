@@ -219,6 +219,23 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 return false;
             }
         }
+        if (r.objectType != QStringLiteral("collectable") &&
+            (r.activeStateFrame >= 0 || r.inactiveStateFrame >= 0)) {
+            if (r.objectAnimated || r.spriteStamp.active()) {
+                if(error) *error=tr("'%1': static ACTIVE/INACTIVE state frames cannot be combined with looping animation or a sprite stamp. Turn off animation or clear the state frames.").arg(r.name);
+                return false;
+            }
+            const QImage sheet=cachedImage(resolvedPath(r.path));
+            const int cw=r.cellWidth>0?r.cellWidth:sheet.width();
+            const int ch=r.cellHeight>0?r.cellHeight:sheet.height();
+            const int frames=!sheet.isNull() && cw>0 && ch>0
+                ? (sheet.width()/cw)*(sheet.height()/ch) : 0;
+            if ((r.activeStateFrame>=0 && r.activeStateFrame>=qMin(256,frames)) ||
+                (r.inactiveStateFrame>=0 && r.inactiveStateFrame>=qMin(256,frames))) {
+                if(error) *error=tr("'%1': ACTIVE/INACTIVE state frame exceeds the sprite atlas (%2 frames).").arg(r.name).arg(frames);
+                return false;
+            }
+        }
         if (r.objectType == QStringLiteral("enemy") && r.enemyDefeatFrame >= 0) {
             const QImage image = cachedImage(resolvedPath(r.path));
             const int cw = r.cellWidth > 0 ? r.cellWidth : image.width();
@@ -431,6 +448,39 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             return false;
         }
     }
+    // Resolve item interactions against this world's Adventure Inventory names.
+    // Numeric item indices change across worlds, so persist/copy only the name.
+    QSet<QString> availableInteractionItems;
+    for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
+        const QString name=entry.toObject().value(QStringLiteral("name")).toString().trimmed();
+        if (!name.isEmpty()) availableInteractionItems.insert(name);
+    }
+    for (const Resource *r : platforms) {
+        if (r->objectType != QStringLiteral("trigger") || r->interactItemName.isEmpty()) continue;
+        if (!availableInteractionItems.contains(r->interactItemName)) {
+            if (error) *error=tr("Interactable '%1' requires inventory item '%2', "
+                "but this world does not define it in Adventure Editor → Inventory Items. "
+                "Add or synchronise that item before updating the game.")
+                .arg(r->name,r->interactItemName);
+            return false;
+        }
+    }
+    const QJsonArray dialogueNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
+    for (const Resource *r:platforms) {
+        if (r->objectType!=QStringLiteral("trigger") || r->interactItemName.isEmpty()) continue;
+        if(r->interactDialogueNode>=dialogueNodes.size() || r->interactDialogueNode < -1) {
+            if(error) *error=tr("Trigger '%1': success dialogue node no longer exists. Select one in Game Object Properties.").arg(r->name);
+            return false;
+        }
+        if(r->interactWrongDialogueNode>=dialogueNodes.size() || r->interactWrongDialogueNode < -1) {
+            if(error) *error=tr("Trigger '%1': wrong-item dialogue node no longer exists. Select one in Game Object Properties.").arg(r->name);
+            return false;
+        }
+        if(!r->interactRewardItem.isEmpty() && !availableInteractionItems.contains(r->interactRewardItem)) {
+            if(error) *error=tr("Trigger '%1': reward item '%2' is not defined in this world's Adventure Inventory.").arg(r->name,r->interactRewardItem);
+            return false;
+        }
+    }
     QHash<QString, const Resource *> musicById;
     for (const Resource &asset : m_resources)
         if (asset.kind == QStringLiteral("music") && !asset.path.isEmpty())
@@ -458,6 +508,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             usedSfx.insert(obj->sfxRespawn);
     }
     for (const Resource *obj : platforms) {
+        if (obj->objectType == QStringLiteral("trigger") && !obj->interactItemName.isEmpty()) {
+            for (const QString &id : {obj->sfxInteractWrong, obj->sfxInteractSuccess,
+                                      obj->sfxInteractCancel})
+                if (!id.isEmpty()) usedSfx.insert(id);
+        }
         if (obj->objectType == QStringLiteral("lift")) {
             for (const QString &id : {obj->sfxStart, obj->sfxMove,
                                       obj->sfxStop, obj->sfxReverse})
@@ -688,9 +743,26 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         value("Y", r.y);
         value("RESPAWN_FRAMES", r.respawnFrames);
         value("PICKUP_VALUE", r.objectValue);
-        value("PICKUP_TRACKING", r.pickupTrackingConfigured ? 1 : 0);
         value("PICKUP_INVENTORY", r.pickupShowInventory ? 1 : 0);
         value("PICKUP_HUD", r.pickupShowHud ? 1 : 0);
+        const QString pickupStat = r.pickupStatTarget.isEmpty()
+            ? (r.pickupKind == 2 ? QStringLiteral("health") : QStringLiteral("none"))
+            : r.pickupStatTarget;
+        const int pickupStatId = pickupStat == QStringLiteral("health") ? 1 :
+            pickupStat == QStringLiteral("lives") ? 2 :
+            pickupStat == QStringLiteral("score") ? 3 :
+            pickupStat.startsWith(QStringLiteral("stat:")) ? 4 : 0;
+        // Existing .sbgm worlds may predate the tracking_configured flag.
+        // Either checked inventory/HUD option or an automatic stat effect
+        // requires a managed callback, so old on_pickup() cannot secretly
+        // add a no-inventory Health boost into the backpack as well.
+        value("PICKUP_TRACKING", r.pickupTrackingConfigured || r.pickupShowInventory ||
+            r.pickupShowHud || (!r.pickupShowInventory && pickupStatId != 0) ? 1 : 0);
+        value("PICKUP_STAT_TARGET", pickupStatId);
+        f.insert(QStringLiteral("PICKUP_STAT_NAME"), pickupStatId == 4
+            ? QString::fromUtf8(QJsonDocument(QJsonArray{pickupStat.mid(5)})
+                .toJson(QJsonDocument::Compact)).mid(1).chopped(1)
+            : QStringLiteral("0"));
         value("PICKUP_PERSISTENT", r.pickupPersistent ? 1 : 0);
         const QStringList pickupsKinds{QString(), QStringLiteral("GAME_PICKUP_COIN"),
             QStringLiteral("GAME_PICKUP_HEALTH"), QStringLiteral("GAME_PICKUP_KEY"),
@@ -709,6 +781,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         f.insert(QStringLiteral("OBJECT_KIND"), kind);
         boolValue("TRIGGER_PRESS", type == QStringLiteral("goto_world") ? r.gotoPress : r.triggerPress);
         boolValue("TRIGGER_ONESHOT", type == QStringLiteral("goto_world") ? false : r.triggerOneShot);
+        boolValue("INTERACT_ENABLED", type == QStringLiteral("trigger") && !r.interactItemName.isEmpty());
         value("CONVEYOR_SPEED", r.conveyorSpeed);
         value("BREAK_HITS", r.breakHits);
         boolValue("BREAK_TOUCH", r.breakTouch && !r.breakFromBelow);
@@ -868,6 +941,92 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if (!r.sfxPickup.isEmpty() && !renderWorldSection(QStringLiteral("PICKUP_EVENT_SOUND"),
                 audioFields(r.sfxPickup, i, r.audioRadius), &checkBody)) return false;
     }
+    QString interactionRows;
+    QString interactionSoundActions;
+    QString interactionPreflightActions;
+    QString interactionDialogueActions;
+    QString interactionWrongDialogueActions;
+    QString activeStateFrames, inactiveStateFrames;
+    bool hasInteractionOutcomes=false;
+    const auto cQuoted=[](const QString &value) -> QString {
+        return QString::fromUtf8(QJsonDocument(QJsonArray{value})
+            .toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+    };
+    for (const Resource *resource:platforms) {
+        activeStateFrames+=QStringLiteral("    %1u,\n")
+            .arg(resource->activeStateFrame>=0 ? resource->activeStateFrame : 65535);
+        inactiveStateFrames+=QStringLiteral("    %1u,\n")
+            .arg(resource->inactiveStateFrame>=0 ? resource->inactiveStateFrame : 65535);
+    }
+    for (int i=0; i<nw; ++i) {
+        const Resource &r=*platforms.at(i);
+        if (r.objectType!=QStringLiteral("trigger") || r.interactItemName.isEmpty()) continue;
+        // QJson escaping is valid inside a C string literal for item names.
+        const QString quoted=QString::fromUtf8(QJsonDocument(
+            QJsonArray{r.interactItemName}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+        interactionRows += QStringLiteral("    {%1u, %2u, %3u, %4},\n")
+            .arg(i).arg(qBound(0,r.interactRadius,128))
+            .arg(r.interactConsume ? 1 : 0).arg(quoted);
+        if (!r.interactRewardItem.isEmpty() ||
+            (r.interactStatTarget!=QStringLiteral("none") && !r.interactStatTarget.isEmpty() && r.interactStatDelta)) {
+            hasInteractionOutcomes=true;
+            QString body;
+            if (!r.interactRewardItem.isEmpty()) {
+                const QString gift=cQuoted(r.interactRewardItem);
+                body+=QStringLiteral(
+                    "        if (!game_adventure_can_reward_name(%1, %2u, r->consume ? r->item : 0)) return 3u;\n")
+                    .arg(gift).arg(qBound(1,r.interactRewardCount,64));
+            }
+            if(r.interactStatTarget!=QStringLiteral("none") &&
+               !r.interactStatTarget.isEmpty() && r.interactStatDelta) {
+                body+=QStringLiteral(
+                    "        if (!gameadventure_apply_item_stat(%1, %2)) return 0u;\n")
+                    .arg(cQuoted(r.interactStatTarget)).arg(r.interactStatDelta);
+            }
+            if (!r.interactRewardItem.isEmpty()) {
+                if(r.interactConsume) body+=QStringLiteral(
+                    "        if (!game_adventure_take_name(r->item, 1u)) return 0u;\n"
+                    "        consumed_here=1u;\n");
+                body+=QStringLiteral(
+                    "        if (!game_adventure_reward_name(%1, %2u)) return 3u;\n")
+                    .arg(cQuoted(r.interactRewardItem)).arg(qBound(1,r.interactRewardCount,64));
+            }
+            interactionPreflightActions+=QStringLiteral("    if(r->object==%1u) {\n%2    }\n")
+                .arg(i).arg(body);
+        }
+        if(r.interactDialogueNode>=0) {
+            hasInteractionOutcomes=true;
+            const QString dialogueFunction=r.interactDialogueMode==QStringLiteral("single")
+                ? QStringLiteral("game_adventure_trigger_message")
+                : r.interactDialogueMode==QStringLiteral("sequence")
+                    ? QStringLiteral("game_adventure_trigger_sequence")
+                    : QStringLiteral("game_adventure_trigger_dialogue");
+            interactionDialogueActions+=QStringLiteral(
+                "    if (r->object==%1u) %3(%2u);\n")
+                .arg(i).arg(r.interactDialogueNode).arg(dialogueFunction);
+        }
+        if(r.interactWrongDialogueNode>=0) {
+            const QString dialogueFunction=r.interactWrongDialogueMode==QStringLiteral("single")
+                ? QStringLiteral("game_adventure_trigger_message")
+                : r.interactWrongDialogueMode==QStringLiteral("sequence")
+                    ? QStringLiteral("game_adventure_trigger_sequence")
+                    : QStringLiteral("game_adventure_trigger_dialogue");
+            interactionWrongDialogueActions+=QStringLiteral(
+                "        if (r->object==%1u) { %3(%2u); return 0u; }\n")
+                .arg(i).arg(r.interactWrongDialogueNode).arg(dialogueFunction);
+        }
+        // Event 0: wrong item, 1: success, 2: FIRE2 cancel. Generated
+        // calls use the normal Game Sound wrappers, not a second audio system.
+        const QStringList eventSounds{r.sfxInteractWrong, r.sfxInteractSuccess, r.sfxInteractCancel};
+        for (int event=0; event<eventSounds.size(); ++event) {
+            const QString symbol=cSoundSymbol(eventSounds.at(event));
+            if (symbol.isEmpty()) continue;
+            interactionSoundActions += QStringLiteral(
+                "    if (r->object == %1u && event == %2u) { "
+                "cg_sound_%3(cg_gwi_platforms[%1u].x, %4); return; }\n")
+                .arg(i).arg(event).arg(symbol).arg(r.audioRadius);
+        }
+    }
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
         if (r.objectType != QStringLiteral("trigger") &&
@@ -944,6 +1103,18 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("WORLD_EVENT_ACTIONS"), eventActions);
     sourceFields.insert(QStringLiteral("CHECK_ACTIONS"), checkBody);
     sourceFields.insert(QStringLiteral("TRIGGER_ACTIONS"), triggerBody);
+    sourceFields.insert(QStringLiteral("INTERACT_ROWS"), interactionRows);
+    sourceFields.insert(QStringLiteral("INTERACT_SOUND_ACTIONS"), interactionSoundActions);
+    sourceFields.insert(QStringLiteral("INTERACT_PREFLIGHT_ACTIONS"),interactionPreflightActions);
+    sourceFields.insert(QStringLiteral("INTERACT_DIALOGUE_ACTIONS"),interactionDialogueActions);
+    sourceFields.insert(QStringLiteral("INTERACT_WRONG_DIALOGUE_ACTIONS"),interactionWrongDialogueActions);
+    sourceFields.insert(QStringLiteral("HAS_INTERACT_OUTCOMES"),flag(hasInteractionOutcomes));
+    sourceFields.insert(QStringLiteral("STATE_ACTIVE_FRAMES"),activeStateFrames);
+    sourceFields.insert(QStringLiteral("STATE_INACTIVE_FRAMES"),inactiveStateFrames);
+    bool hasInactiveStateFrames=false;
+    for(const Resource *resource:platforms)
+        if(resource->inactiveStateFrame>=0) {hasInactiveStateFrames=true;break;}
+    sourceFields.insert(QStringLiteral("HAS_INACTIVE_STATE_FRAMES"),flag(hasInactiveStateFrames));
     sourceFields.insert(QStringLiteral("PICKUP_COUNT"), number(np));
     sourceFields.insert(QStringLiteral("WORLD_OBJECT_COUNT"), number(nw));
     sourceFields.insert(QStringLiteral("HAS_WORLDS"), flag(nw != 0));

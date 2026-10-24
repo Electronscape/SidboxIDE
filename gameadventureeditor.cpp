@@ -1,5 +1,6 @@
 #include "gameadventureeditor.h"
 #include "ppbcodec.h"
+#include "guidesigner_detail.h"
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QFrame>
@@ -43,6 +44,8 @@
 #include <QVBoxLayout>
 #include <QFileInfo>
 #include <QFile>
+#include <QSaveFile>
+#include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QJsonDocument>
@@ -243,7 +246,36 @@ protected:
     }
 };
 
-// SIDBOX uses an 8x16 monospace font. Keep this estimator in step with
+/* Same canonical 8x8 glyphs and nearest-neighbour X/Y scale as the Title
+   Screen designer. GUI Designer draws 8x16, so collapse its doubled rows
+   before scaling, exactly as gametitlescreeneditor.cpp does. */
+void adventureDrawGlyphs(QPainter &painter,int x,int y,const QString &text,
+                         int sx,int sy,const QColor &colour,bool outlined=false,
+                         const QColor &outlineColour=QColor(10,10,16))
+{
+    if(text.isEmpty())return;
+    const QString latin=QString::fromLatin1(text.toLatin1());
+    const int sourceWidth=8*latin.size();
+    if(sourceWidth<=0)return;
+    QImage doubled(sourceWidth,16,QImage::Format_ARGB32_Premultiplied);
+    doubled.fill(Qt::transparent);
+    { QPainter glyphPainter(&doubled);
+      GuiDesignerDetail::drawCoderGirlText(glyphPainter,0,0,latin,Qt::white); }
+    const QImage native=doubled.scaled(sourceWidth,8,Qt::IgnoreAspectRatio,Qt::FastTransformation);
+    QImage scaled=native.scaled(sourceWidth*sx,8*sy,Qt::IgnoreAspectRatio,Qt::FastTransformation);
+    { QPainter tint(&scaled);tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+      tint.fillRect(scaled.rect(),colour); }
+    if(outlined){
+        QImage edge=scaled;
+        { QPainter tint(&edge);tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+          tint.fillRect(edge.rect(),outlineColour); }
+        painter.drawImage(x-1,y,edge);painter.drawImage(x+1,y,edge);
+        painter.drawImage(x,y-1,edge);painter.drawImage(x,y+1,edge);
+    }
+    painter.drawImage(x,y,scaled);
+}
+
+// SIDBOX uses native 8x8 glyphs with X/Y scale (default 8x16). Keep this estimator in step with
 // game/adventureruntime.c: the dialogue box fits the speaker, body and the
 // largest adjacent pair of answer labels (not all three at once).
 QStringList adventurePreviewRows(const QString &text, int width, int limit=64)
@@ -252,7 +284,7 @@ QStringList adventurePreviewRows(const QString &text, int width, int limit=64)
     if (width < 1 || text.isEmpty()) return result;
     const QString source=text.left(512);
     int pos=0;
-    width=std::min(width,54);
+    width=std::min(width,60);
     while (pos<source.size() && result.size()<limit) {
         QString line;
         while (pos<source.size() && source[pos]!=QLatin1Char('\n') && line.size()<width)
@@ -278,12 +310,13 @@ struct AdventurePreviewMetrics {
     bool overflow=false;
 };
 AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
-                                        int minimumHeight, bool outlined, int padding)
+                                        int minimumHeight, bool outlined, int padding,
+                                        int scaleX=1,int scaleY=2)
 {
     AdventurePreviewMetrics m;
-    m.lineHeight=outlined?20:16;
-    m.bodyColumns=std::min(50,(width-2*padding)/8);
-    m.answerColumns=std::min(54,(width-2*padding-34)/8);
+    m.lineHeight=8*scaleY+(outlined?4:0);
+    m.bodyColumns=std::clamp((width-2*padding)/(8*scaleX),1,50);
+    m.answerColumns=std::clamp((width-2*padding-34*scaleX)/(8*scaleX),1,54);
     m.rows=adventurePreviewRows(node.value("text").toString().left(512),m.bodyColumns).size();
     const QJsonArray answers=node.value("choices").toArray();
     QVector<int> lengths;
@@ -297,7 +330,7 @@ AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
     // Match the generated runtime: reclaim eight unused vertical pixels
     // before the choices, or between the speaker and body with no choices.
     const int bottomInset=std::max(0,padding-8);
-    m.needed=(m.answerHeight?24:16)+padding+bottomInset+m.rows*m.lineHeight+
+    m.needed=(m.answerHeight?m.lineHeight+8:m.lineHeight)+padding+bottomInset+m.rows*m.lineHeight+
         (m.answerHeight?1+m.answerHeight:0);
     m.height=std::min(320,std::max(minimumHeight-16,m.needed));
     m.overflow=m.needed>320;
@@ -309,23 +342,40 @@ AdventurePreviewMetrics adventureMeasure(const QJsonObject &node, int width,
 class AdventureDialoguePositionPreview : public QLabel {
 public:
     int frameX=20, frameY=148, frameW=440, frameH=162;
+    int thoughtX=20,thoughtY=12,thoughtW=240,thoughtH=64;
     std::function<void(int,int)> moved;
+    std::function<void(int,int)> movedThought;
     explicit AdventureDialoguePositionPreview(QWidget *parent=nullptr) : QLabel(parent) {
         setFixedSize(480,320);
         setCursor(Qt::OpenHandCursor);
     }
 protected:
-    bool dragging=false;
+    bool dragging=false,thoughtDragging=false;
     int gripX=0,gripY=0;
+public:
+    bool thoughtAboveDialog=true;
+protected:
     void reposition(const QPointF &point) {
-        const int nx=std::clamp(int(point.x())-gripX,0,480-frameW);
-        const int ny=std::clamp(int(point.y())-gripY,0,320-frameH);
-        if(moved)moved(nx,ny);
+        if(thoughtDragging){
+            const int nx=std::clamp(int(point.x())-gripX,0,480-thoughtW);
+            const int ny=std::clamp(int(point.y())-gripY,0,320-thoughtH);
+            if(movedThought)movedThought(nx,ny);
+        } else {
+            const int nx=std::clamp(int(point.x())-gripX,0,480-frameW);
+            const int ny=std::clamp(int(point.y())-gripY,0,320-frameH);
+            if(moved)moved(nx,ny);
+        }
     }
     void mousePressEvent(QMouseEvent *event) override {
         if(event->button()!=Qt::LeftButton)return;
         const int x=int(event->position().x()),y=int(event->position().y());
-        if(x>=frameX && y>=frameY && x<frameX+frameW && y<frameY+frameH){
+        const bool overThought=x>=thoughtX && y>=thoughtY &&
+            x<thoughtX+thoughtW && y<thoughtY+thoughtH;
+        const bool overDialogue=x>=frameX && y>=frameY &&
+            x<frameX+frameW && y<frameY+frameH;
+        thoughtDragging=overThought && (thoughtAboveDialog || !overDialogue);
+        if(thoughtDragging){gripX=x-thoughtX;gripY=y-thoughtY;}
+        else if(x>=frameX && y>=frameY && x<frameX+frameW && y<frameY+frameH){
             gripX=x-frameX;gripY=y-frameY;
         }else{gripX=frameW/2;gripY=frameH/2;}
         dragging=true;setCursor(Qt::ClosedHandCursor);
@@ -335,7 +385,7 @@ protected:
         if(dragging)reposition(event->position());
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
-        if(event->button()==Qt::LeftButton){dragging=false;setCursor(Qt::OpenHandCursor);}
+        if(event->button()==Qt::LeftButton){dragging=false;thoughtDragging=false;setCursor(Qt::OpenHandCursor);}
     }
 };
 
@@ -1051,6 +1101,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     }
     struct EditorFields {
         QTextEdit *label, *reply;
+        QCheckBox *thought;
         QComboBox *next, *missingNext, *event, *mode;
         QComboBox *npcTargets[2], *npcModes[2];
         QSpinBox *customId;
@@ -1073,7 +1124,10 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].reply->setTabChangesFocus(true);
         fields[i].reply->setPlainText(choice.value("reply").toString());
         fields[i].reply->setMaximumHeight(65);
-        fields[i].reply->setToolTip(QObject::tr("The selected player reply appears above the player's head. Up to five wrapped rows are supported."));
+        fields[i].reply->setToolTip(QObject::tr("Player speech can be a normal sequential reply or a simultaneous thought bubble on the next dialogue node."));
+        fields[i].thought = new QCheckBox(QObject::tr("Use as thought bubble (show with next dialogue)"),box);
+        fields[i].thought->setChecked(choice.value("thoughtBubble").toBool(false));
+        fields[i].thought->setToolTip(QObject::tr("Shows this Player speech with the Next dialogue, without delaying that message. Also works in Trigger Message sequence; no puzzle actions run there."));
         fields[i].next=new DialogueTreeCombo(box,&nodes,&folders);
         fields[i].next->addItem(QObject::tr("Close conversation"),-1);
         for(int target=0;target<nodes.size();++target)
@@ -1115,6 +1169,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(fields[i].label,0,1,1,3);
         grid->addWidget(new QLabel(QObject::tr("Player speech"),box),1,0);
         grid->addWidget(fields[i].reply,1,1,1,3);
+        grid->addWidget(fields[i].thought,1,4);
         grid->addWidget(new QLabel(QObject::tr("Next"),box),2,0);
         grid->addWidget(fields[i].next,2,1);
         grid->addWidget(new QLabel(QObject::tr("Event / resource"),box),2,2);
@@ -1423,6 +1478,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     for (int i=0;i<3;++i) {
         QJsonObject c; c.insert("text",fields[i].label->toPlainText().left(180));
         c.insert("reply",fields[i].reply->toPlainText().left(150));
+        c.insert("thoughtBubble",fields[i].thought->isChecked());
         c.insert("next",fields[i].next->currentData().toInt());
         c.insert("missingNext",fields[i].missingNext->currentData().toInt());
         const QString eventSelection=fields[i].event->currentData().toString();
@@ -1475,6 +1531,13 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     }
 }
 } // namespace
+
+QComboBox *createGameDialogueTreeCombo(QWidget *parent,
+                                       const QJsonArray *nodes,
+                                       const QJsonArray *folders)
+{
+    return new DialogueTreeCombo(parent, nodes, folders);
+}
 
 /* Shorten repeated object instances without altering the pickup kind.
  * e.g. flower[0..4], flower[7..9]; a complete zero-based run is flower[].
@@ -1588,6 +1651,201 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     itemsLayout->addLayout(itemAtlasRow);
     itemsLayout->addWidget(new QLabel(QObject::tr("Double-click Icon artwork to choose the PPB atlas and tiles together. The controls above also edit the selected item. Other worlds need the PPB registered in Game Resources."),itemsPage));
     itemsLayout->addWidget(items,1);
+    // Cross-world inventory rules are opt-in. The display name identifies a
+    // shared item; numeric pickup kinds and atlas IDs are local to each world.
+    // Keep changes queued until this Adventure dialog is accepted.
+    QHash<QString, QHash<QString, QSet<QString>>> acceptedWorldRules;
+    QHash<QString, QDateTime> acceptedWorldTimestamps;
+    const auto offerInventoryRuleSync = [&](int row, const QSet<QString> &fields,
+                                            const QString &description) {
+        if (row < 0 || row >= items->rowCount() || fields.isEmpty()
+            || currentDesignFilePath.isEmpty() || !items->item(row, 0)) {
+            if (fields.size() > 1)
+                QMessageBox::information(&dialog, QObject::tr("Inventory World Sync"),
+                    QObject::tr("Select an inventory item in a saved world first."));
+            return;
+        }
+        const QString name = items->item(row, 0)->text().trimmed();
+        if (name.isEmpty()) return;
+        const QString key = name.toCaseFolded();
+        int occurrences = 0;
+        for (int i = 0; i < items->rowCount(); ++i)
+            if (items->item(i, 0) && items->item(i, 0)->text().trimmed().toCaseFolded() == key)
+                ++occurrences;
+        if (occurrences != 1) {
+            QMessageBox::information(&dialog, QObject::tr("Inventory World Sync"),
+                QObject::tr("'%1' has duplicate names in this world. Rename the duplicates before syncing.").arg(name));
+            return;
+        }
+
+        QJsonObject sourceItem;
+        for (const QJsonValue &entry : tableItems(items)) {
+            const QJsonObject candidate = entry.toObject();
+            if (candidate.value(QStringLiteral("name")).toString().trimmed().toCaseFolded() == key) {
+                sourceItem = candidate;
+                break;
+            }
+        }
+        if (sourceItem.isEmpty()) return;
+
+        // Old worlds may omit droppable and useConsume. Compare their actual
+        // UI/runtime defaults, not null JSON values, to avoid false changes.
+        const auto ruleValue = [](const QJsonObject &item, const QString &field) -> QJsonValue {
+            if (field == QStringLiteral("droppable"))
+                return item.value(field).isBool() ? item.value(field)
+                    : QJsonValue(item.value(QStringLiteral("discardable")).toBool(false));
+            if (field == QStringLiteral("discardable")) return item.value(field).toBool(false);
+            if (field == QStringLiteral("capacity")) return item.value(field).toInt(1);
+            if (field == QStringLiteral("useStat")) return item.value(field).toString();
+            if (field == QStringLiteral("useDelta")) return item.value(field).toInt(0);
+            if (field == QStringLiteral("useConsume")) return item.value(field).toBool(true);
+            return item.value(field);
+        };
+        const auto ruleLabel = [](const QString &field) -> QString {
+            if (field == QStringLiteral("droppable")) return QObject::tr("Can Drop");
+            if (field == QStringLiteral("discardable")) return QObject::tr("Can Discard");
+            if (field == QStringLiteral("capacity")) return QObject::tr("Max Owned");
+            if (field == QStringLiteral("useStat")) return QObject::tr("USE Stat");
+            if (field == QStringLiteral("useDelta")) return QObject::tr("USE Amount");
+            if (field == QStringLiteral("useConsume")) return QObject::tr("USE Consumes Item");
+            return field;
+        };
+        const auto ruleText = [](const QJsonValue &value) -> QString {
+            if (value.isBool()) return value.toBool() ? QObject::tr("Yes") : QObject::tr("No");
+            if (value.isString()) {
+                const QString valueText = value.toString();
+                return valueText.isEmpty() ? QObject::tr("None") : valueText;
+            }
+            return QString::number(value.toInt());
+        };
+
+        const QDir project(QFileInfo(currentDesignFilePath).absolutePath());
+        const QString current = QDir::cleanPath(QFileInfo(currentDesignFilePath).absoluteFilePath());
+        QHash<QString, QSet<QString>> differing;
+        QHash<QString, QDateTime> times;
+        QStringList differences, matched, blocked;
+        QDirIterator it(project.absolutePath(), QStringList{QStringLiteral("*.sbgm")},
+                        QDir::Files, QDirIterator::Subdirectories);
+        int scanned = 0;
+        while (it.hasNext() && scanned++ < 256) {
+            const QString path = QDir::cleanPath(QFileInfo(it.next()).absoluteFilePath());
+            if (path == current || QFileInfo(path).isSymLink()) continue;
+            const QString relative = QDir::fromNativeSeparators(project.relativeFilePath(path));
+            if (relative.startsWith(QStringLiteral(".codergirl/"))
+                || relative.startsWith(QStringLiteral("worlds/"))
+                || relative.startsWith(QStringLiteral("buildv1/"))) continue;
+            QFile input(path);
+            if (!input.open(QIODevice::ReadOnly) || input.size() > 16 * 1024 * 1024) continue;
+            QJsonParseError error;
+            const QJsonDocument document = QJsonDocument::fromJson(input.readAll(), &error);
+            if (error.error != QJsonParseError::NoError || !document.isObject()) continue;
+            const QJsonObject world = document.object();
+            if (world.value(QStringLiteral("format")).toString() != QStringLiteral("SIDBOX-GAME-DESIGN")
+                || world.value(QStringLiteral("version")).toInt() != 1) continue;
+            QJsonObject targetItem;
+            int count = 0;
+            for (const QJsonValue &entry : world.value(QStringLiteral("adventure")).toObject()
+                                                    .value(QStringLiteral("items")).toArray()) {
+                const QJsonObject candidate = entry.toObject();
+                if (candidate.value(QStringLiteral("name")).toString().trimmed().toCaseFolded() == key) {
+                    targetItem = candidate;
+                    ++count;
+                }
+            }
+            if (count != 1) continue; // A duplicate is ambiguous, not a sync target.
+            matched.append(relative);
+            times.insert(path, QFileInfo(path).lastModified());
+            QStringList changeLines;
+            for (const QString &field : fields) {
+                const QJsonValue before = ruleValue(targetItem, field);
+                const QJsonValue after = ruleValue(sourceItem, field);
+                if (before == after) continue;
+                if (field == QStringLiteral("discardable") && after.toBool()) {
+                    // Don't offer a rule that cannot be applied: a quest item
+                    // still required by an NPC cannot be destroyed.
+                    const QJsonObject adventure = world.value(QStringLiteral("adventure")).toObject();
+                    const QJsonArray targetItems = adventure.value(QStringLiteral("items")).toArray();
+                    int targetIndex = -1;
+                    for (int i = 0; i < targetItems.size(); ++i)
+                        if (targetItems[i].toObject().value(QStringLiteral("name")).toString()
+                                .trimmed().toCaseFolded() == key) targetIndex = i;
+                    bool required = false;
+                    for (const QJsonValue &nodeValue : adventure.value(QStringLiteral("nodes")).toArray()) {
+                        for (const QJsonValue &choiceValue : nodeValue.toObject().value(QStringLiteral("choices")).toArray()) {
+                            const QJsonObject choice = choiceValue.toObject();
+                            if (choice.value(QStringLiteral("requires")).toInt(-1) == targetIndex
+                                || choice.value(QStringLiteral("take")).toInt(-1) == targetIndex) required = true;
+                            for (const QJsonValue &entry : choice.value(QStringLiteral("exchange")).toObject()
+                                                            .value(QStringLiteral("items")).toArray())
+                                if (entry.toInt(-1) == targetIndex) required = true;
+                        }
+                    }
+                    if (required) {
+                        blocked.append(QObject::tr("%1: Can Discard is locked by NPC dialogue")
+                            .arg(relative));
+                        continue;
+                    }
+                }
+                differing[path].insert(field);
+                changeLines.append(QObject::tr("    %1: %2 -> %3")
+                    .arg(ruleLabel(field), ruleText(before), ruleText(after)));
+            }
+            if (!changeLines.isEmpty())
+                differences.append(relative + QStringLiteral("\n") + changeLines.join(QStringLiteral("\n")));
+        }
+        // Each request replaces older approvals for these exact fields. A
+        // previously approved Yes followed by No must never apply an old value.
+        const auto clearPreviousApproval = [&] {
+            auto itemIt = acceptedWorldRules.find(key);
+            if (itemIt == acceptedWorldRules.end()) return;
+            for (auto worldIt = itemIt->begin(); worldIt != itemIt->end();) {
+                for (const QString &field : fields) worldIt->remove(field);
+                if (worldIt->isEmpty()) worldIt = itemIt->erase(worldIt);
+                else ++worldIt;
+            }
+            if (itemIt->isEmpty()) acceptedWorldRules.erase(itemIt);
+        };
+        if (matched.isEmpty()) {
+            if (fields.size() > 1)
+                QMessageBox::information(&dialog, QObject::tr("Inventory World Sync"),
+                    QObject::tr("No other saved world contains one unambiguous inventory item named '%1'.\n\n"
+                                "The inventory ITEM name must match (ignoring capitals). Object names and pickup numbers don't count.")
+                        .arg(name));
+            return;
+        }
+        if (differences.isEmpty()) {
+            clearPreviousApproval();
+            QString status = QObject::tr("No applicable differences for '%1' (%2) across %3 matching saved world(s).\n\n"
+                                  "Earlier queued changes for these rules were cleared.")
+                                .arg(name, description).arg(matched.size());
+            if (!blocked.isEmpty())
+                status += QObject::tr("\n\nProtected rules NOT copied:\n%1")
+                    .arg(blocked.join(QStringLiteral("\n")));
+            QMessageBox::information(&dialog, QObject::tr("Inventory World Sync"), status);
+            return;
+        }
+        std::sort(differences.begin(), differences.end(), [](const QString &a, const QString &b) {
+            return a.compare(b, Qt::CaseInsensitive) < 0;
+        });
+        QString proposal = QObject::tr("Item: %1\n\nChanges proposed for the other saved worlds:\n\n%2\n\n"
+                       "YES: queue these differences to copy when you press OK in Adventure Editor.\n"
+                       "NO: leave other worlds unchanged, clearing earlier queued choices for these rules.\n\n"
+                       "Artwork, starting quantities, pickup numbers and NPC dialogue stay untouched.")
+                .arg(name, differences.join(QStringLiteral("\n\n")));
+        if (!blocked.isEmpty())
+            proposal += QObject::tr("\n\nProtected rules NOT included:\n%1")
+                .arg(blocked.join(QStringLiteral("\n")));
+        const auto choice = QMessageBox::question(&dialog,
+            QObject::tr("Copy Inventory Rules to Other Worlds?"), proposal,
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        clearPreviousApproval();
+        if (choice != QMessageBox::Yes) return;
+        for (auto pathIt = differing.constBegin(); pathIt != differing.constEnd(); ++pathIt) {
+            acceptedWorldRules[key][pathIt.key()].unite(pathIt.value());
+            acceptedWorldTimestamps.insert(pathIt.key(), times.value(pathIt.key()));
+        }
+    };
+
     const QJsonArray oldItems = old.value("items").toArray();
     const QJsonArray customKinds = old.value("pickupTypes").toArray();
     QSet<QString> protectedItemNames;
@@ -1755,6 +2013,19 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             discard->setToolTip(QObject::tr("Allow the player to discard one copy (confirmation required)."));
         }
         items->setCellWidget(row,6,discard);
+        const auto changedRow = [items, drop]() {
+            for (int i = 0; i < items->rowCount(); ++i)
+                if (items->cellWidget(i, 5) == drop) return i;
+            return -1;
+        };
+        QObject::connect(drop, &QCheckBox::toggled, &dialog, [&, changedRow](bool) {
+            offerInventoryRuleSync(changedRow(), {QStringLiteral("droppable")},
+                                   QObject::tr("Can Drop"));
+        });
+        QObject::connect(discard, &QCheckBox::toggled, &dialog, [&, changedRow](bool) {
+            offerInventoryRuleSync(changedRow(), {QStringLiteral("discardable")},
+                                   QObject::tr("Can Discard"));
+        });
         auto *use=new QPushButton(items);
         const QString initialStat=o.value("useStat").toString();
         const int initialDelta=o.value("useDelta").toInt(0);
@@ -1825,7 +2096,18 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     auto *itemButtons = new QHBoxLayout;
     auto *itemAdd = new QPushButton(QObject::tr("+ Item"), itemsPage);
     auto *itemDel = new QPushButton(QObject::tr("Delete Item"), itemsPage);
-    itemButtons->addWidget(itemAdd); itemButtons->addWidget(itemDel); itemButtons->addStretch();
+    auto *itemSync = new QPushButton(QObject::tr("Sync Selected Item Rules..."), itemsPage);
+    itemSync->setToolTip(QObject::tr("Offer to copy Can Drop, Can Discard, Max Owned and USE rules "
+                                      "to matching inventory items in other saved worlds."));
+    itemButtons->addWidget(itemAdd); itemButtons->addWidget(itemDel);
+    itemButtons->addWidget(itemSync); itemButtons->addStretch();
+    QObject::connect(itemSync, &QPushButton::clicked, &dialog, [&] {
+        offerInventoryRuleSync(items->currentRow(),
+            {QStringLiteral("droppable"), QStringLiteral("discardable"),
+             QStringLiteral("capacity"), QStringLiteral("useStat"),
+             QStringLiteral("useDelta"), QStringLiteral("useConsume")},
+            QObject::tr("Can Drop, Can Discard, Max Owned and USE rules"));
+    });
     itemsLayout->addLayout(itemButtons);
     QObject::connect(itemAdd,&QPushButton::clicked,&dialog,[&] {
         if(items->rowCount()<64) appendItem({});
@@ -2578,14 +2860,50 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         horizontal->addLayout(flipRow);
         tiles->addWidget(slot,i/3,i%3);
     }
-    skinLayout->addLayout(tiles);
+    // Dialogue and thought-bubble frames are edited side by side, using the same
+    // selected atlas but different cells and flips.
+    auto *frameDesignRow=new QHBoxLayout;
+    auto *dialogDesign=new QGroupBox(QObject::tr("Dialogue box frame"),skinPage);
+    auto *dialogDesignLayout=new QVBoxLayout(dialogDesign);
+    dialogDesignLayout->addLayout(tiles);
+    frameDesignRow->addWidget(dialogDesign,1);
+    auto *thoughtDesign=new QGroupBox(QObject::tr("Thought bubble frame"),skinPage);
+    auto *thoughtDesignLayout=new QVBoxLayout(thoughtDesign);
+    auto *thoughtTiles=new QGridLayout;
+    QPushButton *thoughtPick[9]; QCheckBox *thoughtFlipX[9],*thoughtFlipY[9];
+    int thoughtCells[9];
+    const QJsonArray thoughtSaved=old.value("thoughtSkinIndices").toArray();
+    const QJsonArray thoughtSavedFlips=old.value("thoughtSkinFlips").toArray();
+    for(int i=0;i<9;++i){
+        thoughtCells[i]=std::clamp(i<thoughtSaved.size()?thoughtSaved[i].toInt(i):chosenTiles[i],0,65535);
+        auto *slot=new QWidget(thoughtDesign);
+        auto *h=new QHBoxLayout(slot); h->setContentsMargins(2,2,2,2); h->setSpacing(5);
+        thoughtPick[i]=new QPushButton(slot);thoughtPick[i]->setMinimumSize(82,58);
+        h->addWidget(thoughtPick[i]);
+        auto *flips=new QVBoxLayout;
+        thoughtFlipX[i]=new QCheckBox(QObject::tr("X Flip"),slot);
+        thoughtFlipY[i]=new QCheckBox(QObject::tr("Y Flip"),slot);
+        const int flags=i<thoughtSavedFlips.size()?thoughtSavedFlips[i].toInt():0;
+        thoughtFlipX[i]->setChecked((flags&4)!=0);
+        thoughtFlipY[i]->setChecked((flags&8)!=0);
+        flips->addWidget(thoughtFlipX[i]);flips->addWidget(thoughtFlipY[i]);
+        h->addLayout(flips);thoughtTiles->addWidget(slot,i/3,i%3);
+    }
+    thoughtDesignLayout->addLayout(thoughtTiles);
+    auto *thoughtPreview=new QLabel(thoughtDesign);
+    thoughtPreview->setMinimumHeight(112);thoughtPreview->setAlignment(Qt::AlignCenter);
+    thoughtDesignLayout->addWidget(thoughtPreview);
+    frameDesignRow->addWidget(thoughtDesign,1);
+    skinLayout->addLayout(frameDesignRow);
     auto *preview=new QLabel(skinPage);preview->setMinimumHeight(112);
-    preview->setAlignment(Qt::AlignCenter);skinLayout->addWidget(preview,1);
+    preview->setAlignment(Qt::AlignCenter);dialogDesignLayout->addWidget(preview,1);
     auto updatePreview=[&] {
         auto it=std::find_if(atlases.begin(),atlases.end(),[&](const auto &a){return a.id==skinAtlas->currentData().toString();});
         if(it==atlases.end()){
             preview->setText(QObject::tr("No Tile Atlas selected — simple box used."));
-            for(int i=0;i<9;++i){tilePick[i]->setText(QObject::tr("Cell %1").arg(chosenTiles[i]));tilePick[i]->setIcon(QIcon());}
+            for(int i=0;i<9;++i){tilePick[i]->setText(QObject::tr("Cell %1").arg(chosenTiles[i]));tilePick[i]->setIcon(QIcon());
+                thoughtPick[i]->setText(QObject::tr("Cell %1").arg(thoughtCells[i]));thoughtPick[i]->setIcon(QIcon());}
+            thoughtPreview->setText(QObject::tr("Simple thought box"));
             return;
         }
         const QImage atlas=indexedPreview(it->path,foregroundPalette);
@@ -2604,6 +2922,26 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 tilePick[i]->setIconSize(QSize(40,40));
             } else tilePick[i]->setIcon(QIcon());
         }
+        for(int i=0;i<9;++i){
+            thoughtPick[i]->setText(QObject::tr("Cell %1").arg(thoughtCells[i]));
+            if(thoughtCells[i]<cols*rows){
+                QImage cellImage=adventureFlippedCell(atlas.copy((thoughtCells[i]%cols)*t,
+                    (thoughtCells[i]/cols)*t,t,t),thoughtFlipX[i]->isChecked(),thoughtFlipY[i]->isChecked());
+                thoughtPick[i]->setIcon(QIcon(QPixmap::fromImage(cellImage.scaled(36,36,Qt::KeepAspectRatio,Qt::FastTransformation))));
+                thoughtPick[i]->setIconSize(QSize(36,36));
+            } else thoughtPick[i]->setIcon(QIcon());
+        }
+        QImage thoughtResult(t*9,t*5,QImage::Format_ARGB32);thoughtResult.fill(Qt::transparent);
+        QPainter thoughtPainter(&thoughtResult);
+        for(int y=0;y<5;++y)for(int x=0;x<9;++x){
+            const int part=(y==0?0:y==4?2:1)*3+(x==0?0:x==8?2:1);
+            const int idx=thoughtCells[part];if(idx>=cols*rows)continue;
+            thoughtPainter.drawImage(QRect(x*t,y*t,t,t),adventureFlippedCell(
+                atlas.copy((idx%cols)*t,(idx/cols)*t,t,t),
+                thoughtFlipX[part]->isChecked(),thoughtFlipY[part]->isChecked()));
+        }
+        thoughtPainter.end();thoughtPreview->setPixmap(QPixmap::fromImage(
+            thoughtResult.scaled(thoughtResult.size()*2,Qt::KeepAspectRatio,Qt::FastTransformation)));
         QImage result(t*9,t*5,QImage::Format_ARGB32);result.fill(Qt::transparent);
         QPainter painter(&result);
         for(int y=0;y<5;++y)for(int x=0;x<9;++x){
@@ -2617,6 +2955,15 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         painter.end();preview->setPixmap(QPixmap::fromImage(result.scaled(result.size()*2,Qt::KeepAspectRatio,Qt::FastTransformation)));
     };
     for(int i=0;i<9;++i){
+        QObject::connect(thoughtPick[i],&QPushButton::clicked,&dialog,[&,i]{
+            const auto it=std::find_if(atlases.begin(),atlases.end(),[&](const auto&a){return a.id==skinAtlas->currentData().toString();});
+            if(it==atlases.end()){QMessageBox::information(&dialog,QObject::tr("Atlas"),QObject::tr("Choose a Tile Atlas first."));return;}
+            const QImage image=indexedPreview(it->path,foregroundPalette);
+            const int idx=chooseAdventureAtlasCell(&dialog,image,tileSize->value(),thoughtCells[i]);
+            if(idx>=0){thoughtCells[i]=idx;updatePreview();}
+        });
+        QObject::connect(thoughtFlipX[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
+        QObject::connect(thoughtFlipY[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
         QObject::connect(tilePick[i],&QPushButton::clicked,&dialog,[&,i]{
             const auto it=std::find_if(atlases.begin(),atlases.end(),[&](const auto&a){return a.id==skinAtlas->currentData().toString();});
             if(it==atlases.end()){QMessageBox::information(&dialog,QObject::tr("Atlas"),QObject::tr("Choose a Tile Atlas first."));return;}
@@ -2640,7 +2987,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     updatePreview();
     refreshInventoryIcons();
     auto *copyAtlas = new QPushButton(QObject::tr("Copy from Another World..."), skinPage);
-    copyAtlas->setToolTip(QObject::tr("Copy only the saved dialogue frame atlas, nine cells, flips, "
+    copyAtlas->setToolTip(QObject::tr("Copy the dialogue atlas and both frame designs (dialogue + thought), "
                                         "colours, outline and typing speed. NPCs and dialogue are not copied."));
     skinLayout->insertWidget(0, copyAtlas, 0, Qt::AlignLeft);
     QObject::connect(copyAtlas, &QPushButton::clicked, &dialog, [&] {
@@ -2668,9 +3015,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             tileFlipX[i]->setChecked((flags & 4) != 0);
             tileFlipY[i]->setChecked((flags & 8) != 0);
         }
+        const QJsonArray thoughtCellsCopy=settings.value("thoughtSkinIndices").toArray();
+        const QJsonArray thoughtFlipCopy=settings.value("thoughtSkinFlips").toArray();
+        for(int i=0;i<9;++i){
+            thoughtCells[i]=std::clamp(i<thoughtCellsCopy.size()?thoughtCellsCopy[i].toInt(i):chosenTiles[i],0,65535);
+            const int flags=i<thoughtFlipCopy.size()?thoughtFlipCopy[i].toInt():0;
+            thoughtFlipX[i]->setChecked((flags&4)!=0);
+            thoughtFlipY[i]->setChecked((flags&8)!=0);
+        }
         updatePreview();
     });
-    tabs->addTab(skinPage,QObject::tr("Dialogue Box Atlas"));
+    tabs->addTab(skinPage,QObject::tr("Dialogue + Thought Atlas"));
 
     // Stage 4.33: Height is a minimum, not a fixed text budget. The preview
     // uses REAL conversation nodes and the runtime's 8x16 row/choice formula.
@@ -2681,6 +3036,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "and TWO visible answers. Height is a minimum: the box grows for longer "
         "dialogue and rises on screen when needed. Use Up/Down to reach other answers."),positionPage);
     positionHelp->setWordWrap(true);positionLayout->addWidget(positionHelp);
+    // Left: dialogue and thought placement settings. Right: live LCD preview.
+    auto *positionMainRow=new QHBoxLayout;
+    auto *positionLeft=new QVBoxLayout;
+    auto *positionRight=new QVBoxLayout;
+    positionMainRow->addLayout(positionLeft,1);
+    positionMainRow->addLayout(positionRight,1);
+    positionLayout->addLayout(positionMainRow,1);
     auto *previewSelectors=new QHBoxLayout;
     auto *previewNode=new DialogueTreeCombo(positionPage,&nodes,&dialogueFolders);
     auto *previewAnswer=new QComboBox(positionPage);
@@ -2688,7 +3050,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     previewSelectors->addWidget(previewNode,2);
     previewSelectors->addWidget(new QLabel(QObject::tr("Selected answer"),positionPage));
     previewSelectors->addWidget(previewAnswer,1);
-    positionLayout->addLayout(previewSelectors);
+    positionLeft->addLayout(previewSelectors);
     auto *positionFields=new QGridLayout;
     auto *placement=new QComboBox(positionPage);
     placement->addItems({QObject::tr("Custom position"),QObject::tr("Top centre"),
@@ -2718,18 +3080,62 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     textPadding->setCurrentIndex(old.value("dialogPadding").toInt(8)==0 ? 0 : 1);
     positionFields->addWidget(new QLabel(QObject::tr("Dialogue box padding (0 / 8 px)"),positionPage),3,0);
     positionFields->addWidget(textPadding,3,1,1,3);
-    positionLayout->addLayout(positionFields);
+    auto *thoughtPosition=new QGroupBox(QObject::tr("Thought bubble placement"),positionPage);
+    auto *thoughtPositionFields=new QGridLayout(thoughtPosition);
+    auto *thoughtX=makeCoord(0,479,old.value("thoughtX").toInt(20));
+    auto *thoughtY=makeCoord(0,319,old.value("thoughtY").toInt(12));
+    auto *thoughtW=makeCoord(96,480,old.value("thoughtWidth").toInt(240));
+    auto *thoughtH=makeCoord(40,320,old.value("thoughtHeight").toInt(64));
+    auto makeScale=[&](int saved){
+        auto *scale=new QComboBox(positionPage);
+        for(const int n:{1,2,4,8})scale->addItem(QObject::tr("%1×").arg(n),n);
+        scale->setCurrentIndex(std::max(0,scale->findData(saved)));
+        scale->setToolTip(QObject::tr("Native 8×8 SIDBOX glyphs multiplied independently on this axis."));
+        return scale;
+    };
+    auto *dialogScaleX=makeScale(old.value("dialogFontScaleX").toInt(1));
+    auto *dialogScaleY=makeScale(old.value("dialogFontScaleY").toInt(2));
+    auto *thoughtScaleX=makeScale(old.value("thoughtFontScaleX").toInt(1));
+    auto *thoughtScaleY=makeScale(old.value("thoughtFontScaleY").toInt(2));
+    auto *stacking=new QComboBox(positionPage);
+    stacking->addItem(QObject::tr("Thought bubble above dialogue"),1);
+    stacking->addItem(QObject::tr("Main dialogue above thought bubble"),0);
+    stacking->setCurrentIndex(std::max(0,stacking->findData(old.value("thoughtAboveDialog").toInt(1))));
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("X"),thoughtPosition),0,0);
+    thoughtPositionFields->addWidget(thoughtX,0,1);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Y"),thoughtPosition),0,2);
+    thoughtPositionFields->addWidget(thoughtY,0,3);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Width"),thoughtPosition),1,0);
+    thoughtPositionFields->addWidget(thoughtW,1,1);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Height"),thoughtPosition),1,2);
+    thoughtPositionFields->addWidget(thoughtH,1,3);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Font scale X"),thoughtPosition),2,0);
+    thoughtPositionFields->addWidget(thoughtScaleX,2,1);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Font scale Y"),thoughtPosition),2,2);
+    thoughtPositionFields->addWidget(thoughtScaleY,2,3);
+    positionFields->addWidget(new QLabel(QObject::tr("Font scale X"),positionPage),4,0);
+    positionFields->addWidget(dialogScaleX,4,1);
+    positionFields->addWidget(new QLabel(QObject::tr("Font scale Y"),positionPage),4,2);
+    positionFields->addWidget(dialogScaleY,4,3);
+    positionFields->addWidget(new QLabel(QObject::tr("Frontmost box"),positionPage),5,0);
+    positionFields->addWidget(stacking,5,1,1,3);
+    auto *positionPanels=new QVBoxLayout;
+    auto *dialoguePosition=new QGroupBox(QObject::tr("Dialogue box placement"),positionPage);
+    dialoguePosition->setLayout(positionFields);
+    positionPanels->addWidget(dialoguePosition,1);
+    positionPanels->addWidget(thoughtPosition,1);
+    positionLeft->addLayout(positionPanels);
     auto *copyPosition = new QPushButton(QObject::tr("Copy from Another World..."),positionPage);
     copyPosition->setToolTip(QObject::tr("Copy only dialogue window X/Y, width and minimum height. "
                                          "No dialogue text, choices or NPC settings are copied."));
-    positionLayout->insertWidget(1,copyPosition,0,Qt::AlignLeft);
+    positionLeft->insertWidget(0,copyPosition,0,Qt::AlignLeft);
     auto *screenPreview=new AdventureDialoguePositionPreview(positionPage);
     screenPreview->setAlignment(Qt::AlignCenter);
     auto *previewRow=new QHBoxLayout;
     previewRow->addStretch();previewRow->addWidget(screenPreview);previewRow->addStretch();
-    positionLayout->addLayout(previewRow,1);
+    positionRight->addLayout(previewRow,1);
     auto *positionStatus=new QLabel(positionPage);
-    positionStatus->setWordWrap(true);positionLayout->addWidget(positionStatus);
+    positionStatus->setWordWrap(true);positionLeft->addWidget(positionStatus);
     auto chosenNode=[&]() -> QJsonObject {
         const int index=previewNode->currentData().toInt();
         return (index>=0 && index<nodes.size())?nodes[index].toObject():QJsonObject();
@@ -2766,7 +3172,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     };
     auto refreshPosition=[&] {
         const QJsonObject node=chosenNode();
-        const AdventurePreviewMetrics metrics=adventureMeasure(node,dialogW->value(),dialogH->value(),outline->isChecked(),previewInset());
+        const AdventurePreviewMetrics metrics=adventureMeasure(node,dialogW->value(),dialogH->value(),outline->isChecked(),previewInset(),dialogScaleX->currentData().toInt(),dialogScaleY->currentData().toInt());
         const int w=dialogW->value(), h=metrics.height;
         if(dialogX->value()>480-w){
             dialogX->blockSignals(true);dialogX->setValue(480-w);dialogX->blockSignals(false);
@@ -2775,6 +3181,24 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const int x=dialogX->value();
         screenPreview->frameW=w;screenPreview->frameH=h;
         screenPreview->frameX=x;screenPreview->frameY=actualY;
+        const int tw=thoughtW->value();
+        const int thoughtInset=previewInset();
+        const int thoughtSx=thoughtScaleX->currentData().toInt();
+        const int thoughtSy=thoughtScaleY->currentData().toInt();
+        const int thoughtRow=8*thoughtSy+(outline->isChecked()?4:0);
+        const QJsonArray selectedChoices=node.value("choices").toArray();
+        const int selectedAnswer=previewAnswer->currentData().toInt();
+        const QJsonObject selectedChoice=(selectedAnswer>=0 && selectedAnswer<selectedChoices.size())
+            ?selectedChoices[selectedAnswer].toObject():QJsonObject();
+        const QString thoughtText=selectedChoice.value("thoughtBubble").toBool(false)
+            ?selectedChoice.value("reply").toString() : QObject::tr("Thought preview");
+        const int thoughtColumns=std::clamp((tw-2*thoughtInset)/(8*thoughtSx),1,60);
+        const auto thoughtLines=adventurePreviewRows(thoughtText.left(150),thoughtColumns,16);
+        const int th=std::min(320,std::max(thoughtH->value(),2*thoughtInset+thoughtLines.size()*thoughtRow));
+        const int tx=std::min(thoughtX->value(),480-tw);
+        const int ty=std::min(thoughtY->value(),320-th);
+        screenPreview->thoughtX=tx;screenPreview->thoughtY=ty;
+        screenPreview->thoughtW=tw;screenPreview->thoughtH=th;
         QImage screen(480,320,QImage::Format_ARGB32);
         screen.fill(QColor(35,40,52));
         QPainter painter(&screen);
@@ -2782,6 +3206,27 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         painter.drawRect(0,0,479,319);
         for(int gx=80;gx<480;gx+=80)painter.drawLine(gx,0,gx,320);
         for(int gy=80;gy<320;gy+=80)painter.drawLine(0,gy,480,gy);
+        const QColor textInk=chosenText>=0 && chosenText<foregroundPalette.size()
+            ? QColor::fromRgba(foregroundPalette[chosenText]) : QColor(234,240,250);
+        const QColor outlineInk=chosenOutline>=0 && chosenOutline<foregroundPalette.size()
+            ? QColor::fromRgba(foregroundPalette[chosenOutline]) : QColor(10,10,16);
+        const QColor visibleTextInk=textInk.alpha()==0?QColor(textInk.red(),textInk.green(),textInk.blue()):textInk;
+        const QColor visibleOutlineInk=outlineInk.alpha()==0?QColor(outlineInk.red(),outlineInk.green(),outlineInk.blue()):outlineInk;
+        const bool thoughtsOnTop=stacking->currentData().toInt()!=0;
+        screenPreview->thoughtAboveDialog=thoughtsOnTop;
+        auto paintThought=[&]{
+        painter.fillRect(QRect(tx,ty,tw,th),QColor(43,32,64,238));
+        painter.setPen(QPen(QColor(183,120,242),2));
+        painter.drawRect(QRect(tx,ty,tw,th).adjusted(1,1,-2,-2));
+        painter.setPen(QColor(240,210,255));
+        painter.setClipRect(QRect(tx+thoughtInset,ty+thoughtInset,
+                                   tw-2*thoughtInset,th-2*thoughtInset));
+        for(int i=0;i<std::min(int(thoughtLines.size()),std::max(0,(th-2*thoughtInset)/thoughtRow));++i)
+            adventureDrawGlyphs(painter,tx+thoughtInset,ty+thoughtInset+i*thoughtRow,thoughtLines[i],
+                                thoughtSx,thoughtSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
+        painter.setClipping(false);
+        };
+        auto paintDialogue=[&]{
         painter.fillRect(QRect(x,actualY,w,h),QColor(8,14,29,223));
         painter.setPen(QPen(metrics.overflow?QColor(255,83,83):QColor(255,212,71),2));
         painter.drawRect(QRect(x,actualY,w,h).adjusted(1,1,-2,-2));
@@ -2792,20 +3237,20 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             painter.drawRect(QRect(x+skinEdge,actualY+skinEdge,
                 w-2*skinEdge,h-2*skinEdge));
         }
-        QFont font=QFont(QStringLiteral("Monospace"));font.setStyleHint(QFont::TypeWriter);
-        font.setPixelSize(13);painter.setFont(font);
+        const int dialogueSx=dialogScaleX->currentData().toInt();
+        const int dialogueSy=dialogScaleY->currentData().toInt();
         const int contentInset=previewInset();
         painter.setClipRect(QRect(x+contentInset,actualY+contentInset,w-2*contentInset,h-2*contentInset));
         painter.setPen(QColor(234,240,250));
         const int pad=previewInset();
-        painter.drawText(x+pad,actualY+pad+12,node.value("speaker").toString().left(36));
+        adventureDrawGlyphs(painter,x+pad,actualY+pad,node.value("speaker").toString().left(36),dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
         const auto body=adventurePreviewRows(node.value("text").toString().left(512),metrics.bodyColumns);
-        const int bodyY=actualY+pad+(metrics.answerHeight?24:16);
+        const int bodyY=actualY+pad+(metrics.answerHeight?metrics.lineHeight+8:metrics.lineHeight);
         const int choiceSpace=metrics.answerHeight?metrics.answerHeight+1:0;
         const int bottom=actualY+h-std::max(0,pad-8);
         const int visibleRows=std::clamp((bottom-bodyY-choiceSpace)/metrics.lineHeight,0,int(body.size()));
         for(int i=0;i<visibleRows;++i)
-            painter.drawText(x+pad,bodyY+i*metrics.lineHeight+12,body[i]);
+            adventureDrawGlyphs(painter,x+pad,bodyY+i*metrics.lineHeight,body[i],dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
         const QJsonArray options=node.value("choices").toArray();
         QVector<QPair<int,QString>> labels;
         for(int i=0;i<options.size();++i) {
@@ -2821,25 +3266,32 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             const auto rows=adventurePreviewRows(labels[i].second,metrics.answerColumns,32);
             const int lines=std::min(int(rows.size()),std::max(0,(bottom-cy)/metrics.lineHeight));
             if(!lines)break;
-            painter.drawText(x+pad,cy+12,i==selectedPos?QStringLiteral(">") : QStringLiteral(" "));
+            adventureDrawGlyphs(painter,x+pad,cy,i==selectedPos?QStringLiteral(">") : QStringLiteral(" "),dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
             for(int k=0;k<lines;++k)
-                painter.drawText(x+pad+14,cy+k*metrics.lineHeight+12,rows[k]);
-            if(i==first && first>0)painter.drawText(x+w-20,cy+12,QStringLiteral("^"));
+                adventureDrawGlyphs(painter,x+pad+14*dialogueSx,cy+k*metrics.lineHeight,rows[k],dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
+            if(i==first && first>0)adventureDrawGlyphs(painter,x+w-20*dialogueSx,cy,QStringLiteral("^"),dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
             if(i==std::min(first+2,int(labels.size()))-1 && first+2<int(labels.size()))
-                painter.drawText(x+w-20,cy+(lines-1)*metrics.lineHeight+12,QStringLiteral("v"));
+                adventureDrawGlyphs(painter,x+w-20*dialogueSx,cy+(lines-1)*metrics.lineHeight,QStringLiteral("v"),dialogueSx,dialogueSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
             cy+=lines*metrics.lineHeight+4;
         }
         painter.setClipping(false);
         // Dashed line makes the interior text budget visible independently of the frame.
         painter.setPen(QPen(metrics.overflow?QColor(255,83,83):QColor(96,190,128),1,Qt::DashLine));
         painter.drawRect(QRect(x+pad,actualY+pad+(metrics.answerHeight?22:14),
-            w-2*pad,h-2*pad-(metrics.answerHeight?24:16)));
+            w-2*pad,h-2*pad-(metrics.answerHeight?metrics.lineHeight+8:metrics.lineHeight)));
+        };
+        if(thoughtsOnTop){paintDialogue();paintThought();}
+        else {paintThought();paintDialogue();}
         painter.end();
         screenPreview->setPixmap(QPixmap::fromImage(screen));
         QString status=QObject::tr("Needed: %1 px  |  Box: %2 px (configured %3)  |  %4 NPC text rows; at most 2 choices")
             .arg(metrics.needed).arg(h).arg(dialogH->value()).arg(metrics.rows);
         if (actualY!=dialogY->value())
             status+=QObject::tr("  |  Auto-raised to Y=%1 to stay on screen").arg(actualY);
+        if(QRect(x,actualY,w,h).intersects(QRect(tx,ty,tw,th)))
+            status+=thoughtsOnTop ? QObject::tr("  |  Overlap: Thought on top") : QObject::tr("  |  Overlap: Dialogue on top");
+        if(th>thoughtH->value())
+            status+=QObject::tr("  |  Thought grows to %1px to fit scaled glyphs").arg(th);
         if(metrics.overflow)
             status+=QObject::tr("  |  WARNING: Too much text for 320px. Widen the box or shorten the conversation.");
         positionStatus->setText(status);
@@ -2862,15 +3314,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(placement,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int choice){
         if(!choice)return;
         const int w=dialogW->value();
-        const int h=adventureMeasure(chosenNode(),w,dialogH->value(),outline->isChecked(),previewInset()).height;
+        const int h=adventureMeasure(chosenNode(),w,dialogH->value(),outline->isChecked(),previewInset(),dialogScaleX->currentData().toInt(),dialogScaleY->currentData().toInt()).height;
         int x=(480-w)/2,y=(choice==1 || choice==3 || choice==4)?8:320-h-8;
         if(choice==3 || choice==5)x=8;
         if(choice==4 || choice==6)x=480-w-8;
         dialogX->setValue(std::max(0,x));dialogY->setValue(std::max(0,y));
         refreshPosition();
     });
-    for(QSpinBox *field:{dialogX,dialogY,dialogW,dialogH})
+    for(QSpinBox *field:{dialogX,dialogY,dialogW,dialogH,thoughtX,thoughtY,thoughtW,thoughtH})
         QObject::connect(field,QOverload<int>::of(&QSpinBox::valueChanged),positionPage,[&](int){refreshPosition();});
+    for(QComboBox *field:{dialogScaleX,dialogScaleY,thoughtScaleX,thoughtScaleY,stacking})
+        QObject::connect(field,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshPosition();});
     QObject::connect(previewNode,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshAnswers();refreshPosition();});
     QObject::connect(previewAnswer,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshPosition();});
     QObject::connect(outline,&QCheckBox::toggled,positionPage,[&](bool){refreshPosition();});
@@ -2879,13 +3333,16 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     screenPreview->moved=[&](int x,int y){
         dialogX->setValue(x);dialogY->setValue(y);refreshPosition();
     };
+    screenPreview->movedThought=[&](int x,int y){
+        thoughtX->setValue(x);thoughtY->setValue(y);refreshPosition();
+    };
     const int positionTabIndex=tabs->addTab(positionPage,QObject::tr("Dialogue Position"));
     QObject::connect(tabs,&QTabWidget::currentChanged,positionPage,[&](int index){
         if(index==positionTabIndex){refreshNodes();refreshPosition();}
     });
     refreshNodes();refreshPosition();
-    positionLayout->addWidget(new QLabel(QObject::tr(
-        "DRAG the yellow box to move it. The green dashed guide marks its text area; "
+    positionRight->addWidget(new QLabel(QObject::tr(
+        "DRAG the yellow dialogue box or purple thought bubble to position either one. When boxes overlap, the frontmost box receives mouse drags. Glyphs use native SIDBOX 8×8 pixel shapes with independent X/Y scaling. The green dashed guide marks the dialogue text area; "
         "red means the conversation exceeds the LCD height. Only two answers are shown at a time."),positionPage));
 
 
@@ -2908,8 +3365,150 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     }
     if(dialog.exec()!=QDialog::Accepted)return false;
     QJsonObject result=old;
-    result.insert("items",tableItems(items));
+    const QJsonArray finalInventory = tableItems(items);
+    result.insert("items", finalInventory);
     result.insert("maxInventorySlots",inventoryCapacity->value());
+    // Update approved saved worlds only after the dialog was accepted. Read
+    // each target again and modify exactly the permitted inventory rule keys.
+    // QSaveFile commits each full JSON document atomically, without touching
+    // that world's NPCs, artwork or pickup type mappings.
+    QStringList syncProblems;
+    QStringList syncSkipped;
+    int syncedWorlds = 0;
+    int alreadyMatchedWorlds = 0;
+    QSet<QString> touchedPaths;
+    for (auto nameIt = acceptedWorldRules.constBegin();
+         nameIt != acceptedWorldRules.constEnd(); ++nameIt) {
+        int sourceMatches = 0;
+        for (const QJsonValue &entry : finalInventory) {
+            const QJsonObject item = entry.toObject();
+            if (item.value(QStringLiteral("name")).toString().trimmed().toCaseFolded() == nameIt.key()) {
+                ++sourceMatches;
+            }
+        }
+        if (sourceMatches != 1) {
+            syncSkipped.append(QObject::tr("%1 (item renamed, removed or duplicated before OK)").arg(nameIt.key()));
+            continue; // Renamed/deleted/duplicate: don't guess.
+        }
+        for (auto pathIt = nameIt.value().constBegin(); pathIt != nameIt.value().constEnd(); ++pathIt) {
+            const QString path = pathIt.key();
+            if (touchedPaths.contains(path)) continue;
+            // One target can contain multiple approved items. Merge all
+            // changes into a single atomic save of that world.
+            touchedPaths.insert(path);
+            const QFileInfo fileInfo(path);
+            if (!fileInfo.isFile() || fileInfo.isSymLink()
+                || fileInfo.lastModified() != acceptedWorldTimestamps.value(path)) {
+                syncProblems.append(QObject::tr("%1 (changed while editing)").arg(fileInfo.fileName()));
+                continue;
+            }
+            QFile input(path);
+            if (!input.open(QIODevice::ReadOnly) || input.size() > 16 * 1024 * 1024) {
+                syncProblems.append(QObject::tr("%1 (cannot read)").arg(fileInfo.fileName()));
+                continue;
+            }
+            QJsonParseError error;
+            const QJsonDocument doc = QJsonDocument::fromJson(input.readAll(), &error);
+            input.close();
+            if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+                syncProblems.append(QObject::tr("%1 (invalid JSON)").arg(fileInfo.fileName()));
+                continue;
+            }
+            QJsonObject targetWorld = doc.object();
+            if (targetWorld.value(QStringLiteral("format")).toString() != QStringLiteral("SIDBOX-GAME-DESIGN")
+                || targetWorld.value(QStringLiteral("version")).toInt() != 1) {
+                syncProblems.append(QObject::tr("%1 (unsupported world)").arg(fileInfo.fileName()));
+                continue;
+            }
+            QJsonObject targetAdventure = targetWorld.value(QStringLiteral("adventure")).toObject();
+            QJsonArray targetItems = targetAdventure.value(QStringLiteral("items")).toArray();
+            bool changed = false;
+            for (auto itemIt = acceptedWorldRules.constBegin();
+                 itemIt != acceptedWorldRules.constEnd(); ++itemIt) {
+                if (!itemIt.value().contains(path)) continue;
+                QJsonObject fromItem;
+                int sourceCount = 0, targetCount = 0, targetIndex = -1;
+                for (const QJsonValue &entry : finalInventory) {
+                    const QJsonObject one = entry.toObject();
+                    if (one.value(QStringLiteral("name")).toString().trimmed().toCaseFolded() == itemIt.key()) {
+                        fromItem = one;
+                        ++sourceCount;
+                    }
+                }
+                for (int i = 0; i < targetItems.size(); ++i) {
+                    if (targetItems[i].toObject().value(QStringLiteral("name")).toString()
+                            .trimmed().toCaseFolded() == itemIt.key()) {
+                        ++targetCount;
+                        targetIndex = i;
+                    }
+                }
+                if (sourceCount != 1 || targetCount != 1) {
+                    syncSkipped.append(QObject::tr("%1: %2 (item no longer unique in one world)")
+                        .arg(fileInfo.fileName(), itemIt.key()));
+                    continue;
+                }
+                QJsonObject toItem = targetItems[targetIndex].toObject();
+                for (const QString &field : itemIt.value().value(path)) {
+                    if (field == QStringLiteral("discardable")
+                        && fromItem.value(field).toBool()) {
+                        // Safety: never allow destruction of an item required
+                        // by a dialogue in the target world.
+                        bool required = false;
+                        for (const QJsonValue &nodeValue : targetAdventure.value(QStringLiteral("nodes")).toArray()) {
+                            for (const QJsonValue &choiceValue : nodeValue.toObject().value(QStringLiteral("choices")).toArray()) {
+                                const QJsonObject choice = choiceValue.toObject();
+                                if (choice.value(QStringLiteral("requires")).toInt(-1) == targetIndex
+                                    || choice.value(QStringLiteral("take")).toInt(-1) == targetIndex) required = true;
+                                for (const QJsonValue &entry : choice.value(QStringLiteral("exchange")).toObject()
+                                                                .value(QStringLiteral("items")).toArray())
+                                    if (entry.toInt(-1) == targetIndex) required = true;
+                            }
+                        }
+                        if (required) {
+                            syncSkipped.append(QObject::tr("%1: %2 (Can Discard protected by NPC dialogue)")
+                                .arg(fileInfo.fileName(), itemIt.key()));
+                            continue;
+                        }
+                    }
+                    if (toItem.value(field) != fromItem.value(field)) {
+                        toItem.insert(field, fromItem.value(field));
+                        changed = true;
+                    }
+                }
+                targetItems[targetIndex] = toItem;
+            }
+            if (!changed) {
+                ++alreadyMatchedWorlds;
+                continue;
+            }
+            targetAdventure.insert(QStringLiteral("items"), targetItems);
+            targetWorld.insert(QStringLiteral("adventure"), targetAdventure);
+            const QByteArray data = QJsonDocument(targetWorld).toJson(QJsonDocument::Indented);
+            QSaveFile output(path);
+            if (!output.open(QIODevice::WriteOnly) || output.write(data) != data.size()
+                || !output.commit()) {
+                syncProblems.append(QObject::tr("%1 (could not save)").arg(fileInfo.fileName()));
+                continue;
+            }
+            ++syncedWorlds;
+        }
+    }
+    if (!acceptedWorldRules.isEmpty()) {
+        QString summary = QObject::tr("Other worlds updated on disk: %1\n"
+                                      "Already matching (no write needed): %2\n\n"
+                                      "The CURRENT world is still in the designer. Save it, then run Update Game Project.")
+                              .arg(syncedWorlds).arg(alreadyMatchedWorlds);
+        if (!syncSkipped.isEmpty())
+            summary += QObject::tr("\n\nRules NOT copied:\n%1")
+                .arg(syncSkipped.join(QStringLiteral("\n")));
+        if (!syncProblems.isEmpty())
+            summary += QObject::tr("\n\nWorld files NOT saved:\n%1")
+                .arg(syncProblems.join(QStringLiteral("\n")));
+        if (!syncProblems.isEmpty() || !syncSkipped.isEmpty())
+            QMessageBox::warning(parent, QObject::tr("Inventory World Sync: Partial Result"), summary);
+        else
+            QMessageBox::information(parent, QObject::tr("Inventory World Sync: Complete"), summary);
+    }
     QJsonArray outNpcs;
     for(int row=0;row<npcs->rowCount();++row){
         QJsonObject o; o.insert("spriteId",npcs->item(row,0)->data(Qt::UserRole).toString());
@@ -2929,6 +3528,16 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     result.insert("dialogWidth",dialogW->value());
     result.insert("dialogHeight",dialogH->value());
     result.insert("dialogPadding",textPadding->currentData().toInt());
+    result.insert("thoughtX",thoughtX->value());
+    result.insert("thoughtY",thoughtY->value());
+    result.insert("thoughtWidth",thoughtW->value());
+    result.insert("thoughtHeight",thoughtH->value());
+    result.insert("dialogFontScaleX",dialogScaleX->currentData().toInt());
+    result.insert("dialogFontScaleY",dialogScaleY->currentData().toInt());
+    result.insert("thoughtFontScaleX",thoughtScaleX->currentData().toInt());
+    result.insert("thoughtFontScaleY",thoughtScaleY->currentData().toInt());
+    result.insert("thoughtAboveDialog",stacking->currentData().toInt());
+
     result.insert("skinAtlasId",skinAtlas->currentData().toString());
     result.insert("tileSize",tileSize->value());result.insert("framesPerChar",speed->value());
     result.insert("textColourIndex",chosenText);
@@ -2939,5 +3548,12 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QJsonArray flipFlags;
     for(int i=0;i<9;++i)flipFlags.append((tileFlipX[i]->isChecked()?4:0)|(tileFlipY[i]->isChecked()?8:0));
     result.insert("skinFlips",flipFlags);
+    QJsonArray thoughtIndices, thoughtFlips;
+    for(int i=0;i<9;++i){
+        thoughtIndices.append(thoughtCells[i]);
+        thoughtFlips.append((thoughtFlipX[i]->isChecked()?4:0)|(thoughtFlipY[i]->isChecked()?8:0));
+    }
+    result.insert("thoughtSkinIndices",thoughtIndices);
+    result.insert("thoughtSkinFlips",thoughtFlips);
     *payload=result;return true;
 }

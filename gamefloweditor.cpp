@@ -46,6 +46,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QTimer>
 #include <QSet>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -215,10 +216,65 @@ FlowGraph loadGraph(const QString &root) {
                                       .arg(describedAction(o)).arg(r.value("x").toInt()).arg(r.value("y").toInt()).arg(id);
             if (!o.value(QStringLiteral("gotoWorldName")).toString().isEmpty())
                 description += QStringLiteral("\nDestination: ")+o.value(QStringLiteral("gotoWorldName")).toString();
-            if (type == QStringLiteral("collectable"))
-                description += QStringLiteral("\nInventory kind: %1\nPersistent: %2")
-                                   .arg(o.value("pickupKind").toInt())
-                                   .arg(o.value("pickupPersistent").toBool() ? QStringLiteral("yes") : QStringLiteral("no"));
+            if (type == QStringLiteral("collectable")) {
+                const bool backpack=o.value(QStringLiteral("pickupShowInventory")).toBool(false);
+                QString stat=o.value(QStringLiteral("pickupStatTarget")).toString();
+                // Backward-compatible Health default, identical to the game export.
+                if (stat.isEmpty())stat=o.value(QStringLiteral("pickupKind")).toInt(1)==2
+                    ? QStringLiteral("health") : QStringLiteral("none");
+                description += QStringLiteral("\nPickup kind: %1\nShow in inventory: %2"
+                                              "\nPlaced object persists: %3")
+                                   .arg(o.value(QStringLiteral("pickupKind")).toInt(1))
+                                   .arg(backpack ? QStringLiteral("yes") : QStringLiteral("no"))
+                                   .arg(o.value(QStringLiteral("pickupPersistent")).toBool()
+                                        ? QStringLiteral("yes") : QStringLiteral("no"));
+                if (!backpack && stat!=QStringLiteral("none"))
+                    description += QStringLiteral("\nDirect player stat: %1 (+%2)")
+                                       .arg(stat).arg(o.value(QStringLiteral("value")).toInt(10));
+            }
+            if (type==QStringLiteral("trigger") && !o.value(QStringLiteral("interactItemName")).toString().isEmpty()) {
+                description += QStringLiteral("\nFIRE2: use %1 within %2px of hitbox"
+                    "\nConsume on success: %3\nOne-shot: %4")
+                    .arg(o.value(QStringLiteral("interactItemName")).toString())
+                    .arg(o.value(QStringLiteral("interactRadius")).toInt(32))
+                    .arg(o.value(QStringLiteral("interactConsume")).toBool() ? "yes" : "no")
+                    .arg(o.value(QStringLiteral("triggerOneShot")).toBool() ? "yes" : "no");
+                if (o.value(QStringLiteral("interactDialogueNode")).toInt(-1)>=0)
+                    description+=QStringLiteral("\nSuccess dialogue node: %1")
+                        .arg(o.value(QStringLiteral("interactDialogueNode")).toInt(-1))
+                        + (o.value(QStringLiteral("interactDialogueMode")).toString()==QStringLiteral("single")
+                            ? QStringLiteral(" [one message]")
+                            : o.value(QStringLiteral("interactDialogueMode")).toString()==QStringLiteral("sequence")
+                                ? QStringLiteral(" [message sequence]") : QStringLiteral(" [conversation]"));
+                if (o.value(QStringLiteral("interactWrongDialogueNode")).toInt(-1)>=0)
+                    description+=QStringLiteral("\nWrong-item dialogue node: %1")
+                        .arg(o.value(QStringLiteral("interactWrongDialogueNode")).toInt(-1))
+                        + (o.value(QStringLiteral("interactWrongDialogueMode")).toString()==QStringLiteral("single")
+                            ? QStringLiteral(" [one message]")
+                            : o.value(QStringLiteral("interactWrongDialogueMode")).toString()==QStringLiteral("sequence")
+                                ? QStringLiteral(" [message sequence]") : QStringLiteral(" [conversation]"));
+                const QString reward=o.value(QStringLiteral("interactRewardItem")).toString();
+                if(!reward.isEmpty()) description+=QStringLiteral("\nReward: %1 x%2")
+                    .arg(reward).arg(o.value(QStringLiteral("interactRewardCount")).toInt(1));
+                const QString stat=o.value(QStringLiteral("interactStatTarget")).toString();
+                if(!stat.isEmpty() && stat!=QStringLiteral("none") && o.value(QStringLiteral("interactStatDelta")).toInt())
+                    description+=QStringLiteral("\nStat outcome: %1 %2")
+                        .arg(stat).arg(o.value(QStringLiteral("interactStatDelta")).toInt());
+                for (const QString &field : {QStringLiteral("sfxInteractWrong"),
+                                              QStringLiteral("sfxInteractSuccess"),
+                                              QStringLiteral("sfxInteractCancel")}) {
+                    const QString id=o.value(field).toString();
+                    if (!id.isEmpty()) description += QStringLiteral("\n%1 SFX ID: %2")
+                        .arg(field == QStringLiteral("sfxInteractWrong") ? QStringLiteral("Wrong item")
+                             : field == QStringLiteral("sfxInteractSuccess") ? QStringLiteral("Success")
+                             : QStringLiteral("Cancel"), id);
+                }
+            }
+            if (o.value(QStringLiteral("activeStateFrame")).toInt(-1)>=0 ||
+                o.value(QStringLiteral("inactiveStateFrame")).toInt(-1)>=0)
+                description+=QStringLiteral("\nState frames: active=%1 / inactive=%2")
+                    .arg(o.value(QStringLiteral("activeStateFrame")).toInt(-1))
+                    .arg(o.value(QStringLiteral("inactiveStateFrame")).toInt(-1));
             g.addNode(objectKey(w,id),w,describedAction(o),r.value(QStringLiteral("name")).toString(type),description,2);
             FlowNode &node=g.nodes[g.byId.value(objectKey(w,id))];
             node.artStamp=r.value(QStringLiteral("spriteStamp")).toObject();
@@ -235,10 +291,18 @@ FlowGraph loadGraph(const QString &root) {
             QString detail = QStringLiteral("Inventory kind: %1\nCapacity: %2\nIcon atlas ID: %3")
                                  .arg(item.value("pickupKind").toInt()).arg(item.value("capacity").toInt())
                                  .arg(item.value("iconAtlasId").toString());
+            detail += QStringLiteral("\nCan drop: %1\nCan discard: %2")
+                          .arg(item.value(QStringLiteral("droppable")).toBool(
+                                   item.value(QStringLiteral("discardable")).toBool(true))
+                               ? QStringLiteral("yes") : QStringLiteral("no"))
+                          .arg(item.value(QStringLiteral("discardable")).toBool(true)
+                               ? QStringLiteral("yes") : QStringLiteral("no"));
             if (!item.value("useStat").toString().isEmpty())
-                detail += QStringLiteral("\nUse: %1 %2%3").arg(item.value("useStat").toString())
+                detail += QStringLiteral("\nUse: %1 %2%3 (%4)").arg(item.value("useStat").toString())
                               .arg(item.value("useDelta").toInt()>0 ? QStringLiteral("+") : QString())
-                              .arg(item.value("useDelta").toInt());
+                              .arg(item.value("useDelta").toInt())
+                              .arg(item.value(QStringLiteral("useConsume")).toBool(true)
+                                   ? QStringLiteral("consumes item") : QStringLiteral("keeps item"));
             g.addNode(itemKey(w,i),w,QStringLiteral("Inventory Item"),
                       item.value(QStringLiteral("name")).toString(QStringLiteral("Item %1").arg(i)),detail,3);
             FlowNode &node=g.nodes[g.byId.value(itemKey(w,i))];
@@ -295,8 +359,10 @@ FlowGraph loadGraph(const QString &root) {
                 const QString choiceKey=dialogueKey(w,i)+QStringLiteral("/choice/")+QString::number(j);
                 g.addNode(choiceKey,w,QStringLiteral("Dialogue Choice"),
                           brief(c.value(QStringLiteral("text")).toString(),43),
-                          QStringLiteral("Choice %1 in dialogue node %2\n%3\nReply: %4")
-                              .arg(j+1).arg(i).arg(c.value("text").toString(),c.value("reply").toString()),5);
+                          QStringLiteral("Choice %1 in dialogue node %2\n%3\nReply: %4\nOnce: %5\nCompletes NPC: %6")
+                              .arg(j+1).arg(i).arg(c.value("text").toString(),c.value("reply").toString())
+                              .arg(c.value(QStringLiteral("once")).toBool(false)?QStringLiteral("yes"):QStringLiteral("no"))
+                              .arg(c.value(QStringLiteral("completeNpc")).toBool(false)?QStringLiteral("yes"):QStringLiteral("no")),5);
             }
         }
         const QJsonArray npcs=adv.value(QStringLiteral("npcs")).toArray();
@@ -348,6 +414,53 @@ FlowGraph loadGraph(const QString &root) {
                 if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object: ")+obj.value("targetAction").toString("toggle"));
                 else g.missing(w,from,QStringLiteral("object"),target);
             }
+            if (type==QStringLiteral("trigger")) {
+                const QString required=obj.value(QStringLiteral("interactItemName")).toString();
+                if (!required.isEmpty()) {
+                    int matched=-1;
+                    for (int i=0; i<items.size(); ++i)
+                        if (items.at(i).toObject().value(QStringLiteral("name")).toString()==required) {
+                            matched=i; break;
+                        }
+                    if (matched>=0) {
+                        g.link(itemKey(w,matched),from,
+                            QStringLiteral("FIRE2 nearby → USE %1%2")
+                                .arg(required, obj.value(QStringLiteral("interactConsume")).toBool()
+                                    ? QStringLiteral(" (consume one)") : QStringLiteral(" (keep item)")));
+                    } else g.missing(w,from,QStringLiteral("interaction inventory item"),required);
+                    const int dialogue=obj.value(QStringLiteral("interactDialogueNode")).toInt(-1);
+                    if(dialogue>=0) {
+                        if(dialogue<dialogs.size()) g.link(from,dialogueKey(w,dialogue),
+                            obj.value(QStringLiteral("interactDialogueMode")).toString()==QStringLiteral("single")
+                            ? QStringLiteral("Success → single message")
+                            : obj.value(QStringLiteral("interactDialogueMode")).toString()==QStringLiteral("sequence")
+                                ? QStringLiteral("Success → message sequence (no actions)")
+                                : QStringLiteral("Success → full dialogue (choices)"));
+                        else g.missing(w,from,QStringLiteral("success dialogue node"),QString::number(dialogue));
+                    }
+                    const int wrongDialogue=obj.value(QStringLiteral("interactWrongDialogueNode")).toInt(-1);
+                    if(wrongDialogue>=0) {
+                        if(wrongDialogue<dialogs.size())
+                            g.link(from,dialogueKey(w,wrongDialogue),
+                                QStringLiteral("Wrong item → ")+
+                                (obj.value(QStringLiteral("interactWrongDialogueMode")).toString()==QStringLiteral("single")
+                                    ? QStringLiteral("single message")
+                                    : obj.value(QStringLiteral("interactWrongDialogueMode")).toString()==QStringLiteral("sequence")
+                                        ? QStringLiteral("message sequence (no actions)")
+                                        : QStringLiteral("full dialogue")));
+                        else g.missing(w,from,QStringLiteral("wrong-item dialogue node"),QString::number(wrongDialogue));
+                    }
+                    const QString reward=obj.value(QStringLiteral("interactRewardItem")).toString();
+                    if(!reward.isEmpty()) {
+                        bool found=false;
+                        for(int k=0;k<items.size();++k)
+                            if(items.at(k).toObject().value(QStringLiteral("name")).toString()==reward) {
+                                g.link(from,itemKey(w,k),QStringLiteral("Success → reward")); found=true;break;
+                            }
+                        if(!found) g.missing(w,from,QStringLiteral("reward inventory item"),reward);
+                    }
+                }
+            }
             const QString drop=obj.value(QStringLiteral("breakDropCollectableId")).toString();
             if (!drop.isEmpty()) {
                 const QString to=objectKey(w,drop);
@@ -361,10 +474,36 @@ FlowGraph loadGraph(const QString &root) {
                 else g.missing(w,from,QStringLiteral("spline"),spline);
             }
             if (type == QStringLiteral("collectable")) {
-                const int kind=obj.value(QStringLiteral("pickupKind")).toInt(-1);
-                for (int i=0;i<items.size();++i)
-                    if (items.at(i).toObject().value(QStringLiteral("pickupKind")).toInt(-2)==kind)
-                        g.link(from,itemKey(w,i),QStringLiteral("Adds to inventory"));
+                const int kind=obj.value(QStringLiteral("pickupKind")).toInt(1);
+                const bool backpack=obj.value(QStringLiteral("pickupShowInventory")).toBool(false);
+                if (backpack) {
+                    bool matched=false;
+                    for (int i=0;i<items.size();++i)
+                        if (items.at(i).toObject().value(QStringLiteral("pickupKind")).toInt(-2)==kind) {
+                            g.link(from,itemKey(w,i),QStringLiteral("Adds to backpack (capacity checked)"));
+                            matched=true;
+                        }
+                    if (!matched)
+                        g.missing(w,from,QStringLiteral("inventory definition for pickup kind"),
+                                  QString::number(kind));
+                } else {
+                    // Stage 5.84: non-inventory pickups can change a player
+                    // statistic immediately, without occupying a backpack slot.
+                    QString stat=obj.value(QStringLiteral("pickupStatTarget")).toString();
+                    if (stat.isEmpty())stat=kind==2 ? QStringLiteral("health") : QStringLiteral("none");
+                    if (stat!=QStringLiteral("none") &&
+                        (stat==QStringLiteral("health") || stat==QStringLiteral("lives") ||
+                         stat==QStringLiteral("score") || stat.startsWith(QStringLiteral("stat:")))) {
+                        const QString title=stat.startsWith(QStringLiteral("stat:")) ? stat.mid(5) : stat;
+                        if (!title.isEmpty()) {
+                            const QString key=w+QStringLiteral("/stat/")+title.toLower();
+                            g.addNode(key,w,QStringLiteral("Player Stat"),title,
+                                      QStringLiteral("Shared player statistic (direct pickup effect)"),5);
+                            g.link(from,key,QStringLiteral("Immediate stat pickup: +%1 (no backpack)")
+                                                .arg(obj.value(QStringLiteral("value")).toInt(10)));
+                        }
+                    }
+                }
             }
             const QString destination=obj.value(QStringLiteral("gotoWorldName")).toString().trimmed();
             if (type == QStringLiteral("goto_world") && !destination.isEmpty()) {
@@ -433,6 +572,20 @@ FlowGraph loadGraph(const QString &root) {
                         g.link(choice,objectKey(w,target),QStringLiteral("Object: ")+c.value("targetAction").toString("enable"));
                     else g.missing(w,choice,QStringLiteral("dialogue target object"),target);
                 }
+                // Appearance actions target Adventure NPC sprite IDs, not
+                // necessarily gameplay objects (which exclude decorations).
+                for (const QString &prefix : {QStringLiteral("npcAction1"),QStringLiteral("npcAction2")}) {
+                    const QString sprite=c.value(prefix+QStringLiteral("SpriteId")).toString();
+                    if (sprite.isEmpty())continue;
+                    bool found=false;
+                    for (int n=0;n<npcs.size();++n) {
+                        if (npcs.at(n).toObject().value(QStringLiteral("spriteId")).toString()!=sprite)continue;
+                        g.link(choice,w+QStringLiteral("/npc/")+QString::number(n),
+                               QStringLiteral("NPC appearance: ")+c.value(prefix+QStringLiteral("Mode")).toString("hide"));
+                        found=true;
+                    }
+                    if (!found)g.missing(w,choice,QStringLiteral("NPC appearance sprite"),sprite);
+                }
                 const QJsonObject exchange=c.value(QStringLiteral("exchange")).toObject();
                 if (!exchange.value(QStringLiteral("enabled")).toBool()) continue;
                 for (const QJsonValue &part: exchange.value(QStringLiteral("items")).toArray()) {
@@ -442,11 +595,63 @@ FlowGraph loadGraph(const QString &root) {
                 }
                 for (const auto &pair : {qMakePair("wrongNext","Wrong items"),qMakePair("partialNext","Partial items")})
                     next(exchange.value(QLatin1String(pair.first)).toInt(-1),QLatin1String(pair.second));
+                if (exchange.value(QStringLiteral("wrongRepeatEnabled")).toBool(false)) {
+                    // Wrong-item repetition has four distinct, conditional
+                    // dialogue results; show all branches without claiming
+                    // any one of them is the unconditional next step.
+                    for (const auto &pair : {qMakePair("wrongRepeatFirst","Wrong item: first time"),
+                                             qMakePair("wrongRepeatSecond","Wrong item: second time"),
+                                             qMakePair("wrongRepeatThird","Wrong item: third time"),
+                                             qMakePair("wrongRepeatLater","Wrong item: later times")})
+                        next(exchange.value(QLatin1String(pair.first)).toInt(-1),QLatin1String(pair.second));
+                    const int tracked=exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1);
+                    if (tracked>=0 && tracked<items.size())
+                        g.link(itemKey(w,tracked),choice,QStringLiteral("Tracks repeated wrong offering"));
+                    else if (tracked>=items.size())
+                        g.missing(w,choice,QStringLiteral("repeated wrong item"),QString::number(tracked));
+                    const QString repeatedTarget=exchange.value(QStringLiteral("wrongRepeatTargetObjectId")).toString();
+                    if (!repeatedTarget.isEmpty()) {
+                        const QString targetKey=objectKey(w,repeatedTarget);
+                        if (g.byId.contains(targetKey))
+                            g.link(choice,targetKey,QStringLiteral("Repeated wrong item: ")+
+                                   exchange.value(QStringLiteral("wrongRepeatTargetAction")).toString("enable"));
+                        else g.missing(w,choice,QStringLiteral("repeated wrong target object"),repeatedTarget);
+                    }
+                }
                 for (const auto &key : {"wrongTargetObjectId","partialTargetObjectId"}) {
                     const QString id=exchange.value(QLatin1String(key)).toString();
                     if (id.isEmpty()) continue;
                     if (g.byId.contains(objectKey(w,id)))g.link(choice,objectKey(w,id),QLatin1String(key));
                     else g.missing(w,choice,QStringLiteral("exchange target object"),id);
+                }
+            }
+        }
+    }
+    // The world manager persists backpack quantities by the EXACT inventory
+    // item name (strcmp), not by per-world pickupKind or table index.
+    // Show that identity link between saved worlds; unlike artwork and item
+    // style, the quantity is genuinely shared on world transitions.
+    for (int a=0;a<documents.size();++a) {
+        const QJsonArray left=documents.at(a).doc.value(QStringLiteral("adventure"))
+                                         .toObject().value(QStringLiteral("items")).toArray();
+        for (int b=a+1;b<documents.size();++b) {
+            const QJsonArray right=documents.at(b).doc.value(QStringLiteral("adventure"))
+                                             .toObject().value(QStringLiteral("items")).toArray();
+            for (int i=0;i<left.size();++i) {
+                const QString name=left.at(i).toObject().value(QStringLiteral("name")).toString();
+                if (name.isEmpty())continue;
+                for (int j=0;j<right.size();++j) {
+                    const QString other=right.at(j).toObject().value(QStringLiteral("name")).toString();
+                    if (other==name) {
+                        g.link(itemKey(documents.at(a).name,i),itemKey(documents.at(b).name,j),
+                               QStringLiteral("Shared backpack: save by item name"));
+                        g.link(itemKey(documents.at(b).name,j),itemKey(documents.at(a).name,i),
+                               QStringLiteral("Shared backpack: restore by item name"));
+                    } else if (name.compare(other,Qt::CaseInsensitive)==0) {
+                        const QString issue=QStringLiteral("Inventory '%1' differs only by case in %2 / %3; quantities will NOT sync")
+                                                .arg(name,documents.at(a).name,documents.at(b).name);
+                        if (!g.diagnostics.contains(issue))g.diagnostics.append(issue);
+                    }
                 }
             }
         }
@@ -783,7 +988,14 @@ public:
     }
     std::function<void()> onMoved;
     std::function<void(const QString &)> onToggle;
-    void setGroup(bool group) { m_group = group; }
+    void setGroup(bool group) {
+        m_group=group;
+        // Only group containers get the drag-hand pointer. Ordinary node
+        // cards keep their existing cursor, and middle-button canvas panning
+        // still uses the view's own closed hand.
+        if (group)setCursor(Qt::OpenHandCursor);
+        else unsetCursor();
+    }
     void setSnapToGrid(bool enabled) { m_snapToGrid = enabled; }
     void setAllowLeaveParent(bool enabled) { m_allowLeaveParent = enabled; }
     // Include the actual mouse release position; Qt child positions are
@@ -813,12 +1025,15 @@ protected:
     }
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
         m_pressPosition=pos();
+        if (m_group && event->button()==Qt::LeftButton)
+            setCursor(Qt::ClosedHandCursor);
         QGraphicsRectItem::mousePressEvent(event);
     }
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
         const bool clickedToggle=m_group && pos()==m_pressPosition &&
              QRectF(11,3,25,23).contains(event->pos()) && bool(onToggle);
         QGraphicsRectItem::mouseReleaseEvent(event);
+        if (m_group)setCursor(Qt::OpenHandCursor);
         if (clickedToggle) onToggle(m_key); // callback schedules a redraw AFTER this event
         if (onDropped && pos()!=m_pressPosition) onDropped(m_key,pos(),event->scenePos());
     }
@@ -838,6 +1053,8 @@ public:
         setDragMode(QGraphicsView::NoDrag);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
+    std::function<bool(const QString &)> onCardDoubleClicked;
+    std::function<void()> onCardRaised;
     void zoom(qreal multiplier) {
         const qreal now=transform().m11();
         if (!std::isfinite(now) || now<=0 || !std::isfinite(multiplier))return;
@@ -845,6 +1062,22 @@ public:
         scale(next/now,next/now);
     }
 protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (event->button()==Qt::LeftButton && onCardDoubleClicked) {
+            // Look through child labels and thumbnails to the actual graph card.
+            // Keep the manual-group title's native double-click rename intact.
+            for (QGraphicsItem *item=itemAt(event->pos());item;item=item->parentItem()) {
+                const QString id=item->data(0).toString();
+                if (id.isEmpty())continue;
+                if (onCardDoubleClicked(id)) {
+                    event->accept();
+                    return;
+                }
+                break;
+            }
+        }
+        QGraphicsView::mouseDoubleClickEvent(event);
+    }
     void wheelEvent(QWheelEvent *event) override {
         const int steps=event->angleDelta().y();
         const int pixels=event->pixelDelta().y();
@@ -879,6 +1112,7 @@ protected:
                 }
                 card->setZValue(front+1.0);
             }
+            if (onCardRaised)onCardRaised();
         }
         const bool middle=event->button()==Qt::MiddleButton;
         const bool blank=event->button()==Qt::LeftButton && !cardAt(event->pos());
@@ -1125,6 +1359,142 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
     return display;
 }
 
+// Dialogue choices can contain several independent requirements, effects and
+// result branches. Inspect the real saved graph in a separate read-only view,
+// rather than confusing that detail with the parent diagram's node ordering.
+void openChoiceFlow(QWidget *parent,const FlowGraph &graph,const QString &choiceId,
+                    const IDETheme &theme) {
+    const int index=graph.byId.value(choiceId,-1);
+    if (index<0 || graph.nodes.at(index).kind!=QStringLiteral("Dialogue Choice"))return;
+    const FlowNode &choice=graph.nodes.at(index);
+    QDialog sub(parent);
+    sub.setWindowTitle(QObject::tr("Dialogue Choice Flow - %1").arg(choice.title));
+    sub.resize(1150,720);
+    sub.setMinimumSize(750,460);
+    auto *outer=new QVBoxLayout(&sub);
+    auto *info=new QLabel(QObject::tr("Saved dialogue-choice relationships. Arrows run from red source to green destination. "
+                                    "This view is read-only and does not change the game."),&sub);
+    info->setWordWrap(true);
+    outer->addWidget(info);
+    QGraphicsScene scene(&sub);
+    auto *viewer=new FlowView(&scene,&sub);
+    viewer->setBackgroundBrush(theme.windowBackground);
+    viewer->setRenderHint(QPainter::Antialiasing,true);
+    outer->addWidget(viewer,1);
+    auto *controls=new QHBoxLayout();
+    auto *fit=new QPushButton(QObject::tr("Fit Flow"),&sub);
+    auto *close=new QPushButton(QObject::tr("Close"),&sub);
+    controls->addWidget(fit);controls->addStretch();controls->addWidget(close);
+    outer->addLayout(controls);
+    QObject::connect(close,&QPushButton::clicked,&sub,&QDialog::accept);
+    QObject::connect(fit,&QPushButton::clicked,&sub,[&]() {
+        viewer->fitInView(scene.itemsBoundingRect().adjusted(-45,-45,45,45),Qt::KeepAspectRatio);
+    });
+
+    QVector<FlowEdge> incoming,outgoing;
+    for (const FlowEdge &edge:graph.edges) {
+        if (edge.to==choiceId && edge.from!=choiceId)incoming.append(edge);
+        if (edge.from==choiceId && edge.to!=choiceId)outgoing.append(edge);
+    }
+    const QColor border=theme.border;
+    // Side cards contain the actual saved node and the label of the graph
+    // relationship. No conditional order is invented when branches coexist.
+    const auto makeCard=[&](const QString &title,const QString &type,
+                             const QString &description,const QPointF &location,
+                             bool focus)->QGraphicsRectItem * {
+        constexpr qreal width=280;
+        auto *body=new QGraphicsTextItem();
+        body->setPlainText(description);
+        body->setDefaultTextColor(theme.text);
+        body->setTextWidth(width-24);
+        body->setFont(QFont(QStringLiteral("Sans Serif"),9));
+        const qreal height=qMax(qreal(focus?148:94),body->boundingRect().height()+67);
+        auto *card=scene.addRect(QRectF(0,0,width,height),
+                            QPen(focus?theme.accent:border,focus?2.5:1.0),
+                            QBrush(focus?theme.panelBackground:theme.alternateBackground));
+        card->setPos(location);
+        card->setZValue(2);
+        auto *header=new QGraphicsSimpleTextItem(brief(title,35),card);
+        header->setFont(QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
+        header->setBrush(theme.brightText);
+        header->setPos(12,8);
+        auto *kind=new QGraphicsSimpleTextItem(type,card);
+        kind->setFont(QFont(QStringLiteral("Sans Serif"),8));
+        kind->setBrush(theme.accent);
+        kind->setPos(12,30);
+        body->setParentItem(card);
+        body->setPos(12,49);
+        body->setAcceptedMouseButtons(Qt::NoButton);
+        header->setAcceptedMouseButtons(Qt::NoButton);
+        kind->setAcceptedMouseButtons(Qt::NoButton);
+        return card;
+    };
+    QHash<QString,QGraphicsRectItem *> visual;
+    // Put the choice at the centre and keep its entire saved reply and flags
+    // visible: those are the 'inside' of the selected dialogue-choice node.
+    visual.insert(choiceId,makeCard(choice.title,QStringLiteral("DIALOGUE CHOICE"),
+                                    choice.description,QPointF(350,60),true));
+    qreal leftY=40,rightY=40;
+    const auto placeSide=[&](const FlowEdge &edge,bool isIncoming,int number) {
+        const QString otherId=isIncoming?edge.from:edge.to;
+        const int otherIndex=graph.byId.value(otherId,-1);
+        if (otherIndex<0)return;
+        const FlowNode &node=graph.nodes.at(otherIndex);
+        // Cards include their relationship label so different conditions
+        // between the same two nodes remain independently understandable.
+        const QString cardId=(isIncoming?QStringLiteral("in:"):QStringLiteral("out:"))+
+                             otherId+QString::number(number);
+        qreal &nextY=isIncoming?leftY:rightY;
+        auto *card=makeCard(node.title,node.kind+QStringLiteral(" | ")+edge.label,
+                              brief(node.description,145),
+                              QPointF(isIncoming?20:710,nextY),false);
+        visual.insert(cardId,card);
+        nextY+=card->rect().height()+26;
+    };
+    for (int i=0;i<incoming.size();++i)placeSide(incoming.at(i),true,i);
+    for (int i=0;i<outgoing.size();++i)placeSide(outgoing.at(i),false,i);
+    auto *choiceCard=visual.value(choiceId);
+    // Centre the choice beside the taller column. Variable-height cards
+    // prevent long NPC replies and branch names from overlapping.
+    const qreal columnsBottom=qMax(leftY,rightY);
+    choiceCard->setY(qMax(qreal(40),(columnsBottom+40-choiceCard->rect().height())/2));
+    // The reply is information, not an invented execution branch: it is
+    // shown as a labelled region in the central card, not a fake graph edge.
+    if (incoming.isEmpty() && outgoing.isEmpty()) {
+        auto *note=scene.addSimpleText(QObject::tr("No explicit incoming or outgoing links in the saved diagram."));
+        note->setBrush(theme.mutedText);
+        note->setPos(345,choiceCard->sceneBoundingRect().bottom()+12);
+    }
+    const auto connect=[&](QGraphicsRectItem *a,QGraphicsRectItem *b) {
+        if (!a || !b)return;
+        const QRectF ra=a->sceneBoundingRect(),rb=b->sceneBoundingRect();
+        const QPointF start(ra.right(),ra.center().y()),end(rb.left(),rb.center().y());
+        QPainterPath curve(start);
+        const qreal bend=qMax(qreal(30),(end.x()-start.x())*0.44);
+        curve.cubicTo(start+QPointF(bend,0),end-QPointF(bend,0),end);
+        auto *wire=scene.addPath(curve);
+        QLinearGradient gradient(start,end);
+        gradient.setColorAt(0,QColor(226,105,99));
+        gradient.setColorAt(1,QColor(93,207,131));
+        wire->setPen(QPen(QBrush(gradient),2.1));
+        wire->setZValue(-2);
+        const QPolygonF tip{end,end+QPointF(-10,-5),end+QPointF(-10,5)};
+        auto *arrow=scene.addPolygon(tip,QPen(Qt::NoPen),QBrush(QColor(93,207,131)));
+        arrow->setZValue(-1.9);
+    };
+    for (int i=0;i<incoming.size();++i)
+        connect(visual.value(QStringLiteral("in:")+incoming.at(i).from+QString::number(i)),
+                visual.value(choiceId));
+    for (int i=0;i<outgoing.size();++i)
+        connect(visual.value(choiceId),
+                visual.value(QStringLiteral("out:")+outgoing.at(i).to+QString::number(i)));
+    scene.setSceneRect(scene.itemsBoundingRect().adjusted(-60,-60,60,60));
+    QTimer::singleShot(0,&sub,[&]() {
+        viewer->fitInView(scene.sceneRect(),Qt::KeepAspectRatio);
+    });
+    sub.exec();
+}
+
 } // namespace
 
 void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETheme &theme) {
@@ -1211,6 +1581,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                    "Wire colours flow RED (outgoing) to GREEN (incoming).\n"
                                    "Two opposite links are drawn as separate parallel wires.\n"
                                    "Click a wire to select both connected cards.\n"
+                                   "Double-click a Dialogue Choice to open its own flow.\n"
                                    "Double-click a manual group title or press F2 to rename it."),right);
     help->setWordWrap(true);
     rightLayout->addWidget(help);
@@ -1227,6 +1598,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
 
     FlowGraph graph;
     QHash<QString,QGraphicsRectItem *> cards;
+    // Group fill panels are independent scene items behind root-level wires.
+    // Otherwise a wire leaving an expanded group disappears under its fill.
+    // The transparent group card still owns the header, member cards and
+    // selection border, so all of those remain ABOVE every root-level wire.
+    QHash<QString,QGraphicsRectItem *> groupBackdrops;
+    std::function<void()> restackBackdrops;
+    view->onCardRaised=[&]() {
+        if (restackBackdrops)restackBackdrops();
+    };
     QHash<QString,FlowGroupTitleItem *> groupTitles;
     QHash<QString,QGraphicsRectItem *> worldBands;
     QHash<QString,QGraphicsSimpleTextItem *> worldHeaders;
@@ -1235,6 +1615,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QHash<QString,QString> memberGroup;
     QVector<EdgeArt> edges;
     QString selectedId;
+    view->onCardDoubleClicked=[&](const QString &id)->bool {
+        const int index=graph.byId.value(id,-1);
+        if (index<0 || graph.nodes.at(index).kind!=QStringLiteral("Dialogue Choice"))
+            return false;
+        openChoiceFlow(&dialog,graph,id,theme);
+        return true;
+    };
     const QString layoutFile=QDir(projectRoot).filePath(QStringLiteral(".sidbox-flow-layout.json"));
     FlowLayout layout=readFlowLayout(layoutFile);
     snapGrid->setChecked(layout.snapToGrid);
@@ -1284,6 +1671,35 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         if (n.problem)lines<<QString()<<QObject::tr("WARNING: Repair this reference in the Game Designer or Adventure Editor.");
         details->setPlainText(lines.join('\n'));
     };
+    // The separate background panels must still respect Stage 5.82's
+    // click-to-front order. Normalize their z values BELOW the canvas wires
+    // on every raise, so even hundreds of clicks cannot lift a fill over a
+    // connection. Nested array fills sit just above their parent's fill.
+    restackBackdrops=[&]() {
+        QStringList roots;
+        for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
+            auto *card=cards.value(it.key(),nullptr);
+            if (card && !card->parentItem())roots.append(it.key());
+        }
+        std::sort(roots.begin(),roots.end(),[&](const QString &a,const QString &b) {
+            const qreal za=cards.value(a)->zValue();
+            const qreal zb=cards.value(b)->zValue();
+            return za==zb ? a<b : za<zb;
+        });
+        const qreal step=1.7/(roots.size()+1);
+        for (int i=0;i<roots.size();++i) {
+            const QString &id=roots.at(i);
+            const qreal base=-3.9+(i+1)*step;
+            groupBackdrops.value(id)->setZValue(base);
+            for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
+                auto *card=cards.value(it.key(),nullptr);
+                if (!card || !card->parentItem())continue;
+                QGraphicsItem *top=card;
+                while (top->parentItem())top=top->parentItem();
+                if (top==cards.value(id))it.value()->setZValue(base+step*0.25);
+            }
+        }
+    };
     std::function<void()> refreshEdges;
     auto refreshHighlight=[&]() {
         const QString query=search->text().trimmed();
@@ -1328,6 +1744,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             it.value()->setPen(QPen(selectedCards.contains(it.key()) || arrayGroup
                                       ? theme.accent : cardBorder,
                                       selectedCards.contains(it.key())?2.5:1));
+            if (auto *backdrop=groupBackdrops.value(it.key(),nullptr))
+                backdrop->setOpacity(it.value()->opacity());
         }
         for (const EdgeArt &e:edges) {
             const bool connected=selectedCards.isEmpty() || isSelectedEndpoint(e.from) || isSelectedEndpoint(e.to);
@@ -1338,6 +1756,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         if (refreshEdges)refreshEdges();
     };
     refreshEdges=[&]() {
+        restackBackdrops();
+        // Keep all detached group backdrops in step with their draggable
+        // frames. mapRectToScene also follows a nested array when its outer
+        // logic group moves, or when a frame grows after dropping a member.
+        for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
+            auto *frame=cards.value(it.key(),nullptr);
+            if (!frame)continue;
+            it.value()->setRect(frame->mapRectToScene(frame->rect()));
+        }
         QSet<QString> directed;
         for (const EdgeArt &edge:edges)
             directed.insert(edge.from+QChar(0x1f)+edge.to);
@@ -1440,7 +1867,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     std::function<void()> redraw;
     redraw=[&]() {
         QSignalBlocker blocker(scene);
-        cards.clear();groupTitles.clear();worldBands.clear();worldHeaders.clear();edges.clear();
+        cards.clear();groupBackdrops.clear();groupTitles.clear();worldBands.clear();worldHeaders.clear();edges.clear();
         scene->clear();
         const QString selectedWorld=worldSelect->currentData().toString();
         const QStringList worlds=selectedWorld.isEmpty()?graph.worlds:QStringList{selectedWorld};
@@ -1548,12 +1975,45 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     scene->addItem(card);
                     card->setSnapToGrid(layout.snapToGrid);
                     card->setPen(QPen(isGroup && g.automatic ? theme.accent : cardBorder));
-                    card->setBrush(QBrush(isGroup ? (g.automatic ? arrayBackground : groupBackground) : cardBackground));
+                    // Group fills are separate, non-interactive scene panels.
+                    // Root wires (-2) pass ABOVE these panels (-3.2), but
+                    // BELOW every card (2+), even after click-to-front.
+                    // Do not change normal node cards: they must remain opaque.
+                    card->setBrush(isGroup ? QBrush(Qt::NoBrush) : QBrush(cardBackground));
                     card->setPos(savedPositions.value(n.id,QPointF(x,y)));
                     card->setZValue(2);
-                    card->setToolTip(isGroup?QObject::tr("Click +/- to expand or collapse. Drag this group to move its contents."):n.description);
+                    if (isGroup) {
+                        auto *panel=scene->addRect(QRectF(),Qt::NoPen,
+                            QBrush(g.automatic ? arrayBackground : groupBackground));
+                        panel->setZValue(-3.2); // normalized on refresh/raise
+                        panel->setAcceptedMouseButtons(Qt::NoButton);
+                        panel->setFlag(QGraphicsItem::ItemIsSelectable,false);
+                        groupBackdrops.insert(n.id,panel);
+                    }
+                    card->setToolTip(isGroup?QObject::tr("Click +/- to expand or collapse. Drag this group to move its contents."):
+                         n.description+(n.kind==QStringLiteral("Dialogue Choice")
+                             ? QObject::tr("\nDouble-click to view the choice's internal flow.") : QString()));
+                    if (isGroup) {
+                        // The visible six-dot grip complements the open/closed
+                        // hand cursor; it sits on the draggable header, clear
+                        // of the +/- control and editable group name.
+                        auto *grip=new QGraphicsSimpleTextItem(QStringLiteral("⋮⋮"),card);
+                        grip->setPos(card->rect().width()-34,6);
+                        grip->setBrush(theme.mutedText);
+                        grip->setZValue(2);
+                        grip->setAcceptedMouseButtons(Qt::NoButton);
+                        // A solid group HEADER masks any internal link passing
+                        // beneath it. The rest of the expanded frame stays
+                        // transparent to its own local wires.
+                        auto *cover=new QGraphicsRectItem(QRectF(0,0,card->rect().width(),70),card);
+                        cover->setPen(Qt::NoPen);
+                        cover->setBrush(g.automatic?arrayBackground:groupBackground);
+                        cover->setZValue(1.5);
+                        cover->setAcceptedMouseButtons(Qt::NoButton);
+                    }
                     auto *stripe=scene->addRect(0,0,7,isGroup?70:70,Qt::NoPen,QBrush(isGroup?theme.accent:nodeColour(n.kind,n.problem,theme)));
                     stripe->setParentItem(card);stripe->setPos(0,0);
+                    if (isGroup)stripe->setZValue(2);
                     stripe->setAcceptedMouseButtons(Qt::NoButton);
                     if (isGroup) {
                         QFont toggleFont(QStringLiteral("Sans Serif"));
@@ -1561,17 +2021,21 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         toggleFont.setBold(true);
                         auto *toggle=scene->addSimpleText(g.expanded?QStringLiteral("−"):QStringLiteral("+"),toggleFont);
                         toggle->setParentItem(card);toggle->setPos(14,0);toggle->setBrush(theme.brightText);
+                        toggle->setZValue(2);
                         toggle->setAcceptedMouseButtons(Qt::NoButton);
                         auto *kind=scene->addSimpleText(g.automatic?QStringLiteral("ARRAY GROUP"):QStringLiteral("LOGIC GROUP"),QFont(QStringLiteral("Sans Serif"),8,QFont::Bold));
                         kind->setParentItem(card);kind->setPos(45,4);kind->setBrush(theme.text);
+                        kind->setZValue(2);
                         kind->setAcceptedMouseButtons(Qt::NoButton);
                         if (g.automatic) {
                             auto *name=scene->addSimpleText(brief(g.title,42),QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
                             name->setParentItem(card);name->setPos(14,26);name->setBrush(theme.brightText);
+                            name->setZValue(2);
                             name->setAcceptedMouseButtons(Qt::NoButton);
                         } else {
                             auto *name=new FlowGroupTitleItem(g.title,card,theme.brightText);
                             name->setPos(11,20);
+                            name->setZValue(2);
                             name->setTextWidth(qMax(qreal(230),card->rect().width()-22));
                             groupTitles.insert(g.id,name);
                             const QString id=g.id;
@@ -1592,6 +2056,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                                       .arg(g.members.size()).arg(embeddedIds.size()),
                             QFont(QStringLiteral("Sans Serif"),8));
                         count->setParentItem(card);count->setPos(14,48);count->setBrush(theme.mutedText);
+                        count->setZValue(2);
                         count->setAcceptedMouseButtons(Qt::NoButton);
                         if (g.expanded) {
                             for (int i=0;i<g.members.size();++i) {
@@ -1647,21 +2112,43 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                              inner.expanded?88+nestedRows*82:70);
                                 sub->setPos(miniPositions.value(embeddedId));
                                 sub->setZValue(3);
-                                sub->setBrush(nestedBackground);
+                                sub->setBrush(Qt::NoBrush);
                                 sub->setPen(QPen(theme.accent));
+                                // Nested groups also have a scene-level fill.
+                                // Thus links to nodes outside the enclosing
+                                // logic group remain visible across BOTH
+                                // backgrounds, without covering mini cards.
+                                auto *panel=scene->addRect(QRectF(),Qt::NoPen,QBrush(nestedBackground));
+                                panel->setZValue(-3.1); // normalized above parent fill on refresh
+                                panel->setAcceptedMouseButtons(Qt::NoButton);
+                                panel->setFlag(QGraphicsItem::ItemIsSelectable,false);
+                                groupBackdrops.insert(embeddedId,panel);
                                 sub->setToolTip(QObject::tr("Array group nested in %1; click +/- to expand it, or drag outside the parent to detach.").arg(g.title));
+                                auto *subGrip=new QGraphicsSimpleTextItem(QStringLiteral("⋮⋮"),sub);
+                                subGrip->setPos(sub->rect().width()-34,6);
+                                subGrip->setBrush(theme.mutedText);
+                                subGrip->setZValue(2);
+                                subGrip->setAcceptedMouseButtons(Qt::NoButton);
+                                auto *subCover=new QGraphicsRectItem(QRectF(0,0,sub->rect().width(),70),sub);
+                                subCover->setPen(Qt::NoPen);
+                                subCover->setBrush(nestedBackground);
+                                subCover->setZValue(1.5);
+                                subCover->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subtitle=new QGraphicsSimpleTextItem(brief(inner.title,35),sub);
                                 subtitle->setPos(14,26);
                                 subtitle->setBrush(theme.brightText);
+                                subtitle->setZValue(2);
                                 subtitle->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subtype=new QGraphicsSimpleTextItem(QStringLiteral("ARRAY GROUP"),sub);
                                 subtype->setPos(45,4);
                                 subtype->setBrush(theme.text);
+                                subtype->setZValue(2);
                                 subtype->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subCount=new QGraphicsSimpleTextItem(
                                     QObject::tr("%1 cards").arg(inner.members.size()),sub);
                                 subCount->setPos(14,48);
                                 subCount->setBrush(theme.mutedText);
+                                subCount->setZValue(2);
                                 subCount->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subToggle=new QGraphicsSimpleTextItem(inner.expanded?QStringLiteral("−"):QStringLiteral("+"),sub);
                                 QFont subFont(QStringLiteral("Sans Serif"));
@@ -1669,6 +2156,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 subToggle->setFont(subFont);
                                 subToggle->setPos(14,0);
                                 subToggle->setBrush(theme.brightText);
+                                subToggle->setZValue(2);
                                 subToggle->setAcceptedMouseButtons(Qt::NoButton);
                                 cards.insert(embeddedId,sub);
                                 if (inner.expanded) {
@@ -1781,14 +2269,20 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                 existing.path->setToolTip(existing.path->toolTip()+QStringLiteral("\n")+e.label);
                 continue;
             }
-            // Lines leaving an EXPANDED manual group are children of that
-            // group. They stay above its background and below its mini cards.
-            // All other links remain behind the regular top-level cards.
+            // A wire may only live inside a group if BOTH endpoints belong to
+            // that same group. A cross-group wire must be scene-level, or
+            // raising either group lifts its wire OVER unrelated cards.
+            // Nested arrays get their own local wires; other nested routes
+            // stay within the closest common group container.
             QGraphicsItem *wireParent=nullptr;
-            if (cards.value(from) && cards.value(from)->parentItem())
-                wireParent=cards.value(from)->parentItem();
-            else if (cards.value(to) && cards.value(to)->parentItem())
-                wireParent=cards.value(to)->parentItem();
+            for (QGraphicsItem *ancestor=cards.value(from);ancestor;ancestor=ancestor->parentItem()) {
+                const QString parentKey=ancestor->data(0).toString();
+                if (!groups.contains(parentKey))continue;
+                for (QGraphicsItem *other=cards.value(to);other;other=other->parentItem()) {
+                    if (other==ancestor) { wireParent=ancestor; break; }
+                }
+                if (wireParent)break;
+            }
             FlowWireItem *line=new FlowWireItem(wireParent);
             if (!wireParent)scene->addItem(line);
             QGraphicsPolygonItem *arrowItem=new QGraphicsPolygonItem(wireParent);
@@ -1798,8 +2292,11 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             arrowItem->setBrush(QColor(93,207,131));
             arrowItem->setAcceptedMouseButtons(Qt::NoButton);
             arrowItem->setData(1,QStringLiteral("flow-wire"));
-            line->setZValue(wireParent?1:-1);
-            arrowItem->setZValue(wireParent?2:0);
+            // Internal wires must stay above the group BACKGROUND but below
+            // every internal card (mini cards begin at local z=3).
+            // Root wires stay below even the oldest top-level card (z>=2).
+            line->setZValue(wireParent ? 0.5 : -2);
+            arrowItem->setZValue(wireParent ? 0.6 : -1.9);
             line->setToolTip(e.label+QStringLiteral("\nClick to select both connected cards"));
             const QString first=from,second=to,linkLabel=e.label;
             line->onClicked=[&,first,second,linkLabel]() {

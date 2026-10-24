@@ -644,6 +644,26 @@ static void gameworlds_pickup_bridge(game_collectable_t *item, void *context)
         game_adventure_managed_pickup_begin(item->kind);
     }
 @IDE_END
+    if (item->stat_target && !item->show_in_inventory) {
+        uint32_t *target = 0;
+        if (item->stat_target == 1u) target = &persistent.health;
+        else if (item->stat_target == 2u) target = &persistent.lives;
+        else if (item->stat_target == 3u) target = &persistent.score;
+        if (target) {
+            const uint64_t total = (uint64_t)*target + item->value;
+            *target = total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+        }
+@IDE_IF{HAS_SHARED_PLAYER}
+        else if (item->stat_target == 4u && item->stat_name) {
+            int32_t current = 0;
+            if (gameplayer_stat_get(item->stat_name, &current)) {
+                int64_t total = (int64_t)current + item->value;
+                if (total > INT32_MAX) total = INT32_MAX;
+                gameplayer_stat_set(item->stat_name, (int32_t)total);
+            }
+        }
+@IDE_END
+    }
     if (ctx && ctx->cb) ctx->cb(item, ctx->user);
 @IDE_IF{HAS_ADVENTURE_RUNTIME}
     if (item->tracking_configured) game_adventure_managed_pickup_end();

@@ -24,6 +24,8 @@ uint8_t game_collectable_start(game_collectable_t *item, gfxbob_t *sprite,
     item->tracking_configured = 0;
     item->show_in_inventory = 0;
     item->show_in_hud = 0;
+    item->stat_target = 0;
+    item->stat_name = 0;
     item->active = 1;
     item->can_collect = 1;
     item->draw_behind_tiles = 0;
@@ -99,7 +101,9 @@ uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
                A breakable health reward can map to an inventory item while
                tracking_configured == 0. Never consume it when the bag cannot
                accept that kind. Unmapped score/health pickups remain free. */
-            if (game_adventure_can_collect_kind &&
+            if ((item->show_in_inventory ||
+                 (!item->tracking_configured && !item->stat_target)) &&
+                game_adventure_can_collect_kind &&
                 !game_adventure_can_collect_kind(item->kind)) continue;
             item->active = 0;
             item->respawn_left = item->respawn_frames;

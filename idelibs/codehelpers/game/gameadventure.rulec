@@ -105,6 +105,15 @@ static const game_adventure_npc_animation_t npc_animations[] = {
 @IDE{NPC_ANIMATION_ROWS}
 };
 
+static const uint8_t thought_choice_flags[] = {
+@IDE{THOUGHT_CHOICE_FLAGS}
+};
+static const uint16_t thought_skin_cells[9] = {
+@IDE{THOUGHT_SKIN_CELLS}
+};
+static const uint8_t thought_skin_flips[9] = {
+@IDE{THOUGHT_SKIN_FLIPS}
+};
 static const uint16_t skin_cells[9] = {
 @IDE{SKIN_CELLS}
 };
@@ -174,6 +183,9 @@ void gameadventure_setup(void)
 @IDE_IF{HAS_WORLD_OBJECTS}
     /* Let nearby FIRE2 doors/switches handle the button before inventory. */
     game_adventure_set_fire2_action(gameworlditems_fire2_action);
+    game_adventure_set_interaction(gameworlditems_interaction_probe,
+                                   gameworlditems_interaction_use);
+    game_adventure_set_interaction_sound(gameworlditems_interaction_sound);
 @IDE_END
     /* Restore this world's appearance every time the world manager loads it.
      * The shared Adventure renderer must never inherit forest's settings
@@ -188,6 +200,9 @@ void gameadventure_setup(void)
     game_adventure_inventory_max_slots(@IDE{MAX_INVENTORY_SLOTS}u);
     game_adventure_use_effects(item_uses, GAME_ADVENTURE_STORY_ITEM_COUNT, on_use_item, 0);
     game_adventure_text_padding(@IDE{DIALOG_PADDING}u);
+    game_adventure_dialogue_typography(@IDE{DIALOG_FONT_SCALE_X}u,
+        @IDE{DIALOG_FONT_SCALE_Y}u,@IDE{THOUGHT_FONT_SCALE_X}u,
+        @IDE{THOUGHT_FONT_SCALE_Y}u,@IDE{THOUGHT_ABOVE}u);
     game_adventure_npc_initial_visibility(npc_initial_visibility, GAME_ADVENTURE_STORY_NPC_COUNT);
     game_adventure_story_flags(story_choice_flags, npc_completed_nodes);
     game_adventure_npc_choice_actions(npc_choice_actions, @IDE{NPC_CHOICE_ACTION_COUNT}u);
@@ -195,6 +210,11 @@ void gameadventure_setup(void)
     game_adventure_exchange_rules(exchanges, GAME_ADVENTURE_STORY_NODE_COUNT*3u);
     game_adventure_wrong_repeat_rules(wrong_repeat_rules, @IDE{WRONG_REPEAT_COUNT}u);
     game_adventure_skin_flips(skin_flips);
+    game_adventure_thought_choices(thought_choice_flags,
+        (uint16_t)(sizeof(thought_choice_flags)/sizeof(thought_choice_flags[0])));
+    game_adventure_thought_box(@IDE{THOUGHT_X}, @IDE{THOUGHT_Y},
+        @IDE{THOUGHT_WIDTH}u, @IDE{THOUGHT_HEIGHT}u,
+        thought_skin_cells, thought_skin_flips);
     game_adventure_npc_animations(npc_animations, GAME_ADVENTURE_STORY_NPC_COUNT);
     /* Starting items may be owned before any cross-world inventory restore. */
     game_adventure_prepare_owned_icons();

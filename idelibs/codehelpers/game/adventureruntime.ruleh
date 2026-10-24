@@ -174,6 +174,16 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
 typedef uint8_t (*game_adventure_fire2_action_t)(int32_t x, int32_t y,
                                                   uint16_t w, uint16_t h);
 void game_adventure_set_fire2_action(game_adventure_fire2_action_t action);
+/* Stage 5.91: proximity USE, using existing inventory and FIRE2 input.
+ * probe selects a live target; use receives the selected inventory item name.
+ * Return 0 on mismatch, 1 on success, 2 on success consuming one item. */
+typedef uint8_t (*game_adventure_interaction_use_t)(const char *item_name);
+void game_adventure_set_interaction(game_adventure_fire2_action_t probe,
+                                     game_adventure_interaction_use_t use);
+/* Optional callback fired when FIRE2 cancels a targeted USE selection.
+   Callback argument 2 = cancel. No callback is invoked if NULL. */
+typedef void (*game_adventure_interaction_sound_t)(uint8_t event);
+void game_adventure_set_interaction_sound(game_adventure_interaction_sound_t sound);
 uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y,
                              uint16_t player_w, uint16_t player_h, uint16_t frames);
 /* Mask FIRE1 while Adventure owns input and until a consumed press is
@@ -189,10 +199,21 @@ void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
    If it would run off the bottom, its Y is raised to keep the frame visible.
    Existing designs retain their saved minimum and position. */
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height);
+/* Optional thought bubbles: per-choice flag 1, indexed node*3+answer. A
+ * thought-marked Player speech is drawn alongside its Next dialogue node.
+ * Uses the same loaded PPB atlas, with its own nine-slice cell layout. */
+void game_adventure_thought_choices(const uint8_t *flags, uint16_t count);
+void game_adventure_thought_box(int16_t x, int16_t y, uint16_t width,
+    uint16_t height, const uint16_t indices[9], const uint8_t flips[9]);
 /* Extra clear space INSIDE the skin's border for NPC dialogue and
    player reply bubbles: 0 or 8 pixels. Without a skin, measured from
    the plain box edge. Inventory always gets 8px beyond its skin border. */
 void game_adventure_text_padding(uint8_t pixels);
+/* Native 8x8 glyph pixels, scaled independently on X and Y. Each scale is
+   1, 2, 4 or 8. Defaults 1x2 preserve older dialogues' 8x16 footprint.
+   thought_on_top: 1 = thought drawn last, 0 = main dialogue drawn last. */
+void game_adventure_dialogue_typography(uint8_t dialog_x, uint8_t dialog_y,
+    uint8_t thought_x, uint8_t thought_y, uint8_t thought_on_top);
 /* Optional per-node flags: 1 = once-only, 2 = mark talking NPC completed.
    These separate tables preserve compatibility with older dialogue structs. */
 void game_adventure_story_flags(const uint8_t *choice_flags,
@@ -216,6 +237,21 @@ typedef uint8_t (*game_adventure_item_visible_t)(const char *name);
  * never changes NPC requirements, quantities or pickup behaviour. */
 void game_adventure_set_inventory_filter(game_adventure_item_visible_t filter);
 uint8_t game_adventure_open(void);
+/* Triggers can open the same configured dialogue nodes as NPCs. Their
+ * choices, dialogue artwork, quest actions and modal input are reused. */
+uint8_t game_adventure_trigger_dialogue(uint16_t node);
+/* Show only the chosen node's speaker/text. No choices, gifts, NPC or quest
+ * actions are run: Trigger outcomes have already committed on successful USE. */
+uint8_t game_adventure_trigger_message(uint16_t node);
+/* Navigate multiple existing dialogue nodes via their choice labels and Next
+ * links (e.g. Continue... / Thank god!). No inventory or dialogue effects run. */
+uint8_t game_adventure_trigger_sequence(uint16_t node);
+/* Reward by inventory NAME, never by world-local index. Preflight includes
+ * capacity AND a key slot freed by successful consumption. */
+uint8_t game_adventure_can_reward_name(const char *name,uint16_t quantity,
+                                       const char *consumed_item);
+uint8_t game_adventure_reward_name(const char *name,uint16_t quantity);
+uint8_t game_adventure_take_name(const char *name,uint16_t quantity);
 /* Draw all configured NPC sprite BOBs at their CURRENT generated world positions.
    Call once after world tiles and before the player; no manual Guardian coordinates. */
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y);

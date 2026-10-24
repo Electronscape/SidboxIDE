@@ -1,0 +1,7 @@
+CoderGirl Stage 5.97 - Trigger Dialogues
+
+Unzip into your CoderGirl IDE source directory, preserving paths.
+Rebuild the IDE, configure Trigger dialogues, Save, Update Game Project,
+and rebuild your game. Do NOT replace your game or custom main.c.
+
+SEE: STAGE5.97-TRIGGER-DIALOGUE-MODES.md

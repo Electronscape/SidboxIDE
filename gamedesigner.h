@@ -104,6 +104,7 @@ private:
         bool pickupTrackingConfigured = false;
         bool pickupShowInventory = false;
         bool pickupShowHud = false;
+        QString pickupStatTarget; // empty legacy = Health for pickup type 2, otherwise none
         bool pickupPersistent = false; // never respawn after pickup, including world visits
         int hitWidth = 16, hitHeight = 16;
         int conveyorSpeed = 2, springStrength = 11;
@@ -158,6 +159,26 @@ private:
         QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID
         bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
         bool triggerOneShot = false; // Destroy/hide trigger after firing.
+        // A configured item requirement turns a Trigger into an interactable.
+        // The stable inventory name is used instead of world-local item indices.
+        QString interactItemName;
+        int interactRadius = 32; // Outside the hitbox; pixels (0 = touch only).
+        bool interactConsume = false;
+        QString sfxInteractWrong, sfxInteractSuccess, sfxInteractCancel;
+        // Stage 5.94: on successful inventory USE, reuse existing Adventure
+        // dialogue nodes, shared inventory and shared player stat handling.
+        int interactDialogueNode = -1;
+        QString interactDialogueMode = QStringLiteral("conversation"); // single, sequence or conversation (legacy default).
+        int interactWrongDialogueNode = -1;
+        QString interactWrongDialogueMode = QStringLiteral("single");
+        QString interactRewardItem;
+        int interactRewardCount = 1;
+        QString interactStatTarget = QStringLiteral("none");
+        int interactStatDelta = 0;
+        // Object state artwork is independent of animation. -1=default art
+        // (or hidden when inactive). An inactive frame has no collision.
+        int activeStateFrame = -1;
+        int inactiveStateFrame = -1;
         QString triggerMusicId; // Stable ID of music tree resource; empty means no chosen track.
         QString triggerMusicAction = QStringLiteral("none"); // none, play, stop.
         // Stage 3.12: sound references are stable IDs of Sounds in Game Resources.

@@ -9538,8 +9538,13 @@ bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
 bool MainWindow::updateGameWorldPaths(const QStringList &paths, bool fromCompile)
 {
     const int previousTab = m_editorTabs->currentIndex();
+    // Update all saved worlds without adding closed ones to the editor tabs.
+    // A temporary Designer uses the same validated, backed-up generation path
+    // and is destroyed after its world finishes. Open Designers are reused so
+    // their in-memory edits are not silently replaced by older disk content.
     for (const QString &path : paths) {
         SidboxGameDesigner *game = nullptr;
+        std::unique_ptr<SidboxGameDesigner> temporaryWorld;
         const QString absolute = QFileInfo(path).absoluteFilePath();
         for (int i = 0; i < m_editorTabs->count(); ++i) {
             auto *open = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
@@ -9548,10 +9553,23 @@ bool MainWindow::updateGameWorldPaths(const QStringList &paths, bool fromCompile
             }
         }
         if (!game) {
-            if (!openGameDesigner(absolute)) return false;
-            game = dynamic_cast<SidboxGameDesigner *>(m_editorTabs->currentWidget());
+            // Do not call openGameDesigner(): that creates a visible tab for
+            // each saved world during Update Project and build-time refresh.
+            temporaryWorld = std::make_unique<SidboxGameDesigner>(absolute, this);
+            if (!temporaryWorld->isValid()) return false;
+            temporaryWorld->setTheme(m_theme);
+            temporaryWorld->mainSourceHasUnsavedEdits = [this](const QString &mainPath) {
+                for (int i = 0; i < m_editorTabs->count(); ++i) {
+                    CodeEditor *open = primaryEditorForTab(m_editorTabs->widget(i));
+                    if (open && QFileInfo(open->filePath()).absoluteFilePath() ==
+                            QFileInfo(mainPath).absoluteFilePath() && open->document()->isModified())
+                        return true;
+                }
+                return false;
+            };
+            game = temporaryWorld.get();
         }
-        if (!game || !game->updateGameProject(fromCompile)) return false;
+        if (!game->updateGameProject(fromCompile)) return false;
     }
     if (previousTab >= 0 && previousTab < m_editorTabs->count())
         m_editorTabs->setCurrentIndex(previousTab);

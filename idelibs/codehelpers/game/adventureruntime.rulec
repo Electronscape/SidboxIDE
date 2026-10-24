@@ -315,6 +315,7 @@ void game_adventure_story_flags(const uint8_t *choice_flags,
 }
 
 static uint8_t ga_state; /* 0 idle, 1 dialogue, 2 inventory, 3 reply, 4 destroy, 5 GIVE */
+static uint8_t ga_trigger_message_mode; /* 0 normal, 1 single, 2 navigation-only sequence. */
 static const game_adventure_exchange_t *ga_exchanges;
 static uint16_t ga_exchange_count;
 static uint8_t ga_exchange_progress[GAME_ADVENTURE_EXCHANGE_SLOTS];
@@ -355,6 +356,15 @@ static const game_adventure_exchange_t *ga_exchange_rule(uint16_t node,uint8_t c
 /* Optional query owned by the current world; only tests whether FIRE2 has
  * an active trigger under the player, without activating that trigger. */
 static game_adventure_fire2_action_t ga_fire2_action;
+static game_adventure_fire2_action_t ga_interaction_probe;
+static game_adventure_interaction_use_t ga_interaction_use;
+static game_adventure_interaction_sound_t ga_interaction_sound;
+static uint8_t ga_interaction_failed;
+void game_adventure_set_interaction(game_adventure_fire2_action_t probe,
+                                    game_adventure_interaction_use_t use)
+{ ga_interaction_probe=probe; ga_interaction_use=use; ga_interaction_failed=0; }
+void game_adventure_set_interaction_sound(game_adventure_interaction_sound_t sound)
+{ ga_interaction_sound=sound; }
 void game_adventure_set_fire2_action(game_adventure_fire2_action_t action)
 { ga_fire2_action = action; }
 static uint8_t ga_prev_buttons, ga_choice, ga_inventory_offset;
@@ -407,6 +417,33 @@ static uint16_t ga_skin_w, ga_skin_h;
 static uint8_t ga_tile, ga_frames_per_char;
 static uint16_t ga_skin_indices[9];
 static uint8_t ga_skin_flips[9];
+static const uint8_t *ga_thought_flags;
+static uint16_t ga_thought_flag_count;
+static const char *ga_thought_text;
+static uint16_t ga_thought_typed, ga_thought_ticks;
+static uint16_t ga_thought_indices[9];
+static uint8_t ga_thought_flips[9];
+static int16_t ga_thought_x=20,ga_thought_y=12;
+static uint16_t ga_thought_w=240,ga_thought_h=64;
+void game_adventure_thought_choices(const uint8_t *flags,uint16_t count)
+{ ga_thought_flags=flags;ga_thought_flag_count=flags?count:0u; }
+void game_adventure_thought_box(int16_t x,int16_t y,uint16_t w,uint16_t h,
+    const uint16_t indices[9],const uint8_t flips[9])
+{
+    if(w<96u)w=96u;
+    if(w>480u)w=480u;
+    if(h<40u)h=40u;
+    if(h>320u)h=320u;
+    if(x<0)x=0;
+    if(y<0)y=0;
+    if(x>480-(int)w)x=(int16_t)(480-w);
+    if(y>320-(int)h)y=(int16_t)(320-h);
+    ga_thought_x=x;ga_thought_y=y;ga_thought_w=w;ga_thought_h=h;
+    for(uint8_t i=0;i<9u;++i){
+        ga_thought_indices[i]=indices?indices[i]:ga_skin_indices[i];
+        ga_thought_flips[i]=flips?flips[i]:ga_skin_flips[i];
+    }
+}
 static uint8_t ga_text_colour=GA_TEXT_DEFAULT_COLOUR;
 static uint8_t ga_outline_enabled=GA_TEXT_DEFAULT_OUTLINE;
 static uint8_t ga_outline_colour=GA_TEXT_DEFAULT_OUTLINE_COLOUR;
@@ -414,6 +451,20 @@ static uint8_t ga_outline_colour=GA_TEXT_DEFAULT_OUTLINE_COLOUR;
 static int16_t ga_dialog_x=GA_DIALOG_DEFAULT_X, ga_dialog_y=GA_DIALOG_DEFAULT_Y;
 static uint16_t ga_dialog_w=GA_DIALOG_DEFAULT_W, ga_dialog_h=GA_DIALOG_DEFAULT_H;
 static uint8_t ga_dialog_padding = 8u;
+static uint8_t ga_dialog_scale_x=1u,ga_dialog_scale_y=2u;
+static uint8_t ga_thought_scale_x=1u,ga_thought_scale_y=2u;
+static uint8_t ga_thought_on_top=1u;
+static uint8_t ga_valid_font_scale(uint8_t n)
+{ return n==1u || n==2u || n==4u || n==8u ? n : 1u; }
+void game_adventure_dialogue_typography(uint8_t dx,uint8_t dy,uint8_t tx,uint8_t ty,
+                                         uint8_t thought_on_top)
+{
+    ga_dialog_scale_x=ga_valid_font_scale(dx);
+    ga_dialog_scale_y=ga_valid_font_scale(dy);
+    ga_thought_scale_x=ga_valid_font_scale(tx);
+    ga_thought_scale_y=ga_valid_font_scale(ty);
+    ga_thought_on_top=thought_on_top?1u:0u;
+}
 void game_adventure_text_padding(uint8_t pixels)
 { ga_dialog_padding = pixels == 8u ? 8u : 0u; }
 
@@ -672,13 +723,16 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     for (uint16_t i=0;i<ga_item_count;++i)
         if(ga_counts[i]) ga_touch_item(i,0u);
     ga_state = ga_choice = ga_inventory_offset = 0;
+    ga_trigger_message_mode=0u;
     ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
     ga_bracket_restart();
     memset(ga_drops, 0, sizeof(ga_drops));
     ga_dialog_padding = 8u;
+    game_adventure_dialogue_typography(1u,2u,1u,2u,1u);
     /* Keep ga_prev_buttons across world travel: if FIRE2 opened a door and
        is still held during arrival, that hold must NOT reopen inventory. */
     ga_fire2_action = 0; /* Every newly loaded world registers its own query. */
+    ga_interaction_probe=0; ga_interaction_use=0; ga_interaction_sound=0; ga_interaction_failed=0;
     ga_active_npc = 0xFFFFu;
     game_adventure_npc_animations(0,0);
     game_adventure_text_style(GA_TEXT_DEFAULT_COLOUR,
@@ -686,11 +740,14 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                               GA_TEXT_DEFAULT_OUTLINE_COLOUR);
     ga_node = ga_typed = ga_ticks = ga_reply_typed = ga_reply_ticks = 0;
     ga_after_reply = -1; ga_reply = 0;
+    ga_thought_text=0;ga_thought_typed=ga_thought_ticks=0;
+    game_adventure_thought_choices(0,0u);
     ga_skin_pixels = skin_pixels; ga_skin_w = atlas_width; ga_skin_h = atlas_height;
     ga_tile = tile_size >= 4 && tile_size <= 32 ? tile_size
                                                     : GAME_ADVENTURE_DEFAULT_TILE_SIZE;
     for (uint8_t i = 0; i < 9; ++i) ga_skin_indices[i] = skin_indices ? skin_indices[i] : i;
     game_adventure_skin_flips(0);
+    game_adventure_thought_box(20,12,240u,64u,0,0);
     ga_frames_per_char = frames_per_char ? frames_per_char
                                            : GAME_ADVENTURE_DEFAULT_FRAMES_PER_CHAR;
     ga_action = action; ga_user = user;
@@ -699,9 +756,12 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
 }
 static uint8_t ga_choice_visible(uint16_t node, uint8_t choice)
 {
+    if (ga_trigger_message_mode==1u) return 0u;
     if (node >= ga_node_count || choice >= 3u) return 0;
     const game_adventure_choice_t *c = &ga_nodes[node].choices[choice];
     if (!c->label || !c->label[0]) return 0;
+    /* Navigation-only prompts ignore once-only/requirement flags entirely. */
+    if (ga_trigger_message_mode==2u) return 1u;
     const uint16_t bit = (uint16_t)(node * 3u + choice);
     if (!ga_choice_flags || !(ga_choice_flags[bit] & 1u)) return 1;
     return !(ga_used_choices[bit / 8u] & (uint8_t)(1u << (bit % 8u)));
@@ -737,6 +797,36 @@ static uint8_t ga_can_receive_after_take(uint16_t gift,int16_t taken)
     return ga_inventory_slot_limit && !ga_counts[gift] && ga_counts[taken]==1u &&
         ga_visible_count()>=ga_inventory_slot_limit;
 }
+static int16_t ga_find_named_item(const char *name)
+{
+    if (!name || !*name || !ga_items) return -1;
+    for(uint16_t i=0;i<ga_item_count;++i)
+        if (ga_items[i].name && strcmp(ga_items[i].name,name)==0) return (int16_t)i;
+    return -1;
+}
+uint8_t game_adventure_can_reward_name(const char *name,uint16_t quantity,
+                                       const char *consumed_item)
+{
+    const int16_t gift=ga_find_named_item(name);
+    if (gift<0 || !quantity) return 0u;
+    const int16_t taken=ga_find_named_item(consumed_item);
+    const uint16_t own=ga_counts[(uint16_t)gift];
+    const uint16_t consumes=(uint16_t)(taken==gift && own!=0);
+    if ((uint32_t)own-consumes+quantity>ga_items[(uint16_t)gift].capacity) return 0u;
+    if (!ga_inventory_slot_limit || own || ga_visible_count()<ga_inventory_slot_limit)
+        return 1u;
+    return taken>=0 && taken!=gift && ga_counts[(uint16_t)taken]==1u;
+}
+uint8_t game_adventure_reward_name(const char *name,uint16_t quantity)
+{
+    const int16_t item=ga_find_named_item(name);
+    return item>=0 && quantity && game_adventure_add((uint16_t)item,quantity)==quantity;
+}
+uint8_t game_adventure_take_name(const char *name,uint16_t quantity)
+{
+    const int16_t item=ga_find_named_item(name);
+    return item>=0 && game_adventure_remove((uint16_t)item,quantity);
+}
 static uint8_t ga_allowed(const game_adventure_choice_t *c)
 {
     return c->requires < 0 || ((uint16_t)c->requires < ga_item_count && ga_counts[c->requires]);
@@ -752,6 +842,16 @@ static void ga_inventory_full_reply(int16_t return_node)
     ga_after_reply=return_node;
     ga_state=3u;
 }
+static uint8_t ga_is_thought(uint16_t node,uint8_t choice)
+{
+    const uint16_t index=(uint16_t)(node*3u+choice);
+    return ga_thought_flags && index<ga_thought_flag_count && (ga_thought_flags[index]&1u);
+}
+static void ga_set_thought(const char *text)
+{
+    ga_thought_text=text && text[0]?text:0;
+    ga_thought_typed=ga_thought_ticks=0;
+}
 static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_node)
 {
     ga_reply = c->reply && c->reply[0] ? c->reply : c->label;
@@ -766,11 +866,43 @@ static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_no
 }
 static void ga_next_node(int16_t node)
 {
+    ga_thought_text=0;
+    ga_thought_typed=ga_thought_ticks=0;
     if (node < 0 || node >= ga_node_count) { ga_state = 0; return; }
+    ga_trigger_message_mode=0u; /* Normal NPC/full conversation may branch. */
     ga_node = (uint16_t)node; ga_state = 1;
     ga_choice = 0; ga_typed = 0; ga_ticks = 0;
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
+}
+uint8_t game_adventure_trigger_dialogue(uint16_t node)
+{
+    if (node>=ga_node_count || !ga_nodes) return 0u;
+    ga_active_npc=UINT16_MAX; /* No NPC completion assigned to this trigger. */
+    ga_next_node((int16_t)node);
+    ga_bracket_restart();
+    return 1u;
+}
+uint8_t game_adventure_trigger_message(uint16_t node)
+{
+    if (node>=ga_node_count || !ga_nodes) return 0u;
+    ga_active_npc=UINT16_MAX;
+    ga_next_node((int16_t)node);
+    ga_trigger_message_mode=1u;
+    ga_bracket_restart();
+    return 1u;
+}
+uint8_t game_adventure_trigger_sequence(uint16_t node)
+{
+    if (node>=ga_node_count || !ga_nodes) return 0u;
+    ga_active_npc=UINT16_MAX;
+    ga_next_node((int16_t)node);
+    ga_trigger_message_mode=2u;
+    /* Pick the first navigation label, ignoring saved once-only flags. */
+    for (uint8_t i=0;i<3u;++i)
+        if (ga_choice_visible(ga_node,i)) {ga_choice=i;break;}
+    ga_bracket_restart();
+    return 1u;
 }
 /* Both selected-answer and answerless-dialogue-close effects use the same
  * sparse table. On-close IDs start at 3 * number_of_nodes. No frame polling. */
@@ -810,7 +942,11 @@ static void ga_success_choice(const game_adventure_choice_t *c, uint16_t node, u
     if (flags & 1u) ga_mark_choice_used(node,choice);
     if ((flags & 2u) && ga_active_npc < ga_npc_count && ga_active_npc < 256u)
         ga_completed_npcs[ga_active_npc]=1u;
-    ga_reply_then_next(c,c->next);
+    if(ga_is_thought(node,choice)){
+        const char *thought=c->reply;
+        ga_next_node(c->next);
+        if(ga_state==1u)ga_set_thought(thought);
+    } else ga_reply_then_next(c,c->next);
 }
 /* GIVE is a separate inventory mode. A wrong offer is never taken. Incremental
  * deliveries consume one copy only when allowed, and remember their slot by
@@ -1009,6 +1145,15 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
                 return 1;
             }
         }
+        /* Item-targeted interaction uses the same inventory picker, without
+         * allowing the normal free-standing USE/DROP actions to run. */
+        if (ga_interaction_probe && ga_interaction_use &&
+            ga_interaction_probe(player_x,player_y,player_w,player_h)) {
+            ga_state=6u; ga_interaction_failed=0u;
+            ga_inventory_offset=ga_inventory_selection=ga_inventory_action=0u;
+            ga_bracket_restart();
+            return 1;
+        }
         /* A nearby FIRE2 door/switch has priority over opening the bag.
          * The query is read-only; normal gameworlds_after() still fires it. */
         if (ga_fire2_action && ga_fire2_action(player_x, player_y, player_w, player_h))
@@ -1038,11 +1183,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         }
         return 1;
     }
-    if (ga_state == 2) {
+    if (ga_state == 2 || ga_state == 6) {
         const uint16_t visible = ga_visible_count();
         if (ga_inventory_selection >= visible)
             ga_inventory_selection = visible ? (uint8_t)(visible-1u) : 0u;
-        if (press) { ga_state = 0; return 0; }
+        if (press) {
+            if (ga_state==6u && ga_interaction_sound) ga_interaction_sound(2u);
+            ga_state = 0; ga_interaction_failed=0; return 1;
+        }
         if (down && (uint16_t)ga_inventory_selection+1u < visible) {
             ++ga_inventory_selection; ga_inventory_action=0u;
             ga_bracket_restart();
@@ -1058,6 +1206,7 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         const uint8_t can_discard=ga_discardable(action_id);
         const uint8_t can_drop=ga_droppable(action_id);
         const uint8_t count=(uint8_t)(can_use + can_drop + can_discard);
+        if (ga_state==6u && (up || down)) ga_interaction_failed=0u;
         if (count && ga_inventory_action >= count) ga_inventory_action=(uint8_t)(count-1u);
         if (left && ga_inventory_action) { --ga_inventory_action; ga_bracket_restart(); }
         if (right && count && ga_inventory_action + 1u < count) {
@@ -1073,6 +1222,28 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         }
         if (fire && visible) {
             const uint16_t id = ga_visible_item_id(ga_inventory_selection);
+            if (ga_state==6u) {
+                uint8_t outcome=0;
+                if (id<ga_item_count && ga_counts[id] && ga_interaction_use) {
+                    /* Release the inventory modal BEFORE the callback.
+                     * A successful Trigger may open an Adventure dialogue. */
+                    ga_state=0u;
+                    outcome=ga_interaction_use(ga_items[id].name);
+                }
+                if (outcome==1u || outcome==2u) {
+                    if (outcome==2u) game_adventure_remove(id,1u);
+                    ga_interaction_failed=0u;
+                } else if (ga_state==1u) {
+                    /* Wrong-item callback opened a dialogue. Do not clobber
+                     * it by restoring the inventory USE picker. No item taken. */
+                    ga_interaction_failed=0u;
+                } else {
+                    ga_state=6u;
+                    ga_interaction_failed=(outcome==3u) ? 2u : 1u;
+                }
+                ga_bracket_restart();
+                return 1;
+            }
             if (id < ga_item_count) {
                 const uint8_t has_use=ga_can_use(id);
                 const uint8_t has_discard=ga_discardable(id);
@@ -1114,6 +1285,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         ga_ticks = (uint16_t)(elapsed % ga_frames_per_char);
         if (ga_typed > text_len) ga_typed = text_len;
     }
+    /* Thought and dialogue type simultaneously, without any second modal. */
+    if(ga_thought_text && ga_thought_typed<strlen(ga_thought_text)){
+        const uint32_t elapsed=(uint32_t)ga_thought_ticks+frames;
+        ga_thought_typed+=(uint16_t)(elapsed/ga_frames_per_char);
+        ga_thought_ticks=(uint16_t)(elapsed%ga_frames_per_char);
+        if(ga_thought_typed>strlen(ga_thought_text))
+            ga_thought_typed=(uint16_t)strlen(ga_thought_text);
+    }
     const uint8_t count = ga_has_choices();
     if (count && up) {
         do { ga_choice = (uint8_t)((ga_choice + 2) % 3); }
@@ -1126,6 +1305,13 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     if (press) {
         if (ga_typed < text_len) { ga_typed = text_len; return 1; }
         if (!count) {
+            if (ga_trigger_message_mode) {
+                /* No choice/navigation prompt: end text-only conversation.
+                 * Never grant close gifts or run NPC appearance effects. */
+                ga_trigger_message_mode=0u;
+                ga_state=0u;
+                return 0u;
+            }
             /* Closing a terminal speech node is not a dialogue-choice event.
              * Trigger its separately configured NPC actions now. */
             /* Grant before hiding the NPC. No fake selectable answer needed. */
@@ -1139,6 +1325,24 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         }
         if (!ga_choice_visible(ga_node,ga_choice)) { ga_next_node((int16_t)ga_node); return 1; }
         const game_adventure_choice_t *c = &n->choices[ga_choice];
+        if (ga_trigger_message_mode==2u) {
+            /* Follow only the selected Next link. Ignore item checks, gifts,
+             * TAKE, action, reply, NPC progress and once-only flags. */
+            const int16_t next=c->next;
+            if (next>=0 && next<ga_node_count) {
+                ga_next_node(next);
+                if(ga_is_thought((uint16_t)(n-ga_nodes), (uint8_t)(c-n->choices)))
+                    ga_set_thought(c->reply);
+                ga_trigger_message_mode=2u;
+                for (uint8_t i=0;i<3u;++i)
+                    if (ga_choice_visible(ga_node,i)) {ga_choice=i;break;}
+                ga_bracket_restart();
+                return 1u;
+            }
+            ga_trigger_message_mode=0u;
+            ga_state=0u;
+            return 0u;
+        }
         if (ga_exchange_rule(ga_node,ga_choice)) {
             ga_exchange_node=ga_node;
             ga_exchange_choice=ga_choice;
@@ -1183,7 +1387,8 @@ static int ga_dialog_bottom_inset(void)
 
 /* Draw the nine atlas cells as a stretched tiled frame. The LCD canvas is
    assumed to be 480x320; the frame is drawn last, after all world sprites. */
-static void ga_frame(int16_t x, int16_t y, uint16_t width, uint16_t height)
+static void ga_frame_skin(int16_t x,int16_t y,uint16_t width,uint16_t height,
+                          const uint16_t skin_indices[9],const uint8_t skin_flips[9])
 {
     gfx_setcolour(2); gfx_rectf(x, y, width, height);
     if (!ga_skin_pixels || ga_skin_w < ga_tile * 3 || ga_skin_h < ga_tile * 3) return;
@@ -1194,7 +1399,7 @@ static void ga_frame(int16_t x, int16_t y, uint16_t width, uint16_t height)
         for (uint16_t ix = 0; ix < width; ix += ga_tile) {
             const uint8_t pos = (uint8_t)((iy == 0 ? 0 : iy + ga_tile >= height ? 2 : 1) * 3 +
                                           (ix == 0 ? 0 : ix + ga_tile >= width ? 2 : 1));
-            const uint16_t index = ga_skin_indices[pos];
+            const uint16_t index = skin_indices[pos];
             if (index >= cells) continue;
             gfxbob_t tile;
             memset(&tile, 0, sizeof(tile));
@@ -1207,11 +1412,13 @@ static void ga_frame(int16_t x, int16_t y, uint16_t width, uint16_t height)
             tile.atlas_height = ga_tile; tile.width = ga_tile; tile.height = ga_tile;
             tile.drawx = x + ix; tile.drawy = y + iy;
             tile.scale = 100; tile.index = 0;
-            tile.flags = ga_skin_flips[pos];
+            tile.flags = skin_flips[pos];
             gfx_drawbob(&tile);
         }
     }
 }
+static void ga_frame(int16_t x,int16_t y,uint16_t w,uint16_t h)
+{ ga_frame_skin(x,y,w,h,ga_skin_indices,ga_skin_flips); }
 static void ga_text(int x, int y, const char *text)
 {
     if (!text || !text[0]) return;
@@ -1224,6 +1431,24 @@ static void ga_text(int x, int y, const char *text)
     }
     gfx_setcolour(ga_text_colour);
     gfx_drawtext(x,y,text);
+}
+/* Glyphs in the SIDBOX font are native 8x8. gfx_drawtextf scales them
+   independently; only dialogue and simultaneous thoughts use these settings.
+   Inventory menus deliberately keep their existing unscaled typography. */
+static void ga_dialog_text(int x,int y,const char *text,uint8_t sx,uint8_t sy)
+{
+    if(!text || !text[0])return;
+    /* Preserve the exact legacy font path at the default 8x16 setting. */
+    if(sx==1u && sy==2u){ ga_text(x,y,text); return; }
+    if(ga_outline_enabled){
+        gfx_setcolour(ga_outline_colour);
+        gfx_drawtextf(x-1,y,text,sx,sy);
+        gfx_drawtextf(x+1,y,text,sx,sy);
+        gfx_drawtextf(x,y-1,text,sx,sy);
+        gfx_drawtextf(x,y+1,text,sx,sy);
+    }
+    gfx_setcolour(ga_text_colour);
+    gfx_drawtextf(x,y,text,sx,sy);
 }
 /* Brackets are drawn around a fixed-label origin. Selecting an action must
    never move the words themselves (same for the confirmation dialogue). */
@@ -1238,12 +1463,13 @@ static void ga_fixed_action(int x, int y, const char *word, uint8_t selected)
 /* The font is 8x16. This routine is shared by NPC text and answer choices.
    It returns the number of displayed lines and never prints outside the
    caller's vertical budget. Word boundaries are retained where possible. */
-static uint8_t ga_wrapped(const char *text, uint16_t visible, int x, int y,
-                          uint8_t max_columns, uint8_t max_lines)
+static uint8_t ga_wrapped_scaled(const char *text, uint16_t visible, int x, int y,
+                                 uint8_t max_columns, uint8_t max_lines,
+                                 uint8_t sx,uint8_t sy)
 {
     if (!text || !max_lines || !max_columns) return 0;
     char line[GA_COLS + 1]; uint16_t pos = 0; uint8_t lines = 0;
-    const int row_height = ga_outline_enabled ? 20 : 16;
+    const int row_height = 8*(int)sy+(ga_outline_enabled?4:0);
     if (max_columns > GA_COLS) max_columns = GA_COLS;
     while (text[pos] && pos < visible && lines < max_lines) {
         uint8_t n = 0;
@@ -1262,11 +1488,15 @@ static uint8_t ga_wrapped(const char *text, uint16_t visible, int x, int y,
         line[n] = 0;
         if (text[pos] == '\n' && pos < visible) ++pos;
         while (text[pos] == ' ' && pos < visible) ++pos;
-        ga_text(x, y + lines * row_height, line);
+        ga_dialog_text(x, y + lines * row_height, line,sx,sy);
         ++lines;
     }
     return lines;
 }
+
+static uint8_t ga_wrapped(const char *text,uint16_t visible,int x,int y,
+                          uint8_t max_columns,uint8_t max_lines)
+{ return ga_wrapped_scaled(text,visible,x,y,max_columns,max_lines,1u,2u); }
 
 /* Count rows for a full answer, up to max_rows. Text may contain explicit
    newlines and long words. The estimate is used for scrolling the answers. */
@@ -1323,9 +1553,35 @@ static int ga_dialogue_required_height(const game_adventure_node_t *node,
     /* The earlier extra eight pixels sat between the text and the choices
        (or between the name and body when no choices existed).  Reclaim that
        space instead of removing the protective border/text inset. */
-    return (choice_height ? 24 : 16) + ga_dialog_inset() +
+    return (choice_height ? row+8 : row) + ga_dialog_inset() +
         ga_dialog_bottom_inset() + (int)body_rows*row +
         (choice_height ? 1+choice_height : 0);
+}
+
+/* Draw the optional simultaneous player thought. No new modal state and
+ * no dependence on an NPC being present. Existing worlds never call this
+ * unless a dialogue answer explicitly enables thoughtBubble. */
+static void ga_draw_thought(void)
+{
+    if(!ga_thought_text || !ga_thought_text[0])return;
+    const int inset=ga_dialog_inset();
+    const int line_h=8*(int)ga_thought_scale_y+(ga_outline_enabled?4:0);
+    int cols=((int)ga_thought_w-2*inset)/(8*(int)ga_thought_scale_x);
+    if(cols<1)cols=1;
+    if(cols>GA_COLS)cols=GA_COLS;
+    const int text_rows=ga_answer_rows(ga_thought_text,(uint8_t)cols,16);
+    const int needed=2*inset+text_rows*line_h;
+    int h=(int)ga_thought_h;
+    if(h<needed)h=needed;
+    if(h>320)h=320;
+    const int y=ga_thought_y+h>320?320-h:ga_thought_y;
+    ga_frame_skin(ga_thought_x,(int16_t)y,ga_thought_w,(uint16_t)h,
+                  ga_thought_indices,ga_thought_flips);
+    int visible=(h-2*inset)/line_h;
+    if(visible<0)visible=0;
+    if(visible>16)visible=16;
+    ga_wrapped_scaled(ga_thought_text,ga_thought_typed,ga_thought_x+inset,y+inset,
+                      (uint8_t)cols,(uint8_t)visible,ga_thought_scale_x,ga_thought_scale_y);
 }
 
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
@@ -1362,7 +1618,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y)
 {
     if (!ga_state) return;
-    if (ga_state == 2 || ga_state == 4 || ga_state == 5) {
+    if (ga_state == 2 || ga_state == 4 || ga_state == 5 || ga_state == 6) {
         const uint16_t visible = ga_visible_count();
         if (ga_inventory_selection >= visible)
             ga_inventory_selection = visible ? (uint8_t)(visible - 1u) : 0u;
@@ -1387,7 +1643,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         const int drop_x=destroy_x-72;
         const int use_x=drop_x-56;
         ga_frame((int16_t)box_x,(int16_t)box_y,(uint16_t)box_w,(uint16_t)box_h);
-        ga_text(selector_x,box_y+inset,ga_state==5u ? "Give an item:" : "Inventory:");
+        ga_text(selector_x,box_y+inset,ga_state==5u ? "Give an item:" :
+            ga_state==6u ? (ga_interaction_failed==2u ? "Inventory full! Drop something." :
+                ga_interaction_failed ? "That item does not work!" : "Use item on object:") : "Inventory:");
         if (ga_inventory_selection < ga_inventory_offset)
             ga_inventory_offset=ga_inventory_selection;
         if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
@@ -1402,7 +1660,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             if (id>=ga_item_count) break;
             char line[36];
             const char *name=ga_items[id].name?ga_items[id].name:"Item";
-            const int name_area_end=(ga_state==5u || ga_can_use(id)||ga_droppable(id)||ga_discardable(id))
+            const int name_area_end=(ga_state==5u || ga_state==6u || ga_can_use(id)||ga_droppable(id)||ga_discardable(id))
                 ? use_x-8 : box_x+box_w-inset;
             const int name_room=(name_area_end-label_x)/8-3; /* reserve x + quantity */
             const uint8_t limit=(uint8_t)(name_room<1?1:name_room>18?18:name_room);
@@ -1417,8 +1675,10 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             if (display==ga_inventory_selection) ga_text(selector_x,y,">");
             ga_draw_item_icon(id,icon_x,y);
             ga_text(label_x,y,line);
-            const uint8_t current=(uint8_t)((ga_state==2u || ga_state==5u) && display==ga_inventory_selection);
-            if (ga_state==5u) {
+            const uint8_t current=(uint8_t)((ga_state==2u || ga_state==5u || ga_state==6u) && display==ga_inventory_selection);
+            if (ga_state==6u) {
+                ga_fixed_action(destroy_x,y,"USE",current);
+            } else if (ga_state==5u) {
                 ga_fixed_action(destroy_x,y,"GIVE",current);
             } else {
                 const uint8_t use=ga_can_use(id);
@@ -1429,7 +1689,7 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             }
         }
         /* Footer is aligned eight pixels in from the INNER skin edge. */
-        const char *footer=ga_state==5u ? "FIRE1: CONFIRM  FIRE2: BACK" : "FIRE2: CLOSE";
+        const char *footer=(ga_state==5u || ga_state==6u) ? "FIRE1: USE  FIRE2: BACK" : "FIRE2: CLOSE";
         ga_text(box_x+box_w-inset-(int)strlen(footer)*8,box_y+box_h-inset-8,footer);
         if (ga_state == 4) {
             /* The confirmation box has the same eight pixels of CLEAR inner
@@ -1470,37 +1730,49 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
        choices. If growth reaches the LCD bottom, move the frame up rather
        than cutting off the choices. No heap allocations or text clipping. */
     const int bx=ga_dialog_x, bw=ga_dialog_w;
-    const int row=ga_outline_enabled ? 20 : 16;
+    const int row=8*(int)ga_dialog_scale_y+(ga_outline_enabled?4:0);
     const int pad=ga_dialog_inset();
     const int inner_width=bw-2*pad;
-    const uint8_t body_columns=(uint8_t)((inner_width/8)>50?50:inner_width/8);
+    const uint8_t body_columns=(uint8_t)((inner_width/(8*(int)ga_dialog_scale_x))>50?50:inner_width/(8*(int)ga_dialog_scale_x));
     /* Right gutter is reserved for MORE arrows only; item ownership stays hidden. */
-    const uint8_t answer_columns=(uint8_t)(((inner_width-34)/8)>GA_COLS?GA_COLS:(inner_width-34)/8);
-    const int needed=ga_dialogue_required_height(node,body_columns,answer_columns,row);
+    const int answer_width=inner_width-34*(int)ga_dialog_scale_x;
+    const uint8_t answer_columns=(uint8_t)(answer_width>0
+        ? ((answer_width/(8*(int)ga_dialog_scale_x))>GA_COLS
+            ? GA_COLS:answer_width/(8*(int)ga_dialog_scale_x)):1);
+    /* Narrow boxes at large X scale still reserve one glyph for text. */
+    const uint8_t safe_body_columns=body_columns?body_columns:1u;
+    const uint8_t safe_answer_columns=answer_columns?answer_columns:1u;
+    const int needed=ga_dialogue_required_height(node,safe_body_columns,safe_answer_columns,row);
     /* The configured height was previously carrying an extra 8px of
        bottom slack.  Keep enough room for the actual text/choices. */
     const int preferred_h=(int)ga_dialog_h-16;
     const int bh=needed>preferred_h? (needed>320?320:needed) : preferred_h;
     const int by=ga_dialog_y+bh>320?320-bh:ga_dialog_y;
     const int bottom=by+bh-ga_dialog_bottom_inset();
-    const int choice_height=ga_two_choice_height(node,answer_columns,row);
-    const int text_y=by+pad+(choice_height ? 24 : 16);
-    const uint8_t desired_body=ga_answer_rows(node->text,body_columns,64);
+    const int choice_height=ga_two_choice_height(node,safe_answer_columns,row);
+    const int text_y=by+pad+(choice_height ? row+8 : row);
+    const uint8_t desired_body=ga_answer_rows(node->text,safe_body_columns,64);
     int body_budget=bottom-text_y-(choice_height?1+choice_height:0);
     int body_rows=body_budget>0?body_budget/row:0;
     if (body_rows>desired_body) body_rows=desired_body;
     if (body_rows<0) body_rows=0;
 
+    /* Thought is rendered with the next message, using independent frame cells
+     * and screen geometry. Draw after dialogue so it stays readable. */
+    if(!ga_thought_on_top)ga_draw_thought();
     ga_frame((int16_t)bx,(int16_t)by,(uint16_t)bw,(uint16_t)bh);
-    ga_text(bx+pad,by+pad,node->speaker ? node->speaker : "");
-    ga_wrapped(node->text,ga_typed,bx+pad,text_y,body_columns,(uint8_t)body_rows);
-    if (!choice_height) return;
+    ga_dialog_text(bx+pad,by+pad,node->speaker ? node->speaker : "",ga_dialog_scale_x,ga_dialog_scale_y);
+    ga_wrapped_scaled(node->text,ga_typed,bx+pad,text_y,safe_body_columns,(uint8_t)body_rows,ga_dialog_scale_x,ga_dialog_scale_y);
+    if (!choice_height) {
+        if(ga_thought_on_top)ga_draw_thought();
+        return;
+    }
     const int answers_y=text_y+body_rows*row+1;
 
     uint8_t indexes[3], count=0;
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) indexes[count++]=i;
-    if (!count) return;
+    if (!count) { if(ga_thought_on_top)ga_draw_thought(); return; }
     uint8_t selected=0;
     for (uint8_t i=0;i<count;++i) if (indexes[i]==ga_choice) selected=i;
     const uint8_t first=(count>2 && selected>1) ? (uint8_t)(selected-1) : 0u;
@@ -1509,18 +1781,19 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     for (uint8_t i=0;i<shown;++i) {
         const uint8_t choice_index=indexes[first+i];
         const game_adventure_choice_t *c=&node->choices[choice_index];
-        const int rows=ga_answer_rows(c->label,answer_columns,32);
+        const int rows=ga_answer_rows(c->label,safe_answer_columns,32);
         const int room=(bottom-cy)/row;
         if (room<1) break;
         const uint8_t draw_rows=(uint8_t)(rows<room?rows:room);
-        ga_text(bx+pad,cy,choice_index==ga_choice?">":" ");
-        ga_wrapped(c->label,(uint16_t)strlen(c->label),bx+pad+14,cy,
-                   answer_columns,draw_rows);
+        ga_dialog_text(bx+pad,cy,choice_index==ga_choice?">":" ",ga_dialog_scale_x,ga_dialog_scale_y);
+        ga_wrapped_scaled(c->label,(uint16_t)strlen(c->label),bx+pad+14*(int)ga_dialog_scale_x,cy,
+                          safe_answer_columns,draw_rows,ga_dialog_scale_x,ga_dialog_scale_y);
         /* The arrow gutter stays outside the wrapped answer's text area. */
-        if (i==0 && first>0) ga_text(bx+bw-pad-8,cy,"^");
+        if (i==0 && first>0) ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy,"^",ga_dialog_scale_x,ga_dialog_scale_y);
         if (i+1==shown && first+shown<count)
-            ga_text(bx+bw-pad-8,cy+(draw_rows-1)*row,"v");
+            ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy+(draw_rows-1)*row,"v",ga_dialog_scale_x,ga_dialog_scale_y);
         cy+=(int)draw_rows*row+4;
     }
 
+    if(ga_thought_on_top)ga_draw_thought();
 }

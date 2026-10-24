@@ -5,6 +5,8 @@
 #include <QVector>
 #include <QColor>
 class QWidget;
+class QComboBox;
+class QJsonArray;
 struct GameAdventureAsset {
     QString id, name, path, symbol;
     int atlasFrames = 1;
@@ -13,6 +15,14 @@ struct GameAdventureAsset {
     int pickupKind = 0;
     bool flipX = false, flipY = false;
 };
+/* Reuse the Adventure Editor's folder-aware searchable dialogue picker in
+ * Game Object Properties (and other editor-only UI). Nodes and folders must
+ * outlive the returned combo, just like the existing Adventure Editor users.
+ * Its itemData remains the original numeric dialogue ID. */
+QComboBox *createGameDialogueTreeCombo(QWidget *parent,
+                                       const QJsonArray *nodes,
+                                       const QJsonArray *folders);
+
 /* Returns true only after pressing OK. In/out payload belongs to .sbgm. */
 bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &sprites,

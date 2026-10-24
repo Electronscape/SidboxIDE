@@ -224,7 +224,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
     if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1,-1}}},\n";
-    QStringList storyFlags, linkedActions, npcChoiceActionRows, closeGiftRows;
+    QStringList storyFlags, linkedActions, npcChoiceActionRows, closeGiftRows, thoughtChoiceFlags;
     int nodeIndex = 0;
     for (const QJsonValue &v : nodes) {
         const QJsonObject o = v.toObject();
@@ -256,6 +256,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                     return false;
                 linkedActions.append(QString::fromUtf8(linkedCase));
             }
+            thoughtChoiceFlags << (choice.value("thoughtBubble").toBool(false) ? QStringLiteral("1u") : QStringLiteral("0u"));
             nodeOut << "        {" << quoted(choice.value("text").toString().left(180)) << ","
                     << quoted(choice.value("reply").toString().left(150)) << ","
                     << clampInt(choice,"next",-1,nodes.size()-1,-1) << ","
@@ -548,6 +549,18 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         skinCells << QString::number(std::clamp(i<indices.size()?indices[i].toInt(i):i,0,65535));
         skinFlips << QString::number(i<flipValues.size() ? (flipValues[i].toInt() & 12) : 0);
     }
+    fields.insert(QStringLiteral("THOUGHT_CHOICE_FLAGS"),
+                  thoughtChoiceFlags.isEmpty()?QStringLiteral("0u"):thoughtChoiceFlags.join(QLatin1Char(',')));
+    const QJsonArray thoughtIndices=payload.value("thoughtSkinIndices").toArray();
+    const QJsonArray thoughtFlips=payload.value("thoughtSkinFlips").toArray();
+    QStringList thoughtCells, thoughtFlipFlags;
+    for(int i=0;i<9;++i){
+        thoughtCells << QString::number(std::clamp(i<thoughtIndices.size()?thoughtIndices[i].toInt(i):
+            (i<indices.size()?indices[i].toInt(i):i),0,65535));
+        thoughtFlipFlags << QString::number(i<thoughtFlips.size()?thoughtFlips[i].toInt()&12:0);
+    }
+    fields.insert(QStringLiteral("THOUGHT_SKIN_CELLS"),thoughtCells.join(QLatin1Char(',')));
+    fields.insert(QStringLiteral("THOUGHT_SKIN_FLIPS"),thoughtFlipFlags.join(QLatin1Char(',')));
     fields.insert(QStringLiteral("SKIN_CELLS"),skinCells.join(QLatin1Char(',')));
     fields.insert(QStringLiteral("SKIN_FLIPS"),skinFlips.join(QLatin1Char(',')));
     // Every world must configure the ONE shared adventure renderer after its
@@ -555,6 +568,10 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     // the appearance and dialogue position of whichever .sbgm updated last.
     // These are design DATA; gameadventure.rulec owns all generated C calls.
     const struct { const char *field; const char *json; int lo, hi, fallback; } appearance[] = {
+        {"THOUGHT_X", "thoughtX", 0, 479, 20},
+        {"THOUGHT_Y", "thoughtY", 0, 319, 12},
+        {"THOUGHT_WIDTH", "thoughtWidth", 96, 480, 240},
+        {"THOUGHT_HEIGHT", "thoughtHeight", 40, 320, 64},
         {"SKIN_TILE_SIZE", "tileSize", 4, 32, 8},
         {"FRAMES_PER_CHAR", "framesPerChar", 1, 30, 2},
         {"TEXT_COLOUR_INDEX", "textColourIndex", 0, 255, 15},
@@ -564,7 +581,12 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         {"DIALOG_Y", "dialogY", 0, 319, 148},
         {"DIALOG_WIDTH", "dialogWidth", 128, 480, 440},
         {"DIALOG_HEIGHT", "dialogHeight", 96, 320, 96},
-        {"DIALOG_PADDING", "dialogPadding", 0, 8, 8}
+        {"DIALOG_PADDING", "dialogPadding", 0, 8, 8},
+        {"DIALOG_FONT_SCALE_X", "dialogFontScaleX", 1, 8, 1},
+        {"DIALOG_FONT_SCALE_Y", "dialogFontScaleY", 1, 8, 2},
+        {"THOUGHT_FONT_SCALE_X", "thoughtFontScaleX", 1, 8, 1},
+        {"THOUGHT_FONT_SCALE_Y", "thoughtFontScaleY", 1, 8, 2},
+        {"THOUGHT_ABOVE", "thoughtAboveDialog", 0, 1, 1}
     };
     for (const auto &value : appearance) {
         const int number = QByteArray(value.json) == "textOutline"
@@ -666,7 +688,10 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("CLOSE_GIFT_ROWS"),QStringLiteral("CLOSE_GIFT_COUNT"),
         QStringLiteral("NPC_VISIBILITY_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
-        QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("SKIN_CELLS"),
+        QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("THOUGHT_CHOICE_FLAGS"),
+        QStringLiteral("THOUGHT_SKIN_CELLS"),QStringLiteral("THOUGHT_SKIN_FLIPS"),
+        QStringLiteral("THOUGHT_X"),QStringLiteral("THOUGHT_Y"),
+        QStringLiteral("THOUGHT_WIDTH"),QStringLiteral("THOUGHT_HEIGHT"),QStringLiteral("SKIN_CELLS"),
         QStringLiteral("SKIN_FLIPS"),QStringLiteral("LINKED_ACTION_CASES"),
         QStringLiteral("SKIN_PATH"),QStringLiteral("SKIN_TILE_SIZE"),
         QStringLiteral("FRAMES_PER_CHAR"),QStringLiteral("TEXT_COLOUR_INDEX"),

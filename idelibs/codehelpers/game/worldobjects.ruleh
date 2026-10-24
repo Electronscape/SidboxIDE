@@ -76,6 +76,7 @@ typedef struct {
     uint8_t spring_triggered;      /* Set on landing/launch; cleared in update. */
     uint8_t trigger_press;         /* 1 = FIRE2, 0 = enter trigger hitbox. */
     uint8_t trigger_one_shot;      /* One-use triggers remove themselves. */
+    uint8_t trigger_requires_item; /* Stage 5.91: handled by Adventure USE, not touch/FIRE2. */
     uint8_t trigger_touching;      /* Contact edge latch. */
     uint8_t trigger_pressed;       /* FIRE2 edge latch. */
     uint8_t trigger_fired;         /* Set for current trigger() check. */

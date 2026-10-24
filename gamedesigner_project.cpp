@@ -253,6 +253,7 @@ bool SidboxGameDesigner::loadDesign()
         r.pickupTrackingConfigured = object.value(QStringLiteral("pickupTrackingConfigured")).toBool(false);
         r.pickupShowInventory = object.value(QStringLiteral("pickupShowInventory")).toBool(false);
         r.pickupShowHud = object.value(QStringLiteral("pickupShowHud")).toBool(false);
+        r.pickupStatTarget = object.value(QStringLiteral("pickupStatTarget")).toString();
         r.pickupPersistent = object.value(QStringLiteral("pickupPersistent")).toBool(false);
         r.hitWidth = qBound(1, object.value(QStringLiteral("hitWidth")).toInt(16), 1024);
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
@@ -323,6 +324,28 @@ bool SidboxGameDesigner::loadDesign()
         r.gotoStartId = object.value(QStringLiteral("gotoStartId")).toString(QStringLiteral("default"));
         r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
         r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
+        r.interactItemName = object.value(QStringLiteral("interactItemName")).toString();
+        r.interactRadius = qBound(0, object.value(QStringLiteral("interactRadius")).toInt(32), 128);
+        r.interactConsume = object.value(QStringLiteral("interactConsume")).toBool(false);
+        r.sfxInteractWrong = object.value(QStringLiteral("sfxInteractWrong")).toString();
+        r.sfxInteractSuccess = object.value(QStringLiteral("sfxInteractSuccess")).toString();
+        r.sfxInteractCancel = object.value(QStringLiteral("sfxInteractCancel")).toString();
+        r.interactDialogueNode = object.value(QStringLiteral("interactDialogueNode")).toInt(-1);
+        r.interactDialogueMode = object.value(QStringLiteral("interactDialogueMode")).toString(QStringLiteral("conversation"));
+        if (r.interactDialogueMode != QStringLiteral("single") &&
+            r.interactDialogueMode != QStringLiteral("sequence"))
+            r.interactDialogueMode = QStringLiteral("conversation");
+        r.interactWrongDialogueNode = object.value(QStringLiteral("interactWrongDialogueNode")).toInt(-1);
+        r.interactWrongDialogueMode = object.value(QStringLiteral("interactWrongDialogueMode")).toString(QStringLiteral("single"));
+        if (r.interactWrongDialogueMode != QStringLiteral("sequence") &&
+            r.interactWrongDialogueMode != QStringLiteral("conversation"))
+            r.interactWrongDialogueMode = QStringLiteral("single");
+        r.interactRewardItem = object.value(QStringLiteral("interactRewardItem")).toString();
+        r.interactRewardCount = qBound(1, object.value(QStringLiteral("interactRewardCount")).toInt(1), 64);
+        r.interactStatTarget = object.value(QStringLiteral("interactStatTarget")).toString(QStringLiteral("none"));
+        r.interactStatDelta = object.value(QStringLiteral("interactStatDelta")).toInt(0);
+        r.activeStateFrame = object.value(QStringLiteral("activeStateFrame")).toInt(-1);
+        r.inactiveStateFrame = object.value(QStringLiteral("inactiveStateFrame")).toInt(-1);
         r.triggerMusicId = object.value(QStringLiteral("triggerMusicId")).toString();
         r.triggerMusicAction = object.value(QStringLiteral("triggerMusicAction")).toString(QStringLiteral("none"));
         if (!QStringList{QStringLiteral("play"), QStringLiteral("stop")}.contains(r.triggerMusicAction))
@@ -639,6 +662,7 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("pickupTrackingConfigured"), r.pickupTrackingConfigured);
             object.insert(QStringLiteral("pickupShowInventory"), r.pickupShowInventory);
             object.insert(QStringLiteral("pickupShowHud"), r.pickupShowHud);
+            object.insert(QStringLiteral("pickupStatTarget"), r.pickupStatTarget);
             object.insert(QStringLiteral("pickupPersistent"), r.pickupPersistent);
             object.insert(QStringLiteral("hitWidth"), r.hitWidth);
             object.insert(QStringLiteral("hitHeight"), r.hitHeight);
@@ -693,6 +717,22 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("gotoStartId"), r.gotoStartId);
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
             object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);
+            object.insert(QStringLiteral("interactItemName"), r.interactItemName);
+            object.insert(QStringLiteral("interactRadius"), r.interactRadius);
+            object.insert(QStringLiteral("interactConsume"), r.interactConsume);
+            object.insert(QStringLiteral("sfxInteractWrong"), r.sfxInteractWrong);
+            object.insert(QStringLiteral("sfxInteractSuccess"), r.sfxInteractSuccess);
+            object.insert(QStringLiteral("sfxInteractCancel"), r.sfxInteractCancel);
+            object.insert(QStringLiteral("interactDialogueNode"), r.interactDialogueNode);
+            object.insert(QStringLiteral("interactDialogueMode"), r.interactDialogueMode);
+            object.insert(QStringLiteral("interactWrongDialogueNode"), r.interactWrongDialogueNode);
+            object.insert(QStringLiteral("interactWrongDialogueMode"), r.interactWrongDialogueMode);
+            object.insert(QStringLiteral("interactRewardItem"), r.interactRewardItem);
+            object.insert(QStringLiteral("interactRewardCount"), r.interactRewardCount);
+            object.insert(QStringLiteral("interactStatTarget"), r.interactStatTarget);
+            object.insert(QStringLiteral("interactStatDelta"), r.interactStatDelta);
+            object.insert(QStringLiteral("activeStateFrame"), r.activeStateFrame);
+            object.insert(QStringLiteral("inactiveStateFrame"), r.inactiveStateFrame);
             object.insert(QStringLiteral("triggerMusicId"), r.triggerMusicId);
             object.insert(QStringLiteral("triggerMusicAction"), r.triggerMusicAction);
             object.insert(QStringLiteral("sfxPickup"), r.sfxPickup);

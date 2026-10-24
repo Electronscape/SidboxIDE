@@ -77,6 +77,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->spring_triggered = 0;
     object->trigger_press = 0;
     object->trigger_one_shot = 0;
+    object->trigger_requires_item = 0;
     object->trigger_touching = 0;
     object->trigger_pressed = 0;
     object->trigger_fired = 0;
@@ -730,7 +731,7 @@ uint8_t game_world_objects_fire2_action(const game_world_object_t *objects,
     if (!objects || !w || !h) return 0;
     for (uint16_t i = 0; i < count; ++i) {
         const game_world_object_t *o = &objects[i];
-        if (!o->active || o->type != GAME_OBJECT_TRIGGER || !o->trigger_press ||
+        if (!o->active || o->type != GAME_OBJECT_TRIGGER || o->trigger_requires_item || !o->trigger_press ||
             !o->width || !o->height) continue;
         if ((int64_t)x < (int64_t)o->x + o->width &&
             (int64_t)x + w > o->x &&
@@ -749,7 +750,7 @@ uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count
     for (uint16_t i = 0; i < count; ++i) {
         game_world_object_t *o = &objects[i];
         o->trigger_fired = 0;
-        if (o->type != GAME_OBJECT_TRIGGER) continue;
+        if (o->type != GAME_OBJECT_TRIGGER || o->trigger_requires_item) continue;
         if (!o->active) {
             o->trigger_touching = 0;
             o->trigger_pressed = !!pressed;

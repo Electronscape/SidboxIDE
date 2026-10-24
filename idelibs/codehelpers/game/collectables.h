@@ -28,6 +28,8 @@ typedef struct {
     uint8_t tracking_configured;    /* 0 = preserve legacy callback rules. */
     uint8_t show_in_inventory;      /* Add value to matching inventory item(s). */
     uint8_t show_in_hud;            /* Count individual pickups for shared HUD. */
+    uint8_t stat_target;            /* 0 none, 1 health, 2 lives, 3 score, 4 named stat. */
+    const char *stat_name;          /* Only used with stat_target == 4. */
     uint8_t persistent;             /* Stay collected across world reloads. */
     uint8_t active;                 /* 0 = already collected / hidden. */
     uint8_t can_collect;            /* 0 = currently dropping, not yet landed. */

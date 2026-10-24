@@ -31,6 +31,8 @@ void test_rect(int x,int y,int w,int h);
 void test_bob(gfxbob_t *s);
 #define gfx_setcolour(c) test_colour(c)
 #define gfx_drawtext(x,y,s) test_text(x,y,s)
+/* Native 8x8 scaled glyph drawing, share the text spy in host tests. */
+#define gfx_drawtextf(x,y,s,sx,sy) test_text(x,y,s)
 #define gfx_rectf(x,y,w,h) test_rect(x,y,w,h)
 #define gfx_drawbob(b) test_bob(b)
 #endif

@@ -6416,7 +6416,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *pickupShowHud = new QCheckBox(tr("Show in HUD (track total)"), &dialog);
     auto *pickupPersistent = new QCheckBox(tr("Persistent collectible (stay collected across worlds)"), &dialog);
     pickupPersistent->setChecked(old.pickupPersistent);
-    pickupPersistent->setToolTip(tr("Once collected, this placed object stays gone when you return to its world. Its inventory quantity can travel with the player when this pickup type is shared between worlds."));
+    pickupPersistent->setToolTip(tr("Once collected, this PLACED OBJECT stays gone when you return to its world. This setting is independent of inventory persistence: Show in Inventory items travel between worlds whether checked or not."));
     pickupShowInventory->setChecked(old.pickupShowInventory);
     pickupShowHud->setChecked(old.pickupShowHud);
     // Opening/saving an existing object must not silently replace its custom
@@ -6426,11 +6426,49 @@ void SidboxGameDesigner::configureGameObject(int index)
             [&](bool) { pickupOptionsTouched = true; });
     connect(pickupShowHud, &QCheckBox::toggled, &dialog,
             [&](bool) { pickupOptionsTouched = true; });
-    pickupShowInventory->setToolTip(tr("Add Pickup Value to this type in the Adventure Inventory. CoderGirl creates a matching Inventory Item automatically if missing (icon can be chosen later)."));
+    pickupShowInventory->setToolTip(tr("Store this pickup in the shared backpack instead of applying a direct player-stat effect. CoderGirl creates the Adventure Inventory definition and offers to add it to Create / Edit Player → Inventory."));
     pickupShowHud->setToolTip(tr("Count collected objects of this type for the shared HUD. One pickup = one count; Pickup Value is still available for your own game rules."));
     collectCard.form->addRow(QString(), pickupShowInventory);
     collectCard.form->addRow(QString(), pickupShowHud);
     collectCard.form->addRow(QString(), pickupPersistent);
+    auto *pickupStat = new GameComboBox(&dialog);
+    pickupStat->addItem(tr("None (callback only)"), QStringLiteral("none"));
+    pickupStat->addItem(tr("Player Health"), QStringLiteral("health"));
+    pickupStat->addItem(tr("Player Lives"), QStringLiteral("lives"));
+    pickupStat->addItem(tr("Player Score"), QStringLiteral("score"));
+    const QDir statRoot(QFileInfo(m_filePath).absolutePath());
+    QJsonObject statProfile;
+    if (GamePlayerProfile::read(statRoot, &statProfile)) {
+        for (const QJsonValue &entry : statProfile.value(QStringLiteral("customStats")).toArray()) {
+            const QString statName = entry.toObject().value(QStringLiteral("name")).toString();
+            if (!statName.isEmpty())
+                pickupStat->addItem(tr("Custom stat: %1").arg(statName), QStringLiteral("stat:") + statName);
+        }
+    }
+    const QString initialPickupStat = old.pickupStatTarget.isEmpty()
+        ? (old.pickupKind == 2 ? QStringLiteral("health") : QStringLiteral("none"))
+        : old.pickupStatTarget;
+    if (pickupStat->findData(initialPickupStat) < 0)
+        pickupStat->addItem(initialPickupStat, initialPickupStat);
+    pickupStat->setCurrentIndex(qMax(0, pickupStat->findData(initialPickupStat)));
+    pickupStat->setToolTip(tr("When Show in Inventory is OFF, add Pickup Value directly to this player stat. "
+        "Health pickups default to Player Health. When Show in Inventory is ON, the pickup goes "
+        "to the backpack instead; this direct effect is disabled."));
+    collectCard.form->addRow(tr("Apply pickup value to"), pickupStat);
+    const auto updatePickupStat = [pickupStat, pickupShowInventory]() {
+        pickupStat->setEnabled(!pickupShowInventory->isChecked());
+    };
+    connect(pickupShowInventory, &QCheckBox::toggled, &dialog, updatePickupStat);
+    updatePickupStat();
+    bool pickupStatTouched = false;
+    connect(pickupStat, qOverload<int>(&QComboBox::activated), &dialog,
+            [&](int) { pickupStatTouched = true; pickupOptionsTouched = true; });
+    connect(pickup, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [&](int) {
+                if (pickupStatTouched || !old.pickupStatTarget.isEmpty()) return;
+                pickupStat->setCurrentIndex(qMax(0, pickupStat->findData(
+                    pickup->currentData().toInt() == 2 ? QStringLiteral("health") : QStringLiteral("none"))));
+            });
     auto *pickupActions=new QWidget(&dialog);auto *pickupActionsRow=new QHBoxLayout(pickupActions);
     pickupActionsRow->setContentsMargins(0,0,0,0);
     pickupActionsRow->addWidget(addPickupType);pickupActionsRow->addWidget(managePickupTypes);
@@ -6484,15 +6522,237 @@ void SidboxGameDesigner::configureGameObject(int index)
     targetAction->addItem(tr("Toggle target (ON / OFF)"), QStringLiteral("toggle"));
     targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
     form->addRow(tr("Linked action"), targetAction);
+    auto *targetVisibilityHint = new QLabel(&dialog);
+    targetVisibilityHint->setWordWrap(true);
+    form->addRow(QString(),targetVisibilityHint);
+    const auto refreshTargetVisibilityHint=[=]() {
+        targetVisibilityHint->clear();
+        if (targetAction->currentData().toString()!=QStringLiteral("disable")) return;
+        const QString targetId=targetObject->currentData().toString();
+        for (const Resource &candidate:m_resources) {
+            if (candidate.id!=targetId) continue;
+            targetVisibilityHint->setText(candidate.inactiveStateFrame>=0
+                ? tr("Disabling '%1' removes collision and displays its INACTIVE frame %2.")
+                    .arg(candidate.name).arg(candidate.inactiveStateFrame)
+                : tr("Disabling '%1' will HIDE it: its INACTIVE frame is -1. "
+                     "To keep an open/unlocked picture visible, set an INACTIVE frame "
+                     "in that object's own Properties first.").arg(candidate.name));
+            break;
+        }
+    };
+    connect(targetObject,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshTargetVisibilityHint](int){refreshTargetVisibilityHint();});
+    connect(targetAction,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshTargetVisibilityHint](int){refreshTargetVisibilityHint();});
+    refreshTargetVisibilityHint();
+    form = generalCard.form; // State artwork belongs on the target (e.g. Door), not only on the Trigger.
+    auto *activeStateFrame = spin(-1, 255, old.activeStateFrame);
+    auto *inactiveStateFrame = spin(-1, 255, old.inactiveStateFrame);
+    activeStateFrame->setToolTip(tr("Sprite atlas frame shown while the object is ACTIVE (solid). -1 uses its usual frame."));
+    inactiveStateFrame->setToolTip(tr("Sprite atlas frame shown while the object is INACTIVE (no collision). -1 hides it. Use this for an opened door or chest."));
+    form->addRow(tr("ACTIVE state frame (-1 = default)"), activeStateFrame);
+    form->addRow(tr("INACTIVE state frame (-1 = hidden)"), inactiveStateFrame);
     form = triggerCard.form;
     auto *triggerPress = new QCheckBox(tr("Require FIRE2 while touching (otherwise activate on touch)"), &dialog);
     triggerPress->setChecked(old.triggerPress);
-    triggerPress->setToolTip(tr("FIRE2 is the second fire button; unlike FIRE it does not jump. "
-                                 "Press once per activation while overlapping the switch."));
+    triggerPress->setToolTip(tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
+        "otherwise the trigger activates on touch."));
     form->addRow(QString(), triggerPress);
     auto *triggerOneShot = new QCheckBox(tr("Remove switch after activation (one-shot)"), &dialog);
     triggerOneShot->setChecked(old.triggerOneShot);
     form->addRow(QString(), triggerOneShot);
+    auto *interactItem = new GameComboBox(&dialog);
+    interactItem->addItem(tr("No required item (ordinary trigger)"), QString());
+    for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
+        const QString name = entry.toObject().value(QStringLiteral("name")).toString().trimmed();
+        if (!name.isEmpty() && interactItem->findData(name) < 0)
+            interactItem->addItem(name, name);
+    }
+    if (!old.interactItemName.isEmpty() && interactItem->findData(old.interactItemName) < 0)
+        interactItem->addItem(tr("Missing inventory item: %1").arg(old.interactItemName), old.interactItemName);
+    interactItem->setCurrentIndex(qMax(0, interactItem->findData(old.interactItemName)));
+    interactItem->setToolTip(tr("Require the player to USE this inventory item while near the trigger. "
+        "Item identity follows the Adventure Inventory name across worlds. "
+        "Other inventory items won't activate this trigger."));
+    form->addRow(tr("Interact with inventory item"), interactItem);
+    auto *interactRadius = spin(0, 128, old.interactRadius);
+    interactRadius->setToolTip(tr("Extra distance in pixels outside this object's hitbox. "
+        "Set 0 for touching only; a solid door can be operated from just outside its edges."));
+    form->addRow(tr("Interaction reach (px)"), interactRadius);
+    auto *interactConsume = new QCheckBox(tr("Consume one item on successful USE"), &dialog);
+    interactConsume->setChecked(old.interactConsume);
+    form->addRow(QString(), interactConsume);
+    // Stage 5.95: use the same searchable folder tree as the Adventure
+    // Editor. Keep the numeric node IDs exactly as before for export/saves.
+    // These arrays live through dialog.exec(), as required by the picker.
+    const QJsonArray interactionNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
+    const QJsonArray interactionFolders=m_adventure.value(QStringLiteral("dialogueFolders")).toArray();
+    auto *interactDialogue = createGameDialogueTreeCombo(
+        &dialog, &interactionNodes, &interactionFolders);
+    interactDialogue->addItem(tr("None (no dialogue)"), -1);
+    for (int i=0;i<interactionNodes.size();++i) {
+        const QJsonObject node=interactionNodes.at(i).toObject();
+        const QString speaker=node.value(QStringLiteral("speaker")).toString().left(24);
+        const QString text=node.value(QStringLiteral("text")).toString().left(35);
+        interactDialogue->addItem(tr("%1: %2 — %3").arg(i).arg(speaker,text),i);
+    }
+    if (old.interactDialogueNode>=0 && interactDialogue->findData(old.interactDialogueNode)<0)
+        interactDialogue->addItem(tr("Missing dialogue node %1").arg(old.interactDialogueNode),old.interactDialogueNode);
+    interactDialogue->setCurrentIndex(qMax(0,interactDialogue->findData(old.interactDialogueNode)));
+    interactDialogue->setToolTip(tr("Choose an existing Adventure dialogue using its searchable folder tree. "
+        "The selected dialogue runs after a successful USE, including its choices and quest actions."));
+    form->addRow(tr("On success: dialogue"),interactDialogue);
+    auto *interactDialogueMode = new GameComboBox(&dialog);
+    interactDialogueMode->addItem(tr("Single message (one node, no actions)"),
+                                  QStringLiteral("single"));
+    interactDialogueMode->addItem(tr("Message sequence (continue prompts, no actions)"),
+                                  QStringLiteral("sequence"));
+    interactDialogueMode->addItem(tr("Full conversation (choices and dialogue actions)"),
+                                  QStringLiteral("conversation"));
+    interactDialogueMode->setCurrentIndex(qMax(0,interactDialogueMode->findData(old.interactDialogueMode)));
+    interactDialogueMode->setToolTip(tr("Single message shows one node only. Message sequence uses the "
+        "saved choice labels (e.g. Continue... / Thank god!) as navigation buttons and follows "
+        "their Next node destinations, but NEVER runs gifts, requirements or dialogue actions. "
+        "Full conversation executes configured choices and actions. Trigger success always "
+        "commits before the dialogue opens."));
+    form->addRow(tr("Dialogue behaviour"),interactDialogueMode);
+    auto *interactDialogueHint = new QLabel(&dialog);
+    interactDialogueHint->setWordWrap(true);
+    form->addRow(QString(),interactDialogueHint);
+    const auto refreshDialogueHint = [=]() {
+        interactDialogueMode->setEnabled(type->currentData().toString()==QStringLiteral("trigger") &&
+            !interactItem->currentData().toString().isEmpty() &&
+            interactDialogue->currentData().toInt()>=0);
+        const int id=interactDialogue->currentData().toInt();
+        if(id<0 || id>=interactionNodes.size()) {
+            interactDialogueHint->setText(tr("No dialogue on success."));return;
+        }
+        const QJsonObject node=interactionNodes.at(id).toObject();
+        int choices=0;
+        for(const QJsonValue &v:node.value(QStringLiteral("choices")).toArray())
+            if(!v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty()) ++choices;
+        const QString mode=interactDialogueMode->currentData().toString();
+        if(mode==QStringLiteral("single")) {
+            interactDialogueHint->setText(tr("Shows just this node's text; its %1 choice(s) and all actions are ignored.").arg(choices));
+        } else if(mode==QStringLiteral("sequence")) {
+            interactDialogueHint->setText(tr("Shows this node and follows the Next destinations of its %1 choice(s) "
+                "using their labels as prompts. No inventory, NPC, quest or dialogue actions run. "
+                "A choice with Next = None closes the message sequence.").arg(choices));
+        } else {
+            interactDialogueHint->setText(choices
+                ? tr("This node starts a %1-choice conversation. Trigger actions run BEFORE "
+                     "the player answers. To make answers control the outcome, use an Adventure NPC.").arg(choices)
+                : tr("Full dialogue: continues into any configured next nodes or dialogue effects."));
+        }
+    };
+    connect(interactDialogue,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshDialogueHint](int){refreshDialogueHint();});
+    connect(interactDialogueMode,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshDialogueHint](int){refreshDialogueHint();});
+    refreshDialogueHint();
+    // Wrong item: same searchable tree picker and modes, but independent
+    // from the success message. Nothing is consumed or activated by a mismatch.
+    auto *interactWrongDialogue = createGameDialogueTreeCombo(
+        &dialog, &interactionNodes, &interactionFolders);
+    interactWrongDialogue->addItem(tr("None (keep USE selector open)"), -1);
+    for (int i=0;i<interactionNodes.size();++i) {
+        const QJsonObject node=interactionNodes.at(i).toObject();
+        interactWrongDialogue->addItem(tr("%1: %2 — %3").arg(i)
+            .arg(node.value(QStringLiteral("speaker")).toString().left(24),
+                 node.value(QStringLiteral("text")).toString().left(35)), i);
+    }
+    if (old.interactWrongDialogueNode>=0 &&
+        interactWrongDialogue->findData(old.interactWrongDialogueNode)<0)
+        interactWrongDialogue->addItem(tr("Missing dialogue node %1")
+            .arg(old.interactWrongDialogueNode), old.interactWrongDialogueNode);
+    interactWrongDialogue->setCurrentIndex(qMax(0,interactWrongDialogue->findData(old.interactWrongDialogueNode)));
+    interactWrongDialogue->setToolTip(tr("Dialogue to show if a different inventory item is used. "
+        "If None, show the normal 'That item does not work' hint in the USE selector."));
+    form->addRow(tr("On wrong item: dialogue"),interactWrongDialogue);
+    auto *interactWrongDialogueMode = new GameComboBox(&dialog);
+    interactWrongDialogueMode->addItem(tr("Single message (one node, no actions)"),QStringLiteral("single"));
+    interactWrongDialogueMode->addItem(tr("Message sequence (continue prompts, no actions)"),QStringLiteral("sequence"));
+    interactWrongDialogueMode->addItem(tr("Full conversation (choices and dialogue actions)"),QStringLiteral("conversation"));
+    interactWrongDialogueMode->setCurrentIndex(qMax(0,interactWrongDialogueMode->findData(old.interactWrongDialogueMode)));
+    interactWrongDialogueMode->setToolTip(tr("Single and sequence modes have no dialogue side effects. "
+        "Full conversation deliberately runs any saved dialogue-choice actions; "
+        "it never activates the Trigger or consumes the attempted item automatically."));
+    form->addRow(tr("Wrong item: dialogue behaviour"),interactWrongDialogueMode);
+    auto *wrongDialogueHint = new QLabel(&dialog);
+    wrongDialogueHint->setWordWrap(true);
+    form->addRow(QString(),wrongDialogueHint);
+    const auto refreshWrongDialogueHint=[=]() {
+        const int id=interactWrongDialogue->currentData().toInt();
+        if(id<0 || id>=interactionNodes.size()) {
+            wrongDialogueHint->setText(tr("No wrong-item dialogue: sound and standard USE hint only."));
+            return;
+        }
+        const QJsonObject node=interactionNodes.at(id).toObject();
+        int choices=0;
+        for(const QJsonValue &v:node.value(QStringLiteral("choices")).toArray())
+            if(!v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty()) ++choices;
+        const QString mode=interactWrongDialogueMode->currentData().toString();
+        wrongDialogueHint->setText(mode==QStringLiteral("single")
+            ? tr("Wrong item: show one message; ignore %1 choice(s) and all actions.").arg(choices)
+            : mode==QStringLiteral("sequence")
+                ? tr("Wrong item: follow navigation prompts and Next nodes without executing any actions.")
+                : tr("Wrong item: run full dialogue choices and their explicit actions. "
+                     "The Trigger itself remains locked and the attempted item is not automatically consumed."));
+    };
+    connect(interactWrongDialogue,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshWrongDialogueHint](int){refreshWrongDialogueHint();});
+    connect(interactWrongDialogueMode,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+            [refreshWrongDialogueHint](int){refreshWrongDialogueHint();});
+    refreshWrongDialogueHint();
+    auto *interactReward = new GameComboBox(&dialog);
+    interactReward->addItem(tr("None (no reward)"),QString());
+    for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
+        const QString name=entry.toObject().value(QStringLiteral("name")).toString().trimmed();
+        if (!name.isEmpty() && interactReward->findData(name)<0) interactReward->addItem(name,name);
+    }
+    if (!old.interactRewardItem.isEmpty() && interactReward->findData(old.interactRewardItem)<0)
+        interactReward->addItem(tr("Missing inventory item: %1").arg(old.interactRewardItem),old.interactRewardItem);
+    interactReward->setCurrentIndex(qMax(0,interactReward->findData(old.interactRewardItem)));
+    interactReward->setToolTip(tr("Reward is only granted after a successful USE. A full inventory prevents the interaction from activating or consuming the required item."));
+    form->addRow(tr("On success: give item"),interactReward);
+    auto *interactRewardCount=spin(1,64,old.interactRewardCount);
+    form->addRow(tr("Reward quantity"),interactRewardCount);
+    auto *interactStat=new GameComboBox(&dialog);
+    interactStat->addItem(tr("None"),QStringLiteral("none"));
+    for (const QString &stat : {QStringLiteral("health"),QStringLiteral("lives"),QStringLiteral("score")})
+        interactStat->addItem(stat,stat);
+    QJsonObject interactionProfile;
+    if (GamePlayerProfile::read(QDir(QFileInfo(m_filePath).absolutePath()),&interactionProfile)) {
+        for (const QJsonValue &entry:interactionProfile.value(QStringLiteral("customStats")).toArray()) {
+            const QString name=entry.toObject().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty() && interactStat->findData(name)<0) interactStat->addItem(name,name);
+        }
+    }
+    if (interactStat->findData(old.interactStatTarget)<0)
+        interactStat->addItem(old.interactStatTarget,old.interactStatTarget);
+    interactStat->setCurrentIndex(qMax(0,interactStat->findData(old.interactStatTarget)));
+    form->addRow(tr("On success: player stat"),interactStat);
+    auto *interactStatDelta=spin(-65535,65535,old.interactStatDelta);
+    form->addRow(tr("Stat change (+ / -)"),interactStatDelta);
+    const auto updateItemInteraction = [=]() {
+        const bool isTrigger = type->currentData().toString() == QStringLiteral("trigger");
+        const bool requiresItem = !interactItem->currentData().toString().isEmpty();
+        const bool itemInteraction = isTrigger && requiresItem;
+        interactRadius->setEnabled(itemInteraction);
+        interactConsume->setEnabled(itemInteraction);
+        // Item-required triggers already use FIRE2 to select an inventory item.
+        // Keep the user's ordinary-trigger preference checked/unchecked so it
+        // returns intact when "No required item" is selected again.
+        triggerPress->setEnabled(isTrigger && !requiresItem);
+        triggerPress->setToolTip(itemInteraction
+            ? tr("Not used for inventory-item interactions: FIRE2 already opens "
+                 "the item selector when the player is nearby. "
+                 "Choose 'No required item' to enable this option again.")
+            : tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
+                 "otherwise the trigger activates on touch."));
+    };
+    connect(interactItem, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [updateItemInteraction](int) { updateItemInteraction(); });
     auto *musicAction = new GameComboBox(&dialog);
     musicAction->addItem(tr("No music action"), QStringLiteral("none"));
     musicAction->addItem(tr("Play selected tune"), QStringLiteral("play"));
@@ -7016,6 +7276,15 @@ void SidboxGameDesigner::configureGameObject(int index)
         box->setCurrentIndex(qMax(0, box->findData(id)));
         return box;
     };
+    auto *sfxInteractWrong = soundPicker(old.sfxInteractWrong);
+    auto *sfxInteractSuccess = soundPicker(old.sfxInteractSuccess);
+    auto *sfxInteractCancel = soundPicker(old.sfxInteractCancel);
+    for (QComboBox *picker : {sfxInteractWrong, sfxInteractSuccess, sfxInteractCancel})
+        picker->setToolTip(tr("Optional sound played for this inventory-item interaction. "
+                               "Uses the selected Sound resource's audio channel and volume."));
+    triggerCard.form->addRow(tr("Wrong inventory item — sound"), sfxInteractWrong);
+    triggerCard.form->addRow(tr("Successful USE — sound"), sfxInteractSuccess);
+    triggerCard.form->addRow(tr("Cancel USE — sound"), sfxInteractCancel);
     auto *sfxPickup = soundPicker(old.sfxPickup);
     auto *sfxRespawn = soundPicker(old.sfxRespawn);
     auto *sfxStart = soundPicker(old.sfxStart);
@@ -7445,8 +7714,11 @@ void SidboxGameDesigner::configureGameObject(int index)
         hiddenCollectable->setEnabled(behaviour == QStringLiteral("collectable"));
         targetObject->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
         targetAction->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
-        triggerPress->setEnabled(isTrigger);
+        // updateItemInteraction() owns triggerPress enabled state so an
+        // inventory requirement cannot be accidentally overridden here.
         triggerOneShot->setEnabled(isTrigger);
+        interactItem->setEnabled(isTrigger);
+        updateItemInteraction();
         musicAction->setEnabled(isTrigger);
         musicTrack->setEnabled(isTrigger && musicAction->currentData().toString() == QStringLiteral("play"));
         hitW->setEnabled(isObject); hitH->setEnabled(isObject);
@@ -7456,6 +7728,20 @@ void SidboxGameDesigner::configureGameObject(int index)
         springTouch->setEnabled(behaviour == QStringLiteral("spring"));
         springSlide->setEnabled(behaviour == QStringLiteral("spring"));
         springJumpBoost->setEnabled(behaviour == QStringLiteral("spring"));
+        const bool soundsForInteraction = isTrigger && !interactItem->currentData().toString().isEmpty();
+        sfxInteractWrong->setEnabled(soundsForInteraction);
+        sfxInteractSuccess->setEnabled(soundsForInteraction);
+        sfxInteractCancel->setEnabled(soundsForInteraction);
+        interactDialogue->setEnabled(soundsForInteraction);
+        interactDialogueMode->setEnabled(soundsForInteraction && interactDialogue->currentData().toInt()>=0);
+        interactWrongDialogue->setEnabled(soundsForInteraction);
+        interactWrongDialogueMode->setEnabled(soundsForInteraction && interactWrongDialogue->currentData().toInt()>=0);
+        interactReward->setEnabled(soundsForInteraction);
+        interactRewardCount->setEnabled(soundsForInteraction && !interactReward->currentData().toString().isEmpty());
+        interactStat->setEnabled(soundsForInteraction);
+        interactStatDelta->setEnabled(soundsForInteraction && interactStat->currentData().toString()!=QStringLiteral("none"));
+        activeStateFrame->setEnabled(isObject && behaviour!=QStringLiteral("collectable"));
+        inactiveStateFrame->setEnabled(isObject && behaviour!=QStringLiteral("collectable"));
         sfxPickup->setEnabled(behaviour == QStringLiteral("collectable"));
         sfxRespawn->setEnabled(behaviour == QStringLiteral("collectable"));
         collectOnce->setEnabled(behaviour == QStringLiteral("collectable"));
@@ -7511,8 +7797,14 @@ void SidboxGameDesigner::configureGameObject(int index)
         audioBreakCard.panel->setVisible(isBreak || isEnemy);
         audioHazardCard.panel->setVisible(isHazard);
         audioOptionsCard.panel->setVisible(isCollect || isLift || isSpring ||
-            isConveyor || isBreak || isHazard || isEnemy);
+            isConveyor || isBreak || isHazard || isEnemy || isTrigger);
     };
+    connect(interactReward, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
+    connect(interactStat, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
+    connect(interactItem, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [enableFields](int) { enableFields(); });
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
     connect(spline, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
@@ -7567,6 +7859,62 @@ void SidboxGameDesigner::configureGameObject(int index)
             tr("Choose another world in this project before saving this door."));
         return false;
     }
+    // Guard against treating a Trigger like an NPC. A Trigger's linked action
+    // commits BEFORE the dialogue starts, so choices cannot veto that action.
+    if (newType == QStringLiteral("trigger") &&
+        !interactItem->currentData().toString().isEmpty()) {
+        const int dialogueId=interactDialogue->currentData().toInt();
+        if (dialogueId>=0 && dialogueId<interactionNodes.size() &&
+            interactDialogueMode->currentData().toString()==QStringLiteral("conversation") &&
+            (dialogueId!=old.interactDialogueNode || old.interactDialogueMode!=QStringLiteral("conversation"))) {
+            int choiceCount=0;
+            for(const QJsonValue &v:interactionNodes.at(dialogueId).toObject().value(QStringLiteral("choices")).toArray())
+                if(!v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty()) ++choiceCount;
+            if(choiceCount && QMessageBox::question(&dialog,tr("Dialogue choices on a Trigger"),
+                tr("This dialogue has %1 player choice(s). The Trigger's item check, linked object action "
+                   "and any item consumption are already completed BEFORE these choices appear.\n\n"
+                   "If a choice should decide whether the object moves or unlocks, configure an Adventure NPC instead. "
+                   "For text-only dialogue, choose 'Single message' or 'Message sequence'.\n\n"
+                   "Keep the full conversation anyway?").arg(choiceCount),
+                QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
+                return false;
+        }
+        const int wrongDialogueId=interactWrongDialogue->currentData().toInt();
+        if(wrongDialogueId>=0 && wrongDialogueId<interactionNodes.size() &&
+            interactWrongDialogueMode->currentData().toString()==QStringLiteral("conversation") &&
+            (wrongDialogueId!=old.interactWrongDialogueNode ||
+             old.interactWrongDialogueMode!=QStringLiteral("conversation"))) {
+            int choiceCount=0;
+            for(const QJsonValue &v:interactionNodes.at(wrongDialogueId).toObject()
+                    .value(QStringLiteral("choices")).toArray())
+                if(!v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty()) ++choiceCount;
+            if(choiceCount && QMessageBox::question(&dialog,tr("Wrong-item dialogue actions"),
+                tr("This wrong-item dialogue has %1 choice(s) with potentially active inventory, NPC "
+                   "or quest effects. The Trigger will NOT open or consume the wrong item, but a "
+                   "deliberate dialogue-choice action can still change game state.\n\n"
+                   "Choose Message sequence for text-only responses. Keep full conversation?" )
+                   .arg(choiceCount), QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
+                return false;
+        }
+        if(targetAction->currentData().toString()==QStringLiteral("disable")) {
+            const QString targetId=targetObject->currentData().toString();
+            for(const Resource &candidate:m_resources) {
+                if(candidate.id!=targetId) continue;
+                if(candidate.inactiveStateFrame<0 &&
+                    (old.targetObjectId!=targetId || old.targetAction!=QStringLiteral("disable"))) {
+                    if(QMessageBox::question(&dialog,tr("Linked object will disappear"),
+                        tr("Disabling '%1' removes its collision AND hides its sprite because its "
+                           "INACTIVE state frame is -1.\n\n"
+                           "For an unlocked/opened object that stays visible, edit THAT object's properties "
+                           "and assign an INACTIVE state frame.\n\n"
+                           "Keep the disappearing-object behaviour?").arg(candidate.name),
+                        QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
+                        return false;
+                }
+                break;
+            }
+        }
+    }
     // Validate the draft BEFORE adding to the undo history or mutating the
     // actual object. A missing sheet cannot partially commit an object.
     Resource stamped = old;
@@ -7602,6 +7950,74 @@ void SidboxGameDesigner::configureGameObject(int index)
             createInventoryDefinition = true;
         }
     }
+    // The Adventure definition and the project-owned Player Inventory are two
+    // different files. Offer the second step, never silently rewrite .sbpi.
+    const QDir playerProject(QFileInfo(m_filePath).absolutePath());
+    QJsonObject playerProfile;
+    bool appendPlayerItem = false;
+    QString playerItemName;
+    if (newType == QStringLiteral("collectable") && pickupShowInventory->isChecked()) {
+        for (const QJsonValue &entry : inventoryDefinitions) {
+            const QJsonObject item = entry.toObject();
+            if (item.value(QStringLiteral("pickupKind")).toInt() == pickup->currentData().toInt()) {
+                playerItemName = item.value(QStringLiteral("name")).toString().trimmed();
+                break;
+            }
+        }
+        if (playerItemName.isEmpty()) {
+            if (pickup->currentData().toInt() == 1) playerItemName = tr("Coins");
+            else playerItemName = pickup->currentData().toInt() < 5
+                ? pickup->currentText().trimmed()
+                : pickup->currentText().section(QStringLiteral(": "), 1).trimmed();
+        }
+        if (playerItemName.isEmpty()) playerItemName = old.name.trimmed();
+        const QString profileFile = GamePlayerProfile::profilePath(playerProject);
+        if (QFileInfo::exists(profileFile)) {
+            QString profileError;
+            if (!GamePlayerProfile::read(playerProject, &playerProfile, &profileError)) {
+                QMessageBox::warning(&dialog, tr("Player Inventory"), profileError);
+                return false;
+            }
+            bool exists = false;
+            QJsonArray playerItems = playerProfile.value(QStringLiteral("inventory")).toArray();
+            for (const QJsonValue &entry : playerItems)
+                if (entry.toObject().value(QStringLiteral("name")).toString()
+                    .compare(playerItemName, Qt::CaseInsensitive) == 0) { exists = true; break; }
+            if (!exists && !playerItemName.isEmpty()) {
+                if (playerItems.size() >= 64) {
+                    QMessageBox::warning(&dialog, tr("Player Inventory"),
+                        tr("The Player Inventory is full (64 types). Remove an unused type "
+                           "in Create / Edit Player before adding '%1'.").arg(playerItemName));
+                    return false;
+                }
+                const auto answer = QMessageBox::question(&dialog, tr("Add to Player Inventory?"),
+                    tr("'%1' is shown in the backpack but isn't listed under "
+                       "Create / Edit Player → Inventory.\n\n"
+                       "Add it there with starting quantity 0? The item will be "
+                       "available across worlds. You can edit it later.").arg(playerItemName),
+                    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
+                if (answer == QMessageBox::Cancel) return false;
+                appendPlayerItem = answer == QMessageBox::Yes;
+                if (appendPlayerItem) {
+                    playerItems.append(QJsonObject{{QStringLiteral("name"), playerItemName},
+                        {QStringLiteral("initial"), 0}, {QStringLiteral("hidden"), false}});
+                    playerProfile.insert(QStringLiteral("inventory"), playerItems);
+                }
+            }
+        } else {
+            QMessageBox::information(&dialog, tr("Create a player first"),
+                tr("This pickup will be registered in the Adventure Inventory. "
+                   "Create the project player in Create / Edit Player if you also want "
+                   "to list it under Player Inventory."));
+        }
+    }
+    if (appendPlayerItem) {
+        QString profileError;
+        if (!GamePlayerProfile::write(playerProject, playerProfile, &profileError)) {
+            QMessageBox::warning(&dialog, tr("Player Inventory"), profileError);
+            return false;
+        }
+    }
     rememberResourceEdit();
     m_adventure.insert(QStringLiteral("pickupTypes"),customPickupTypes);
     if (createInventoryDefinition) {
@@ -7630,9 +8046,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.pickupKind = pickup->currentData().toInt();
     r.objectValue = value->value();
     r.pickupTrackingConfigured = newType == QStringLiteral("collectable") &&
-        (old.pickupTrackingConfigured || pickupOptionsTouched);
+        (old.pickupTrackingConfigured || pickupOptionsTouched || pickupStatTouched ||
+         (!pickupShowInventory->isChecked() &&
+          pickupStat->currentData().toString() != QStringLiteral("none")));
     r.pickupShowInventory = pickupShowInventory->isChecked();
     r.pickupShowHud = pickupShowHud->isChecked();
+    r.pickupStatTarget = pickupStat->currentData().toString();
     r.pickupPersistent = pickupPersistent->isChecked();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
     r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
@@ -7692,6 +8111,22 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.gotoStartId = gotoStart->currentData().toString();
     r.triggerPress = triggerPress->isChecked();
     r.triggerOneShot = triggerOneShot->isChecked();
+    r.interactItemName = interactItem->currentData().toString();
+    r.interactRadius = interactRadius->value();
+    r.interactConsume = interactConsume->isChecked();
+    r.sfxInteractWrong = sfxInteractWrong->currentData().toString();
+    r.sfxInteractSuccess = sfxInteractSuccess->currentData().toString();
+    r.sfxInteractCancel = sfxInteractCancel->currentData().toString();
+    r.interactDialogueNode = interactDialogue->currentData().toInt();
+    r.interactDialogueMode = interactDialogueMode->currentData().toString();
+    r.interactWrongDialogueNode = interactWrongDialogue->currentData().toInt();
+    r.interactWrongDialogueMode = interactWrongDialogueMode->currentData().toString();
+    r.interactRewardItem = interactReward->currentData().toString();
+    r.interactRewardCount = interactRewardCount->value();
+    r.interactStatTarget = interactStat->currentData().toString();
+    r.interactStatDelta = interactStatDelta->value();
+    r.activeStateFrame = activeStateFrame->value();
+    r.inactiveStateFrame = inactiveStateFrame->value();
     r.triggerMusicId = musicTrack->currentData().toString();
     r.triggerMusicAction = musicAction->currentData().toString();
     r.sfxPickup = sfxPickup->currentData().toString();
@@ -7757,6 +8192,12 @@ void SidboxGameDesigner::configureGameObject(int index)
         pickupShowInventory->setChecked(old.pickupShowInventory);
         pickupShowHud->setChecked(old.pickupShowHud);
         pickupPersistent->setChecked(old.pickupPersistent);
+        const QString shownStat = old.pickupStatTarget.isEmpty()
+            ? (old.pickupKind == 2 ? QStringLiteral("health") : QStringLiteral("none"))
+            : old.pickupStatTarget;
+        if (pickupStat->findData(shownStat) < 0)
+            pickupStat->addItem(shownStat, shownStat);
+        pickupStat->setCurrentIndex(qMax(0, pickupStat->findData(shownStat)));
         initiallyActive->setChecked(old.objectInitiallyActive);
         hiddenCollectable->setChecked(!old.objectInitiallyActive ||
             (old.objectType == QStringLiteral("collectable") &&
@@ -7781,6 +8222,22 @@ void SidboxGameDesigner::configureGameObject(int index)
         gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
         triggerPress->setChecked(old.triggerPress);
         triggerOneShot->setChecked(old.triggerOneShot);
+        interactItem->setCurrentIndex(qMax(0, interactItem->findData(old.interactItemName)));
+        interactRadius->setValue(old.interactRadius);
+        interactConsume->setChecked(old.interactConsume);
+        sfxInteractWrong->setCurrentIndex(qMax(0, sfxInteractWrong->findData(old.sfxInteractWrong)));
+        sfxInteractSuccess->setCurrentIndex(qMax(0, sfxInteractSuccess->findData(old.sfxInteractSuccess)));
+        sfxInteractCancel->setCurrentIndex(qMax(0, sfxInteractCancel->findData(old.sfxInteractCancel)));
+        interactDialogue->setCurrentIndex(qMax(0,interactDialogue->findData(old.interactDialogueNode)));
+        interactDialogueMode->setCurrentIndex(qMax(0,interactDialogueMode->findData(old.interactDialogueMode)));
+        interactWrongDialogue->setCurrentIndex(qMax(0,interactWrongDialogue->findData(old.interactWrongDialogueNode)));
+        interactWrongDialogueMode->setCurrentIndex(qMax(0,interactWrongDialogueMode->findData(old.interactWrongDialogueMode)));
+        interactReward->setCurrentIndex(qMax(0,interactReward->findData(old.interactRewardItem)));
+        interactRewardCount->setValue(old.interactRewardCount);
+        interactStat->setCurrentIndex(qMax(0,interactStat->findData(old.interactStatTarget)));
+        interactStatDelta->setValue(old.interactStatDelta);
+        activeStateFrame->setValue(old.activeStateFrame);
+        inactiveStateFrame->setValue(old.inactiveStateFrame);
         musicAction->setCurrentIndex(qMax(0, musicAction->findData(old.triggerMusicAction)));
         musicTrack->setCurrentIndex(qMax(0, musicTrack->findData(old.triggerMusicId)));
         respawn->setValue(old.respawnFrames);
@@ -8571,9 +9028,10 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
 }
 
 
-// Persistent inventory types are project-wide. A world may have no NPCs or
-// its own Adventure items, yet the player still needs to SEE items picked up
-// in another world. Read only saved source worlds, never change .sbgm files.
+// Inventory pickup TYPES are project-wide, regardless of whether a placed
+// object stays collected. A world may have no NPCs or its own Adventure items,
+// yet the player still needs to see backpack items from another world.
+// Read only saved source worlds; never modify any .sbgm file here.
 static QJsonArray persistentItemsFromSavedWorlds(const QString &root)
 {
     QMap<int,QJsonObject> byKind;
@@ -8588,7 +9046,6 @@ static QJsonArray persistentItemsFromSavedWorlds(const QString &root)
             const QJsonObject resource=value.toObject();
             const QJsonObject object=resource.value(QStringLiteral("gameObject")).toObject();
             if(object.value(QStringLiteral("type")).toString()!=QStringLiteral("collectable") ||
-               !object.value(QStringLiteral("pickupPersistent")).toBool(false) ||
                !object.value(QStringLiteral("pickupShowInventory")).toBool(false))continue;
             const int kind=object.value(QStringLiteral("pickupKind")).toInt();
             if(kind<1 || kind>255 || byKind.contains(kind))continue;
@@ -8775,9 +9232,9 @@ bool SidboxGameDesigner::exportAdventure(QString *error)
     }
     QJsonObject effectiveAdventure=m_adventure;
     QJsonArray effectiveItems=effectiveAdventure.value(QStringLiteral("items")).toArray();
-    // Append only, so all existing NPC dialogue/quest inventory indices stay
-    // stable. A new world automatically exposes persistent pickup TYPES owned
-    // by another world. Counts still travel through gameworlds' name registry.
+    // Append only, preserving existing NPC dialogue/quest inventory indices.
+    // Inventory pickup TYPES travel between worlds independently of whether
+    // the placed collectible respawns when its original world is revisited.
     for(const QJsonValue &value:persistentItemsFromSavedWorlds(QFileInfo(m_filePath).absolutePath())) {
         const QJsonObject item=value.toObject();
         const int kind=item.value(QStringLiteral("pickupKind")).toInt();
