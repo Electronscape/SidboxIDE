@@ -79,6 +79,8 @@ void game_collectables_update(game_collectable_t *items, uint16_t count, uint16_
     }
 }
 
+/* Optional Adventure hook. Non-adventure projects still compile/link alone. */
+extern uint8_t game_adventure_can_collect_kind(uint16_t kind) __attribute__((weak));
 uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
                                   int32_t px, int32_t py, uint16_t pw, uint16_t ph,
                                   game_pickup_callback_t callback, void *user)
@@ -93,6 +95,12 @@ uint16_t game_collectables_check(game_collectable_t *items, uint16_t count,
             (int64_t)px + pw > item->x &&
             py < (int64_t)item->y + item->height &&
             (int64_t)py + ph > item->y) {
+            /* Check the adventure kind even for legacy/untracked pickups.
+               A breakable health reward can map to an inventory item while
+               tracking_configured == 0. Never consume it when the bag cannot
+               accept that kind. Unmapped score/health pickups remain free. */
+            if (game_adventure_can_collect_kind &&
+                !game_adventure_can_collect_kind(item->kind)) continue;
             item->active = 0;
             item->respawn_left = item->respawn_frames;
             ++taken;

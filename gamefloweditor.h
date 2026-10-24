@@ -3,9 +3,10 @@
 
 #include <QString>
 class QWidget;
+struct IDETheme;
 
 // Stage 5.50: read-only, design-time flow graph of all saved .sbgm worlds.
 // Does not modify the project, generate C or connect to SIDBOX hardware.
-void openGameFlowEditor(QWidget *parent, const QString &projectRoot);
+void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETheme &theme);
 
 #endif

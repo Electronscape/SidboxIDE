@@ -189,7 +189,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
 
     QString styleRows;
     QTextStream styleOut(&styleRows);
-    if (itemList.isEmpty()) styleOut << "    {{0u,0u,0u,0u},0u,0u},\n";
+    if (itemList.isEmpty()) styleOut << "    {{0u,0u,0u,0u},0u,0u,0u},\n";
     for (const QJsonValue &v : itemList) {
         const QJsonObject o = v.toObject();
         styleOut << "    {{";
@@ -202,9 +202,11 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         const bool disposable = o.value("discardable").toBool(false)
             && !puzzleItems.contains(o.value("name").toString().trimmed().toCaseFolded());
         styleOut << "}," << (o.value("icon2x2").toBool(false) ? "1" : "0")
-                 << "u," << (disposable ? "1" : "0") << "u},\n";
+                 << "u," << (disposable ? "1" : "0") << "u,"
+                 << (o.value("droppable").toBool(o.value("discardable").toBool(false)) ? "1" : "0") << "u},\n";
     }
     fields.insert(QStringLiteral("ITEM_STYLE_ROWS"),styleRows.trimmed());
+    fields.insert(QStringLiteral("MAX_INVENTORY_SLOTS"),QString::number(clampInt(payload,"maxInventorySlots",0,64,0)));
     QString useRows;
     QTextStream useOut(&useRows);
     if (itemList.isEmpty()) useOut << "    {0,0,0},\n";
@@ -656,6 +658,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     const QStringList requiredC = {
         QStringLiteral("ITEM_ICON_SETUP"),
         QStringLiteral("ITEM_ROWS"),QStringLiteral("ITEM_STYLE_ROWS"),
+        QStringLiteral("MAX_INVENTORY_SLOTS"),
         QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
         QStringLiteral("WRONG_REPEAT_ROWS"),QStringLiteral("WRONG_REPEAT_COUNT"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),

@@ -6,10 +6,12 @@
 #include <utility>
 #include <QAbstractItemView>
 #include <QCompleter>
+#include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QDateTime>
+#include <QAction>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -38,12 +40,126 @@
 #include <QTextLayout>
 #include <QTimer>
 #include <QWidget>
+#include <QVector>
 
 namespace {
 constexpr int CodeMinimapWidth = 92;
 constexpr int FoldGutterWidth = 16;
 constexpr int FoldMarkerHitLeft = 4;
 constexpr int FoldMarkerHitRight = 20;
+
+/*
+ * Shared lightweight lexical masking for source formatting and bracket
+ * matching. The returned text has spaces in place of strings/comments, so
+ * punctuation inside a URL, literal, or comment cannot change indentation
+ * or form a false matching pair. The state is carried across source lines.
+ */
+struct SourceLexState
+{
+    bool inBlockComment = false;
+    QChar quote;
+    QString rawTerminator;
+};
+
+QString visibleSourceLine(const QString &line, SourceLexState &state,
+                          bool *hasComment = nullptr)
+{
+    if (hasComment)
+        *hasComment = state.inBlockComment;
+    QString code(line.size(), QLatin1Char(' '));
+
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar ch = line.at(i);
+        const QChar next = i + 1 < line.size() ? line.at(i + 1) : QChar();
+
+        if (!state.rawTerminator.isEmpty()) {
+            const int end = line.indexOf(state.rawTerminator, i);
+            if (end < 0)
+                break;
+            i = end + state.rawTerminator.size() - 1;
+            state.rawTerminator.clear();
+            continue;
+        }
+        if (state.inBlockComment) {
+            if (ch == QLatin1Char('*') && next == QLatin1Char('/')) {
+                state.inBlockComment = false;
+                ++i;
+            }
+            continue;
+        }
+        if (!state.quote.isNull()) {
+            if (ch == QLatin1Char('\\')) {
+                ++i; // Escaped quote/backslash, never a delimiter.
+            } else if (ch == state.quote) {
+                state.quote = QChar();
+            }
+            continue;
+        }
+        if (ch == QLatin1Char('/') && next == QLatin1Char('/')) {
+            if (hasComment)
+                *hasComment = true;
+            break;
+        }
+        if (ch == QLatin1Char('/') && next == QLatin1Char('*')) {
+            if (hasComment)
+                *hasComment = true;
+            state.inBlockComment = true;
+            ++i;
+            continue;
+        }
+        // C++ raw strings can span lines, and contain any braces/quotes.
+        if (ch == QLatin1Char('R') && next == QLatin1Char('"')) {
+            const int open = line.indexOf(QLatin1Char('('), i + 2);
+            if (open >= 0 && open - (i + 2) <= 16) {
+                const QString delimiter = line.mid(i + 2, open - (i + 2));
+                bool valid = true;
+                for (const QChar d : delimiter) {
+                    if (d.isSpace() || d == QLatin1Char('\\')
+                        || d == QLatin1Char(')')) {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (valid) {
+                    state.rawTerminator = QStringLiteral(")") + delimiter
+                                          + QLatin1Char('"');
+                    i = open;
+                    continue;
+                }
+            }
+        }
+        if (ch == QLatin1Char('"') || ch == QLatin1Char('\'')) {
+            state.quote = ch;
+            continue;
+        }
+        code[i] = ch;
+    }
+
+    // Normal C/C++ string literals only continue on escaped newlines.
+    if (!state.quote.isNull()) {
+        int trailingSlashes = 0;
+        for (int i = line.size() - 1; i >= 0
+             && line.at(i) == QLatin1Char('\\'); --i)
+            ++trailingSlashes;
+        if ((trailingSlashes % 2) == 0)
+            state.quote = QChar();
+    }
+    return code;
+}
+
+// Only the leading indentation is changed, never whitespace in code or text.
+QString tabbedIndentation(const QString &line, int prefixLength)
+{
+    int column = 0;
+    for (int i = 0; i < prefixLength; ++i) {
+        if (line.at(i) == QLatin1Char('\t'))
+            column = ((column / 4) + 1) * 4;
+        else
+            ++column;
+    }
+    return QString(column / 4, QLatin1Char('\t'))
+        + QString(column % 4, QLatin1Char(' '));
+}
 
 class FoldBlockData : public QTextBlockUserData
 {
@@ -1126,7 +1242,7 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
     // Text changes also cover Backspace, paste and auto-paired punctuation;
     // arrow keys do not emit textChanged and never schedule a popup.
     m_completionDelayTimer->setSingleShot(true);
-    m_completionDelayTimer->setInterval(120);
+    m_completionDelayTimer->setInterval(100);
     connect(m_completionDelayTimer, &QTimer::timeout,
             this, &CodeEditor::showDelayedCompletion);
     connect(this, &CodeEditor::textChanged, this, [this]() {
@@ -3125,6 +3241,541 @@ void CodeEditor::applyFoldVisibility(
     updateGeometry();
 }
 
+void CodeEditor::changeEvent(QEvent *event)
+{
+    QPlainTextEdit::changeEvent(event);
+    if (event->type() == QEvent::FontChange) {
+        // MainWindow can change the source font after construction. A tab
+        // must still mean exactly four spaces with the new font metrics.
+        setTabStopDistance(
+            fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
+    }
+}
+
+void CodeEditor::contextMenuEvent(QContextMenuEvent *event)
+{
+    // Standard Qt actions retain their normal enabled/disabled states and
+    // platform shortcuts: Undo, Redo, Cut, Copy, Paste, Delete, Select All.
+    QMenu *menu = createStandardContextMenu();
+    menu->addSeparator();
+    QAction *formatAction = menu->addAction(tr("Format Sourcecode"));
+    formatAction->setEnabled(!isReadOnly() && !m_resourceMode);
+    connect(formatAction, &QAction::triggered,
+            this, &CodeEditor::formatSourcecode);
+    QAction *lineByAction = menu->addAction(tr("Format SourceCode LineBy"));
+    lineByAction->setEnabled(!isReadOnly() && !m_resourceMode);
+    connect(lineByAction, &QAction::triggered,
+            this, &CodeEditor::formatSourcecodeLineBy);
+    menu->exec(event->globalPos());
+    delete menu;
+}
+
+void CodeEditor::formatSourcecode()
+{
+    if (isReadOnly() || m_resourceMode)
+        return;
+
+    // Use one tab per brace level, with one additional tab for arguments on
+    // subsequent lines of a parenthesised call / bracketed expression.
+    // Only leading whitespace is changed, except for a multiline control
+    // statement's trailing "{", which moves to its own equally indented line.
+    struct IndentChange {
+        int position;
+        int oldLength;
+        QString replacement;
+    };
+    struct ContinuationFrame {
+        QChar closing;
+        int baseDepth;
+        int openedLine;
+        bool controlParen;
+    };
+
+    QVector<IndentChange> changes;
+    QVector<ContinuationFrame> continuations;
+    SourceLexState lex;
+    int braceDepth = 0;
+    int caseDepth = -1;
+    bool macroContinuation = false;
+    bool unbracedBody = false;
+    // Keep continuation indentation anchored to the FIRST source line,
+    // never to the preceding continuation (which would staircase right).
+    QString previousCode;
+    int previousTargetDepth = 0;
+    int operatorBaseDepth = 0;
+    bool operatorContinuationActive = false;
+
+    for (QTextBlock block = document()->firstBlock(); block.isValid();
+         block = block.next()) {
+        const QString line = block.text();
+        int oldLength = 0;
+        while (oldLength < line.size()
+               && (line.at(oldLength) == QLatin1Char(' ')
+                   || line.at(oldLength) == QLatin1Char('\t')))
+            ++oldLength;
+
+        const QString content = line.mid(oldLength);
+        const QString trimmed = content.trimmed();
+        const bool inLiteral = !lex.quote.isNull()
+                               || !lex.rawTerminator.isEmpty();
+        const bool inComment = lex.inBlockComment;
+        const bool preprocessor = macroContinuation
+            || (!inLiteral && !inComment && content.startsWith(QLatin1Char('#')));
+
+        QString desired = tabbedIndentation(line, oldLength);
+        bool splitOpeningBrace = false;
+        int braceToSplit = -1;
+        int closedControlDepth = -1;
+
+        if (preprocessor) {
+            if (!macroContinuation)
+                desired.clear(); // Preprocessor directives stay in column zero.
+            // Do not parse macro arguments/braces as normal source syntax.
+            macroContinuation = trimmed.endsWith(QLatin1Char('\\'));
+            previousCode.clear();
+            operatorContinuationActive = false;
+        } else if (inLiteral) {
+            // Never reindent the body of a multiline string or raw literal.
+            visibleSourceLine(line, lex);
+            desired = line.left(oldLength);
+            previousCode.clear();
+            operatorContinuationActive = false;
+        } else {
+            bool hasComment = false;
+            const QString visible = visibleSourceLine(line, lex, &hasComment);
+            const QString code = visible.trimmed();
+            const bool caseLabel = code.startsWith(QStringLiteral("case "))
+                                   || code.startsWith(QStringLiteral("case\t"))
+                                   || code.startsWith(QStringLiteral("default:"));
+
+            int closingBraces = 0;
+            while (closingBraces < code.size()
+                   && code.at(closingBraces) == QLatin1Char('}'))
+                ++closingBraces;
+            const int lineDepth = qMax(0, braceDepth - closingBraces);
+            if (caseDepth > lineDepth)
+                caseDepth = -1;
+
+            int targetDepth = lineDepth;
+            if (!code.isEmpty() && !inComment) {
+                if (caseLabel) {
+                    caseDepth = lineDepth;
+                } else if (caseDepth == lineDepth && closingBraces == 0) {
+                    ++targetDepth;
+                }
+                if (unbracedBody && closingBraces == 0
+                    && !code.startsWith(QLatin1Char('{')))
+                    ++targetDepth;
+
+                if (!continuations.isEmpty()) {
+                    const ContinuationFrame &frame = continuations.constLast();
+                    // A standalone closing ')' or ']' aligns with its opener.
+                    // An argument that *ends* in '))' remains one tab in.
+                    const bool standaloneClose =
+                        code.startsWith(frame.closing);
+                    targetDepth = standaloneClose
+                        ? frame.baseDepth
+                        : qMax(lineDepth, frame.baseDepth + 1);
+                }
+
+                // Outside (...) and [...], an expression may continue onto
+                // another line at an operator: a ternary '?'/':', a trailing
+                // binary operator, or an operator at the next line's start.
+                // Unlike brace indentation, this belongs ONE tab beyond the
+                // original statement, even across several continuation lines.
+                const bool previousTerminated = previousCode.endsWith(QLatin1Char(';'))
+                    || previousCode.endsWith(QLatin1Char('{'))
+                    || previousCode.endsWith(QLatin1Char('}'))
+                    || previousCode.endsWith(QLatin1Char(':'));
+                static const QRegularExpression completeControlHeader(
+                    QStringLiteral(R"(^(?:if|for|while|switch|catch)\s*\()"));
+                const bool previousControlHeader =
+                    previousCode.endsWith(QLatin1Char(')'))
+                    && completeControlHeader.match(previousCode).hasMatch();
+                const bool startsOperator =
+                    code.startsWith(QLatin1Char('?'))
+                    || (code.startsWith(QLatin1Char(':'))
+                        && !code.startsWith(QStringLiteral("::")))
+                    || (code.startsWith(QLatin1Char('-'))
+                        && !code.startsWith(QStringLiteral("--")))
+                    || (code.startsWith(QLatin1Char('+'))
+                        && !code.startsWith(QStringLiteral("++")))
+                    || code.startsWith(QLatin1Char('*'))
+                    || code.startsWith(QLatin1Char('/'))
+                    || code.startsWith(QLatin1Char('%'))
+                    || code.startsWith(QLatin1Char('^'))
+                    || code.startsWith(QStringLiteral("&&"))
+                    || code.startsWith(QStringLiteral("||"))
+                    || code.startsWith(QStringLiteral("<<"))
+                    || code.startsWith(QStringLiteral(">>"));
+                const bool endsOperator =
+                    previousCode.endsWith(QLatin1Char('='))
+                    || previousCode.endsWith(QLatin1Char('+'))
+                    || previousCode.endsWith(QLatin1Char('-'))
+                    || previousCode.endsWith(QLatin1Char('*'))
+                    || previousCode.endsWith(QLatin1Char('/'))
+                    || previousCode.endsWith(QLatin1Char('%'))
+                    || previousCode.endsWith(QLatin1Char('&'))
+                    || previousCode.endsWith(QLatin1Char('|'))
+                    || previousCode.endsWith(QLatin1Char('^'))
+                    || previousCode.endsWith(QLatin1Char('?'))
+                    || previousCode.endsWith(QLatin1Char(','));
+                const bool operatorContinuation =
+                    continuations.isEmpty() && !previousCode.isEmpty()
+                    && !previousTerminated && !previousControlHeader
+                    && !caseLabel && closingBraces == 0
+                    && !code.startsWith(QLatin1Char('{'))
+                    && !hasComment && !lex.inBlockComment
+                    && (startsOperator || endsOperator);
+                if (operatorContinuation) {
+                    if (!operatorContinuationActive)
+                        operatorBaseDepth = previousTargetDepth;
+                    targetDepth = qMax(targetDepth, operatorBaseDepth + 1);
+                }
+                operatorContinuationActive = operatorContinuation;
+                desired = QString(targetDepth, QLatin1Char('\t'));
+            }
+
+            // A complete single-line if/for/while without braces may own one
+            // unbraced statement. A multiline condition is dealt with only
+            // after its parentheses close, not halfway through the header.
+            if (!code.isEmpty() && !inComment) {
+                unbracedBody = false;
+                static const QRegularExpression controlStatement(
+                    QStringLiteral(R"(^(?:if\s*\(|for\s*\(|while\s*\(|else\b|do\b))"));
+                const bool potentialControl = controlStatement.match(code).hasMatch();
+                if (potentialControl && !code.contains(QLatin1Char('{'))
+                    && (code.endsWith(QLatin1Char(')'))
+                        || code == QStringLiteral("else")
+                        || code == QStringLiteral("do")))
+                    unbracedBody = true;
+            }
+
+            bool closedMultilineControl = false;
+            int closedOuterGroupBaseDepth = -1;
+            for (int i = 0; i < visible.size(); ++i) {
+                const QChar ch = visible.at(i);
+                if (ch == QLatin1Char('{')) {
+                    ++braceDepth;
+                } else if (ch == QLatin1Char('}')) {
+                    braceDepth = qMax(0, braceDepth - 1);
+                } else if (ch == QLatin1Char('(') || ch == QLatin1Char('[')) {
+                    // Detect control parentheses independently from function
+                    // parentheses, so only multiline control braces are split.
+                    bool controlParen = false;
+                    if (ch == QLatin1Char('(')) {
+                        int wordEnd = i;
+                        while (wordEnd > 0 && visible.at(wordEnd - 1).isSpace())
+                            --wordEnd;
+                        int wordStart = wordEnd;
+                        while (wordStart > 0
+                               && (visible.at(wordStart - 1).isLetterOrNumber()
+                                   || visible.at(wordStart - 1) == QLatin1Char('_')))
+                            --wordStart;
+                        const QString word = visible.mid(wordStart, wordEnd - wordStart);
+                        controlParen = word == QStringLiteral("if")
+                                       || word == QStringLiteral("for")
+                                       || word == QStringLiteral("while")
+                                       || word == QStringLiteral("switch")
+                                       || word == QStringLiteral("catch");
+                    }
+                    continuations.push_back({
+                        ch == QLatin1Char('(') ? QLatin1Char(')') : QLatin1Char(']'),
+                        targetDepth, block.blockNumber(), controlParen
+                    });
+                } else if (ch == QLatin1Char(')') || ch == QLatin1Char(']')) {
+                    // Leave unmatched closers alone. For malformed nesting,
+                    // discard the inner frames through the matching opener.
+                    int matched = continuations.size() - 1;
+                    while (matched >= 0 && continuations.at(matched).closing != ch)
+                        --matched;
+                    if (matched >= 0) {
+                        const ContinuationFrame frame = continuations.at(matched);
+                        if (frame.controlParen && frame.openedLine != block.blockNumber()) {
+                            closedMultilineControl = true;
+                            closedControlDepth = frame.baseDepth;
+                        }
+                        if (matched == 0)
+                            closedOuterGroupBaseDepth = frame.baseDepth;
+                        continuations.resize(matched);
+                    }
+                }
+            }
+            if (caseDepth > braceDepth)
+                caseDepth = -1;
+
+            // Never infer expression continuation across empty/commented
+            // lines or after a quoted literal that spans source lines.
+            previousCode = (!code.isEmpty() && !inComment && !hasComment
+                            && lex.quote.isNull() && lex.rawTerminator.isEmpty())
+                ? code : QString();
+            if (previousCode.isEmpty())
+                operatorContinuationActive = false;
+            // If this line finishes an argument list, a following operator
+            // continues from the CALL's indentation, not from the last
+            // (more deeply indented) argument.
+            previousTargetDepth = closedOuterGroupBaseDepth >= 0
+                ? closedOuterGroupBaseDepth : targetDepth;
+
+            // When a multiline if/for/while condition ends in ") {", give
+            // its brace a separate line (as requested). Do not touch lines
+            // with trailing comments, code following the brace, or macros.
+            if (closedMultilineControl && !inComment) {
+                int last = visible.size() - 1;
+                while (last >= 0 && visible.at(last).isSpace())
+                    --last;
+                if (last >= 0 && visible.at(last) == QLatin1Char('{')
+                    && line.mid(last + 1).trimmed().isEmpty()) {
+                    int beforeBrace = last - 1;
+                    while (beforeBrace >= 0 && visible.at(beforeBrace).isSpace())
+                        --beforeBrace;
+                    if (beforeBrace >= 0
+                        && visible.at(beforeBrace) == QLatin1Char(')')) {
+                        splitOpeningBrace = true;
+                        braceToSplit = last;
+                    }
+                }
+            }
+        }
+
+        if (trimmed.isEmpty() && !inLiteral) {
+            desired.clear(); // Blank lines remain genuinely blank.
+            previousCode.clear();
+            operatorContinuationActive = false;
+        }
+
+        if (splitOpeningBrace) {
+            // One replacement per original line, including the new brace
+            // line. Re-applying Format Sourcecode will not split it again.
+            const QString beforeBrace = line.mid(
+                oldLength, braceToSplit - oldLength).trimmed();
+            changes.push_back({block.position(), block.length() - 1,
+                               desired + beforeBrace + QLatin1Char('\n')
+                               + QString(qMax(0, closedControlDepth), QLatin1Char('\t'))
+                               + QLatin1Char('{')});
+        } else if (line.left(oldLength) != desired) {
+            changes.push_back({block.position(), oldLength, desired});
+        }
+    }
+
+    if (changes.isEmpty())
+        return;
+
+    m_completionDelayTimer->stop();
+    if (m_completer && m_completer->popup())
+        m_completer->popup()->hide();
+
+    // Apply backwards so positions stay valid, group the whole format as ONE
+    // undo action, preserve the caret/selection and do not auto-save the file.
+    QTextCursor savedCursor = textCursor();
+    const int scrollPosition = verticalScrollBar()->value();
+    QTextCursor edit(document());
+    edit.beginEditBlock();
+    for (int i = changes.size() - 1; i >= 0; --i) {
+        const IndentChange &change = changes.at(i);
+        edit.setPosition(change.position);
+        edit.setPosition(change.position + change.oldLength, QTextCursor::KeepAnchor);
+        edit.insertText(change.replacement);
+    }
+    edit.endEditBlock();
+    setTextCursor(savedCursor);
+    verticalScrollBar()->setValue(scrollPosition);
+    m_completionDelayTimer->stop();
+    requestDeferredAnalysisSync();
+}
+
+void CodeEditor::formatSourcecodeLineBy()
+{
+    if (isReadOnly() || m_resourceMode)
+        return;
+
+    // Join genuine expression continuations only. Crucially, keep the
+    // indentation of the first line exactly as typed; do not run the brace
+    // formatter here or move unrelated statements.
+    struct LineJoin {
+        int position;
+        int length;
+    };
+
+    struct OpenGroup {
+        QChar opener;
+        int braceDepth;
+    };
+    QVector<LineJoin> joins;
+    SourceLexState lex;
+    QVector<OpenGroup> openGroups;
+    int braceDepth = 0;
+    QTextBlock previousBlock;
+    QString previousLine;
+    QString previousCode;
+    bool previousSafe = false;
+    bool macroContinuation = false;
+    bool joinedControl = false;
+    bool controlBracePending = false;
+
+    static const QRegularExpression controlHeader(
+        QStringLiteral(R"(^(?:if|for|while|switch|catch)\s*\()"));
+
+    for (QTextBlock block = document()->firstBlock(); block.isValid();
+         block = block.next()) {
+        const QString line = block.text();
+        const QString trimmedLine = line.trimmed();
+        const bool startedInLiteral = !lex.quote.isNull()
+                                      || !lex.rawTerminator.isEmpty();
+        const bool preprocessor = macroContinuation
+            || (!startedInLiteral && !lex.inBlockComment
+                && trimmedLine.startsWith(QLatin1Char('#')));
+        bool hasComment = false;
+        const QString visible = visibleSourceLine(line, lex, &hasComment);
+        const QString code = visible.trimmed();
+        const bool endedInLiteral = !lex.quote.isNull()
+                                    || !lex.rawTerminator.isEmpty();
+        const bool safe = !trimmedLine.isEmpty() && !code.isEmpty()
+                          && !preprocessor && !hasComment
+                          && !startedInLiteral && !endedInLiteral
+                          && !trimmedLine.endsWith(QLatin1Char('\\'));
+        macroContinuation = preprocessor
+                            && trimmedLine.endsWith(QLatin1Char('\\'));
+
+        // openGroups describes the lexical parenthesis/bracket state AFTER
+        // the preceding source line, not the line currently being inspected.
+        const bool insideArguments = !openGroups.isEmpty()
+            && braceDepth <= openGroups.constLast().braceDepth;
+        const bool previousTerminated = previousCode.endsWith(QLatin1Char(';'))
+                                        || previousCode.endsWith(QLatin1Char('{'))
+                                        || previousCode.endsWith(QLatin1Char('}'));
+        const bool nextIsBoundary = code.startsWith(QLatin1Char('{'))
+                                    || code.startsWith(QLatin1Char('}'))
+                                    || code.startsWith(QLatin1Char('#'));
+
+        // Outside parentheses, only continue when the operator makes the
+        // intended relationship clear. The motivating example starts with
+        // "- animation->current_frame" on its second line.
+        const bool nextStartsOperator =
+            ((code.startsWith(QLatin1Char('-'))
+              && !code.startsWith(QStringLiteral("--")))
+             || (code.startsWith(QLatin1Char('+'))
+                 && !code.startsWith(QStringLiteral("++")))
+             || code.startsWith(QStringLiteral("&&"))
+             || code.startsWith(QStringLiteral("||"))
+             || code.startsWith(QStringLiteral("<<"))
+             || code.startsWith(QStringLiteral(">>"))
+             || code.startsWith(QLatin1Char('?'))
+             || code.startsWith(QLatin1Char(':'))
+             || code.startsWith(QLatin1Char('*'))
+             || code.startsWith(QLatin1Char('/'))
+             || code.startsWith(QLatin1Char('%'))
+             || code.startsWith(QLatin1Char('^')));
+        const bool previousEndsOperator =
+            previousCode.endsWith(QLatin1Char('='))
+            || previousCode.endsWith(QLatin1Char('+'))
+            || previousCode.endsWith(QLatin1Char('-'))
+            || previousCode.endsWith(QLatin1Char('*'))
+            || previousCode.endsWith(QLatin1Char('/'))
+            || previousCode.endsWith(QLatin1Char('%'))
+            || previousCode.endsWith(QLatin1Char('&'))
+            || previousCode.endsWith(QLatin1Char('|'))
+            || previousCode.endsWith(QLatin1Char('^'))
+            || previousCode.endsWith(QLatin1Char('?'))
+            || previousCode.endsWith(QLatin1Char(','));
+
+        // Never merge an unbraced control body with its if/for/while header.
+        const bool completeControl = controlHeader.match(previousCode).hasMatch()
+                                     && previousCode.endsWith(QLatin1Char(')'));
+        const bool continuation =
+            (insideArguments && !previousCode.endsWith(QLatin1Char('{'))
+             && !previousCode.endsWith(QLatin1Char('}')))
+            || (!previousTerminated && !completeControl
+                && (nextStartsOperator || previousEndsOperator));
+        const bool joinBrace = controlBracePending
+                               && code == QStringLiteral("{");
+        const bool join = previousBlock.isValid() && previousSafe && safe
+                          && (joinBrace || (!nextIsBoundary && continuation));
+
+        if (join) {
+            int end = previousBlock.length() - 1;
+            while (end > 0
+                   && (previousLine.at(end - 1) == QLatin1Char(' ')
+                       || previousLine.at(end - 1) == QLatin1Char('\t')))
+                --end;
+            int leading = 0;
+            while (leading < line.size()
+                   && (line.at(leading) == QLatin1Char(' ')
+                       || line.at(leading) == QLatin1Char('\t')))
+                ++leading;
+            // Remove preceding trailing whitespace, the paragraph separator
+            // and the next line's leading indentation. Insert ONE space.
+            joins.push_back({previousBlock.position() + end,
+                             previousBlock.length() - end + leading});
+
+            if (!joinedControl)
+                joinedControl = controlHeader.match(previousCode).hasMatch();
+        } else {
+            joinedControl = false;
+        }
+
+        // Update bracket nesting only after deciding whether this boundary
+        // is a continuation. Comments and quoted literals are already masked.
+        if (preprocessor) {
+            // Macro parentheses are not C statement continuations; never
+            // allow one to leak into the following ordinary source code.
+            openGroups.clear();
+        } else {
+            for (const QChar ch : visible) {
+                if (ch == QLatin1Char('{')) {
+                    ++braceDepth;
+                } else if (ch == QLatin1Char('}')) {
+                    braceDepth = qMax(0, braceDepth - 1);
+                } else if (ch == QLatin1Char('(') || ch == QLatin1Char('[')) {
+                    openGroups.push_back({ch, braceDepth});
+                } else if (ch == QLatin1Char(')') || ch == QLatin1Char(']')) {
+                    const QChar opener = ch == QLatin1Char(')')
+                        ? QLatin1Char('(') : QLatin1Char('[');
+                    if (!openGroups.isEmpty()
+                        && openGroups.constLast().opener == opener)
+                        openGroups.removeLast();
+                    else
+                        openGroups.clear(); // Malformed syntax: do not guess.
+                }
+            }
+        }
+        controlBracePending = join && joinedControl && openGroups.isEmpty()
+                              && code.endsWith(QLatin1Char(')'));
+        if (joinBrace) {
+            joinedControl = false;
+            controlBracePending = false;
+        }
+
+        previousBlock = block;
+        previousLine = line;
+        previousCode = code;
+        previousSafe = safe;
+    }
+
+    if (joins.isEmpty())
+        return;
+
+    m_completionDelayTimer->stop();
+    if (m_completer && m_completer->popup())
+        m_completer->popup()->hide();
+
+    QTextCursor savedCursor = textCursor();
+    const int scrollPosition = verticalScrollBar()->value();
+    QTextCursor edit(document());
+    edit.beginEditBlock();
+    for (int i = joins.size() - 1; i >= 0; --i) {
+        const LineJoin &join = joins.at(i);
+        edit.setPosition(join.position);
+        edit.setPosition(join.position + join.length, QTextCursor::KeepAnchor);
+        edit.insertText(QStringLiteral(" "));
+    }
+    edit.endEditBlock();
+    setTextCursor(savedCursor);
+    verticalScrollBar()->setValue(scrollPosition);
+    m_completionDelayTimer->stop();
+    requestDeferredAnalysisSync();
+}
+
 void CodeEditor::focusInEvent(QFocusEvent *event)
 {
     m_includeScanMs = 0; // pick up headers generated while another tab was active
@@ -3158,7 +3809,8 @@ void CodeEditor::insertAutoIndent()
     const QString beforeCursor = blockText.left(positionInBlock);
     const QString afterCursor = blockText.mid(positionInBlock);
 
-    QString baseIndent = leadingWhitespace(blockText);
+    QString baseIndent = tabbedIndentation(
+        blockText, leadingWhitespace(blockText).size());
     QString nextIndent = baseIndent;
     const QString trimmedBefore = beforeCursor.trimmed();
     const bool opensBlock = trimmedBefore.endsWith(QLatin1Char(123));
@@ -3639,14 +4291,21 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
 
     if (earlyControlOnly
         && event->key() == Qt::Key_Tab) {
-        if (m_completer
-            && m_completer->popup()->isVisible()) {
-            m_completer->popup()->hide();
-        }
-
+        dismissCompletionForNavigation();
         emit nextEditorTabRequested();
         event->accept();
         return;
+    }
+
+    /*
+     * Tab and Shift+Tab ALWAYS edit indentation. A visible completion popup
+     * must never steal Tab and replace an existing identifier/function.
+     * Enter still accepts an intentionally selected completion.
+     */
+    if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab)
+        && !(earlyModifiers & (Qt::ControlModifier | Qt::AltModifier
+                               | Qt::MetaModifier))) {
+        dismissCompletionForNavigation();
     }
 
     // Key events usually go to the popup itself, but some window managers
@@ -3663,7 +4322,6 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
                 return;
             }
             break;
-        case Qt::Key_Tab:
         case Qt::Key_Return:
         case Qt::Key_Enter:
             if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
@@ -3755,6 +4413,8 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
 
     if (shiftTab) {
         unindentSelection();
+        // unindentSelection() emitted textChanged: don't schedule popup.
+        dismissCompletionForNavigation();
         event->accept();
         return;
     }
@@ -3801,7 +4461,8 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
             && blockText.at(pos) == QLatin1Char('}');
 
         if (betweenBraces) {
-            const QString baseIndent = leadingWhitespace(blockText);
+            const QString baseIndent = tabbedIndentation(
+                blockText, leadingWhitespace(blockText).size());
             const QString innerIndent =
                 baseIndent + QLatin1Char('\t');
 
@@ -3840,6 +4501,9 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
             setTextCursor(cursor);
         }
 
+        // Typing a tab can emit textChanged too. Indentation is not an
+        // IntelliSense request, even if enough idle time passes afterwards.
+        dismissCompletionForNavigation();
         event->accept();
         return;
     }
@@ -3889,7 +4553,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    // textChanged already scheduled the completion after 120 ms of quiet.
+    // textChanged already scheduled the completion after 100 ms of quiet.
     // No immediate popup here (including inside #include and object.member).
 
 }
@@ -3963,8 +4627,25 @@ bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
                 navigateCompletion(key->key() == Qt::Key_Down ? +1 : -1);
                 return true;
             }
+            if (plainKey && (key->key() == Qt::Key_Tab
+                             || key->key() == Qt::Key_Backtab)) {
+                /*
+                 * Qt can give the completion popup keyboard focus. Send Tab
+                 * back to the editor so it indents instead of accepting a
+                 * suggestion; editor event filters see the popup hidden.
+                 */
+                dismissCompletionForNavigation();
+                if (fromPopup) {
+                    QKeyEvent forwarded(key->type(), key->key(),
+                                        key->modifiers(), key->text(),
+                                        key->isAutoRepeat(), key->count());
+                    QCoreApplication::sendEvent(this, &forwarded);
+                    return true;
+                }
+                return false;
+            }
             if (plainKey && (key->key() == Qt::Key_Return ||
-                             key->key() == Qt::Key_Enter || key->key() == Qt::Key_Tab)) {
+                             key->key() == Qt::Key_Enter)) {
                 acceptCurrentCompletion();
                 return true;
             }
@@ -4135,6 +4816,85 @@ void CodeEditor::highlightCurrentLine()
         match.cursor = cursor;
         match.format.setBackground(occurrenceColor);
         selections.append(match);
+    }
+
+    // Match the bracket under the caret, or immediately to its left. Parse
+    // only when on ()[]{}; normal cursor movement remains constant-time.
+    const QTextCursor caret = textCursor();
+    if (!caret.hasSelection()) {
+        int target = caret.position();
+        QChar bracket = document()->characterAt(target);
+        const QString brackets = QStringLiteral("()[]{}");
+        if (!brackets.contains(bracket)) {
+            --target;
+            bracket = target >= 0 ? document()->characterAt(target) : QChar();
+        }
+        if (target >= 0 && brackets.contains(bracket)) {
+            SourceLexState lex;
+            QVector<QPair<QChar, int>> stack;
+            int partner = -1;
+            bool macroContinuation = false;
+            for (QTextBlock block = document()->firstBlock(); block.isValid();
+                 block = block.next()) {
+                const QString line = block.text();
+                const QString trimmed = line.trimmed();
+                const bool directive = macroContinuation ||
+                    (!lex.inBlockComment && lex.quote.isNull()
+                     && lex.rawTerminator.isEmpty()
+                     && trimmed.startsWith(QLatin1Char('#')));
+                if (directive) {
+                    macroContinuation = trimmed.endsWith(QLatin1Char('\\'));
+                    continue;
+                }
+                const QString code = visibleSourceLine(line, lex);
+                for (int j = 0; j < code.size(); ++j) {
+                    const QChar ch = code.at(j);
+                    const int pos = block.position() + j;
+                    if (ch == QLatin1Char('(') || ch == QLatin1Char('[')
+                        || ch == QLatin1Char('{')) {
+                        stack.push_back(qMakePair(ch, pos));
+                    } else if (ch == QLatin1Char(')') || ch == QLatin1Char(']')
+                               || ch == QLatin1Char('}')) {
+                        if (!stack.isEmpty()) {
+                            const QPair<QChar, int> open = stack.last();
+                            const bool paired =
+                                (open.first == QLatin1Char('(') && ch == QLatin1Char(')'))
+                                || (open.first == QLatin1Char('[') && ch == QLatin1Char(']'))
+                                || (open.first == QLatin1Char('{') && ch == QLatin1Char('}'));
+                            if (paired) {
+                                stack.removeLast();
+                                if (pos == target) partner = open.second;
+                                if (open.second == target) partner = pos;
+                            } else {
+                                // An invalid/mixed bracket sequence cannot
+                                // yield a misleading apparent match.
+                                stack.clear();
+                            }
+                        }
+                    }
+                    if (partner >= 0)
+                        break;
+                }
+                if (partner >= 0
+                    || (block.position() > target && stack.isEmpty()))
+                    break;
+            }
+            if (partner >= 0) {
+                QColor pairColor = m_theme.accent;
+                pairColor.setAlpha(195);
+                for (const int position : {target, partner}) {
+                    QTextEdit::ExtraSelection selection;
+                    selection.cursor = QTextCursor(document());
+                    selection.cursor.setPosition(position);
+                    selection.cursor.movePosition(QTextCursor::NextCharacter,
+                                                  QTextCursor::KeepAnchor);
+                    selection.format.setBackground(pairColor);
+                    selection.format.setForeground(m_theme.brightText);
+                    selection.format.setFontWeight(QFont::Bold);
+                    selections.append(selection);
+                }
+            }
+        }
     }
 
     setExtraSelections(selections);

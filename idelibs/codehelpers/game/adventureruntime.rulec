@@ -120,15 +120,54 @@ void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint1
 { ga_item_styles = styles; ga_item_style_count = styles ? count : 0u; }
 static uint8_t ga_discardable(uint16_t id)
 { return ga_item_styles && id < ga_item_style_count && ga_item_styles[id].discardable; }
+static uint8_t ga_droppable(uint16_t id)
+{ return ga_item_styles && id < ga_item_style_count && ga_item_styles[id].droppable; }
+static uint8_t ga_inventory_slot_limit; /* 0 = unrestricted */
+static uint8_t ga_restoring_inventory;
+void game_adventure_inventory_max_slots(uint8_t slots)
+{ ga_inventory_slot_limit=slots>GA_MAX_ITEMS?GA_MAX_ITEMS:slots; }
+void game_adventure_inventory_restore_begin(void) { ga_restoring_inventory=1u; }
+void game_adventure_inventory_restore_end(void) { ga_restoring_inventory=0u; }
+/* Item names are stable between world-local lists. Keep order for the game's
+ * lifetime even when game_adventure_start() unloads/rebuilds a world. */
+typedef struct { char name[37]; uint32_t rank; } ga_recent_item_t;
+static ga_recent_item_t ga_recent[GA_MAX_ITEMS];
+static uint16_t ga_recent_count;
+static uint32_t ga_recent_clock;
+static uint32_t ga_item_rank(uint16_t id)
+{
+    if(id>=ga_item_count || !ga_items || !ga_items[id].name) return 0u;
+    for(uint16_t i=0;i<ga_recent_count;++i)
+        if(strcmp(ga_recent[i].name,ga_items[id].name)==0) return ga_recent[i].rank;
+    return 0u;
+}
+static void ga_touch_item(uint16_t id,uint8_t new_acquisition)
+{
+    if(id>=ga_item_count || !ga_items || !ga_items[id].name) return;
+    const char *name=ga_items[id].name;
+    for(uint16_t i=0;i<ga_recent_count;++i)
+        if(strcmp(ga_recent[i].name,name)==0) {
+            if(new_acquisition) ga_recent[i].rank=++ga_recent_clock;
+            return;
+        }
+    if(ga_recent_count>=GA_MAX_ITEMS)return;
+    ga_recent_item_t *slot=&ga_recent[ga_recent_count++];
+    strncpy(slot->name,name,sizeof(slot->name)-1u);
+    slot->name[sizeof(slot->name)-1u]=0;
+    slot->rank=++ga_recent_clock;
+}
+
 static uint16_t ga_counts[GA_MAX_ITEMS];
+static uint8_t ga_display_dirty=1u;
 static void ga_load_item_icon(uint16_t item)
 {
-    if(item>=ga_item_count || !ga_counts[item] || !ga_icon_file[item] || ga_icon_atlas[item]) return;
+    if(item>=ga_item_count || !ga_icon_file[item] || ga_icon_atlas[item]) return;
     ga_icon_atlas[item]=ga_load_ppb(ga_icon_file[item],ga_icon_width[item],ga_icon_height[item]);
 }
 void game_adventure_prepare_owned_icons(void)
 {
-    for(uint16_t i=0;i<ga_item_count;++i) ga_load_item_icon(i);
+    for(uint16_t i=0;i<ga_item_count;++i)
+        if(ga_counts[i]) ga_load_item_icon(i);
 }
 static const game_adventure_item_use_t *ga_use_effects;
 static uint16_t ga_use_count;
@@ -151,7 +190,7 @@ static uint8_t ga_use_item(uint16_t id)
     if (!ga_can_use(id) || id >= ga_item_count || !ga_counts[id]) return 0;
     const game_adventure_item_use_t *effect=&ga_use_effects[id];
     if (!ga_use_handler(effect->stat,effect->delta,ga_use_user)) return 0;
-    if (effect->consume) --ga_counts[id];
+    if (effect->consume) { --ga_counts[id]; ga_display_dirty=1u; }
     return 1;
 }
 
@@ -171,17 +210,35 @@ static uint8_t ga_item_visible(uint16_t i)
 {
     return i < ga_item_count && ga_counts[i] != 0u;
 }
+/* Cache display order. Rebuilding at 50 Hz is unnecessary when unchanged. */
+static uint8_t ga_display_ids[GA_MAX_ITEMS];
+static uint16_t ga_display_count;
+static void ga_refresh_display(void)
+{
+    if(!ga_display_dirty)return;
+    ga_display_count=0u;
+    for(uint16_t i=0;i<ga_item_count;++i) {
+        if(!ga_item_visible(i))continue;
+        const uint32_t rank=ga_item_rank(i);
+        uint16_t place=ga_display_count;
+        while(place && ga_item_rank(ga_display_ids[place-1u])<rank) {
+            ga_display_ids[place]=ga_display_ids[place-1u];
+            --place;
+        }
+        ga_display_ids[place]=(uint8_t)i;
+        ++ga_display_count;
+    }
+    ga_display_dirty=0u;
+}
 static uint16_t ga_visible_count(void)
 {
-    uint16_t total = 0;
-    for (uint16_t i = 0; i < ga_item_count; ++i) if (ga_item_visible(i)) ++total;
-    return total;
+    ga_refresh_display();
+    return ga_display_count;
 }
 static uint16_t ga_visible_item_id(uint16_t display_index)
 {
-    for (uint16_t i = 0; i < ga_item_count; ++i)
-        if (ga_item_visible(i) && display_index-- == 0) return i;
-    return ga_item_count;
+    ga_refresh_display();
+    return display_index<ga_display_count?ga_display_ids[display_index]:ga_item_count;
 }
 /* 256 nodes x 3 choices: 96 bytes for once-only flags. One bit per choice. */
 static uint8_t ga_used_choices[(256u * 3u + 7u) / 8u];
@@ -319,8 +376,8 @@ static uint8_t ga_confirm_yes;  /* Confirmation defaults to NO. */
 static uint8_t ga_bracket_frames;
 static void ga_bracket_restart(void) { ga_bracket_frames=0u; }
 static uint8_t ga_brackets_visible(void) { return ga_bracket_frames < 10u; }
-/* Ten normal 24px rows plus header/footer fit inside a 480x320 LCD. */
-#define GA_INVENTORY_ROWS 10u
+/* Four rows plus header/footer fit in the compact backpack. */
+#define GA_INVENTORY_ROWS 4u
 static void ga_inventory_clamp_offset(void)
 {
     const uint16_t visible = ga_visible_count();
@@ -331,7 +388,16 @@ static void ga_inventory_clamp_offset(void)
 void game_adventure_save_drops(game_adventure_drop_t out[GAME_ADVENTURE_MAX_DROPS])
 { if (out) memcpy(out, ga_drops, sizeof(ga_drops)); }
 void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTURE_MAX_DROPS])
-{ if (saved) memcpy(ga_drops, saved, sizeof(ga_drops)); }
+{
+    if (!saved) return;
+    memcpy(ga_drops, saved, sizeof(ga_drops));
+    /* A floor drop can be the player's LAST item of this kind. Inventory
+     * quantity is then zero, but the item still needs its PPB to draw.
+     * Restore artwork now (on world entry), never during frame rendering. */
+    for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i)
+        if (ga_drops[i].active && ga_drops[i].item_id < ga_item_count)
+            ga_load_item_icon(ga_drops[i].item_id);
+}
 static uint16_t ga_node, ga_typed, ga_ticks, ga_reply_typed, ga_reply_ticks;
 static int16_t ga_after_reply;
 static const char *ga_reply;
@@ -481,9 +547,14 @@ uint16_t game_adventure_add(uint16_t i, uint16_t n)
 {
     if (i >= ga_item_count) return 0;
     const uint16_t old = ga_counts[i], max = ga_items[i].capacity;
+    if(n && !old && !ga_restoring_inventory && ga_inventory_slot_limit &&
+       ga_visible_count() >= ga_inventory_slot_limit) return 0;
     const uint32_t wanted = (uint32_t)old + n;
     ga_counts[i] = (uint16_t)(wanted > max ? max : wanted);
+    if(ga_counts[i]!=old) ga_display_dirty=1u;
     if (ga_counts[i] > old) {
+        if (!ga_restoring_inventory) ga_touch_item(i,1u);
+        else ga_touch_item(i,0u);
         /* Gifts, hand-ins and scripted awards can precede floor pickups. */
         game_adventure_inventory_kind_changed(ga_items[i].pickup_kind);
         ga_load_item_icon(i);
@@ -494,6 +565,7 @@ uint8_t game_adventure_remove(uint16_t i, uint16_t n)
 {
     if (i >= ga_item_count || ga_counts[i] < n) return 0;
     ga_counts[i] -= n;
+    ga_display_dirty=1u;
     return 1;
 }
 static uint8_t ga_managed_pickup_scope;
@@ -501,9 +573,21 @@ static uint16_t ga_managed_pickup_kind;
 void game_adventure_managed_pickup_begin(uint16_t kind)
 { ga_managed_pickup_kind = kind; ga_managed_pickup_scope = 1; }
 void game_adventure_managed_pickup_end(void) { ga_managed_pickup_scope = 0; }
+uint8_t game_adventure_can_collect_kind(uint16_t kind)
+{
+    if(!kind || !ga_items)return 1u;
+    uint16_t needed=0,existing=ga_visible_count();
+    for(uint16_t i=0;i<ga_item_count;++i) {
+        if(ga_items[i].pickup_kind!=kind)continue;
+        if(ga_counts[i]>=ga_items[i].capacity) return 0u;
+        if(!ga_counts[i])++needed;
+    }
+    return !ga_inventory_slot_limit || existing+needed<=ga_inventory_slot_limit;
+}
 uint16_t game_adventure_collect_amount(uint16_t kind, uint16_t amount)
 {
     uint16_t matched = 0;
+    if(amount && !game_adventure_can_collect_kind(kind))return 0;
     for (uint16_t i = 0; i < ga_item_count; ++i)
         if (kind && ga_items[i].pickup_kind == kind) {
             game_adventure_add(i, amount); ++matched;
@@ -561,6 +645,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_nodes = nodes; ga_node_count = node_count;
     ga_npcs = npcs; ga_npc_count = npc_count;
     memset(ga_counts, 0, sizeof(ga_counts));
+    ga_display_dirty=1u;
     memset(ga_used_choices, 0, sizeof(ga_used_choices));
     memset(ga_completed_npcs, 0, sizeof(ga_completed_npcs));
     memset(ga_npc_visibility, 0, sizeof(ga_npc_visibility));
@@ -582,6 +667,10 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
          * must not wait for a floor pickup to discover inventory linkage. */
         game_adventure_inventory_kind_changed(ga_items[i].pickup_kind);
     }
+    ga_inventory_slot_limit=0u;
+    ga_restoring_inventory=0u;
+    for (uint16_t i=0;i<ga_item_count;++i)
+        if(ga_counts[i]) ga_touch_item(i,0u);
     ga_state = ga_choice = ga_inventory_offset = 0;
     ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
     ga_bracket_restart();
@@ -631,12 +720,38 @@ static uint8_t ga_has_choices(void)
         if (ga_choice_visible(ga_node,i)) ++n;
     return n;
 }
+static uint8_t ga_can_receive(uint16_t item)
+{
+    return item<ga_item_count && ga_items && ga_counts[item]<ga_items[item].capacity &&
+        (!ga_inventory_slot_limit || ga_counts[item] ||
+          ga_visible_count()<ga_inventory_slot_limit);
+}
+/* A valid hand-in can free the very slot needed for its reward. */
+static uint8_t ga_can_receive_after_take(uint16_t gift,int16_t taken)
+{
+    if(ga_can_receive(gift))return 1u;
+    if(gift>=ga_item_count || !ga_items || !ga_items[gift].capacity)return 0u;
+    if(taken<0 || (uint16_t)taken>=ga_item_count || !ga_counts[taken])return 0u;
+    if(taken==(int16_t)gift)
+        return 1u; /* Consuming one from a full stack makes room for one. */
+    return ga_inventory_slot_limit && !ga_counts[gift] && ga_counts[taken]==1u &&
+        ga_visible_count()>=ga_inventory_slot_limit;
+}
 static uint8_t ga_allowed(const game_adventure_choice_t *c)
 {
     return c->requires < 0 || ((uint16_t)c->requires < ga_item_count && ga_counts[c->requires]);
 }
 /* Called by the reply helper below, before its full definition. */
 static void ga_next_node(int16_t node);
+/* Explain why a choice/gift was deferred; do not consume or complete it. */
+static void ga_inventory_full_reply(int16_t return_node)
+{
+    ga_reply="Inventory full! Drop something.";
+    ga_reply_typed=0u;
+    ga_reply_ticks=0u;
+    ga_after_reply=return_node;
+    ga_state=3u;
+}
 static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_node)
 {
     ga_reply = c->reply && c->reply[0] ? c->reply : c->label;
@@ -671,17 +786,19 @@ static void ga_apply_npc_appearance(uint16_t event_id)
 }
 /* Award terminal-node gifts once. On full inventory, retry next time rather
  * than marking the gift claimed and silently losing it. */
-static void ga_award_close_gift(uint16_t node)
+static uint8_t ga_award_close_gift(uint16_t node)
 {
-    if (node>=256u) return;
+    if (node>=256u) return 1u;
     const uint8_t mask=(uint8_t)(1u<<(node & 7u));
     uint8_t *used=&ga_close_gift_claimed[node>>3u];
-    if (*used & mask) return;
+    if (*used & mask) return 1u;
     for(uint16_t i=0;i<ga_close_gift_count;++i) {
         if (ga_close_gifts[i].node_id!=node) continue;
-        if (game_adventure_add(ga_close_gifts[i].item_id,1u)) *used|=mask;
-        break;
+        if(!game_adventure_add(ga_close_gifts[i].item_id,1u)) return 0u;
+        *used|=mask;
+        return 1u;
     }
+    return 1u;
 }
 static void ga_success_choice(const game_adventure_choice_t *c, uint16_t node, uint8_t choice)
 {
@@ -729,6 +846,12 @@ static void ga_offer_item(uint16_t offered)
         else ga_next_node((int16_t)ga_exchange_node);
         return;
     }
+    if(choice->give>=0 &&
+       !ga_can_receive_after_take((uint16_t)choice->give,
+            r->consume ? (int16_t)offered : -1)) {
+        ga_inventory_full_reply((int16_t)ga_exchange_node);
+        return;
+    }
     if (r->any) {
         if (r->consume && !game_adventure_remove(offered,1u)) {ga_state=1u;return;}
         ga_success_choice(choice,ga_exchange_node,ga_exchange_choice);
@@ -766,7 +889,7 @@ static void ga_offer_item(uint16_t offered)
 static uint8_t ga_drop_item(uint16_t item_id, int32_t player_x, int32_t player_y,
                             uint16_t player_w, uint16_t player_h)
 {
-    if (item_id >= ga_item_count || !ga_counts[item_id] || !ga_discardable(item_id)) return 0;
+    if (item_id >= ga_item_count || !ga_counts[item_id] || !ga_droppable(item_id)) return 0;
     for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
         if (ga_drops[i].active) continue;
         ga_drops[i].x = player_x + (int32_t)player_w/2 - 8;
@@ -928,12 +1051,13 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
             --ga_inventory_selection; ga_inventory_action=0u;
             ga_bracket_restart();
         }
-        /* USE is first when configured; protected quest items can still be USED.
-         * DROP/DESTROY appear only if discard was explicitly enabled. */
+        /* Each permission is independent: a quest item may be dropped
+         * for later retrieval but never permanently destroyed. */
         const uint16_t action_id=ga_visible_item_id(ga_inventory_selection);
         const uint8_t can_use=ga_can_use(action_id);
         const uint8_t can_discard=ga_discardable(action_id);
-        const uint8_t count=(uint8_t)(can_use + (can_discard ? 2u : 0u));
+        const uint8_t can_drop=ga_droppable(action_id);
+        const uint8_t count=(uint8_t)(can_use + can_drop + can_discard);
         if (count && ga_inventory_action >= count) ga_inventory_action=(uint8_t)(count-1u);
         if (left && ga_inventory_action) { --ga_inventory_action; ga_bracket_restart(); }
         if (right && count && ga_inventory_action + 1u < count) {
@@ -952,14 +1076,15 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
             if (id < ga_item_count) {
                 const uint8_t has_use=ga_can_use(id);
                 const uint8_t has_discard=ga_discardable(id);
+                const uint8_t has_drop=ga_droppable(id);
                 if (has_use && ga_inventory_action==0u) {
                     if (ga_use_item(id)) ga_state=0u;
-                } else if (has_discard) {
-                    const uint8_t discard_action=(uint8_t)(ga_inventory_action - (has_use ? 1u : 0u));
-                    if (discard_action==0u) {
-                        if (ga_drop_item(id, player_x, player_y, player_w, player_h)) ga_state=0u;
-                    } else if (discard_action==1u) {
-                        ga_confirm_yes=0u; ga_state=4u;
+                } else {
+                    const uint8_t next=(uint8_t)(ga_inventory_action-(has_use?1u:0u));
+                    if(has_drop && next==0u) {
+                        if(ga_drop_item(id,player_x,player_y,player_w,player_h)) ga_state=0u;
+                    } else if(has_discard && next==(has_drop?1u:0u)) {
+                        ga_confirm_yes=0u;ga_state=4u;
                         ga_bracket_restart();
                     }
                 }
@@ -1004,7 +1129,10 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
             /* Closing a terminal speech node is not a dialogue-choice event.
              * Trigger its separately configured NPC actions now. */
             /* Grant before hiding the NPC. No fake selectable answer needed. */
-            ga_award_close_gift(ga_node);
+            if(!ga_award_close_gift(ga_node)) {
+                ga_inventory_full_reply((int16_t)ga_node);
+                return 1; /* Retain gift to retry. */
+            }
             ga_apply_npc_appearance((uint16_t)(ga_node_count*3u+ga_node));
             ga_state = 0;
             return 0;
@@ -1025,6 +1153,13 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
                and never execute its item, event or completion actions. */
             if (c->missing_next >= 0 && c->missing_next < ga_node_count)
                 ga_next_node(c->missing_next);
+            return 1;
+        }
+        /* Do not consume a quest requirement or complete a puzzle if its
+         * reward has nowhere to go. The player can free a slot and retry. */
+        if (c->give >= 0 &&
+            !ga_can_receive_after_take((uint16_t)c->give,c->take)) {
+            ga_inventory_full_reply((int16_t)ga_node);
             return 1;
         }
         if (c->take >= 0 && !game_adventure_remove((uint16_t)c->take, 1)) return 1;
@@ -1257,13 +1392,17 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             ga_inventory_offset=ga_inventory_selection;
         if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
             ga_inventory_offset=(uint8_t)(ga_inventory_selection-GA_INVENTORY_ROWS+1u);
+        ga_inventory_clamp_offset();
+        if(ga_inventory_offset) ga_text(box_x+box_w-inset-16,box_y+inset,"^");
+        if(visible>(uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
+            ga_text(selector_x,box_y+box_h-inset-8,"v");
         for (uint8_t i=0; i<shown; ++i) {
             const uint16_t display=(uint16_t)(ga_inventory_offset+i);
             const uint16_t id=ga_visible_item_id(display);
             if (id>=ga_item_count) break;
             char line[36];
             const char *name=ga_items[id].name?ga_items[id].name:"Item";
-            const int name_area_end=(ga_state==5u || ga_can_use(id)||ga_discardable(id))
+            const int name_area_end=(ga_state==5u || ga_can_use(id)||ga_droppable(id)||ga_discardable(id))
                 ? use_x-8 : box_x+box_w-inset;
             const int name_room=(name_area_end-label_x)/8-3; /* reserve x + quantity */
             const uint8_t limit=(uint8_t)(name_room<1?1:name_room>18?18:name_room);
@@ -1284,10 +1423,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
             } else {
                 const uint8_t use=ga_can_use(id);
                 if (use) ga_fixed_action(use_x,y,"USE",current && ga_inventory_action==0u);
-                if (ga_discardable(id)) {
-                    ga_fixed_action(drop_x,y,"DROP",current && ga_inventory_action==(use?1u:0u));
-                    ga_fixed_action(destroy_x,y,"DESTROY",current && ga_inventory_action==(use?2u:1u));
-                }
+                const uint8_t drop=ga_droppable(id);
+                if (drop) ga_fixed_action(drop_x,y,"DROP",current && ga_inventory_action==(use?1u:0u));
+                if (ga_discardable(id)) ga_fixed_action(destroy_x,y,"DESTROY",current && ga_inventory_action==(uint8_t)(use+drop));
             }
         }
         /* Footer is aligned eight pixels in from the INNER skin edge. */

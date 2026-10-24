@@ -25,6 +25,8 @@
 #include <QTreeWidgetItemIterator>
 #include <QInputDialog>
 #include <QHash>
+#include <QMap>
+#include <QRegularExpression>
 #include <QSet>
 #include <QUuid>
 #include <QMessageBox>
@@ -583,9 +585,11 @@ QJsonArray tableItems(QTableWidget *table)
         item.insert("icon2x2",iconEntry && iconEntry->data(Qt::UserRole+2).toBool());
         item.insert("iconAtlasId",iconEntry ? iconEntry->data(Qt::UserRole+3).toString() : QString());
         item.insert("iconTileSize",iconEntry ? (iconEntry->data(Qt::UserRole+4).isValid() ? iconEntry->data(Qt::UserRole+4).toInt() : 8) : 8);
-        auto *discard = qobject_cast<QCheckBox*>(table->cellWidget(r,5));
+        auto *drop = qobject_cast<QCheckBox*>(table->cellWidget(r,5));
+        item.insert("droppable",drop && drop->isChecked());
+        auto *discard = qobject_cast<QCheckBox*>(table->cellWidget(r,6));
         item.insert("discardable",discard && discard->isChecked() && discard->isEnabled());
-        auto *use=qobject_cast<QPushButton*>(table->cellWidget(r,6));
+        auto *use=qobject_cast<QPushButton*>(table->cellWidget(r,7));
         item.insert("useStat",use ? use->property("useStat").toString() : QString());
         item.insert("useDelta",use ? use->property("useDelta").toInt() : 0);
         item.insert("useConsume",use ? use->property("useConsume").toBool() : true);
@@ -1472,6 +1476,42 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
 }
 } // namespace
 
+/* Shorten repeated object instances without altering the pickup kind.
+ * e.g. flower[0..4], flower[7..9]; a complete zero-based run is flower[].
+ * An already-named flower[] remains the explicit all-instances notation. */
+QStringList collectableInstanceSummary(const QStringList &names)
+{
+    const QRegularExpression indexed(QStringLiteral(R"(^(.*)\[(\d+)\]$)"));
+    QMap<QString,QSet<int>> groups;
+    QStringList plain;
+    for (const QString &name : names) {
+        const QRegularExpressionMatch match=indexed.match(name);
+        if (!match.hasMatch()) { if (!plain.contains(name)) plain.append(name); continue; }
+        bool ok=false;
+        const int number=match.captured(2).toInt(&ok);
+        if (!ok || number<0) { plain.append(name); continue; }
+        groups[match.captured(1)].insert(number);
+    }
+    for (auto it=groups.constBegin();it!=groups.constEnd();++it) {
+        QList<int> indices=it.value().values();
+        std::sort(indices.begin(),indices.end());
+        if(indices.isEmpty())continue;
+        const bool complete=indices.first()==0 && indices.last()==indices.size()-1;
+        if (complete && indices.size()>1) {
+            plain.append(it.key()+QStringLiteral("[]"));
+            continue;
+        }
+        for(int i=0;i<indices.size();) {
+            const int first=indices[i];
+            int last=first;
+            while(++i<indices.size() && indices[i]==last+1) last=indices[i];
+            plain.append(it.key()+QStringLiteral("[%1%2]").arg(first)
+                .arg(last==first?QString():QStringLiteral("..%1").arg(last)));
+        }
+    }
+    return plain;
+}
+
 bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &sprites,
                        const QVector<GameAdventureAsset> &atlases,
@@ -1498,10 +1538,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QSpinBox *inventoryIconCell = nullptr;
     bool editingIconControls = false;
     auto *itemsPage = new QWidget(tabs); auto *itemsLayout = new QVBoxLayout(itemsPage);
-    auto *items = new QTableWidget(0,7,itemsPage);
+    auto *items = new QTableWidget(0,8,itemsPage);
     items->setHorizontalHeaderLabels({QObject::tr("Item name (e.g. Brass Key)"),QObject::tr("Pick up from..."),
                                       QObject::tr("Max owned"),QObject::tr("Start with"),QObject::tr("Icon artwork"),
-                                      QObject::tr("Can discard?"),QObject::tr("USE effect")});
+                                      QObject::tr("Can drop?"),QObject::tr("Can discard?"),QObject::tr("USE effect")});
     items->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     items->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(2,QHeaderView::ResizeToContents);
@@ -1509,6 +1549,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     items->horizontalHeader()->setSectionResizeMode(4,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(6,QHeaderView::ResizeToContents);
+    items->horizontalHeader()->setSectionResizeMode(7,QHeaderView::ResizeToContents);
     items->setIconSize(QSize(36,36));
     items->verticalHeader()->setDefaultSectionSize(46);
     auto *collectionHelp=new QLabel(QObject::tr(
@@ -1522,9 +1563,18 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "still use game_adventure_collect(item->kind) in a custom on_pickup() callback. "
         "Double-click Icon artwork to choose that item's PPB atlas, cell size, and Single or 2×2 stamp. "
         "Make that PPB available in every other world where this inventory icon should appear. "
-        "Discarding is OFF by default. NPC quest-required items are protected automatically, "
-        "even if a quest NPC lives in another SAVED world."),itemsPage);
+        "Can drop places an item on the floor for later recovery; Can discard destroys it permanently. "
+        "NPC-required items cannot be destroyed but CAN be dropped. "
+        "A 0-slot inventory limit means unlimited distinct item stacks."),itemsPage);
     collectionHelp->setWordWrap(true);itemsLayout->addWidget(collectionHelp);
+    auto *inventoryCapacityRow=new QHBoxLayout;
+    auto *inventoryCapacity=new QSpinBox(itemsPage);
+    inventoryCapacity->setRange(0,64);
+    inventoryCapacity->setValue(std::clamp(old.value("maxInventorySlots").toInt(0),0,64));
+    inventoryCapacity->setToolTip(QObject::tr("Maximum distinct item stacks held. 0 = unlimited; existing stack quantities can still grow."));
+    inventoryCapacityRow->addWidget(new QLabel(QObject::tr("Maximum inventory slots (0 = unlimited):"),itemsPage));
+    inventoryCapacityRow->addWidget(inventoryCapacity);inventoryCapacityRow->addStretch();
+    itemsLayout->addLayout(inventoryCapacityRow);
     auto *itemAtlasRow = new QHBoxLayout;
     inventoryIconAtlas = new QComboBox(itemsPage);
     inventoryIconAtlas->addItem(QObject::tr("Dialogue atlas (legacy default)"),QString());
@@ -1674,7 +1724,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             const QString typeName=QStringList{QString(),QObject::tr("Coin"),QObject::tr("Health"),
                 QObject::tr("Key"),QObject::tr("Gem")}.at(k);
             kind->addItem(QObject::tr("%1: %2 — %3").arg(k).arg(typeName)
-                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):names.join(QStringLiteral(", "))),k);
+                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):collectableInstanceSummary(names).join(QStringLiteral(", "))),k);
         }
         for(const QJsonValue &kv:customKinds){
             const QJsonObject def=kv.toObject();
@@ -1684,13 +1734,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             for(const auto &object:collectables) if(object.pickupKind==k) names<<object.name;
             kind->addItem(QObject::tr("%1: %2 — %3").arg(k)
                 .arg(def.value("name").toString())
-                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):names.join(QStringLiteral(", "))),k);
+                .arg(names.isEmpty()?QObject::tr("no matching objects placed"):collectableInstanceSummary(names).join(QStringLiteral(", "))),k);
         }
         const int requested=o.value("pickupKind").toInt(0);
         if (kind->findData(requested)<0 && requested>4 && requested<=255)
             kind->addItem(QObject::tr("%1: missing custom pickup definition").arg(requested),requested);
         kind->setCurrentIndex(std::max(0,kind->findData(requested)));
         items->setCellWidget(row,1,kind);
+        auto *drop=new QCheckBox(items);
+        drop->setChecked(o.value("droppable").toBool(o.value("discardable").toBool(false)));
+        drop->setToolTip(QObject::tr("Allow dropping this item on the ground, even if an NPC needs it later."));
+        items->setCellWidget(row,5,drop);
         auto *discard=new QCheckBox(items);
         discard->setChecked(o.value("discardable").toBool(false));
         if (protectedItemNames.contains(o.value("name").toString().trimmed().toCaseFolded())) {
@@ -1700,7 +1754,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         } else {
             discard->setToolTip(QObject::tr("Allow the player to discard one copy (confirmation required)."));
         }
-        items->setCellWidget(row,5,discard);
+        items->setCellWidget(row,6,discard);
         auto *use=new QPushButton(items);
         const QString initialStat=o.value("useStat").toString();
         const int initialDelta=o.value("useDelta").toInt(0);
@@ -1739,7 +1793,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             use->setProperty("useConsume",consume->isChecked());
             refreshUse();
         });
-        items->setCellWidget(row,6,use);
+        items->setCellWidget(row,7,use);
         refreshInventoryIcons();
         items->setCurrentCell(row,0);
         selectItemAtlas();
@@ -2855,6 +2909,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     if(dialog.exec()!=QDialog::Accepted)return false;
     QJsonObject result=old;
     result.insert("items",tableItems(items));
+    result.insert("maxInventorySlots",inventoryCapacity->value());
     QJsonArray outNpcs;
     for(int row=0;row<npcs->rowCount();++row){
         QJsonObject o; o.insert("spriteId",npcs->item(row,0)->data(Qt::UserRole).toString());

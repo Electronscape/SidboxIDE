@@ -1,4 +1,5 @@
 #include "gamefloweditor.h"
+#include "idetheme.h"
 #include "ppbcodec.h"
 #include "gamespritestamp.h"
 
@@ -78,6 +79,8 @@ struct FlowLayout {
     QHash<QString,bool> expanded;
     // Positions are LOCAL to a manual group so moving its frame preserves its wiring.
     QHash<QString,QHash<QString,QPointF>> memberPositions;
+    // Array-group ID -> containing manual group ID (one nesting level).
+    QHash<QString,QString> embeddedArrays;
     bool snapToGrid = true;
 };
 struct FlowEdge {
@@ -451,16 +454,19 @@ FlowGraph loadGraph(const QString &root) {
     return g;
 }
 
-QColor nodeColour(const QString &kind, bool problem) {
-    if (problem) return QColor(154,58,54);
-    if (kind == QStringLiteral("World")) return QColor(45,80,127);
-    if (kind == QStringLiteral("Player Start")) return QColor(44,112,110);
-    if (kind == QStringLiteral("NPC") || kind == QStringLiteral("Dialogue")) return QColor(105,75,138);
-    if (kind == QStringLiteral("Dialogue Choice")) return QColor(127,78,122);
-    if (kind == QStringLiteral("Inventory Item")) return QColor(118,98,45);
-    if (kind == QStringLiteral("Player Stat")) return QColor(108,71,52);
-    if (kind == QStringLiteral("Spline")) return QColor(73,98,68);
-    return QColor(66,92,112);
+QColor nodeColour(const QString &kind, bool problem, const IDETheme &theme) {
+    // Node categories retain distinct stripes, but every colour comes from
+    // the current IDE theme, including a user's custom .sidtheme file.
+    if (problem) return theme.diagnosticError;
+    if (kind == QStringLiteral("World")) return theme.accent;
+    if (kind == QStringLiteral("Player Start")) return theme.outputSuccess;
+    if (kind == QStringLiteral("NPC")) return theme.syntaxFunction;
+    if (kind == QStringLiteral("Dialogue")) return theme.syntaxString;
+    if (kind == QStringLiteral("Dialogue Choice")) return theme.syntaxAPI;
+    if (kind == QStringLiteral("Inventory Item")) return theme.syntaxKeyword;
+    if (kind == QStringLiteral("Player Stat")) return theme.syntaxNumber;
+    if (kind == QStringLiteral("Spline")) return theme.syntaxType;
+    return theme.syntaxSTM32;
 }
 
 // Return an actual 16x16 preview of the sprite/frame used by this design
@@ -521,12 +527,12 @@ QPixmap flowArtworkIcon(const FlowNode &node, const QString &root,
 
 // Tiny, self-contained 16x16 pictograms: no theme-dependent icon files or
 // larger artwork. All icons are painted into the graph only (never exported).
-QPixmap flowCardIcon(const QString &kind, bool problem) {
+QPixmap flowCardIcon(const QString &kind, bool problem, const IDETheme &theme) {
     QPixmap pix(16,16);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing,true);
-    const QColor colour = problem ? QColor(255,143,133) : QColor(190,214,232);
+    const QColor colour = problem ? theme.diagnosticError : theme.text;
     QPen pen(colour,1.45,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
@@ -700,9 +706,9 @@ protected:
 // derived from actual source resource names and should not be overridden.
 class FlowGroupTitleItem final : public QGraphicsTextItem {
 public:
-    explicit FlowGroupTitleItem(const QString &name,QGraphicsItem *parent)
+    explicit FlowGroupTitleItem(const QString &name,QGraphicsItem *parent, const QColor &titleColour)
         : QGraphicsTextItem(name,parent),m_original(name) {
-        setDefaultTextColor(QColor(245,246,250));
+        setDefaultTextColor(titleColour);
         setFont(QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
         setTextInteractionFlags(Qt::NoTextInteraction);
         setToolTip(QObject::tr("Double-click to rename this logic group"));
@@ -779,14 +785,17 @@ public:
     std::function<void(const QString &)> onToggle;
     void setGroup(bool group) { m_group = group; }
     void setSnapToGrid(bool enabled) { m_snapToGrid = enabled; }
-    std::function<void(const QString &,const QPointF &)> onDropped;
+    void setAllowLeaveParent(bool enabled) { m_allowLeaveParent = enabled; }
+    // Include the actual mouse release position; Qt child positions are
+    // parent-local, but drag-out detection needs a scene coordinate.
+    std::function<void(const QString &,const QPointF &,const QPointF &)> onDropped;
 protected:
     QVariant itemChange(GraphicsItemChange change,const QVariant &value) override {
         if (change==QGraphicsItem::ItemPositionChange) {
             QPointF p=value.toPointF();
-            if (parentItem() && flags().testFlag(QGraphicsItem::ItemIsMovable)) {
-                // Keep independently draggable mini cards inside their
-                // group, including when 8px snapping is switched off.
+            if (parentItem() && !m_allowLeaveParent && flags().testFlag(QGraphicsItem::ItemIsMovable)) {
+                // Ordinary mini cards stay inside their logic group; nested
+                // array groups may cross the boundary to be pulled back out.
                 p.setX(qMax(qreal(16),p.x()));
                 p.setY(qMax(qreal(80),p.y()));
             }
@@ -811,13 +820,14 @@ protected:
              QRectF(11,3,25,23).contains(event->pos()) && bool(onToggle);
         QGraphicsRectItem::mouseReleaseEvent(event);
         if (clickedToggle) onToggle(m_key); // callback schedules a redraw AFTER this event
-        if (onDropped && pos()!=m_pressPosition) onDropped(m_key,pos());
+        if (onDropped && pos()!=m_pressPosition) onDropped(m_key,pos(),event->scenePos());
     }
 private:
     QString m_key;
     QPointF m_pressPosition;
     bool m_group=false;
     bool m_snapToGrid=true;
+    bool m_allowLeaveParent=false;
 };
 
 // Drag empty canvas to rubber-band select. Middle or Alt+drag pans.
@@ -846,6 +856,30 @@ protected:
         QGraphicsView::wheelEvent(event);
     }
     void mousePressEvent(QMouseEvent *event) override {
+        // Raise the clicked card above its siblings. An embedded card must
+        // also bring each enclosing group forward; child z-values alone
+        // cannot place it above a different top-level logic group.
+        // Use the card key rather than Qt item types so clicks on a group's
+        // editable title, labels, and artwork all work the same way.
+        if (event->button()==Qt::LeftButton) {
+            for (QGraphicsItem *card=itemAt(event->pos());card;card=card->parentItem()) {
+                if (card->data(0).toString().isEmpty())continue;
+                qreal front=card->zValue();
+                if (QGraphicsItem *parent=card->parentItem()) {
+                    for (QGraphicsItem *sibling:parent->childItems()) {
+                        if (sibling!=card && !sibling->data(0).toString().isEmpty())
+                            front=qMax(front,sibling->zValue());
+                    }
+                } else if (scene()) {
+                    for (QGraphicsItem *sibling:scene()->items()) {
+                        if (sibling!=card && !sibling->parentItem() &&
+                            !sibling->data(0).toString().isEmpty())
+                            front=qMax(front,sibling->zValue());
+                    }
+                }
+                card->setZValue(front+1.0);
+            }
+        }
         const bool middle=event->button()==Qt::MiddleButton;
         const bool blank=event->button()==Qt::LeftButton && !cardAt(event->pos());
         if (blank && !(event->modifiers() & Qt::AltModifier)) {
@@ -938,6 +972,13 @@ FlowLayout readFlowLayout(const QString &filename) {
     const QJsonObject states=document.value(QStringLiteral("expanded")).toObject();
     for (auto it=states.begin();it!=states.end();++it)
         if (it.value().isBool())result.expanded.insert(it.key(),it.value().toBool());
+    const QJsonObject embedded=document.value(QStringLiteral("embeddedArrays")).toObject();
+    for (auto it=embedded.constBegin();it!=embedded.constEnd();++it) {
+        const QString parent=it.value().toString();
+        if (it.key().startsWith(QStringLiteral("flow-group/array/")) &&
+            parent.startsWith(QStringLiteral("flow-group/manual/")))
+            result.embeddedArrays.insert(it.key(),parent);
+    }
     result.snapToGrid=document.value(QStringLiteral("snapToGrid")).toBool(true);
     const QJsonObject offsets=document.value(QStringLiteral("memberPositions")).toObject();
     for (auto group=offsets.begin();group!=offsets.end();++group) {
@@ -981,11 +1022,15 @@ bool writeFlowLayout(const QString &filename,const FlowLayout &layout) {
                                                      {QStringLiteral("y"),member.value().y()}});
         memberPositions.insert(group.key(),members);
     }
-    const QJsonDocument doc(QJsonObject{{QStringLiteral("version"),3},
+    QJsonObject embeddedArrays;
+    for (auto it=layout.embeddedArrays.cbegin();it!=layout.embeddedArrays.cend();++it)
+        embeddedArrays.insert(it.key(),it.value());
+    const QJsonDocument doc(QJsonObject{{QStringLiteral("version"),4},
                                          {QStringLiteral("positions"),points},
                                          {QStringLiteral("groups"),groups},
                                          {QStringLiteral("expanded"),states},
                                          {QStringLiteral("memberPositions"),memberPositions},
+                                         {QStringLiteral("embeddedArrays"),embeddedArrays},
                                          {QStringLiteral("snapToGrid"),layout.snapToGrid}});
     QSaveFile file(filename);
     if (!file.open(QIODevice::WriteOnly))return false;
@@ -1044,7 +1089,8 @@ void buildFlowGroups(const FlowGraph &graph,const FlowLayout &layout,
 }
 
 FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup> &groups,
-                           const QHash<QString,QString> &memberGroup) {
+                           const QHash<QString,QString> &memberGroup,
+                           const QHash<QString,QString> &embeddedArrays) {
     FlowGraph display;
     display.worlds=graph.worlds;
     for (const FlowNode &node:graph.nodes) {
@@ -1052,6 +1098,9 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
         display.addNode(node.id,node.world,node.kind,node.title,node.description,node.column,node.problem);
     }
     for (auto it=groups.cbegin();it!=groups.cend();++it) {
+        if (embeddedArrays.contains(it.key()) && groups.contains(embeddedArrays.value(it.key())) &&
+            groups.value(embeddedArrays.value(it.key())).world==it.value().world)
+            continue; // This array is a child of the visible manual group.
         int column=5;
         for (const QString &id:it.value().members)
             column=qMin(column,graph.nodes.at(graph.byId.value(id)).column);
@@ -1060,8 +1109,14 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
     }
     QSet<QString> seen;
     for (const FlowEdge &edge:graph.edges) {
-        const QString from=memberGroup.value(edge.from,edge.from);
-        const QString to=memberGroup.value(edge.to,edge.to);
+        QString from=memberGroup.value(edge.from,edge.from);
+        QString to=memberGroup.value(edge.to,edge.to);
+        if (groups.contains(embeddedArrays.value(from)) &&
+            groups.value(embeddedArrays.value(from)).world==groups.value(from).world)
+            from=embeddedArrays.value(from);
+        if (groups.contains(embeddedArrays.value(to)) &&
+            groups.value(embeddedArrays.value(to)).world==groups.value(to).world)
+            to=embeddedArrays.value(to);
         if (from==to)continue;
         const QString key=from+QChar(0x1f)+to;
         if (seen.contains(key))continue;
@@ -1072,7 +1127,21 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
 
 } // namespace
 
-void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
+void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETheme &theme) {
+    // The graph is design-time only. Take the current designer theme as a
+    // snapshot when opened, as this dialog is modal.
+    // Blend existing theme fields only: no independent flowchart palette.
+    const auto mix = [](const QColor &a, const QColor &b, qreal fraction) -> QColor {
+        return QColor::fromRgbF(a.redF() * (1.0 - fraction) + b.redF() * fraction,
+                                a.greenF() * (1.0 - fraction) + b.greenF() * fraction,
+                                a.blueF() * (1.0 - fraction) + b.blueF() * fraction);
+    };
+    const QColor cardBackground = mix(theme.panelBackground, theme.brightText, 0.07);
+    const QColor groupBackground = mix(theme.panelBackground, theme.accent, 0.36);
+    const QColor arrayBackground = mix(groupBackground, theme.accent, 0.13);
+    const QColor nestedBackground = mix(groupBackground, theme.accent, 0.28);
+    const QColor miniBackground = mix(cardBackground, theme.windowBackground, 0.20);
+    const QColor cardBorder = mix(theme.border, theme.mutedText, 0.45);
     QDialog dialog(parent);
     dialog.setWindowTitle(QObject::tr("Game Flow Debugger - Design Time"));
     dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
@@ -1121,7 +1190,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
     auto *view=new FlowView(scene,split);
     view->setRenderHint(QPainter::Antialiasing,true);
     view->setViewportUpdateMode(QGraphicsView::SmartViewportUpdate);
-    view->setBackgroundBrush(QColor(24,27,34));
+    view->setBackgroundBrush(theme.windowBackground);
     auto *right=new QWidget(split);
     right->setMinimumWidth(215);
     auto *rightLayout=new QVBoxLayout(right);
@@ -1130,6 +1199,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                    "Drag empty space to select cards; middle/Alt+drag to pan.\n"
                                    "Ctrl+click adds individual selections. Ctrl+G groups.\n"
                                    "Click a group's +/- to expand or collapse; drag its header to move.\n"
+                                   "Drop a card or array group onto a logic group to place it inside.\n"
+                                   "Drag a nested array group outside its logic group to detach it.\n"
                                    "Manual groups show internal arrows and movable mini cards.\n"
                                    "Ctrl+Shift+G ungroups a selected manual group or its child.\n"
                                    "Snap 8px aligns all cards (including mini cards) while dragging.\n"
@@ -1138,6 +1209,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                    "Spread Left to Right lays out linked logic chains.\n"
                                    "Red cards indicate broken references.\n"
                                    "Wire colours flow RED (outgoing) to GREEN (incoming).\n"
+                                   "Two opposite links are drawn as separate parallel wires.\n"
                                    "Click a wire to select both connected cards.\n"
                                    "Double-click a manual group title or press F2 to rename it."),right);
     help->setWordWrap(true);
@@ -1178,6 +1250,11 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                               QStringLiteral("World: ")+g.world,
                               QStringLiteral("Members: %1").arg(g.members.size()),
                               QString(),QObject::tr("Click +/- to show or hide individual cards. Drag the group header to move it.")};
+            if (!g.automatic) {
+                for (auto it=layout.embeddedArrays.cbegin();it!=layout.embeddedArrays.cend();++it)
+                    if (it.value()==g.id && groups.contains(it.key()))
+                        lines << QStringLiteral(" • ")+groups.value(it.key()).title+QStringLiteral(" (array group)");
+            }
             for (const QString &id:g.members) {
                 const int index=graph.byId.value(id,-1);
                 if (index>=0)lines << QStringLiteral(" • ")+graph.nodes.at(index).title;
@@ -1217,7 +1294,9 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
         }
         if (selectedCards.isEmpty() && !selectedId.isEmpty())selectedCards.insert(selectedId);
         const auto isSelectedEndpoint=[&](const QString &id) {
-            return selectedCards.contains(id) || selectedCards.contains(memberGroup.value(id));
+            const QString groupId=memberGroup.value(id);
+            return selectedCards.contains(id) || selectedCards.contains(groupId) ||
+                   selectedCards.contains(layout.embeddedArrays.value(groupId));
         };
         QSet<QString> neighbours=selectedCards;
         for (const EdgeArt &e:edges) {
@@ -1242,9 +1321,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                desc.contains(query,Qt::CaseInsensitive) ||
                                kind.contains(query,Qt::CaseInsensitive);
             const bool near=!connectionsOnly->isChecked() || selectedCards.isEmpty() || neighbours.contains(it.key()) ||
-                            (memberGroup.value(it.key())==selectedId);
+                            (memberGroup.value(it.key())==selectedId) ||
+                            (layout.embeddedArrays.value(memberGroup.value(it.key()))==selectedId);
             it.value()->setOpacity(matches && near ? 1.0 : 0.16);
-            it.value()->setPen(QPen(selectedCards.contains(it.key())?QColor(255,229,116):QColor(125,137,149),
+            const bool arrayGroup = groups.contains(it.key()) && groups.value(it.key()).automatic;
+            it.value()->setPen(QPen(selectedCards.contains(it.key()) || arrayGroup
+                                      ? theme.accent : cardBorder,
                                       selectedCards.contains(it.key())?2.5:1));
         }
         for (const EdgeArt &e:edges) {
@@ -1256,6 +1338,9 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
         if (refreshEdges)refreshEdges();
     };
     refreshEdges=[&]() {
+        QSet<QString> directed;
+        for (const EdgeArt &edge:edges)
+            directed.insert(edge.from+QChar(0x1f)+edge.to);
         for (const EdgeArt &e:edges) {
             QGraphicsRectItem *aItem=cards.value(e.from,nullptr);
             QGraphicsRectItem *bItem=cards.value(e.to,nullptr);
@@ -1267,10 +1352,19 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
             // lines do not make a pointless loop through the cards.
             const bool vertical=std::abs(ac.x()-bc.x())<170;
             const bool positive=vertical ? bc.y()>=ac.y() : bc.x()>=ac.x();
-            const QPointF start=vertical ? QPointF(ac.x(),positive?a.bottom():a.top())
-                                          : QPointF(positive?a.right():a.left(),ac.y());
-            const QPointF end=vertical ? QPointF(bc.x(),positive?b.top():b.bottom())
-                                        : QPointF(positive?b.left():b.right(),bc.y());
+            QPointF start=vertical ? QPointF(ac.x(),positive?a.bottom():a.top())
+                                    : QPointF(positive?a.right():a.left(),ac.y());
+            QPointF end=vertical ? QPointF(bc.x(),positive?b.top():b.bottom())
+                                  : QPointF(positive?b.left():b.right(),bc.y());
+            // A->B and B->A must not sit exactly on the same path: each gets
+            // its own lane and its own RED -> GREEN arrow at the destination.
+            const bool reciprocal=directed.contains(e.to+QChar(0x1f)+e.from);
+            if (reciprocal) {
+                const qreal side=e.from<e.to ? qreal(-12) : qreal(12);
+                const QPointF lane=vertical ? QPointF(side,0) : QPointF(0,side);
+                start+=lane;
+                end+=lane;
+            }
             const qreal length=vertical?std::abs(end.y()-start.y()):std::abs(end.x()-start.x());
             const qreal bend=qMax(qreal(28),length*0.40);
             QPainterPath path(start);
@@ -1350,7 +1444,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
         scene->clear();
         const QString selectedWorld=worldSelect->currentData().toString();
         const QStringList worlds=selectedWorld.isEmpty()?graph.worlds:QStringList{selectedWorld};
-        FlowGraph display=groupLayoutGraph(graph,groups,memberGroup);
+        FlowGraph display=groupLayoutGraph(graph,groups,memberGroup,layout.embeddedArrays);
         qreal laneTop=20;
         for (const QString &world:worlds) {
             QVector<int> columns[6];
@@ -1371,6 +1465,14 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                     auto *card=new FlowCardItem(n.id);
                     const int rows=(g.members.size()+1)/2;
                     QHash<QString,QPointF> miniPositions;
+                    QStringList embeddedIds;
+                    if (isGroup && !g.automatic) {
+                        for (auto it=layout.embeddedArrays.cbegin();it!=layout.embeddedArrays.cend();++it)
+                            if (it.value()==g.id && groups.contains(it.key()) && groups.value(it.key()).automatic &&
+                                groups.value(it.key()).world==g.world)
+                                embeddedIds.append(it.key());
+                        embeddedIds.sort();
+                    }
                     if (isGroup && g.expanded && !g.automatic) {
                         // Layout the manual group's INTERNAL graph, not a blind
                         // list. Directed steps advance right; unrelated branches
@@ -1415,6 +1517,17 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                             const QPointF initial(24+rank*224,88+row*88);
                             miniPositions.insert(id,layout.memberPositions.value(g.id).value(id,initial));
                         }
+                        // Array-group cards occupy their own local frame. Their
+                        // constituent cards remain inside, not flattened.
+                        qreal nextRow=88;
+                        for (const QPointF &existing:miniPositions)
+                            nextRow=qMax(nextRow,existing.y()+88);
+                        for (const QString &embeddedId:embeddedIds) {
+                            const QPointF initial(24,nextRow);
+                            const QPointF position=layout.memberPositions.value(g.id).value(embeddedId,initial);
+                            miniPositions.insert(embeddedId,position);
+                            nextRow=qMax(nextRow,position.y()+88);
+                        }
                     }
                     if (isGroup) {
                         card->setGroup(true);
@@ -1422,21 +1535,24 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                         if (g.expanded && g.automatic) {width=550;height=88+rows*82;}
                         if (g.expanded && !g.automatic) {
                             width=280;height=170;
-                            for (const QPointF &point:miniPositions) {
-                                width=qMax(width,point.x()+224);
-                                height=qMax(height,point.y()+88);
+                            for (auto it=miniPositions.cbegin();it!=miniPositions.cend();++it) {
+                                const bool nested=groups.contains(it.key());
+                                const FlowGroup inner=groups.value(it.key());
+                                const int nestedRows=(inner.members.size()+1)/2;
+                                width=qMax(width,it.value().x()+(nested && inner.expanded ? 550 : 224)+24);
+                                height=qMax(height,it.value().y()+(nested && inner.expanded ? 88+nestedRows*82 : 88)+24);
                             }
                         }
                         card->setRect(0,0,width,height);
                     }
                     scene->addItem(card);
                     card->setSnapToGrid(layout.snapToGrid);
-                    card->setPen(QPen(QColor(125,137,149)));
-                    card->setBrush(QBrush(isGroup?QColor(43,53,69):QColor(37,41,50)));
+                    card->setPen(QPen(isGroup && g.automatic ? theme.accent : cardBorder));
+                    card->setBrush(QBrush(isGroup ? (g.automatic ? arrayBackground : groupBackground) : cardBackground));
                     card->setPos(savedPositions.value(n.id,QPointF(x,y)));
                     card->setZValue(2);
                     card->setToolTip(isGroup?QObject::tr("Click +/- to expand or collapse. Drag this group to move its contents."):n.description);
-                    auto *stripe=scene->addRect(0,0,7,isGroup?70:70,Qt::NoPen,QBrush(isGroup?QColor(76,151,183):nodeColour(n.kind,n.problem)));
+                    auto *stripe=scene->addRect(0,0,7,isGroup?70:70,Qt::NoPen,QBrush(isGroup?theme.accent:nodeColour(n.kind,n.problem,theme)));
                     stripe->setParentItem(card);stripe->setPos(0,0);
                     stripe->setAcceptedMouseButtons(Qt::NoButton);
                     if (isGroup) {
@@ -1444,17 +1560,17 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                         toggleFont.setPixelSize(14);
                         toggleFont.setBold(true);
                         auto *toggle=scene->addSimpleText(g.expanded?QStringLiteral("−"):QStringLiteral("+"),toggleFont);
-                        toggle->setParentItem(card);toggle->setPos(14,0);toggle->setBrush(QColor(232,241,255));
+                        toggle->setParentItem(card);toggle->setPos(14,0);toggle->setBrush(theme.brightText);
                         toggle->setAcceptedMouseButtons(Qt::NoButton);
                         auto *kind=scene->addSimpleText(g.automatic?QStringLiteral("ARRAY GROUP"):QStringLiteral("LOGIC GROUP"),QFont(QStringLiteral("Sans Serif"),8,QFont::Bold));
-                        kind->setParentItem(card);kind->setPos(45,4);kind->setBrush(QColor(151,195,219));
+                        kind->setParentItem(card);kind->setPos(45,4);kind->setBrush(theme.text);
                         kind->setAcceptedMouseButtons(Qt::NoButton);
                         if (g.automatic) {
                             auto *name=scene->addSimpleText(brief(g.title,42),QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
-                            name->setParentItem(card);name->setPos(14,26);name->setBrush(QColor(245,246,250));
+                            name->setParentItem(card);name->setPos(14,26);name->setBrush(theme.brightText);
                             name->setAcceptedMouseButtons(Qt::NoButton);
                         } else {
-                            auto *name=new FlowGroupTitleItem(g.title,card);
+                            auto *name=new FlowGroupTitleItem(g.title,card,theme.brightText);
                             name->setPos(11,20);
                             name->setTextWidth(qMax(qreal(230),card->rect().width()-22));
                             groupTitles.insert(g.id,name);
@@ -1470,8 +1586,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                 },Qt::QueuedConnection);
                             };
                         }
-                        auto *count=scene->addSimpleText(QObject::tr("%1 cards").arg(g.members.size()),QFont(QStringLiteral("Sans Serif"),8));
-                        count->setParentItem(card);count->setPos(14,48);count->setBrush(QColor(165,188,210));
+                        auto *count=scene->addSimpleText(
+                            embeddedIds.isEmpty() ? QObject::tr("%1 cards").arg(g.members.size())
+                                                  : QObject::tr("%1 cards + %2 arrays")
+                                                      .arg(g.members.size()).arg(embeddedIds.size()),
+                            QFont(QStringLiteral("Sans Serif"),8));
+                        count->setParentItem(card);count->setPos(14,48);count->setBrush(theme.mutedText);
                         count->setAcceptedMouseButtons(Qt::NoButton);
                         if (g.expanded) {
                             for (int i=0;i<g.members.size();++i) {
@@ -1492,14 +1612,14 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                     child->setFlag(QGraphicsItem::ItemIsMovable,false);
                                 }
                                 child->setZValue(3); // above embedded wires
-                                child->setBrush(QColor(37,41,50));
-                                child->setPen(QPen(QColor(104,119,137)));
+                                child->setBrush(miniBackground);
+                                child->setPen(QPen(cardBorder));
                                 child->setToolTip(member.description);
                                 auto *label=scene->addSimpleText(brief(member.title,g.automatic?34:26),QFont(QStringLiteral("Sans Serif"),9,QFont::DemiBold));
-                                label->setParentItem(child);label->setPos(12,5);label->setBrush(QColor(240,244,250));
+                                label->setParentItem(child);label->setPos(12,5);label->setBrush(theme.brightText);
                                 label->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *type=scene->addSimpleText(brief(member.kind,32),QFont(QStringLiteral("Sans Serif"),8));
-                                type->setParentItem(child);type->setPos(12,29);type->setBrush(QColor(171,188,207));
+                                type->setParentItem(child);type->setPos(12,29);type->setBrush(theme.mutedText);
                                 type->setAcceptedMouseButtons(Qt::NoButton);
                                 const QPixmap art=flowArtworkIcon(member,projectRoot,artworkSheets);
                                 if (!art.isNull()) {
@@ -1510,6 +1630,80 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                                         .arg(member.artPath).arg(member.artFrame));
                                 }
                                 cards.insert(memberId,child);
+                            }
+                            // A manually placed automatic array group stays a
+                            // selectable, movable container inside this logic group.
+                            for (const QString &embeddedId:embeddedIds) {
+                                const FlowGroup inner=groups.value(embeddedId);
+                                const int nestedRows=(inner.members.size()+1)/2;
+                                auto *sub=new FlowCardItem(embeddedId);
+                                sub->setParentItem(card);
+                                sub->setGroup(true);
+                                sub->setSnapToGrid(layout.snapToGrid);
+                                // Only these nested ARRAY GROUP cards can be
+                                // dragged outside their owner's frame.
+                                sub->setAllowLeaveParent(true);
+                                sub->setRect(0,0,inner.expanded?550:270,
+                                             inner.expanded?88+nestedRows*82:70);
+                                sub->setPos(miniPositions.value(embeddedId));
+                                sub->setZValue(3);
+                                sub->setBrush(nestedBackground);
+                                sub->setPen(QPen(theme.accent));
+                                sub->setToolTip(QObject::tr("Array group nested in %1; click +/- to expand it, or drag outside the parent to detach.").arg(g.title));
+                                auto *subtitle=new QGraphicsSimpleTextItem(brief(inner.title,35),sub);
+                                subtitle->setPos(14,26);
+                                subtitle->setBrush(theme.brightText);
+                                subtitle->setAcceptedMouseButtons(Qt::NoButton);
+                                auto *subtype=new QGraphicsSimpleTextItem(QStringLiteral("ARRAY GROUP"),sub);
+                                subtype->setPos(45,4);
+                                subtype->setBrush(theme.text);
+                                subtype->setAcceptedMouseButtons(Qt::NoButton);
+                                auto *subCount=new QGraphicsSimpleTextItem(
+                                    QObject::tr("%1 cards").arg(inner.members.size()),sub);
+                                subCount->setPos(14,48);
+                                subCount->setBrush(theme.mutedText);
+                                subCount->setAcceptedMouseButtons(Qt::NoButton);
+                                auto *subToggle=new QGraphicsSimpleTextItem(inner.expanded?QStringLiteral("−"):QStringLiteral("+"),sub);
+                                QFont subFont(QStringLiteral("Sans Serif"));
+                                subFont.setPixelSize(14);subFont.setBold(true);
+                                subToggle->setFont(subFont);
+                                subToggle->setPos(14,0);
+                                subToggle->setBrush(theme.brightText);
+                                subToggle->setAcceptedMouseButtons(Qt::NoButton);
+                                cards.insert(embeddedId,sub);
+                                if (inner.expanded) {
+                                    for (int i=0;i<inner.members.size();++i) {
+                                        const QString memberId=inner.members.at(i);
+                                        const int index=graph.byId.value(memberId,-1);
+                                        if (index<0)continue;
+                                        const FlowNode &member=graph.nodes.at(index);
+                                        auto *mini=new FlowCardItem(memberId);
+                                        mini->setParentItem(sub);
+                                        mini->setSnapToGrid(layout.snapToGrid);
+                                        mini->setFlag(QGraphicsItem::ItemIsMovable,false);
+                                        mini->setPos(16+(i%2)*272,80+(i/2)*88);
+                                        mini->setZValue(3);
+                                        mini->setBrush(miniBackground);
+                                        mini->setPen(QPen(cardBorder));
+                                        mini->setToolTip(member.description);
+                                        auto *label=new QGraphicsSimpleTextItem(brief(member.title,34),mini);
+                                        label->setPos(12,5);label->setBrush(theme.brightText);
+                                        label->setAcceptedMouseButtons(Qt::NoButton);
+                                        auto *kind=new QGraphicsSimpleTextItem(brief(member.kind,32),mini);
+                                        kind->setPos(12,29);kind->setBrush(theme.mutedText);
+                                        kind->setAcceptedMouseButtons(Qt::NoButton);
+                                        cards.insert(memberId,mini);
+                                    }
+                                }
+                                sub->onToggle=[&](const QString &id) {
+                                    QMetaObject::invokeMethod(&dialog,[&,id]() {
+                                        if (!groups.contains(id))return;
+                                        const bool expanded=!groups.value(id).expanded;
+                                        groups[id].expanded=expanded;
+                                        layout.expanded.insert(id,expanded);
+                                        redraw();savePositions();
+                                    },Qt::QueuedConnection);
+                                };
                             }
                         }
                         card->onToggle=[&](const QString &id) {
@@ -1524,13 +1718,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                         };
                     } else {
                         auto *kind=scene->addSimpleText(n.kind.toUpper(),QFont(QStringLiteral("Sans Serif"),8,QFont::Bold));
-                        kind->setParentItem(card);kind->setPos(36,4);kind->setBrush(QColor(151,166,185));
+                        kind->setParentItem(card);kind->setPos(36,4);kind->setBrush(theme.mutedText);
                         kind->setAcceptedMouseButtons(Qt::NoButton);
-                        auto *symbol=scene->addPixmap(flowCardIcon(n.kind,n.problem));
+                        auto *symbol=scene->addPixmap(flowCardIcon(n.kind,n.problem,theme));
                         symbol->setParentItem(card);symbol->setPos(15,4);
                         symbol->setAcceptedMouseButtons(Qt::NoButton);
                         auto *name=scene->addSimpleText(brief(n.title,36),QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
-                        name->setParentItem(card);name->setPos(14,24);name->setBrush(QColor(245,246,250));
+                        name->setParentItem(card);name->setPos(14,24);name->setBrush(theme.brightText);
                         name->setAcceptedMouseButtons(Qt::NoButton);
                         const QPixmap art=flowArtworkIcon(n,projectRoot,artworkSheets);
                         if (!art.isNull()) {
@@ -1552,35 +1746,34 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                          qMax(qreal(2030),worldBounds.width()+36),
                          qMax(laneHeight,worldBounds.height()+104))
                 : QRectF(12,laneTop,2030,laneHeight);
-            auto *band=scene->addRect(bandRect,QPen(QColor(65,68,78)),QBrush(QColor(29,32,39)));
+            auto *band=scene->addRect(bandRect,QPen(theme.border),QBrush(theme.alternateBackground));
             band->setZValue(-5);band->setAcceptedMouseButtons(Qt::NoButton);
             worldBands.insert(world,band);
             auto *header=scene->addSimpleText(world.toUpper());
             worldHeaders.insert(world,header);
-            header->setBrush(QColor(210,213,225));
+            header->setBrush(theme.text);
             header->setPos(bandRect.left()+20,bandRect.top()+8);
             header->setAcceptedMouseButtons(Qt::NoButton);
             laneTop=qMax(laneTop+laneHeight+18,bandRect.bottom()+18);
         }
         QHash<QString,int> sharedLines;
+        const auto visibleEndpoint=[&](const QString &id) -> QString {
+            const QString groupId=memberGroup.value(id);
+            if (groupId.isEmpty())return id;
+            const FlowGroup group=groups.value(groupId);
+            if (group.automatic) {
+                const QString outer=layout.embeddedArrays.value(groupId);
+                if (groups.contains(outer) && groups.value(outer).world==group.world &&
+                    groups.value(outer).expanded)
+                    return groupId; // A nested automatic array is still a group.
+                return groups.contains(outer) && groups.value(outer).world==group.world
+                    ? outer : groupId;
+            }
+            return group.expanded?id:groupId;
+        };
         for (const FlowEdge &e:graph.edges) {
-            const QString fromGroup=memberGroup.value(e.from);
-            const QString toGroup=memberGroup.value(e.to);
-            // Expanded MANUAL groups expose original card-to-card links,
-            // including their outside connections. Collapsed groups and all
-            // array groups still use a single aggregated connector endpoint.
-            const bool internal=!fromGroup.isEmpty() && fromGroup==toGroup;
-            const bool mini=internal && groups.contains(fromGroup) &&
-                            groups.value(fromGroup).expanded && !groups.value(fromGroup).automatic;
-            if (internal && !mini)continue;
-            const bool fromMini=groups.contains(fromGroup) && groups.value(fromGroup).expanded &&
-                                !groups.value(fromGroup).automatic;
-            const bool toMini=groups.contains(toGroup) && groups.value(toGroup).expanded &&
-                              !groups.value(toGroup).automatic;
-            // On an expanded manual group, external edges must reach the
-            // ACTUAL mini card, not disappear behind the group background.
-            const QString from=mini || fromGroup.isEmpty() || fromMini ? e.from : fromGroup;
-            const QString to=mini || toGroup.isEmpty() || toMini ? e.to : toGroup;
+            const QString from=visibleEndpoint(e.from);
+            const QString to=visibleEndpoint(e.to);
             if (from==to || !cards.contains(from) || !cards.contains(to))continue;
             const QString pair=from+QChar(0x1f)+to;
             if (sharedLines.contains(pair)) {
@@ -1592,13 +1785,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
             // group. They stay above its background and below its mini cards.
             // All other links remain behind the regular top-level cards.
             QGraphicsItem *wireParent=nullptr;
-            if (mini || fromMini)wireParent=cards.value(fromGroup,nullptr);
-            else if (toMini)wireParent=cards.value(toGroup,nullptr);
+            if (cards.value(from) && cards.value(from)->parentItem())
+                wireParent=cards.value(from)->parentItem();
+            else if (cards.value(to) && cards.value(to)->parentItem())
+                wireParent=cards.value(to)->parentItem();
             FlowWireItem *line=new FlowWireItem(wireParent);
             if (!wireParent)scene->addItem(line);
             QGraphicsPolygonItem *arrowItem=new QGraphicsPolygonItem(wireParent);
             if (!wireParent)scene->addItem(arrowItem);
-            line->setPen(QPen(QColor(126,148,164),1.5));
+            line->setPen(QPen(theme.border,1.5));
             arrowItem->setPen(Qt::NoPen);
             arrowItem->setBrush(QColor(93,207,131));
             arrowItem->setAcceptedMouseButtons(Qt::NoButton);
@@ -1633,14 +1828,81 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
         for (auto it=cards.begin();it!=cards.end();++it) {
             auto *card=static_cast<FlowCardItem *>(it.value());
             // Array members stay fixed; manual-group mini cards can be moved.
-            if (card->parentItem() && (!memberGroup.contains(it.key()) ||
-                groups.value(memberGroup.value(it.key())).automatic))continue;
+            if (card->parentItem() && !layout.embeddedArrays.contains(it.key()) &&
+                (!memberGroup.contains(it.key()) ||
+                 groups.value(memberGroup.value(it.key())).automatic))continue;
             card->onMoved=[&]() {
                 refreshEdges();
                 resizeWorldBands(false);
             };
-            card->onDropped=[&](const QString &id,const QPointF &position) {
-                if (memberGroup.contains(id) && groups.contains(memberGroup.value(id)) &&
+            card->onDropped=[&](const QString &id,const QPointF &position,const QPointF &releaseScenePos) {
+                // Root cards may be dropped INTO logic groups. Nested array
+                // groups may also be dragged OUT of their current parent;
+                // ordinary mini cards remain group-local.
+                auto *moved=cards.value(id,nullptr);
+                QString dropTarget;
+                QPointF childPosition;
+                const bool rootCard=moved && !moved->parentItem();
+                const bool mayNest=rootCard && (graph.byId.contains(id) ||
+                                   (groups.contains(id) && groups.value(id).automatic &&
+                                    !layout.embeddedArrays.contains(id)));
+                if (mayNest) {
+                    const QRectF source=moved->sceneBoundingRect();
+                    const QString world=graph.byId.contains(id)
+                        ? graph.nodes.at(graph.byId.value(id)).world : groups.value(id).world;
+                    // A large expanded array can cover a small collapsed
+                    // logic group without its centre entering the header.
+                    // Require substantial overlap, not a grazing corner.
+                    qreal bestOverlap=0;
+                    for (auto it=groups.cbegin();it!=groups.cend();++it) {
+                        if (it.value().automatic || it.value().world!=world || it.key()==id ||
+                            memberGroup.contains(id))continue;
+                        auto *target=cards.value(it.key(),nullptr);
+                        if (!target || target->parentItem())continue;
+                        const QRectF targetRect=target->sceneBoundingRect();
+                        const QRectF overlap=targetRect.intersected(source);
+                        const qreal smallArea=qMin(source.width()*source.height(),
+                                                   targetRect.width()*targetRect.height());
+                        const qreal score=smallArea>0
+                            ? overlap.width()*overlap.height()/smallArea : 0;
+                        if (score<0.35 || score<=bestOverlap)continue;
+                        bestOverlap=score;
+                        dropTarget=it.key();
+                        childPosition=target->mapFromScene(source.topLeft());
+                        if (!it.value().expanded || childPosition.y()<80) {
+                            qreal nextRow=88;
+                            for (const QPointF &existing:layout.memberPositions.value(it.key()))
+                                nextRow=qMax(nextRow,existing.y()+88);
+                            childPosition=QPointF(24,nextRow);
+                        }
+                        childPosition.setX(qMax(qreal(16),childPosition.x()));
+                        childPosition.setY(qMax(qreal(80),childPosition.y()));
+                    }
+                }
+                bool detachNestedArray=false;
+                QString oldParent;
+                QPointF detachedScenePosition;
+                if (moved && moved->parentItem() && layout.embeddedArrays.contains(id)) {
+                    oldParent=layout.embeddedArrays.value(id);
+                    auto *frame=cards.value(oldParent,nullptr);
+                    // The mouse leaving the logic frame is the deliberate
+                    // drag-out gesture. Check BEFORE resizing the frame, or
+                    // the parent would grow to swallow the departing array.
+                    // The 12px margin avoids accidental detach at an edge.
+                    detachNestedArray=frame &&
+                        !frame->sceneBoundingRect().adjusted(-12,-12,12,12).contains(releaseScenePos);
+                    if (detachNestedArray) {
+                        detachedScenePosition=moved->scenePos();
+                    } else {
+                        layout.memberPositions[oldParent].insert(id,position);
+                        if (frame) {
+                            QRectF rect=frame->rect();
+                            rect.setWidth(qMax(rect.width(),position.x()+moved->rect().width()+24));
+                            rect.setHeight(qMax(rect.height(),position.y()+moved->rect().height()+24));
+                            frame->setRect(rect);
+                        }
+                    }
+                } else if (memberGroup.contains(id) && groups.contains(memberGroup.value(id)) &&
                     !groups.value(memberGroup.value(id)).automatic) {
                     const QString owner=memberGroup.value(id);
                     auto *frame=cards.value(owner,nullptr);
@@ -1668,7 +1930,37 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
                         savedPositions.insert(current.key(),current.value()->pos());
                 refreshEdges();
                 resizeWorldBands(true);
-                savePositions();
+                if (detachNestedArray) {
+                    // A nested ARRAY GROUP becomes an independent root card.
+                    // Preserve scene coordinates (not its old parent-local
+                    // position), all array members, links and expand state.
+                    // Redraw only AFTER Qt finishes the mouse release event.
+                    QMetaObject::invokeMethod(&dialog,[&,id,oldParent,detachedScenePosition]() {
+                        if (layout.embeddedArrays.value(id)!=oldParent)return;
+                        layout.embeddedArrays.remove(id);
+                        layout.memberPositions[oldParent].remove(id);
+                        savedPositions.insert(id,detachedScenePosition);
+                        buildFlowGroups(graph,layout,groups,memberGroup);
+                        redraw();savePositions();
+                    },Qt::QueuedConnection);
+                } else if (!dropTarget.isEmpty()) {
+                    // The dragged item is processing mouseRelease; Qt must
+                    // finish that event before we destroy/rebuild the scene.
+                    QMetaObject::invokeMethod(&dialog,[&,id,dropTarget,childPosition]() {
+                        if (!groups.contains(dropTarget) || groups.value(dropTarget).automatic)return;
+                        if (groups.contains(id) && groups.value(id).automatic) {
+                            layout.embeddedArrays.insert(id,dropTarget);
+                        } else if (graph.byId.contains(id) && !memberGroup.contains(id)) {
+                            for (FlowGroup &manual:layout.manualGroups)
+                                if (manual.id==dropTarget && !manual.members.contains(id))
+                                    manual.members.append(id);
+                        } else return;
+                        layout.memberPositions[dropTarget].insert(id,childPosition);
+                        layout.expanded.insert(dropTarget,true);
+                        buildFlowGroups(graph,layout,groups,memberGroup);
+                        redraw();savePositions();
+                    },Qt::QueuedConnection);
+                } else savePositions();
             };
         }
         refreshEdges();
@@ -1745,7 +2037,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
         view->centerOn(QPointF(160,150));
     });
     QObject::connect(spread,&QPushButton::clicked,&dialog,[&](){
-        savedPositions=flowLeftToRightPositions(groupLayoutGraph(graph,groups,memberGroup));
+        savedPositions=flowLeftToRightPositions(groupLayoutGraph(graph,groups,memberGroup,layout.embeddedArrays));
         redraw();
         savePositions();
         // Keep the graph readable after switching from a tiny Fit Graph zoom.
@@ -1842,6 +2134,18 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot) {
             const auto offsets=layout.memberPositions.value(id);
             for (auto it=offsets.cbegin();it!=offsets.cend();++it)
                 savedPositions.insert(it.key(),frame->pos()+it.value());
+        }
+        for (auto it=layout.embeddedArrays.begin();it!=layout.embeddedArrays.end();) {
+            if (it.value()==id) {
+                const QString arrayId=it.key();
+                auto *inner=cards.value(arrayId,nullptr);
+                if (inner && inner->parentItem()==frame)
+                    savedPositions.insert(arrayId,inner->scenePos());
+                else if (frame)
+                    savedPositions.insert(arrayId,frame->pos()+
+                        layout.memberPositions.value(id).value(arrayId,QPointF(24,88)));
+                it=layout.embeddedArrays.erase(it);
+            } else ++it;
         }
         for (int i=layout.manualGroups.size()-1;i>=0;--i)
             if (layout.manualGroups.at(i).id==id)layout.manualGroups.removeAt(i);

@@ -1,7 +1,9 @@
-# CoderGirl IDE / SIDBOX Stage 5.71.5.241026
+# CoderGirl IDE Stage 5.78 | 24 October 2026
 
-**Gift-to-HUD hotfix:** Inventory grants from dialogue-close now display immediately in HUD inventory-linked pickup counts, even before any floor pickup. Stage 5.71.4 dialogue gifts and NPC visibility remain intact. No additional per-frame or TFCard work.
+**Drop-in update for Stage 5.77.1**
 
-Apply the drop-in over Stage 5.71.4, rebuild the IDE, use **Update Game Project** to regenerate `gamehelpers/gameworlds.c` and `gamehelpers/gameadventureruntime.c`, then rebuild the SIDBOX game. Leave handwritten `main.c` untouched.
+Replace exactly `gamefloweditor.cpp` and `splashscreenwidget.cpp` in your IDE source tree, then rebuild. No source-generation steps and no changes to your game files are necessary.
 
-See `STAGE5.71.5-DIALOGUE-GIFT-HUD.md` for diagnosis and tests.
+The Flow Debugger now detaches an embedded ARRAY GROUP when its header is dragged and released beyond its parent LOGIC GROUP frame. It remains intact, and can be dragged back into the parent.
+
+See `STAGE5.78-DRAG-OUT-ARRAY-GROUP.md` for tests and limitations.

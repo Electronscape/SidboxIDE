@@ -185,6 +185,7 @@ void gameadventure_setup(void)
     game_adventure_dialogue_box(@IDE{DIALOG_X}, @IDE{DIALOG_Y},
         @IDE{DIALOG_WIDTH}u, @IDE{DIALOG_HEIGHT}u);
     game_adventure_item_styles(item_styles, GAME_ADVENTURE_STORY_ITEM_COUNT);
+    game_adventure_inventory_max_slots(@IDE{MAX_INVENTORY_SLOTS}u);
     game_adventure_use_effects(item_uses, GAME_ADVENTURE_STORY_ITEM_COUNT, on_use_item, 0);
     game_adventure_text_padding(@IDE{DIALOG_PADDING}u);
     game_adventure_npc_initial_visibility(npc_initial_visibility, GAME_ADVENTURE_STORY_NPC_COUNT);
@@ -214,6 +215,7 @@ void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)
 {
     if (!lookup) return;
     const uint16_t count = GAME_ADVENTURE_STORY_ITEM_COUNT;
+    game_adventure_inventory_restore_begin();
     for (uint16_t i = 0; i < count; ++i) {
         if (!items[i].name || !*items[i].name) continue;
         const uint32_t incoming = lookup(items[i].name, user);
@@ -223,6 +225,7 @@ void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)
         if (target > current) game_adventure_add(i, (uint16_t)(target - current));
         else if (current > target) game_adventure_remove(i, (uint16_t)(current - target));
     }
+    game_adventure_inventory_restore_end();
     /* Load only art actually carried into this world, not every world PPB. */
     game_adventure_prepare_owned_icons();
 }

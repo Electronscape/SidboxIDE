@@ -28,14 +28,19 @@ typedef struct {
     uint16_t icon_cells[4]; /* TL, TR, BL, BR */
     uint8_t icon_2x2;
     uint8_t discardable; /* 0 is protected: safe default */
+    uint8_t droppable; /* floor drop may be allowed even for quest items */
 } game_adventure_item_style_t;
 void game_adventure_item_styles(const game_adventure_item_style_t *styles, uint16_t count);
+void game_adventure_inventory_max_slots(uint8_t slots); /* 0 = unlimited */
+void game_adventure_inventory_restore_begin(void);
+void game_adventure_inventory_restore_end(void);
+uint8_t game_adventure_can_collect_kind(uint16_t kind);
 /* Override one item's icon source independently of the dialogue skin. */
 void game_adventure_item_atlas(uint16_t item, const uint8_t *pixels,
                                uint16_t width,uint16_t height,uint8_t tile_size);
 /* A persistent item can carry its ORIGINAL PPB filename across worlds even
-   when that atlas is not a resource on the current map. Only owned items are
-   loaded into RAM, and multiple icons can borrow the same single PPB load. */
+   when that atlas is not a resource on the current map. Only carried or floor-dropped items load artwork into RAM; multiple
+   item icons can share the same single PPB allocation. */
 void game_adventure_item_atlas_file(uint16_t item,const char *path,
                                     uint16_t width,uint16_t height,uint8_t tile_size);
 void game_adventure_prepare_owned_icons(void);

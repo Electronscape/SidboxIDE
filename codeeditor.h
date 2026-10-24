@@ -15,6 +15,7 @@
 class CSyntaxHighlighter;
 class QCompleter;
 class QFont;
+class QContextMenuEvent;
 class QPaintEvent;
 class QResizeEvent;
 class QStringListModel;
@@ -81,6 +82,8 @@ public:
     int firstVisibleSourceBlockNumber() const;
     void recalculateFoldScrollBarRange();
     void syncDeferredEditorStateNow();
+    void formatSourcecode();
+    void formatSourcecodeLineBy();
 
 signals:
     void deferredAnalysisSyncRequested();
@@ -96,6 +99,8 @@ signals:
 
 protected:
     void focusInEvent(QFocusEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;

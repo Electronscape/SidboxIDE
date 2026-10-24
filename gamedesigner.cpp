@@ -2871,7 +2871,7 @@ void SidboxGameDesigner::buildUi()
     flowButton->setMaximumWidth(108);
     topActions->addWidget(flowButton);
     connect(flowButton, &QPushButton::clicked, this, [this] {
-        openGameFlowEditor(this, QFileInfo(m_filePath).absolutePath());
+        openGameFlowEditor(this, QFileInfo(m_filePath).absolutePath(), m_theme);
     });
     auto *titleScreenButton = new QPushButton(tr("Title Screen..."), this);
     titleScreenButton->setToolTip(tr("Design an optional project-wide title/menu screen with menu actions such as Start Game, Load Game and Goto World."));
