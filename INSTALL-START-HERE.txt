@@ -1,6 +1,5 @@
-CoderGirl IDE source bundle - Stage 5.117.251026
-
-Read INSTALL-STAGE5.117.txt first.
-This version adds visually distinct red/faded disabled and green enabled
-states for dependency-controlled Adventure Editor fields, while preserving
-the Stage 5.116 prerequisites, tooltips and older gameplay functionality.
+CoderGirl IDE Stage 5.121.251026
+- Stage 5.120 users: extract Stage 5.121 DROPIN to source root, rebuild IDE.
+- Full tree also provided separately.
+- Only Game Flow Debugger root-card header positions change.
+- No game project regeneration or main.c replacement.

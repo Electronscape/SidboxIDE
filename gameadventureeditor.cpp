@@ -989,6 +989,10 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     repeatForm->addRow(repeatDoorHint);
     // Dependencies are presentation-only: unchecked/disabled settings retain
     // their saved values and become editable again when prerequisites return.
+    auto *exchangeWarning=new QLabel(&dlg);
+    exchangeWarning->setWordWrap(true);
+    exchangeWarning->setVisible(false);
+    layout->addWidget(exchangeWarning);
     auto refreshExchangeControls=[=]() {
         const bool active=enabled->isChecked();
         const QString enableHint=QObject::tr("Disabled: tick 'Selecting this answer opens inventory in GIVE mode' first.");
@@ -1006,14 +1010,20 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
         const bool canIncrement=active && logic->currentData().toString()==QStringLiteral("all") && required>=2;
         gate(incremental,canIncrement,!active ? enableHint
             : QObject::tr("Disabled: incremental hand-ins need ALL (AND) and at least two required items."));
-        gate(wrong,active,enableHint);
+        const bool ready=active && required>0;
+        const QString itemHint=QObject::tr("Disabled: add a requested item to this GIVE exchange first.");
+        gate(wrong,ready,!active ? enableHint : itemHint);
         for (const Event &event : events) {
-            gate(event.kind,active,enableHint);
+            gate(event.kind,ready,!active ? enableHint : itemHint);
             const QString kind=event.kind->currentData().toString();
             event.number->setVisible(kind==QStringLiteral("custom"));
             event.mode->setVisible(kind!=QStringLiteral("none") && kind!=QStringLiteral("custom"));
-            gate(event.number,active,enableHint);
-            gate(event.mode,active,enableHint);
+            gate(event.number,ready && kind==QStringLiteral("custom"),
+                 !ready ? (!active ? enableHint : itemHint)
+                 : QObject::tr("Disabled: select Custom event ID first."));
+            gate(event.mode,ready && kind!=QStringLiteral("none") && kind!=QStringLiteral("custom"),
+                 !ready ? (!active ? enableHint : itemHint)
+                 : QObject::tr("Disabled: choose a Game Object action first."));
         }
         gate(repeatEnabled,active && required>0,!active ? enableHint
             : QObject::tr("Disabled: select at least one requested item above before configuring repeated wrong offers."));
@@ -1027,14 +1037,39 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
         const QString repeatKind=repeatActionKind->currentData().toString();
         repeatEventId->setVisible(repeatKind==QStringLiteral("custom"));
         repeatActionMode->setVisible(repeatKind!=QStringLiteral("none") && repeatKind!=QStringLiteral("custom"));
-        gate(repeatEventId,repeat,repeatHint);
-        gate(repeatActionMode,repeat,repeatHint);
+        gate(repeatEventId,repeat && repeatKind==QStringLiteral("custom"),
+             !repeat ? repeatHint : QObject::tr("Disabled: select Custom event ID first."));
+        gate(repeatActionMode,repeat && repeatKind!=QStringLiteral("none") && repeatKind!=QStringLiteral("custom"),
+             !repeat ? repeatHint : QObject::tr("Disabled: choose a Game Object action first."));
+        QStringList issues;
+        if (active && required==0)
+            issues << QObject::tr("Add at least one requested item before this exchange can run.");
+        QSet<int> uniqueItems;
+        for (QComboBox *slot:itemSlots) {
+            const int id=slot->currentData().toInt();
+            if (id<0)continue;
+            if (uniqueItems.contains(id))
+                issues << QObject::tr("The same item is selected twice. It counts only once.");
+            uniqueItems.insert(id);
+        }
+        if (repeat) {
+            const int wrongId=repeatItem->currentData().toInt();
+            if (wrongId<0)
+                issues << QObject::tr("Repeated wrong offers need a Wrong item to remember.");
+            else if (uniqueItems.contains(wrongId))
+                issues << QObject::tr("The repeated WRONG item cannot also be a requested item.");
+        }
+        exchangeWarning->setText(issues.isEmpty() ? QString()
+            : QObject::tr("Check GIVE flow: %1").arg(issues.join(QStringLiteral("  "))));
+        exchangeWarning->setVisible(!issues.isEmpty());
     };
     QObject::connect(enabled,&QCheckBox::toggled,&dlg,[=](bool){refreshExchangeControls();});
     QObject::connect(logic,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
     for(QComboBox *slot:itemSlots)
         QObject::connect(slot,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
     QObject::connect(repeatEnabled,&QCheckBox::toggled,&dlg,[=](bool){refreshExchangeControls();});
+    QObject::connect(repeatItem,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
+    QObject::connect(events[0].kind,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
     QObject::connect(repeatActionKind,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
     refreshExchangeControls();
     layout->addWidget(repeated);
@@ -1055,7 +1090,20 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
                 QObject::tr("Select at least one item before enabling an exchange."));
             return;
         }
-        if(repeatEnabled->isChecked()) {
+        if(enabled->isChecked()) {
+            int selectedCount=0;
+            for (QComboBox *slot:itemSlots)
+                if (slot->currentData().toInt()>=0) ++selectedCount;
+            if (selectedCount!=chosen.size()) {
+                QMessageBox::warning(&dlg,QObject::tr("Duplicate GIVE Items"),
+                    QObject::tr("The same requested item is selected more than once. "
+                                "Use different items or set the extra slot to None."));
+                return;
+            }
+        }
+        // A remembered checkbox is inactive while GIVE is off. Never reject
+        // an unrelated edit because an unavailable old option was left set.
+        if(enabled->isChecked() && repeatEnabled->isChecked()) {
             const int tracked=repeatItem->currentData().toInt();
             if(!enabled->isChecked() || tracked<0) {
                 QMessageBox::warning(&dlg,QObject::tr("Repeated Wrong Item"),

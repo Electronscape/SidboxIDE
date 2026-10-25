@@ -1,0 +1,61 @@
+CoderGirl IDE - Stage 5.119.251026
+Game Flow Debugger: full-width lighter card title strips + logic-flow audit
+
+INSTALL (Stage 5.118 source -> Stage 5.119)
+1. Back up your existing Stage 5.118 IDE source folder.
+2. Extract CoderGirl-Stage5.119-251026-DROPIN.zip into the TOP LEVEL of
+   that folder, preserving relative paths, and overwrite existing files.
+3. Rebuild the Qt6 IDE using your normal Fedora build procedure.
+4. Open Game Flow Debugger in a game project with multiple dialogue nodes,
+   NPCs and inventory exchanges. Check ordinary cards, expanded array/logic
+   groups, embedded mini-cards, and double-click Choice drilldowns.
+5. Verify the red/green availability outlines and dropdown chevrons from
+   Stage 5.118 are still unchanged in Adventure Editor.
+
+CHANGED EXISTING SOURCE FILES
+  gamefloweditor.cpp
+  gameadventureeditor.cpp
+  splashscreenwidget.cpp
+
+GAME FLOW GRAPH LOGIC AUDIT
+- Answerless Fire2-close dialogue now links to its actual inventory gift and
+  NPC appearance actions. Graph honors the same legacy blank-choice fallback
+  as gameadventuregen.cpp for older saved worlds.
+- The node's details include Fire2 spotlight and first valid current-dialogue
+  thought, without inventing graph connections to a non-existent answer.
+- Invalid completed NPC dialogue target is reported as a broken reference.
+- Inactive Missing-item branches without a valid Needs item are reported,
+  not drawn as executable edges.
+- A NEXT thought with Close conversation is identified as inactive.
+- GIVE with zero valid items, and repeated-wrong branches with no valid
+  tracked wrong item, are flagged as inactive rather than drawn as runnable.
+
+ADVENTURE GIVE EDITOR AUDIT
+- Wrong-offer action controls require an enabled exchange and >=1 item.
+- Custom event ID and Game Object action-mode controls require the matching
+  event type; inactive settings retain their saved values.
+- Visible note reports missing requested item, repeated wrong-item mismatch,
+  duplicate requested items. SAVE blocks duplicate items rather than silently
+  merging them.
+- Stale 'repeated wrong item' setting no longer blocks Save while GIVE is off.
+
+APPEARANCE
+- Subtle full-width lighter header strips for regular cards, mini-cards,
+  nested array groups, manual/automatic group headers and Choice drilldown.
+- Existing category-colour side stripes, title text, click, drag and wiring
+  remain intact. No new controls, no changes to arrow/colour guard QSS.
+
+UNCHANGED
+  Game generator, generated runtime C, ABI, game main.c, saved-world format,
+  TFCard assets, world files and firmware. No game regeneration required.
+
+TEST RESULTS
+- Stage 5.119 source + compiled native thought-bubble tests: PASS
+- Stage 5.104 Trigger expander source checks (version adjusted): PASS
+- Stage 5.56 flow navigation source checks (version adjusted): PASS
+- Stage 5.54 historical test has an existing failure on both Stage 5.118
+  and Stage 5.119 ('group-local mini connections' literal source check).
+- Qt6 development SDK is not installed in preparation environment:
+  IDE GUI compilation and actual rendered headers require Fedora testing.
+
+Build splash label: 5.119.251026

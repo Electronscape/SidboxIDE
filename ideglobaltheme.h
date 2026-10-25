@@ -82,6 +82,41 @@ inline QString ideCheckedBoxImageUrl(const IDETheme &theme, bool isChecked = tru
     return QStringLiteral(":/icons/checkbox_tick.png");
 }
 
+// Stage 5.118: Qt stylesheet-painted QComboBoxes cannot depend on the
+// platform style to draw a down-arrow. Save a small theme-coloured chevron
+// once and use it in BOTH the application and KDE popup-combo stylesheets.
+// This does not affect designer combos that draw their own custom chevron.
+inline QString ideComboDownArrowImageUrl(const IDETheme &theme, bool disabled = false)
+{
+    const QColor colour = disabled
+        ? QColor((theme.mutedText.red() + theme.panelBackground.red()) / 2,
+                 (theme.mutedText.green() + theme.panelBackground.green()) / 2,
+                 (theme.mutedText.blue() + theme.panelBackground.blue()) / 2)
+        : theme.text;
+    const QByteArray digest = QCryptographicHash::hash(
+        (colour.name(QColor::HexArgb) + (disabled ? QStringLiteral("off")
+                                                  : QStringLiteral("on"))).toLatin1(),
+        QCryptographicHash::Sha256).toHex();
+    QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cache.isEmpty()) cache = QDir::tempPath() + QStringLiteral("/SidboxIDE");
+    const QString directory = QDir(cache).filePath(QStringLiteral("theme-icons"));
+    const QString file = QDir(directory).filePath(
+        QStringLiteral("combobox-chevron-") + QString::fromLatin1(digest.left(20))
+            + QStringLiteral(".png"));
+    if (!QFile::exists(file) && QDir().mkpath(directory)) {
+        QImage arrow(12, 9, QImage::Format_ARGB32_Premultiplied);
+        arrow.fill(Qt::transparent);
+        QPainter painter(&arrow);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(colour, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(2, 2), QPointF(6, 6));
+        painter.drawLine(QPointF(6, 6), QPointF(10, 2));
+        painter.end();
+        arrow.save(file, "PNG");
+    }
+    return QDir::fromNativeSeparators(file);
+}
+
 // Install the same colours in the QApplication palette as in its stylesheet.
 // Native popup list views (notably on KDE) and alternating tree rows can read
 // their palette rather than the parent's stylesheet. Keep both in sync.
@@ -150,8 +185,11 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
                       (base.green()*(100-percent) + tint.green()*percent)/100,
                       (base.blue()*(100-percent) + tint.blue()*percent)/100);
     };
-    const QColor adventureGreenBg=blend(theme.inputBackground,adventureGreen,10);
-    const QColor adventureRedBg=blend(theme.panelBackground,adventureRed,18);
+    // Muted, 1px outlines: hint at availability without glowing neon.
+    const QColor adventureGreenBorder=blend(theme.border,adventureGreen,48);
+    const QColor adventureRedBorder=blend(theme.border,adventureRed,58);
+    const QColor adventureGreenBg=blend(theme.inputBackground,adventureGreen,5);
+    const QColor adventureRedBg=blend(theme.panelBackground,adventureRed,11);
 
     QString css = QStringLiteral(R"GGCONTROLS(
         QWidget { color:@text; }
@@ -217,8 +255,16 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
             width:21px; border-left:1px solid @border;
             border-radius:0px; background:@panel;
         }
-        /* Only designer-owned combos draw their own high-contrast chevron.
-           Ordinary Qt combos retain the native arrow globally. */
+        /* Explicit chevrons are necessary when Qt uses QSS (KDE/Wayland).
+           The native glyph is otherwise sometimes suppressed entirely. */
+        QComboBox::down-arrow {
+            image:url("@comboArrow"); width:12px; height:9px;
+        }
+        QComboBox::down-arrow:disabled {
+            image:url("@comboArrowDisabled"); width:12px; height:9px;
+        }
+        /* Designer-owned combos draw their own high-contrast chevron.
+           All other combos use the theme-matched arrow above. */
         QComboBox[customChevron="true"]::down-arrow {
             image:none; width:0px; height:0px;
         }
@@ -345,7 +391,7 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
             border:1px solid @border; padding:4px; border-radius:0px; }
         QFrame, QScrollArea, QGraphicsView, QSplitter { border-radius:0px; }
 
-        /* Stage 5.117: only prerequisite-dependent Adventure Editor widgets.
+        /* Stage 5.118: softer prerequisite-dependent Adventure Editor widgets.
            Preserve box geometry across enable/disable transitions, use both
            colour and muted fill for disabled state, and keep checkmark art.
            A dynamically tagged widget is repolished exactly once by the
@@ -357,7 +403,7 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         QPushButton[adventureGuard="true"]:enabled,
         QToolButton[adventureGuard="true"]:enabled,
         QTextEdit[adventureGuard="true"]:enabled {
-            border:2px solid @advGreen; background-color:@advGreenBg;
+            border:1px solid @advGreenBorder; background-color:@advGreenBg;
         }
         QComboBox[adventureGuard="true"]:disabled,
         QLineEdit[adventureGuard="true"]:disabled,
@@ -366,34 +412,34 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         QPushButton[adventureGuard="true"]:disabled,
         QToolButton[adventureGuard="true"]:disabled,
         QTextEdit[adventureGuard="true"]:disabled {
-            border:2px solid @advRed; background-color:@advRedBg;
+            border:1px solid @advRedBorder; background-color:@advRedBg;
             color:@disabledText;
         }
         QPushButton[adventureGuard="true"]:enabled:hover,
         QToolButton[adventureGuard="true"]:enabled:hover {
-            border:2px solid @advGreen; background-color:@hover;
+            border:1px solid @advGreenBorder; background-color:@hover;
         }
         QPushButton[adventureGuard="true"]:enabled:pressed,
         QToolButton[adventureGuard="true"]:enabled:pressed,
         QToolButton[adventureGuard="true"]:enabled:checked {
-            border:2px solid @advGreen; background-color:@chosen;
+            border:1px solid @advGreenBorder; background-color:@chosen;
             color:@chosenText;
         }
         QCheckBox[adventureGuard="true"]:enabled,
         QRadioButton[adventureGuard="true"]:enabled {
-            border:1px solid @advGreen; background-color:@advGreenBg;
+            border:1px solid @advGreenBorder; background-color:@advGreenBg;
             padding:3px 4px;
         }
         QCheckBox[adventureGuard="true"]:disabled,
         QRadioButton[adventureGuard="true"]:disabled {
-            border:1px solid @advRed; background-color:@advRedBg;
+            border:1px solid @advRedBorder; background-color:@advRedBg;
             color:@disabledText; padding:3px 4px;
         }
         QGroupBox[adventureGuard="true"]:enabled {
-            border:2px solid @advGreen;
+            border:1px solid @advGreenBorder;
         }
         QGroupBox[adventureGuard="true"]:disabled {
-            border:2px solid @advRed; background-color:@advRedBg;
+            border:1px solid @advRedBorder; background-color:@advRedBg;
         }
     )GGCONTROLS");
     const struct Pair { const char *token; QColor value; } values[] = {
@@ -416,8 +462,8 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         {"@disabledText", disabledText},
         {"@advGreenBg", adventureGreenBg},
         {"@advRedBg", adventureRedBg},
-        {"@advGreen", adventureGreen},
-        {"@advRed", adventureRed}
+        {"@advGreenBorder", adventureGreenBorder},
+        {"@advRedBorder", adventureRedBorder}
     };
     // Long placeholders first: @chosen must not consume @chosenText,
     // and @scroll must not consume @scrollHover.
@@ -428,6 +474,8 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
             continue;
         css.replace(QString::fromLatin1(v.token), ideThemeColorName(v.value));
     }
+    css.replace(QStringLiteral("@comboArrowDisabled"), ideComboDownArrowImageUrl(theme, true));
+    css.replace(QStringLiteral("@comboArrow"), ideComboDownArrowImageUrl(theme));
     css.replace(QStringLiteral("@untick"), ideCheckedBoxImageUrl(theme, false));
     css.replace(QStringLiteral("@tick"), ideCheckedBoxImageUrl(theme));
     css.replace(QStringLiteral("@hover"), ideThemeColorName(theme.hover));
@@ -474,7 +522,7 @@ public:
         static const char *comboBaseProperty = "_sidboxComboBaseStyle";
         if (!combo->property(comboBaseProperty).isValid())
             combo->setProperty(comboBaseProperty, combo->styleSheet());
-        const QString comboRules = QStringLiteral(R"IDECOMBOLOCAL(
+        QString comboRules = QStringLiteral(R"IDECOMBOLOCAL(
             QComboBox {
                 background-color:%1; color:%2; border:1px solid %3;
                 border-radius:0px; padding:2px 25px 2px 5px;
@@ -484,6 +532,23 @@ public:
             QComboBox::drop-down {
                 background-color:%7; border-left:1px solid %3;
                 border-radius:0px; width:21px;
+            }
+            QComboBox::down-arrow {
+                image:url("@localComboArrow"); width:12px; height:9px;
+            }
+            QComboBox::down-arrow:disabled {
+                image:url("@localComboArrowDisabled"); width:12px; height:9px;
+            }
+            /* Guard controls need LOCAL rules because this per-combo QSS
+               takes precedence over the application's global stylesheet. */
+            QComboBox[adventureGuard="true"]:enabled {
+                border:1px solid @localAdvGreen;
+                background-color:@localAdvGreenBg;
+            }
+            QComboBox[adventureGuard="true"]:disabled {
+                border:1px solid @localAdvRed;
+                background-color:@localAdvRedBg;
+                color:@localDisabledText;
             }
             QComboBox QAbstractItemView {
                 background-color:%4; alternate-background-color:%8;
@@ -505,6 +570,25 @@ public:
                  C(m_theme.border), C(m_theme.menuBackground),
                  C(selected), C(selectedText), C(m_theme.panelBackground),
                  C(m_theme.alternateBackground));
+        // Use the exact same colour blend and chevrons as the global theme.
+        const auto blend = [](const QColor &base, const QColor &tint, int percent) {
+            return QColor((base.red()*(100-percent)+tint.red()*percent)/100,
+                          (base.green()*(100-percent)+tint.green()*percent)/100,
+                          (base.blue()*(100-percent)+tint.blue()*percent)/100);
+        };
+        const bool lightTheme=m_theme.windowBackground.lightnessF()>0.55;
+        const QColor green(lightTheme ? QStringLiteral("#267744") : QStringLiteral("#59c991"));
+        const QColor red(lightTheme ? QStringLiteral("#b03f4b") : QStringLiteral("#dc7380"));
+        const QColor disabledText=blend(m_theme.panelBackground,m_theme.mutedText,70);
+        comboRules.replace(QStringLiteral("@localComboArrowDisabled"),
+                           ideComboDownArrowImageUrl(m_theme,true));
+        comboRules.replace(QStringLiteral("@localComboArrow"),
+                           ideComboDownArrowImageUrl(m_theme));
+        comboRules.replace(QStringLiteral("@localAdvGreenBg"),C(blend(m_theme.inputBackground,green,5)));
+        comboRules.replace(QStringLiteral("@localAdvRedBg"),C(blend(m_theme.panelBackground,red,11)));
+        comboRules.replace(QStringLiteral("@localAdvGreen"),C(blend(m_theme.border,green,48)));
+        comboRules.replace(QStringLiteral("@localAdvRed"),C(blend(m_theme.border,red,58)));
+        comboRules.replace(QStringLiteral("@localDisabledText"),C(disabledText));
         const QString newComboStyle = combo->property(comboBaseProperty).toString()
                                     + QStringLiteral("\n") + comboRules;
         if (combo->styleSheet() != newComboStyle)

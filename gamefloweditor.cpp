@@ -678,10 +678,72 @@ FlowGraph loadGraph(const QString &root) {
             if (node>=0 && node<dialogs.size())g.link(npcKey,dialogueKey(w,node),QStringLiteral("Starts dialogue"));
             else if (node>=0)g.missing(w,npcKey,QStringLiteral("dialogue node"),QString::number(node));
             const int done=npc.value(QStringLiteral("doneNode")).toInt(-1);
-            if (done>=0 && done<dialogs.size())g.link(npcKey,dialogueKey(w,done),QStringLiteral("Completed interaction"));
+            if (done>=0 && done<dialogs.size())
+                g.link(npcKey,dialogueKey(w,done),QStringLiteral("Completed interaction"));
+            else if (done>=0)
+                g.missing(w,npcKey,QStringLiteral("completed dialogue node"),QString::number(done));
         }
         for (int i=0;i<dialogs.size();++i) {
-            const QJsonArray choices=dialogs.at(i).toObject().value(QStringLiteral("choices")).toArray();
+            const QJsonObject dialogue=dialogs.at(i).toObject();
+            const QJsonArray choices=dialogue.value(QStringLiteral("choices")).toArray();
+            bool hasSelectableAnswer=false;
+            for (const QJsonValue &answer:choices)
+                if (!answer.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty())
+                    hasSelectableAnswer=true;
+            if (!hasSelectableAnswer) {
+                // Answerless nodes close with Fire2. Their actions live on the
+                // dialogue NODE, not on any of its three blank Choice slots.
+                // An old project's blank-choice actions do not execute.
+                const QString from=dialogueKey(w,i);
+                int closeGift=dialogue.value(QStringLiteral("closeGiveItem")).toInt(-1);
+                // Mirror gameadventuregen.cpp's legacy fallback for projects
+                // that haven't reopened/resaved their blank Choice rewards.
+                if (closeGift<0) for (const QJsonValue &answer:choices) {
+                    const int oldGift=answer.toObject().value(QStringLiteral("give")).toInt(-1);
+                    if (oldGift>=0 && oldGift<items.size()) {closeGift=oldGift;break;}
+                }
+                if (closeGift>=0 && closeGift<items.size())
+                    g.link(from,itemKey(w,closeGift),QStringLiteral("Fire2 close: gives item (one-time)"));
+                else if (closeGift>=0)
+                    g.missing(w,from,QStringLiteral("Fire2 close gift item"),QString::number(closeGift));
+                for (int effect=1;effect<=2;++effect) {
+                    const QString closePrefix=QStringLiteral("closeNpcAction%1").arg(effect);
+                    QString sprite=dialogue.value(closePrefix+QStringLiteral("SpriteId")).toString();
+                    QString mode=dialogue.value(closePrefix+QStringLiteral("Mode")).toString("hide");
+                    if (sprite.isEmpty()) for (const QJsonValue &answer:choices) {
+                        const QJsonObject old=answer.toObject();
+                        sprite=old.value(QStringLiteral("npcAction%1SpriteId").arg(effect)).toString();
+                        if (sprite.isEmpty()) continue;
+                        mode=old.value(QStringLiteral("npcAction%1Mode").arg(effect)).toString("hide");
+                        break;
+                    }
+                    if (sprite.isEmpty()) continue;
+                    const QString to=npcActionNode(w,sprite);
+                    if (g.byId.contains(to))
+                        g.link(from,to,QStringLiteral("Fire2 close: NPC appearance ")+mode);
+                    else g.missing(w,from,QStringLiteral("Fire2 close NPC sprite"),sprite);
+                }
+                const int spotlight=dialogue.value(QStringLiteral("closeSpotlightAction")).toInt(3);
+                if (spotlight!=3) {
+                    const int nodeIndex=g.byId.value(from,-1);
+                    if (nodeIndex>=0)
+                        g.nodes[nodeIndex].description+=QStringLiteral("\nFire2 close: spotlight ")+
+                            (spotlight==1 ? QStringLiteral("ON") : spotlight==0
+                                ? QStringLiteral("OFF") : spotlight==2
+                                    ? QStringLiteral("TOGGLE") : QStringLiteral("invalid value"));
+                }
+                for (const QJsonValue &answer:choices) {
+                    const QJsonObject c=answer.toObject();
+                    if (c.value(QStringLiteral("thoughtBubbleThis")).toBool() &&
+                        !c.value(QStringLiteral("reply")).toString().trimmed().isEmpty()) {
+                        const int nodeIndex=g.byId.value(from,-1);
+                        if (nodeIndex>=0)
+                            g.nodes[nodeIndex].description+=QStringLiteral("\nThought with THIS dialogue: ")+
+                                brief(c.value(QStringLiteral("reply")).toString(),90);
+                        break; // runtime uses the first valid thought
+                    }
+                }
+            }
             for (int j=0;j<choices.size();++j) {
                 const QJsonObject c=choices.at(j).toObject();
                 if (c.value(QStringLiteral("text")).toString().trimmed().isEmpty()) continue;
@@ -692,8 +754,18 @@ FlowGraph loadGraph(const QString &root) {
                     if (index<dialogs.size())g.link(choice,dialogueKey(w,index),reason);
                     else g.missing(w,choice,QStringLiteral("dialogue node"),QString::number(index));
                 };
-                next(c.value(QStringLiteral("next")).toInt(-1),QStringLiteral("Next / success"));
-                next(c.value(QStringLiteral("missingNext")).toInt(-1),QStringLiteral("Missing item"));
+                const int nextIndex=c.value(QStringLiteral("next")).toInt(-1);
+                const int needed=c.value(QStringLiteral("requires")).toInt(-1);
+                const int missingIndex=c.value(QStringLiteral("missingNext")).toInt(-1);
+                next(nextIndex,QStringLiteral("Next / success"));
+                if (needed>=0 && needed<items.size())
+                    next(missingIndex,QStringLiteral("Missing item"));
+                else if (missingIndex>=0)
+                    g.diagnostics.append(QStringLiteral("%1: Choice %2 in dialogue %3 has an inactive Missing-item branch (select Needs first)")
+                        .arg(w).arg(j+1).arg(i));
+                if (c.value(QStringLiteral("thoughtBubble")).toBool() && nextIndex<0)
+                    g.diagnostics.append(QStringLiteral("%1: Choice %2 in dialogue %3 has a NEXT thought but closes the conversation")
+                        .arg(w).arg(j+1).arg(i));
                 for (const auto &pair : {qMakePair("requires","Requires item"),qMakePair("give","Gives item"),qMakePair("take","Takes item")}) {
                     const int idx=c.value(QLatin1String(pair.first)).toInt(-1);
                     if (idx<0)continue;
@@ -724,6 +796,16 @@ FlowGraph loadGraph(const QString &root) {
                 }
                 const QJsonObject exchange=c.value(QStringLiteral("exchange")).toObject();
                 if (!exchange.value(QStringLiteral("enabled")).toBool()) continue;
+                bool validRequest=false;
+                for (const QJsonValue &part:exchange.value(QStringLiteral("items")).toArray()) {
+                    const int index=part.toInt(-1);
+                    if (index>=0 && index<items.size())validRequest=true;
+                }
+                if (!validRequest) {
+                    g.diagnostics.append(QStringLiteral("%1: Choice %2 in dialogue %3 enables GIVE with no valid requested items")
+                        .arg(w).arg(j+1).arg(i));
+                    continue; // generator treats this exchange as inactive
+                }
                 for (const QJsonValue &part: exchange.value(QStringLiteral("items")).toArray()) {
                     const int index=part.toInt(-1);
                     if (index>=0 && index<items.size())g.link(itemKey(w,index),choice,QStringLiteral("Exchange requirement"));
@@ -731,7 +813,14 @@ FlowGraph loadGraph(const QString &root) {
                 }
                 for (const auto &pair : {qMakePair("wrongNext","Wrong items"),qMakePair("partialNext","Partial items")})
                     next(exchange.value(QLatin1String(pair.first)).toInt(-1),QLatin1String(pair.second));
-                if (exchange.value(QStringLiteral("wrongRepeatEnabled")).toBool(false)) {
+                if (exchange.value(QStringLiteral("wrongRepeatEnabled")).toBool(false) &&
+                    (exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)<0 ||
+                     exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)>=items.size()))
+                    g.diagnostics.append(QStringLiteral("%1: Choice %2 in dialogue %3 has inactive repeated-wrong branches (choose a valid tracked wrong item)")
+                        .arg(w).arg(j+1).arg(i));
+                if (exchange.value(QStringLiteral("wrongRepeatEnabled")).toBool(false) &&
+                    exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)>=0 &&
+                    exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)<items.size()) {
                     // Wrong-item repetition has four distinct, conditional
                     // dialogue results; show all branches without claiming
                     // any one of them is the unconditional next step.
@@ -1604,6 +1693,11 @@ void openChoiceFlow(QWidget *parent,const FlowGraph &graph,const QString &choice
                             QBrush(focus?theme.panelBackground:theme.alternateBackground));
         card->setPos(location);
         card->setZValue(2);
+        // Choice drilldown cards are not expandable: shade only the title row.
+        auto *titleBand=new QGraphicsRectItem(QRectF(0,0,width,27),card);
+        titleBand->setPen(Qt::NoPen);
+        titleBand->setBrush((focus?theme.panelBackground:theme.alternateBackground).lighter(124));
+        titleBand->setAcceptedMouseButtons(Qt::NoButton);
         auto *header=new QGraphicsSimpleTextItem(brief(title,35),card);
         header->setFont(QFont(QStringLiteral("Sans Serif"),10,QFont::DemiBold));
         header->setBrush(theme.brightText);
@@ -2257,6 +2351,24 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     card->setToolTip(isGroup?QObject::tr("Click +/- to expand or collapse. Drag this group to move its contents."):
                          n.description+(n.kind==QStringLiteral("Dialogue Choice")
                              ? QObject::tr("\nDouble-click to view the choice's internal flow.") : QString()));
+                    if (!isGroup) {
+                        // Stage 5.121: ordinary root cards place their kind label
+                        // (e.g. WORLD) at y=4 and their name (e.g. forest) at
+                        // y=24. Tint only the first line, matching the compact
+                        // height of title-first mini cards without moving any
+                        // text. Expandable Triggers keep their tall header.
+                        // Keep the existing kind-colour stripe at the left.
+                        const QColor headerShade=mix(
+                            mix(cardBackground,theme.brightText,0.11),
+                            nodeColour(n.kind,n.problem,theme),0.055);
+                        const bool expandableTrigger=n.kind==QStringLiteral("Touch / button trigger");
+                        auto *heading=new QGraphicsRectItem(
+                            expandableTrigger ? QRectF(7,0,card->rect().width()-7,60)
+                                              : QRectF(7,0,card->rect().width()-7,22),card);
+                        heading->setPen(Qt::NoPen);
+                        heading->setBrush(headerShade);
+                        heading->setAcceptedMouseButtons(Qt::NoButton);
+                    }
                     if (isGroup) {
                         // The visible six-dot grip complements the open/closed
                         // hand cursor; it sits on the draggable header, clear
@@ -2271,7 +2383,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         // transparent to its own local wires.
                         auto *cover=new QGraphicsRectItem(QRectF(0,0,card->rect().width(),70),card);
                         cover->setPen(Qt::NoPen);
-                        cover->setBrush(g.automatic?arrayBackground:groupBackground);
+                        cover->setBrush(mix(g.automatic?arrayBackground:groupBackground,
+                                            theme.brightText,0.105));
                         cover->setZValue(1.5);
                         cover->setAcceptedMouseButtons(Qt::NoButton);
                     }
@@ -2366,6 +2479,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 }
                                 child->setZValue(3); // above embedded wires
                                 child->setBrush(miniBackground);
+                                const bool expandableTrigger=member.kind==QStringLiteral("Touch / button trigger");
+                                auto *miniHeader=new QGraphicsRectItem(
+                                    QRectF(0,0,child->rect().width(),expandableTrigger ? 58 : 25),child);
+                                miniHeader->setPen(Qt::NoPen);
+                                miniHeader->setBrush(mix(mix(miniBackground,theme.brightText,0.115),
+                                    nodeColour(member.kind,member.problem,theme),0.055));
+                                miniHeader->setAcceptedMouseButtons(Qt::NoButton);
                                 child->setPen(QPen(cardBorder));
                                 child->setToolTip(member.description);
                                 attachTriggerToggle(child,member);
@@ -2442,7 +2562,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 subGrip->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subCover=new QGraphicsRectItem(QRectF(0,0,sub->rect().width(),70),sub);
                                 subCover->setPen(Qt::NoPen);
-                                subCover->setBrush(nestedBackground);
+                                subCover->setBrush(mix(nestedBackground,theme.brightText,0.105));
                                 subCover->setZValue(1.5);
                                 subCover->setAcceptedMouseButtons(Qt::NoButton);
                                 auto *subtitle=new QGraphicsSimpleTextItem(brief(inner.title,35),sub);
@@ -2497,6 +2617,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                         mini->setPos(16+(i%2)*(nestedCellWidth+22),rowY);
                                         mini->setZValue(3);
                                         mini->setBrush(miniBackground);
+                                        const bool expandableTrigger=member.kind==QStringLiteral("Touch / button trigger");
+                                        auto *miniHeader=new QGraphicsRectItem(
+                                            QRectF(0,0,mini->rect().width(),expandableTrigger ? 58 : 25),mini);
+                                        miniHeader->setPen(Qt::NoPen);
+                                        miniHeader->setBrush(mix(mix(miniBackground,theme.brightText,0.115),
+                                            nodeColour(member.kind,member.problem,theme),0.055));
+                                        miniHeader->setAcceptedMouseButtons(Qt::NoButton);
                                         mini->setPen(QPen(cardBorder));
                                         mini->setToolTip(member.description);
                                         attachTriggerToggle(mini,member);

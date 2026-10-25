@@ -1,0 +1,29 @@
+CoderGirl IDE - Stage 5.121.251026
+Game Flow Debugger: category-first root card header alignment
+
+INSTALL (Stage 5.120 -> Stage 5.121)
+1. Back up the existing IDE source folder.
+2. Extract the Stage 5.121 DROPIN zip into the source root, overwriting files.
+3. Rebuild the Qt6 IDE.
+4. Open Game Flow Debugger: the WORLD category label and globe icon on
+   a world root card should sit ON the lightly tinted full-width header strip.
+   The name of the world (e.g. forest) must remain on the dark background
+   immediately below the strip.
+5. Compare a dialogue mini-card (e.g. Big Steve [0]): its name stays in
+   the existing title banner; Dialogue stays below, exactly as in 5.120.
+6. Expand a Trigger and a group to check their unchanged large headers.
+
+CHANGED EXISTING SOURCE FILES
+  gamefloweditor.cpp
+  splashscreenwidget.cpp
+
+DETAILS
+- Non-expandable ROOT cards now shade y=0..22 (category at y=4), not y=21..47.
+- Existing text locations, card size, item layering, card stripe and links
+  remain unchanged.
+- Dialogue/other mini-cards, Choice drilldown and expandable headers unchanged.
+- Tests in development/tests confirm these layout contracts.
+- No data format, generated code, main.c or game runtime changes.
+- Qt6 visual build requires checking on the target Fedora machine.
+
+Splash build: 5.121.251026
