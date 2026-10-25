@@ -798,7 +798,7 @@ void SidboxPlayerAnimationEditor::createUi()
     m_showBox = new QCheckBox(tr("Show collision box"), right); m_showBox->setChecked(m_savedShowBox);
     props->addRow(m_showFoot); props->addRow(m_showBox);
     rightLayout->addLayout(props);
-    rightLayout->addWidget(new QLabel(tr("The hitbox controls V1 player physics when\nanimations are enabled. Foot anchor is\npreview-only; BOB pixels remain unchanged."), right));
+    rightLayout->addWidget(new QLabel(tr("The hitbox controls V1 player physics when\nanimations are enabled. Foot X/Y locates the\nplayer anchor used by dropped items. BOB pixels\nand map collision remain unchanged."), right));
     split->setSizes({185, 640, 270});
 
     m_status = new QLabel(this);
@@ -1394,6 +1394,8 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
     };
     const QMap<QString, QString> fields = {
         {QStringLiteral("PREFIX"), prefix}, {QStringLiteral("PREFIX_UPPER"), up},
+        {QStringLiteral("FOOT_X"), QString::number(m_footX->value())},
+        {QStringLiteral("FOOT_Y"), QString::number(m_footY->value())},
         {QStringLiteral("HITBOX_X"), QString::number(m_boxX->value())},
         {QStringLiteral("HITBOX_Y"), QString::number(m_boxY->value())},
         {QStringLiteral("HITBOX_W"), QString::number(m_boxW->value())},

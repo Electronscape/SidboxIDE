@@ -8,8 +8,67 @@
 #include "../gameassets/gameassets.h"
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+@IDE_IF{HAS_DROP_TILEMAP}
+#include "gametilemap.h"
+/* The entire item footprint must stay clear between the foot and drop.
+   One-way platforms are not horizontal walls; tilemap_actor_blocked already
+   uses the same solid/slope rules as moving players. */
+static int32_t gameadventure_drop_sweep(int32_t start_x,int32_t target_x,int32_t y)
+{
+    const game_tilemap_t *map=(const game_tilemap_t *)gameworlds_map();
+    if (!map || !map->collision || !map->tile_size) return target_x;
+    const int32_t max_x=(int32_t)map->width*map->tile_size-16;
+    if (max_x<0) return INT32_MIN;
+    if (start_x<0) start_x=0;
+    if (start_x>max_x) start_x=max_x;
+    if (target_x<0) target_x=0;
+    if (target_x>max_x) target_x=max_x;
+    if (game_tilemap_actor_blocked(map,start_x,y,16u,16u)) return INT32_MIN;
+    const int32_t step=target_x>=start_x ? 1 : -1;
+    int32_t clear_x=start_x;
+    while (clear_x!=target_x) {
+        const int32_t next_x=clear_x+step;
+        if (game_tilemap_actor_blocked(map,next_x,y,16u,16u)) break;
+        clear_x=next_x;
+    }
+    return clear_x;
+}
+/* Query the SAME map/walls/slopes as the built-in tile player. One-way
+   platforms are added only when approached downward across their top. */
+static int32_t gameadventure_drop_floor(int32_t x,int32_t old_y,int32_t next_y)
+{
+    const game_tilemap_t *map=(const game_tilemap_t *)gameworlds_map();
+    if (!map || !map->collision || !map->tile_size) return old_y;
+    const int32_t tile=map->tile_size;
+    const int32_t map_bottom=(int32_t)map->height*tile;
+    for (int32_t y=old_y; y<=next_y; ++y) {
+        if (game_tilemap_actor_blocked(map,x,y,16u,16u))
+            return y==old_y ? y : y-1;
+        const int32_t feet=y+16;
+        if (feet>=0 && feet%tile==0) {
+            const int32_t ty=feet/tile;
+            const int32_t left=x<0 ? 0 : x/tile;
+            const int32_t right=(x+15)<0 ? -1 : (x+15)/tile;
+            for (int32_t tx=left; tx<=right; ++tx)
+                if (game_tile_at(map,tx,ty)==GAME_TILE_ONEWAY) return y;
+        }
+        /* The map boundary catches dropped items when no solid floor exists. */
+        if (feet>=map_bottom) return y;
+    }
+    return INT32_MAX;
+}
+@IDE_END
 @IDE_IF{HAS_SHARED_PLAYER}
 #include "gameplayer.h"
+/* Bound world physics exposes sprite origin, NOT collision rectangle. */
+static uint8_t gameadventure_live_sprite_origin(int32_t *x,int32_t *y)
+{ return gameworlds_player_sprite_origin(x,y); }
+/* Keep pickup collision in world hitbox coordinates, independently of the
+   foot anchor used for spawning and the player's map collision code. */
+static uint8_t gameadventure_live_pickup_rect(int32_t *x,int32_t *y,
+                                              uint16_t *w,uint16_t *h)
+{ return gameworlds_player_pickup_rect(x,y,w,h); }
 @IDE_END
 @IDE_IF{HAS_WORLD_OBJECTS}
 #include "gameworlditems.h"
@@ -218,6 +277,16 @@ void gameadventure_setup(void)
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
         skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
         @IDE{FRAMES_PER_CHAR}u, on_event, 0);
+@IDE_IF{HAS_SHARED_PLAYER}
+    game_adventure_set_drop_anchor(gameadventure_live_sprite_origin,
+        @IDE{DROP_FOOT_X}, @IDE{DROP_FOOT_Y},
+        @IDE{DROP_HITBOX_W}u, @IDE{DROP_HITBOX_H}u);
+    game_adventure_set_pickup_rect(gameadventure_live_pickup_rect);
+@IDE_END
+@IDE_IF{HAS_DROP_TILEMAP}
+    game_adventure_set_drop_floor(gameadventure_drop_floor);
+    game_adventure_set_drop_sweep(gameadventure_drop_sweep);
+@IDE_END
 @IDE{ITEM_ICON_SETUP}
 @IDE_IF{HAS_WORLD_OBJECTS}
     /* Let nearby FIRE2 doors/switches handle the button before inventory. */
@@ -225,6 +294,7 @@ void gameadventure_setup(void)
     game_adventure_set_interaction(gameworlditems_interaction_probe,
                                    gameworlditems_interaction_use);
     game_adventure_set_interaction_sound(gameworlditems_interaction_sound);
+    game_adventure_set_drop_contact(gameworlditems_drop_contact);
 @IDE_END
     /* Restore this world's appearance every time the world manager loads it.
      * The shared Adventure renderer must never inherit forest's settings
@@ -233,6 +303,7 @@ void gameadventure_setup(void)
      * This includes the inventory window, not just NPC conversations. */
     game_adventure_text_style(@IDE{TEXT_COLOUR_INDEX}u,
         @IDE{TEXT_OUTLINE_ENABLED}u, @IDE{OUTLINE_COLOUR_INDEX}u);
+    game_adventure_thought_text_colour(@IDE{THOUGHT_TEXT_COLOUR_INDEX}u);
     game_adventure_dialogue_box(@IDE{DIALOG_X}, @IDE{DIALOG_Y},
         @IDE{DIALOG_WIDTH}u, @IDE{DIALOG_HEIGHT}u);
     game_adventure_item_styles(item_styles, GAME_ADVENTURE_STORY_ITEM_COUNT);

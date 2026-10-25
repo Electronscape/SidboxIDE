@@ -207,6 +207,44 @@ uint8_t game_adventure_gameplay_buttons(uint8_t buttons);
 void game_adventure_skin_flips(const uint8_t flips[9]);
 void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
                                uint8_t outline_index);
+/* Optional independent player thought text CLUT colour. */
+void game_adventure_thought_text_colour(uint8_t colour_index);
+/* Optional initial facing (0=left, 1=right). Gameplay LEFT/RIGHT updates it. */
+void game_adventure_set_player_facing(uint8_t facing_right);
+/* Optional floor query for dropped 16x16 items. It receives world-space X,
+   previous item-top Y and candidate item-top Y; return the first safe landing
+   top Y, or INT32_MAX if there is no landing surface. The generated game
+   registers the active tilemap automatically. No allocation is involved. */
+typedef int32_t (*game_adventure_drop_floor_t)(int32_t x, int32_t old_y,
+                                              int32_t next_y);
+void game_adventure_set_drop_floor(game_adventure_drop_floor_t query);
+/* Sweep the entire 16x16 item horizontally from the player's foot towards
+   the desired drop X. Return the last unblocked item-left X, or INT32_MIN
+   if even the foot-side starting position is obstructed. */
+typedef int32_t (*game_adventure_drop_sweep_t)(int32_t start_x,
+                                                int32_t target_x, int32_t item_y);
+void game_adventure_set_drop_sweep(game_adventure_drop_sweep_t query);
+/* Callback when a dropped 16x16 inventory item touches a Trigger sensor.
+   Return 0 = no successful activation, 1 = activated/leave on ground,
+   2 = activated/consume the physical item. Invoked once per dropped item
+   after a successful activation, even if the item remains on the ground. */
+typedef uint8_t (*game_adventure_drop_contact_t)(const char *item_name,
+                                                  int32_t x, int32_t y);
+void game_adventure_set_drop_contact(game_adventure_drop_contact_t contact);
+/* Optional true Player Animation foot anchor (sprite-local coordinates).
+   The callback reads live sprite TOP-LEFT without changing player hitbox.
+   Foot X also centres NPC talk-range checks; NPC vertical range is unchanged.
+   The fall and pickup collision continue using the original item rules. */
+typedef uint8_t (*game_adventure_sprite_origin_t)(int32_t *x, int32_t *y);
+void game_adventure_set_drop_anchor(game_adventure_sprite_origin_t source,
+                                    int16_t foot_x, int16_t foot_y,
+                                    uint16_t hitbox_w, uint16_t hitbox_h);
+/* Read-only callback providing the player's ACTUAL collision rectangle for
+ * recollecting drops. If unavailable, use the legacy input coordinates.
+ * This does not change how NPCs, doors or map collision interpret input. */
+typedef uint8_t (*game_adventure_pickup_rect_t)(int32_t *x, int32_t *y,
+                                                uint16_t *w, uint16_t *h);
+void game_adventure_set_pickup_rect(game_adventure_pickup_rect_t source);
 /* Optional per-game dialogue box position/width and MINIMUM height on the
    480x320 LCD. A dialogue grows to fit its text and two visible choices.
    If it would run off the bottom, its Y is raised to keep the frame visible.
@@ -288,7 +326,7 @@ uint8_t game_adventure_remove(uint16_t index, uint16_t amount);
 typedef struct {
     int32_t x, y;
     uint16_t item_id;
-    uint8_t active, armed;
+    uint8_t active, armed; /* armed bit0 = can recollect; bit1 = drop-trigger already fired. */
 } game_adventure_drop_t;
 void game_adventure_save_drops(game_adventure_drop_t out[GAME_ADVENTURE_MAX_DROPS]);
 void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTURE_MAX_DROPS]);

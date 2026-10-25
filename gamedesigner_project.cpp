@@ -353,6 +353,7 @@ bool SidboxGameDesigner::loadDesign()
         r.gotoPress = object.value(QStringLiteral("gotoPress")).toBool(false);
         r.gotoStartId = object.value(QStringLiteral("gotoStartId")).toString(QStringLiteral("default"));
         r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
+        r.triggerDrop = object.value(QStringLiteral("triggerDrop")).toBool(false);
         r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
         r.interactItemName = object.value(QStringLiteral("interactItemName")).toString();
         r.interactRadius = qBound(0, object.value(QStringLiteral("interactRadius")).toInt(32), 128);
@@ -791,6 +792,7 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("gotoPress"), r.gotoPress);
             object.insert(QStringLiteral("gotoStartId"), r.gotoStartId);
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
+            object.insert(QStringLiteral("triggerDrop"), r.triggerDrop);
             object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);
             object.insert(QStringLiteral("interactItemName"), r.interactItemName);
             object.insert(QStringLiteral("interactRadius"), r.interactRadius);

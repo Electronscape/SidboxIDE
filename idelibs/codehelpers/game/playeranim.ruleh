@@ -8,6 +8,8 @@
 #include "apis.h"
 #include <stdint.h>
 
+#define @IDE{PREFIX_UPPER}_FOOT_X @IDE{FOOT_X}u
+#define @IDE{PREFIX_UPPER}_FOOT_Y @IDE{FOOT_Y}u
 #define @IDE{PREFIX_UPPER}_HITBOX_X @IDE{HITBOX_X}u
 #define @IDE{PREFIX_UPPER}_HITBOX_Y @IDE{HITBOX_Y}u
 #define @IDE{PREFIX_UPPER}_HITBOX_W @IDE{HITBOX_W}u

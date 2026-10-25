@@ -1,0 +1,46 @@
+CoderGirl IDE Stage 5.127.251026
+Adventure Editor cross-world copying and Thought Frame layout
+
+INSTALLATION
+1. Extract CoderGirl-Stage5.127-251026-DROPIN.zip over the SOURCE ROOT
+   of your existing Stage 5.126 IDE, retaining the paths.
+2. Rebuild the IDE with your Qt6 installation on Fedora (CMake needs Qt6 >= 6.5).
+3. Open Adventure Editor > Dialogue Position and test Copy from Another World:
+   dialogue X/Y/width/minimum height and padding; thought X/Y/width/height;
+   both dialogue and thought font X/Y scales; frontmost box and the two
+   independent foreground palette text indices should now copy.
+4. Open Adventure Editor > Dialogue + Thought Atlas and test its separate
+   Copy from Another World: atlas resource mapping, tile size, typing speed,
+   both foreground text colours, outline on/off and outline colour, all nine
+   dialogue frame cells/flips and all nine thought frame cells/flips.
+5. On the Atlas tab, the Thought Bubble Frame's grid should be as compact
+   as the Dialogue Box Frame, with matching button and flip-check sizes,
+   icons and preview layout.
+6. Save the destination world to persist the copied values. The source
+   world's .sbgm is never written by either copy action.
+
+IMPORTANT
+- Save the SOURCE WORLD before copying: only saved .sbgm data is read.
+- The destination world must have the same Tile Atlas resource registered;
+  copying does not move/duplicate PPB assets. The IDE checks by file path
+  and, with confirmation, by a unique resource name.
+- Foreground colours copy PALETTE INDICES. If the worlds have different
+  palette entries at those indices, the rendered RGB colours will differ.
+- Old worlds without thought-specific fields use the editor's usual default
+  values. Dialogue text, answers, NPCs and inventory are NOT copied.
+- The saved placement preset is a UI convenience; copying restores its
+  exact custom coordinates instead of a potentially different preset.
+
+CHANGED FILES
+  gameadventureeditor.cpp
+  splashscreenwidget.cpp
+  README.md
+  INSTALL-START-HERE.txt
+  INSTALL-STAGE5.127.txt
+  development/tests/test_stage5127_adventure_copy_layout.py
+
+COMPATIBILITY
+- Editor-only: game runtime, main.c, generators and .sbgm format unchanged.
+- This uses existing Qt6 6.5-compatible APIs. Full Qt6 IDE compilation is
+  not possible in the supplied test environment; rebuild on Fedora.
+- Source tests check every copied property against the saved field list.

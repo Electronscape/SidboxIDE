@@ -1,0 +1,7 @@
+CODERGIRL STAGE 5.131.251026 — LEFT/RIGHT DROP PICKUP FIX
+
+Install this drop-in over the Stage 5.130 IDE sources, preserve paths, rebuild
+CoderGirl, then Update Game Project and rebuild your game.
+
+Do NOT modify main.c or player hitbox / map collision settings.
+Read INSTALL-STAGE5.131.txt for details and testing.

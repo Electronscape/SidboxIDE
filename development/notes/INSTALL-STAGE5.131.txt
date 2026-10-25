@@ -1,0 +1,49 @@
+CoderGirl Stage 5.131.251026 — Dropped-item pickup alignment hotfix
+
+CAUSE (CONFIRMED IN SOURCE)
+Stage 5.129 / 5.130 spawn and wall-sweep dropped items using the saved Player
+Animation FOOT X/Y anchor. However, adventure runtime's ga_collect_drops()
+still tested the player_x/player_y passed to game_adventure_input(). In existing
+hand-owned main.c this is sprite TOP-LEFT plus collision width/height, rather
+than the real hitbox origin. The hitbox has a nonzero horizontal X offset.
+This makes pickup against a RIGHT wall particularly unreliable even though
+LEFT-wall pickup appears to work. Wall/platform collision was not the cause.
+
+CHANGE
+- gameworlds.rulec/.ruleh: read-only accessor for the player's active hitbox
+  (sprite x/y + hitbox offsets, actual width and height).
+- gameadventure.rulec: automatically register this accessor on world setup.
+- adventureruntime.rulec/.ruleh: ga_collect_drops() uses the real hitbox
+  when available; falls back to the old input rectangle otherwise.
+- Keep the existing leave-then-return arming guard to prevent instantly
+  recollecting a just-dropped item.
+- Clear the callback on world start to avoid retaining another world binding.
+- Splash version: 5.131.251026.
+
+WHAT DID NOT CHANGE
+- Player motion and physics.
+- Map collisions, solid tiles and one-way platforms.
+- Player Animation Foot X/Y drop origin.
+- Wall sweep and gravity/floor landing.
+- Inventory quantities, dropped-item save structure, world files.
+- NPC/interact distances, or the meaning of game_adventure_input arguments.
+- No main.c modification needed.
+
+INSTALL
+1. Unzip Stage5.131 DROPIN into the IDE source root ON TOP OF Stage 5.130.
+2. Rebuild the IDE (Qt6 baseline remains 6.5+).
+3. Game Designer > Update Game Project for the game/world.
+4. Rebuild the SIDBOX game. You do NOT need to hand-edit main.c.
+5. Test RIGHT and LEFT walls: drop, walk away if the item overlaps your
+   collision box, return and walk into it. Both sides should collect equally.
+
+VERIFICATION
+Native GCC (-std=c11 -Wall -Wextra -Werror) PASS for:
+- right wall: collision rectangle reaches item where sprite-based rectangle cannot
+- left wall counterpart
+- new-drop no-instant-recollect protection and walk-away/reapproach
+- fallback when live physics isn't available
+- compiled physics hitbox accessor with X/Y positive/negative offsets
+- Stage5.130 wall sweep, Stage5.129 foot anchor, Stage5.128 gravity,
+  Stage5.126 directional drop and thought-colour regressions
+Actual Qt6 build and SIDBOX hardware verification still required.

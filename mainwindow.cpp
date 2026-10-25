@@ -11732,6 +11732,7 @@ bool MainWindow::openFile(const QString &filePath)
         QDialog dialog(this);
         dialog.setWindowTitle(tr("PPB Viewer — %1").arg(QFileInfo(filePath).fileName()));
         dialog.resize(850, 600);
+        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
         dialog.setStyleSheet(styleSheet());
         auto *layout = new QVBoxLayout(&dialog);
         auto *tools = new QHBoxLayout();

@@ -38,6 +38,9 @@ uint8_t gameworlditems_interaction_probe(int32_t x, int32_t y, uint16_t w, uint1
 uint8_t gameworlditems_interaction_use(const char *item_name);
 /* 0 = wrong item, 1 = successful USE, 2 = FIRE2 cancel. */
 void gameworlditems_interaction_sound(uint8_t event);
+/* Dropped item overlap (16x16 world rectangle): 0 = ignored/failed,
+   1 = activated, item stays; 2 = activated, consume physical drop. */
+uint8_t gameworlditems_drop_contact(const char *name, int32_t x, int32_t y);
 @IDE_END
 @IDE_IF{HAS_TRIGGERS}
 uint16_t gameworlditems_trigger(int32_t player_x, int32_t player_y,

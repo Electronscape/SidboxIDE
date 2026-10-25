@@ -1,0 +1,68 @@
+CoderGirl Stage 5.128.251026
+Physics-driven inventory drops using the player's actual collision hitbox
+
+INSTALLATION
+1. Extract Stage 5.128 DROPIN over the Stage 5.127 IDE SOURCE ROOT, preserving paths.
+2. Rebuild CoderGirl IDE (the installed CMake baseline is Qt6 >= 6.5).
+3. In the game project, choose Update Game Project to regenerate gameadventureruntime.c/.h,
+   gameadventure.c, and maingame.c.txt from the revised templates.
+4. Rebuild the SIDBOX game; no .sbgm file format changes or firmware changes.
+
+IMPORTANT: YOUR MAIN.C MAY BE USER-OWNED
+The IDE deliberately does NOT overwrite an edited main.c. If yours is user-owned,
+open the game's main.c, find the game_adventure_input(...) call in the frame loop,
+then replace that ONE CALL with the following (same physics variable names as
+maingame.c.txt, generated from the SDK). DO NOT overwrite your entire main.c.
+
+        game_adventure_input(adventure_buttons,
+            player_physics.x100 / 100 + player_physics.hitbox_x,
+            player_physics.y100 / 100 + player_physics.hitbox_y,
+            player_physics.hitbox_w ? player_physics.hitbox_w : GAMERGIRL_PLAYER_BOB.width,
+            player_physics.hitbox_h ? player_physics.hitbox_h : GAMERGIRL_PLAYER_BOB.height, 1);
+
+This passes the ACTUAL collision hitbox left/top X/Y, instead of the sprite's
+visual top-left. Without the new offsets the drop may still appear displaced
+if your player animation defines nonzero hitbox X/Y. If your user-owned main.c
+uses different variable names, copy the equivalent call from freshly
+regenerated maingame.c.txt, keeping your local naming and loop structure.
+
+BEHAVIOUR
+- Drop left/right based on last gameplay-facing direction. LEFT/RIGHT in the
+  inventory menu never changes facing.
+- X is 8px clear of the physical hitbox edge (16px collectible footprint).
+- Y is the vertical CENTER of the physical hitbox (item itself centred there).
+- Drop falls with increasing speed at 50FPS (0.45px/frame acceleration,
+  maximum 8px/frame) and stops when its 16x16 hitbox lands on a surface.
+- The generated world registers the active TFCard or embedded tilemap through
+  the EXISTING tile collision helpers. Solid ground, one-way platforms,
+  slopes and blocking surfaces are supported by the landing query.
+- A missing/empty collision map leaves the dropped item at its starting
+  height; lower world bounds prevent falling endlessly past the map.
+- Item remains an inventory collectible. The existing leave-and-return
+  pickup arming safety stays intact.
+- Existing saved drops have the same layout. Position persists across
+  worlds; transient fall velocity restarts on re-entry.
+
+TECHNICAL / COMPATIBILITY
+- Runtime API addition: game_adventure_set_drop_floor(query), automatically
+  configured by regenerated gameadventure.c when gametilemap.c/.h exist.
+- The generated maingame.c.txt is updated to supply physical hitbox offsets.
+- The gameadventure generator detects a project's installed tilemap helper.
+- No changes to gametilemap.c/.h or existing collidable-map formats.
+- On older/custom mains, if game_adventure_input() is entirely absent,
+  that frame call still needs normal Adventure integration.
+- Full Qt6 GUI build and physical SIDBOX test must be performed on Fedora.
+
+CHANGED FILES
+  idelibs/codehelpers/game/adventureruntime.rulec
+  idelibs/codehelpers/game/adventureruntime.ruleh
+  idelibs/codehelpers/game/gameadventure.rulec
+  idelibs/codehelpers/game/maingame.rulec
+  gameadventuregen.cpp
+  splashscreenwidget.cpp
+  development/tests/test_stage5128_features.py
+  development/tests/test_stage5128_drop_gravity.c
+  development/tests/test_stage5128_tile_landing.c
+  INSTALL-STAGE5.128.txt
+  INSTALL-START-HERE.txt
+  README.md

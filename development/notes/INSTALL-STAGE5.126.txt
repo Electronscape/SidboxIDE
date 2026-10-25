@@ -1,0 +1,70 @@
+CoderGirl IDE Stage 5.126.251026
+Adventure / PPB / Inventory / Enemy colour update
+
+INSTALLATION
+1. Extract CoderGirl-Stage5.126-251026-DROPIN.zip over the SOURCE ROOT
+   of your existing Stage 5.125 IDE, retaining subdirectories.
+2. Rebuild the IDE using the Qt6 installation on your Fedora computer.
+3. Open Adventure Editor and a PPB to check both launch maximised.
+4. In Adventure Editor > Dialogue Position choose separate foreground
+   palette text colours for Dialogue and Thought. Preview updates when picked.
+5. In dialogue/thought atlas cell pickers, hold MIDDLE mouse and drag to pan.
+   LEFT-click continues to select cells without panning.
+6. Game Object Properties > Damage/Knockback/Hurt Effects > Flash CLUT
+   colour now opens a visual 16x16 foreground-palette index picker.
+7. Save your world; click Update Game Project; build the game and test
+   dropping items facing right and left, and dialogue/thought colours.
+
+CHANGED FILES
+  gameadventureeditor.cpp
+  gamedesigner.cpp
+  gameadventuregen.cpp
+  gamehelpertemplates.h
+  mainwindow.cpp
+  splashscreenwidget.cpp
+  idelibs/codehelpers/game/adventureruntime.rulec
+  idelibs/codehelpers/game/adventureruntime.ruleh
+  idelibs/codehelpers/game/gameadventure.rulec
+  idelibs/codehelpers/game/maingame.rulec
+  README.md / INSTALL-STAGE5.126.txt / INSTALL-START-HERE.txt
+  development/tests/test_stage5126_directional_drop.c
+  development/tests/test_stage5126_thought_colours.c
+  development/tests/test_stage5126_features.py
+
+DIRECTION RULES
+ - The dropped icon appears immediately outside the player collision width:
+   8 pixels ahead on the right, or 8 pixels ahead of the left boundary.
+ - The last gameplay LEFT/RIGHT direction is remembered. Navigating bag
+   items/actions never turns the player.
+ - The generated starter's spawn/world-change code also sets exact initial
+   facing. If main.c is USER-OWNED it is NOT overwritten. Facing is inferred
+   from gameplay directional inputs without manual source edits. To handle
+   initial facing before any movement in a custom main.c, OPTIONAL call:
+       game_adventure_set_player_facing(spawn.facing ? 1u : 0u);
+   after loading the current world spawn/arrival.
+ - Existing floor-drop save format is unchanged.
+
+TEXT COLOUR RULES
+ - Existing textColourIndex remains the dialogue, inventory and UI text
+   colour; thoughtTextColourIndex is an additional independent foreground
+   palette index for thought bubbles ONLY. Old projects automatically use
+   their existing dialogue text colour for both if the new key is absent.
+ - Dialogue text outline settings remain shared with thought text.
+ - Per-world palette indices are restored by generated gameadventure.c.
+ - Update Game Project is REQUIRED for these runtime changes; user-owned
+   main.c is NOT replaced.
+
+Qt6 COMPATIBILITY
+CMakeLists.txt requires Qt6 >= 6.5. Changes use APIs already available
+in Qt6.5 (mouse globalPosition, QDialog window state, Qt mouse buttons and
+existing Qt widgets), avoiding newer-only Qt calls.
+
+VERIFICATION
+PASS: new compiled native C directional-drop tests.
+PASS: new compiled independent dialogue/thought foreground-colour tests.
+PASS: compiled Stage 5.114 and 5.115 thought-bubble regressions.
+PASS: source checks for picker, maximisation, panning and export wiring.
+LIMITATION: Qt6 development packages are absent from this container, so
+Fedora GUI compilation and on-device SIDBOX testing remain required.
+Historical old tests may contain stale build/version assertions and known
+pre-existing failures unrelated to this stage.

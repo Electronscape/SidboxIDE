@@ -220,6 +220,10 @@ public:
     QImage source;
     int cellSize = 8, cellHeight = 8, zoom = 3, selectedIndex = 0;
     std::function<void(int)> changed;
+    QScrollArea *panScroll=nullptr;
+    bool middlePanning=false;
+    QPoint panStart;
+    int panStartH=0, panStartV=0;
     explicit AdventureAtlasGrid(QWidget *parent = nullptr) : QWidget(parent) {}
     void configure(const QImage &image, int tile, int tileY, int active) {
         source = image;
@@ -248,6 +252,16 @@ protected:
         }
     }
     void mousePressEvent(QMouseEvent *event) override {
+        if (event->button()==Qt::MiddleButton && panScroll) {
+            middlePanning=true;
+            panStart=event->globalPosition().toPoint();
+            panStartH=panScroll->horizontalScrollBar()->value();
+            panStartV=panScroll->verticalScrollBar()->value();
+            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+        if (event->button()!=Qt::LeftButton) return;
         if (source.isNull() || !cellSize) return;
         const int columns=source.width()/cellSize;
         const int rows=source.height()/cellHeight;
@@ -258,6 +272,23 @@ protected:
         selectedIndex = y*columns+x;
         update();
         if(changed) changed(selectedIndex);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if (middlePanning && panScroll) {
+            const QPoint delta=event->globalPosition().toPoint()-panStart;
+            panScroll->horizontalScrollBar()->setValue(panStartH-delta.x());
+            panScroll->verticalScrollBar()->setValue(panStartV-delta.y());
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (event->button()==Qt::MiddleButton && middlePanning) {
+            middlePanning=false;
+            unsetCursor();
+            event->accept();
+        }
     }
 };
 
@@ -419,6 +450,9 @@ int chooseAdventureAtlasCell(QWidget *parent,const QImage &source,int tile,int p
     auto *scroll=new QScrollArea(&dialog);scroll->setWidgetResizable(false);
     auto *grid=new AdventureAtlasGrid(scroll);
     grid->configure(source,tile,effectiveHeight,std::clamp(previous,0,std::min(columns*rows,limit)-1));
+    grid->panScroll=scroll;
+    grid->setToolTip(QObject::tr("Left click: select a cell. Hold middle mouse and drag: pan the atlas."));
+    info->setToolTip(QObject::tr("Middle mouse drag pans the sheet without changing the selected cell."));
     scroll->setWidget(grid);v->addWidget(scroll,1);
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);
     v->addWidget(buttons);
@@ -3235,8 +3269,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     skinForm->addRow(QObject::tr("Dialogue Tile Atlas"),skinAtlas);
     skinForm->addRow(QObject::tr("Tile size (px)"),tileSize);
     int chosenText=std::clamp(old.value("textColourIndex").toInt(15),0,255);
+    int chosenThoughtText=std::clamp(old.value("thoughtTextColourIndex").toInt(chosenText),0,255);
     int chosenOutline=std::clamp(old.value("outlineColourIndex").toInt(1),0,255);
     auto *textColour=new QPushButton(skinPage);
+    auto *thoughtTextColour=new QPushButton(skinPage);
     auto *outline=new QCheckBox(QObject::tr("Outline dialogue text (four directions)"),skinPage);
     outline->setChecked(old.value("textOutline").toBool(false));
     auto *outlineColour=new QPushButton(skinPage);
@@ -3251,10 +3287,16 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             button->setIcon(QIcon(px));button->setIconSize(QSize(22,22));
         }
     };
-    decorateColour(textColour,chosenText);decorateColour(outlineColour,chosenOutline);
+    decorateColour(textColour,chosenText);
+    decorateColour(thoughtTextColour,chosenThoughtText);
+    decorateColour(outlineColour,chosenOutline);
     QObject::connect(textColour,&QPushButton::clicked,&dialog,[&]{
         const int idx=chooseAdventurePaletteIndex(&dialog,foregroundPalette,chosenText);
         if(idx>=0){chosenText=idx;decorateColour(textColour,chosenText);}
+    });
+    QObject::connect(thoughtTextColour,&QPushButton::clicked,&dialog,[&]{
+        const int idx=chooseAdventurePaletteIndex(&dialog,foregroundPalette,chosenThoughtText);
+        if(idx>=0){chosenThoughtText=idx;decorateColour(thoughtTextColour,chosenThoughtText);}
     });
     QObject::connect(outlineColour,&QPushButton::clicked,&dialog,[&]{
         const int idx=chooseAdventurePaletteIndex(&dialog,foregroundPalette,chosenOutline);
@@ -3268,9 +3310,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     });
     auto *colours=new QWidget(skinPage);auto *colourRow=new QHBoxLayout(colours);
     colourRow->setContentsMargins(0,0,0,0);
-    colourRow->addWidget(new QLabel(QObject::tr("Text:"),colours));
-    colourRow->addWidget(textColour,1);
-    colourRow->addWidget(new QLabel(QObject::tr("Outline:"),colours));
+    colourRow->addWidget(new QLabel(QObject::tr("Text outline:"),colours));
     colourRow->addWidget(outlineColour,1);
     skinForm->addRow(QObject::tr("Foreground colours"),colours);
     skinForm->addRow(QString(),outline);
@@ -3320,9 +3360,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         thoughtCells[i]=std::clamp(i<thoughtSaved.size()?thoughtSaved[i].toInt(i):chosenTiles[i],0,65535);
         auto *slot=new QWidget(thoughtDesign);
         auto *h=new QHBoxLayout(slot); h->setContentsMargins(2,2,2,2); h->setSpacing(5);
-        thoughtPick[i]=new QPushButton(slot);thoughtPick[i]->setMinimumSize(82,58);
+        thoughtPick[i]=new QPushButton(slot);thoughtPick[i]->setMinimumSize(94,58);
         h->addWidget(thoughtPick[i]);
         auto *flips=new QVBoxLayout;
+        flips->setSpacing(0); // Match the tightly packed dialogue-frame X/Y controls.
         thoughtFlipX[i]=new QCheckBox(QObject::tr("X Flip"),slot);
         thoughtFlipY[i]=new QCheckBox(QObject::tr("Y Flip"),slot);
         const int flags=i<thoughtSavedFlips.size()?thoughtSavedFlips[i].toInt():0;
@@ -3334,7 +3375,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     thoughtDesignLayout->addLayout(thoughtTiles);
     auto *thoughtPreview=new QLabel(thoughtDesign);
     thoughtPreview->setMinimumHeight(112);thoughtPreview->setAlignment(Qt::AlignCenter);
-    thoughtDesignLayout->addWidget(thoughtPreview);
+    thoughtDesignLayout->addWidget(thoughtPreview,1);
     frameDesignRow->addWidget(thoughtDesign,1);
     skinLayout->addLayout(frameDesignRow);
     auto *preview=new QLabel(skinPage);preview->setMinimumHeight(112);
@@ -3369,8 +3410,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             if(thoughtCells[i]<cols*rows){
                 QImage cellImage=adventureFlippedCell(atlas.copy((thoughtCells[i]%cols)*t,
                     (thoughtCells[i]/cols)*t,t,t),thoughtFlipX[i]->isChecked(),thoughtFlipY[i]->isChecked());
-                thoughtPick[i]->setIcon(QIcon(QPixmap::fromImage(cellImage.scaled(36,36,Qt::KeepAspectRatio,Qt::FastTransformation))));
-                thoughtPick[i]->setIconSize(QSize(36,36));
+                thoughtPick[i]->setIcon(QIcon(QPixmap::fromImage(cellImage.scaled(40,40,Qt::KeepAspectRatio,Qt::FastTransformation))));
+                thoughtPick[i]->setIconSize(QSize(40,40));
             } else thoughtPick[i]->setIcon(QIcon());
         }
         QImage thoughtResult(t*9,t*5,QImage::Format_ARGB32);thoughtResult.fill(Qt::transparent);
@@ -3454,8 +3495,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     updatePreview();
     refreshInventoryIcons();
     auto *copyAtlas = new QPushButton(QObject::tr("Copy from Another World..."), skinPage);
-    copyAtlas->setToolTip(QObject::tr("Copy the dialogue atlas and both frame designs (dialogue + thought), "
-                                        "colours, outline and typing speed. NPCs and dialogue are not copied."));
+    copyAtlas->setToolTip(QObject::tr("Copy the saved tile atlas (matched to this world's resources), "
+        "tile size, all 9 dialogue and 9 thought cells with X/Y flips, foreground text indices, "
+        "outline settings and typing speed. No dialogue text, answers or NPCs are copied. "
+        "The source world must be saved first."));
     skinLayout->insertWidget(0, copyAtlas, 0, Qt::AlignLeft);
     QObject::connect(copyAtlas, &QPushButton::clicked, &dialog, [&] {
         AdventureSavedWorld source;
@@ -3470,6 +3513,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         tileSize->setValue(std::clamp(settings.value(QStringLiteral("tileSize")).toInt(8),4,32));
         speed->setValue(std::clamp(settings.value(QStringLiteral("framesPerChar")).toInt(2),1,30));
         chosenText = std::clamp(settings.value(QStringLiteral("textColourIndex")).toInt(15),0,255);
+        chosenThoughtText = std::clamp(settings.value(QStringLiteral("thoughtTextColourIndex")).toInt(chosenText),0,255);
+        decorateColour(thoughtTextColour, chosenThoughtText);
         chosenOutline = std::clamp(settings.value(QStringLiteral("outlineColourIndex")).toInt(1),0,255);
         decorateColour(textColour, chosenText);
         decorateColour(outlineColour, chosenOutline);
@@ -3490,7 +3535,9 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             thoughtFlipX[i]->setChecked((flags&4)!=0);
             thoughtFlipY[i]->setChecked((flags&8)!=0);
         }
+        refreshFrameControls();
         updatePreview();
+        refreshInventoryIcons();
     });
     tabs->addTab(skinPage,QObject::tr("Dialogue + Thought Atlas"));
 
@@ -3584,8 +3631,14 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     positionFields->addWidget(dialogScaleX,4,1);
     positionFields->addWidget(new QLabel(QObject::tr("Font scale Y"),positionPage),4,2);
     positionFields->addWidget(dialogScaleY,4,3);
-    positionFields->addWidget(new QLabel(QObject::tr("Frontmost box"),positionPage),5,0);
-    positionFields->addWidget(stacking,5,1,1,3);
+    positionFields->addWidget(new QLabel(QObject::tr("Dialogue text colour"),positionPage),5,0);
+    positionFields->addWidget(textColour,5,1,1,3);
+    thoughtPositionFields->addWidget(new QLabel(QObject::tr("Thought text colour"),thoughtPosition),3,0);
+    thoughtPositionFields->addWidget(thoughtTextColour,3,1,1,3);
+    textColour->setToolTip(QObject::tr("Foreground palette index for dialogue speakers, body text and answers."));
+    thoughtTextColour->setToolTip(QObject::tr("Independent foreground palette index for player thought text."));
+    positionFields->addWidget(new QLabel(QObject::tr("Frontmost box"),positionPage),6,0);
+    positionFields->addWidget(stacking,6,1,1,3);
     auto *positionPanels=new QVBoxLayout;
     auto *dialoguePosition=new QGroupBox(QObject::tr("Dialogue box placement"),positionPage);
     dialoguePosition->setLayout(positionFields);
@@ -3593,8 +3646,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     positionPanels->addWidget(thoughtPosition,1);
     positionLeft->addLayout(positionPanels);
     auto *copyPosition = new QPushButton(QObject::tr("Copy from Another World..."),positionPage);
-    copyPosition->setToolTip(QObject::tr("Copy only dialogue window X/Y, width and minimum height. "
-                                         "No dialogue text, choices or NPC settings are copied."));
+    copyPosition->setToolTip(QObject::tr("Copy the complete Dialogue Position settings: dialogue and "
+        "thought bubble placement and size, padding, both font scales, stacking order, "
+        "and both foreground text palette indices. No dialogue text, answers, NPCs or inventory are copied. "
+        "The source world must be saved first."));
     positionLeft->insertWidget(0,copyPosition,0,Qt::AlignLeft);
     auto *screenPreview=new AdventureDialoguePositionPreview(positionPage);
     screenPreview->setAlignment(Qt::AlignCenter);
@@ -3695,9 +3750,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         for(int gy=80;gy<320;gy+=80)painter.drawLine(0,gy,480,gy);
         const QColor textInk=chosenText>=0 && chosenText<foregroundPalette.size()
             ? QColor::fromRgba(foregroundPalette[chosenText]) : QColor(234,240,250);
+        const QColor thoughtTextInk=chosenThoughtText>=0 && chosenThoughtText<foregroundPalette.size()
+            ? QColor::fromRgba(foregroundPalette[chosenThoughtText]) : textInk;
         const QColor outlineInk=chosenOutline>=0 && chosenOutline<foregroundPalette.size()
             ? QColor::fromRgba(foregroundPalette[chosenOutline]) : QColor(10,10,16);
         const QColor visibleTextInk=textInk.alpha()==0?QColor(textInk.red(),textInk.green(),textInk.blue()):textInk;
+        const QColor visibleThoughtTextInk=thoughtTextInk.alpha()==0
+            ? QColor(thoughtTextInk.red(),thoughtTextInk.green(),thoughtTextInk.blue()) : thoughtTextInk;
         const QColor visibleOutlineInk=outlineInk.alpha()==0?QColor(outlineInk.red(),outlineInk.green(),outlineInk.blue()):outlineInk;
         const bool thoughtsOnTop=stacking->currentData().toInt()!=0;
         screenPreview->thoughtAboveDialog=thoughtsOnTop;
@@ -3710,7 +3769,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                                    tw-2*thoughtInset,th-2*thoughtInset));
         for(int i=0;i<std::min(int(thoughtLines.size()),std::max(0,(th-2*thoughtInset)/thoughtRow));++i)
             adventureDrawGlyphs(painter,tx+thoughtInset,ty+thoughtInset+i*thoughtRow,thoughtLines[i],
-                                thoughtSx,thoughtSy,visibleTextInk,outline->isChecked(),visibleOutlineInk);
+                                thoughtSx,thoughtSy,visibleThoughtTextInk,outline->isChecked(),visibleOutlineInk);
         painter.setClipping(false);
         };
         auto paintDialogue=[&]{
@@ -3796,6 +3855,21 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         dialogW->setValue(std::clamp(settings.value(QStringLiteral("dialogWidth")).toInt(440),128,480));
         dialogH->setValue(std::clamp(settings.value(QStringLiteral("dialogHeight")).toInt(96),96,320));
         textPadding->setCurrentIndex(settings.value("dialogPadding").toInt(8)==0 ? 0 : 1);
+        // Position is TWO independent windows. Copy their entire layout and
+        // text presentation, not only the main dialogue's four coordinates.
+        thoughtX->setValue(std::clamp(settings.value("thoughtX").toInt(20),0,479));
+        thoughtY->setValue(std::clamp(settings.value("thoughtY").toInt(12),0,319));
+        thoughtW->setValue(std::clamp(settings.value("thoughtWidth").toInt(240),96,480));
+        thoughtH->setValue(std::clamp(settings.value("thoughtHeight").toInt(64),40,320));
+        dialogScaleX->setCurrentIndex(qMax(0,dialogScaleX->findData(settings.value("dialogFontScaleX").toInt(1))));
+        dialogScaleY->setCurrentIndex(qMax(0,dialogScaleY->findData(settings.value("dialogFontScaleY").toInt(2))));
+        thoughtScaleX->setCurrentIndex(qMax(0,thoughtScaleX->findData(settings.value("thoughtFontScaleX").toInt(1))));
+        thoughtScaleY->setCurrentIndex(qMax(0,thoughtScaleY->findData(settings.value("thoughtFontScaleY").toInt(2))));
+        stacking->setCurrentIndex(qMax(0,stacking->findData(settings.value("thoughtAboveDialog").toInt(1))));
+        chosenText=std::clamp(settings.value("textColourIndex").toInt(15),0,255);
+        chosenThoughtText=std::clamp(settings.value("thoughtTextColourIndex").toInt(chosenText),0,255);
+        decorateColour(textColour,chosenText);
+        decorateColour(thoughtTextColour,chosenThoughtText);
         refreshPosition();
     });
     QObject::connect(placement,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int choice){
@@ -3814,6 +3888,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         QObject::connect(field,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshPosition();});
     QObject::connect(previewNode,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshAnswers();refreshPosition();});
     QObject::connect(previewAnswer,QOverload<int>::of(&QComboBox::currentIndexChanged),positionPage,[&](int){refreshPosition();});
+    QObject::connect(textColour,&QPushButton::clicked,positionPage,[&]{refreshPosition();});
+    QObject::connect(thoughtTextColour,&QPushButton::clicked,positionPage,[&]{refreshPosition();});
     QObject::connect(outline,&QCheckBox::toggled,positionPage,[&](bool){refreshPosition();});
     QObject::connect(textPadding,QOverload<int>::of(&QComboBox::currentIndexChanged),
                      positionPage,[&](int){refreshPosition();});
@@ -3850,6 +3926,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             break;
         }
     }
+    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     if(dialog.exec()!=QDialog::Accepted)return false;
     QJsonObject result=old;
     const QJsonArray finalInventory = tableItems(items);
@@ -4028,6 +4105,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     result.insert("skinAtlasId",skinAtlas->currentData().toString());
     result.insert("tileSize",tileSize->value());result.insert("framesPerChar",speed->value());
     result.insert("textColourIndex",chosenText);
+    result.insert("thoughtTextColourIndex",chosenThoughtText);
     result.insert("textOutline",outline->isChecked());
     result.insert("outlineColourIndex",chosenOutline);
     QJsonArray cells;for(int i=0;i<9;++i)cells.append(chosenTiles[i]);

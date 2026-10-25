@@ -173,6 +173,48 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     fields.insert(QStringLiteral("HAS_SHARED_PLAYER"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("players/player.sbpi")))
             ? QStringLiteral("1") : QStringLiteral("0"));
+    fields.insert(QStringLiteral("HAS_DROP_TILEMAP"),
+        QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.h")))
+        && QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.c")))
+            ? QStringLiteral("1") : QStringLiteral("0"));
+    /* Player Animation Foot X/Y belongs to the sprite (not hitbox).
+       Populate the generated world's drop setup from the SAME .sbanim
+       file the editor saves; avoid depending on a user-owned main.c. */
+    int dropCellW=32, dropCellH=32;
+    int dropFootX=16, dropFootY=31;
+    int dropBoxW=32, dropBoxH=32;
+    const QDir project(projectRoot);
+    QFile playerFile(project.filePath(QStringLiteral("players/player.sbpi")));
+    if (playerFile.open(QIODevice::ReadOnly)) {
+        const QJsonObject player=QJsonDocument::fromJson(playerFile.readAll()).object();
+        if (player.value(QStringLiteral("format")).toString()==QStringLiteral("SIDBOX-PLAYER-INFO")) {
+            dropCellW=std::clamp(player.value(QStringLiteral("cellWidth")).toInt(32),1,2048);
+            dropCellH=std::clamp(player.value(QStringLiteral("cellHeight")).toInt(32),1,2048);
+            dropFootX=dropCellW/2; dropFootY=dropCellH-1;
+            dropBoxW=dropCellW; dropBoxH=dropCellH;
+            const QString animationPath=player.value(QStringLiteral("animationFile")).toString();
+            QFile anim(project.filePath(animationPath));
+            if (!animationPath.isEmpty() && anim.open(QIODevice::ReadOnly)) {
+                const QJsonObject root=QJsonDocument::fromJson(anim.readAll()).object();
+                if (root.value(QStringLiteral("format")).toString()==QStringLiteral("SIDBOX-PLAYER-ANIM")
+                    && root.value(QStringLiteral("cellWidth")).toInt()==dropCellW
+                    && root.value(QStringLiteral("cellHeight")).toInt()==dropCellH) {
+                    dropFootX=std::clamp(root.value(QStringLiteral("footX")).toInt(dropFootX),0,dropCellW);
+                    dropFootY=std::clamp(root.value(QStringLiteral("footY")).toInt(dropFootY),0,dropCellH);
+                    dropBoxW=std::clamp(root.value(QStringLiteral("hitboxW")).toInt(dropBoxW),1,dropCellW);
+                    dropBoxH=std::clamp(root.value(QStringLiteral("hitboxH")).toInt(dropBoxH),1,dropCellH);
+                }
+            }
+            if (player.value(QStringLiteral("customHitbox")).toBool()) {
+                dropBoxW=std::clamp(player.value(QStringLiteral("hitboxW")).toInt(dropBoxW),1,2048);
+                dropBoxH=std::clamp(player.value(QStringLiteral("hitboxH")).toInt(dropBoxH),1,2048);
+            }
+        }
+    }
+    fields.insert(QStringLiteral("DROP_FOOT_X"),QString::number(dropFootX));
+    fields.insert(QStringLiteral("DROP_FOOT_Y"),QString::number(dropFootY));
+    fields.insert(QStringLiteral("DROP_HITBOX_W"),QString::number(dropBoxW));
+    fields.insert(QStringLiteral("DROP_HITBOX_H"),QString::number(dropBoxH));
 
     const QSet<QString> puzzleItems = requiredItemNames(payload, projectRoot);
     QString items;
@@ -653,6 +695,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         {"THOUGHT_FONT_SCALE_Y", "thoughtFontScaleY", 1, 8, 2},
         {"THOUGHT_ABOVE", "thoughtAboveDialog", 0, 1, 1}
     };
+    fields.insert(QStringLiteral("THOUGHT_TEXT_COLOUR_INDEX"),
+        QString::number(clampInt(payload, "thoughtTextColourIndex", 0, 255,
+            clampInt(payload, "textColourIndex", 0, 255, 15))));
     for (const auto &value : appearance) {
         const int number = QByteArray(value.json) == "textOutline"
             ? (payload.value(QStringLiteral("textOutline")).toBool(false) ? 1 : 0)
@@ -762,10 +807,13 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("SKIN_FLIPS"),QStringLiteral("LINKED_ACTION_CASES"),
         QStringLiteral("SKIN_PATH"),QStringLiteral("SKIN_TILE_SIZE"),
         QStringLiteral("FRAMES_PER_CHAR"),QStringLiteral("TEXT_COLOUR_INDEX"),
+        QStringLiteral("THOUGHT_TEXT_COLOUR_INDEX"),
         QStringLiteral("TEXT_OUTLINE_ENABLED"),QStringLiteral("OUTLINE_COLOUR_INDEX"),
         QStringLiteral("DIALOG_X"),QStringLiteral("DIALOG_Y"),
         QStringLiteral("DIALOG_WIDTH"),QStringLiteral("DIALOG_HEIGHT"),
-        QStringLiteral("DIALOG_PADDING")};
+        QStringLiteral("DIALOG_PADDING"),
+        QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
+        QStringLiteral("DROP_HITBOX_W"),QStringLiteral("DROP_HITBOX_H")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),
                                    QStringLiteral("NPC_COUNT")};
     // Both rules are read, checked and fully expanded before writing either file.

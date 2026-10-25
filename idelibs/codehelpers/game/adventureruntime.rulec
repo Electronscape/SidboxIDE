@@ -401,6 +401,84 @@ uint8_t game_adventure_gameplay_buttons(uint8_t buttons)
 static uint8_t ga_inventory_selection; /* Index into owned/visible items. */
 static uint8_t ga_inventory_action; /* Among available USE, DROP, DESTROY (LEFT/RIGHT). */
 static game_adventure_drop_t ga_drops[GAME_ADVENTURE_MAX_DROPS];
+/* The saved drop structure stays unchanged: per-frame velocities are transient. */
+static uint16_t ga_drop_speed100[GAME_ADVENTURE_MAX_DROPS];
+static uint16_t ga_drop_fraction100[GAME_ADVENTURE_MAX_DROPS];
+static uint8_t ga_drop_landed[GAME_ADVENTURE_MAX_DROPS];
+static game_adventure_drop_floor_t ga_drop_floor;
+static game_adventure_drop_sweep_t ga_drop_sweep;
+static game_adventure_drop_contact_t ga_drop_contact;
+static game_adventure_sprite_origin_t ga_drop_sprite_origin;
+static game_adventure_pickup_rect_t ga_pickup_rect;
+void game_adventure_set_pickup_rect(game_adventure_pickup_rect_t source)
+{ ga_pickup_rect=source; }
+static int16_t ga_drop_foot_x, ga_drop_foot_y;
+static uint16_t ga_drop_hitbox_w, ga_drop_hitbox_h;
+void game_adventure_set_drop_anchor(game_adventure_sprite_origin_t source,
+                                    int16_t foot_x, int16_t foot_y,
+                                    uint16_t hitbox_w, uint16_t hitbox_h)
+{
+    ga_drop_sprite_origin=source;
+    ga_drop_foot_x=foot_x; ga_drop_foot_y=foot_y;
+    ga_drop_hitbox_w=hitbox_w; ga_drop_hitbox_h=hitbox_h;
+}
+void game_adventure_set_drop_floor(game_adventure_drop_floor_t query)
+{ ga_drop_floor=query; }
+void game_adventure_set_drop_sweep(game_adventure_drop_sweep_t query)
+{ ga_drop_sweep=query; }
+void game_adventure_set_drop_contact(game_adventure_drop_contact_t contact)
+{ ga_drop_contact=contact; }
+static uint8_t ga_drop_touch_trigger(game_adventure_drop_t *d)
+{
+    if (!d->active || (d->armed & 2u) || !ga_drop_contact || d->item_id>=ga_item_count)
+        return 0u;
+    const char *name=ga_items[d->item_id].name;
+    const uint8_t result=ga_drop_contact(name,d->x,d->y);
+    if (result==1u || result==2u) {
+        d->armed |= 2u;
+        if (result==2u) d->active=0u;
+        return 1u;
+    }
+    return 0u;
+}
+/* 50 FPS; accelerate by 0.45 px/frame, max 8 px/frame. Reuse the world's
+   collision landing query so items respect solid, one-way and slope tiles. */
+static void ga_step_drops(uint16_t frames)
+{
+    if (frames>60u) frames=60u;
+    for (uint8_t i=0u; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
+        game_adventure_drop_t *d=&ga_drops[i];
+        if (!d->active) continue;
+        /* Check the initial footprint, even before the first pixel of fall. */
+        ga_drop_touch_trigger(d);
+        if (!d->active || ga_drop_landed[i] || !ga_drop_floor) continue;
+        for (uint16_t f=0u; f<frames && d->active; ++f) {
+            uint16_t speed=(uint16_t)(ga_drop_speed100[i]+45u);
+            if (speed>800u) speed=800u;
+            ga_drop_speed100[i]=speed;
+            const uint16_t accumulated=(uint16_t)(ga_drop_fraction100[i]+speed);
+            const uint16_t pixels=(uint16_t)(accumulated/100u);
+            ga_drop_fraction100[i]=(uint16_t)(accumulated%100u);
+            if (!pixels) continue;
+            const int32_t from=d->y, next=from+(int32_t)pixels;
+            const int32_t landed=ga_drop_floor(d->x,from,next);
+            const int32_t final_y=(landed!=INT32_MAX && landed>=from && landed<=next)
+                ? landed : next;
+            /* Never tunnel over a thin trigger while falling at 8px/frame. */
+            for (int32_t y=from+1; y<=final_y && d->active; ++y) {
+                d->y=y;
+                ga_drop_touch_trigger(d);
+                if (!d->active) break;
+            }
+            if (!d->active) break;
+            if (landed!=INT32_MAX && landed>=from && landed<=next) {
+                ga_drop_speed100[i]=ga_drop_fraction100[i]=0u;
+                ga_drop_landed[i]=1u;
+                break;
+            }
+        }
+    }
+}
 static uint8_t ga_confirm_yes;  /* Confirmation defaults to NO. */
 /* Blink only the [ ] selection brackets, not the action labels.  At 50 fps,
    each half-period is ten frames (200 ms), and drawing does not change time. */
@@ -422,6 +500,9 @@ void game_adventure_restore_drops(const game_adventure_drop_t saved[GAME_ADVENTU
 {
     if (!saved) return;
     memcpy(ga_drops, saved, sizeof(ga_drops));
+    memset(ga_drop_speed100,0,sizeof(ga_drop_speed100));
+    memset(ga_drop_fraction100,0,sizeof(ga_drop_fraction100));
+    memset(ga_drop_landed,0,sizeof(ga_drop_landed));
     /* A floor drop can be the player's LAST item of this kind. Inventory
      * quantity is then zero, but the item still needs its PPB to draw.
      * Restore artwork now (on world entry), never during frame rendering. */
@@ -468,7 +549,9 @@ void game_adventure_thought_box(int16_t x,int16_t y,uint16_t w,uint16_t h,
         ga_thought_flips[i]=flips?flips[i]:ga_skin_flips[i];
     }
 }
+static uint8_t ga_drop_facing_right=1u;
 static uint8_t ga_text_colour=GA_TEXT_DEFAULT_COLOUR;
+static uint8_t ga_thought_text_colour=GA_TEXT_DEFAULT_COLOUR;
 static uint8_t ga_outline_enabled=GA_TEXT_DEFAULT_OUTLINE;
 static uint8_t ga_outline_colour=GA_TEXT_DEFAULT_OUTLINE_COLOUR;
 /* Dialogue height is a MINIMUM: expanded at draw time for the current node. */
@@ -526,6 +609,12 @@ void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
     ga_outline_enabled = outline_enabled ? 1u : 0u;
     ga_outline_colour = outline_index;
 }
+
+void game_adventure_thought_text_colour(uint8_t colour_index)
+{ ga_thought_text_colour=colour_index; }
+
+void game_adventure_set_player_facing(uint8_t facing_right)
+{ ga_drop_facing_right=facing_right ? 1u : 0u; }
 
 void game_adventure_npc_animations(const game_adventure_npc_animation_t *animations,
                                    uint16_t count)
@@ -753,6 +842,14 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
     ga_bracket_restart();
     memset(ga_drops, 0, sizeof(ga_drops));
+    memset(ga_drop_speed100,0,sizeof(ga_drop_speed100));
+    memset(ga_drop_fraction100,0,sizeof(ga_drop_fraction100));
+    memset(ga_drop_landed,0,sizeof(ga_drop_landed));
+    ga_drop_floor=0; /* Never retain a previous world's collision function. */
+    ga_drop_sweep=0; /* World transitions must register their own map query. */
+    ga_drop_contact=0; /* Never leak old world's Trigger callback. */
+    game_adventure_set_drop_anchor(0,0,0,0,0);
+    game_adventure_set_pickup_rect(0); /* Never leak a previous world's binding. */
     ga_dialog_padding = 8u;
     game_adventure_dialogue_typography(1u,2u,1u,2u,1u);
     /* Keep ga_prev_buttons across world travel: if FIRE2 opened a door and
@@ -764,6 +861,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     game_adventure_text_style(GA_TEXT_DEFAULT_COLOUR,
                               GA_TEXT_DEFAULT_OUTLINE,
                               GA_TEXT_DEFAULT_OUTLINE_COLOUR);
+    ga_thought_text_colour=GA_TEXT_DEFAULT_COLOUR;
     ga_node = ga_typed = ga_ticks = ga_reply_typed = ga_reply_ticks = 0;
     ga_after_reply = -1; ga_reply = 0;
     ga_thought_text=ga_inherited_thought=0;
@@ -1116,8 +1214,44 @@ static uint8_t ga_drop_item(uint16_t item_id, int32_t player_x, int32_t player_y
     if (item_id >= ga_item_count || !ga_counts[item_id] || !ga_droppable(item_id)) return 0;
     for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
         if (ga_drops[i].active) continue;
-        ga_drops[i].x = player_x + (int32_t)player_w/2 - 8;
-        ga_drops[i].y = player_y + (int32_t)player_h - 16;
+        int32_t sprite_x=0, sprite_y=0;
+        int32_t foot_x=player_x+(int32_t)player_w/2;
+        int32_t target_x=0, item_y=0;
+        uint8_t has_foot=0u;
+        if (ga_drop_sprite_origin && ga_drop_sprite_origin(&sprite_x,&sprite_y)) {
+            /* The saved Foot anchor is sprite-local, never a collision offset.
+               The 16px item travels horizontally FROM that anchor, so a
+               wall cannot be skipped just because the final point is free. */
+            foot_x=sprite_x+ga_drop_foot_x;
+            const int32_t foot_y=sprite_y+ga_drop_foot_y;
+            const int32_t reach=ga_drop_hitbox_w ? ga_drop_hitbox_w : player_w;
+            const int32_t height=ga_drop_hitbox_h ? ga_drop_hitbox_h : player_h;
+            target_x=ga_drop_facing_right
+                ? foot_x+reach+8 : foot_x-reach-16-8;
+            item_y=foot_y-height/2-8;
+            has_foot=1u;
+        } else {
+            /* Backwards-compatible input hitbox path when no sprite is bound. */
+            target_x=ga_drop_facing_right
+                ? player_x+(int32_t)player_w+8 : player_x-24;
+            item_y=player_y+(int32_t)player_h/2-8;
+        }
+        if (item_y<0) item_y=0;
+        if (target_x<0) target_x=0;
+        if (ga_drop_sweep) {
+            /* The sweep begins with the item wholly on the player's side of
+               the foot X, then tests EACH intermediate 16x16 footprint. */
+            const int32_t start_x=has_foot
+                ? (ga_drop_facing_right ? foot_x-16 : foot_x)
+                : (ga_drop_facing_right ? player_x : player_x+(int32_t)player_w-16);
+            const int32_t resolved=ga_drop_sweep(start_x,target_x,item_y);
+            if (resolved==INT32_MIN) return 0u; /* Keep the item in inventory. */
+            target_x=resolved;
+        }
+        ga_drops[i].x=target_x;
+        ga_drops[i].y=item_y;
+        ga_drop_speed100[i]=ga_drop_fraction100[i]=0u;
+        ga_drop_landed[i]=0u;
         ga_drops[i].item_id = item_id;
         ga_drops[i].active = 1u;
         ga_drops[i].armed = 0u;
@@ -1128,6 +1262,16 @@ static uint8_t ga_drop_item(uint16_t item_id, int32_t player_x, int32_t player_y
 }
 static void ga_collect_drops(int32_t x, int32_t y, uint16_t w, uint16_t h)
 {
+    /* The input position can be sprite top-left in a user-owned main.c.
+       Use the live PHYSICS hitbox for drops only, so a right-side item up
+       against a wall can actually be reached. Preserve legacy fallback. */
+    if (ga_pickup_rect) {
+        int32_t hit_x=0,hit_y=0;
+        uint16_t hit_w=0,hit_h=0;
+        if (ga_pickup_rect(&hit_x,&hit_y,&hit_w,&hit_h) && hit_w && hit_h) {
+            x=hit_x; y=hit_y; w=hit_w; h=hit_h;
+        }
+    }
     if (!w || !h) return;
     for (uint8_t i=0; i<GAME_ADVENTURE_MAX_DROPS; ++i) {
         game_adventure_drop_t *drop=&ga_drops[i];
@@ -1135,8 +1279,8 @@ static void ga_collect_drops(int32_t x, int32_t y, uint16_t w, uint16_t h)
         const uint8_t touching = (uint8_t)((int64_t)x < (int64_t)drop->x+16 &&
             (int64_t)x+w > drop->x && (int64_t)y < (int64_t)drop->y+16 &&
             (int64_t)y+h > drop->y);
-        if (!touching) { drop->armed=1u; continue; }
-        if (drop->armed && game_adventure_add(drop->item_id,1u)) drop->active=0u;
+        if (!touching) { drop->armed |= 1u; continue; }
+        if ((drop->armed & 1u) && game_adventure_add(drop->item_id,1u)) drop->active=0u;
     }
 }
 static void ga_draw_item_icon(uint16_t id, int x, int y)
@@ -1193,9 +1337,16 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     if (!(buttons & BTN_FIRE)) ga_fire1_blocked=0u;
     else if (ga_state != 0u) ga_fire1_blocked=1u;
     ga_prev_buttons = buttons;
+    ga_step_drops(frames);
     ga_tick_animations(frames);
     ga_bracket_frames=(uint8_t)(((uint32_t)ga_bracket_frames + frames) % 20u);
     ga_player_x = player_x; ga_player_y = player_y;
+    /* Only gameplay movement sets facing; inventory LEFT/RIGHT navigates
+       menu actions and must never turn the player around. */
+    if (ga_state==0u) {
+        if ((buttons & BTN_LEFT) && !(buttons & BTN_RIGHT)) ga_drop_facing_right=0u;
+        if ((buttons & BTN_RIGHT) && !(buttons & BTN_LEFT)) ga_drop_facing_right=1u;
+    }
     if (ga_state == 5u) {
         const uint16_t visible=ga_visible_count();
         if (ga_inventory_selection>=visible)
@@ -1216,7 +1367,18 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     if (ga_state == 0) {
         ga_collect_drops(player_x, player_y, player_w, player_h);
         if (!press) return 0;
-        const int32_t pcx = player_x + player_w / 2, pcy = player_y + player_h / 2;
+        /* NPC talk range follows the Player Animation Foot X, just like
+           physical item drops. The caller's rectangle may start at the
+           sprite's top-left (especially in user-owned main.c), so its
+           centre is NOT necessarily the player's interaction position.
+           Preserve the historical vertical range and old-project fallback. */
+        int32_t pcx = player_x + (int32_t)player_w / 2;
+        const int32_t pcy = player_y + (int32_t)player_h / 2;
+        if (ga_drop_sprite_origin) {
+            int32_t sprite_x = 0, sprite_y = 0;
+            if (ga_drop_sprite_origin(&sprite_x, &sprite_y))
+                pcx = sprite_x + ga_drop_foot_x;
+        }
         for (uint16_t i = 0; i < ga_npc_count; ++i) {
             if (!game_adventure_npc_visible(i)) continue;
             const game_adventure_npc_t *npc = &ga_npcs[i];
@@ -1668,8 +1830,11 @@ static void ga_draw_thought(void)
     int visible=(h-2*inset)/line_h;
     if(visible<0)visible=0;
     if(visible>16)visible=16;
+    const uint8_t saved_colour=ga_text_colour;
+    ga_text_colour=ga_thought_text_colour;
     ga_wrapped_scaled(ga_thought_text,ga_thought_typed,ga_thought_x+inset,y+inset,
                       (uint8_t)cols,(uint8_t)visible,ga_thought_scale_x,ga_thought_scale_y);
+    ga_text_colour=saved_colour;
 }
 
 void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)

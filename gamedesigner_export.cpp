@@ -1066,9 +1066,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         // QJson escaping is valid inside a C string literal for item names.
         const QString quoted=QString::fromUtf8(QJsonDocument(
             QJsonArray{r.interactItemName}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
-        interactionRows += QStringLiteral("    {%1u, %2u, %3u, %4},\n")
+        interactionRows += QStringLiteral("    {%1u, %2u, %3u, %4u, %5},\n")
             .arg(i).arg(qBound(0,r.interactRadius,128))
-            .arg(r.interactConsume ? 1 : 0).arg(quoted);
+            .arg(r.interactConsume ? 1 : 0).arg(r.triggerDrop ? 1 : 0).arg(quoted);
         if (!r.interactRewardItem.isEmpty() ||
             (r.interactStatTarget!=QStringLiteral("none") && !r.interactStatTarget.isEmpty() && r.interactStatDelta)) {
             hasInteractionOutcomes=true;
@@ -1076,7 +1076,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if (!r.interactRewardItem.isEmpty()) {
                 const QString gift=cQuoted(r.interactRewardItem);
                 body+=QStringLiteral(
-                    "        if (!game_adventure_can_reward_name(%1, %2u, r->consume ? r->item : 0)) return 3u;\n")
+                    "        if (!game_adventure_can_reward_name(%1, %2u, !dropped && r->consume ? r->item : 0)) return 3u;\n")
                     .arg(gift).arg(qBound(1,r.interactRewardCount,64));
             }
             if(r.interactStatTarget!=QStringLiteral("none") &&
@@ -1087,8 +1087,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
             if (!r.interactRewardItem.isEmpty()) {
                 if(r.interactConsume) body+=QStringLiteral(
-                    "        if (!game_adventure_take_name(r->item, 1u)) return 0u;\n"
-                    "        consumed_here=1u;\n");
+                    "        if (!dropped && !game_adventure_take_name(r->item, 1u)) return 0u;\n"
+                    "        if (!dropped) consumed_here=1u;\n");
                 body+=QStringLiteral(
                     "        if (!game_adventure_reward_name(%1, %2u)) return 3u;\n")
                     .arg(cQuoted(r.interactRewardItem)).arg(qBound(1,r.interactRewardCount,64));

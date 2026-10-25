@@ -73,6 +73,9 @@ inline QMap<QString, QString> valuesFor(const QString &helper,
         values.insert(QStringLiteral("DIALOG_WIDTH"), bounded("dialogWidth", 128, 480, 440));
         values.insert(QStringLiteral("DIALOG_HEIGHT"), bounded("dialogHeight", 96, 320, 162));
         values.insert(QStringLiteral("TEXT_COLOUR_INDEX"), bounded("textColourIndex", 0, 255, 15));
+        values.insert(QStringLiteral("THOUGHT_TEXT_COLOUR_INDEX"),
+            bounded("thoughtTextColourIndex", 0, 255,
+                adventure.value(QStringLiteral("textColourIndex")).toInt(15)));
         values.insert(QStringLiteral("TEXT_OUTLINE_ENABLED"),
                       adventure.value(QStringLiteral("textOutline")).toBool(false)
                       ? QStringLiteral("1") : QStringLiteral("0"));

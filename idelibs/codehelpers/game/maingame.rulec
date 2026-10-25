@@ -550,6 +550,9 @@ int main(int argc, char *argv[])
     if (!gameworlds_player_start(&spawn)) { result = 4; goto cleanup; }
     GAMERGIRL_PLAYER_BOB.drawx = spawn.x;
     GAMERGIRL_PLAYER_BOB.drawy = spawn.y;
+@IDE_IF{HAS_ADVENTURE}
+    game_adventure_set_player_facing(spawn.facing ? 1u : 0u);
+@IDE_END
     GAMERGIRL_PLAYER_BOB.flags = (uint8_t)((GAMERGIRL_PLAYER_BOB.flags & (uint8_t)~BLIT_FLAG_FLIP_X)
                                   | (spawn.facing ? 0 : BLIT_FLAG_FLIP_X));
 @IDE_IF{HAS_PLAYER_ANIMATION}
@@ -645,6 +648,9 @@ int main(int argc, char *argv[])
             }
             GAMERGIRL_PLAYER_BOB.drawx = arrival.x;
             GAMERGIRL_PLAYER_BOB.drawy = arrival.y;
+@IDE_IF{HAS_ADVENTURE}
+            game_adventure_set_player_facing(arrival.facing ? 1u : 0u);
+@IDE_END
             GAMERGIRL_PLAYER_BOB.flags = (uint8_t)(
                 (GAMERGIRL_PLAYER_BOB.flags & (uint8_t)~BLIT_FLAG_FLIP_X) |
                 (arrival.facing ? 0 : BLIT_FLAG_FLIP_X));
@@ -707,8 +713,12 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_ADVENTURE}
         const uint8_t adventure_buttons = getjoyport();
-        game_adventure_input(adventure_buttons, player_physics.x100 / 100,
-            player_physics.y100 / 100, player_physics.hitbox_w ? player_physics.hitbox_w : GAMERGIRL_PLAYER_BOB.width,
+        /* Adventure uses the PHYSICAL hitbox position, including its offset
+         * from the visible player sprite. Item drops originate from here. */
+        game_adventure_input(adventure_buttons,
+            player_physics.x100 / 100 + player_physics.hitbox_x,
+            player_physics.y100 / 100 + player_physics.hitbox_y,
+            player_physics.hitbox_w ? player_physics.hitbox_w : GAMERGIRL_PLAYER_BOB.width,
             player_physics.hitbox_h ? player_physics.hitbox_h : GAMERGIRL_PLAYER_BOB.height, 1);
         if (!game_adventure_open()) {
 @IDE_END

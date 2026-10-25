@@ -70,9 +70,9 @@ static game_world_object_t cg_gwi_platforms[@IDE{WORLD_OBJECT_COUNT}];
    as gameworlditems_after() uses to activate the door, including offsets. */
 static const game_world_player_t *cg_fire2_player;
 /* A stable item name, not a world-local inventory slot number. */
-typedef struct { uint16_t object; uint16_t reach; uint8_t consume; const char *item; } cg_interaction_rule_t;
+typedef struct { uint16_t object; uint16_t reach; uint8_t consume, drop; const char *item; } cg_interaction_rule_t;
 static const cg_interaction_rule_t cg_interaction_rules[] = {
-@IDE{INTERACT_ROWS}    {UINT16_MAX, 0u, 0u, 0}
+@IDE{INTERACT_ROWS}    {UINT16_MAX, 0u, 0u, 0u, 0}
 };
 static uint16_t cg_interaction_target = UINT16_MAX;
 static const uint16_t cg_active_state_frames[] = {
@@ -612,27 +612,56 @@ void gameworlditems_interaction_sound(uint8_t event)
     if (r->object>=@IDE{WORLD_OBJECT_COUNT}) return;
     (void)event;
 @IDE{INTERACT_SOUND_ACTIONS}}
-uint8_t gameworlditems_interaction_use(const char *item_name)
+/* USE and falling-item contact deliberately share the SAME success path.
+   A dropped item already left inventory, so 'consume' removes its physical
+   sprite rather than deducting a second item from the player's backpack. */
+static uint8_t cg_complete_item_interaction(uint16_t rule_index, uint8_t dropped)
 {
-    if (cg_interaction_target>=sizeof(cg_interaction_rules)/sizeof(cg_interaction_rules[0]) || !item_name) return 0;
-    const cg_interaction_rule_t *r=&cg_interaction_rules[cg_interaction_target];
-    if (r->object>=@IDE{WORLD_OBJECT_COUNT}) return 0;
+    const cg_interaction_rule_t *r=&cg_interaction_rules[rule_index];
+    if (r->object>=@IDE{WORLD_OBJECT_COUNT}) return 0u;
     game_world_object_t *o=&cg_gwi_platforms[r->object];
     if (!o->active || !r->item) return 0u;
-    if (strcmp(item_name,r->item)!=0) {
-        gameworlditems_interaction_sound(0u); /* Wrong item. */
-@IDE{INTERACT_WRONG_DIALOGUE_ACTIONS}        return 0u;
-    }
     uint8_t consumed_here=0u;
 @IDE{INTERACT_PREFLIGHT_ACTIONS}
     o->trigger_fired=1;
     if (o->trigger_one_shot) o->active=0;
     cg_run_trigger_actions();
     o->trigger_fired=0;
-    gameworlditems_interaction_sound(1u); /* Success, before clearing target. */
+    const uint16_t previous=cg_interaction_target;
+    cg_interaction_target=rule_index;
+    gameworlditems_interaction_sound(1u);
 @IDE{INTERACT_DIALOGUE_ACTIONS}
-    cg_interaction_target=UINT16_MAX;
-    return consumed_here ? 1u : (r->consume ? 2u : 1u);
+    cg_interaction_target=dropped ? previous : UINT16_MAX;
+    return dropped ? (r->consume ? 2u : 1u)
+                   : (consumed_here ? 1u : (r->consume ? 2u : 1u));
+}
+uint8_t gameworlditems_interaction_use(const char *item_name)
+{
+    if (cg_interaction_target>=sizeof(cg_interaction_rules)/sizeof(cg_interaction_rules[0]) || !item_name) return 0u;
+    const cg_interaction_rule_t *r=&cg_interaction_rules[cg_interaction_target];
+    if (r->object>=@IDE{WORLD_OBJECT_COUNT}) return 0u;
+    if (!cg_gwi_platforms[r->object].active || !r->item) return 0u;
+    if (strcmp(item_name,r->item)!=0) {
+        gameworlditems_interaction_sound(0u);
+@IDE{INTERACT_WRONG_DIALOGUE_ACTIONS}        return 0u;
+    }
+    return cg_complete_item_interaction(cg_interaction_target,0u);
+}
+uint8_t gameworlditems_drop_contact(const char *name, int32_t x, int32_t y)
+{
+    if (!name || !*name) return 0u;
+    for (uint16_t n=0u; n<sizeof(cg_interaction_rules)/sizeof(cg_interaction_rules[0]); ++n) {
+        const cg_interaction_rule_t *r=&cg_interaction_rules[n];
+        if (!r->drop || !r->item || strcmp(name,r->item)!=0 ||
+            r->object>=@IDE{WORLD_OBJECT_COUNT}) continue;
+        const game_world_object_t *o=&cg_gwi_platforms[r->object];
+        if (!o->active || !o->width || !o->height) continue;
+        if ((int64_t)x>=((int64_t)o->x+o->width) || ((int64_t)x+16)<=o->x ||
+            (int64_t)y>=((int64_t)o->y+o->height) || ((int64_t)y+16)<=o->y) continue;
+        const uint8_t result=cg_complete_item_interaction(n,1u);
+        if (result==1u || result==2u) return result;
+    }
+    return 0u;
 }
 @IDE_END
 @IDE_IF{HAS_TRIGGERS}

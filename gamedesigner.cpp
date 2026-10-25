@@ -7217,6 +7217,18 @@ void SidboxGameDesigner::configureGameObject(int index)
     triggerPress->setToolTip(tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
         "otherwise the trigger activates on touch."));
     form->addRow(QString(), triggerPress);
+    auto *triggerDrop = new QCheckBox(tr("Activate when matching dropped item touches switch"), &dialog);
+    triggerDrop->setChecked(old.triggerDrop);
+    triggerDrop->setToolTip(tr("A DROPPED inventory item activates this Trigger as soon as its 16x16 icon overlaps the sensor, even during a fall into a well. "
+        "Choose the required inventory item below to select which item activates it. "
+        "On success, the normal linked actions, dialogue, sound, stat changes and reward run. "
+        "'Consume used / dropped item on success' also consumes the physical dropped item; "
+        "otherwise it stays on the ground for pickup. FIRE2/USE remains available independently. "
+        "Wrong dropped items do nothing and remain recoverable."));
+    form->addRow(QString(), triggerDrop);
+    auto *triggerDropHint = new QLabel(&dialog);
+    triggerDropHint->setWordWrap(true);
+    form->addRow(QString(), triggerDropHint);
     auto *triggerOneShot = new QCheckBox(tr("Remove switch after activation (one-shot)"), &dialog);
     triggerOneShot->setChecked(old.triggerOneShot);
     form->addRow(QString(), triggerOneShot);
@@ -7238,7 +7250,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     interactRadius->setToolTip(tr("Extra distance in pixels outside this object's hitbox. "
         "Set 0 for touching only; a solid door can be operated from just outside its edges."));
     form->addRow(tr("Interaction reach (px)"), interactRadius);
-    auto *interactConsume = new QCheckBox(tr("Consume one item on successful USE"), &dialog);
+    auto *interactConsume = new QCheckBox(tr("Consume used / dropped item on success"), &dialog);
     interactConsume->setChecked(old.interactConsume);
     form->addRow(QString(), interactConsume);
     // Stage 5.95: use the same searchable folder tree as the Adventure
@@ -7409,9 +7421,35 @@ void SidboxGameDesigner::configureGameObject(int index)
                  "Choose 'No required item' to enable this option again.")
             : tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
                  "otherwise the trigger activates on touch."));
+        triggerDrop->setEnabled(itemInteraction);
+        triggerDrop->setToolTip(itemInteraction
+            ? tr("Match the selected required inventory item against falling/dropped items. "
+                 "Contact with the sensor runs normal success actions and dialogue. "
+                 "The consume checkbox determines whether the dropped item vanishes. "
+                 "The dropped item is not required to remain in the player's bag.")
+            : tr("Choose a Required inventory item below first. Only Trigger / Switch objects "
+                 "with an item requirement can accept dropped objects."));
+        triggerDropHint->setText(!isTrigger
+            ? tr("Dropped-item activation is available for Trigger / Switch objects only.")
+            : !requiresItem
+                ? tr("To use falling items: choose a Required inventory item, then tick Activate when matching dropped item touches switch.")
+                : triggerDrop->isChecked()
+                    ? tr("DROP ACTIVE: a matching 16x16 item touching this sensor (even mid-fall) runs the normal success dialogue, reward, sound and linked actions. "
+                         "Consume on success removes the physical item; otherwise it can still be collected. Wrong items do nothing.")
+                    : tr("Dropped items will not activate this Trigger until you tick the option above. Normal inventory USE still works."));
     };
     connect(interactItem, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateItemInteraction](int) { updateItemInteraction(); });
+    connect(triggerDrop, &QCheckBox::toggled, &dialog,
+            [updateItemInteraction](bool) { updateItemInteraction(); });
+    // Only dependency-controlled controls get the soft red/green outline.
+    for (QWidget *w : {static_cast<QWidget *>(triggerPress),static_cast<QWidget *>(triggerDrop),
+             static_cast<QWidget *>(triggerOneShot),static_cast<QWidget *>(interactItem),
+             static_cast<QWidget *>(interactConsume),static_cast<QWidget *>(interactRadius),
+             static_cast<QWidget *>(interactDialogue),static_cast<QWidget *>(interactDialogueMode),
+             static_cast<QWidget *>(interactReward),static_cast<QWidget *>(interactRewardCount),
+             static_cast<QWidget *>(interactStat),static_cast<QWidget *>(interactStatDelta)})
+        w->setProperty("adventureGuard", true);
     auto *musicAction = new GameComboBox(&dialog);
     musicAction->addItem(tr("No music action"), QStringLiteral("none"));
     musicAction->addItem(tr("Play selected tune"), QStringLiteral("play"));
@@ -7796,26 +7834,63 @@ void SidboxGameDesigner::configureGameObject(int index)
     hazardHurtAnim->setChecked(old.hazardHurtAnimation);
     auto *hazardFlash = new QCheckBox(tr("Flash player using solid-colour BOB"), &dialog);
     hazardFlash->setChecked(old.hazardFlash);
-    auto *hazardColour = new GameComboBox(&dialog);
+    auto *hazardColour = new QPushButton(&dialog);
+    int chosenHazardColour = qBound(0, old.hazardFlashColour, 255);
     QVector<QRgb> flashBank = activePalette(QStringLiteral("foreground"));
     if (flashBank.size() != 256 && !old.path.isEmpty()) {
-        // For projects without a shared .pal, take the swatch colours from
-        // this PPB's own palette instead of presenting 256 grey rectangles.
         SidboxPpb::Picture flashPicture;
         if (SidboxPpb::read(resolvedPath(old.path), &flashPicture))
             flashBank = flashPicture.indexed.colorTable();
     }
-    for (int i = 0; i < 256; ++i) {
-        const QColor colour = i < flashBank.size() ? QColor::fromRgba(flashBank.at(i))
-                                                  : QColor::fromRgb(96, 96, 96);
-        QPixmap swatch(18, 14);
-        swatch.fill(colour);
-        hazardColour->addItem(QIcon(swatch), tr("Index %1").arg(i), i);
-    }
-    hazardColour->setCurrentIndex(qBound(0, old.hazardFlashColour, 255));
-    hazardColour->setToolTip(tr("The solid-colour BOB flag uses an 8-bit FOREGROUND CLUT index. "
-                              "Swatches use the active foreground palette, falling back to "
-                              "this PPB's colours. Palette index 0 is usually transparent."));
+    const auto updateFlashSwatch = [&]() {
+        hazardColour->setText(tr("Index %1  —  Pick palette colour...").arg(chosenHazardColour));
+        if (flashBank.size()==256) {
+            QPixmap swatch(22,22);
+            swatch.fill(QColor::fromRgba(flashBank.at(chosenHazardColour)));
+            hazardColour->setIcon(QIcon(swatch));
+            hazardColour->setIconSize(QSize(22,22));
+        } else {
+            hazardColour->setIcon(QIcon());
+        }
+    };
+    updateFlashSwatch();
+    hazardColour->setToolTip(tr("Pick a foreground CLUT index from the 16×16 palette. "
+                                  "Uses the active foreground palette or this PPB's palette."));
+    connect(hazardColour, &QPushButton::clicked, &dialog, [&]() {
+        if (flashBank.size()!=256) {
+            QMessageBox::information(&dialog,tr("Flash CLUT colour"),
+                tr("Select a foreground 256-colour palette or an indexed PPB first."));
+            return;
+        }
+        QDialog picker(&dialog);
+        picker.setWindowTitle(tr("Pick flash foreground CLUT colour"));
+        auto *layout = new QVBoxLayout(&picker);
+        layout->addWidget(new QLabel(tr("Select a colour from the foreground palette (index 0 is transparent)."),&picker));
+        auto *cells = new QGridLayout();
+        cells->setSpacing(3);
+        for (int index=0; index<256; ++index) {
+            auto *cell = new QPushButton(&picker);
+            cell->setFixedSize(28,28);
+            QPixmap swatch(22,22);
+            swatch.fill(QColor::fromRgba(flashBank.at(index)));
+            cell->setIcon(QIcon(swatch));
+            cell->setIconSize(QSize(22,22));
+            cell->setToolTip(tr("CLUT index %1: %2").arg(index)
+                .arg(QColor::fromRgba(flashBank.at(index)).name()));
+            if (index==chosenHazardColour)
+                cell->setStyleSheet(QStringLiteral("border: 2px solid #f5c747;"));
+            cells->addWidget(cell,index/16,index%16);
+            connect(cell, &QPushButton::clicked, &picker, [&,index]() {
+                chosenHazardColour=index;
+                picker.accept();
+            });
+        }
+        layout->addLayout(cells);
+        auto *cancel=new QDialogButtonBox(QDialogButtonBox::Cancel,&picker);
+        layout->addWidget(cancel);
+        connect(cancel,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
+        if (picker.exec()==QDialog::Accepted) updateFlashSwatch();
+    });
     auto *hazardFlashes = spin(1, 32, old.hazardFlashCount);
     auto *hazardFlashFrames = spin(1, 255, old.hazardFlashFrames);
     hazardDamage->hide(); // Historical magnitude retained for old runtime source only.
@@ -8922,7 +8997,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.hazardKickY = hazardKickY->value();
     r.hazardHurtAnimation = hazardHurtAnim->isChecked();
     r.hazardFlash = hazardFlash->isChecked();
-    r.hazardFlashColour = hazardColour->currentData().toInt();
+    r.hazardFlashColour = chosenHazardColour;
     r.hazardFlashCount = hazardFlashes->value();
     r.hazardFlashFrames = hazardFlashFrames->value();
     if (newType==QStringLiteral("trigger")) {
@@ -8939,6 +9014,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.gotoPress = gotoActivation->currentData().toBool();
     r.gotoStartId = gotoStart->currentData().toString();
     r.triggerPress = triggerPress->isChecked();
+    r.triggerDrop = triggerDrop->isChecked();
     r.triggerOneShot = triggerOneShot->isChecked();
     r.interactItemName = interactItem->currentData().toString();
     r.interactRadius = interactRadius->value();
@@ -9053,6 +9129,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         populateGotoStarts(old.gotoStartId);
         gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
         triggerPress->setChecked(old.triggerPress);
+        triggerDrop->setChecked(old.triggerDrop);
         triggerOneShot->setChecked(old.triggerOneShot);
         interactItem->setCurrentIndex(qMax(0, interactItem->findData(old.interactItemName)));
         interactRadius->setValue(old.interactRadius);
@@ -9126,20 +9203,15 @@ void SidboxGameDesigner::configureGameObject(int index)
         hazardKickY->setValue(old.hazardKickY);
         hazardHurtAnim->setChecked(old.hazardHurtAnimation);
         hazardFlash->setChecked(old.hazardFlash);
-        // Swatches are based on the current object if no shared bank exists.
-        QVector<QRgb> bank = activePalette(QStringLiteral("foreground"));
-        if (bank.size() != 256 && !old.path.isEmpty()) {
+        // Refresh the swatch when switching the selected object in Properties.
+        flashBank = activePalette(QStringLiteral("foreground"));
+        if (flashBank.size()!=256 && !old.path.isEmpty()) {
             SidboxPpb::Picture picture;
             if (SidboxPpb::read(resolvedPath(old.path), &picture))
-                bank = picture.indexed.colorTable();
+                flashBank=picture.indexed.colorTable();
         }
-        for (int i = 0; i < 256; ++i) {
-            QPixmap swatch(18, 14);
-            swatch.fill(i < bank.size() ? QColor::fromRgba(bank.at(i))
-                                        : QColor::fromRgb(96, 96, 96));
-            hazardColour->setItemIcon(i, QIcon(swatch));
-        }
-        hazardColour->setCurrentIndex(qBound(0, old.hazardFlashColour, 255));
+        chosenHazardColour=qBound(0,old.hazardFlashColour,255);
+        updateFlashSwatch();
         hazardFlashes->setValue(old.hazardFlashCount);
         hazardFlashFrames->setValue(old.hazardFlashFrames);
         spline->setCurrentIndex(qMax(0, spline->findData(old.objectSplineId)));

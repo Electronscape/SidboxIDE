@@ -168,6 +168,7 @@ private:
         bool gotoPress = false; // false = walk into door; true = FIRE2 contact
         QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID
         bool triggerPress = false; // false = touch to activate, true = BTN_FIRE2.
+        bool triggerDrop = false; // Matching dropped inventory item activates the switch on contact.
         bool triggerOneShot = false; // Destroy/hide trigger after firing.
         // A configured item requirement turns a Trigger into an interactable.
         // The stable inventory name is used instead of world-local item indices.

@@ -47,6 +47,14 @@ uint8_t gameworlds_physics_profile(void);
 /* Bind the live player ONCE after game_tile_player_start(). Applies the first
  * world's profile now and future worlds' profiles on successful entry. */
 uint8_t gameworlds_bind_player_physics(game_tile_player_t *player);
+/* Sprite top-left in world pixels, independent of collision hitbox.
+   This never modifies physics or the player position. */
+uint8_t gameworlds_player_sprite_origin(int32_t *x, int32_t *y);
+/* Read the ACTIVE collision hitbox, not the sprite origin. Adventure floor
+ * pickups must use this rectangle on both sides of the player. Read-only:
+ * it never moves the player or changes the map collision. */
+uint8_t gameworlds_player_pickup_rect(int32_t *x, int32_t *y,
+                                     uint16_t *w, uint16_t *h);
 @IDE_END
 /* NULL or empty starts the project's selected/default world. */
 uint8_t gameworlds_start(const char *name);

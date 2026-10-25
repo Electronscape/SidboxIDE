@@ -670,6 +670,26 @@ uint8_t gameworlds_bind_player_physics(game_tile_player_t *player)
     bound_player_physics = player;
     return 1;
 }
+uint8_t gameworlds_player_sprite_origin(int32_t *x, int32_t *y)
+{
+    if (!bound_player_physics || !active_world || !x || !y) return 0u;
+    *x=bound_player_physics->x100/100;
+    *y=bound_player_physics->y100/100;
+    return 1u;
+}
+uint8_t gameworlds_player_pickup_rect(int32_t *x, int32_t *y,
+                                     uint16_t *w, uint16_t *h)
+{
+    if (!bound_player_physics || !active_world || !x || !y || !w || !h ||
+        !bound_player_physics->hitbox_w || !bound_player_physics->hitbox_h)
+        return 0u;
+    /* These are WORLD coordinates. Do not modify physics or collision. */
+    *x=bound_player_physics->x100/100 + bound_player_physics->hitbox_x;
+    *y=bound_player_physics->y100/100 + bound_player_physics->hitbox_y;
+    *w=bound_player_physics->hitbox_w;
+    *h=bound_player_physics->hitbox_h;
+    return 1u;
+}
 @IDE_END
 
 static const gameworlds_record_t *find_world(const char *name)

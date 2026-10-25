@@ -42,3 +42,31 @@ For hand-edited main.c, keep game_adventure_input() and the existing drawing
 call for each NPC as in Stage 4.28a. There are no additional frame-loop calls.
 Regenerate the game project to update generated gameadventure.c and copied
 runtime headers/sources in gamehelpers before compiling the platformer.
+
+STAGE 5.132 — DROPPED ITEM TRIGGERS
+-----------------------------------
+A falling 16x16 dropped inventory item can activate a configured Trigger / Switch.
+The Trigger uses an exact saved inventory item name and a world-space overlap
+with its sensor rectangle. Checks run at EACH vertical pixel of a fall to
+avoid tunnelling through narrow trigger zones. It does not need FIRE2.
+Success reuses the Trigger's inventory USE dialogue/rewards/stat/action/sounds.
+The 'consume' preference consumes the world drop only; do not subtract a
+second copy from the backpack, since DROP already removed it there.
+One successful activation is stored in the existing drop's armed byte
+(bit 1) and survives world-change save/restore without changing structure size. If the trigger is one-shot it cannot fire again.
+A wrong item stays collectable and does not run the Wrong-item dialogue.
+The callback is registered inside generated gameadventure_setup(), so no
+additional call is required in the user's hand-maintained main.c.
+
+STAGE 5.133 — PLAYER FOOT-ANCHORED NPC TALK RANGE
+------------------------------------------------
+NPC interaction distance uses the saved Player Animation Foot X (sprite
+position + footX) instead of the midpoint of the rectangle provided to
+game_adventure_input(). This corrects the left/right reach discrepancy
+when main.c passes sprite top-left plus a collision-hitbox width.
+The existing vertical distance test stays unchanged, as do NPC radius,
+visibility, dialogue priority, world collision, item drops, and pickup.
+If no Player Animation/sprite-origin binding exists, the old range check
+is used for backward compatibility. Save Player Animation and regenerate
+the project so the existing gameadventure_setup() binding is up-to-date.
+No changes to user-owned main.c are necessary.

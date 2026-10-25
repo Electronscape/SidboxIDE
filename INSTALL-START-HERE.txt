@@ -1,10 +1,4 @@
-CoderGirl IDE - Stage 5.125.251026
-
-To update an existing Stage 5.124 source directory:
-  Extract CoderGirl-Stage5.125-251026-DROPIN.zip over it, preserving paths.
-  Rebuild your Qt6 IDE.
-
-For the complete source use:
-  CoderGirl-IDE-Stage5.125-251026-FULL.tar.gz
-
-Read INSTALL-STAGE5.125.txt for the exact compile fix and test notes.
+CoderGirl IDE Stage 5.134.251026
+For an existing Stage 5.133 tree, extract the DROPIN zip at the source root,
+then rebuild the IDE. No game Update Game Project or game rebuild needed.
+Read INSTALL-STAGE5.134.txt for the exact wire-click crash fix and tests.

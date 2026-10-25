@@ -277,6 +277,20 @@ For a Trigger / Switch:
 With removal OFF, touch switches rearm when the player leaves the hitbox,
 and FIRE2 switches rearm on release; holding FIRE2 does not repeat.
 
+For a falling-item switch (well, drain, chute, offering altar):
+  [x] Activate when matching dropped item touches switch.
+  Choose Interact with inventory item: e.g. Stone.
+  The switch uses the sensor hitbox; a dropped 16x16 Stone touching it
+  activates on contact, even while falling (no FIRE2 needed).
+  [x] Consume used / dropped item on success: the Stone disappears into the
+  well; with it unchecked, Stone remains on the ground for recovery.
+  Success dialogue, reward, player stat, sound, linked action and one-shot
+  apply exactly as for a successful inventory USE. Wrong items are ignored.
+  The ordinary inventory USE route still works: the checkbox ADDS a way
+  to activate the trigger, it does not replace normal interaction.
+  Important: the item must be defined by NAME in that world's Adventure
+  Inventory. Items can be dropped only when their own Drop permission is on.
+
 For a locked door:
   Configure Door / Solid blocker and leave Active when level starts ON.
   Configure a Key or Switch with target = that door and action = DISABLE.

@@ -306,6 +306,8 @@ FlowGraph loadGraph(const QString &root) {
                 QStringList events;
                 const QString required=o.value(QStringLiteral("interactItemName")).toString();
                 if (!required.isEmpty()) {
+                    if (o.value(QStringLiteral("triggerDrop")).toBool())
+                        events << QStringLiteral("ON: dropped %1 touches sensor (16x16, including in mid-air)").arg(required);
                     events << QStringLiteral("ON: FIRE2 + USE %1 (%2px)")
                         .arg(required).arg(o.value(QStringLiteral("interactRadius")).toInt(32));
                     events << (o.value(QStringLiteral("interactConsume")).toBool()
@@ -594,6 +596,9 @@ FlowGraph loadGraph(const QString &root) {
                     else g.missing(w,from,QStringLiteral("linked object"),id);
                 }
                 const QString required=obj.value(QStringLiteral("interactItemName")).toString();
+                if (required.isEmpty() && obj.value(QStringLiteral("triggerDrop")).toBool())
+                    g.diagnostics.append(QStringLiteral("%1: Trigger '%2' accepts dropped items but has no required inventory item")
+                        .arg(w,r.value(QStringLiteral("name")).toString()));
                 if (!required.isEmpty()) {
                     int matched=-1;
                     for (int i=0; i<items.size(); ++i)
@@ -605,6 +610,12 @@ FlowGraph loadGraph(const QString &root) {
                             QStringLiteral("FIRE2 nearby → USE %1%2")
                                 .arg(required, obj.value(QStringLiteral("interactConsume")).toBool()
                                     ? QStringLiteral(" (consume one)") : QStringLiteral(" (keep item)")));
+                        if (obj.value(QStringLiteral("triggerDrop")).toBool())
+                            g.link(itemKey(w,matched),from,
+                                QStringLiteral("DROP %1 into sensor%2")
+                                    .arg(required, obj.value(QStringLiteral("interactConsume")).toBool()
+                                        ? QStringLiteral(" (consume drop)")
+                                        : QStringLiteral(" (leave drop)")));
                     } else g.missing(w,from,QStringLiteral("interaction inventory item"),required);
                     const int dialogue=obj.value(QStringLiteral("interactDialogueNode")).toInt(-1);
                     if(dialogue>=0) {
@@ -2899,8 +2910,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             line->setZValue(wireParent ? 0.5 : -2);
             arrowItem->setZValue(wireParent ? 0.6 : -1.9);
             line->setToolTip(e.label+QStringLiteral("\nClick to select both connected cards"));
-            const QString first=from,second=to,edgePair=pair;
-            line->onClicked=[&,first,second,edgePair]() {
+            // Capture the stable edge index, not the redraw-local sharedLines
+            // hash. Wire clicks happen AFTER redraw() returns, when sharedLines
+            // has already been destroyed (Stage 5.134 crash fix).
+            const QString first=from,second=to;
+            const int edgeIndex=edges.size();
+            line->onClicked=[&,first,second,edgeIndex]() {
                 // Click selection is separate from rubber-band selection: wires
                 // are NOT selectable graphics items, so drag-to-group is safe.
                 {
@@ -2916,14 +2931,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     if (index>=0)return graph.nodes.at(index).title;
                     return groups.contains(id)?groups.value(id).title:id;
                 };
-                const int selectedEdge=sharedLines.value(edgePair,-1);
-                const QString labels=selectedEdge>=0 && selectedEdge<edges.size()
-                    ? edges.at(selectedEdge).label : QString();
+                // The live EdgeArt retains the complete merged label as
+                // subsequent actions join the same source/destination pair.
+                const QString labels=edgeIndex>=0 && edgeIndex<edges.size()
+                    ? edges.at(edgeIndex).label : QString();
                 details->appendPlainText(QObject::tr("\nSelected connection(s): %1\n%2 -> %3")
                     .arg(labels,titleOf(first),titleOf(second)));
                 refreshHighlight();
             };
-            sharedLines.insert(pair,edges.size());
+            sharedLines.insert(pair,edgeIndex);
             edges.append({from,to,e.label,line,arrowItem});
         }
         for (auto it=cards.begin();it!=cards.end();++it) {
