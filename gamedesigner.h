@@ -140,6 +140,12 @@ private:
         bool objectInitiallyActive = true; // Default for all old designs.
         bool drawBehindTiles = false; // Per-placed-sprite layer, even for decorations.
         bool objectFlipX = false, objectFlipY = false; // Optional BOB mirroring; hitbox stays in place.
+        int objectAlphaFadePercent = 0; // SIDBOX 4x4 patterned fade strength 0..100; zero = disabled.
+        bool objectFadeAnimated = false; // Per-instance patterned fade animation.
+        int objectFadeLow = 20, objectFadeHigh = 80; // Inclusive fade endpoints 0..100.
+        int objectFadeStep = 5; // Percentage points per animation step.
+        int objectFadeDelay = 2; // 50 Hz game frames between steps.
+        bool objectFadePingpong = true; // Reverse, or loop from high back to low.
         int hazardDamage = 1; // Legacy damage magnitude.
         QString damageTarget = QStringLiteral("health"); // health/lives/score/coins/stat:<name>
         int damageDelta = -1; // Signed change on an accepted hit. Positive heals.
@@ -154,6 +160,10 @@ private:
 
         QString targetObjectId; // Stable resource ID; never a tree index or name.
         QString targetAction = QStringLiteral("none"); // enable, disable, toggle.
+        // Extra actions for Triggers only. The legacy targetObjectId/targetAction
+        // is the FIRST action; these follow it in the user's chosen order.
+        struct LinkedAction { QString objectId; QString action; };
+        QVector<LinkedAction> triggerExtraActions;
         QString gotoWorldName; // target world basename, not a path or tab index
         bool gotoPress = false; // false = walk into door; true = FIRE2 contact
         QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID

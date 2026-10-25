@@ -555,6 +555,57 @@ bool visualKind(const QString &kind)
     return kind == QStringLiteral("sprite") || kind == QStringLiteral("background");
 }
 
+// Editor-only approximation of SIDBOX's 4x4 patterned BOB fade.
+// The firmware's precise threshold pattern is not distributed with the IDE.
+// Unlike QPainter opacity, this removes whole pixels, leaving the scene
+// behind them visible. Always apply the mask at the final DRAWN resolution
+// so zoomed BOBs retain a 4x4 SCREEN-pixel pattern.
+/* Exact fade steps are shared conceptually with the generated gameassets code.
+ * Sequence visits both endpoints; ping-pong doesn't double-pause at the ends. */
+static int bobAnimatedFade(int low, int high, int step, int delay,
+                           bool pingpong, qint64 frames)
+{
+    const int boundedLow = qBound(0, low, 100);
+    const int boundedHigh = qBound(0, high, 100);
+    low = qMin(boundedLow, boundedHigh);
+    high = qMax(boundedLow, boundedHigh);
+    step = qBound(1, step, 100);
+    delay = qMax(1, delay);
+    if (low == high) return low;
+    const int steps = (high - low + step - 1) / step;
+    const int period = pingpong ? 2 * steps : steps + 1;
+    const int phase = int((qMax(qint64(0), frames) / delay) % period);
+    const int position = pingpong && phase > steps ? 2 * steps - phase : phase;
+    return qMin(high, low + position * step);
+}
+
+static QImage patternedBobPreview(const QImage &source, int fadePercent,
+                                  int spriteScale, int screenX, int screenY)
+{
+    if (source.isNull() || fadePercent <= 0) return source;
+    const int percent = qBound(0, fadePercent, 100);
+    const double factor = qBound(1, spriteScale, 800) / 100.0;
+    QImage image = source;
+    const int width = qMax(1, qRound(source.width() * factor));
+    const int height = qMax(1, qRound(source.height() * factor));
+    if (width != source.width() || height != source.height())
+        image = source.scaled(width, height, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    image = image.convertToFormat(QImage::Format_ARGB32);
+    // Bayer ordering is an approximation pending the actual Core routine.
+    static const int pattern[4][4] = {
+        { 0, 8, 2, 10 }, { 12, 4, 14, 6 },
+        { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
+    };
+    for (int y = 0; y < image.height(); ++y) {
+        QRgb *pixels = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int rank = pattern[(y + screenY) & 3][(x + screenX) & 3];
+            if ((2 * rank + 1) * 100 <= percent * 32) pixels[x] = 0;
+        }
+    }
+    return image;
+}
+
 QPixmap paletteSwatches(const QVector<QRgb> &table)
 {
     QImage image(128, 128, QImage::Format_RGB32);
@@ -653,7 +704,8 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
         }
         for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
             const Resource &r = m_resources.at(i);
-            if (r.kind != QStringLiteral("sprite") || !r.objectAnimated || r.animCount <= 1)
+            if (r.kind != QStringLiteral("sprite") ||
+                ((!r.objectAnimated || r.animCount <= 1) && !r.objectFadeAnimated))
                 continue;
             auto *image = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(i));
             if (!image) continue;
@@ -667,13 +719,23 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
                 frameInClip = phase < r.animCount ? phase : cycle - phase;
             } else frameInClip = int(step % r.animCount);
             const int index = r.animFirst + frameInClip;
-            if (image->data(1).toInt() == index) continue;
+            const int fade = r.objectFadeAnimated
+                ? bobAnimatedFade(r.objectFadeLow, r.objectFadeHigh,
+                    r.objectFadeStep, r.objectFadeDelay, r.objectFadePingpong, ticks)
+                : r.objectAlphaFadePercent;
+            if (image->data(1).toInt() == index && image->data(3).toInt() == fade) continue;
             Resource frame = r;
             frame.frame = index;
             const QImage preview = resourcePreview(frame);
             if (!preview.isNull()) {
-                image->setPixmap(QPixmap::fromImage(preview));
+                image->setPixmap(QPixmap::fromImage(patternedBobPreview(
+                    preview, fade, r.scale, r.x, r.y)));
+                image->setScale(fade > 0 ? 1.0 : r.scale / 100.0);
+                image->setShapeMode(fade > 0
+                    ? QGraphicsPixmapItem::BoundingRectShape
+                    : QGraphicsPixmapItem::MaskShape);
                 image->setData(1, index);
+                image->setData(3, fade);
             }
         }
     });
@@ -4258,7 +4320,16 @@ void SidboxGameDesigner::refreshColourCyclePreview()
         Resource frame = resource;
         frame.frame = item->data(1).toInt();
         const QImage preview = resourcePreview(frame);
-        if (!preview.isNull()) item->setPixmap(QPixmap::fromImage(preview));
+        if (!preview.isNull()) {
+            item->setPixmap(QPixmap::fromImage(patternedBobPreview(
+                preview, resource.objectAlphaFadePercent, resource.scale,
+                resource.x, resource.y)));
+            item->setScale(resource.objectAlphaFadePercent > 0 ? 1.0
+                : resource.scale / 100.0);
+            item->setShapeMode(resource.objectAlphaFadePercent > 0
+                ? QGraphicsPixmapItem::BoundingRectShape
+                : QGraphicsPixmapItem::MaskShape);
+        }
     }
     if (m_tilemapOverlayItem) {
         static_cast<GameTilemapOverlay *>(m_tilemapOverlayItem)->setColourCycle(
@@ -4297,7 +4368,9 @@ void SidboxGameDesigner::rebuildScene()
         if (!visualKind(r.kind)) continue;
         const QImage preview = resourcePreview(r);
         const QPixmap pixmap = preview.isNull() ? missingImage(r.kind)
-                                                 : QPixmap::fromImage(preview);
+            : QPixmap::fromImage(r.kind == QStringLiteral("sprite")
+                ? patternedBobPreview(preview, r.objectAlphaFadePercent,
+                                      r.scale, r.x, r.y) : preview);
         auto *item = new PlacedImage(pixmap);
         item->setData(0, i);
         item->setData(1, r.frame); // Atlas index currently displayed.
@@ -4310,7 +4383,10 @@ void SidboxGameDesigner::rebuildScene()
             return QPointF(qRound(p.x() / step) * step, qRound(p.y() / step) * step);
         };
         item->setPos(r.x, r.y);
-        item->setScale(r.scale / 100.0);
+        item->setScale(r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0
+            ? 1.0 : r.scale / 100.0);
+        if (r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0)
+            item->setShapeMode(QGraphicsPixmapItem::BoundingRectShape);
         if (r.kind == QStringLiteral("background")) item->setZValue(1);
         else if (r.kind == QStringLiteral("sprite") && r.drawBehindTiles)
             item->setZValue(1.9); // Behind Tilemap Overlay (Z=2), still draggable.
@@ -4432,6 +4508,18 @@ void SidboxGameDesigner::syncFromSceneItem(QGraphicsItem *item)
     if (m_resources[index].locked) return;
     m_resources[index].x = qRound(item->pos().x());
     m_resources[index].y = qRound(item->pos().y());
+    if (m_resources.at(index).kind == QStringLiteral("sprite") &&
+        m_resources.at(index).objectAlphaFadePercent > 0) {
+        auto *image = dynamic_cast<QGraphicsPixmapItem *>(item);
+        if (image) {
+            Resource frame = m_resources.at(index);
+            frame.frame = image->data(1).toInt();
+            const QImage base = resourcePreview(frame);
+            if (!base.isNull())
+                image->setPixmap(QPixmap::fromImage(patternedBobPreview(base,
+                    frame.objectAlphaFadePercent, frame.scale, frame.x, frame.y)));
+        }
+    }
     setDirty();
     if (selectedIndex() == index) { refreshProperties(); refreshObjectHitbox(); }
 }
@@ -4445,7 +4533,21 @@ void SidboxGameDesigner::updateSelectedItem()
     const Resource &r = m_resources.at(index);
     m_loading = true;
     item->setPos(r.x, r.y);
-    item->setScale(r.scale / 100.0);
+    item->setScale(r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0
+        ? 1.0 : r.scale / 100.0);
+    if (auto *image = dynamic_cast<QGraphicsPixmapItem *>(item)) {
+        image->setShapeMode(r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0
+            ? QGraphicsPixmapItem::BoundingRectShape
+            : QGraphicsPixmapItem::MaskShape);
+        if (r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0) {
+            Resource frame = r;
+            frame.frame = image->data(1).toInt();
+            const QImage base = resourcePreview(frame);
+            if (!base.isNull())
+                image->setPixmap(QPixmap::fromImage(patternedBobPreview(base,
+                    r.objectAlphaFadePercent, r.scale, r.x, r.y)));
+        }
+    }
     item->setZValue(r.kind == QStringLiteral("background") ? 1.0 :
                     (r.kind == QStringLiteral("sprite") && r.drawBehindTiles) ? 1.9 : 10.0);
     m_loading = false;
@@ -4458,10 +4560,18 @@ void SidboxGameDesigner::updateSelectedPixmap()
     if (index < 0 || index >= m_sceneItems.size() || !m_sceneItems.at(index)) return;
     auto *item = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(index));
     if (!item) return;
-    const QImage preview = resourcePreview(m_resources.at(index));
-    item->setPixmap(preview.isNull() ? missingImage(m_resources.at(index).kind)
-                                     : QPixmap::fromImage(preview));
-    item->setData(1, m_resources.at(index).frame);
+    const Resource &r = m_resources.at(index);
+    const QImage preview = resourcePreview(r);
+    item->setPixmap(preview.isNull() ? missingImage(r.kind)
+        : QPixmap::fromImage(r.kind == QStringLiteral("sprite")
+            ? patternedBobPreview(preview, r.objectAlphaFadePercent, r.scale, r.x, r.y)
+            : preview));
+    item->setScale(r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0
+        ? 1.0 : r.scale / 100.0);
+    item->setShapeMode(r.kind == QStringLiteral("sprite") && r.objectAlphaFadePercent > 0
+        ? QGraphicsPixmapItem::BoundingRectShape
+        : QGraphicsPixmapItem::MaskShape);
+    item->setData(1, r.frame);
 }
 
 void SidboxGameDesigner::refreshProperties()
@@ -4808,6 +4918,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
             for (const auto field : soundFields) checkId(r.*field);
             checkId(r.triggerMusicId);
             checkId(r.targetObjectId);
+            for (const Resource::LinkedAction &link : r.triggerExtraActions)
+                checkId(link.objectId);
             checkId(r.breakDropCollectableId);
             if (!r.objectSplineId.isEmpty()) {
                 bool foundSpline = false;
@@ -5061,6 +5173,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
                     r.*field = importById(r.*field);
                 r.triggerMusicId = importById(r.triggerMusicId);
                 r.targetObjectId = importById(r.targetObjectId);
+                for (Resource::LinkedAction &link : r.triggerExtraActions)
+                    link.objectId = importById(link.objectId);
                 r.breakDropCollectableId = importById(r.breakDropCollectableId);
             };
             remapFields(dep);
@@ -5073,6 +5187,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
                 r.*field = importById(r.*field);
             r.triggerMusicId = importById(r.triggerMusicId);
             r.targetObjectId = importById(r.targetObjectId);
+            for (Resource::LinkedAction &link : r.triggerExtraActions)
+                link.objectId = importById(link.objectId);
             r.breakDropCollectableId = importById(r.breakDropCollectableId);
         };
         attachAnimation(copy, s_copiedWorldObject.id);
@@ -6545,6 +6661,114 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(targetAction,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
             [refreshTargetVisibilityHint](int){refreshTargetVisibilityHint();});
     refreshTargetVisibilityHint();
+    // A Trigger owns an ordered list; keys and enemies retain the familiar
+    // single linked-object controls. Legacy targetObjectId/action = first row.
+    auto *linkedActionRows = new QTableWidget(0, 2, &dialog);
+    linkedActionRows->setHorizontalHeaderLabels({tr("Game Object"), tr("Action")});
+    linkedActionRows->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
+    linkedActionRows->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
+    linkedActionRows->verticalHeader()->hide();
+    linkedActionRows->setSelectionBehavior(QAbstractItemView::SelectRows);
+    linkedActionRows->setSelectionMode(QAbstractItemView::SingleSelection);
+    linkedActionRows->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    linkedActionRows->setMinimumHeight(126);
+    auto *actionRowControls = new QWidget(&dialog);
+    auto *actionRowButtons = new QHBoxLayout(actionRowControls);
+    actionRowButtons->setContentsMargins(0,0,0,0);
+    auto *addLinkedAction = new QPushButton(tr("+ Add Linked Action"), actionRowControls);
+    auto *removeLinkedAction = new QPushButton(tr("Remove"), actionRowControls);
+    auto *upLinkedAction = new QPushButton(tr("Move Up"), actionRowControls);
+    auto *downLinkedAction = new QPushButton(tr("Move Down"), actionRowControls);
+    actionRowButtons->addWidget(addLinkedAction);
+    actionRowButtons->addWidget(removeLinkedAction);
+    actionRowButtons->addWidget(upLinkedAction);
+    actionRowButtons->addWidget(downLinkedAction);
+    form->addRow(tr("Ordered linked actions"), linkedActionRows);
+    form->addRow(QString(), actionRowControls);
+    auto *linkedActionsHint = new QLabel(tr("Each action runs once when this Trigger activates. "
+        "Actions run top-to-bottom, then music/dialogue. Choose a placed object; "
+        "disabling an object with no INACTIVE frame hides it."),&dialog);
+    linkedActionsHint->setWordWrap(true);
+    form->addRow(QString(),linkedActionsHint);
+    auto currentLinks = [linkedActionRows]() {
+        QVector<Resource::LinkedAction> links;
+        for (int row=0; row<linkedActionRows->rowCount(); ++row) {
+            auto *object=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,0));
+            auto *action=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,1));
+            if (object && action && !object->currentData().toString().isEmpty() &&
+                action->currentData().toString()!=QStringLiteral("none"))
+                links.append({object->currentData().toString(),action->currentData().toString()});
+        }
+        return links;
+    };
+    auto insertLink = [=](int row, const Resource::LinkedAction &link) {
+        linkedActionRows->insertRow(row);
+        auto *object = new GameComboBox(linkedActionRows);
+        for (const Resource &candidate : m_resources) {
+            if (candidate.kind!=QStringLiteral("sprite") ||
+                candidate.objectType==QStringLiteral("decoration") || candidate.id==old.id) continue;
+            object->addItem(tr("%1 [%2]").arg(candidate.name,candidate.objectType),candidate.id);
+        }
+        if (!link.objectId.isEmpty() && object->findData(link.objectId)<0)
+            object->addItem(tr("MISSING: %1").arg(link.objectId),link.objectId);
+        object->setCurrentIndex(qMax(0,object->findData(link.objectId)));
+        auto *action = new GameComboBox(linkedActionRows);
+        action->addItem(tr("Enable"),QStringLiteral("enable"));
+        action->addItem(tr("Disable"),QStringLiteral("disable"));
+        action->addItem(tr("Toggle"),QStringLiteral("toggle"));
+        action->setCurrentIndex(qMax(0,action->findData(link.action)));
+        linkedActionRows->setCellWidget(row,0,object);
+        linkedActionRows->setCellWidget(row,1,action);
+        linkedActionRows->setRowHeight(row,30);
+        linkedActionRows->selectRow(row);
+    };
+    auto reloadLinks = [=]() {
+        linkedActionRows->setRowCount(0);
+        if (!old.targetObjectId.isEmpty() && old.targetAction!=QStringLiteral("none"))
+            insertLink(linkedActionRows->rowCount(),{old.targetObjectId,old.targetAction});
+        for (const Resource::LinkedAction &link : old.triggerExtraActions)
+            insertLink(linkedActionRows->rowCount(),link);
+    };
+    reloadLinks();
+    connect(addLinkedAction,&QPushButton::clicked,&dialog,[=]() {
+        if (linkedActionRows->rowCount()>=64) {
+            QMessageBox::information(linkedActionRows,tr("Linked actions"),tr("Maximum 64 actions per Trigger."));
+            return;
+        }
+        insertLink(linkedActionRows->rowCount(),{QString(),QStringLiteral("enable")});
+    });
+    connect(removeLinkedAction,&QPushButton::clicked,&dialog,[=]() {
+        const int row=linkedActionRows->currentRow();
+        if (row>=0) linkedActionRows->removeRow(row);
+        if (linkedActionRows->rowCount()) linkedActionRows->selectRow(qMin(row,linkedActionRows->rowCount()-1));
+    });
+    auto moveLink = [=](int direction) {
+        const int row=linkedActionRows->currentRow();
+        const int next=row+direction;
+        if (row<0 || next<0 || next>=linkedActionRows->rowCount()) return;
+        auto *object=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,0));
+        auto *action=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,1));
+        auto *otherObject=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,0));
+        auto *otherAction=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,1));
+        if (!object || !action || !otherObject || !otherAction) return;
+        const QString id=object->currentData().toString();
+        const QString act=action->currentData().toString();
+        const QString otherId=otherObject->currentData().toString();
+        const QString otherAct=otherAction->currentData().toString();
+        // Deleted targets can be present as a MISSING row-only option.
+        // Preserve those IDs when moving a row so export can diagnose them.
+        if (!otherId.isEmpty() && object->findData(otherId)<0)
+            object->addItem(tr("MISSING: %1").arg(otherId),otherId);
+        if (!id.isEmpty() && otherObject->findData(id)<0)
+            otherObject->addItem(tr("MISSING: %1").arg(id),id);
+        object->setCurrentIndex(object->findData(otherId));
+        action->setCurrentIndex(action->findData(otherAct));
+        otherObject->setCurrentIndex(otherObject->findData(id));
+        otherAction->setCurrentIndex(otherAction->findData(act));
+        linkedActionRows->selectRow(next);
+    };
+    connect(upLinkedAction,&QPushButton::clicked,&dialog,[=](){moveLink(-1);});
+    connect(downLinkedAction,&QPushButton::clicked,&dialog,[=](){moveLink(1);});
     form = generalCard.form; // State artwork belongs on the target (e.g. Door), not only on the Trigger.
     auto *activeStateFrame = spin(-1, 255, old.activeStateFrame);
     auto *inactiveStateFrame = spin(-1, 255, old.inactiveStateFrame);
@@ -7252,6 +7476,61 @@ void SidboxGameDesigner::configureGameObject(int index)
     flipLayout->addWidget(objectFlipY);
     flipLayout->addStretch();
     form->addRow(tr("Sprite mirroring"), flipRow);
+    auto *objectFadeRow = new QWidget(&dialog);
+    auto *objectFadeLayout = new QHBoxLayout(objectFadeRow);
+    objectFadeLayout->setContentsMargins(0, 0, 0, 0);
+    objectFadeLayout->setSpacing(8);
+    auto *objectFadeSlider = new QSlider(Qt::Horizontal, objectFadeRow);
+    objectFadeSlider->setRange(0, 100);
+    objectFadeSlider->setValue(old.objectAlphaFadePercent);
+    auto *objectFadeValue = new QSpinBox(objectFadeRow);
+    objectFadeValue->setRange(0, 100);
+    objectFadeValue->setSuffix(tr(" %"));
+    objectFadeValue->setValue(old.objectAlphaFadePercent);
+    objectFadeValue->setFixedWidth(80);
+    connect(objectFadeSlider, &QSlider::valueChanged,
+            objectFadeValue, &QSpinBox::setValue);
+    connect(objectFadeValue, qOverload<int>(&QSpinBox::valueChanged),
+            objectFadeSlider, &QSlider::setValue);
+    objectFadeLayout->addWidget(objectFadeSlider, 1);
+    objectFadeLayout->addWidget(objectFadeValue);
+    objectFadeRow->setToolTip(tr("SIDBOX 4x4 patterned fade. 0% = normal solid sprite; "
+                                 "100% = fully faded. The editor shows a live 4x4 dither "
+                                 "approximation, not RGB alpha. Verify the exact pattern on SIDBOX."));
+    form->addRow(tr("BOB patterned fade"), objectFadeRow);
+    auto *fadeAnimate = new QCheckBox(tr("Animate patterned fade"), &dialog);
+    fadeAnimate->setChecked(old.objectFadeAnimated);
+    auto *fadeLow = spin(0, 100, old.objectFadeLow);
+    auto *fadeHigh = spin(0, 100, old.objectFadeHigh);
+    auto *fadeStep = spin(1, 100, old.objectFadeStep);
+    auto *fadeDelay = spin(1, 32656, old.objectFadeDelay);
+    fadeDelay->setSuffix(tr(" frames"));
+    auto *fadePingpong = new QCheckBox(tr("Ping-pong (reverse at ends)"), &dialog);
+    fadePingpong->setChecked(old.objectFadePingpong);
+    fadeAnimate->setToolTip(tr("Animate this sprite's patterned BOB fade independently of sprite-frame animation. "
+                               "Animation begins at the lowest percentage when the world loads."));
+    fadeStep->setToolTip(tr("Fade percentage points to advance per delay. For example 5% every 2 frames."));
+    fadeDelay->setToolTip(tr("SIDBOX runs at 50 FPS. 30,000 frames is 10 minutes "
+        "between fade steps; maximum 32,656 frames (~10 min 53 s)."));
+    fadePingpong->setToolTip(tr("Checked: low to high to low, repeating without duplicate end frames. "
+                               "Unchecked: low to high, then jump back to low and repeat."));
+    form->addRow(QString(), fadeAnimate);
+    form->addRow(tr("Lowest fade"), quickValue(fadeLow));
+    form->addRow(tr("Highest fade"), quickValue(fadeHigh));
+    form->addRow(tr("Fade step"), quickValue(fadeStep));
+    form->addRow(tr("Frames per fade step"), quickValue(fadeDelay));
+    form->addRow(QString(), fadePingpong);
+    const auto refreshFadeControls = [=]() {
+        const bool enabled = fadeAnimate->isChecked();
+        for (QWidget *w : {static_cast<QWidget *>(fadeLow), static_cast<QWidget *>(fadeHigh),
+                           static_cast<QWidget *>(fadeStep), static_cast<QWidget *>(fadeDelay),
+                           static_cast<QWidget *>(fadePingpong)}) w->setEnabled(enabled);
+        objectFadeRow->setToolTip(enabled
+            ? tr("The slider is the static fade setting; animation overrides it while enabled.")
+            : tr("Static patterned fade percentage."));
+    };
+    connect(fadeAnimate, &QCheckBox::toggled, &dialog, [=](bool) { refreshFadeControls(); });
+    refreshFadeControls();
     form = animationCard.form;
     auto *first = spin(0, 255, old.animFirst);
     auto *count = spin(1, 256, old.animCount);
@@ -7525,6 +7804,10 @@ void SidboxGameDesigner::configureGameObject(int index)
             [refreshDeathStartButton](int) { refreshDeathStartButton(); });
     refreshDeathStartButton();
     int previewFrame = 0;
+    qint64 fadePreviewFrames = 0;
+    int fadePreviewPercent = old.objectAlphaFadePercent;
+    int fadeCanvasPercent = -1;
+    QString fadeCanvasObject;
     bool previewPlaying = true;
     auto *previewTimer = new QTimer(&dialog);
     // Keep preview linked to whichever object is currently selected; the
@@ -7532,7 +7815,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const auto updatePreview = [this, &previewFrame, &atlas, &old, &draftSpriteStamp, animated,
                                 first, count, mode, type, hitW, hitH,
                                 enemyStompX, enemyStompY, enemyStompW, enemyStompH,
-                                objectFlipX, objectFlipY, spritePreview, collisionPreview,
+                                objectFlipX, objectFlipY, objectFadeSlider,
+                                fadeAnimate, fadeLow, fadeHigh, fadeStep, fadeDelay, fadePingpong,
+                                &fadePreviewPercent, &fadePreviewFrames,
+                                spritePreview, collisionPreview,
                                 collisionLegend, spriteInfo]() {
         const int cw = atlas.isNull() ? 1 :
             (old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width());
@@ -7569,6 +7855,13 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (objectFlipY->isChecked()) flipDirections |= Qt::Vertical;
             frame = frame.flipped(flipDirections);
         }
+        fadePreviewPercent = fadeAnimate->isChecked()
+            ? bobAnimatedFade(fadeLow->value(), fadeHigh->value(), fadeStep->value(),
+                              fadeDelay->value(), fadePingpong->isChecked(), fadePreviewFrames)
+            : objectFadeSlider->value();
+        if (!frame.isNull() && fadePreviewPercent > 0)
+            frame = patternedBobPreview(frame, fadePreviewPercent,
+                                        100, old.x, old.y);
         const bool enemyPreview =
             type->currentData().toString() == QStringLiteral("enemy");
         collisionLegend->setVisible(enemyPreview);
@@ -7650,8 +7943,21 @@ void SidboxGameDesigner::configureGameObject(int index)
         collisionPreview->setPixmap(makeCanvas(255, 145, true));
         spriteInfo->setText(tr("Sprite: %1\nCell: %2 × %3 px  |  Atlas frames: %4\nPreview frame: %5")
             .arg(QFileInfo(old.path).fileName()).arg(cw).arg(ch)
-            .arg(available).arg(selected + 1));
+            .arg(available).arg(selected + 1)
+            + (fadePreviewPercent > 0 || fadeAnimate->isChecked()
+                ? tr("\n4×4 patterned fade: %1% (editor approximation)")
+                    .arg(fadePreviewPercent) : QString()));
     };
+    auto *fadePreviewTimer = new QTimer(&dialog);
+    fadePreviewTimer->setInterval(20);
+    connect(fadePreviewTimer, &QTimer::timeout, &dialog, [=, &fadePreviewFrames]() {
+        ++fadePreviewFrames;
+        if (fadeAnimate->isChecked() &&
+            bobAnimatedFade(fadeLow->value(), fadeHigh->value(), fadeStep->value(),
+                            fadeDelay->value(), fadePingpong->isChecked(), fadePreviewFrames)
+                != fadePreviewPercent)
+            updatePreview();
+    });
     connect(previewTimer, &QTimer::timeout, &dialog, [=, &previewFrame]() {
         ++previewFrame;
         updatePreview();
@@ -7660,6 +7966,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         previewTimer->setInterval(qMax(1, ticks->value()) * 20);
         if (animated->isChecked() && previewPlaying) previewTimer->start();
         else previewTimer->stop();
+        if (fadeAnimate->isChecked() && previewPlaying) fadePreviewTimer->start();
+        else fadePreviewTimer->stop();
         updatePreview();
     };
     connect(playButton, &QToolButton::clicked, &dialog, [=, &previewPlaying]() {
@@ -7669,16 +7977,66 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(pauseButton, &QToolButton::clicked, &dialog, [=, &previewPlaying]() {
         previewPlaying = false;
         previewTimer->stop();
+        fadePreviewTimer->stop();
     });
-    connect(stopButton, &QToolButton::clicked, &dialog, [=, &previewPlaying, &previewFrame]() {
+    connect(stopButton, &QToolButton::clicked, &dialog,
+            [=, &previewPlaying, &previewFrame, &fadePreviewFrames]() {
         previewPlaying = false;
         previewTimer->stop();
+        fadePreviewTimer->stop();
         previewFrame = 0;
+        fadePreviewFrames = 0;
         updatePreview();
     });
     connect(animated, &QCheckBox::toggled, &dialog, [=](bool) { refreshTimer(); });
+    connect(fadeAnimate, &QCheckBox::toggled, &dialog, [=](bool) { refreshTimer(); });
+    for (QSpinBox *setting : {fadeLow, fadeHigh, fadeStep, fadeDelay})
+        connect(setting, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [=](int) { updatePreview(); });
+    connect(fadePingpong, &QCheckBox::toggled, &dialog, [=](bool) { updatePreview(); });
     connect(objectFlipX, &QCheckBox::toggled, &dialog, [=](bool) { updatePreview(); });
     connect(objectFlipY, &QCheckBox::toggled, &dialog, [=](bool) { updatePreview(); });
+    // Update the modal previews AND the existing canvas item without saving.
+    // Cancel restores the saved percentage, and previous/next commits retain
+    // the normal per-object editing behaviour.
+    const auto previewFadeOnCanvas = [this, &old, &fadePreviewPercent,
+                                      &fadeCanvasPercent, &fadeCanvasObject]() {
+        if (fadeCanvasPercent == fadePreviewPercent && fadeCanvasObject == old.id)
+            return;
+        for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
+            if (m_resources.at(i).id != old.id) continue;
+            auto *image = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(i));
+            if (!image) break;
+            Resource draft = m_resources.at(i);
+            draft.frame = image->data(1).toInt();
+            draft.objectAlphaFadePercent = fadePreviewPercent;
+            const QImage base = resourcePreview(draft);
+            if (!base.isNull()) {
+                image->setPixmap(QPixmap::fromImage(patternedBobPreview(base,
+                    draft.objectAlphaFadePercent, draft.scale, draft.x, draft.y)));
+                image->setScale(draft.objectAlphaFadePercent > 0 ? 1.0 : draft.scale / 100.0);
+                image->setShapeMode(draft.objectAlphaFadePercent > 0
+                    ? QGraphicsPixmapItem::BoundingRectShape
+                    : QGraphicsPixmapItem::MaskShape);
+                fadeCanvasPercent = fadePreviewPercent;
+                fadeCanvasObject = old.id;
+            }
+            break;
+        }
+    };
+    connect(objectFadeSlider, &QSlider::valueChanged, &dialog,
+            [=](int) { updatePreview(); previewFadeOnCanvas(); });
+    connect(fadePreviewTimer, &QTimer::timeout, &dialog,
+            [=]() { previewFadeOnCanvas(); });
+    connect(fadeAnimate, &QCheckBox::toggled, &dialog,
+            [=](bool) { updatePreview(); previewFadeOnCanvas(); });
+    for (QSpinBox *setting : {fadeLow, fadeHigh, fadeStep, fadeDelay})
+        connect(setting, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [=](int) { updatePreview(); previewFadeOnCanvas(); });
+    connect(fadePingpong, &QCheckBox::toggled, &dialog,
+            [=](bool) { updatePreview(); previewFadeOnCanvas(); });
+    connect(stopButton, &QToolButton::clicked, &dialog,
+            [=]() { previewFadeOnCanvas(); });
     connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [=](int) { updatePreview(); });
     for (QSpinBox *spin : {first, count, ticks, hitW, hitH})
@@ -7712,8 +8070,23 @@ void SidboxGameDesigner::configureGameObject(int index)
         initiallyActive->setEnabled(isObject);
         initiallyActive->setVisible(isObject && behaviour != QStringLiteral("collectable"));
         hiddenCollectable->setEnabled(behaviour == QStringLiteral("collectable"));
-        targetObject->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
-        targetAction->setEnabled(isTrigger || isKey || behaviour == QStringLiteral("enemy"));
+        targetObject->setEnabled(isKey || behaviour == QStringLiteral("enemy"));
+        const bool oldStyleLinks = isKey || behaviour == QStringLiteral("enemy");
+        targetObject->setVisible(oldStyleLinks);
+        targetAction->setVisible(oldStyleLinks);
+        targetVisibilityHint->setVisible(oldStyleLinks);
+        linkedActionRows->setVisible(isTrigger);
+        actionRowControls->setVisible(isTrigger);
+        linkedActionsHint->setVisible(isTrigger);
+        targetAction->setEnabled(oldStyleLinks);
+        // Hide associated QFormLayout labels alongside the controls.
+        for (QWidget *field : {static_cast<QWidget *>(targetObject),
+                               static_cast<QWidget *>(targetAction),
+                               static_cast<QWidget *>(targetVisibilityHint)})
+            if (QWidget *label=linkedCard.form->labelForField(field))
+                label->setVisible(oldStyleLinks);
+        if (QWidget *label=linkedCard.form->labelForField(linkedActionRows))
+            label->setVisible(isTrigger);
         // updateItemInteraction() owns triggerPress enabled state so an
         // inventory requirement cannot be accidentally overridden here.
         triggerOneShot->setEnabled(isTrigger);
@@ -7896,21 +8269,27 @@ void SidboxGameDesigner::configureGameObject(int index)
                    .arg(choiceCount), QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
                 return false;
         }
-        if(targetAction->currentData().toString()==QStringLiteral("disable")) {
-            const QString targetId=targetObject->currentData().toString();
-            for(const Resource &candidate:m_resources) {
-                if(candidate.id!=targetId) continue;
-                if(candidate.inactiveStateFrame<0 &&
-                    (old.targetObjectId!=targetId || old.targetAction!=QStringLiteral("disable"))) {
-                    if(QMessageBox::question(&dialog,tr("Linked object will disappear"),
-                        tr("Disabling '%1' removes its collision AND hides its sprite because its "
-                           "INACTIVE state frame is -1.\n\n"
-                           "For an unlocked/opened object that stays visible, edit THAT object's properties "
-                           "and assign an INACTIVE state frame.\n\n"
-                           "Keep the disappearing-object behaviour?").arg(candidate.name),
-                        QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
-                        return false;
-                }
+    }
+    if (newType==QStringLiteral("trigger")) {
+        // Every linked disable can conceal its target. Warn once per newly
+        // configured disappearing target, including additional actions.
+        for (const Resource::LinkedAction &link : currentLinks()) {
+            if (link.action!=QStringLiteral("disable")) continue;
+            for (const Resource &candidate : m_resources) {
+                if (candidate.id!=link.objectId) continue;
+                if (candidate.inactiveStateFrame>=0) break;
+                bool alreadyLinked=(old.targetObjectId==link.objectId &&
+                                    old.targetAction==QStringLiteral("disable"));
+                for (const Resource::LinkedAction &previous : old.triggerExtraActions)
+                    if (previous.objectId==link.objectId && previous.action==QStringLiteral("disable"))
+                        alreadyLinked=true;
+                if (!alreadyLinked && QMessageBox::question(&dialog,
+                    tr("Linked object will disappear"),
+                    tr("Disabling '%1' removes collision AND hides its sprite because "
+                       "its INACTIVE state frame is -1. Configure an INACTIVE frame "
+                       "on that object if you want it to remain visible. Keep hiding it?")
+                        .arg(candidate.name),QMessageBox::Yes|QMessageBox::No,
+                        QMessageBox::No)!=QMessageBox::Yes) return false;
                 break;
             }
         }
@@ -8092,6 +8471,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.drawBehindTiles = behindTiles->isChecked();
     r.objectFlipX = objectFlipX->isChecked();
     r.objectFlipY = objectFlipY->isChecked();
+    r.objectAlphaFadePercent = objectFadeSlider->value();
+    r.objectFadeAnimated = fadeAnimate->isChecked();
+    r.objectFadeLow = qMin(fadeLow->value(), fadeHigh->value());
+    r.objectFadeHigh = qMax(fadeLow->value(), fadeHigh->value());
+    r.objectFadeStep = fadeStep->value();
+    r.objectFadeDelay = fadeDelay->value();
+    r.objectFadePingpong = fadePingpong->isChecked();
     r.hazardDamage = qAbs(damageDelta->value());
     r.damageTarget = damageTarget->currentData().toString();
     r.damageDelta = damageDelta->value();
@@ -8104,8 +8490,16 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.hazardFlashColour = hazardColour->currentData().toInt();
     r.hazardFlashCount = hazardFlashes->value();
     r.hazardFlashFrames = hazardFlashFrames->value();
-    r.targetObjectId = targetObject->currentData().toString();
-    r.targetAction = targetAction->currentData().toString();
+    if (newType==QStringLiteral("trigger")) {
+        const QVector<Resource::LinkedAction> actions=currentLinks();
+        r.targetObjectId=actions.isEmpty() ? QString() : actions.first().objectId;
+        r.targetAction=actions.isEmpty() ? QStringLiteral("none") : actions.first().action;
+        r.triggerExtraActions.clear();
+        for (int i=1;i<actions.size();++i) r.triggerExtraActions.append(actions.at(i));
+    } else {
+        r.targetObjectId=targetObject->currentData().toString();
+        r.targetAction=targetAction->currentData().toString();
+    }
     r.gotoWorldName = gotoWorld->currentData().toString();
     r.gotoPress = gotoActivation->currentData().toBool();
     r.gotoStartId = gotoStart->currentData().toString();
@@ -8177,6 +8571,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     const auto showObject = [&](int selectedIndex) {
         index = selectedIndex;
         old = m_resources.at(index);
+        fadePreviewFrames = 0;
+        fadeCanvasPercent = -1;
         draftSpriteStamp = old.spriteStamp;
         editSpriteStampButton->setText(draftSpriteStamp.active()
             ? tr("Edit Sprite Stamp (%1 x %2 tiles)...").arg(draftSpriteStamp.width).arg(draftSpriteStamp.height)
@@ -8217,6 +8613,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
         targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
+        reloadLinks();
         gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
         populateGotoStarts(old.gotoStartId);
         gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
@@ -8315,6 +8712,13 @@ void SidboxGameDesigner::configureGameObject(int index)
         animated->setChecked(old.objectAnimated);
         objectFlipX->setChecked(old.objectFlipX);
         objectFlipY->setChecked(old.objectFlipY);
+        objectFadeSlider->setValue(old.objectAlphaFadePercent);
+        fadeAnimate->setChecked(old.objectFadeAnimated);
+        fadeLow->setValue(old.objectFadeLow);
+        fadeHigh->setValue(old.objectFadeHigh);
+        fadeStep->setValue(old.objectFadeStep);
+        fadeDelay->setValue(old.objectFadeDelay);
+        fadePingpong->setChecked(old.objectFadePingpong);
         first->setValue(old.animFirst);
         count->setValue(old.animCount);
         ticks->setValue(old.animTicks);
@@ -8384,7 +8788,34 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (objectWindowWasMaximized)
         dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
-    dialog.exec();
+    // The modal fade preview owns this object's canvas pixels while open.
+    // Prevent the world-canvas 50 Hz timer from repainting the saved values
+    // on top of the live unsaved slider/animation preview.
+    const bool restartCanvasTimer = m_objectPreviewTimer && m_objectPreviewTimer->isActive();
+    if (restartCanvasTimer) m_objectPreviewTimer->stop();
+    const int result = dialog.exec();
+    if (restartCanvasTimer && m_objectPreviewTimer) m_objectPreviewTimer->start();
+    if (result != QDialog::Accepted) {
+        // Only the current object has uncommitted slider changes.
+        // Earlier objects visited with Next/Previous were explicitly saved.
+        for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
+            if (m_resources.at(i).id != old.id) continue;
+            auto *image = dynamic_cast<QGraphicsPixmapItem *>(m_sceneItems.at(i));
+            if (!image) break;
+            Resource saved = m_resources.at(i);
+            saved.frame = image->data(1).toInt();
+            const QImage base = resourcePreview(saved);
+            if (!base.isNull()) {
+                image->setPixmap(QPixmap::fromImage(patternedBobPreview(base,
+                    saved.objectAlphaFadePercent, saved.scale, saved.x, saved.y)));
+                image->setScale(saved.objectAlphaFadePercent > 0 ? 1.0 : saved.scale / 100.0);
+                image->setShapeMode(saved.objectAlphaFadePercent > 0
+                    ? QGraphicsPixmapItem::BoundingRectShape
+                    : QGraphicsPixmapItem::MaskShape);
+            }
+            break;
+        }
+    }
     objectWindowSettings.setValue(QStringLiteral("GameObjectProperties/maximized"), dialog.isMaximized());
 }
 

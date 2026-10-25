@@ -1,0 +1,22 @@
+SIDBOX CoderGirl Stage 5.103.1, 25 October 2026
+============================================
+Qt6 compiler fix: game designer linked-actions warning.
+
+At gamedesigner.cpp:6735 Stage 5.103 used:
+    QMessageBox::information(&dialog, ...);
+inside a [=] lambda. That by-value capture makes the dialog const in
+the lambda call operator; QMessageBox::information expects QWidget*.
+
+Changed only the warning parent to the already existing, mutable
+linked-actions QTableWidget* (a QWidget*):
+    QMessageBox::information(linkedActionRows, ...);
+
+Also bumped splash to Build: 5.103.1.251026.
+
+INSTALL: Copy gamedesigner.cpp and splashscreenwidget.cpp over the
+Stage 5.103 IDE source, then rebuild. No Update Game Project is needed:
+this is an IDE-only compiler fix, no runtime/generated code changed.
+The user-owned main.c is untouched.
+
+Verification: exact call replacement, version marker, archive integrity.
+Qt6 compilation and on-device testing must be done on Fedora/SIDBOX.

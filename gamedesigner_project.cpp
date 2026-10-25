@@ -316,6 +316,14 @@ bool SidboxGameDesigner::loadDesign()
         r.hazardFlashFrames = qBound(1, object.value(QStringLiteral("hazardFlashFrames")).toInt(3), 255);
         r.targetObjectId = object.value(QStringLiteral("targetObjectId")).toString();
         r.targetAction = object.value(QStringLiteral("targetAction")).toString(QStringLiteral("none"));
+        for (const QJsonValue &entry : object.value(QStringLiteral("triggerExtraActions")).toArray()) {
+            const QJsonObject link=entry.toObject();
+            const QString id=link.value(QStringLiteral("objectId")).toString();
+            const QString action=link.value(QStringLiteral("action")).toString();
+            if (!id.isEmpty() && (action==QStringLiteral("enable") ||
+                action==QStringLiteral("disable") || action==QStringLiteral("toggle")))
+                r.triggerExtraActions.append({id, action});
+        }
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
                          QStringLiteral("toggle")}.contains(r.targetAction))
             r.targetAction = QStringLiteral("none");
@@ -379,6 +387,19 @@ bool SidboxGameDesigner::loadDesign()
         r.drawBehindTiles = a.value(QStringLiteral("drawBehindTiles")).toBool(false);
         r.objectFlipX = a.value(QStringLiteral("objectFlipX")).toBool(false);
         r.objectFlipY = a.value(QStringLiteral("objectFlipY")).toBool(false);
+        // Old Stage 5.100 used a checkbox without a fade value.
+        // Recover an enabled checkbox at a visible 50% setting.
+        r.objectAlphaFadePercent = qBound(0,
+            a.contains(QStringLiteral("objectAlphaFadePercent"))
+                ? a.value(QStringLiteral("objectAlphaFadePercent")).toInt(0)
+                : (a.value(QStringLiteral("objectAlphaBlend")).toBool(false) ? 50 : 0),
+            100);
+        r.objectFadeAnimated = a.value(QStringLiteral("objectFadeAnimated")).toBool(false);
+        r.objectFadeLow = qBound(0, a.value(QStringLiteral("objectFadeLow")).toInt(20), 100);
+        r.objectFadeHigh = qBound(r.objectFadeLow, a.value(QStringLiteral("objectFadeHigh")).toInt(80), 100);
+        r.objectFadeStep = qBound(1, a.value(QStringLiteral("objectFadeStep")).toInt(5), 100);
+        r.objectFadeDelay = qBound(1, a.value(QStringLiteral("objectFadeDelay")).toInt(2), 32656);
+        r.objectFadePingpong = a.value(QStringLiteral("objectFadePingpong")).toBool(true);
         r.backgroundMode = a.value(QStringLiteral("backgroundMode")).toString(QStringLiteral("sprite"));
         if (r.kind != QStringLiteral("background") ||
             !QStringList{QStringLiteral("sprite"), QStringLiteral("direct_ready"),
@@ -653,6 +674,13 @@ bool SidboxGameDesigner::saveDesign()
             a.insert(QStringLiteral("drawBehindTiles"), r.drawBehindTiles);
             a.insert(QStringLiteral("objectFlipX"), r.objectFlipX);
             a.insert(QStringLiteral("objectFlipY"), r.objectFlipY);
+            a.insert(QStringLiteral("objectAlphaFadePercent"), r.objectAlphaFadePercent);
+            a.insert(QStringLiteral("objectFadeAnimated"), r.objectFadeAnimated);
+            a.insert(QStringLiteral("objectFadeLow"), r.objectFadeLow);
+            a.insert(QStringLiteral("objectFadeHigh"), r.objectFadeHigh);
+            a.insert(QStringLiteral("objectFadeStep"), r.objectFadeStep);
+            a.insert(QStringLiteral("objectFadeDelay"), r.objectFadeDelay);
+            a.insert(QStringLiteral("objectFadePingpong"), r.objectFadePingpong);
         }
         if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration")) {
             QJsonObject object;
@@ -712,6 +740,13 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("hazardFlashFrames"), r.hazardFlashFrames);
             object.insert(QStringLiteral("targetObjectId"), r.targetObjectId);
             object.insert(QStringLiteral("targetAction"), r.targetAction);
+            if (r.objectType==QStringLiteral("trigger")) {
+                QJsonArray links;
+                for (const Resource::LinkedAction &link : r.triggerExtraActions)
+                    links.append(QJsonObject{{QStringLiteral("objectId"),link.objectId},
+                                              {QStringLiteral("action"),link.action}});
+                object.insert(QStringLiteral("triggerExtraActions"),links);
+            }
             object.insert(QStringLiteral("gotoWorldName"), r.gotoWorldName);
             object.insert(QStringLiteral("gotoPress"), r.gotoPress);
             object.insert(QStringLiteral("gotoStartId"), r.gotoStartId);

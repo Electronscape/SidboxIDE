@@ -32,6 +32,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPair>
+#include <QStringList>
 #include <QMouseEvent>
 #include <QSaveFile>
 #include <QWheelEvent>
@@ -67,6 +69,8 @@ struct FlowNode {
     QJsonArray artCells;
     int artFrame = 0, artWidth = 8, artHeight = 8;
     bool art2x2 = false;
+    // The Trigger detail panel draws these rows from saved .sbgm data.
+    QStringList triggerEvents;
 };
 struct FlowGroup {
     QString id, world, title;
@@ -277,6 +281,81 @@ FlowGraph loadGraph(const QString &root) {
                     .arg(o.value(QStringLiteral("inactiveStateFrame")).toInt(-1));
             g.addNode(objectKey(w,id),w,describedAction(o),r.value(QStringLiteral("name")).toString(type),description,2);
             FlowNode &node=g.nodes[g.byId.value(objectKey(w,id))];
+            if (type==QStringLiteral("trigger")) {
+                // List linked object actions in their configured order, then
+                // describe optional Trigger outcomes. IDs are resolved
+                // against the CURRENT world; this never changes game logic.
+                const auto objectName=[&](const QString &target)->QString {
+                    for (const QJsonValue &rv:resources) {
+                        const QJsonObject other=rv.toObject();
+                        if (other.value(QStringLiteral("id")).toString()==target)
+                            return other.value(QStringLiteral("name")).toString(target);
+                    }
+                    return QStringLiteral("Missing object: ")+target;
+                };
+                QStringList events;
+                const QString required=o.value(QStringLiteral("interactItemName")).toString();
+                if (!required.isEmpty()) {
+                    events << QStringLiteral("ON: FIRE2 + USE %1 (%2px)")
+                        .arg(required).arg(o.value(QStringLiteral("interactRadius")).toInt(32));
+                    events << (o.value(QStringLiteral("interactConsume")).toBool()
+                        ? QStringLiteral("Item: consume on success")
+                        : QStringLiteral("Item: keep on success"));
+                } else {
+                    events << (o.value(QStringLiteral("triggerPress")).toBool()
+                        ? QStringLiteral("ON: touch + FIRE2")
+                        : QStringLiteral("ON: touch"));
+                }
+                events << (o.value(QStringLiteral("triggerOneShot")).toBool()
+                    ? QStringLiteral("Mode: one-shot") : QStringLiteral("Mode: repeatable"));
+                const auto addLinked=[&](const QString &id,const QString &action) {
+                    if (!id.isEmpty() && action!=QStringLiteral("none") && !action.isEmpty())
+                        events << QStringLiteral("Object: %1 -> %2")
+                                  .arg(objectName(id),action.toUpper());
+                };
+                addLinked(o.value(QStringLiteral("targetObjectId")).toString(),
+                          o.value(QStringLiteral("targetAction")).toString(QStringLiteral("none")));
+                for (const QJsonValue &entry:o.value(QStringLiteral("triggerExtraActions")).toArray()) {
+                    const QJsonObject link=entry.toObject();
+                    addLinked(link.value(QStringLiteral("objectId")).toString(),
+                              link.value(QStringLiteral("action")).toString());
+                }
+                const auto modeName=[](const QString &mode)->QString {
+                    if (mode==QStringLiteral("single"))return QStringLiteral("single");
+                    if (mode==QStringLiteral("sequence"))return QStringLiteral("sequence");
+                    return QStringLiteral("conversation");
+                };
+                const int successNode=o.value(QStringLiteral("interactDialogueNode")).toInt(-1);
+                const int wrongNode=o.value(QStringLiteral("interactWrongDialogueNode")).toInt(-1);
+                if (successNode>=0)
+                    events << QStringLiteral("Success: dialogue #%1 (%2)")
+                        .arg(successNode).arg(modeName(o.value(QStringLiteral("interactDialogueMode")).toString()));
+                if (wrongNode>=0)
+                    events << QStringLiteral("Wrong item: dialogue #%1 (%2)")
+                        .arg(wrongNode).arg(modeName(o.value(QStringLiteral("interactWrongDialogueMode")).toString()));
+                const QString reward=o.value(QStringLiteral("interactRewardItem")).toString();
+                if (!reward.isEmpty())
+                    events << QStringLiteral("Reward: %1 x%2").arg(reward)
+                        .arg(o.value(QStringLiteral("interactRewardCount")).toInt(1));
+                const QString stat=o.value(QStringLiteral("interactStatTarget")).toString();
+                const int delta=o.value(QStringLiteral("interactStatDelta")).toInt();
+                if (!stat.isEmpty() && stat!=QStringLiteral("none") && delta!=0)
+                    events << QStringLiteral("Stat: %1 %2%3").arg(stat).arg(delta>0 ? QStringLiteral("+") : QString()).arg(delta);
+                const QString musicAction=o.value(QStringLiteral("triggerMusicAction")).toString();
+                if (musicAction==QStringLiteral("play") || musicAction==QStringLiteral("stop")) {
+                    const QString track=o.value(QStringLiteral("triggerMusicId")).toString();
+                    events << QStringLiteral("Music: %1 %2").arg(musicAction,track);
+                }
+                for (const auto &pair : {
+                         qMakePair(QStringLiteral("sfxStart"),QStringLiteral("Activate sound")),
+                         qMakePair(QStringLiteral("sfxInteractSuccess"),QStringLiteral("Success sound")),
+                         qMakePair(QStringLiteral("sfxInteractWrong"),QStringLiteral("Wrong-item sound")),
+                         qMakePair(QStringLiteral("sfxInteractCancel"),QStringLiteral("Cancel sound"))}) {
+                    const QString sound=o.value(pair.first).toString();
+                    if (!sound.isEmpty())events << pair.second+QStringLiteral(": ")+sound;
+                }
+                node.triggerEvents=events;
+            }
             node.artStamp=r.value(QStringLiteral("spriteStamp")).toObject();
             node.artPath=node.artStamp.value(QStringLiteral("source")).toString();
             if (node.artPath.isEmpty())node.artPath=r.value(QStringLiteral("path")).toString();
@@ -415,6 +494,15 @@ FlowGraph loadGraph(const QString &root) {
                 else g.missing(w,from,QStringLiteral("object"),target);
             }
             if (type==QStringLiteral("trigger")) {
+                for (const QJsonValue &entry : obj.value(QStringLiteral("triggerExtraActions")).toArray()) {
+                    const QJsonObject link=entry.toObject();
+                    const QString id=link.value(QStringLiteral("objectId")).toString();
+                    if (id.isEmpty()) continue;
+                    const QString to=objectKey(w,id);
+                    if (g.byId.contains(to))
+                        g.link(from,to,QStringLiteral("Object: ")+link.value(QStringLiteral("action")).toString());
+                    else g.missing(w,from,QStringLiteral("linked object"),id);
+                }
                 const QString required=obj.value(QStringLiteral("interactItemName")).toString();
                 if (!required.isEmpty()) {
                     int matched=-1;
@@ -975,6 +1063,55 @@ private:
 
 struct EdgeArt { QString from,to,label; FlowWireItem *path=nullptr; QGraphicsPolygonItem *arrow=nullptr; };
 
+// Trigger cards display their events without generating extra graph nodes or
+// changing any saved game design. Expanded state belongs to the FLOW layout.
+constexpr qreal TriggerRowHeight = 18.0;
+qreal triggerCardHeight(const FlowNode &node,bool expanded) {
+    return expanded && node.kind==QStringLiteral("Touch / button trigger")
+        ? 94.0 + node.triggerEvents.size()*TriggerRowHeight : 70.0;
+}
+qreal triggerCardWidth(const FlowNode &node,bool expanded,qreal normalWidth=250) {
+    return expanded && node.kind==QStringLiteral("Touch / button trigger")
+        ? qMax(qreal(350),normalWidth) : normalWidth;
+}
+void drawTriggerEventRows(QGraphicsRectItem *card,const FlowNode &node,
+                          const IDETheme &theme,bool expanded) {
+    if (node.kind!=QStringLiteral("Touch / button trigger"))return;
+    auto *toggle=new QGraphicsSimpleTextItem(expanded?QStringLiteral("−"):QStringLiteral("+"),card);
+    QFont iconFont(QStringLiteral("Sans Serif"));iconFont.setPixelSize(15);iconFont.setBold(true);
+    toggle->setFont(iconFont);
+    toggle->setPos(card->rect().width()-27,2);
+    toggle->setBrush(theme.accent);
+    toggle->setAcceptedMouseButtons(Qt::NoButton);
+    toggle->setToolTip(expanded?QObject::tr("Collapse Trigger actions")
+                              :QObject::tr("Expand Trigger actions"));
+    if (!expanded) {
+        auto *count=new QGraphicsSimpleTextItem(QObject::tr("%1 events / actions")
+            .arg(node.triggerEvents.size()),card);
+        count->setPos(14,47);count->setBrush(theme.mutedText);
+        count->setFont(QFont(QStringLiteral("Sans Serif"),8));
+        count->setAcceptedMouseButtons(Qt::NoButton);
+        return;
+    }
+    auto *separator=new QGraphicsRectItem(QRectF(12,64,card->rect().width()-24,1),card);
+    separator->setPen(Qt::NoPen);separator->setBrush(theme.border);
+    separator->setAcceptedMouseButtons(Qt::NoButton);
+    auto *caption=new QGraphicsSimpleTextItem(QObject::tr("EVENTS / LINKED ACTIONS"),card);
+    caption->setPos(14,68);caption->setBrush(theme.accent);
+    caption->setFont(QFont(QStringLiteral("Sans Serif"),8,QFont::Bold));
+    caption->setAcceptedMouseButtons(Qt::NoButton);
+    const int maxChars=qMax(12,int((card->rect().width()-28)/6.5));
+    for (int i=0;i<node.triggerEvents.size();++i) {
+        const QString &detail=node.triggerEvents.at(i);
+        auto *line=new QGraphicsSimpleTextItem(brief(detail,maxChars),card);
+        line->setPos(14,87+i*TriggerRowHeight);
+        line->setFont(QFont(QStringLiteral("Sans Serif"),8));
+        line->setBrush(theme.text);
+        line->setToolTip(detail); // full unabridged value remains inspectable
+        line->setAcceptedMouseButtons(Qt::NoButton);
+    }
+}
+
 // The graphics are editable ONLY as a diagram. Moving one never changes a
 // resource coordinate, world design, or runtime data.
 class FlowCardItem final : public QGraphicsRectItem {
@@ -996,6 +1133,7 @@ public:
         if (group)setCursor(Qt::OpenHandCursor);
         else unsetCursor();
     }
+    void setExpandableTrigger(bool enabled) { m_expandableTrigger=enabled; }
     void setSnapToGrid(bool enabled) { m_snapToGrid = enabled; }
     void setAllowLeaveParent(bool enabled) { m_allowLeaveParent = enabled; }
     // Include the actual mouse release position; Qt child positions are
@@ -1030,8 +1168,10 @@ protected:
         QGraphicsRectItem::mousePressEvent(event);
     }
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
-        const bool clickedToggle=m_group && pos()==m_pressPosition &&
-             QRectF(11,3,25,23).contains(event->pos()) && bool(onToggle);
+        const bool clickedToggle=pos()==m_pressPosition && event->button()==Qt::LeftButton &&
+            bool(onToggle) && ((m_group && QRectF(11,3,25,23).contains(event->pos())) ||
+            (m_expandableTrigger &&
+                QRectF(rect().width()-36,3,34,24).contains(event->pos())));
         QGraphicsRectItem::mouseReleaseEvent(event);
         if (m_group)setCursor(Qt::OpenHandCursor);
         if (clickedToggle) onToggle(m_key); // callback schedules a redraw AFTER this event
@@ -1041,6 +1181,7 @@ private:
     QString m_key;
     QPointF m_pressPosition;
     bool m_group=false;
+    bool m_expandableTrigger=false;
     bool m_snapToGrid=true;
     bool m_allowLeaveParent=false;
 };
@@ -1330,6 +1471,7 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
     for (const FlowNode &node:graph.nodes) {
         if (memberGroup.contains(node.id))continue;
         display.addNode(node.id,node.world,node.kind,node.title,node.description,node.column,node.problem);
+        display.nodes[display.byId.value(node.id)].triggerEvents=node.triggerEvents;
     }
     for (auto it=groups.cbegin();it!=groups.cend();++it) {
         if (embeddedArrays.contains(it.key()) && groups.contains(embeddedArrays.value(it.key())) &&
@@ -1569,6 +1711,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                    "Drag empty space to select cards; middle/Alt+drag to pan.\n"
                                    "Ctrl+click adds individual selections. Ctrl+G groups.\n"
                                    "Click a group's +/- to expand or collapse; drag its header to move.\n"
+                                   "Click a Trigger card's top-right +/- to see its events and linked actions.\n"
                                    "Drop a card or array group onto a logic group to place it inside.\n"
                                    "Drag a nested array group outside its logic group to detach it.\n"
                                    "Manual groups show internal arrows and movable mini cards.\n"
@@ -1865,6 +2008,21 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         view->viewport()->update();
     };
     std::function<void()> redraw;
+    const auto attachTriggerToggle=[&](FlowCardItem *card,const FlowNode &node) {
+        if (node.kind!=QStringLiteral("Touch / button trigger"))return;
+        card->setExpandableTrigger(true);
+        card->onToggle=[&](const QString &id) {
+            // Rebuild later, after Qt finishes dispatching the mouse event.
+            QMetaObject::invokeMethod(&dialog,[&,id]() {
+                if (!graph.byId.contains(id))return;
+                layout.expanded.insert(id,!layout.expanded.value(id,false));
+                const QPointF focus=view->mapToScene(view->viewport()->rect().center());
+                redraw();savePositions();
+                // Avoid losing context when a long event card expands.
+                view->centerOn(focus);
+            },Qt::QueuedConnection);
+        };
+    };
     redraw=[&]() {
         QSignalBlocker blocker(scene);
         cards.clear();groupBackdrops.clear();groupTitles.clear();worldBands.clear();worldHeaders.clear();edges.clear();
@@ -1888,7 +2046,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     const FlowNode &n=display.nodes.at(columns[col].at(j));
                     const bool isGroup=groups.contains(n.id);
                     const FlowGroup g=isGroup ? groups.value(n.id) : FlowGroup();
-                    const qreal x=30+col*335,y=laneTop+52+j*118;
+                    qreal y=laneTop+52;
+                    for (int previous=0;previous<j;++previous) {
+                        const FlowNode &above=display.nodes.at(columns[col].at(previous));
+                        y+=qMax(qreal(70),triggerCardHeight(above,layout.expanded.value(above.id,false)))+48;
+                    }
+                    const qreal x=30+col*355;
                     auto *card=new FlowCardItem(n.id);
                     const int rows=(g.members.size()+1)/2;
                     QHash<QString,QPointF> miniPositions;
@@ -1956,18 +2119,71 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                             nextRow=qMax(nextRow,position.y()+88);
                         }
                     }
+                    if (!isGroup && n.kind==QStringLiteral("Touch / button trigger")) {
+                        const bool expanded=layout.expanded.value(n.id,false);
+                        card->setRect(0,0,triggerCardWidth(n,expanded),triggerCardHeight(n,expanded));
+                    }
                     if (isGroup) {
                         card->setGroup(true);
                         qreal width=270,height=70;
-                        if (g.expanded && g.automatic) {width=550;height=88+rows*82;}
+                        if (g.expanded && g.automatic) {
+                            qreal widest=250;
+                            height=80;
+                            for (int i=0;i<g.members.size();++i) {
+                                const int idx=graph.byId.value(g.members.at(i),-1);
+                                if (idx>=0)widest=qMax(widest,triggerCardWidth(graph.nodes.at(idx),
+                                    layout.expanded.value(g.members.at(i),false)));
+                            }
+                            width=2*widest+54;
+                            for (int row=0;row<rows;++row) {
+                                qreal rowH=70;
+                                for (int col=0;col<2;++col) {
+                                    const int index=row*2+col;
+                                    if (index>=g.members.size())continue;
+                                    const int idx=graph.byId.value(g.members.at(index),-1);
+                                    if (idx>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(idx),
+                                        layout.expanded.value(g.members.at(index),false)));
+                                }
+                                height+=rowH+18;
+                            }
+                        }
                         if (g.expanded && !g.automatic) {
                             width=280;height=170;
                             for (auto it=miniPositions.cbegin();it!=miniPositions.cend();++it) {
                                 const bool nested=groups.contains(it.key());
                                 const FlowGroup inner=groups.value(it.key());
                                 const int nestedRows=(inner.members.size()+1)/2;
-                                width=qMax(width,it.value().x()+(nested && inner.expanded ? 550 : 224)+24);
-                                height=qMax(height,it.value().y()+(nested && inner.expanded ? 88+nestedRows*82 : 88)+24);
+                                qreal childW=224,childH=88;
+                                if (nested && inner.expanded) {
+                                    qreal widest=250;
+                                    childH=80;
+                                    for (const QString &memberId:inner.members) {
+                                        const int ix=graph.byId.value(memberId,-1);
+                                        if (ix>=0)widest=qMax(widest,triggerCardWidth(graph.nodes.at(ix),
+                                            layout.expanded.value(memberId,false)));
+                                    }
+                                    childW=2*widest+54;
+                                    for (int row=0;row<nestedRows;++row) {
+                                        qreal rowH=70;
+                                        for (int col=0;col<2;++col) {
+                                            const int ixRow=row*2+col;
+                                            if (ixRow>=inner.members.size())continue;
+                                            const QString memberId=inner.members.at(ixRow);
+                                            const int ix=graph.byId.value(memberId,-1);
+                                            if (ix>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(ix),
+                                                layout.expanded.value(memberId,false)));
+                                        }
+                                        childH+=rowH+18;
+                                    }
+                                } else if (!nested) {
+                                    const int ix=graph.byId.value(it.key(),-1);
+                                    if (ix>=0) {
+                                        childW=triggerCardWidth(graph.nodes.at(ix),layout.expanded.value(it.key(),false),200);
+                                        childH=triggerCardHeight(graph.nodes.at(ix),layout.expanded.value(it.key(),false));
+                                    }
+                                }
+                                width=qMax(width,it.value().x()+childW+24);
+                                height=qMax(height,it.value().y()+childH+24);
                             }
                         }
                         card->setRect(0,0,width,height);
@@ -2068,18 +2284,44 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 child->setParentItem(card);
                                 child->setSnapToGrid(layout.snapToGrid);
                                 if (!g.automatic) {
-                                    child->setRect(0,0,200,60);
+                                    child->setRect(0,0,
+                                        triggerCardWidth(member,layout.expanded.value(memberId,false),200),
+                                        triggerCardHeight(member,layout.expanded.value(memberId,false)));
                                     child->setPos(miniPositions.value(memberId));
                                     child->setFlag(QGraphicsItem::ItemIsMovable,true);
                                 } else {
-                                    // Automatic array groups stay as simple lists.
-                                    child->setPos(16+(i%2)*272,80+(i/2)*88);
+                                    // Automatic arrays use variable row heights
+                                    // when a Trigger member is expanded.
+                                    child->setRect(0,0,
+                                        triggerCardWidth(member,layout.expanded.value(memberId,false)),
+                                        triggerCardHeight(member,layout.expanded.value(memberId,false)));
+                                    qreal rowY=80;
+                                    for (int row=0;row<i/2;++row) {
+                                        qreal maxH=70;
+                                        for (int col=0;col<2;++col) {
+                                            const int k=row*2+col;
+                                            if (k>=g.members.size())continue;
+                                            const int idx=graph.byId.value(g.members.at(k),-1);
+                                            if (idx>=0)maxH=qMax(maxH,triggerCardHeight(graph.nodes.at(idx),
+                                                layout.expanded.value(g.members.at(k),false)));
+                                        }
+                                        rowY+=maxH+18;
+                                    }
+                                    qreal maxWidth=250;
+                                    for (const QString &sibling:g.members) {
+                                        const int idx=graph.byId.value(sibling,-1);
+                                        if (idx>=0)maxWidth=qMax(maxWidth,triggerCardWidth(graph.nodes.at(idx),
+                                            layout.expanded.value(sibling,false)));
+                                    }
+                                    child->setPos(16+(i%2)*(maxWidth+22),rowY);
                                     child->setFlag(QGraphicsItem::ItemIsMovable,false);
                                 }
                                 child->setZValue(3); // above embedded wires
                                 child->setBrush(miniBackground);
                                 child->setPen(QPen(cardBorder));
                                 child->setToolTip(member.description);
+                                attachTriggerToggle(child,member);
+                                drawTriggerEventRows(child,member,theme,layout.expanded.value(memberId,false));
                                 auto *label=scene->addSimpleText(brief(member.title,g.automatic?34:26),QFont(QStringLiteral("Sans Serif"),9,QFont::DemiBold));
                                 label->setParentItem(child);label->setPos(12,5);label->setBrush(theme.brightText);
                                 label->setAcceptedMouseButtons(Qt::NoButton);
@@ -2089,7 +2331,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 const QPixmap art=flowArtworkIcon(member,projectRoot,artworkSheets);
                                 if (!art.isNull()) {
                                     auto *thumbnail=new QGraphicsPixmapItem(art,child);
-                                    thumbnail->setPos(child->rect().right()-20,child->rect().bottom()-20);
+                                    thumbnail->setPos(child->rect().right()-20,
+                                        member.kind==QStringLiteral("Touch / button trigger") ? 38 : child->rect().bottom()-20);
                                     thumbnail->setAcceptedMouseButtons(Qt::NoButton);
                                     thumbnail->setToolTip(QObject::tr("Artwork: %1, frame %2")
                                         .arg(member.artPath).arg(member.artFrame));
@@ -2108,8 +2351,28 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 // Only these nested ARRAY GROUP cards can be
                                 // dragged outside their owner's frame.
                                 sub->setAllowLeaveParent(true);
-                                sub->setRect(0,0,inner.expanded?550:270,
-                                             inner.expanded?88+nestedRows*82:70);
+                                qreal nestedW=270,nestedH=70,nestedCellWidth=250;
+                                if (inner.expanded) {
+                                    nestedH=80;
+                                    for (const QString &memberId:inner.members) {
+                                        const int ix=graph.byId.value(memberId,-1);
+                                        if (ix>=0)nestedCellWidth=qMax(nestedCellWidth,
+                                            triggerCardWidth(graph.nodes.at(ix),layout.expanded.value(memberId,false)));
+                                    }
+                                    nestedW=2*nestedCellWidth+54;
+                                    for (int row=0;row<nestedRows;++row) {
+                                        qreal rowH=70;
+                                        for (int col=0;col<2;++col) {
+                                            const int k=row*2+col;
+                                            if (k>=inner.members.size())continue;
+                                            const int ix=graph.byId.value(inner.members.at(k),-1);
+                                            if (ix>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(ix),
+                                                layout.expanded.value(inner.members.at(k),false)));
+                                        }
+                                        nestedH+=rowH+18;
+                                    }
+                                }
+                                sub->setRect(0,0,nestedW,nestedH);
                                 sub->setPos(miniPositions.value(embeddedId));
                                 sub->setZValue(3);
                                 sub->setBrush(Qt::NoBrush);
@@ -2169,11 +2432,27 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                         mini->setParentItem(sub);
                                         mini->setSnapToGrid(layout.snapToGrid);
                                         mini->setFlag(QGraphicsItem::ItemIsMovable,false);
-                                        mini->setPos(16+(i%2)*272,80+(i/2)*88);
+                                        mini->setRect(0,0,triggerCardWidth(member,layout.expanded.value(memberId,false)),
+                                            triggerCardHeight(member,layout.expanded.value(memberId,false)));
+                                        qreal rowY=80;
+                                        for (int row=0;row<i/2;++row) {
+                                            qreal rowH=70;
+                                            for (int col=0;col<2;++col) {
+                                                const int j=row*2+col;
+                                                if (j>=inner.members.size())continue;
+                                                const int ix=graph.byId.value(inner.members.at(j),-1);
+                                                if (ix>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(ix),
+                                                    layout.expanded.value(inner.members.at(j),false)));
+                                            }
+                                            rowY+=rowH+18;
+                                        }
+                                        mini->setPos(16+(i%2)*(nestedCellWidth+22),rowY);
                                         mini->setZValue(3);
                                         mini->setBrush(miniBackground);
                                         mini->setPen(QPen(cardBorder));
                                         mini->setToolTip(member.description);
+                                        attachTriggerToggle(mini,member);
+                                        drawTriggerEventRows(mini,member,theme,layout.expanded.value(memberId,false));
                                         auto *label=new QGraphicsSimpleTextItem(brief(member.title,34),mini);
                                         label->setPos(12,5);label->setBrush(theme.brightText);
                                         label->setAcceptedMouseButtons(Qt::NoButton);
@@ -2205,6 +2484,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                             },Qt::QueuedConnection);
                         };
                     } else {
+                        attachTriggerToggle(card,n);
+                        drawTriggerEventRows(card,n,theme,layout.expanded.value(n.id,false));
                         auto *kind=scene->addSimpleText(n.kind.toUpper(),QFont(QStringLiteral("Sans Serif"),8,QFont::Bold));
                         kind->setParentItem(card);kind->setPos(36,4);kind->setBrush(theme.mutedText);
                         kind->setAcceptedMouseButtons(Qt::NoButton);
@@ -2217,7 +2498,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         const QPixmap art=flowArtworkIcon(n,projectRoot,artworkSheets);
                         if (!art.isNull()) {
                             auto *thumbnail=new QGraphicsPixmapItem(art,card);
-                            thumbnail->setPos(card->rect().right()-20,card->rect().bottom()-20);
+                            thumbnail->setPos(card->rect().right()-20,
+                                n.kind==QStringLiteral("Touch / button trigger") ? 38 : card->rect().bottom()-20);
                             thumbnail->setAcceptedMouseButtons(Qt::NoButton);
                             thumbnail->setToolTip(QObject::tr("Artwork: %1, frame %2")
                                 .arg(n.artPath).arg(n.artFrame));

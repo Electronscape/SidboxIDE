@@ -10,6 +10,9 @@ extern "C" {
 /* Call AFTER initMalloc(), before the first draw. Returns 1 on success. */
 int gameassets_init(void);
 void gameassets_shutdown(void);
+/* Advance BOB fade animations using the game's 50 Hz frame count.
+   Generated gameworlditems_update() calls this automatically. */
+void gameassets_fade_update(uint16_t frames);
 /* Source CLUTs are read-only to callers. The world transition runtime keeps
  * its own temporary colour arrays; original PPB indices never change. */
 const uint32_t *gameassets_front_palette(void);

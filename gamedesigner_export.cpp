@@ -448,6 +448,22 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             return false;
         }
     }
+    // Additional Trigger links resolve to actual PLACED objects (not atlas assets).
+    // Validation precedes file output so a broken reference never half-generates C.
+    for (const Resource *r : platforms) {
+        if (r->objectType != QStringLiteral("trigger")) continue;
+        for (const Resource::LinkedAction &link : r->triggerExtraActions) {
+            if (link.objectId == r->id || !objectSlot.contains(link.objectId) ||
+                (link.action != QStringLiteral("enable") &&
+                 link.action != QStringLiteral("disable") &&
+                 link.action != QStringLiteral("toggle"))) {
+                if (error) *error = tr("Trigger '%1' has an invalid linked action target '%2'. "
+                    "Choose an existing Game Object in its Linked Actions list.")
+                    .arg(r->name,link.objectId);
+                return false;
+            }
+        }
+    }
     // Resolve item interactions against this world's Adventure Inventory names.
     // Numeric item indices change across worlds, so persist/copy only the name.
     QSet<QString> availableInteractionItems;
@@ -1038,7 +1054,17 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 "cg_gwi_platforms[%3].y + cg_gwi_platforms[%3].height / 2);\n")
                 .arg(r.gotoWorldName, r.gotoStartId.isEmpty() ? QStringLiteral("default") : r.gotoStartId)
                 .arg(i);
-        } else if (!targetAction(r, &action)) return false;
+        } else {
+            if (!targetAction(r, &action)) return false;
+            // Run each additional action in order, after the original link.
+            // Reuse the proven enable/disable/toggle template and object indices.
+            for (const Resource::LinkedAction &link : r.triggerExtraActions) {
+                Resource target = r;
+                target.targetObjectId = link.objectId;
+                target.targetAction = link.action;
+                if (!targetAction(target, &action)) return false;
+            }
+        }
         const bool stop = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("stop");
         const bool play = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("play") && musicById.contains(r.triggerMusicId);
         if (action.isEmpty() && !stop && !play) continue;
@@ -1657,6 +1683,14 @@ bool SidboxGameDesigner::generateGameCodeCore(bool embedPixels, bool batchMode)
         if (!r.path.isEmpty()) a.absolutePath = resolvedPath(r.path);
         a.x = r.x; a.y = r.y; a.scale = r.scale;
         a.cellWidth = r.cellWidth; a.cellHeight = r.cellHeight; a.frame = r.frame;
+        a.alphaFadePercent = r.kind == QStringLiteral("sprite")
+            ? qBound(0, r.objectAlphaFadePercent, 100) : 0;
+        a.fadeAnimated = r.kind == QStringLiteral("sprite") && r.objectFadeAnimated;
+        a.fadeLow = qBound(0, r.objectFadeLow, 100);
+        a.fadeHigh = qBound(a.fadeLow, r.objectFadeHigh, 100);
+        a.fadeStep = qBound(1, r.objectFadeStep, 100);
+        a.fadeDelay = qBound(1, r.objectFadeDelay, 32656);
+        a.fadePingpong = r.objectFadePingpong;
         a.channel = r.audio.channel; a.frequency = r.audio.frequency;
         a.volume = r.audio.volume; a.pan = r.audio.pan;
         a.loop = r.audio.loop; a.loopStart = r.audio.loopStart;

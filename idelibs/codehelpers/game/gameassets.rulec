@@ -20,6 +20,60 @@ extern uint8_t gametitle_music_enabled(void) __attribute__((weak));
 @IDE{SPRITE_DECLARATIONS}
 @IDE{SOUND_DECLARATIONS}
 
+/* Patterned BOB fade animation: percentage, NOT RGB alpha. */
+@IDE_IF{HAS_FADE_ANIM}
+typedef struct {
+    gfxbob_t *bob;
+    uint8_t low, high, step, pingpong;
+    uint16_t delay, elapsed;
+    uint16_t phase;
+} cg_bob_fade_t;
+static cg_bob_fade_t cg_bob_fades[] = {
+@IDE{FADE_ANIM_ROWS}};
+static void cg_bob_fade_apply(cg_bob_fade_t *a)
+{
+    const uint16_t span = (uint16_t)(a->high - a->low);
+    const uint16_t steps = (uint16_t)((span + a->step - 1u) / a->step);
+    uint16_t pos = a->phase;
+    if (a->pingpong && steps && pos > steps)
+        pos = (uint16_t)(2u * steps - pos);
+    uint16_t fade = (uint16_t)(a->low + pos * a->step);
+    if (fade > a->high) fade = a->high;
+    a->bob->flagval[BLIT_FLAG_TYPE_FADE_VALUE] = (uint8_t)fade;
+    a->bob->flags = (uint8_t)((a->bob->flags & (uint8_t)~BLIT_FLAG_ALPHABLEND)
+        | (fade ? BLIT_FLAG_ALPHABLEND : 0u));
+}
+static void cg_bob_fade_reset(void)
+{
+    for (unsigned i = 0u; i < sizeof(cg_bob_fades)/sizeof(cg_bob_fades[0]); ++i) {
+        cg_bob_fades[i].phase = 0u;
+        cg_bob_fades[i].elapsed = 0u;
+        cg_bob_fade_apply(&cg_bob_fades[i]);
+    }
+}
+void gameassets_fade_update(uint16_t frames)
+{
+    if (!frames) return;
+    for (unsigned i = 0u; i < sizeof(cg_bob_fades)/sizeof(cg_bob_fades[0]); ++i) {
+        cg_bob_fade_t *a = &cg_bob_fades[i];
+        if (a->low >= a->high) continue;
+        const uint16_t span = (uint16_t)(a->high - a->low);
+        const uint16_t steps = (uint16_t)((span + a->step - 1u) / a->step);
+        const uint16_t period = a->pingpong ? (uint16_t)(2u * steps)
+                                             : (uint16_t)(steps + 1u);
+        const uint32_t elapsed = (uint32_t)a->elapsed + frames;
+        const uint32_t advances = elapsed / a->delay;
+        a->elapsed = (uint16_t)(elapsed % a->delay);
+        if (!advances) continue;
+        a->phase = (uint16_t)((a->phase + advances) % period);
+        cg_bob_fade_apply(a);
+    }
+}
+@IDE_ELSE
+static void cg_bob_fade_reset(void) {}
+void gameassets_fade_update(uint16_t frames) { (void)frames; }
+@IDE_END
+
 int gameassets_init(void)
 {
     /* Graphics mode, drawing buffers and initMalloc belong to main.c. */
@@ -34,6 +88,7 @@ int gameassets_init(void)
 @IDE_END
 @IDE{PALETTE_CYCLES}
 @IDE{SPRITE_INITIALIZERS}
+    cg_bob_fade_reset();
 @IDE{SOUND_LOADS}
 @IDE{MUSIC_START}
     return 1;
@@ -205,6 +260,8 @@ static uint32_t gameassets_sfx_length_@IDE{SYMBOL} = 0;
     @IDE{REF}.drawy = @IDE{Y};
     @IDE{REF}.scale = @IDE{SCALE};
     @IDE{REF}.index = @IDE{FRAME};
+    @IDE{REF}.flags = (uint8_t)((@IDE{REF}.flags & (uint8_t)~BLIT_FLAG_ALPHABLEND) | @IDE{BLEND_FLAG});
+    @IDE{REF}.flagval[BLIT_FLAG_TYPE_FADE_VALUE] = (uint8_t)@IDE{FADE_PERCENT};
 @IDE_SECTION_END
 @IDE_SECTION{SOUND_LOAD}
     gameassets_sfx_length_@IDE{SYMBOL} = LoadSFX((char *)@IDE{WAV_PATH}, &gameassets_sfx_@IDE{SYMBOL});

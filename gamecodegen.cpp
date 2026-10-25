@@ -442,6 +442,7 @@ Result generate(const Request &request)
         QStringLiteral("SPRITE_RESETS"), QStringLiteral("SPRITE_DRAW_FUNCTIONS"),
         QStringLiteral("DRAW_BACKGROUND"), QStringLiteral("DRAW_FOREGROUND"),
         QStringLiteral("DIRECT_DRAW_CALLS"), QStringLiteral("SOUND_FUNCTIONS"),
+        QStringLiteral("FADE_ANIM_ROWS"),
         QStringLiteral("MUSIC_FUNCTIONS")
     };
     // Removing a required slot from a customized rule must fail, not silently
@@ -469,6 +470,7 @@ Result generate(const Request &request)
                                QStringLiteral("SOUND_HEADERS"),
                                QStringLiteral("MUSIC_HEADERS")}) hdr.insert(key, {});
     code.insert(QStringLiteral("DUAL_PLANE"), flag(request.dualPlane));
+    code.insert(QStringLiteral("HAS_FADE_ANIM"), QStringLiteral("0"));
     code.insert(QStringLiteral("HAS_FRONT_PALETTE"), flag(!frontClut.isEmpty()));
     code.insert(QStringLiteral("HAS_BACK_PALETTE"), flag(request.dualPlane && !backClut.isEmpty()));
     code.insert(QStringLiteral("HAS_FOREGROUND_CYCLE"), flag(request.foregroundCycle.enabled));
@@ -578,9 +580,24 @@ Result generate(const Request &request)
                 {QStringLiteral("X"), num(sprite.asset.x)},
                 {QStringLiteral("Y"), num(sprite.asset.y)},
                 {QStringLiteral("SCALE"), num(qBound(1, sprite.asset.scale, 800))},
-                {QStringLiteral("FRAME"), num(sprite.asset.frame)}
+                {QStringLiteral("FRAME"), num(sprite.asset.frame)},
+                {QStringLiteral("BLEND_FLAG"), sprite.asset.alphaFadePercent > 0
+                    ? QStringLiteral("BLIT_FLAG_ALPHABLEND") : QStringLiteral("0")},
+                {QStringLiteral("FADE_PERCENT"), num(qBound(0, sprite.asset.alphaFadePercent, 100))}
             };
             if (!section(QStringLiteral("SPRITE_INIT"), sf, code[QStringLiteral("SPRITE_INITIALIZERS")])) return result;
+            if (sprite.asset.fadeAnimated) {
+                const QString ref = sf.value(QStringLiteral("REF"));
+                const int lo = qBound(0, sprite.asset.fadeLow, 100);
+                const int hi = qBound(lo, sprite.asset.fadeHigh, 100);
+                const int step = qBound(1, sprite.asset.fadeStep, 100);
+                const int delay = qBound(1, sprite.asset.fadeDelay, 65535);
+                code[QStringLiteral("HAS_FADE_ANIM")] = QStringLiteral("1");
+                code[QStringLiteral("FADE_ANIM_ROWS")] +=
+                    QStringLiteral("    { &%1, %2u, %3u, %4u, %5u, %6u, 0u, 0u },\n")
+                        .arg(ref).arg(lo).arg(hi).arg(step)
+                        .arg(sprite.asset.fadePingpong ? 1 : 0).arg(delay);
+            }
         }
     }
     // Draw order matches resource order: background groups, then foreground.

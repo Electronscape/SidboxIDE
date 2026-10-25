@@ -1,0 +1,4 @@
+CoderGirl Stage 5.100.1
+Extract to the IDE source root, preserving paths.
+Rebuild the IDE, set a BOB patterned fade percentage in Configure Game Object, save the world, Update Game Project, rebuild the game.
+This is a correction of Stage 5.100. No main.c changes.

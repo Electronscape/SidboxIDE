@@ -1494,10 +1494,6 @@ static uint8_t ga_wrapped_scaled(const char *text, uint16_t visible, int x, int 
     return lines;
 }
 
-static uint8_t ga_wrapped(const char *text,uint16_t visible,int x,int y,
-                          uint8_t max_columns,uint8_t max_lines)
-{ return ga_wrapped_scaled(text,visible,x,y,max_columns,max_lines,1u,2u); }
-
 /* Count rows for a full answer, up to max_rows. Text may contain explicit
    newlines and long words. The estimate is used for scrolling the answers. */
 static uint8_t ga_answer_rows(const char *text, uint8_t columns, uint8_t max_rows)
@@ -1705,14 +1701,28 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         return;
     }
     if (ga_state == 3) {
-        /* Player's selected reply types out above their own head. */
+        /* The player's spoken reply uses the SAME font scale as dialogue.
+         * Thought bubbles keep their independent thought font settings;
+         * the inventory still uses the legacy, unscaled text renderer. */
         const int screen_x = player_x - camera_x, screen_y = player_y - camera_y;
         const uint16_t letters=ga_reply ? (uint16_t)strlen(ga_reply) : 0;
-        const int bubble_w=letters > 23u ? 280 : 205;
+        const int glyph_w=8*(int)ga_dialog_scale_x;
+        const int line_h=8*(int)ga_dialog_scale_y+(ga_outline_enabled?4:0);
         const int inset=ga_dialog_inset();
-        const uint8_t columns=(uint8_t)((bubble_w-2*inset)/8);
-        const uint8_t rows=ga_answer_rows(ga_reply,columns,5);
-        const int line_h=ga_outline_enabled ? 20 : 16;
+        /* Wider scales need a wider bubble to avoid an unnecessary
+         * one- or two-character column. Keep legacy dimensions at 1x2. */
+        const int bubble_w=ga_dialog_scale_x>2u ? 464 : letters>23u ? 280 : 205;
+        int columns=(bubble_w-2*inset)/glyph_w;
+        if(columns<1)columns=1;
+        if(columns>GA_COLS)columns=GA_COLS;
+        /* Cap height to the LCD, including the decorated frame. A large
+         * font may show fewer rows rather than drawing off-screen. */
+        int max_lines=(320-2*inset)/line_h;
+        if(max_lines>8)max_lines=8;
+        if(ga_dialog_scale_x==1u && ga_dialog_scale_y==2u && max_lines>5)
+            max_lines=5; /* Original 8x16 reply layout. */
+        if(max_lines<1)max_lines=1;
+        const uint8_t rows=ga_answer_rows(ga_reply,(uint8_t)columns,(uint8_t)max_lines);
         const int bubble_h=2*inset+(rows ? rows : 1)*line_h;
         const int bubble_x=screen_x-10<4 ? 4 : screen_x-10>480-bubble_w-4
             ? 480-bubble_w-4 : screen_x-10;
@@ -1720,7 +1730,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         const int bubble_y=tentative_y >= 4 ? tentative_y
             : (screen_y+28+bubble_h < 316 ? screen_y+28 : 4);
         ga_frame((int16_t)bubble_x,(int16_t)bubble_y,(uint16_t)bubble_w,(uint16_t)bubble_h);
-        ga_wrapped(ga_reply,ga_reply_typed,bubble_x+inset,bubble_y+inset,columns,5);
+        ga_wrapped_scaled(ga_reply,ga_reply_typed,bubble_x+inset,bubble_y+inset,
+                          (uint8_t)columns,(uint8_t)max_lines,
+                          ga_dialog_scale_x,ga_dialog_scale_y);
         return;
     }
     if (ga_node >= ga_node_count) return;

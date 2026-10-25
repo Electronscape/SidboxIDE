@@ -1,0 +1,26 @@
+Stage 5.102 · Animated SIDBOX BOB fades · 25 October 2026
+==========================================================
+
+Install over the Stage 5.101 IDE source. Replacement files:
+  gamedesigner.cpp
+  gamedesigner.h
+  gamedesigner_project.cpp
+  gamedesigner_export.cpp
+  gamecodegen.cpp
+  gamecodegen.h
+  splashscreenwidget.cpp
+  idelibs/codehelpers/game/gameassets.rulec
+  idelibs/codehelpers/game/gameassets.ruleh
+  idelibs/codehelpers/game/gameworlditems.rulec
+
+Regression:
+  development/tests/test_stage5102_fade_animation.py
+
+Documentation:
+  STAGE5.102-FADE-ANIMATION.md
+
+Stage 5.102.251026
+
+Set 20%-80%, step 5, delay 2, pingpong ON to get a 0.96s fade pulse.
+Qt6 compilation and SIDBOX hardware testing remain for the user.
+No user-owned main.c changed. Run Update Game Project and rebuild game.

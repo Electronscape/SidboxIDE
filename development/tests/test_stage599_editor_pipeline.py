@@ -23,5 +23,5 @@ assert 'if(ga_thought_on_top)ga_draw_thought();' in rt
 assert 'if(thoughtsOnTop){paintDialogue();paintThought();}' in ed
 assert 'else {paintThought();paintDialogue();}' in ed
 assert 'screenPreview->thoughtAboveDialog=thoughtsOnTop;' in ed
-assert 'Build: 5.99.241026' in (r/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.99.2.251026' in (r/'splashscreenwidget.cpp').read_text()
 print('Stage 5.99: editor/generator/preview/runtime integration checks PASS')

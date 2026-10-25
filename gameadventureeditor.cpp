@@ -3194,7 +3194,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             ?selectedChoice.value("reply").toString() : QObject::tr("Thought preview");
         const int thoughtColumns=std::clamp((tw-2*thoughtInset)/(8*thoughtSx),1,60);
         const auto thoughtLines=adventurePreviewRows(thoughtText.left(150),thoughtColumns,16);
-        const int th=std::min(320,std::max(thoughtH->value(),2*thoughtInset+thoughtLines.size()*thoughtRow));
+        const int th=std::min(320,std::max(thoughtH->value(),2*thoughtInset+int(thoughtLines.size())*thoughtRow));
         const int tx=std::min(thoughtX->value(),480-tw);
         const int ty=std::min(thoughtY->value(),320-th);
         screenPreview->thoughtX=tx;screenPreview->thoughtY=ty;

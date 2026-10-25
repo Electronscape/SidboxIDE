@@ -20,7 +20,7 @@ assert 'Dialogue + Thought Atlas' in editor
 assert 'ga_trigger_message_mode==2u' in runtime
 assert 'ga_set_thought(c->reply)' in runtime
 assert '@IDE{THOUGHT_CHOICE_FLAGS}' in rule
-assert re.search(r'Build: 5\.(?:98|99)\.241026',read('splashscreenwidget.cpp'))
+assert re.search(r'Build: 5\.(?:98|99)(?:\.\d+)?\.(?:241026|251026)',read('splashscreenwidget.cpp'))
 for name in ['THOUGHT_CHOICE_FLAGS','THOUGHT_SKIN_CELLS','THOUGHT_SKIN_FLIPS','THOUGHT_X','THOUGHT_Y','THOUGHT_WIDTH','THOUGHT_HEIGHT']:
     assert f'@IDE{{{name}}}' in rule
     assert f'"{name}"' in generator
