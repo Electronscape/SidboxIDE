@@ -1,8 +1,8 @@
-CoderGirl IDE - Stage 5.121.251026
+# CoderGirl IDE Stage 5.125.251026
 
-Game Flow Debugger ordinary root cards now tint their TOP category row
-(e.g. WORLD and its icon), leaving the card name (e.g. forest) below.
-Existing title-first mini cards (e.g. Big Steve [0]) are unchanged.
-Expandable Trigger and group card headers retain the previous layout.
+Qt6 compilation hotfix for Stage 5.124 Trigger / Switch row controls:
+three `connect()` calls now use the linked-action table as context, avoiding
+an accidental capture-by-copy of the noncopyable `QDialog`.
 
-See INSTALL-STAGE5.121.txt for installation notes.
+Only `gamedesigner.cpp` and `splashscreenwidget.cpp` change. See
+`INSTALL-STAGE5.125.txt` for exact instructions.

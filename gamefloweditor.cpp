@@ -16,6 +16,7 @@
 #include <QPainterPathStroker>
 #include <QLinearGradient>
 #include <QFocusEvent>
+#include <QFrame>
 #include <QKeyEvent>
 #include <QTextCursor>
 #include <QGraphicsPixmapItem>
@@ -79,6 +80,10 @@ struct FlowGroup {
     bool expanded = false;
     bool automatic = false;
 };
+struct FlowViewport {
+    QPointF center;
+    qreal zoom = 0.90;
+};
 struct FlowLayout {
     QHash<QString,QPointF> positions;
     QVector<FlowGroup> manualGroups;
@@ -88,6 +93,10 @@ struct FlowLayout {
     // Array-group ID -> containing manual group ID (one nesting level).
     QHash<QString,QString> embeddedArrays;
     bool snapToGrid = true;
+    // Design-time camera only; a separate position and zoom for each world
+    // filter (including All Worlds). Stored alongside the card layout.
+    QHash<QString,FlowViewport> viewports;
+    QString lastWorld;
 };
 struct FlowEdge {
     QString from, to, label;
@@ -531,20 +540,50 @@ FlowGraph loadGraph(const QString &root) {
             const QString from=objectKey(w,r.value(QStringLiteral("id")).toString());
             if (!g.byId.contains(from)) continue;
             const QString target=obj.value(QStringLiteral("targetObjectId")).toString();
-            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight")) {
+            // A stored target with Action = None is deliberately inert.
+            // Keep it in the editor, but do not draw a runnable connection.
+            const QString targetAction=obj.value(QStringLiteral("targetAction")).toString(QStringLiteral("none"));
+            const bool targetActive=targetAction==QStringLiteral("enable") ||
+                targetAction==QStringLiteral("disable") || targetAction==QStringLiteral("toggle");
+            // Exported links run only for Triggers, defeated enemies and
+            // key-style Collectables. Stored fields on other types are inert.
+            const bool targetSupported=type==QStringLiteral("trigger") ||
+                type==QStringLiteral("enemy") ||
+                (type==QStringLiteral("collectable") &&
+                 obj.value(QStringLiteral("pickupKind")).toInt(1)==3);
+            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight") &&
+                targetActive && !targetSupported)
+                g.diagnostics.append(QStringLiteral("%1: %2 has a saved object link, but this object type never executes it")
+                    .arg(w,r.value(QStringLiteral("name")).toString()));
+            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight") &&
+                targetActive && targetSupported) {
                 QString foreignWorld, foreignId;
                 const bool remote=cgDecodeCrossWorldLink(target,&foreignWorld,&foreignId);
-                const QString to=target.startsWith(QStringLiteral("@npc:"))
-                    ? npcActionNode(w,target)
-                    : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,target));
-                if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object/NPC: ")+obj.value("targetAction").toString("toggle"));
-                else g.missing(w,from,QStringLiteral("object"),target);
+                if (type!=QStringLiteral("trigger") &&
+                    (remote || target.startsWith(QStringLiteral("@npc:")))) {
+                    // Key pickups and enemy defeat actions are validated
+                    // against local object slots by the world exporter.
+                    g.missing(w,from,QStringLiteral("unsupported remote action target"),target);
+                } else {
+                    const QString to=target.startsWith(QStringLiteral("@npc:"))
+                        ? npcActionNode(w,target)
+                        : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,target));
+                    if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object/NPC: ")+targetAction);
+                    else g.missing(w,from,QStringLiteral("object"),target);
+                }
             }
             if (type==QStringLiteral("trigger")) {
                 for (const QJsonValue &entry : obj.value(QStringLiteral("triggerExtraActions")).toArray()) {
                     const QJsonObject link=entry.toObject();
                     const QString id=link.value(QStringLiteral("objectId")).toString();
+                    const QString action=link.value(QStringLiteral("action")).toString();
                     if (id.isEmpty() || id == QStringLiteral("@player_spotlight")) continue;
+                    if (action!=QStringLiteral("enable") && action!=QStringLiteral("disable") &&
+                        action!=QStringLiteral("toggle")) {
+                        g.diagnostics.append(QStringLiteral("%1: Trigger '%2' has an inactive linked action for '%3'")
+                            .arg(w,r.value(QStringLiteral("name")).toString(),id));
+                        continue;
+                    }
                     QString foreignWorld, foreignId;
                     const bool remote=cgDecodeCrossWorldLink(id,&foreignWorld,&foreignId);
                     const QString to=id.startsWith(QStringLiteral("@npc:"))
@@ -601,9 +640,12 @@ FlowGraph loadGraph(const QString &root) {
                 }
             }
             const QString drop=obj.value(QStringLiteral("breakDropCollectableId")).toString();
-            if (!drop.isEmpty()) {
+            if (!drop.isEmpty() && (type==QStringLiteral("breakable") ||
+                                     type==QStringLiteral("enemy"))) {
                 const QString to=objectKey(w,drop);
-                if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Drops on break"));
+                const int rewardNode=g.byId.value(to,-1);
+                if (rewardNode>=0 && g.nodes.at(rewardNode).kind==QStringLiteral("Collectable pickup"))
+                    g.link(from,to,QStringLiteral("Drops on break / defeat"));
                 else g.missing(w,from,QStringLiteral("break-drop collectable"),drop);
             }
             const QString spline=obj.value(QStringLiteral("splineId")).toString();
@@ -646,9 +688,10 @@ FlowGraph loadGraph(const QString &root) {
             }
             const QString destination=obj.value(QStringLiteral("gotoWorldName")).toString().trimmed();
             if (type == QStringLiteral("goto_world") && !destination.isEmpty()) {
-                QString match;
-                for (const QString &known:g.worlds)
-                    if (known.compare(destination,Qt::CaseInsensitive)==0) {match=known;break;}
+                // The exporter compares .sbgm world names exactly; a
+                // case-insensitive guess would show a transition that fails
+                // during game generation on case-sensitive filesystems.
+                const QString match=g.worlds.contains(destination) ? destination : QString();
                 if (match.isEmpty()) {g.missing(w,from,QStringLiteral("world"),destination);continue;}
                 QString startId=obj.value(QStringLiteral("gotoStartId")).toString();
                 if (startId.isEmpty()) startId=QStringLiteral("default");
@@ -811,8 +854,17 @@ FlowGraph loadGraph(const QString &root) {
                     if (index>=0 && index<items.size())g.link(itemKey(w,index),choice,QStringLiteral("Exchange requirement"));
                     else if (index>=0)g.missing(w,choice,QStringLiteral("exchange item index"),QString::number(index));
                 }
-                for (const auto &pair : {qMakePair("wrongNext","Wrong items"),qMakePair("partialNext","Partial items")})
-                    next(exchange.value(QLatin1String(pair.first)).toInt(-1),QLatin1String(pair.second));
+                // The generator deliberately leaves partial hand-ins silent:
+                // partialAction = -1, partialNext = -1 in the emitted C data.
+                // Do not draw a branch that game code cannot take.
+                next(exchange.value(QStringLiteral("wrongNext")).toInt(-1),
+                     QStringLiteral("Wrong items"));
+                if (exchange.value(QStringLiteral("partialNext")).toInt(-1)>=0 ||
+                    !exchange.value(QStringLiteral("partialTargetObjectId")).toString().isEmpty() ||
+                    exchange.value(QStringLiteral("partialAction")).toInt(-1)>=0)
+                    g.diagnostics.append(QStringLiteral("%1: Choice %2 in dialogue %3 has saved partial-GIVE actions, "
+                        "but partial hand-ins are silent in the game runtime")
+                        .arg(w).arg(j+1).arg(i));
                 if (exchange.value(QStringLiteral("wrongRepeatEnabled")).toBool(false) &&
                     (exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)<0 ||
                      exchange.value(QStringLiteral("wrongRepeatItem")).toInt(-1)>=items.size()))
@@ -838,16 +890,18 @@ FlowGraph loadGraph(const QString &root) {
                     if (!repeatedTarget.isEmpty()) {
                         const QString targetKey=objectKey(w,repeatedTarget);
                         if (g.byId.contains(targetKey))
-                            g.link(choice,targetKey,QStringLiteral("Repeated wrong item: ")+
+                            g.link(choice,targetKey,QStringLiteral("Repeated wrong item (third offer only): ")+
                                    exchange.value(QStringLiteral("wrongRepeatTargetAction")).toString("enable"));
                         else g.missing(w,choice,QStringLiteral("repeated wrong target object"),repeatedTarget);
                     }
                 }
-                for (const auto &key : {"wrongTargetObjectId","partialTargetObjectId"}) {
-                    const QString id=exchange.value(QLatin1String(key)).toString();
-                    if (id.isEmpty()) continue;
-                    if (g.byId.contains(objectKey(w,id)))g.link(choice,objectKey(w,id),QLatin1String(key));
-                    else g.missing(w,choice,QStringLiteral("exchange target object"),id);
+                // Only wrong-item actions are generated. Partial outcomes
+                // are intentionally ignored (see gameadventuregen.cpp).
+                const QString wrongTarget=exchange.value(QStringLiteral("wrongTargetObjectId")).toString();
+                if (!wrongTarget.isEmpty()) {
+                    if (g.byId.contains(objectKey(w,wrongTarget)))
+                        g.link(choice,objectKey(w,wrongTarget),QStringLiteral("Wrong item: object action"));
+                    else g.missing(w,choice,QStringLiteral("wrong-item target object"),wrongTarget);
                 }
             }
         }
@@ -1333,11 +1387,13 @@ public:
     }
     std::function<bool(const QString &)> onCardDoubleClicked;
     std::function<void()> onCardRaised;
+    std::function<void()> onViewportChanged;
     void zoom(qreal multiplier) {
         const qreal now=transform().m11();
         if (!std::isfinite(now) || now<=0 || !std::isfinite(multiplier))return;
         const qreal next=qBound(qreal(0.04),now*multiplier,qreal(5.0));
         scale(next/now,next/now);
+        if (onViewportChanged)onViewportChanged();
     }
 protected:
     void mouseDoubleClickEvent(QMouseEvent *event) override {
@@ -1492,6 +1548,22 @@ FlowLayout readFlowLayout(const QString &filename) {
             result.embeddedArrays.insert(it.key(),parent);
     }
     result.snapToGrid=document.value(QStringLiteral("snapToGrid")).toBool(true);
+    result.lastWorld=document.value(QStringLiteral("lastWorld")).toString();
+    const QJsonObject viewports=document.value(QStringLiteral("viewports")).toObject();
+    for (auto it=viewports.constBegin();it!=viewports.constEnd();++it) {
+        if (!it.value().isObject())continue;
+        const QJsonObject saved=it.value().toObject();
+        if (!saved.value(QStringLiteral("x")).isDouble() ||
+            !saved.value(QStringLiteral("y")).isDouble() ||
+            !saved.value(QStringLiteral("zoom")).isDouble())continue;
+        const qreal x=saved.value(QStringLiteral("x")).toDouble();
+        const qreal y=saved.value(QStringLiteral("y")).toDouble();
+        const qreal zoom=saved.value(QStringLiteral("zoom")).toDouble();
+        if (std::isfinite(x) && std::isfinite(y) &&
+            std::abs(x)<1000000 && std::abs(y)<1000000 &&
+            std::isfinite(zoom) && zoom>=0.04 && zoom<=5.0)
+            result.viewports.insert(it.key(),FlowViewport{QPointF(x,y),zoom});
+    }
     const QJsonObject offsets=document.value(QStringLiteral("memberPositions")).toObject();
     for (auto group=offsets.begin();group!=offsets.end();++group) {
         if (!group.value().isObject())continue;
@@ -1537,13 +1609,22 @@ bool writeFlowLayout(const QString &filename,const FlowLayout &layout) {
     QJsonObject embeddedArrays;
     for (auto it=layout.embeddedArrays.cbegin();it!=layout.embeddedArrays.cend();++it)
         embeddedArrays.insert(it.key(),it.value());
-    const QJsonDocument doc(QJsonObject{{QStringLiteral("version"),4},
+    QJsonObject viewports;
+    for (auto it=layout.viewports.cbegin();it!=layout.viewports.cend();++it) {
+        const FlowViewport &v=it.value();
+        viewports.insert(it.key(),QJsonObject{{QStringLiteral("x"),v.center.x()},
+                                             {QStringLiteral("y"),v.center.y()},
+                                             {QStringLiteral("zoom"),v.zoom}});
+    }
+    const QJsonDocument doc(QJsonObject{{QStringLiteral("version"),5},
                                          {QStringLiteral("positions"),points},
                                          {QStringLiteral("groups"),groups},
                                          {QStringLiteral("expanded"),states},
                                          {QStringLiteral("memberPositions"),memberPositions},
                                          {QStringLiteral("embeddedArrays"),embeddedArrays},
-                                         {QStringLiteral("snapToGrid"),layout.snapToGrid}});
+                                         {QStringLiteral("snapToGrid"),layout.snapToGrid},
+                                         {QStringLiteral("lastWorld"),layout.lastWorld},
+                                         {QStringLiteral("viewports"),viewports}});
     QSaveFile file(filename);
     if (!file.open(QIODevice::WriteOnly))return false;
     if (file.write(doc.toJson(QJsonDocument::Indented))<0) {file.cancelWriting();return false;}
@@ -1620,7 +1701,7 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
         display.addNode(it.key(),it.value().world,QStringLiteral("Group"),it.value().title,
                         QStringLiteral("Collapsed logic group"),column);
     }
-    QSet<QString> seen;
+    QHash<QString,int> shared;
     for (const FlowEdge &edge:graph.edges) {
         QString from=memberGroup.value(edge.from,edge.from);
         QString to=memberGroup.value(edge.to,edge.to);
@@ -1631,9 +1712,16 @@ FlowGraph groupLayoutGraph(const FlowGraph &graph,const QHash<QString,FlowGroup>
             groups.value(embeddedArrays.value(to)).world==groups.value(to).world)
             to=embeddedArrays.value(to);
         if (from==to)continue;
+        if (!display.byId.contains(from) || !display.byId.contains(to))continue;
         const QString key=from+QChar(0x1f)+to;
-        if (seen.contains(key))continue;
-        seen.insert(key);display.link(from,to,edge.label);
+        // Collapsed groups stand for several executable relationships.
+        // Preserve every description, not just the first encountered edge.
+        if (shared.contains(key)) {
+            display.edges[shared.value(key)].label+=QStringLiteral("\n")+edge.label;
+            continue;
+        }
+        shared.insert(key,display.edges.size());
+        display.link(from,to,edge.label);
     }
     return display;
 }
@@ -1849,35 +1937,40 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     right->setMinimumWidth(215);
     auto *rightLayout=new QVBoxLayout(right);
     rightLayout->setContentsMargins(7,7,7,7);
-    auto *help=new QLabel(QObject::tr("Drag cards to rearrange the graph.\n"
-                                   "Drag empty space to select cards; middle/Alt+drag to pan.\n"
-                                   "Ctrl+click adds individual selections. Ctrl+G groups.\n"
-                                   "Click a group's +/- to expand or collapse; drag its header to move.\n"
-                                   "Click a Trigger card's top-right +/- to see its events and linked actions.\n"
-                                   "Drop a card or array group onto a logic group to place it inside.\n"
-                                   "Drag a nested array group outside its logic group to detach it.\n"
-                                   "Manual groups show internal arrows and movable mini cards.\n"
-                                   "Ctrl+Shift+G ungroups a selected manual group or its child.\n"
-                                   "Snap 8px aligns all cards (including mini cards) while dragging.\n"
-                                   "Positions and groups are saved per project.\n"
-                                   "Clean Layout restores the original columns.\n"
-                                   "Spread Left to Right lays out linked logic chains.\n"
-                                   "Red cards indicate broken references.\n"
-                                   "Wire colours flow RED (outgoing) to GREEN (incoming).\n"
-                                   "Two opposite links are drawn as separate parallel wires.\n"
-                                   "Click a wire to select both connected cards.\n"
-                                   "Double-click a Dialogue Choice to open its own flow.\n"
-                                   "Double-click a manual group title or press F2 to rename it."),right);
-    help->setWordWrap(true);
-    rightLayout->addWidget(help);
+    // Keep the inspector spacious. The former full-page instructions now live
+    // as a compact guide beneath the live status, with full help on hover.
     auto *details=new QPlainTextEdit(right);
     details->setReadOnly(true);
     details->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     rightLayout->addWidget(details,1);
-    auto *status=new QLabel(right);
+    auto *statusBox=new QFrame(&dialog);
+    statusBox->setFrameShape(QFrame::StyledPanel);
+    auto *statusLayout=new QVBoxLayout(statusBox);
+    statusLayout->setContentsMargins(8,5,8,5);
+    statusLayout->setSpacing(2);
+    auto *status=new QLabel(statusBox);
     status->setWordWrap(true);
+    statusLayout->addWidget(status);
+    auto *quickHelp=new QLabel(QObject::tr(
+        "Pan: middle/Alt+drag  |  Zoom: wheel, +/- or Fit  |  Select: drag blank space / Ctrl+click\n"
+        "Groups: Ctrl+G / Ctrl+Shift+G  |  Expand: +/-  |  Rename: F2  |  Choice: double-click  |  View auto-saved"),statusBox);
+    quickHelp->setWordWrap(true);
+    quickHelp->setStyleSheet(QStringLiteral("color: %1;").arg(theme.mutedText.name()));
+    quickHelp->setToolTip(QObject::tr(
+        "Drag cards to arrange. Middle-button or Alt+drag empty canvas to pan. "
+        "Mouse wheel zooms. Drag empty space to box-select; Ctrl+click adds cards. "
+        "Ctrl+G groups and Ctrl+Shift+G ungroups selected cards. "
+        "Click a group's +/- to expand or collapse; drag its header to move. "
+        "Click a Trigger card's +/- to show event details. "
+        "Drop a card or array into a manual group; drag an embedded array out to detach. "
+        "Double-click a Dialogue Choice to inspect its own flow. "
+        "Double-click a group title or press F2 to rename it. "
+        "Clean Layout resets positions; Spread arranges linked cards. "
+        "Red cards indicate broken references. Wire red is outgoing, green incoming. "
+        "Click a wire to inspect its connections. Card positions and view pan/zoom save automatically per project."));
+    statusLayout->addWidget(quickHelp);
     rootLayout->addWidget(split,1);
-    rootLayout->addWidget(status);
+    rootLayout->addWidget(statusBox);
     split->setStretchFactor(0,4);split->setStretchFactor(1,1);
     split->setSizes({1000,270});
 
@@ -1915,6 +2008,53 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         if (!writeFlowLayout(layoutFile,layout))
             status->setText(QObject::tr("Could not save card positions to %1").arg(layoutFile));
     };
+    // View settings use the very same atomic .sidbox-flow-layout.json writer
+    // as card positions. Never write into .sbgm or generated game code.
+    const auto viewportKey=[](const QString &world) {
+        return world.isEmpty()?QStringLiteral("all-worlds"):QStringLiteral("world:")+world;
+    };
+    QString activeViewKey=viewportKey(QString());
+    bool trackingView=false;
+    QTimer viewSaveTimer(&dialog);
+    viewSaveTimer.setSingleShot(true);
+    viewSaveTimer.setInterval(450); // coalesce mouse-wheel and drag updates
+    const auto captureView=[&]() {
+        if (!trackingView)return;
+        const qreal zoom=view->transform().m11();
+        const QPointF center=view->mapToScene(view->viewport()->rect().center());
+        if (!std::isfinite(zoom) || zoom<0.04 || zoom>5.0 ||
+            !std::isfinite(center.x()) || !std::isfinite(center.y()) ||
+            std::abs(center.x())>=1000000 || std::abs(center.y())>=1000000)return;
+        layout.viewports.insert(activeViewKey,FlowViewport{center,zoom});
+        savePositions();
+    };
+    const auto scheduleViewSave=[&]() {
+        if (trackingView)viewSaveTimer.start();
+    };
+    const auto restoreView=[&]() {
+        const auto it=layout.viewports.constFind(activeViewKey);
+        const qreal zoom=it!=layout.viewports.cend()?it.value().zoom:0.90;
+        QPointF center(430,185);
+        if (it!=layout.viewports.cend())center=it.value().center;
+        else {
+            const QString world=worldSelect->currentData().toString();
+            if (!world.isEmpty() && worldBands.contains(world)) {
+                const QRectF band=worldBands.value(world)->rect();
+                center=QPointF(band.left()+qMin(qreal(420),band.width()/2),
+                               band.top()+qMin(qreal(170),band.height()/2));
+            }
+        }
+        view->resetTransform();
+        view->scale(zoom,zoom);
+        view->centerOn(center);
+        view->viewport()->update();
+    };
+    QObject::connect(&viewSaveTimer,&QTimer::timeout,&dialog,captureView);
+    QObject::connect(view->horizontalScrollBar(),&QScrollBar::valueChanged,&dialog,
+                     [&](int){scheduleViewSave();});
+    QObject::connect(view->verticalScrollBar(),&QScrollBar::valueChanged,&dialog,
+                     [&](int){scheduleViewSave();});
+    view->onViewportChanged=scheduleViewSave;
     const auto setDetails=[&]() {
         if (groups.contains(selectedId)) {
             const FlowGroup &g=groups.value(selectedId);
@@ -2723,7 +2863,11 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             const QString pair=from+QChar(0x1f)+to;
             if (sharedLines.contains(pair)) {
                 EdgeArt &existing=edges[sharedLines.value(pair)];
-                existing.path->setToolTip(existing.path->toolTip()+QStringLiteral("\n")+e.label);
+                // Different actions can share the same two cards. Retain all
+                // their labels both on hover AND when the wire is clicked.
+                existing.label+=QStringLiteral("\n")+e.label;
+                existing.path->setToolTip(existing.label+
+                    QStringLiteral("\nClick to select both connected cards"));
                 continue;
             }
             // A wire may only live inside a group if BOTH endpoints belong to
@@ -2755,8 +2899,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             line->setZValue(wireParent ? 0.5 : -2);
             arrowItem->setZValue(wireParent ? 0.6 : -1.9);
             line->setToolTip(e.label+QStringLiteral("\nClick to select both connected cards"));
-            const QString first=from,second=to,linkLabel=e.label;
-            line->onClicked=[&,first,second,linkLabel]() {
+            const QString first=from,second=to,edgePair=pair;
+            line->onClicked=[&,first,second,edgePair]() {
                 // Click selection is separate from rubber-band selection: wires
                 // are NOT selectable graphics items, so drag-to-group is safe.
                 {
@@ -2772,8 +2916,11 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     if (index>=0)return graph.nodes.at(index).title;
                     return groups.contains(id)?groups.value(id).title:id;
                 };
-                details->appendPlainText(QObject::tr("\nSelected connection: %1\n%2 -> %3")
-                    .arg(linkLabel,titleOf(first),titleOf(second)));
+                const int selectedEdge=sharedLines.value(edgePair,-1);
+                const QString labels=selectedEdge>=0 && selectedEdge<edges.size()
+                    ? edges.at(selectedEdge).label : QString();
+                details->appendPlainText(QObject::tr("\nSelected connection(s): %1\n%2 -> %3")
+                    .arg(labels,titleOf(first),titleOf(second)));
                 refreshHighlight();
             };
             sharedLines.insert(pair,edges.size());
@@ -2925,8 +3072,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         .arg(edges.size()).arg(graph.diagnostics.size()));
     };
     const auto reloadGraph=[&]() {
+        const bool wasTracking=trackingView;
+        if (wasTracking) {
+            viewSaveTimer.stop();
+            captureView();
+        }
+        trackingView=false;
         artworkSheets.clear();
-        const QString previous=worldSelect->currentData().toString();
+        const QString previous=worldSelect->count()
+            ? worldSelect->currentData().toString() : layout.lastWorld;
         graph=loadGraph(projectRoot);
         buildFlowGroups(graph,layout,groups,memberGroup);
         worldSelect->blockSignals(true);
@@ -2935,7 +3089,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         const int index=worldSelect->findData(previous);
         worldSelect->setCurrentIndex(qMax(0,index));
         worldSelect->blockSignals(false);
+        activeViewKey=viewportKey(worldSelect->currentData().toString());
+        layout.lastWorld=worldSelect->currentData().toString();
         redraw();
+        if (wasTracking) {
+            restoreView();
+            trackingView=true;
+        }
         if (graph.worlds.isEmpty()) {
             details->setPlainText(QObject::tr("No readable .sbgm design files in:\n%1").arg(projectRoot));
         } else if (!graph.diagnostics.isEmpty()) {
@@ -2952,16 +3112,15 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         setDetails();refreshHighlight();
     });
     QObject::connect(worldSelect,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int){
+        viewSaveTimer.stop();
+        captureView(); // save the PREVIOUS world's camera before changing filters
+        trackingView=false;
+        layout.lastWorld=worldSelect->currentData().toString();
+        activeViewKey=viewportKey(layout.lastWorld);
         redraw();
-        const QString world=worldSelect->currentData().toString();
-        if (!world.isEmpty() && worldBands.contains(world)) {
-            const QRectF band=worldBands.value(world)->rect();
-            view->centerOn(QPointF(band.left()+qMin(qreal(420),band.width()/2),
-                                   band.top()+qMin(qreal(170),band.height()/2)));
-        }
-        // Scene contents have been replaced; repaint right away rather than
-        // depending on the next mouse-wheel/scroll event to refresh the view.
-        view->viewport()->update();
+        restoreView(); // the selected world has its own saved pan and zoom
+        trackingView=true;
+        savePositions();
     });
     QObject::connect(search,&QLineEdit::textChanged,&dialog,[&](const QString &){refreshHighlight();});
     QObject::connect(connectionsOnly,&QCheckBox::toggled,&dialog,[&](bool enabled){
@@ -2974,13 +3133,18 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QObject::connect(zoomOut,&QPushButton::clicked,&dialog,[&](){view->zoom(0.8);});
     QObject::connect(actualSize,&QPushButton::clicked,&dialog,[&](){
         view->resetTransform();
+        scheduleViewSave();
     });
     QObject::connect(fit,&QPushButton::clicked,&dialog,[&](){
         const QRectF rect=scene->itemsBoundingRect();
-        if (rect.isValid() && !rect.isEmpty())
+        if (rect.isValid() && !rect.isEmpty()) {
             view->fitInView(rect.adjusted(-40,-40,40,40),Qt::KeepAspectRatio);
+            scheduleViewSave();
+        }
     });
     QObject::connect(clean,&QPushButton::clicked,&dialog,[&](){
+        viewSaveTimer.stop();
+        trackingView=false;
         savedPositions.clear();
         redraw();
         savePositions();
@@ -2989,8 +3153,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         view->resetTransform();
         view->scale(0.90,0.90);
         view->centerOn(QPointF(160,150));
+        trackingView=true;
+        captureView();
     });
     QObject::connect(spread,&QPushButton::clicked,&dialog,[&](){
+        viewSaveTimer.stop();
+        trackingView=false;
         savedPositions=flowLeftToRightPositions(groupLayoutGraph(graph,groups,memberGroup,layout.embeddedArrays));
         redraw();
         savePositions();
@@ -3002,6 +3170,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         view->resetTransform();
         view->scale(0.90,0.90);
         view->centerOn(start+QPointF(125,35));
+        trackingView=true;
+        captureView();
     });
     const auto makeGroup=[&]() {
         QStringList members;
@@ -3125,14 +3295,23 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QObject::connect(renameShortcut,&QShortcut::activated,&dialog,renameSelectedGroup);
     QObject::connect(close,&QPushButton::clicked,&dialog,&QDialog::accept);
     reloadGraph();
-    // Start with readable cards. 'Fit Graph' is optional for a whole-project overview.
-    view->scale(0.90,0.90);
-    view->centerOn(QPointF(430,185));
+    // Apply saved view after Qt lays out the maximised dialog. Without this,
+    // centerOn() can be clamped by the pre-show viewport size.
+    QTimer::singleShot(0,&dialog,[&]() {
+        restoreView();
+        trackingView=true;
+    });
     dialog.exec();
+    viewSaveTimer.stop();
+    captureView(); // also save the final camera when closing immediately
     // IMPORTANT: the dialog (and its child scene/widgets) outlives local graph
     // state. Disconnect closures BEFORE destroying their captured references.
     // In particular QGraphicsScene::clear during QWidget teardown can emit
     // selectionChanged; the previous version left a dangling stack capture.
+    view->onViewportChanged=nullptr;
+    QObject::disconnect(view->horizontalScrollBar(),nullptr,&dialog,nullptr);
+    QObject::disconnect(view->verticalScrollBar(),nullptr,&dialog,nullptr);
+    QObject::disconnect(&viewSaveTimer,nullptr,&dialog,nullptr);
     QObject::disconnect(scene,nullptr,&dialog,nullptr);
     QObject::disconnect(worldSelect,nullptr,&dialog,nullptr);
     QObject::disconnect(search,nullptr,&dialog,nullptr);

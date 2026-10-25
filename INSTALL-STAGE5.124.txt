@@ -1,0 +1,56 @@
+CoderGirl IDE Stage 5.124.251026
+Game Object Properties: row-specific Trigger / Switch linked-action controls
+
+INSTALLATION
+1. Extract CoderGirl-Stage5.124-251026-DROPIN.zip into your existing
+   Stage 5.123 IDE source directory, preserving paths.
+2. Rebuild and launch your Qt6 IDE.
+3. Open Game Object Properties > Trigger / Switch > Ordered linked actions.
+
+CHANGES
+- Each linked-action row now includes its own Up arrow, Down arrow and
+  clearly labelled Delete button. You no longer have to select a row before
+  moving or deleting its action.
+- The first row cannot move up, and the last row cannot move down; those
+  buttons are visibly disabled and have explanatory tooltips.
+- Clicking a row's Delete asks for confirmation, showing the CURRENT target
+  and CURRENT action of that exact row. No deletion happens if you choose No.
+- If another row has been deleted, row-specific buttons still resolve the
+  correct live row rather than relying on a stale index.
+- The deletion is a draft edit within Game Object Properties. You must save
+  Properties to commit it; cancelling the dialog retains the saved actions.
+- The existing maximum of 64 ordered actions is preserved.
+- Original Trigger action execution order is preserved: the first table row
+  stays the legacy targetObjectId/targetAction; later rows are
+  triggerExtraActions.
+- Row arrows use Qt-drawn icons so they are independent of font glyphs.
+- No changes to game generation, .sbgm saved worlds, firmware or main.c.
+
+SOURCE FILES CHANGED
+- gamedesigner.cpp
+- splashscreenwidget.cpp (Build: 5.124.251026)
+
+ADDED TEST
+- development/tests/test_stage5124_trigger_row_controls.py
+
+TESTED HERE
+- Stage 5.124 row-control source/logic contracts: PASS
+- Stage 5.103 native Trigger action order with obsolete UI assertions
+  updated in the test runner: PASS
+- Stage 5.123 saved pan/zoom regressions with build label updated: PASS
+- Stage 5.114 current-dialogue thought bubble (native C): PASS
+- Stage 5.115 answerless Fire2 thought bubble (native C): PASS
+- Qt6 GUI compilation and live on-screen clicks: NOT TESTED here; Qt6
+  development headers/libraries are unavailable in this environment.
+
+PLEASE CHECK ON FEDORA
+1. Open a Trigger containing at least three linked actions.
+2. Click the Down arrow on the first action. Check that its target AND action
+   trade places with the second row. Click Up to restore.
+3. Click Delete on the middle row. The confirmation should name that exact
+   target/action. Choose No: nothing should disappear.
+4. Click Delete again, choose Yes: ONLY that row should disappear. Check
+   the Up/Down boundary buttons update correctly.
+5. Cancel Game Object Properties and reopen: original actions should return.
+6. Repeat deletion, SAVE Properties, reopen: deleted action should stay gone.
+7. Check the resulting Game Flow Debugger connections still match actions.

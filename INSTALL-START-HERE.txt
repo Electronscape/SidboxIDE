@@ -1,5 +1,10 @@
-CoderGirl IDE Stage 5.121.251026
-- Stage 5.120 users: extract Stage 5.121 DROPIN to source root, rebuild IDE.
-- Full tree also provided separately.
-- Only Game Flow Debugger root-card header positions change.
-- No game project regeneration or main.c replacement.
+CoderGirl IDE - Stage 5.125.251026
+
+To update an existing Stage 5.124 source directory:
+  Extract CoderGirl-Stage5.125-251026-DROPIN.zip over it, preserving paths.
+  Rebuild your Qt6 IDE.
+
+For the complete source use:
+  CoderGirl-IDE-Stage5.125-251026-FULL.tar.gz
+
+Read INSTALL-STAGE5.125.txt for the exact compile fix and test notes.

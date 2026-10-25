@@ -1,0 +1,31 @@
+CoderGirl IDE Stage 5.125.251026
+Hotfix: Trigger / Switch row controls Qt6 compile error
+
+INSTALLATION
+1. Extract CoderGirl-Stage5.125-251026-DROPIN.zip over your existing
+   Stage 5.124 source directory, preserving paths.
+2. Rebuild the IDE using your normal Fedora Qt6 toolchain.
+3. Test the Trigger / Switch row controls in Object Properties.
+
+EXACT FIX
+- File: gamedesigner.cpp
+- Function: SidboxGameDesigner::configureGameObject(int index) (Trigger / Switch row UI)
+- The three connect() calls inside the insertLink lambda had &dialog as
+  their Qt context. The enclosing [=] lambda then attempted to copy the
+  local QDialog, whose copy constructor is deleted.
+- The connections now use linkedActionRows as their QObject context.
+  The table has the same lifetime as the dialog. No QDialog is copied.
+- This changes ONLY those 3 connect contexts in gamedesigner.cpp.
+- File: splashscreenwidget.cpp
+- Bumped Build: 5.125.251026.
+
+UNCHANGED
+- Row-specific Up, Down and confirmable Delete behavior.
+- Game generator, project save format, firmware, game logic, main.c.
+
+VERIFICATION
+- The new Stage 5.125 source and C++ lambda capture test: PASS.
+- The original Stage 5.124 Trigger/order and native thought-bubble tests
+  were rerun on the corrected code (stage label updated): PASS.
+- A full Qt6 build cannot be performed in this environment because the
+  Qt6 developer headers/libraries are unavailable.

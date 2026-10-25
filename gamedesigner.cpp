@@ -6978,10 +6978,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     refreshTargetVisibilityHint();
     // A Trigger owns an ordered list; keys and enemies retain the familiar
     // single linked-object controls. Legacy targetObjectId/action = first row.
-    auto *linkedActionRows = new QTableWidget(0, 2, &dialog);
-    linkedActionRows->setHorizontalHeaderLabels({tr("Game Object / NPC"), tr("Action")});
+    auto *linkedActionRows = new QTableWidget(0, 3, &dialog);
+    linkedActionRows->setHorizontalHeaderLabels({tr("Game Object / NPC"), tr("Action"), tr("This row")});
     linkedActionRows->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     linkedActionRows->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
+    linkedActionRows->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Fixed);
+    linkedActionRows->horizontalHeader()->resizeSection(2,150);
     linkedActionRows->verticalHeader()->hide();
     linkedActionRows->setSelectionBehavior(QAbstractItemView::SelectRows);
     linkedActionRows->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6991,18 +6993,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *actionRowButtons = new QHBoxLayout(actionRowControls);
     actionRowButtons->setContentsMargins(0,0,0,0);
     auto *addLinkedAction = new QPushButton(tr("+ Add Linked Action"), actionRowControls);
-    auto *removeLinkedAction = new QPushButton(tr("Remove"), actionRowControls);
-    auto *upLinkedAction = new QPushButton(tr("Move Up"), actionRowControls);
-    auto *downLinkedAction = new QPushButton(tr("Move Down"), actionRowControls);
     actionRowButtons->addWidget(addLinkedAction);
-    actionRowButtons->addWidget(removeLinkedAction);
-    actionRowButtons->addWidget(upLinkedAction);
-    actionRowButtons->addWidget(downLinkedAction);
+    actionRowButtons->addStretch(1);
     form->addRow(tr("Ordered linked actions"), linkedActionRows);
     form->addRow(QString(), actionRowControls);
     auto *linkedActionsHint = new QLabel(tr("Each action runs once when this Trigger activates. "
-        "Actions run top-to-bottom, then music/dialogue. Choose a Game Object, NPC, or Player Spotlight; "
-        "disabling an object with no INACTIVE frame hides it."),&dialog);
+        "Actions run top-to-bottom, then music/dialogue. Use the arrows beside each row "
+        "to change its order, or Delete to remove that exact action (confirmation required). "
+        "Disabling an object with no INACTIVE frame hides it."),&dialog);
     linkedActionsHint->setWordWrap(true);
     form->addRow(QString(),linkedActionsHint);
     auto currentLinks = [linkedActionRows]() {
@@ -7015,6 +7013,60 @@ void SidboxGameDesigner::configureGameObject(int index)
                 links.append({object->currentData().toString(),action->currentData().toString()});
         }
         return links;
+    };
+    // Row action buttons stay attached to their row even after other rows are
+    // removed. Never capture a fixed row index in their click handlers.
+    const auto refreshLinkedRowButtons = [=]() {
+        for (int i=0; i<linkedActionRows->rowCount(); ++i) {
+            QWidget *controls=linkedActionRows->cellWidget(i,2);
+            if (!controls) continue;
+            if (auto *up=controls->findChild<QToolButton *>(QStringLiteral("linkedRowUp")))
+                up->setEnabled(i>0);
+            if (auto *down=controls->findChild<QToolButton *>(QStringLiteral("linkedRowDown")))
+                down->setEnabled(i+1<linkedActionRows->rowCount());
+        }
+    };
+    const auto deleteLink = [=](int row) {
+        if (row<0 || row>=linkedActionRows->rowCount()) return;
+        auto *object=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,0));
+        auto *action=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,1));
+        if (!object || !action) return;
+        const QString target=object->currentData().toString().isEmpty()
+            ? tr("(no target selected)") : object->currentText();
+        const QString behaviour=action->currentText();
+        if (QMessageBox::question(linkedActionRows, tr("Delete linked action?"),
+                tr("Remove linked action #%1?\n\nTarget: %2\nAction: %3\n\n"
+                   "This change is saved only when you save Object Properties.")
+                    .arg(row+1).arg(target,behaviour),
+                QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)
+            return;
+        linkedActionRows->removeRow(row);
+        if (linkedActionRows->rowCount()>0)
+            linkedActionRows->selectRow(qMin(row,linkedActionRows->rowCount()-1));
+        refreshLinkedRowButtons();
+    };
+    const auto moveLink = [=](int row, int direction) {
+        const int next=row+direction;
+        if (row<0 || next<0 || next>=linkedActionRows->rowCount()) return;
+        auto *object=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,0));
+        auto *action=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,1));
+        auto *otherObject=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,0));
+        auto *otherAction=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,1));
+        if (!object || !action || !otherObject || !otherAction) return;
+        const QString id=object->currentData().toString();
+        const QString act=action->currentData().toString();
+        const QString otherId=otherObject->currentData().toString();
+        const QString otherAct=otherAction->currentData().toString();
+        // Preserve MISSING targets during reordering so export can diagnose them.
+        if (!otherId.isEmpty() && object->findData(otherId)<0)
+            object->addItem(tr("MISSING: %1").arg(otherId),otherId);
+        if (!id.isEmpty() && otherObject->findData(id)<0)
+            otherObject->addItem(tr("MISSING: %1").arg(id),id);
+        object->setCurrentIndex(object->findData(otherId));
+        action->setCurrentIndex(action->findData(otherAct));
+        otherObject->setCurrentIndex(otherObject->findData(id));
+        otherAction->setCurrentIndex(otherAction->findData(act));
+        linkedActionRows->selectRow(next);
     };
     auto insertLink = [=](int row, const Resource::LinkedAction &link) {
         linkedActionRows->insertRow(row);
@@ -7089,8 +7141,53 @@ void SidboxGameDesigner::configureGameObject(int index)
         action->setCurrentIndex(qMax(0,action->findData(link.action)));
         linkedActionRows->setCellWidget(row,0,object);
         linkedActionRows->setCellWidget(row,1,action);
-        linkedActionRows->setRowHeight(row,30);
+        auto *rowControls=new QWidget(linkedActionRows);
+        auto *buttons=new QHBoxLayout(rowControls);
+        buttons->setContentsMargins(2,0,2,0);
+        buttons->setSpacing(3);
+        auto *rowUp=new QToolButton(rowControls);
+        rowUp->setObjectName(QStringLiteral("linkedRowUp"));
+        rowUp->setArrowType(Qt::UpArrow);
+        rowUp->setFixedSize(26,26);
+        rowUp->setToolTip(tr("Move THIS linked action up one position."));
+        auto *rowDown=new QToolButton(rowControls);
+        rowDown->setObjectName(QStringLiteral("linkedRowDown"));
+        rowDown->setArrowType(Qt::DownArrow);
+        rowDown->setFixedSize(26,26);
+        rowDown->setToolTip(tr("Move THIS linked action down one position."));
+        auto *rowDelete=new QPushButton(tr("Delete"),rowControls);
+        rowDelete->setFixedWidth(74);
+        rowDelete->setToolTip(tr("Delete THIS linked action after confirmation. "));
+        buttons->addWidget(rowUp);
+        buttons->addWidget(rowDown);
+        buttons->addWidget(rowDelete);
+        linkedActionRows->setCellWidget(row,2,rowControls);
+        // Resolve the current position of this row's button container at click
+        // time: deleting another row must never redirect a later click.
+        connect(rowUp,&QToolButton::clicked,linkedActionRows,[=]() {
+            for (int i=0;i<linkedActionRows->rowCount();++i)
+                if (linkedActionRows->cellWidget(i,2)==rowControls) {
+                    moveLink(i,-1);
+                    break;
+                }
+        });
+        connect(rowDown,&QToolButton::clicked,linkedActionRows,[=]() {
+            for (int i=0;i<linkedActionRows->rowCount();++i)
+                if (linkedActionRows->cellWidget(i,2)==rowControls) {
+                    moveLink(i,1);
+                    break;
+                }
+        });
+        connect(rowDelete,&QPushButton::clicked,linkedActionRows,[=]() {
+            for (int i=0;i<linkedActionRows->rowCount();++i)
+                if (linkedActionRows->cellWidget(i,2)==rowControls) {
+                    deleteLink(i);
+                    break;
+                }
+        });
+        linkedActionRows->setRowHeight(row,32);
         linkedActionRows->selectRow(row);
+        refreshLinkedRowButtons();
     };
     auto reloadLinks = [=]() {
         linkedActionRows->setRowCount(0);
@@ -7107,38 +7204,6 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         insertLink(linkedActionRows->rowCount(),{QString(),QStringLiteral("enable")});
     });
-    connect(removeLinkedAction,&QPushButton::clicked,&dialog,[=]() {
-        const int row=linkedActionRows->currentRow();
-        if (row>=0) linkedActionRows->removeRow(row);
-        if (linkedActionRows->rowCount()) linkedActionRows->selectRow(qMin(row,linkedActionRows->rowCount()-1));
-    });
-    auto moveLink = [=](int direction) {
-        const int row=linkedActionRows->currentRow();
-        const int next=row+direction;
-        if (row<0 || next<0 || next>=linkedActionRows->rowCount()) return;
-        auto *object=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,0));
-        auto *action=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row,1));
-        auto *otherObject=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,0));
-        auto *otherAction=qobject_cast<QComboBox *>(linkedActionRows->cellWidget(next,1));
-        if (!object || !action || !otherObject || !otherAction) return;
-        const QString id=object->currentData().toString();
-        const QString act=action->currentData().toString();
-        const QString otherId=otherObject->currentData().toString();
-        const QString otherAct=otherAction->currentData().toString();
-        // Deleted targets can be present as a MISSING row-only option.
-        // Preserve those IDs when moving a row so export can diagnose them.
-        if (!otherId.isEmpty() && object->findData(otherId)<0)
-            object->addItem(tr("MISSING: %1").arg(otherId),otherId);
-        if (!id.isEmpty() && otherObject->findData(id)<0)
-            otherObject->addItem(tr("MISSING: %1").arg(id),id);
-        object->setCurrentIndex(object->findData(otherId));
-        action->setCurrentIndex(action->findData(otherAct));
-        otherObject->setCurrentIndex(otherObject->findData(id));
-        otherAction->setCurrentIndex(otherAction->findData(act));
-        linkedActionRows->selectRow(next);
-    };
-    connect(upLinkedAction,&QPushButton::clicked,&dialog,[=](){moveLink(-1);});
-    connect(downLinkedAction,&QPushButton::clicked,&dialog,[=](){moveLink(1);});
     form = generalCard.form; // State artwork belongs on the target (e.g. Door), not only on the Trigger.
     auto *activeStateFrame = spin(-1, 255, old.activeStateFrame);
     auto *inactiveStateFrame = spin(-1, 255, old.inactiveStateFrame);
