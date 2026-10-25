@@ -212,8 +212,10 @@ void game_adventure_text_style(uint8_t text_index, uint8_t outline_enabled,
    If it would run off the bottom, its Y is raised to keep the frame visible.
    Existing designs retain their saved minimum and position. */
 void game_adventure_dialogue_box(int16_t x, int16_t y, uint16_t width, uint16_t height);
-/* Optional thought bubbles: per-choice flag 1, indexed node*3+answer. A
- * thought-marked Player speech is drawn alongside its Next dialogue node.
+/* Optional thought bubbles: per-choice bit 0 means show with NEXT dialogue;
+ * bit 1 means show on THIS dialogue with the highlighted answer, or on
+ * an answerless node (first flagged non-empty Player speech, no Answer).
+ * Index is node*3+answer; legacy flag values (0/1) still work unchanged.
  * Uses the same loaded PPB atlas, with its own nine-slice cell layout. */
 void game_adventure_thought_choices(const uint8_t *flags, uint16_t count);
 void game_adventure_thought_box(int16_t x, int16_t y, uint16_t width,

@@ -54,6 +54,7 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSlider>
+#include <QStyle>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QIcon>
@@ -66,6 +67,19 @@
 #include <algorithm>
 
 namespace {
+// Stage 5.117: tag ONLY controls whose availability follows prerequisites.
+// The QApplication theme owns their green/red appearance; repaint after first
+// tagging so controls created in already-visible dialogs acquire that style.
+// Never modify saved widget values or business logic when changing appearance.
+void adventureMarkDependent(QWidget *control)
+{
+    if (!control || control->property("adventureGuard").toBool()) return;
+    control->setProperty("adventureGuard", true);
+    control->style()->unpolish(control);
+    control->style()->polish(control);
+    control->update();
+}
+
 // Stage 5.4h: copies only one group of saved Adventure settings from another
 // .sbgm. The source is read-only; NPCs, dialogue nodes and inventory never move.
 struct AdventureSavedWorld {
@@ -411,7 +425,7 @@ int chooseAdventureAtlasCell(QWidget *parent,const QImage &source,int tile,int p
     auto updateLabel=[&](int idx) {
         info->setText(QObject::tr("Selected cell %1 of %2  (%3 columns × %4 rows)")
             .arg(idx).arg(columns*rows).arg(columns).arg(rows));
-        buttons->button(QDialogButtonBox::Ok)->setEnabled(idx<limit);
+        adventureMarkDependent(buttons->button(QDialogButtonBox::Ok)); buttons->button(QDialogButtonBox::Ok)->setEnabled(idx<limit);
     };
     grid->changed=updateLabel;updateLabel(grid->selectedIndex);
     QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
@@ -535,7 +549,7 @@ bool editAdventureInventoryIcon(QWidget *parent, const QVector<GameAdventureAsse
         const QString selected=id.isEmpty()?dialogueAtlasId:id;
         const auto it=std::find_if(atlases.begin(),atlases.end(),
             [&](const GameAdventureAsset &a){return a.id==selected;});
-        tileSize->setEnabled(!id.isEmpty()); // Default uses Dialogue tile size, not this override.
+        adventureMarkDependent(tileSize); tileSize->setEnabled(!id.isEmpty()); // Default uses Dialogue tile size, not this override.
         effectiveSize=id.isEmpty()?dialogueTileSize:tileSize->value();
         image=it==atlases.end()?QImage():indexedPreview(it->path,foregroundPalette);
         if (!image.isNull() && (effectiveSize>image.width() || effectiveSize>image.height())) image=QImage();
@@ -836,6 +850,11 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     scroll->setWidgetResizable(true);
     auto *contents=new QWidget(scroll);
     QVBoxLayout *layout=new QVBoxLayout(contents);
+    auto *guardLegend=new QLabel(QObject::tr(
+        "CONTROL STATUS: Green border = editable. Red border + faded background = disabled. "
+        "Hover over a disabled field to see what must be set first."),contents);
+    guardLegend->setWordWrap(true);
+    layout->addWidget(guardLegend);
     scroll->setWidget(contents);
     outerLayout->addWidget(scroll,1);
     QCheckBox *enabled=new QCheckBox(QObject::tr("Selecting this answer opens inventory in GIVE mode"),&dlg);
@@ -968,18 +987,56 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
         "even when the Game Object is deactivated."),repeated);
     repeatDoorHint->setWordWrap(true);
     repeatForm->addRow(repeatDoorHint);
-    auto refreshRepeat=[=](){
-        const bool active=repeatEnabled->isChecked();
-        repeatItem->setEnabled(active);
-        for(QComboBox *node:repeatNodes)node->setEnabled(active);
-        repeatActionKind->setEnabled(active);
-        repeatEventId->setVisible(active && repeatActionKind->currentData().toString()==QStringLiteral("custom"));
-        repeatActionMode->setVisible(active && repeatActionKind->currentData().toString()!=QStringLiteral("none")
-            && repeatActionKind->currentData().toString()!=QStringLiteral("custom"));
+    // Dependencies are presentation-only: unchecked/disabled settings retain
+    // their saved values and become editable again when prerequisites return.
+    auto refreshExchangeControls=[=]() {
+        const bool active=enabled->isChecked();
+        const QString enableHint=QObject::tr("Disabled: tick 'Selecting this answer opens inventory in GIVE mode' first.");
+        const auto gate=[&](QWidget *control, bool allowed, const QString &reason) {
+            adventureMarkDependent(control); control->setEnabled(allowed);
+            control->setToolTip(allowed ? QObject::tr("Used by this GIVE exchange.") : reason);
+        };
+        gate(logic,active,enableHint);
+        gate(consume,active,enableHint);
+        int required=0;
+        for (QComboBox *slot : itemSlots) {
+            gate(slot,active,enableHint);
+            if(slot->currentData().toInt()>=0) ++required;
+        }
+        const bool canIncrement=active && logic->currentData().toString()==QStringLiteral("all") && required>=2;
+        gate(incremental,canIncrement,!active ? enableHint
+            : QObject::tr("Disabled: incremental hand-ins need ALL (AND) and at least two required items."));
+        gate(wrong,active,enableHint);
+        for (const Event &event : events) {
+            gate(event.kind,active,enableHint);
+            const QString kind=event.kind->currentData().toString();
+            event.number->setVisible(kind==QStringLiteral("custom"));
+            event.mode->setVisible(kind!=QStringLiteral("none") && kind!=QStringLiteral("custom"));
+            gate(event.number,active,enableHint);
+            gate(event.mode,active,enableHint);
+        }
+        gate(repeatEnabled,active && required>0,!active ? enableHint
+            : QObject::tr("Disabled: select at least one requested item above before configuring repeated wrong offers."));
+        const bool repeat=active && required>0 && repeatEnabled->isChecked();
+        const QString repeatHint=!active ? enableHint : required==0
+            ? QObject::tr("Disabled: select at least one requested item first.")
+            : QObject::tr("Disabled: tick 'Give one wrong item escalating dialogue' first.");
+        gate(repeatItem,repeat,repeatHint);
+        for(QComboBox *node:repeatNodes)gate(node,repeat,repeatHint);
+        gate(repeatActionKind,repeat,repeatHint);
+        const QString repeatKind=repeatActionKind->currentData().toString();
+        repeatEventId->setVisible(repeatKind==QStringLiteral("custom"));
+        repeatActionMode->setVisible(repeatKind!=QStringLiteral("none") && repeatKind!=QStringLiteral("custom"));
+        gate(repeatEventId,repeat,repeatHint);
+        gate(repeatActionMode,repeat,repeatHint);
     };
-    QObject::connect(repeatEnabled,&QCheckBox::toggled,repeated,[=](bool){refreshRepeat();});
-    QObject::connect(repeatActionKind,QOverload<int>::of(&QComboBox::currentIndexChanged),repeated,[=](int){refreshRepeat();});
-    refreshRepeat();
+    QObject::connect(enabled,&QCheckBox::toggled,&dlg,[=](bool){refreshExchangeControls();});
+    QObject::connect(logic,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
+    for(QComboBox *slot:itemSlots)
+        QObject::connect(slot,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
+    QObject::connect(repeatEnabled,&QCheckBox::toggled,&dlg,[=](bool){refreshExchangeControls();});
+    QObject::connect(repeatActionKind,QOverload<int>::of(&QComboBox::currentIndexChanged),&dlg,[=](int){refreshExchangeControls();});
+    refreshExchangeControls();
     layout->addWidget(repeated);
     QLabel *success=new QLabel(QObject::tr("Success uses this dialogue choice's existing Next, "
         "event, item reward and NPC-completed settings."),&dlg);
@@ -1103,6 +1160,12 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     scroll->setWidgetResizable(true);
     auto *content = new QWidget(scroll);
     auto *detail = new QVBoxLayout(content);
+    auto *guardLegend = new QLabel(QObject::tr(
+        "CONTROL STATUS: Green outline = editable. Red outline + faded background = "
+        "disabled until its prerequisite is set. Hover for the reason; "
+        "unusable saved dialogue settings also show a warning."),content);
+    guardLegend->setWordWrap(true);
+    detail->addWidget(guardLegend);
     scroll->setWidget(content); main->addWidget(scroll,1);
     auto *form = new QFormLayout;
     auto *speaker = new QLineEdit(node.value("speaker").toString(), &dialog);
@@ -1111,6 +1174,16 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     form->addRow(QObject::tr("Speaker"), speaker);
     form->addRow(QObject::tr("Dialogue text (auto wraps)"), text);
     detail->addLayout(form);
+    auto *thoughtHelp = new QLabel(QObject::tr(
+        "Thought bubbles: For an NPC speech with NO Answer, enter text in Choice 1's "
+        "Player speech and tick 'Use as thought bubble (show with this dialogue)'. "
+        "The thought appears with the NPC's words; Fire2 finishes the dialogue "
+        "as normal. No Answer text is needed. With Answers, 'this dialogue' "
+        "follows the highlighted Answer, while 'next dialogue' appears after "
+        "you select it. On a Fire2-only dialogue, only the first filled THIS-dialogue "
+        "thought is shown; clear its checkbox to use one in a later Choice panel."),content);
+    thoughtHelp->setWordWrap(true);
+    detail->addWidget(thoughtHelp);
     QJsonArray choices = node.value("choices").toArray();
     while (choices.size() < 3) choices.append(defaultChoices().at(choices.size()));
     bool noAnswers=true;
@@ -1139,7 +1212,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     }
     struct EditorFields {
         QTextEdit *label, *reply;
-        QCheckBox *thought;
+        QCheckBox *thought, *thoughtThis;
         QComboBox *next, *missingNext, *event, *mode;
         QComboBox *npcTargets[2], *npcModes[2];
         QComboBox *spotlight;
@@ -1147,6 +1220,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QComboBox *requires, *give, *take;
         QCheckBox *once, *completeNpc;
         QPushButton *exchange;
+        QLabel *dependencyNote;
     } fields[3];
     for (int i=0;i<3;++i) {
         const QJsonObject choice = choices[i].toObject();
@@ -1163,10 +1237,20 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].reply->setTabChangesFocus(true);
         fields[i].reply->setPlainText(choice.value("reply").toString());
         fields[i].reply->setMaximumHeight(65);
-        fields[i].reply->setToolTip(QObject::tr("Player speech can be a normal sequential reply or a simultaneous thought bubble on the next dialogue node."));
+        fields[i].reply->setToolTip(QObject::tr("Player speech can be a sequential reply or a thought. For a dialogue with NO answers, enter Player speech and tick 'show with this dialogue': the thought appears with the NPC speech, and Fire2 closes normally."));
         fields[i].thought = new QCheckBox(QObject::tr("Use as thought bubble (show with next dialogue)"),box);
         fields[i].thought->setChecked(choice.value("thoughtBubble").toBool(false));
-        fields[i].thought->setToolTip(QObject::tr("Shows this Player speech with the Next dialogue, without delaying that message. Also works in Trigger Message sequence; no puzzle actions run there."));
+        fields[i].thought->setToolTip(QObject::tr("Shows this Player speech with the NEXT dialogue after an Answer is selected. Requires an Answer; for a Fire2-only conversation with no answers, use THIS dialogue instead."));
+        fields[i].thoughtThis = new QCheckBox(QObject::tr("Use as thought bubble (show with this dialogue)"),box);
+        fields[i].thoughtThis->setChecked(!fields[i].thought->isChecked() && choice.value("thoughtBubbleThis").toBool(false));
+        fields[i].thoughtThis->setToolTip(QObject::tr("Shows this Player speech with the CURRENT NPC dialogue. With answers, follows the highlighted answer. With NO answers, works without an Answer: the thought appears immediately and Fire2 closes as usual. Blank answers never trigger choice actions."));
+        // Both options can be unticked, but cannot be ticked simultaneously.
+        QObject::connect(fields[i].thought,&QCheckBox::toggled,box,[&,i](bool checked){
+            if(checked) fields[i].thoughtThis->setChecked(false);
+        });
+        QObject::connect(fields[i].thoughtThis,&QCheckBox::toggled,box,[&,i](bool checked){
+            if(checked) fields[i].thought->setChecked(false);
+        });
         fields[i].next=new DialogueTreeCombo(box,&nodes,&folders);
         fields[i].next->addItem(QObject::tr("Close conversation"),-1);
         for(int target=0;target<nodes.size();++target)
@@ -1208,7 +1292,11 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         grid->addWidget(fields[i].label,0,1,1,3);
         grid->addWidget(new QLabel(QObject::tr("Player speech"),box),1,0);
         grid->addWidget(fields[i].reply,1,1,1,3);
-        grid->addWidget(fields[i].thought,1,4);
+        auto *thoughtOptions=new QVBoxLayout;
+        thoughtOptions->setContentsMargins(0,0,0,0);
+        thoughtOptions->addWidget(fields[i].thought);
+        thoughtOptions->addWidget(fields[i].thoughtThis);
+        grid->addLayout(thoughtOptions,1,4);
         grid->addWidget(new QLabel(QObject::tr("Next"),box),2,0);
         grid->addWidget(fields[i].next,2,1);
         grid->addWidget(new QLabel(QObject::tr("Event / resource"),box),2,2);
@@ -1286,6 +1374,10 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         fields[i].spotlight->setToolTip(QObject::tr("Runs after this answer succeeds. The spotlight is configured under Player Start."));
         grid->addWidget(new QLabel(QObject::tr("Player Spotlight"),box),12,0);
         grid->addWidget(fields[i].spotlight,12,1,1,3);
+        fields[i].dependencyNote=new QLabel(box);
+        fields[i].dependencyNote->setWordWrap(true);
+        fields[i].dependencyNote->setVisible(false);
+        grid->addWidget(fields[i].dependencyNote,13,0,1,5);
         detail->addWidget(box);
     }
 
@@ -1420,32 +1512,138 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QObject::connect(onCloseNpcMode[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
                          &dialog,[&,effect](int){ mirrorCloseNpc(effect); });
     }
+    // Stage 5.116: grey out *unreachable* actions, not their saved values.
+    // An answerless dialogue has a special Fire2-close route; NPC appearance
+    // and inventory gifts in its blank Choice panels edit that SAME close route.
+    // Do not disable those mirrors (the earlier 5.71 regression).
     const auto refreshChoiceControls = [&]() {
         const bool terminal = !hasAnyAnswer();
+        // The runtime displays the first available thought when there is no
+        // highlighted Answer; only one Fire2-only thought can be active.
+        int firstTerminalThought=-1;
+        if(terminal)for(int i=0;i<3;++i)
+            if(fields[i].thoughtThis->isChecked() &&
+               !fields[i].reply->toPlainText().trimmed().isEmpty()) {
+                firstTerminalThought=i;break;
+            }
+        int choiceIndex=0;
+        const QString answerNeeded = QObject::tr("Disabled: enter an Answer in THIS choice first. Blank answers cannot be selected, so their actions never run.");
         for (EditorFields &f : fields) {
             const bool hasAnswer=!f.label->toPlainText().trimmed().isEmpty();
-            /* On answerless nodes, this is a live editor for closeGiveItem.
-             * On nodes with actual answers, keep the normal per-choice rule. */
-            f.give->setEnabled(terminal || hasAnswer);
+            const bool hasSpeech=!f.reply->toPlainText().trimmed().isEmpty();
+            const bool selectable=hasAnswer;
+            const bool hasNext=f.next->currentData().toInt()>=0;
+            const bool hasRequirement=f.requires->currentData().toInt()>=0;
+            const QString kind=f.event->currentData().toString();
+            const QString answerHint = selectable
+                ? QObject::tr("Runs only when this Answer is selected successfully.") : answerNeeded;
+            const auto gateAnswer = [&](QWidget *widget, const QString &activeHint) {
+                adventureMarkDependent(widget); widget->setEnabled(selectable);
+                widget->setToolTip(selectable ? activeHint : answerNeeded);
+            };
+            gateAnswer(f.next,QObject::tr("Dialogue to open immediately after selecting this Answer. 'Close conversation' ends it."));
+            gateAnswer(f.event,QObject::tr("Choose a Game Object to activate/deactivate, or a custom C event, after selecting this Answer."));
+            adventureMarkDependent(f.customId); f.customId->setEnabled(selectable && kind==QStringLiteral("custom"));
+            f.customId->setToolTip(!selectable ? answerNeeded : QObject::tr("Custom event ID; choose 'Custom C event ID' above to edit it."));
+            adventureMarkDependent(f.mode); f.mode->setEnabled(selectable && kind!=QStringLiteral("none") && kind!=QStringLiteral("custom"));
+            f.mode->setToolTip(!selectable ? answerNeeded : QObject::tr("Disabled until Event / resource selects a Game Object. Custom events use their numeric ID instead."));
+            gateAnswer(f.requires,QObject::tr("This inventory item must be owned to use this Answer."));
+            gateAnswer(f.take,QObject::tr("Remove this item when the Answer is selected successfully."));
+            adventureMarkDependent(f.missingNext); f.missingNext->setEnabled(selectable && hasRequirement);
+            f.missingNext->setToolTip(!selectable ? answerNeeded : !hasRequirement
+                ? QObject::tr("Disabled: choose an item under Needs first. With no required item, the missing-item branch cannot occur.")
+                : QObject::tr("Dialogue shown when the player selects this Answer without its required item."));
+            gateAnswer(f.once,QObject::tr("Once this Answer succeeds, do not show it again."));
+            gateAnswer(f.completeNpc,QObject::tr("Marks this NPC helped; its 'After helped' dialogue is used on a FUTURE visit."));
+            gateAnswer(f.spotlight,QObject::tr("Change the player's spotlight after the selected Answer succeeds."));
+            gateAnswer(f.exchange,QObject::tr("Configure the GIVE inventory interaction opened by selecting this Answer."));
+
+            adventureMarkDependent(f.thought); f.thought->setEnabled(selectable && hasSpeech && hasNext);
+            f.thought->setToolTip(!hasSpeech
+                ? QObject::tr("Disabled: enter Player speech first, then enable a thought bubble.")
+                : !selectable
+                    ? QObject::tr("Disabled: 'show with NEXT dialogue' requires a selectable Answer. For a Fire2-only dialogue use 'show with THIS dialogue'.")
+                    : !hasNext
+                        ? QObject::tr("Disabled: set Next to a dialogue node first. 'Close conversation' leaves no next dialogue to display this thought.")
+                        : QObject::tr("Show this Player speech as a thought after selecting the Answer, with the NEXT dialogue."));
+            const bool otherTerminalThought=terminal && firstTerminalThought>=0 &&
+                firstTerminalThought!=choiceIndex;
+            const bool canThinkNow=hasSpeech && (selectable || terminal) && !otherTerminalThought;
+            adventureMarkDependent(f.thoughtThis); f.thoughtThis->setEnabled(canThinkNow);
+            f.thoughtThis->setToolTip(!hasSpeech
+                ? QObject::tr("Disabled: enter Player speech first to display a thought.")
+                : otherTerminalThought
+                    ? QObject::tr("Disabled: another Choice already supplies this Fire2-only thought. Untick the earlier THIS-dialogue thought first.")
+                : !selectable && !terminal
+                    ? QObject::tr("Disabled: this blank Choice is not selectable. Enter an Answer, or remove all Answers to make a Fire2-only dialogue.")
+                    : terminal
+                        ? QObject::tr("Show this thought during the current dialogue without an Answer. Fire2 still closes normally.")
+                        : QObject::tr("Show this thought during the current dialogue while this Answer is highlighted."));
+
+            // Visible warnings cover legacy values and options made inactive
+            // after an edit. Qt does not reliably show tooltips for all disabled
+            // controls under all widget styles, so don't rely on hover alone.
+            QStringList problems;
+            if(!selectable && hasSpeech && !f.thoughtThis->isChecked() && terminal)
+                problems << QObject::tr("Player speech on a Fire2-only dialogue needs 'show with THIS dialogue' to be visible.");
+            if(!selectable && hasSpeech && !terminal)
+                problems << QObject::tr("Player speech on a blank Choice cannot run until that Choice has an Answer.");
+            if(!selectable && (f.next->currentData().toInt()>=0 ||
+                f.event->currentData().toString()!=QStringLiteral("none") ||
+                f.requires->currentData().toInt()>=0 || f.take->currentData().toInt()>=0 ||
+                f.once->isChecked() || f.completeNpc->isChecked() ||
+                f.exchange->property("exchange").toJsonObject().value("enabled").toBool()))
+                problems << QObject::tr("Answer-only Next, item, event or quest actions on this blank Choice cannot run.");
+            if(f.thought->isChecked() && !hasSpeech)
+                problems << QObject::tr("NEXT thought has no Player speech.");
+            else if(f.thought->isChecked() && !selectable)
+                problems << QObject::tr("NEXT thought needs an Answer. Use THIS dialogue for Fire2-only speech.");
+            else if(f.thought->isChecked() && !hasNext)
+                problems << QObject::tr("NEXT thought needs Next → a dialogue node (not Close conversation).");
+            if(f.thoughtThis->isChecked() && !hasSpeech)
+                problems << QObject::tr("THIS thought has no Player speech.");
+            if(f.thoughtThis->isChecked() && !selectable && !terminal)
+                problems << QObject::tr("THIS thought is on a blank Choice; only selectable Answers can show it here.");
+            if(f.thoughtThis->isChecked() && otherTerminalThought)
+                problems << QObject::tr("Another Fire2-only thought appears first. Only one can show.");
+            if(f.missingNext->currentData().toInt()>=0 && !hasRequirement)
+                problems << QObject::tr("Missing-item dialogue needs a selection under Needs.");
+            f.dependencyNote->setText(problems.isEmpty() ? QString()
+                : QObject::tr("Settings currently unable to run: %1").arg(problems.join(QStringLiteral("  "))));
+            f.dependencyNote->setVisible(!problems.isEmpty());
+            adventureMarkDependent(f.give); f.give->setEnabled(terminal || selectable);
             f.give->setToolTip(terminal
-                ? QObject::tr("No answers: this sets 'Give item when dialogue closes'. All three NPC gives selectors mirror that one-time gift.")
-                : hasAnswer
-                    ? QObject::tr("Award this item when the player selects this answer.")
-                    : QObject::tr("Enter an Answer to enable this choice's inventory gift."));
-            f.exchange->setEnabled(hasAnswer);
-            for (int effect=0;effect<2;++effect) {
-                /* Never grey out the NPC action selectors. Blank rows are
-                 * editable, and terminal-node rows mirror the close action. */
-                f.npcTargets[effect]->setEnabled(true);
-                f.npcModes[effect]->setEnabled(true);
-                const QString hint = terminal
-                    ? QObject::tr("This edits the ON-CLOSE NPC action too. All blank rows mirror the same setting.")
-                    : hasAnswer
-                        ? QObject::tr("Runs when this answer is selected.")
-                        : QObject::tr("Editable for later: this choice action runs once you enter an Answer.");
-                f.npcTargets[effect]->setToolTip(hint);
-                f.npcModes[effect]->setToolTip(hint);
+                ? QObject::tr("No answers: edits 'Give item when dialogue closes'. All three NPC gives selectors mirror that one-time gift.")
+                : selectable ? QObject::tr("Award this item when this Answer is selected.") : answerNeeded);
+            for (int effect=0; effect<2; ++effect) {
+                // Terminal nodes mirror the ON-CLOSE NPC action; blank choices
+                // on a non-terminal node are truly unreachable.
+                const bool canEdit=terminal || selectable;
+                const bool hasTarget=!f.npcTargets[effect]->currentData().toString().isEmpty();
+                adventureMarkDependent(f.npcTargets[effect]); f.npcTargets[effect]->setEnabled(canEdit);
+                f.npcTargets[effect]->setToolTip(terminal
+                    ? QObject::tr("No Answers: edits the ON-CLOSE NPC action. The other blank Choice panels mirror it.")
+                    : answerHint);
+                adventureMarkDependent(f.npcModes[effect]); f.npcModes[effect]->setEnabled(canEdit && hasTarget);
+                f.npcModes[effect]->setToolTip(!canEdit ? answerNeeded : !hasTarget
+                    ? QObject::tr("Disabled: select an NPC target first, then choose Hide, Show or Toggle.")
+                    : QObject::tr("Hide, Show or Toggle this NPC when the action runs."));
             }
+            ++choiceIndex;
+        }
+        // These actions run ONLY after Fire2 closes an answerless dialogue.
+        adventureMarkDependent(onCloseGroup); onCloseGroup->setEnabled(terminal);
+        onCloseGroup->setToolTip(terminal
+            ? QObject::tr("Runs when Fire2 closes this dialogue without selectable Answers.")
+            : QObject::tr("Disabled: this dialogue has selectable Answers. Remove every Answer to enable Fire2 on-close actions."));
+        for (int effect=0; effect<2; ++effect) {
+            const bool hasTarget=!onCloseNpcTarget[effect]->currentData().toString().isEmpty();
+            adventureMarkDependent(onCloseNpcMode[effect]); onCloseNpcMode[effect]->setEnabled(terminal && hasTarget);
+            onCloseNpcMode[effect]->setToolTip(!terminal
+                ? QObject::tr("Disabled: on-close actions require a dialogue with no Answers.")
+                : !hasTarget
+                    ? QObject::tr("Disabled: select an On close NPC target first.")
+                    : QObject::tr("Choose how the selected NPC changes when Fire2 closes this dialogue."));
         }
         if (terminal) {
             mirrorCloseGift();
@@ -1456,6 +1654,18 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     for (int i=0;i<3;++i) {
         QObject::connect(fields[i].label,&QTextEdit::textChanged,&dialog,
                          [&,i] { Q_UNUSED(i); refreshChoiceControls(); });
+        QObject::connect(fields[i].reply,&QTextEdit::textChanged,&dialog,
+                         [&,i] { Q_UNUSED(i); refreshChoiceControls(); });
+        QObject::connect(fields[i].thoughtThis,&QCheckBox::toggled,&dialog,
+                         [&](bool){refreshChoiceControls();});
+        QObject::connect(fields[i].thought,&QCheckBox::toggled,&dialog,
+                         [&](bool){refreshChoiceControls();});
+        QObject::connect(fields[i].requires,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&](int){ refreshChoiceControls(); });
+        QObject::connect(fields[i].next,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&](int){ refreshChoiceControls(); });
+        QObject::connect(fields[i].event,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&](int){ refreshChoiceControls(); });
         QObject::connect(fields[i].give,QOverload<int>::of(&QComboBox::currentIndexChanged),
                          &dialog,[&,i](int){ chooseCloseGiftFromChoice(i); });
         for (int effect=0;effect<2;++effect) {
@@ -1465,6 +1675,12 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
                              &dialog,[&,i,effect](int){ chooseCloseNpcFromChoice(i,effect); });
         }
     }
+    for (int i=0; i<3; ++i) for (int effect=0; effect<2; ++effect)
+        QObject::connect(fields[i].npcTargets[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&](int){ refreshChoiceControls(); });
+    for (int effect=0; effect<2; ++effect)
+        QObject::connect(onCloseNpcTarget[effect],QOverload<int>::of(&QComboBox::currentIndexChanged),
+                         &dialog,[&](int){ refreshChoiceControls(); });
     refreshChoiceControls();
     /* A terminal node's active controls must not be buried below three
      * unused Choice panels. The same controls remain visible inside choices. */
@@ -1529,6 +1745,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QJsonObject c; c.insert("text",fields[i].label->toPlainText().left(180));
         c.insert("reply",fields[i].reply->toPlainText().left(150));
         c.insert("thoughtBubble",fields[i].thought->isChecked());
+        c.insert("thoughtBubbleThis",fields[i].thoughtThis->isChecked());
         c.insert("next",fields[i].next->currentData().toInt());
         c.insert("missingNext",fields[i].missingNext->currentData().toInt());
         const QString eventSelection=fields[i].event->currentData().toString();
@@ -1644,6 +1861,11 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Advanced Platformer — Adventure Editor"));
     dialog.setMinimumSize(890,670); dialog.resize(1230,800);
     auto *main = new QVBoxLayout(&dialog);
+    auto *guardLegend=new QLabel(QObject::tr(
+        "Dependency controls: GREEN outline = available; RED outline + faded = unavailable. "
+        "Hover for the missing requirement. Other controls use the normal theme."),&dialog);
+    guardLegend->setWordWrap(true);
+    main->addWidget(guardLegend);
     auto *tabs = new QTabWidget(&dialog); main->addWidget(tabs,1);
 
     // Both inventory icons and dialogue frame tiles use the selected atlas.
@@ -1985,8 +2207,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const int row=items->currentRow();
         const auto *entry=row>=0?items->item(row,4):nullptr;
         editingIconControls=true;
-        inventoryIconAtlas->setEnabled(entry!=nullptr);
-        inventoryIconCell->setEnabled(entry!=nullptr);
+        adventureMarkDependent(inventoryIconAtlas); inventoryIconAtlas->setEnabled(entry!=nullptr);
+        inventoryIconAtlas->setToolTip(entry
+            ? QObject::tr("Choose an atlas for this item's icon. Default uses the Dialogue Tile Atlas.")
+            : QObject::tr("Disabled: select an inventory item row first."));
+        const bool customIconAtlas=entry && !entry->data(Qt::UserRole+3).toString().isEmpty();
+        adventureMarkDependent(inventoryIconCell); inventoryIconCell->setEnabled(customIconAtlas);
+        inventoryIconCell->setToolTip(!entry
+            ? QObject::tr("Disabled: select an inventory item row first.")
+            : !customIconAtlas
+                ? QObject::tr("Disabled: the default Dialogue Tile Atlas uses its own tile size. Choose a custom Icon Atlas to override the cell size.")
+                : QObject::tr("Tile size of the selected item's custom PPB Icon Atlas."));
         if(entry){
             const QString id=entry->data(Qt::UserRole+3).toString();
             inventoryIconAtlas->setCurrentIndex(qMax(0,inventoryIconAtlas->findData(id)));
@@ -1999,6 +2230,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(inventoryIconAtlas,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int){
         if(editingIconControls||items->currentRow()<0||!items->item(items->currentRow(),4))return;
         items->item(items->currentRow(),4)->setData(Qt::UserRole+3,inventoryIconAtlas->currentData());
+        selectItemAtlas();
         refreshInventoryIcons();
     });
     QObject::connect(inventoryIconCell,qOverload<int>(&QSpinBox::valueChanged),&dialog,[&](int n){
@@ -2059,7 +2291,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         discard->setChecked(o.value("discardable").toBool(false));
         if (protectedItemNames.contains(o.value("name").toString().trimmed().toCaseFolded())) {
             discard->setChecked(false);
-            discard->setEnabled(false);
+            adventureMarkDependent(discard); discard->setEnabled(false);
             discard->setToolTip(QObject::tr("Protected: this item is required/taken by NPC dialogue."));
         } else {
             discard->setToolTip(QObject::tr("Allow the player to discard one copy (confirmation required)."));
@@ -2106,6 +2338,17 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             form->addRow(QObject::tr("Amount (+ or -)"),delta);
             auto *consume=new QCheckBox(QObject::tr("Consume one item after successful USE"),&popup);
             consume->setChecked(use->property("useConsume").toBool());form->addRow(consume);
+            const auto refreshUseControls=[&] {
+                const bool usable=!stat->currentData().toString().isEmpty();
+                adventureMarkDependent(delta); delta->setEnabled(usable);
+                adventureMarkDependent(consume); consume->setEnabled(usable);
+                const QString hint=QObject::tr("Disabled: select a player stat above. 'Not usable' has no USE effect.");
+                delta->setToolTip(usable ? QObject::tr("Amount to add or remove from the selected stat.") : hint);
+                consume->setToolTip(usable ? QObject::tr("Consume one copy only after a successful USE.") : hint);
+            };
+            QObject::connect(stat,QOverload<int>::of(&QComboBox::currentIndexChanged),
+                             &popup,[&](int){refreshUseControls();});
+            refreshUseControls();
             auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&popup);
             form->addRow(buttons);
             QObject::connect(buttons,&QDialogButtonBox::accepted,&popup,&QDialog::accept);
@@ -2153,6 +2396,22 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                                       "to matching inventory items in other saved worlds."));
     itemButtons->addWidget(itemAdd); itemButtons->addWidget(itemDel);
     itemButtons->addWidget(itemSync); itemButtons->addStretch();
+    const auto refreshItemButtons=[&] {
+        const bool selected=items->currentRow()>=0 && items->item(items->currentRow(),0);
+        adventureMarkDependent(itemDel); itemDel->setEnabled(selected);
+        adventureMarkDependent(itemSync); itemSync->setEnabled(selected && !currentDesignFilePath.isEmpty());
+        const QString hint=QObject::tr("Disabled: select an inventory item row first.");
+        itemDel->setToolTip(selected ? QObject::tr("Remove this inventory item (and remap dialogue item references).") : hint);
+        itemSync->setToolTip(!selected ? hint : currentDesignFilePath.isEmpty()
+            ? QObject::tr("Disabled: save the world first to locate other saved worlds.")
+            : QObject::tr("Copy selected item rules to matching named items in other saved worlds."));
+        adventureMarkDependent(itemAdd); itemAdd->setEnabled(items->rowCount()<64);
+        itemAdd->setToolTip(items->rowCount()<64 ? QObject::tr("Add an inventory item (maximum 64).")
+            : QObject::tr("Disabled: the maximum of 64 inventory items has been reached."));
+    };
+    QObject::connect(items,&QTableWidget::currentCellChanged,&dialog,
+                     [&](int,int,int,int){refreshItemButtons();});
+    refreshItemButtons();
     QObject::connect(itemSync, &QPushButton::clicked, &dialog, [&] {
         offerInventoryRuleSync(items->currentRow(),
             {QStringLiteral("droppable"), QStringLiteral("discardable"),
@@ -2163,6 +2422,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     itemsLayout->addLayout(itemButtons);
     QObject::connect(itemAdd,&QPushButton::clicked,&dialog,[&] {
         if(items->rowCount()<64) appendItem({});
+        refreshItemButtons();
     });
     QObject::connect(itemDel,&QPushButton::clicked,&dialog,[&] {
         const int row=items->currentRow();
@@ -2170,6 +2430,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 QObject::tr("Delete item %1? Dialogue choice item references will be cleared.").arg(row))
                 == QMessageBox::Yes) {
             items->removeRow(row);
+            refreshItemButtons();
             for (int i=0;i<nodes.size();++i) {
                 QJsonObject node=nodes[i].toObject();
                 QJsonArray choices=node.value("choices").toArray();
@@ -2299,6 +2560,27 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     auto *npcAnim = new QPushButton(QObject::tr("NPC Animations..."),npcPage);
     npcButtons->addWidget(npcAdd); npcButtons->addWidget(npcAnim); npcButtons->addWidget(npcDel); npcButtons->addStretch();
     npcLayout->addLayout(npcButtons);
+    const auto refreshNpcButtons=[&] {
+        const bool selected=npcs->currentRow()>=0 && npcs->item(npcs->currentRow(),0);
+        adventureMarkDependent(npcDel); npcDel->setEnabled(selected);
+        adventureMarkDependent(npcAnim); npcAnim->setEnabled(selected);
+        const QString selectHint=QObject::tr("Disabled: select an NPC row first.");
+        npcDel->setToolTip(selected ? QObject::tr("Remove the selected NPC, keeping its placed Sprite.") : selectHint);
+        npcAnim->setToolTip(selected ? QObject::tr("Edit animation frames for the selected NPC.") : selectHint);
+        bool unused=false;
+        for (const auto &sprite:sprites) {
+            bool taken=false;
+            for(int n=0;n<npcs->rowCount();++n)
+                if(npcs->item(n,0) && npcs->item(n,0)->data(Qt::UserRole).toString()==sprite.id) {taken=true;break;}
+            if(!taken){unused=true;break;}
+        }
+        adventureMarkDependent(npcAdd); npcAdd->setEnabled(unused);
+        npcAdd->setToolTip(unused ? QObject::tr("Add a placed Sprite as an Adventure NPC.")
+            : QObject::tr("Disabled: place a new Sprite in World Designer first; all placed Sprites already have NPC entries (or none exist)."));
+    };
+    QObject::connect(npcs,&QTableWidget::currentCellChanged,&dialog,
+                     [&](int,int,int,int){refreshNpcButtons();});
+    refreshNpcButtons();
     QObject::connect(npcAdd,&QPushButton::clicked,&dialog,[&] {
         QDialog picker(&dialog); picker.setWindowTitle(QObject::tr("Choose Placed Sprite"));
         auto *v=new QVBoxLayout(&picker); auto *cb=new QComboBox(&picker);
@@ -2316,6 +2598,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         QObject::connect(b,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
         if(cb->count() && picker.exec()==QDialog::Accepted)
             appendNpc(cb->currentData().toString(),0,48);
+        refreshNpcButtons();
     });
     QObject::connect(npcAnim,&QPushButton::clicked,&dialog,[&] {
         const int row=npcs->currentRow();
@@ -2442,7 +2725,31 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 const int oldDelay=std::clamp(saved.value(speedKeys[state]).toInt(state?5:6),1,255);
                 for(int k=0;k<count;++k)insertFrame(state,-1,first+k,oldDelay);
             }
-            QObject::connect(ui.list,&QListWidget::currentRowChanged,page,[&,state](int row){
+            const auto refreshTimeline=[&,state,add,remove,up,down] {
+                const auto &a=states[state];
+                const int row=a.list->currentRow();
+                const int count=a.list->count();
+                const bool selected=row>=0 && row<count;
+                adventureMarkDependent(add); add->setEnabled(count<255);
+                adventureMarkDependent(remove); remove->setEnabled(selected);
+                adventureMarkDependent(up); up->setEnabled(selected && row>0);
+                adventureMarkDependent(down); down->setEnabled(selected && row<count-1);
+                adventureMarkDependent(a.delay); a.delay->setEnabled(selected);
+                adventureMarkDependent(a.play); a.play->setEnabled(count>0 || a.timer->isActive());
+                add->setToolTip(count<255 ? QObject::tr("Append another sprite frame (up to 255).")
+                    : QObject::tr("Disabled: maximum 255 frames reached."));
+                const QString selectHint=QObject::tr("Disabled: select an animation frame first.");
+                remove->setToolTip(selected ? QObject::tr("Remove the selected frame.") : selectHint);
+                a.delay->setToolTip(selected ? QObject::tr("Set the selected frame's duration in 50 FPS ticks.") : selectHint);
+                up->setToolTip(!selected ? selectHint : row==0
+                    ? QObject::tr("Disabled: selected frame is already first.") : QObject::tr("Move selected frame one position earlier."));
+                down->setToolTip(!selected ? selectHint : row==count-1
+                    ? QObject::tr("Disabled: selected frame is already last.") : QObject::tr("Move selected frame one position later."));
+                a.play->setToolTip(count ? QObject::tr("Start or stop the frame preview.")
+                    : QObject::tr("Disabled: add at least one animation frame first."));
+            };
+            QObject::connect(ui.list,&QListWidget::currentRowChanged,page,[&,state,refreshTimeline](int row){
+                refreshTimeline();
                 auto &a=states[state];if(row<0){a.preview->setText(QObject::tr("No frame selected"));return;}
                 a.delay->blockSignals(true);
                 a.delay->setValue(a.list->item(row)->data(Qt::UserRole+1).toInt());
@@ -2459,6 +2766,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 const int chosen=chooseAdventureAtlasCell(&anim,atlas,tileW,0,frames,tileH);
                 if(chosen<0)return;
                 insertFrame(state,list->currentRow()+1,chosen,6);
+                refreshTimeline();
             });
             QObject::connect(remove,&QPushButton::clicked,page,[&,state]{
                 auto *list=states[state].list;
@@ -2466,14 +2774,18 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                 delete list->takeItem(row);
                 if(list->count())list->setCurrentRow(std::min(row,list->count()-1));
                 else states[state].preview->setText(QObject::tr("No frames"));
+                if(!list->count() && states[state].timer->isActive()) {
+                    states[state].timer->stop();states[state].play->setText(QObject::tr("Play preview"));
+                }
+                refreshTimeline();
             });
             auto move=[&](int state,int step){
                 auto *list=states[state].list;const int old=list->currentRow();
                 const int next=old+step;if(old<0 || next<0 || next>=list->count())return;
                 QListWidgetItem *item=list->takeItem(old);list->insertItem(next,item);list->setCurrentRow(next);
             };
-            QObject::connect(up,&QPushButton::clicked,page,[&,state,move]{move(state,-1);});
-            QObject::connect(down,&QPushButton::clicked,page,[&,state,move]{move(state,+1);});
+            QObject::connect(up,&QPushButton::clicked,page,[&,state,move,refreshTimeline]{move(state,-1);refreshTimeline();});
+            QObject::connect(down,&QPushButton::clicked,page,[&,state,move,refreshTimeline]{move(state,+1);refreshTimeline();});
             QObject::connect(ui.play,&QPushButton::clicked,page,[&,state]{
                 auto &a=states[state];
                 if(a.timer->isActive()) {a.timer->stop();a.play->setText(QObject::tr("Play preview"));return;}
@@ -2492,6 +2804,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             stateTabs->addTab(page,state?QObject::tr("Talking"):QObject::tr("Idle"));
             if(ui.list->count())ui.list->setCurrentRow(0);
             else ui.preview->setText(QObject::tr("No animation yet — press Add frame..."));
+            refreshTimeline();
         }
         auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&anim);
         layout->addWidget(buttons);
@@ -2526,6 +2839,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
               QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes) return;
         const QString removedId=npcs->item(row,0)->data(Qt::UserRole).toString();
         npcs->removeRow(row);
+        refreshNpcButtons();
         /* Clear only now-invalid appearance links, preserving ordinary
          * dialogue and Game Object events. IDs are stable under row reorder. */
         bool stillExists=false;
@@ -2663,6 +2977,26 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     auto *nodeDel=new QPushButton(QObject::tr("Delete Dialogue..."),dialoguePage);
     nodeButtons->addWidget(nodeAdd);nodeButtons->addWidget(nodeEdit);nodeButtons->addWidget(nodeDel);
     nodeButtons->addStretch();dialogueLayout->addLayout(nodeButtons);
+    const auto refreshDialogueButtons=[&] {
+        const bool isNode=selectedNode()>=0;
+        const auto *selectedEntry=nodeTree->currentItem();
+        const bool isFolder=selectedEntry &&
+            selectedEntry->data(0,Qt::UserRole+1).toString()==QStringLiteral("folder");
+        adventureMarkDependent(nodeEdit); nodeEdit->setEnabled(isNode);
+        adventureMarkDependent(nodeDel); nodeDel->setEnabled(isNode);
+        adventureMarkDependent(nodeMove); nodeMove->setEnabled(isNode);
+        adventureMarkDependent(folderRename); folderRename->setEnabled(isFolder);
+        adventureMarkDependent(folderDelete); folderDelete->setEnabled(isFolder);
+        const QString chooseNode=QObject::tr("Disabled: select a Dialogue node in the tree first.");
+        const QString chooseFolder=QObject::tr("Disabled: select a dialogue Folder in the tree first.");
+        nodeEdit->setToolTip(isNode ? QObject::tr("Edit the selected dialogue.") : chooseNode);
+        nodeDel->setToolTip(isNode ? QObject::tr("Delete the selected dialogue node.") : chooseNode);
+        nodeMove->setToolTip(isNode ? QObject::tr("Move this dialogue into a folder.") : chooseNode);
+        folderRename->setToolTip(isFolder ? QObject::tr("Rename the selected dialogue folder.") : chooseFolder);
+        folderDelete->setToolTip(isFolder ? QObject::tr("Remove the selected folder without deleting its dialogues.") : chooseFolder);
+    };
+    QObject::connect(nodeTree,&QTreeWidget::itemSelectionChanged,&dialog,[&]{ refreshDialogueButtons(); });
+    refreshDialogueButtons();
     QObject::connect(folderAdd,&QPushButton::clicked,&dialog,[&] {
         // Selecting a folder creates a child folder; otherwise make a root folder.
         QString parentId;
@@ -2858,7 +3192,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     auto *outline=new QCheckBox(QObject::tr("Outline dialogue text (four directions)"),skinPage);
     outline->setChecked(old.value("textOutline").toBool(false));
     auto *outlineColour=new QPushButton(skinPage);
-    outlineColour->setEnabled(outline->isChecked());
+    adventureMarkDependent(outlineColour); outlineColour->setEnabled(outline->isChecked());
+    outlineColour->setToolTip(outline->isChecked()
+        ? QObject::tr("Pick the outline colour.")
+        : QObject::tr("Disabled: tick 'Outline dialogue text' first."));
     auto decorateColour=[&](QPushButton *button,int idx){
         button->setText(QObject::tr("Index %1 — pick colour...").arg(idx));
         if(foregroundPalette.size()==256){
@@ -2875,7 +3212,12 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const int idx=chooseAdventurePaletteIndex(&dialog,foregroundPalette,chosenOutline);
         if(idx>=0){chosenOutline=idx;decorateColour(outlineColour,chosenOutline);}
     });
-    QObject::connect(outline,&QCheckBox::toggled,outlineColour,&QWidget::setEnabled);
+    QObject::connect(outline,&QCheckBox::toggled,outlineColour,[=](bool checked){
+        adventureMarkDependent(outlineColour); outlineColour->setEnabled(checked);
+        outlineColour->setToolTip(checked
+            ? QObject::tr("Pick the outline colour.")
+            : QObject::tr("Disabled: tick 'Outline dialogue text' first."));
+    });
     auto *colours=new QWidget(skinPage);auto *colourRow=new QHBoxLayout(colours);
     colourRow->setContentsMargins(0,0,0,0);
     colourRow->addWidget(new QLabel(QObject::tr("Text:"),colours));
@@ -3028,7 +3370,31 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         QObject::connect(tileFlipX[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
         QObject::connect(tileFlipY[i],&QCheckBox::toggled,&dialog,[&](bool){updatePreview();});
     }
+    const auto refreshFrameControls=[&] {
+        const bool hasAtlas=!skinAtlas->currentData().toString().isEmpty();
+        const QString hint=hasAtlas
+            ? QObject::tr("Select a tile from the chosen Dialogue Tile Atlas.")
+            : QObject::tr("Disabled: choose a Dialogue Tile Atlas above first. Without an atlas, a simple frame is drawn.");
+        for(int i=0;i<9;++i){
+            adventureMarkDependent(tilePick[i]); tilePick[i]->setEnabled(hasAtlas);
+            adventureMarkDependent(thoughtPick[i]); thoughtPick[i]->setEnabled(hasAtlas);
+            adventureMarkDependent(tileFlipX[i]); tileFlipX[i]->setEnabled(hasAtlas);
+            adventureMarkDependent(tileFlipY[i]); tileFlipY[i]->setEnabled(hasAtlas);
+            adventureMarkDependent(thoughtFlipX[i]); thoughtFlipX[i]->setEnabled(hasAtlas);
+            adventureMarkDependent(thoughtFlipY[i]); thoughtFlipY[i]->setEnabled(hasAtlas);
+            tilePick[i]->setToolTip(hint);
+            thoughtPick[i]->setToolTip(hint);
+            tileFlipX[i]->setToolTip(hint);
+            tileFlipY[i]->setToolTip(hint);
+            thoughtFlipX[i]->setToolTip(hint);
+            thoughtFlipY[i]->setToolTip(hint);
+        }
+        tileSize->setToolTip(hasAtlas
+            ? QObject::tr("Atlas frame cell size in pixels.")
+            : QObject::tr("Frame tile size; affects dialogue layout even when using the simple box."));
+    };
     QObject::connect(skinAtlas,QOverload<int>::of(&QComboBox::currentIndexChanged),&dialog,[&](int){
+        refreshFrameControls();
         updatePreview();
         refreshInventoryIcons();
     });
@@ -3036,6 +3402,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         updatePreview();
         refreshInventoryIcons();
     });
+    refreshFrameControls();
     updatePreview();
     refreshInventoryIcons();
     auto *copyAtlas = new QPushButton(QObject::tr("Copy from Another World..."), skinPage);
@@ -3201,8 +3568,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             if(!label.isEmpty())
                 previewAnswer->addItem(QObject::tr("%1: %2").arg(i+1).arg(label.left(26)),i);
         }
-        if(previewAnswer->count()==0)previewAnswer->addItem(QObject::tr("No answers"),-1);
+        const bool hasAnswers=previewAnswer->count()>0;
+        if(!hasAnswers)previewAnswer->addItem(QObject::tr("No answers"),-1);
         previewAnswer->setCurrentIndex(std::max(0,previewAnswer->findData(prev)));
+        adventureMarkDependent(previewAnswer); previewAnswer->setEnabled(hasAnswers);
+        previewAnswer->setToolTip(hasAnswers
+            ? QObject::tr("Preview the speech/thought for the highlighted Answer.")
+            : QObject::tr("Disabled: this dialogue has no selectable Answers. The preview uses its Fire2-only thought instead."));
         previewAnswer->blockSignals(false);
     };
     auto refreshNodes=[&]{
@@ -3242,8 +3614,23 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         const int selectedAnswer=previewAnswer->currentData().toInt();
         const QJsonObject selectedChoice=(selectedAnswer>=0 && selectedAnswer<selectedChoices.size())
             ?selectedChoices[selectedAnswer].toObject():QJsonObject();
-        const QString thoughtText=selectedChoice.value("thoughtBubble").toBool(false)
-            ?selectedChoice.value("reply").toString() : QObject::tr("Thought preview");
+        QString thoughtText=(selectedChoice.value("thoughtBubble").toBool(false)
+            || selectedChoice.value("thoughtBubbleThis").toBool(false))
+            ?selectedChoice.value("reply").toString() : QString();
+        if(selectedAnswer<0) {
+            // Fire2-only dialogues have no highlighted answer: show the first
+            // non-empty THIS-dialogue thought, just like the generated runtime.
+            for(const QJsonValue &v:selectedChoices) {
+                const QJsonObject choice=v.toObject();
+                if(choice.value("thoughtBubbleThis").toBool(false) &&
+                   !choice.value("thoughtBubble").toBool(false) &&
+                   !choice.value("reply").toString().isEmpty()) {
+                    thoughtText=choice.value("reply").toString();
+                    break;
+                }
+            }
+        }
+        if(thoughtText.isEmpty())thoughtText=QObject::tr("Thought preview");
         const int thoughtColumns=std::clamp((tw-2*thoughtInset)/(8*thoughtSx),1,60);
         const auto thoughtLines=adventurePreviewRows(thoughtText.left(150),thoughtColumns,16);
         const int th=std::min(320,std::max(thoughtH->value(),2*thoughtInset+int(thoughtLines.size())*thoughtRow));

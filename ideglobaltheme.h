@@ -139,6 +139,20 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         theme.mutedText.greenF() * 0.7 + theme.panelBackground.greenF() * 0.3,
         theme.mutedText.blueF() * 0.7 + theme.panelBackground.blueF() * 0.3);
 
+    // Stage 5.117: dependency indicators are deliberately specific to tagged
+    // Adventure Editor controls, rather than colouring every IDE control.
+    // Contrast is tuned for both the built-in dark and light colour schemes.
+    const bool lightTheme = theme.windowBackground.lightnessF() > 0.55;
+    const QColor adventureGreen(lightTheme ? QStringLiteral("#267744") : QStringLiteral("#59c991"));
+    const QColor adventureRed(lightTheme ? QStringLiteral("#b03f4b") : QStringLiteral("#dc7380"));
+    const auto blend = [](const QColor &base, const QColor &tint, int percent) {
+        return QColor((base.red()*(100-percent) + tint.red()*percent)/100,
+                      (base.green()*(100-percent) + tint.green()*percent)/100,
+                      (base.blue()*(100-percent) + tint.blue()*percent)/100);
+    };
+    const QColor adventureGreenBg=blend(theme.inputBackground,adventureGreen,10);
+    const QColor adventureRedBg=blend(theme.panelBackground,adventureRed,18);
+
     QString css = QStringLiteral(R"GGCONTROLS(
         QWidget { color:@text; }
         QMainWindow, QDialog { background-color:@window; color:@text; }
@@ -330,6 +344,57 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         QHeaderView::section { background:@panel; color:@text;
             border:1px solid @border; padding:4px; border-radius:0px; }
         QFrame, QScrollArea, QGraphicsView, QSplitter { border-radius:0px; }
+
+        /* Stage 5.117: only prerequisite-dependent Adventure Editor widgets.
+           Preserve box geometry across enable/disable transitions, use both
+           colour and muted fill for disabled state, and keep checkmark art.
+           A dynamically tagged widget is repolished exactly once by the
+           Adventure Editor; future enabled changes use normal Qt states. */
+        QComboBox[adventureGuard="true"]:enabled,
+        QLineEdit[adventureGuard="true"]:enabled,
+        QSpinBox[adventureGuard="true"]:enabled,
+        QDoubleSpinBox[adventureGuard="true"]:enabled,
+        QPushButton[adventureGuard="true"]:enabled,
+        QToolButton[adventureGuard="true"]:enabled,
+        QTextEdit[adventureGuard="true"]:enabled {
+            border:2px solid @advGreen; background-color:@advGreenBg;
+        }
+        QComboBox[adventureGuard="true"]:disabled,
+        QLineEdit[adventureGuard="true"]:disabled,
+        QSpinBox[adventureGuard="true"]:disabled,
+        QDoubleSpinBox[adventureGuard="true"]:disabled,
+        QPushButton[adventureGuard="true"]:disabled,
+        QToolButton[adventureGuard="true"]:disabled,
+        QTextEdit[adventureGuard="true"]:disabled {
+            border:2px solid @advRed; background-color:@advRedBg;
+            color:@disabledText;
+        }
+        QPushButton[adventureGuard="true"]:enabled:hover,
+        QToolButton[adventureGuard="true"]:enabled:hover {
+            border:2px solid @advGreen; background-color:@hover;
+        }
+        QPushButton[adventureGuard="true"]:enabled:pressed,
+        QToolButton[adventureGuard="true"]:enabled:pressed,
+        QToolButton[adventureGuard="true"]:enabled:checked {
+            border:2px solid @advGreen; background-color:@chosen;
+            color:@chosenText;
+        }
+        QCheckBox[adventureGuard="true"]:enabled,
+        QRadioButton[adventureGuard="true"]:enabled {
+            border:1px solid @advGreen; background-color:@advGreenBg;
+            padding:3px 4px;
+        }
+        QCheckBox[adventureGuard="true"]:disabled,
+        QRadioButton[adventureGuard="true"]:disabled {
+            border:1px solid @advRed; background-color:@advRedBg;
+            color:@disabledText; padding:3px 4px;
+        }
+        QGroupBox[adventureGuard="true"]:enabled {
+            border:2px solid @advGreen;
+        }
+        QGroupBox[adventureGuard="true"]:disabled {
+            border:2px solid @advRed; background-color:@advRedBg;
+        }
     )GGCONTROLS");
     const struct Pair { const char *token; QColor value; } values[] = {
         {"@window", theme.windowBackground},
@@ -348,7 +413,11 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         {"@hoverHandle", theme.scrollHandleHover},
         {"@scroll", theme.scrollHandle},
         {"@scrollHover", theme.scrollHandleHover},
-        {"@disabledText", disabledText}
+        {"@disabledText", disabledText},
+        {"@advGreenBg", adventureGreenBg},
+        {"@advRedBg", adventureRedBg},
+        {"@advGreen", adventureGreen},
+        {"@advRed", adventureRed}
     };
     // Long placeholders first: @chosen must not consume @chosenText,
     // and @scroll must not consume @scrollHover.

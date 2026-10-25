@@ -1,4 +1,6 @@
-CoderGirl Stage 5.100.1
-Extract to the IDE source root, preserving paths.
-Rebuild the IDE, set a BOB patterned fade percentage in Configure Game Object, save the world, Update Game Project, rebuild the game.
-This is a correction of Stage 5.100. No main.c changes.
+CoderGirl IDE source bundle - Stage 5.117.251026
+
+Read INSTALL-STAGE5.117.txt first.
+This version adds visually distinct red/faded disabled and green enabled
+states for dependency-controlled Adventure Editor fields, while preserving
+the Stage 5.116 prerequisites, tooltips and older gameplay functionality.

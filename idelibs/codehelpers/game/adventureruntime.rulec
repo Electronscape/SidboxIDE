@@ -441,6 +441,9 @@ static uint8_t ga_skin_flips[9];
 static const uint8_t *ga_thought_flags;
 static uint16_t ga_thought_flag_count;
 static const char *ga_thought_text;
+/* The inherited NEXT-node thought remains available when changing answers.
+ * This-node thoughts are selected live without changing dialogue state. */
+static const char *ga_inherited_thought;
 static uint16_t ga_thought_typed, ga_thought_ticks;
 static uint16_t ga_thought_indices[9];
 static uint8_t ga_thought_flips[9];
@@ -763,7 +766,8 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                               GA_TEXT_DEFAULT_OUTLINE_COLOUR);
     ga_node = ga_typed = ga_ticks = ga_reply_typed = ga_reply_ticks = 0;
     ga_after_reply = -1; ga_reply = 0;
-    ga_thought_text=0;ga_thought_typed=ga_thought_ticks=0;
+    ga_thought_text=ga_inherited_thought=0;
+    ga_thought_typed=ga_thought_ticks=0;
     game_adventure_thought_choices(0,0u);
     ga_skin_pixels = skin_pixels; ga_skin_w = atlas_width; ga_skin_h = atlas_height;
     ga_tile = tile_size >= 4 && tile_size <= 32 ? tile_size
@@ -870,10 +874,55 @@ static uint8_t ga_is_thought(uint16_t node,uint8_t choice)
     const uint16_t index=(uint16_t)(node*3u+choice);
     return ga_thought_flags && index<ga_thought_flag_count && (ga_thought_flags[index]&1u);
 }
+static uint8_t ga_is_thought_this(uint16_t node,uint8_t choice)
+{
+    const uint16_t index=(uint16_t)(node*3u+choice);
+    return ga_thought_flags && index<ga_thought_flag_count && (ga_thought_flags[index]&2u);
+}
+/* Show THIS-dialogue thoughts beside the NPC's speech. If this node has
+ * no Answer labels at all, a thought in any blank choice row becomes a
+ * node-local thought, visible until Fire2 closes the speech. It is NOT a
+ * selectable choice and cannot fire its associated answer actions.
+ * Important: only use this fallback on genuinely answerless nodes, never
+ * on nodes with hidden/used answers or in text-only Trigger Message mode
+ * when there are real Answer labels. */
+static void ga_refresh_thought_for_choice(void)
+{
+    const char *selected=0;
+    if(ga_state==1u && ga_node<ga_node_count) {
+        const game_adventure_node_t *node=&ga_nodes[ga_node];
+        if(ga_choice<3u && ga_choice_visible(ga_node,ga_choice)) {
+            const uint16_t index=(uint16_t)(ga_node*3u+ga_choice);
+            if(ga_thought_flags && index<ga_thought_flag_count &&
+               (ga_thought_flags[index]&2u)) {
+                const char *reply=node->choices[ga_choice].reply;
+                if(reply && reply[0]) selected=reply;
+            }
+        } else {
+            uint8_t has_answer=0u;
+            for(uint8_t i=0u;i<3u;++i)
+                if(node->choices[i].label && node->choices[i].label[0])
+                    { has_answer=1u; break; }
+            if(!has_answer) for(uint8_t i=0u;i<3u;++i) {
+                const uint16_t index=(uint16_t)(ga_node*3u+i);
+                const char *reply=node->choices[i].reply;
+                if(ga_thought_flags && index<ga_thought_flag_count &&
+                   (ga_thought_flags[index]&2u) && reply && reply[0]) {
+                    selected=reply;break;
+                }
+            }
+        }
+    }
+    const char *wanted=selected ? selected : ga_inherited_thought;
+    if(wanted!=ga_thought_text) {
+        ga_thought_text=wanted;
+        ga_thought_typed=ga_thought_ticks=0u;
+    }
+}
 static void ga_set_thought(const char *text)
 {
-    ga_thought_text=text && text[0]?text:0;
-    ga_thought_typed=ga_thought_ticks=0;
+    ga_inherited_thought=text && text[0]?text:0;
+    ga_refresh_thought_for_choice();
 }
 static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_node)
 {
@@ -889,7 +938,7 @@ static void ga_reply_then_next(const game_adventure_choice_t *c, int16_t next_no
 }
 static void ga_next_node(int16_t node)
 {
-    ga_thought_text=0;
+    ga_thought_text=ga_inherited_thought=0;
     ga_thought_typed=ga_thought_ticks=0;
     if (node < 0 || node >= ga_node_count) { ga_state = 0; return; }
     ga_trigger_message_mode=0u; /* Normal NPC/full conversation may branch. */
@@ -897,6 +946,7 @@ static void ga_next_node(int16_t node)
     ga_choice = 0; ga_typed = 0; ga_ticks = 0;
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
+    ga_refresh_thought_for_choice();
 }
 uint8_t game_adventure_trigger_dialogue(uint16_t node)
 {
@@ -912,6 +962,7 @@ uint8_t game_adventure_trigger_message(uint16_t node)
     ga_active_npc=UINT16_MAX;
     ga_next_node((int16_t)node);
     ga_trigger_message_mode=1u;
+    ga_refresh_thought_for_choice();
     ga_bracket_restart();
     return 1u;
 }
@@ -924,6 +975,7 @@ uint8_t game_adventure_trigger_sequence(uint16_t node)
     /* Pick the first navigation label, ignoring saved once-only flags. */
     for (uint8_t i=0;i<3u;++i)
         if (ga_choice_visible(ga_node,i)) {ga_choice=i;break;}
+    ga_refresh_thought_for_choice();
     ga_bracket_restart();
     return 1u;
 }
@@ -979,6 +1031,9 @@ static void ga_success_choice(const game_adventure_choice_t *c, uint16_t node, u
         const char *thought=c->reply;
         ga_next_node(c->next);
         if(ga_state==1u)ga_set_thought(thought);
+    } else if(ga_is_thought_this(node,choice)) {
+        /* Already shown with THIS node: do not repeat it as spoken reply. */
+        ga_next_node(c->next);
     } else ga_reply_then_next(c,c->next);
 }
 /* GIVE is a separate inventory mode. A wrong offer is never taken. Incremental
@@ -1318,14 +1373,6 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         ga_ticks = (uint16_t)(elapsed % ga_frames_per_char);
         if (ga_typed > text_len) ga_typed = text_len;
     }
-    /* Thought and dialogue type simultaneously, without any second modal. */
-    if(ga_thought_text && ga_thought_typed<strlen(ga_thought_text)){
-        const uint32_t elapsed=(uint32_t)ga_thought_ticks+frames;
-        ga_thought_typed+=(uint16_t)(elapsed/ga_frames_per_char);
-        ga_thought_ticks=(uint16_t)(elapsed%ga_frames_per_char);
-        if(ga_thought_typed>strlen(ga_thought_text))
-            ga_thought_typed=(uint16_t)strlen(ga_thought_text);
-    }
     const uint8_t count = ga_has_choices();
     if (count && up) {
         do { ga_choice = (uint8_t)((ga_choice + 2) % 3); }
@@ -1334,6 +1381,16 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     if (count && down) {
         do { ga_choice = (uint8_t)((ga_choice + 1) % 3); }
         while (!ga_choice_visible(ga_node,ga_choice));
+    }
+    ga_refresh_thought_for_choice();
+    /* Thought and dialogue type simultaneously, without any second modal.
+     * Update the selection BEFORE typing so arrow presses switch immediately. */
+    if(ga_thought_text && ga_thought_typed<strlen(ga_thought_text)){
+        const uint32_t elapsed=(uint32_t)ga_thought_ticks+frames;
+        ga_thought_typed+=(uint16_t)(elapsed/ga_frames_per_char);
+        ga_thought_ticks=(uint16_t)(elapsed%ga_frames_per_char);
+        if(ga_thought_typed>strlen(ga_thought_text))
+            ga_thought_typed=(uint16_t)strlen(ga_thought_text);
     }
     if (press) {
         if (ga_typed < text_len) { ga_typed = text_len; return 1; }
@@ -1369,6 +1426,7 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
                 ga_trigger_message_mode=2u;
                 for (uint8_t i=0;i<3u;++i)
                     if (ga_choice_visible(ga_node,i)) {ga_choice=i;break;}
+                ga_refresh_thought_for_choice();
                 ga_bracket_restart();
                 return 1u;
             }
@@ -1588,8 +1646,9 @@ static int ga_dialogue_required_height(const game_adventure_node_t *node,
 }
 
 /* Draw the optional simultaneous player thought. No new modal state and
- * no dependence on an NPC being present. Existing worlds never call this
- * unless a dialogue answer explicitly enables thoughtBubble. */
+ * no dependence on an NPC being present. It draws whichever active thought
+ * was selected from a NEXT link, the highlighted Answer, or an empty-Answer
+ * THIS-dialogue thought. */
 static void ga_draw_thought(void)
 {
     if(!ga_thought_text || !ga_thought_text[0])return;
@@ -1802,8 +1861,8 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
     if (body_rows>desired_body) body_rows=desired_body;
     if (body_rows<0) body_rows=0;
 
-    /* Thought is rendered with the next message, using independent frame cells
-     * and screen geometry. Draw after dialogue so it stays readable. */
+    /* The active thought belongs either to this highlighted choice or
+     * to the previous choice's NEXT-node message. Both use the same frame. */
     if(!ga_thought_on_top)ga_draw_thought();
     ga_frame((int16_t)bx,(int16_t)by,(uint16_t)bw,(uint16_t)bh);
     ga_dialog_text(bx+pad,by+pad,node->speaker ? node->speaker : "",ga_dialog_scale_x,ga_dialog_scale_y);

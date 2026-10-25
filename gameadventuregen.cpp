@@ -320,7 +320,12 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 !choice.value("text").toString().trimmed().isEmpty())
                 spotlightActionRows << QStringLiteral("    {%1u,%2u},")
                     .arg(nodeIndex*3+i).arg(spotlightMode);
-            thoughtChoiceFlags << (choice.value("thoughtBubble").toBool(false) ? QStringLiteral("1u") : QStringLiteral("0u"));
+            // Per-choice bit 0: show with NEXT node (legacy); bit 1: show
+            // with THIS node while the answer is selected. The editor keeps
+            // these mutually exclusive, and old worlds need no migration.
+            const bool thoughtNext=choice.value("thoughtBubble").toBool(false);
+            const bool thoughtThis=!thoughtNext && choice.value("thoughtBubbleThis").toBool(false);
+            thoughtChoiceFlags << QStringLiteral("%1u").arg(thoughtNext ? 1 : (thoughtThis ? 2 : 0));
             nodeOut << "        {" << quoted(choice.value("text").toString().left(180)) << ","
                     << quoted(choice.value("reply").toString().left(150)) << ","
                     << clampInt(choice,"next",-1,nodes.size()-1,-1) << ","
