@@ -23,7 +23,7 @@ assert 'triggerExtraActions' in project and 'links.append(QJsonObject' in projec
 assert 'link.objectId = importById(link.objectId)' in designer
 assert 'checkId(link.objectId)' in designer
 assert 'if (!targetAction(target, &action)) return false;' in source
-assert 'if (link.objectId == r->id || !objectSlot.contains(link.objectId)' in source
+assert 'link.objectId == r->id' in source and '!objectSlot.contains(link.objectId)' in source
 # The generator must execute the primary action then each additional one.
 section=source[source.index('if (nt) for (int i = 0; i < nw; ++i)'):]
 assert section.index('if (!targetAction(r, &action))') < section.index('for (const Resource::LinkedAction &link : r.triggerExtraActions)')
@@ -35,7 +35,7 @@ assert 'oldStyleLinks = isKey || behaviour == QStringLiteral("enemy")' in design
 assert 'spin(1, 32656, old.objectFadeDelay)' in designer
 assert 'a.value(QStringLiteral("objectFadeDelay")).toInt(2), 32656' in project
 assert 'qBound(1, r.objectFadeDelay, 32656)' in source
-assert 'Build: 5.104.251026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.108.251026' in read('splashscreenwidget.cpp')
 # Extract the exact firmware-rule statements, preserving source formatting.
 template=read('idelibs/codehelpers/game/gameworlditems.rulec')
 match=re.search(r'@IDE_SECTION\{TARGET_ACTION\}(.*?)@IDE_SECTION_END',template,re.S)

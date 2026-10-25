@@ -76,6 +76,16 @@ uint8_t gameworlds_transition_busy(void);
  * optional Player Start/door centre. No camera update = screen-centred mask. */
 void gameworlds_transition_camera(int32_t camera_x, int32_t camera_y);
 void gameworlds_transition_frame(uint16_t view_width, uint16_t view_height);
+void gameworlds_spotlight_camera(int32_t camera_x, int32_t camera_y);
+void gameworlds_spotlight_player(int32_t world_x, int32_t world_y);
+void gameworlds_spotlight_frame(uint16_t view_width, uint16_t view_height);
+/* 0 = off, 1 = on, 2 = toggle. Applies to currently loaded world. */
+void gameworlds_spotlight_action(uint8_t action);
+/* Trigger action targeting a live or unloaded world by compiled object slot.
+   Unloaded targets are staged and applied at their next entry. */
+uint8_t gameworlds_object_action(const char *world_name, uint16_t object_slot, uint8_t action);
+/* NPC visibility actions: 0 hide, 1 show, 2 toggle; remote worlds stay unloaded. */
+uint8_t gameworlds_npc_action(const char *world_name, uint16_t npc_slot, uint8_t action);
 /* Seed project-wide starting items BEFORE gameworlds_start(); never resets on travel. */
 void gameworlds_seed_inventory(const char *name, uint16_t initial);
 /* The current map may be NULL for a scenery-only world. */

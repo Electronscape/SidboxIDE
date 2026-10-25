@@ -172,6 +172,8 @@ private:
     QTimer *m_occurrenceDelayTimer = nullptr;
     QTimer *m_occurrenceScanTimer = nullptr;
     QTimer *m_completionDelayTimer = nullptr;
+    // Only genuine typing, not navigation or programmatic edits, may arm IntelliSense.
+    bool m_completionTypingEdit = false;
     QString m_occurrenceWord;
     QRegularExpression m_occurrenceExpression;
     QTextBlock m_occurrenceScanBlock;

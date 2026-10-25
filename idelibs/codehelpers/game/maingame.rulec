@@ -944,6 +944,15 @@ int main(int argc, char *argv[])
         /* Foreground tiles are deliberately drawn AFTER the player. */
         game_tilemap_blit_view_front((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, GAME_PLAY_H);
 @IDE_END
+        /* Optional world darkness / player spotlight sits above the scene
+           but below HUD and dialogue so interface text stays readable. */
+        gameworlds_spotlight_camera(camera_x, camera_y);
+@IDE_IF{HAS_ADVENTURE_PHYSICS}
+        gameworlds_spotlight_player(player_physics.x100 / 100, player_physics.y100 / 100);
+@IDE_ELSE
+        gameworlds_spotlight_player(GAMERGIRL_PLAYER_BOB.drawx + camera_x, GAMERGIRL_PLAYER_BOB.drawy + camera_y);
+@IDE_END
+        gameworlds_spotlight_frame(VIEW_W, GAME_PLAY_H);
 @IDE_IF{HAS_HUD}
         /* The scene has been rendered into the full framebuffer. Crop it to
            the docked playfield here, before drawing any HUD pixels. A top

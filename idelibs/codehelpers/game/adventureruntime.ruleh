@@ -137,6 +137,19 @@ typedef struct {
 } game_adventure_npc_choice_action_t;
 void game_adventure_npc_choice_actions(const game_adventure_npc_choice_action_t *rules,
                                        uint16_t count);
+/* Sparse remote NPC rules used by choices and terminal dialogue-close events. */
+typedef struct {
+    uint16_t event_id, npc_slot;
+    const char *world;
+    uint8_t action;
+} game_adventure_remote_npc_rule_t;
+void game_adventure_remote_npc_actions(const game_adventure_remote_npc_rule_t *rules,
+                                     uint16_t count,
+                                     uint8_t (*apply)(const char *,uint16_t,uint8_t));
+/* Optional dialogue choice / terminal-close lighting actions (0 off,1 on,2 toggle). */
+typedef struct { uint16_t event_id; uint8_t action; } game_adventure_spotlight_rule_t;
+void game_adventure_spotlight_actions(const game_adventure_spotlight_rule_t *rules,
+                                     uint16_t count, void (*apply)(uint8_t));
 /* Optional ONE-TIME reward on closing a dialogue node with no answers.
  * Kept separate from game_adventure_choice_t to preserve its ABI. */
 #define GAME_ADVENTURE_CLOSE_GIFT_BYTES 32u /* up to 256 dialogue nodes */

@@ -9,6 +9,7 @@
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
+#include "gamecrossworldlinks.h"
 #include "gameplayerprofile.h"
 #include "gametitleruntime.h"
 
@@ -382,6 +383,56 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
         }
     }
+    /* Resolve remote targets against SAVED sibling .sbgm files; the destination
+       slot numbering matches the destination's world-object export order. */
+    auto remoteTarget = [&](const QString &id, QString *world, int *slot) -> bool {
+        QString w, targetId;
+        if (!cgDecodeCrossWorldLink(id,&w,&targetId)) return false;
+        if (w==worldBase || !validWorlds.contains(w)) return false;
+        for (const QFileInfo &file : projectDir.entryInfoList(
+                 QStringList{QStringLiteral("*.sbgm")},QDir::Files)) {
+            if (sidboxTilemapWorldBaseName(file.absoluteFilePath())!=w) continue;
+            QFile source(file.absoluteFilePath());
+            if (!source.open(QIODevice::ReadOnly)) return false;
+            const QJsonObject design=QJsonDocument::fromJson(source.readAll()).object();
+            const int index=cgCrossWorldObjectSlot(design,targetId);
+            if (index<0) return false;
+            if (world) *world=w;
+            if (slot) *slot=index;
+            return true;
+        }
+        return false;
+    };
+    auto npcTarget = [&](const QString &id, QString *world, int *slot) -> bool {
+        if (!id.startsWith(QStringLiteral("@npc:"))) return false;
+        const int separator=id.indexOf(QLatin1Char(':'),5);
+        if (separator<0) return false;
+        const QString wantedWorld=id.mid(5,separator-5);
+        const QString wantedSprite=id.mid(separator+1);
+        if (wantedWorld.isEmpty() || wantedSprite.isEmpty() || !validWorlds.contains(wantedWorld)) return false;
+        QJsonArray npcs;
+        if (wantedWorld==worldBase) {
+            npcs=m_adventure.value(QStringLiteral("npcs")).toArray();
+        } else {
+            for (const QFileInfo &file : projectDir.entryInfoList(
+                     QStringList{QStringLiteral("*.sbgm")},QDir::Files)) {
+                if (sidboxTilemapWorldBaseName(file.absoluteFilePath())!=wantedWorld) continue;
+                QFile input(file.absoluteFilePath());
+                if (!input.open(QIODevice::ReadOnly)) return false;
+                npcs=QJsonDocument::fromJson(input.readAll()).object()
+                    .value(QStringLiteral("adventure")).toObject()
+                    .value(QStringLiteral("npcs")).toArray();
+                break;
+            }
+        }
+        for (int n=0;n<npcs.size();++n) {
+            if (npcs[n].toObject().value(QStringLiteral("spriteId")).toString()!=wantedSprite) continue;
+            if (world) *world=wantedWorld;
+            if (slot) *slot=n;
+            return true;
+        }
+        return false;
+    };
     QHash<QString, QString> objectSlot; // Stable object ID -> generated live runtime instance.
     for (int i = 0; i < np; ++i)
         objectSlot.insert(pickups.at(i)->id, QStringLiteral("cg_gwi_pickups[%1]").arg(i));
@@ -443,7 +494,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (const Resource *r : platforms) {
         if (r->objectType != QStringLiteral("trigger") || r->targetAction == QStringLiteral("none") ||
             r->targetObjectId.isEmpty()) continue;
-        if (!objectSlot.contains(r->targetObjectId)) {
+        QString otherWorld; int otherSlot=-1;
+        if (r->targetObjectId != QStringLiteral("@player_spotlight") &&
+            !objectSlot.contains(r->targetObjectId) &&
+            !remoteTarget(r->targetObjectId,&otherWorld,&otherSlot) &&
+            !npcTarget(r->targetObjectId,&otherWorld,&otherSlot)) {
             if (error) *error = tr("Trigger '%1' links to a missing game object. Reassign its target.").arg(r->name);
             return false;
         }
@@ -453,7 +508,12 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (const Resource *r : platforms) {
         if (r->objectType != QStringLiteral("trigger")) continue;
         for (const Resource::LinkedAction &link : r->triggerExtraActions) {
-            if (link.objectId == r->id || !objectSlot.contains(link.objectId) ||
+            QString otherWorld; int otherSlot=-1;
+            if (link.objectId == r->id ||
+                (link.objectId != QStringLiteral("@player_spotlight") &&
+                 !objectSlot.contains(link.objectId) &&
+                 !remoteTarget(link.objectId,&otherWorld,&otherSlot) &&
+                 !npcTarget(link.objectId,&otherWorld,&otherSlot)) ||
                 (link.action != QStringLiteral("enable") &&
                  link.action != QStringLiteral("disable") &&
                  link.action != QStringLiteral("toggle"))) {
@@ -649,6 +709,32 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     };
     auto targetAction = [&](const Resource &r, QString *out) -> bool {
         if (r.targetAction == QStringLiteral("none") || r.targetObjectId.isEmpty()) return true;
+        QString otherWorld; int otherSlot=-1;
+        if (npcTarget(r.targetObjectId,&otherWorld,&otherSlot)) {
+            const int action=r.targetAction==QStringLiteral("enable") ? 1 :
+                r.targetAction==QStringLiteral("disable") ? 0 :
+                r.targetAction==QStringLiteral("toggle") ? 2 : -1;
+            if (action>=0) *out += QStringLiteral(
+                "        gameworlds_npc_action(\"%1\", %2u, %3u);\n")
+                .arg(otherWorld).arg(otherSlot).arg(action);
+            return true;
+        }
+        if (remoteTarget(r.targetObjectId,&otherWorld,&otherSlot)) {
+            const int action=r.targetAction==QStringLiteral("enable") ? 1 :
+                r.targetAction==QStringLiteral("disable") ? 0 :
+                r.targetAction==QStringLiteral("toggle") ? 2 : -1;
+            if (action>=0) *out += QStringLiteral(
+                "        gameworlds_object_action(\"%1\", %2u, %3u);\n")
+                .arg(otherWorld).arg(otherSlot).arg(action);
+            return true;
+        }
+        if (r.targetObjectId == QStringLiteral("@player_spotlight")) {
+            const QString action = r.targetAction == QStringLiteral("enable") ? QStringLiteral("1")
+                : r.targetAction == QStringLiteral("disable") ? QStringLiteral("0")
+                : r.targetAction == QStringLiteral("toggle") ? QStringLiteral("2") : QString();
+            if (!action.isEmpty()) *out += QStringLiteral("        gameworlds_spotlight_action(%1u);\n").arg(action);
+            return true;
+        }
         const QMap<QString, QString> f = actionFields(r);
         if (f.value(QStringLiteral("TARGET_ENABLE")) == QStringLiteral("0") &&
             f.value(QStringLiteral("TARGET_DISABLE")) == QStringLiteral("0") &&
@@ -1143,6 +1229,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("HAS_INACTIVE_STATE_FRAMES"),flag(hasInactiveStateFrames));
     sourceFields.insert(QStringLiteral("PICKUP_COUNT"), number(np));
     sourceFields.insert(QStringLiteral("WORLD_OBJECT_COUNT"), number(nw));
+    QStringList initialActive;
+    for (const Resource *item : platforms)
+        initialActive << (item->objectInitiallyActive ? QStringLiteral("1") : QStringLiteral("0"));
+    sourceFields.insert(QStringLiteral("WORLD_OBJECT_INITIAL_ACTIVE"),initialActive.join(QStringLiteral(", ")));
     sourceFields.insert(QStringLiteral("HAS_WORLDS"), flag(nw != 0));
     sourceFields.insert(QStringLiteral("HAS_PICKUPS"), flag(np != 0));
     sourceFields.insert(QStringLiteral("HAS_TRIGGERS"), flag(nt != 0));

@@ -1,5 +1,6 @@
 #include "gameadventuregen.h"
 #include "gamehelpertemplates.h"
+#include "gametilemap.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QJsonDocument>
@@ -224,7 +225,65 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     QString nodeRows;
     QTextStream nodeOut(&nodeRows);
     if (nodes.isEmpty()) nodeOut << "    {0,0,{{0,0,-1,-1,-1,-1,-1,-1}}},\n";
-    QStringList storyFlags, linkedActions, npcChoiceActionRows, closeGiftRows, thoughtChoiceFlags;
+    QStringList storyFlags, linkedActions, npcChoiceActionRows, closeGiftRows, thoughtChoiceFlags, spotlightActionRows;
+    QStringList remoteNpcActionRows;
+    /* NPC identity is world name plus stable sprite ID. Never use a displayed
+       name or the other world's object-slot indices. */
+    auto remoteNpc = [&](const QString &target, QString *world, int *slot) -> bool {
+        if (!target.startsWith(QStringLiteral("@npc:"))) return false;
+        const int delimiter=target.indexOf(QLatin1Char(':'),5);
+        if (delimiter<0) return false;
+        const QString wantedWorld=target.mid(5,delimiter-5);
+        const QString wantedSprite=target.mid(delimiter+1);
+        if (wantedWorld.isEmpty() || wantedSprite.isEmpty()) return false;
+        QDirIterator it(projectRoot, QStringList{QStringLiteral("*.sbgm")},
+                        QDir::Files, QDirIterator::NoIteratorFlags);
+        while (it.hasNext()) {
+            const QString source=it.next();
+            if (sidboxTilemapWorldBaseName(source)!=wantedWorld) continue;
+            QFile file(source);
+            if (!file.open(QIODevice::ReadOnly) || file.size()>16*1024*1024) return false;
+            const QJsonObject design=QJsonDocument::fromJson(file.readAll()).object();
+            const QJsonArray npcs=design.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("npcs")).toArray();
+            for (int n=0;n<npcs.size();++n) {
+                if (npcs[n].toObject().value(QStringLiteral("spriteId")).toString()!=wantedSprite)
+                    continue;
+                *world=wantedWorld;
+                *slot=n;
+                return true;
+            }
+        }
+        return false;
+    };
+    auto resolveNpcEffect = [&](const QString &spriteId, const QString &mode,
+                                uint16_t eventId, QString *localIndex,
+                                QString *localMode, const QString &where) -> bool {
+        *localIndex=QStringLiteral("65535u");
+        *localMode=QStringLiteral("0u");
+        if (spriteId.isEmpty()) return true;
+        const int action=mode==QStringLiteral("show") ? 1 : mode==QStringLiteral("toggle") ? 2 : 0;
+        if (spriteId.startsWith(QStringLiteral("@npc:"))) {
+            QString world;int slot=-1;
+            if (!remoteNpc(spriteId,&world,&slot)) {
+                if (error) *error=QStringLiteral("%1 targets an unavailable NPC '%2'. Save the destination world first.")
+                    .arg(where,spriteId);
+                return false;
+            }
+            remoteNpcActionRows << QStringLiteral("    {%1u,%2u,%3,%4u},")
+                .arg(eventId).arg(slot).arg(quoted(world)).arg(action);
+            return true;
+        }
+        for (int n=0; n<npcList.size(); ++n) {
+            if (npcList[n].toObject().value(QStringLiteral("spriteId")).toString()!=spriteId) continue;
+            *localIndex=QStringLiteral("%1u").arg(n);
+            *localMode=QStringLiteral("%1u").arg(action);
+            return true;
+        }
+        if (error) *error=QStringLiteral("%1 refers to a removed NPC Sprite '%2'.")
+            .arg(where,spriteId);
+        return false;
+    };
     int nodeIndex = 0;
     for (const QJsonValue &v : nodes) {
         const QJsonObject o = v.toObject();
@@ -256,6 +315,11 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                     return false;
                 linkedActions.append(QString::fromUtf8(linkedCase));
             }
+            const int spotlightMode = choice.value("spotlightAction").toInt(3);
+            if (spotlightMode >= 0 && spotlightMode <= 2 &&
+                !choice.value("text").toString().trimmed().isEmpty())
+                spotlightActionRows << QStringLiteral("    {%1u,%2u},")
+                    .arg(nodeIndex*3+i).arg(spotlightMode);
             thoughtChoiceFlags << (choice.value("thoughtBubble").toBool(false) ? QStringLiteral("1u") : QStringLiteral("0u"));
             nodeOut << "        {" << quoted(choice.value("text").toString().left(180)) << ","
                     << quoted(choice.value("reply").toString().left(150)) << ","
@@ -276,21 +340,14 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                     npcModes << QStringLiteral("0u");
                     continue;
                 }
-                int npcIndex = -1;
-                for (int n = 0; n < npcList.size(); ++n) {
-                    if (npcList[n].toObject().value("spriteId").toString() == spriteId) {
-                        npcIndex = n; break;
-                    }
-                }
-                if (npcIndex < 0) {
-                    if (error) *error = QStringLiteral("Dialogue node %1 choice %2 refers to a removed NPC Sprite. Please edit its NPC appearance actions.")
-                        .arg(nodeIndex).arg(i + 1);
+                QString index,modeValue;
+                if (!resolveNpcEffect(spriteId,
+                        choice.value(prefix + QStringLiteral("Mode")).toString("hide"),
+                        (uint16_t)(nodeIndex*3+i), &index, &modeValue,
+                        QStringLiteral("Dialogue %1, answer %2").arg(nodeIndex).arg(i+1)))
                     return false;
-                }
-                npcIndices << QStringLiteral("%1u").arg(npcIndex);
-                const QString mode = choice.value(prefix + QStringLiteral("Mode")).toString("hide");
-                npcModes << (mode == QStringLiteral("show") ? QStringLiteral("1u")
-                           : mode == QStringLiteral("toggle") ? QStringLiteral("2u") : QStringLiteral("0u"));
+                npcIndices << index;
+                npcModes << modeValue;
             }
             if (npcIndices[0] != QStringLiteral("65535u") || npcIndices[1] != QStringLiteral("65535u"))
                 npcChoiceActionRows << QStringLiteral("    {%1u,%2,%3,%4,%5},")
@@ -416,20 +473,17 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 closeModes << QStringLiteral("0u");
                 continue;
             }
-            int npcIndex=-1;
-            for (int n=0; n<npcList.size(); ++n) {
-                if (npcList[n].toObject().value(QStringLiteral("spriteId")).toString()==spriteId) {
-                    npcIndex=n;break;
-                }
-            }
-            if (npcIndex<0) {
-                if (error) *error=QStringLiteral("Dialogue node %1 on-close action refers to a removed NPC Sprite.").arg(nodeIndex);
-                return false;
-            }
-            closeIndices << QStringLiteral("%1u").arg(npcIndex);
-            closeModes << (mode==QStringLiteral("show") ? QStringLiteral("1u")
-                : mode==QStringLiteral("toggle") ? QStringLiteral("2u") : QStringLiteral("0u"));
+            QString index,modeValue;
+            if (!resolveNpcEffect(spriteId,mode,(uint16_t)(nodes.size()*3+nodeIndex),
+                                  &index,&modeValue,
+                                  QStringLiteral("Dialogue %1 on-close").arg(nodeIndex))) return false;
+            closeIndices << index;
+            closeModes << modeValue;
         }
+        const int closeSpotlight = o.value("closeSpotlightAction").toInt(3);
+        if (closeSpotlight >= 0 && closeSpotlight <= 2)
+            spotlightActionRows << QStringLiteral("    {%1u,%2u},")
+                .arg(nodes.size()*3+nodeIndex).arg(closeSpotlight);
         /* A terminal dialogue may hand over inventory before hiding the NPC.
          * Legacy versions placed rewards on an empty answer, which never ran.
          * Only auto-migrate that gift when NO answer is selectable. */
@@ -455,6 +509,12 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         ? QStringLiteral("    {0u,65535u,65535u,0u,0u},")
         : npcChoiceActionRows.join(QLatin1Char('\n')));
     fields.insert(QStringLiteral("NPC_CHOICE_ACTION_COUNT"),QString::number(npcChoiceActionRows.size()));
+    fields.insert(QStringLiteral("REMOTE_NPC_ACTION_ROWS"),remoteNpcActionRows.isEmpty()
+        ? QStringLiteral("    {0u,0u,0,0u},") : remoteNpcActionRows.join(QLatin1Char('\n')));
+    fields.insert(QStringLiteral("REMOTE_NPC_ACTION_COUNT"),QString::number(remoteNpcActionRows.size()));
+    fields.insert(QStringLiteral("SPOTLIGHT_ACTION_ROWS"), spotlightActionRows.isEmpty()
+        ? QStringLiteral("    {0u,0u},") : spotlightActionRows.join(QLatin1Char('\n')));
+    fields.insert(QStringLiteral("SPOTLIGHT_ACTION_COUNT"),QString::number(spotlightActionRows.size()));
     fields.insert(QStringLiteral("CLOSE_GIFT_ROWS"),closeGiftRows.isEmpty()
         ? QStringLiteral("    {0u,0u},") : closeGiftRows.join(QLatin1Char('\n')));
     fields.insert(QStringLiteral("CLOSE_GIFT_COUNT"),QString::number(closeGiftRows.size()));
@@ -685,7 +745,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("WRONG_REPEAT_ROWS"),QStringLiteral("WRONG_REPEAT_COUNT"),
         QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_CHOICE_ACTION_ROWS"),QStringLiteral("NPC_CHOICE_ACTION_COUNT"),
+        QStringLiteral("REMOTE_NPC_ACTION_ROWS"),QStringLiteral("REMOTE_NPC_ACTION_COUNT"),
         QStringLiteral("CLOSE_GIFT_ROWS"),QStringLiteral("CLOSE_GIFT_COUNT"),
+        QStringLiteral("SPOTLIGHT_ACTION_ROWS"),QStringLiteral("SPOTLIGHT_ACTION_COUNT"),
         QStringLiteral("NPC_VISIBILITY_ROWS"),
         QStringLiteral("NPC_COMPLETED_NODES"),QStringLiteral("NPC_FRAME_ROWS"),
         QStringLiteral("NPC_ANIMATION_ROWS"),QStringLiteral("THOUGHT_CHOICE_FLAGS"),

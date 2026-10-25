@@ -1,4 +1,33 @@
 
+in the spotlight mode, could we have a tick box(s) enable where that the offset on the x, (or y) if the player is flipped (directions) makes holding a candle more believable
+the next option is the overall feather, like so we have a 0 to 100% opaque effect, this might be a little intelisense on the cpu so im hoping that people wont use this option much. but it would make for more atmospheric (i can just barely see into the distance) in dark rooms
+Also could i have the player starts window open in maximise please?
+
+more Codeeditor issues!!
+symptoms
+when i am pressing enter, its pushing the text right!!
+so every time i press enter at the beginning of the light, the code is being tabbed across every time!
+ALSO doing this is causing the intelisense to popup and entering the first entry too!!
+the intelisense should only popup after no key activity for a while, its STILL instantly popping up on keystrokes
+seems to be worse when using the delete, enter, space
+
+also with collapsed sections i think should have something at the end to show its collapsed too like say [...]
+example if a
+if (something==true) [...]
+
+that would show its got more code there just collapsed right now
+it should disapear and go back to
+if (something==true)
+{
+    dostuff();
+}
+
+it wouldnt be restricted to just if, it would be on all collapsable blocks
+
+
+[doing]
+actions, add these to the NPC editor AND the toggles, as a way to turn on, and off the focus mystery spot light
+
 
 
 

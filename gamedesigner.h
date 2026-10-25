@@ -313,6 +313,24 @@ private:
     QString m_playerTransitionOut = QStringLiteral("none");
     QString m_playerCircleOrigin = QStringLiteral("center");
     int m_playerTransitionFrames = 30;
+    bool m_playerSpotlightEnabled = false;
+    int m_playerSpotlightRadius = 96;
+    int m_playerSpotlightFeather = 24;
+    bool m_playerSpotlightCenter = true; // default: visually centre the shared player BOB
+    int m_playerSpotlightOffsetX = 0;    // +right / -left in screen pixels
+    int m_playerSpotlightOffsetY = 0;    // +down / -up in screen pixels
+    bool m_playerSpotlightFlipX = false; // mirror candle offset when sprite faces left
+    bool m_playerSpotlightFlipY = false; // mirror offset when sprite flips vertically
+    int m_playerSpotlightOpacity = 100;  // percent darkness outside clear circle
+    bool m_playerSpotlightStableDither = true; // 4-pixel alignment prevents dither crawling
+    int m_playerSpotlightAnimMode = 0; // 0 off, 1 random, 2 pulse
+    int m_playerSpotlightAnimMin = 12; // feather thickness, pixels
+    int m_playerSpotlightAnimMax = 32;
+    int m_playerSpotlightAnimDelayMin = 3; // random pause in frames
+    int m_playerSpotlightAnimDelayMax = 12;
+    int m_playerSpotlightAnimPulseDelay = 3; // frames per cached thickness
+    int m_playerSpotlightMaskIndex = 255; // reserve this foreground CLUT slot for the mask
+    QString m_playerSpotlightMaskColour = QStringLiteral("#000000");
     // Additional, named destination entrances belong to this world only.
     struct PlayerStartLocation {
         QString id;

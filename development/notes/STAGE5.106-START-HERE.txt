@@ -1,0 +1,36 @@
+CODERGIRL Stage 5.106 - Player-Spotlight Anchor and Offset
+=========================================================
+Apply these replacement files to an already-working Stage 5.105 IDE source.
+Back up first (you already did!). Rebuild CoderGirl.
+
+New Player Start settings (under the existing local darkness controls):
+ - Spotlight anchor: Centre of player sprite (default) OR sprite origin
+ - Light offset X: -240 to +240 pixels, positive means RIGHT
+ - Light offset Y: -240 to +240 pixels, positive means DOWN
+
+A 32x48 pixel player at 100% scale now gets its spotlight automatically
+shifted by +16,+24 compared with Stage 5.105's raw top-left origin.
+The offsets add to the chosen anchor. A torch held above/right could be
+X=12, Y=-12 relative to the sprite centre.
+
+IMPORTANT FOR CUSTOM MAIN.C:
+ - The same THREE spotlight calls you added for Stage 5.105 STILL WORK.
+ - Do NOT insert a second spotlight pass. Do NOT edit main.c again for 5.106.
+ - Run Update Game Project to regenerate the world manager C files, then
+   rebuild/reinstall the SIDBOX game. This stage changes generated runtime.
+
+Compatibility:
+ - Missing fields in an old .sbgm default to sprite centre, X=0, Y=0.
+ - Only the shared-player game path can read the current sprite dimensions;
+   games without that path keep the original player-origin anchor.
+ - Settings are per world and load on each successful world activation.
+ - Does not alter movement, collision, animation, the 4x4 fade, UI/HUD,
+   transition rendering, or authored game data other than saved new settings.
+ - X offset does not flip automatically with player facing (future option).
+
+Verification: native GCC tests cover scaled BOB midpoint, signed offset,
+world switching and disabled scenes. Qt6 GUI build and real hardware still
+need your acceptance test. The previous Stage 5.105 circular darkness pass
+was user verified at 50 FPS. Stage 5.106 adds only small integer arithmetic.
+
+Build: 5.106.251026

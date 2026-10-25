@@ -89,6 +89,12 @@ static const uint16_t npc_completed_nodes[] = {
 static const game_adventure_npc_choice_action_t npc_choice_actions[] = {
 @IDE{NPC_CHOICE_ACTION_ROWS}
 };
+static const game_adventure_remote_npc_rule_t remote_npc_actions[] = {
+@IDE{REMOTE_NPC_ACTION_ROWS}
+};
+static const game_adventure_spotlight_rule_t spotlight_actions[] = {
+@IDE{SPOTLIGHT_ACTION_ROWS}
+};
 static const game_adventure_close_gift_t close_gifts[] = {
 @IDE{CLOSE_GIFT_ROWS}
 };
@@ -142,6 +148,34 @@ static uint8_t cg_saved_story_npcs[GAME_ADVENTURE_COMPLETED_NPC_BYTES];
 static uint8_t cg_saved_npc_visibility[GAME_ADVENTURE_NPC_VISIBILITY_BYTES];
 static uint8_t cg_saved_close_gifts[GAME_ADVENTURE_CLOSE_GIFT_BYTES];
 static uint8_t cg_saved_story_valid;
+/* Remote NPC actions must NOT initialise unrelated story progress on a first visit.
+ * Pending overrides are resolved against the saved state, or NPC defaults. */
+static uint8_t cg_pending_npc_mask[GAME_ADVENTURE_NPC_VISIBILITY_BYTES];
+static uint8_t cg_pending_npc_state[GAME_ADVENTURE_NPC_VISIBILITY_BYTES];
+void gameadventure_npc_action(uint16_t npc, uint8_t action)
+{
+    if (npc < GAME_ADVENTURE_STORY_NPC_COUNT && action <= 2u)
+        game_adventure_npc_action(npc, action);
+}
+void gameadventure_npc_remote_action(uint16_t npc, uint8_t action)
+{
+    if (npc >= GAME_ADVENTURE_STORY_NPC_COUNT || action > 2u) return;
+    uint8_t value = cg_pending_npc_mask[npc] ? cg_pending_npc_state[npc]
+        : (cg_saved_story_valid ? cg_saved_npc_visibility[npc] : npc_initial_visibility[npc]);
+    if (action == 0u) value = 0u;
+    else if (action == 1u) value = 1u;
+    else value ^= 1u;
+    cg_pending_npc_mask[npc] = 1u;
+    cg_pending_npc_state[npc] = value;
+}
+void gameadventure_npc_remote_reset(void)
+{
+    memset(cg_pending_npc_mask, 0, sizeof(cg_pending_npc_mask));
+    memset(cg_pending_npc_state, 0, sizeof(cg_pending_npc_state));
+    /* gameworlds_shutdown() ends this session; a later Start must use
+       the world's defaults, not the preceding playthrough's story. */
+    cg_saved_story_valid = 0u;
+}
 static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
 static uint8_t cg_saved_exchanges[GAME_ADVENTURE_EXCHANGE_SLOTS];
 static uint8_t cg_saved_wrong_repeats[GAME_ADVENTURE_EXCHANGE_SLOTS];
@@ -164,6 +198,11 @@ void gameadventure_restore_progress(void)
         game_adventure_restore_drops(cg_saved_world_drops);
         game_adventure_restore_exchanges(cg_saved_exchanges);
         game_adventure_restore_wrong_repeats(cg_saved_wrong_repeats);
+    }
+    for (uint16_t npc=0; npc<GAME_ADVENTURE_STORY_NPC_COUNT; ++npc) {
+        if (!cg_pending_npc_mask[npc]) continue;
+        game_adventure_set_npc_visible(npc, cg_pending_npc_state[npc]);
+        cg_pending_npc_mask[npc] = 0u;
     }
 }
 
@@ -206,6 +245,10 @@ void gameadventure_setup(void)
     game_adventure_npc_initial_visibility(npc_initial_visibility, GAME_ADVENTURE_STORY_NPC_COUNT);
     game_adventure_story_flags(story_choice_flags, npc_completed_nodes);
     game_adventure_npc_choice_actions(npc_choice_actions, @IDE{NPC_CHOICE_ACTION_COUNT}u);
+    game_adventure_remote_npc_actions(remote_npc_actions,
+        @IDE{REMOTE_NPC_ACTION_COUNT}u, gameworlds_npc_action);
+    game_adventure_spotlight_actions(spotlight_actions, @IDE{SPOTLIGHT_ACTION_COUNT}u,
+                                      gameworlds_spotlight_action);
     game_adventure_close_gifts(close_gifts, @IDE{CLOSE_GIFT_COUNT}u);
     game_adventure_exchange_rules(exchanges, GAME_ADVENTURE_STORY_NODE_COUNT*3u);
     game_adventure_wrong_repeat_rules(wrong_repeat_rules, @IDE{WRONG_REPEAT_COUNT}u);

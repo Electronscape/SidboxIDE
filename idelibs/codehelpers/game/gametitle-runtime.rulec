@@ -420,7 +420,14 @@ uint8_t gametitle_run(const char **world, const char **start)
     }
     if (playing) music_stop();
     title_release_images();
-    gfx_usebuffer(buffers[drawn]);
+    /* Both foreground buffers can still contain title pixels. World loading
+     * replaces the CLUT, so leaving the displayed title buffer intact makes
+     * those old pixels briefly turn into world-palette colours (red/pink
+     * flashes during a dark fade). Clear BOTH, not just the next backbuffer,
+     * before handing the display to the game world. */
+    gfx_usebuffer(buffers[0]);
+    gfx_cls();
+    gfx_usebuffer(buffers[1]);
     gfx_cls();
     return 1;
 }

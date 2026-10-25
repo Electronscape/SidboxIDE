@@ -4,6 +4,7 @@
  */
 #include "gameworlds.h"
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "apis.h"
 @IDE_IF{HAS_WORLD_PHYSICS}
@@ -66,12 +67,29 @@ typedef struct {
     const gameworlds_named_spawn_t *named_spawns;
     uint16_t named_spawn_count;
     uint8_t transition_in, transition_out, transition_frames, circle_origin;
+    uint8_t spotlight_enabled;
+    uint16_t spotlight_radius, spotlight_feather;
+    uint8_t spotlight_center;
+    int16_t spotlight_offset_x, spotlight_offset_y;
+    uint8_t spotlight_mask_index;
+    uint32_t spotlight_mask_colour;
+    uint8_t spotlight_flip_x, spotlight_flip_y, spotlight_opacity_code;
+    uint8_t spotlight_stable_dither, spotlight_anim_mode;
+    uint8_t spotlight_anim_min, spotlight_anim_max;
+    uint16_t spotlight_random_min_frames, spotlight_random_max_frames, spotlight_pulse_delay;
     const uint32_t *(*front_palette)(void);
     const uint32_t *(*back_palette)(void);
     void (*world_state_save)(void);
     void (*world_state_restore)(void);
     void (*story_save)(void);
     void (*story_restore)(void);
+    void (*object_set_active)(uint16_t, uint8_t);
+    void (*object_remote_action)(uint16_t, uint8_t);
+    void (*object_remote_reset)(void);
+    void (*object_apply_remote)(void);
+    void (*npc_set_active)(uint16_t, uint8_t);
+    void (*npc_remote_action)(uint16_t, uint8_t);
+    void (*npc_remote_reset)(void);
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -118,6 +136,41 @@ static int32_t transition_world_x, transition_world_y;
 static int32_t transition_camera_x, transition_camera_y;
 static uint32_t transition_front[256] __attribute__((aligned(32)));
 static uint32_t transition_back[256] __attribute__((aligned(32)));
+/* World-local lighting changes survive leaving and re-entering a world. */
+static uint8_t spotlight_override_valid[WORLD_COUNT];
+static uint8_t spotlight_override_value[WORLD_COUNT];
+static uint8_t spotlight_enabled;
+static uint16_t spotlight_radius, spotlight_feather;
+static uint8_t spotlight_center;
+static int16_t spotlight_offset_x, spotlight_offset_y;
+static uint8_t spotlight_mask_index = 255u;
+static uint32_t spotlight_mask_colour = 0xff000000u;
+static uint8_t spotlight_flip_x, spotlight_flip_y, spotlight_opacity = 100u;
+static uint8_t spotlight_stable_dither = 1u, spotlight_anim_mode;
+static uint8_t spotlight_anim_min, spotlight_anim_max;
+static uint16_t spotlight_random_min_frames, spotlight_random_max_frames, spotlight_pulse_delay;
+static uint16_t spotlight_anim_ticks;
+static uint8_t spotlight_anim_frame, spotlight_anim_backward;
+#if defined(gfx_drawbob)
+static uint32_t spotlight_rng_state = 0x8abc1234u;
+#endif
+static uint8_t spotlight_feather_current;
+static int32_t spotlight_camera_x, spotlight_camera_y;
+static int32_t spotlight_player_x, spotlight_player_y;
+/* At most eight precomputed integer-only feather BOBs, built on WORLD LOAD.
+ * 768 KiB hard cap keeps the effect from exhausting 8 MiB SDRAM. */
+#define SPOTLIGHT_RING_VARIANTS 8u
+#define SPOTLIGHT_RING_BUDGET (768u * 1024u)
+#if defined(gfx_drawbob)
+static uint8_t *spotlight_ring_pixels[SPOTLIGHT_RING_VARIANTS];
+static uint16_t spotlight_ring_side[SPOTLIGHT_RING_VARIANTS];
+static uint8_t spotlight_ring_width[SPOTLIGHT_RING_VARIANTS];
+static gfxbob_t spotlight_ring_bob[SPOTLIGHT_RING_VARIANTS] __attribute__((aligned(32)));
+static uint8_t spotlight_ring_count;
+#endif
+static const uint8_t spotlight_bayer4[4][4] = {
+    {0,8,2,10}, {12,4,14,6}, {3,11,1,9}, {15,7,13,5}
+};
 
 /* Both effects on a Goto World doorway are configured on its selected
  * DESTINATION Player Start: OUT on the departing scene, IN on arrival.
@@ -161,6 +214,16 @@ static void transition_begin(uint8_t phase, uint8_t mode, uint8_t frames,
     transition_world_y = origin_y;
     transition_camera_valid = 0;
 }
+/* Never mutate the world palette. Reserve one entry in a CLUT COPY only.
+ * Keeping that entry stable across title/world transitions prevents the mask
+ * colour from briefly becoming the title's previous colour or fading red. */
+static void spotlight_palette_copy(const uint32_t *source)
+{
+    if (!source) return;
+    memcpy(transition_front, source, sizeof(transition_front));
+    transition_front[spotlight_enabled ? spotlight_mask_index : 255u] =
+        spotlight_enabled ? spotlight_mask_colour : 0xff000000u;
+}
 static void transition_restore_palette(void)
 {
     if (!active_world) return;
@@ -168,11 +231,29 @@ static void transition_restore_palette(void)
     const uint32_t *back = active_world->back_palette ? active_world->back_palette() : NULL;
     (void)front; (void)back; /* Minimal host-test API may omit gfx macros. */
 #ifdef gfx_usefpalette
-    if (front) gfx_usefpalette((uint32_t *)front);
+    if (front) {
+        if (spotlight_enabled) {
+            spotlight_palette_copy(front);
+            gfx_usefpalette(transition_front);
+        } else gfx_usefpalette((uint32_t *)front);
+    }
 #endif
 #ifdef gfx_usebpalette
     if (back) gfx_usebpalette((uint32_t *)back);
 #endif
+}
+void gameworlds_spotlight_action(uint8_t action)
+{
+    if (!active_world || action > 2u) return;
+    const uint8_t next = action == 2u ? (uint8_t)!spotlight_enabled : (uint8_t)(action == 1u);
+    if (next == spotlight_enabled) return;
+    spotlight_enabled = next;
+    const size_t index = (size_t)(active_world - worlds);
+    if (index < WORLD_COUNT) {
+        spotlight_override_valid[index] = 1u;
+        spotlight_override_value[index] = next;
+    }
+    if (transition_phase == GW_PHASE_IDLE) transition_restore_palette();
 }
 static uint32_t transition_dim(uint32_t source, uint16_t brightness)
 {
@@ -198,6 +279,163 @@ static uint32_t transition_isqrt(uint32_t number)
     return root;
 }
 #endif
+/* Integer math and sprite-relative 4x4 pattern. NEVER recalculate the
+ * artwork during ordinary movement. Animation chooses a prebuilt BOB. */
+#if defined(gfx_drawbob)
+static void spotlight_ring_release(void)
+{
+    for (uint8_t i = 0u; i < SPOTLIGHT_RING_VARIANTS; ++i) {
+        free(spotlight_ring_pixels[i]);
+        spotlight_ring_pixels[i] = NULL;
+        spotlight_ring_side[i] = 0u;
+        spotlight_ring_width[i] = 0u;
+        memset(&spotlight_ring_bob[i], 0, sizeof(spotlight_ring_bob[i]));
+    }
+    spotlight_ring_count = 0u;
+}
+static uint8_t spotlight_ring_width_for(uint8_t index, uint8_t count)
+{
+    if (spotlight_anim_mode == 0u || count < 2u)
+        return (uint8_t)spotlight_feather;
+    return (uint8_t)(spotlight_anim_min +
+        ((uint32_t)(spotlight_anim_max - spotlight_anim_min) * index + (count - 1u)/2u) /
+        (count - 1u));
+}
+static uint8_t spotlight_ring_allocate(uint8_t count)
+{
+    for (uint8_t i = 0u; i < count; ++i) {
+        const uint8_t thick = spotlight_ring_width_for(i, count);
+        spotlight_ring_width[i] = thick;
+        if (!thick || !spotlight_opacity) continue;
+        const int32_t inner = spotlight_radius;
+        const int32_t outer = inner + thick;
+        const uint16_t side = (uint16_t)(2 * outer + 1);
+        const size_t bytes = (size_t)side * side;
+        uint8_t *pixels = (uint8_t *)malloc(bytes);
+        if (!pixels) return 0u;
+        memset(pixels, 0, bytes);
+        const int32_t inner2 = inner * inner, outer2 = outer * outer;
+        const uint32_t range = (uint32_t)(outer2 - inner2);
+        for (int32_t sy = 0; sy < side; ++sy) {
+            const int32_t dy = sy - outer;
+            for (int32_t sx = 0; sx < side; ++sx) {
+                const int32_t dx = sx - outer, d2 = dx * dx + dy * dy;
+                if (d2 <= inner2 || d2 >= outer2) continue;
+                const uint32_t coverage = (uint32_t)(((uint64_t)(d2 - inner2) *
+                    spotlight_opacity * 16u) / (range * 100u));
+                const uint32_t threshold = coverage > 16u ? 16u : coverage;
+                if (spotlight_bayer4[sy & 3][sx & 3] < threshold)
+                    pixels[(size_t)sy * side + (size_t)sx] = spotlight_mask_index;
+            }
+        }
+        spotlight_ring_pixels[i] = pixels;
+        spotlight_ring_side[i] = side;
+        gfxbob_t *bob = &spotlight_ring_bob[i];
+        bob->imgdat = pixels;
+        bob->atlas_stride = side;
+        bob->atlas_height = side;
+        bob->width = side;
+        bob->height = side;
+        bob->scale = 100u;
+        bob->handle = BLIT_HANDLE_TOP_LEFT;
+    }
+    return 1u;
+}
+static void spotlight_ring_build(void)
+{
+    spotlight_ring_release();
+    const uint8_t animated = spotlight_anim_mode != 0u &&
+        spotlight_anim_min < spotlight_anim_max;
+    uint8_t count = animated ? (uint8_t)(spotlight_anim_max - spotlight_anim_min + 1u) : 1u;
+    if (count > SPOTLIGHT_RING_VARIANTS) count = SPOTLIGHT_RING_VARIANTS;
+    /* Avoid making several gigantic BOBs when the artist increases radius.
+     * Use fewer, coarser steps; do not allocate more than the memory budget. */
+    for (;;) {
+        size_t bytes = 0u;
+        for (uint8_t i = 0; i < count; ++i) {
+            const uint8_t thick = spotlight_ring_width_for(i, count);
+            if (!thick) continue;
+            const size_t side = (size_t)(2u * (spotlight_radius + thick) + 1u);
+            bytes += side * side;
+        }
+        if (bytes <= SPOTLIGHT_RING_BUDGET && spotlight_ring_allocate(count)) {
+            spotlight_ring_count = count;
+            break;
+        }
+        spotlight_ring_release();
+        if (count == 1u) break; /* may use legacy CPU fallback on OOM */
+        --count;
+    }
+    /* If memory cannot fit two variants, hold a single cached feather. */
+    if (spotlight_ring_count < 2u) spotlight_anim_mode = 0u;
+    spotlight_anim_frame = 0u;
+    spotlight_anim_backward = 0u;
+    spotlight_anim_ticks = spotlight_anim_mode == 1u ? spotlight_random_min_frames
+        : (spotlight_anim_mode == 2u ? spotlight_pulse_delay : 0u);
+    spotlight_feather_current = spotlight_ring_count
+        ? spotlight_ring_width[0] : (uint8_t)spotlight_feather;
+}
+#else
+static void spotlight_ring_release(void) {}
+static void spotlight_ring_build(void) {}
+#endif
+
+#if defined(gfx_drawbob)
+static uint32_t spotlight_rand(void)
+{
+    /* Small stateful PRNG. No rand(), floating point or timer interrupts. */
+    uint32_t r = spotlight_rng_state;
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+    return spotlight_rng_state = r;
+}
+#endif
+static void spotlight_animation_tick(void)
+{
+#if defined(gfx_drawbob)
+    if (spotlight_anim_mode == 0u || spotlight_ring_count < 2u) return;
+    if (spotlight_anim_ticks > 0u) { --spotlight_anim_ticks; return; }
+    if (spotlight_anim_mode == 1u) {
+        /* Change to a different cached thickness after a random pause. */
+        const uint8_t jump = (uint8_t)(1u + spotlight_rand() % (spotlight_ring_count - 1u));
+        spotlight_anim_frame = (uint8_t)((spotlight_anim_frame + jump) % spotlight_ring_count);
+        const uint16_t low = spotlight_random_min_frames;
+        const uint16_t high = spotlight_random_max_frames;
+        spotlight_anim_ticks = (uint16_t)(low + spotlight_rand() % (uint32_t)(high - low + 1u) - 1u);
+    } else {
+        if (!spotlight_anim_backward) {
+            if (++spotlight_anim_frame >= spotlight_ring_count - 1u)
+                spotlight_anim_backward = 1u;
+        } else {
+            if (spotlight_anim_frame) --spotlight_anim_frame;
+            if (!spotlight_anim_frame) spotlight_anim_backward = 0u;
+        }
+        spotlight_anim_ticks = spotlight_pulse_delay - 1u;
+    }
+    spotlight_feather_current = spotlight_ring_width[spotlight_anim_frame];
+#endif
+}
+/* Optional expensive path for <100% darkness. Draw repeating 4x4 coverage
+ * as contiguous runs rather than one gfx_plot call per opaque pixel. */
+static void spotlight_dither_segment(int32_t x0, int32_t x1, int32_t y, uint16_t opacity)
+{
+#if defined(gfx_rectf) && defined(gfx_setcolour)
+    if (x1 <= x0 || !opacity) return;
+    if (opacity >= 100u) { gfx_rectf(x0, y, x1 - x0, 1); return; }
+    const uint32_t coverage = (opacity * 16u + 50u) / 100u;
+    int32_t begin = -1;
+    for (int32_t x = x0; x < x1; ++x) {
+        const uint8_t dark = spotlight_bayer4[y & 3][x & 3] < coverage;
+        if (dark && begin < 0) begin = x;
+        if (!dark && begin >= 0) {
+            gfx_rectf(begin, y, x - begin, 1);
+            begin = -1;
+        }
+    }
+    if (begin >= 0) gfx_rectf(begin, y, x1 - begin, 1);
+#else
+    (void)x0; (void)x1; (void)y; (void)opacity;
+#endif
+}
 void gameworlds_transitions_enable(uint8_t enabled)
 {
     if (!enabled) {
@@ -227,6 +465,110 @@ void gameworlds_transition_camera(int32_t camera_x, int32_t camera_y)
     transition_camera_valid = 1;
 }
 
+void gameworlds_spotlight_camera(int32_t camera_x, int32_t camera_y)
+{
+    spotlight_camera_x = camera_x;
+    spotlight_camera_y = camera_y;
+}
+
+void gameworlds_spotlight_player(int32_t world_x, int32_t world_y)
+{
+    spotlight_player_x = world_x;
+    spotlight_player_y = world_y;
+}
+
+void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
+{
+    if (!spotlight_enabled || !active_world || !width || !height || !spotlight_opacity) return;
+#if defined(gfx_rectf) && defined(gfx_setcolour)
+    /* The user-owned main.c still passes the player WORLD origin. Determine
+     * the actual drawn sprite centre and current flip flags here. */
+    int32_t anchor_x = spotlight_player_x;
+    int32_t anchor_y = spotlight_player_y;
+    int32_t offset_x = spotlight_offset_x;
+    int32_t offset_y = spotlight_offset_y;
+@IDE_IF{HAS_SHARED_PLAYER}
+    if (spotlight_center) {
+        const uint32_t scale = gameplayer_sprite.scale ? gameplayer_sprite.scale : 100u;
+        anchor_x += (int32_t)((uint32_t)gameplayer_sprite.width * scale / 200u);
+        anchor_y += (int32_t)((uint32_t)gameplayer_sprite.height * scale / 200u);
+    }
+#ifdef BLIT_FLAG_FLIP_X
+    if (spotlight_flip_x && (gameplayer_sprite.flags & BLIT_FLAG_FLIP_X)) offset_x = -offset_x;
+    if (spotlight_flip_y && (gameplayer_sprite.flags & BLIT_FLAG_FLIP_Y)) offset_y = -offset_y;
+#endif
+@IDE_END
+    int32_t cx = anchor_x + offset_x - spotlight_camera_x;
+    int32_t cy = anchor_y + offset_y - spotlight_camera_y;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx >= (int32_t)width) cx = (int32_t)width - 1;
+    if (cy >= (int32_t)height) cy = (int32_t)height - 1;
+    spotlight_animation_tick();
+    /* Dither BOB pattern is local to its artwork. Quantising the ENTIRE
+     * aperture (mask + BOB) in 4px steps keeps Bayer coverage screen-stable
+     * while walking. Switch off for a deliberately shimmering light. */
+    if (spotlight_stable_dither) { cx = (cx + 2) & ~3; cy = (cy + 2) & ~3; }
+    const int32_t inner = spotlight_radius > 0u ? (int32_t)spotlight_radius : 1;
+    const int32_t outer = inner + (int32_t)spotlight_feather_current;
+    const int32_t outer2 = outer * outer;
+    const uint32_t *front = active_world->front_palette ? active_world->front_palette() : NULL;
+    if (front) {
+        spotlight_palette_copy(front);
+#ifdef gfx_usefpalette
+        gfx_usefpalette(transition_front);
+#endif
+    }
+    gfx_setcolour(spotlight_mask_index);
+    /* Two solid outer strips per row. Cheap at 100% opacity; optional 4x4
+     * patterned segments at lower opacity, with no full-frame buffer copy. */
+    for (int32_t y = 0; y < height; ++y) {
+        const int32_t dy = y - cy;
+        const int32_t dy2 = dy * dy;
+        if (dy2 >= outer2) {
+            spotlight_dither_segment(0, width, y, spotlight_opacity);
+            continue;
+        }
+        const int32_t half = (int32_t)transition_isqrt((uint32_t)(outer2 - dy2));
+        int32_t left = cx - half;
+        int32_t right = cx + half + 1;
+        if (left < 0) left = 0;
+        if (right > width) right = width;
+        spotlight_dither_segment(0, left, y, spotlight_opacity);
+        spotlight_dither_segment(right, width, y, spotlight_opacity);
+    }
+    if (!spotlight_feather_current) return;
+#if defined(gfx_drawbob)
+    if (spotlight_ring_count && spotlight_ring_pixels[spotlight_anim_frame]) {
+        /* Indexed PPB-like ring. Index 0 transparent, other pixels use
+         * the world's reserved mask index. No per-frame dither plotting. */
+        gfxbob_t *bob = &spotlight_ring_bob[spotlight_anim_frame];
+        bob->drawx = (int16_t)(cx - outer);
+        bob->drawy = (int16_t)(cy - outer);
+        gfx_drawbob(bob);
+        return;
+    }
+#endif
+#if defined(gfx_plot)
+    /* Allocation or minimal-test-renderer fallback; same 4x4 pattern. */
+    const int32_t inner2 = inner * inner;
+    const uint32_t range = (uint32_t)(outer2 - inner2);
+    for (int32_t y = 0; y < height; ++y) {
+        const int32_t dy = y - cy;
+        for (int32_t x = 0; x < width; ++x) {
+            const int32_t dx = x - cx;
+            const int32_t d2 = dx * dx + dy * dy;
+            if (d2 <= inner2 || d2 >= outer2) continue;
+            const uint32_t threshold = (uint32_t)(((uint64_t)(d2 - inner2) *
+                spotlight_opacity * 16u) / (range * 100u));
+            if (spotlight_bayer4[(y-cy+outer)&3][(x-cx+outer)&3] < threshold)
+                gfx_plot(x, y);
+        }
+    }
+#endif
+#endif
+}
+
 void gameworlds_transition_frame(uint16_t width, uint16_t height)
 {
     if (!transition_enabled || !active_world || transition_phase == GW_PHASE_IDLE ||
@@ -240,6 +582,10 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         if (front) {
             for (uint16_t i = 0; i < 256; ++i)
                 transition_front[i] = transition_dim(front[i], light);
+            /* The spotlight aperture must never inherit a fading title/world
+             * colour. Its mask entry stays constant, even during Fade IN. */
+            if (spotlight_enabled)
+                transition_front[spotlight_mask_index] = spotlight_mask_colour;
 #ifdef gfx_usefpalette
             gfx_usefpalette(transition_front);
 #endif
@@ -252,12 +598,10 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
 #endif
         }
     } else {
-        /* Index 255 is a TEMPORARY blackout drawing colour; the original
-         * palette is restored when the effect finishes. Background pixels
-         * are not changed. This index may briefly look black in scenery. */
+        /* Mask drawing uses the same reserved index as the spotlight. Old
+         * non-spotlight worlds retain the original temporary index 255. */
         if (front) {
-            memcpy(transition_front, front, sizeof(transition_front));
-            transition_front[255] = 0xff000000u;
+            spotlight_palette_copy(front);
 #ifdef gfx_usefpalette
             gfx_usefpalette(transition_front);
 #endif
@@ -281,7 +625,7 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
             const uint32_t maxr = transition_isqrt((uint32_t)(far_x * far_x + far_y * far_y)) + 2u;
             const int32_t radius = (int32_t)((maxr * (255u - coverage)) / 255u);
             const int32_t rr = radius * radius;
-            gfx_setcolour(255);
+            gfx_setcolour(spotlight_enabled ? spotlight_mask_index : 255u);
             for (int32_t y = 0; y < height; ++y) {
                 const int32_t dy = y - cy;
                 if (dy * dy >= rr) {
@@ -297,7 +641,7 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         } else {
             const int32_t w = (int32_t)((width * coverage + 254u) / 255u);
             const int32_t h = (int32_t)((height * coverage + 254u) / 255u);
-            gfx_setcolour(255);
+            gfx_setcolour(spotlight_enabled ? spotlight_mask_index : 255u);
             switch (transition_mode) {
             case GW_TRANSITION_LEFT:  if (w) gfx_rectf(width - w, 0, w, height); break;
             case GW_TRANSITION_RIGHT: if (w) gfx_rectf(0, 0, w, height); break;
@@ -334,6 +678,34 @@ static const gameworlds_record_t *find_world(const char *name)
     for (size_t i = 0; i < WORLD_COUNT; ++i)
         if (strcmp(worlds[i].name, name) == 0) return &worlds[i];
     return 0;
+}
+uint8_t gameworlds_object_action(const char *world_name, uint16_t object_slot, uint8_t action)
+{
+    if (!world_name || action>2u) return 0;
+    const gameworlds_record_t *world=find_world(world_name);
+    if (!world) return 0;
+    if (world==active_world) {
+        if (!world->object_set_active) return 0;
+        world->object_set_active(object_slot,action);
+    } else {
+        if (!world->object_remote_action) return 0;
+        world->object_remote_action(object_slot,action);
+    }
+    return 1;
+}
+uint8_t gameworlds_npc_action(const char *world_name, uint16_t npc_slot, uint8_t action)
+{
+    if (!world_name || action > 2u) return 0;
+    const gameworlds_record_t *world = find_world(world_name);
+    if (!world) return 0;
+    if (world == active_world) {
+        if (!world->npc_set_active) return 0;
+        world->npc_set_active(npc_slot, action);
+    } else {
+        if (!world->npc_remote_action) return 0;
+        world->npc_remote_action(npc_slot, action);
+    }
+    return 1;
 }
 static void inventory_put(const char *name, uint16_t amount, void *user)
 {
@@ -388,6 +760,7 @@ uint8_t gameworlds_player_start(gameworlds_spawn_t *out) {
 
 static void unload_active(void)
 {
+    spotlight_ring_release();
     if (!active_world) return;
     music_stop(); /* Never free sample buffers while DMA/audio still use them. */
     if (active_world->inventory_store)
@@ -403,6 +776,7 @@ static void unload_active(void)
     if (active_world->unload_map) active_world->unload_map();
     active_world->assets_shutdown();
     active_world = 0;
+    spotlight_enabled = 0;
 }
 static uint8_t activate(const gameworlds_record_t *world)
 {
@@ -419,7 +793,41 @@ static uint8_t activate(const gameworlds_record_t *world)
     if (!world->objects_init()) goto failed;
     /* Reapply this world's saved mutable state after its default objects are built. */
     if (world->world_state_restore) world->world_state_restore();
+    if (world->object_apply_remote) world->object_apply_remote();
     active_world = world;
+    const size_t spot_index = (size_t)(world - worlds);
+    spotlight_enabled = spot_index < WORLD_COUNT && spotlight_override_valid[spot_index]
+        ? spotlight_override_value[spot_index] : world->spotlight_enabled;
+    spotlight_radius = world->spotlight_radius;
+    spotlight_feather = world->spotlight_feather;
+    spotlight_center = world->spotlight_center;
+    spotlight_offset_x = world->spotlight_offset_x;
+    spotlight_offset_y = world->spotlight_offset_y;
+    spotlight_mask_index = world->spotlight_mask_index ? world->spotlight_mask_index : 255u;
+    spotlight_mask_colour = 0xff000000u | (world->spotlight_mask_colour & 0xffffffu);
+    spotlight_flip_x = world->spotlight_flip_x;
+    spotlight_flip_y = world->spotlight_flip_y;
+    spotlight_opacity = (world->spotlight_opacity_code >= 1u && world->spotlight_opacity_code <= 101u)
+        ? (uint8_t)(world->spotlight_opacity_code - 1u) : 100u;
+    /* Old generated C records have zero-initialised trailing animation fields.
+     * No animation stays static; new Stage5.111 exports stable dither=1. */
+    spotlight_stable_dither = world->spotlight_stable_dither;
+    spotlight_anim_mode = world->spotlight_anim_mode <= 2u ? world->spotlight_anim_mode : 0u;
+    spotlight_anim_min = world->spotlight_anim_min > 96u ? 96u : world->spotlight_anim_min;
+    spotlight_anim_max = world->spotlight_anim_max > 96u ? 96u : world->spotlight_anim_max;
+    if (spotlight_anim_max < spotlight_anim_min) spotlight_anim_max = spotlight_anim_min;
+    spotlight_random_min_frames = world->spotlight_random_min_frames ? world->spotlight_random_min_frames : 3u;
+    spotlight_random_max_frames = world->spotlight_random_max_frames >= spotlight_random_min_frames
+        ? world->spotlight_random_max_frames : spotlight_random_min_frames;
+    spotlight_pulse_delay = world->spotlight_pulse_delay ? world->spotlight_pulse_delay : 3u;
+    spotlight_anim_ticks = 0u;
+    spotlight_anim_frame = 0u;
+    spotlight_anim_backward = 0u;
+    spotlight_feather_current = (uint8_t)spotlight_feather;
+    spotlight_ring_build();
+    /* Immediately replace any title-screen CLUT before the first spotlight
+     * frame, without modifying original palette arrays. */
+    if (spotlight_enabled) transition_restore_palette();
     return 1;
 failed:
     music_stop();
@@ -555,6 +963,12 @@ void gameworlds_shutdown(void)
     transition_phase = GW_PHASE_IDLE;
     transition_enabled = 0;
     unload_active();
+    for (size_t i=0; i<WORLD_COUNT; ++i) {
+        if (worlds[i].object_remote_reset) worlds[i].object_remote_reset();
+        if (worlds[i].npc_remote_reset) worlds[i].npc_remote_reset();
+    }
+    memset(spotlight_override_valid,0,sizeof(spotlight_override_valid));
+    memset(spotlight_override_value,0,sizeof(spotlight_override_value));
     pending_world = 0;
     pending_has_exit = 0;
     strcpy(active_spawn_id, "default");

@@ -1,5 +1,6 @@
 #include "gameadventureeditor.h"
 #include "ppbcodec.h"
+#include "gametilemap.h"
 #include "guidesigner_detail.h"
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -1054,12 +1055,49 @@ QString dialogueTitle(const QJsonObject &node, int index)
 }
 void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &items,
               const QVector<GameAdventureAsset> &objects, QTableWidget *npcTable,
-              const QJsonArray &folders)
+              const QJsonArray &folders, const QString &currentDesignFilePath)
 {
     if (row < 0 || row >= nodes.size()) return;
     QJsonObject node = nodes[row].toObject();
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Dialogue Node %1").arg(row));
     dialog.setMinimumSize(820, 680); dialog.resize(1010, 815);
+    /* World-qualified NPC appearance targets. The saved target contains the
+       stable sprite ID, not a fragile table row; visual labels contain world
+       and instance indices so two BigSteves are unmistakable. */
+    auto appendNpcTargets = [npcTable,&currentDesignFilePath](QComboBox *target) {
+        if (npcTable) for (int n=0; n<npcTable->rowCount(); ++n) {
+            const QTableWidgetItem *entry=npcTable->item(n,0);
+            if (entry) target->addItem(QObject::tr("%1 [local %2]").arg(entry->text()).arg(n),
+                                       entry->data(Qt::UserRole).toString());
+        }
+        if (currentDesignFilePath.isEmpty()) return;
+        const QDir folder(QFileInfo(currentDesignFilePath).absolutePath());
+        const QString thisWorld=sidboxTilemapWorldBaseName(currentDesignFilePath);
+        for (const QFileInfo &file : folder.entryInfoList(
+                 QStringList{QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+            const QString world=sidboxTilemapWorldBaseName(file.absoluteFilePath());
+            if (world==thisWorld) continue;
+            QFile input(file.absoluteFilePath());
+            if (!input.open(QIODevice::ReadOnly) || input.size()>16*1024*1024) continue;
+            const QJsonObject design=QJsonDocument::fromJson(input.readAll()).object();
+            const QJsonArray others=design.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("npcs")).toArray();
+            const QJsonArray resources=design.value(QStringLiteral("resources")).toArray();
+            for (int n=0;n<others.size();++n) {
+                const QString id=others[n].toObject().value(QStringLiteral("spriteId")).toString();
+                if (id.isEmpty()) continue;
+                QString name=id;
+                for (const QJsonValue &v : resources) {
+                    const QJsonObject sprite=v.toObject();
+                    if (sprite.value(QStringLiteral("id")).toString()==id) {
+                        name=sprite.value(QStringLiteral("name")).toString(id);break;
+                    }
+                }
+                target->addItem(QObject::tr("%1: %2 [%3]").arg(world,name).arg(n),
+                                QStringLiteral("@npc:%1:%2").arg(world,id));
+            }
+        }
+    };
     auto *main = new QVBoxLayout(&dialog);
     auto *scroll = new QScrollArea(&dialog);
     scroll->setWidgetResizable(true);
@@ -1104,6 +1142,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         QCheckBox *thought;
         QComboBox *next, *missingNext, *event, *mode;
         QComboBox *npcTargets[2], *npcModes[2];
+        QComboBox *spotlight;
         QSpinBox *customId;
         QComboBox *requires, *give, *take;
         QCheckBox *once, *completeNpc;
@@ -1206,10 +1245,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
             auto *target = fields[i].npcTargets[effect];
             target->addItem(QObject::tr("No NPC change"),QString());
             target->setToolTip(QObject::tr("Runs ONLY when the player selects this answer successfully. For a final speech node with no answers, use the separate When dialogue closes actions below."));
-            if (npcTable) for (int n = 0; n < npcTable->rowCount(); ++n) {
-                const QTableWidgetItem *entry = npcTable->item(n,0);
-                if (entry) target->addItem(entry->text(),entry->data(Qt::UserRole).toString());
-            }
+            appendNpcTargets(target);
             target->setCurrentIndex(std::max(0,target->findData(choice.value(prefix + QStringLiteral("SpriteId")).toString())));
             fields[i].npcModes[effect] = new QComboBox(box);
             auto *mode = fields[i].npcModes[effect];
@@ -1241,6 +1277,15 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         });
         grid->addWidget(new QLabel(QObject::tr("NPC item exchange"),box),9,0);
         grid->addWidget(fields[i].exchange,9,1,1,3);
+        fields[i].spotlight = new QComboBox(box);
+        fields[i].spotlight->addItem(QObject::tr("No change"), 3);
+        fields[i].spotlight->addItem(QObject::tr("Switch spotlight ON"), 1);
+        fields[i].spotlight->addItem(QObject::tr("Switch spotlight OFF"), 0);
+        fields[i].spotlight->addItem(QObject::tr("Toggle spotlight"), 2);
+        fields[i].spotlight->setCurrentIndex(std::max(0,fields[i].spotlight->findData(choice.value("spotlightAction").toInt(3))));
+        fields[i].spotlight->setToolTip(QObject::tr("Runs after this answer succeeds. The spotlight is configured under Player Start."));
+        grid->addWidget(new QLabel(QObject::tr("Player Spotlight"),box),12,0);
+        grid->addWidget(fields[i].spotlight,12,1,1,3);
         detail->addWidget(box);
     }
 
@@ -1262,10 +1307,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         onCloseNpcTarget[effect]=new QComboBox(onCloseGroup);
         auto *target=onCloseNpcTarget[effect];
         target->addItem(QObject::tr("No NPC change"),QString());
-        if (npcTable) for (int r=0; r<npcTable->rowCount(); ++r) {
-            const auto *entry=npcTable->item(r,0);
-            if (entry) target->addItem(entry->text(),entry->data(Qt::UserRole).toString());
-        }
+        appendNpcTargets(target);
         const QString savedSprite=node.value(prefix+QStringLiteral("SpriteId")).toString();
         target->setCurrentIndex(std::max(0,target->findData(savedSprite.isEmpty() && noAnswers
             ? legacyCloseSprite[effect] : savedSprite)));
@@ -1293,6 +1335,14 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     onCloseGift->setToolTip(QObject::tr("Grant ONE inventory item when an answerless final dialogue closes. One-time and preserved across world transitions. NPC gives on the blank Choice panels edits this same value."));
     onCloseLayout->addWidget(new QLabel(QObject::tr("Give item when dialogue closes"),onCloseGroup),3,0,1,2);
     onCloseLayout->addWidget(onCloseGift,3,2,1,2);
+    auto *onCloseSpotlight = new QComboBox(onCloseGroup);
+    onCloseSpotlight->addItem(QObject::tr("No change"), 3);
+    onCloseSpotlight->addItem(QObject::tr("Switch spotlight ON"), 1);
+    onCloseSpotlight->addItem(QObject::tr("Switch spotlight OFF"), 0);
+    onCloseSpotlight->addItem(QObject::tr("Toggle spotlight"), 2);
+    onCloseSpotlight->setCurrentIndex(std::max(0,onCloseSpotlight->findData(node.value("closeSpotlightAction").toInt(3))));
+    onCloseLayout->addWidget(new QLabel(QObject::tr("Player Spotlight on close"),onCloseGroup),4,0,1,2);
+    onCloseLayout->addWidget(onCloseSpotlight,4,2,1,2);
     /* Keep NPC Hide/Show/Toggle EDITABLE even when a terminal node has no
      * answer text. For an answerless node the three familiar choice-row NPC
      * controls are live mirrors of the two real on-close NPC actions. Updating
@@ -1491,6 +1541,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         c.insert("targetObjectId",(eventSelection!=QStringLiteral("none") && eventSelection!=QStringLiteral("custom"))
             ?eventSelection:QString());
         c.insert("targetAction",fields[i].mode->currentData().toString());
+        c.insert("spotlightAction",fields[i].spotlight->currentData().toInt());
         for (int effect = 0; effect < 2; ++effect) {
             const QString prefix = QStringLiteral("npcAction%1").arg(effect + 1);
             c.insert(prefix + QStringLiteral("SpriteId"),fields[i].npcTargets[effect]->currentData().toString());
@@ -1500,6 +1551,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         updated.append(c);
     }
     node.insert("closeGiveItem",onCloseGift->currentData().toInt());
+    node.insert("closeSpotlightAction",onCloseSpotlight->currentData().toInt());
     for (int effect=0; effect<2; ++effect) {
         const QString prefix=QStringLiteral("closeNpcAction%1").arg(effect+1);
         node.insert(prefix+QStringLiteral("SpriteId"),onCloseNpcTarget[effect]->currentData().toString());
@@ -2741,7 +2793,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         if(row<0){
             QMessageBox::information(&dialog,QObject::tr("Edit Dialogue"),QObject::tr("Select a dialogue node first."));return;
         }
-        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders);
+        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders,currentDesignFilePath);
         redrawNodes(row);refreshNpcNodes();sizeNpcColumns();
     };
     QObject::connect(nodeEdit,&QPushButton::clicked,&dialog,doNodeEdit);

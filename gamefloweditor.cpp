@@ -1,4 +1,5 @@
 #include "gamefloweditor.h"
+#include "gamecrossworldlinks.h"
 #include "idetheme.h"
 #include "ppbcodec.h"
 #include "gamespritestamp.h"
@@ -309,9 +310,30 @@ FlowGraph loadGraph(const QString &root) {
                 events << (o.value(QStringLiteral("triggerOneShot")).toBool()
                     ? QStringLiteral("Mode: one-shot") : QStringLiteral("Mode: repeatable"));
                 const auto addLinked=[&](const QString &id,const QString &action) {
-                    if (!id.isEmpty() && action!=QStringLiteral("none") && !action.isEmpty())
+                    if (id == QStringLiteral("@player_spotlight"))
+                        events << QStringLiteral("Player Spotlight -> %1").arg(action.toUpper());
+                    else if (!id.isEmpty() && action!=QStringLiteral("none") && !action.isEmpty()) {
+                        QString otherWorld, otherId;
+                        const bool remote=cgDecodeCrossWorldLink(id,&otherWorld,&otherId);
+                        QString display=objectName(id);
+                        if (remote) {
+                            display=otherWorld+QStringLiteral(": ")+otherId;
+                            for (const auto &document : documents) {
+                                if (document.name!=otherWorld) continue;
+                                for (const QJsonValue &rv : document.doc.value(QStringLiteral("resources")).toArray()) {
+                                    const QJsonObject target=rv.toObject();
+                                    if (target.value(QStringLiteral("id")).toString()==otherId) {
+                                        display=otherWorld+QStringLiteral(": ")+
+                                            target.value(QStringLiteral("name")).toString(otherId);
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
                         events << QStringLiteral("Object: %1 -> %2")
-                                  .arg(objectName(id),action.toUpper());
+                                  .arg(display,action.toUpper());
+                    }
                 };
                 addLinked(o.value(QStringLiteral("targetObjectId")).toString(),
                           o.value(QStringLiteral("targetAction")).toString(QStringLiteral("none")));
@@ -473,6 +495,27 @@ FlowGraph loadGraph(const QString &root) {
         }
     }
 
+    /* NPC action targets carry world + stable sprite ID, while the graph's
+       NPC cards use each world's dialogue-table index. Resolve both here. */
+    const auto npcActionNode = [&documents](const QString &origin,const QString &target) -> QString {
+        QString world=origin, sprite=target;
+        if (target.startsWith(QStringLiteral("@npc:"))) {
+            const int split=target.indexOf(QLatin1Char(':'),5);
+            if (split<0) return {};
+            world=target.mid(5,split-5);
+            sprite=target.mid(split+1);
+        }
+        for (const auto &doc:documents) {
+            if (doc.name!=world) continue;
+            const QJsonArray npcs=doc.doc.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("npcs")).toArray();
+            for (int i=0;i<npcs.size();++i)
+                if (npcs[i].toObject().value(QStringLiteral("spriteId")).toString()==sprite)
+                    return world+QStringLiteral("/npc/")+QString::number(i);
+            break;
+        }
+        return {};
+    };
     // Second pass: connect actual design relationships, including cross-world links.
     for (const auto &entry : documents) {
         const QString w=entry.name;
@@ -488,19 +531,27 @@ FlowGraph loadGraph(const QString &root) {
             const QString from=objectKey(w,r.value(QStringLiteral("id")).toString());
             if (!g.byId.contains(from)) continue;
             const QString target=obj.value(QStringLiteral("targetObjectId")).toString();
-            if (!target.isEmpty()) {
-                const QString to=objectKey(w,target);
-                if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object: ")+obj.value("targetAction").toString("toggle"));
+            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight")) {
+                QString foreignWorld, foreignId;
+                const bool remote=cgDecodeCrossWorldLink(target,&foreignWorld,&foreignId);
+                const QString to=target.startsWith(QStringLiteral("@npc:"))
+                    ? npcActionNode(w,target)
+                    : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,target));
+                if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object/NPC: ")+obj.value("targetAction").toString("toggle"));
                 else g.missing(w,from,QStringLiteral("object"),target);
             }
             if (type==QStringLiteral("trigger")) {
                 for (const QJsonValue &entry : obj.value(QStringLiteral("triggerExtraActions")).toArray()) {
                     const QJsonObject link=entry.toObject();
                     const QString id=link.value(QStringLiteral("objectId")).toString();
-                    if (id.isEmpty()) continue;
-                    const QString to=objectKey(w,id);
+                    if (id.isEmpty() || id == QStringLiteral("@player_spotlight")) continue;
+                    QString foreignWorld, foreignId;
+                    const bool remote=cgDecodeCrossWorldLink(id,&foreignWorld,&foreignId);
+                    const QString to=id.startsWith(QStringLiteral("@npc:"))
+                        ? npcActionNode(w,id)
+                        : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,id));
                     if (g.byId.contains(to))
-                        g.link(from,to,QStringLiteral("Object: ")+link.value(QStringLiteral("action")).toString());
+                        g.link(from,to,QStringLiteral("Object/NPC: ")+link.value(QStringLiteral("action")).toString());
                     else g.missing(w,from,QStringLiteral("linked object"),id);
                 }
                 const QString required=obj.value(QStringLiteral("interactItemName")).toString();
@@ -665,14 +716,11 @@ FlowGraph loadGraph(const QString &root) {
                 for (const QString &prefix : {QStringLiteral("npcAction1"),QStringLiteral("npcAction2")}) {
                     const QString sprite=c.value(prefix+QStringLiteral("SpriteId")).toString();
                     if (sprite.isEmpty())continue;
-                    bool found=false;
-                    for (int n=0;n<npcs.size();++n) {
-                        if (npcs.at(n).toObject().value(QStringLiteral("spriteId")).toString()!=sprite)continue;
-                        g.link(choice,w+QStringLiteral("/npc/")+QString::number(n),
-                               QStringLiteral("NPC appearance: ")+c.value(prefix+QStringLiteral("Mode")).toString("hide"));
-                        found=true;
-                    }
-                    if (!found)g.missing(w,choice,QStringLiteral("NPC appearance sprite"),sprite);
+                    const QString to=npcActionNode(w,sprite);
+                    if (g.byId.contains(to))
+                        g.link(choice,to,QStringLiteral("NPC appearance: ")+
+                               c.value(prefix+QStringLiteral("Mode")).toString("hide"));
+                    else g.missing(w,choice,QStringLiteral("NPC appearance sprite"),sprite);
                 }
                 const QJsonObject exchange=c.value(QStringLiteral("exchange")).toObject();
                 if (!exchange.value(QStringLiteral("enabled")).toBool()) continue;

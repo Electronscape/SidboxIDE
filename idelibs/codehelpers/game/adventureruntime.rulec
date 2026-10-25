@@ -245,7 +245,13 @@ static uint8_t ga_used_choices[(256u * 3u + 7u) / 8u];
 static uint8_t ga_completed_npcs[256];
 static uint8_t ga_npc_visibility[256];
 static const game_adventure_npc_choice_action_t *ga_npc_choice_actions;
+static const game_adventure_spotlight_rule_t *ga_spotlight_rules;
+static uint16_t ga_spotlight_rule_count;
+static void (*ga_spotlight_apply)(uint8_t);
 static uint16_t ga_npc_choice_action_count;
+static const game_adventure_remote_npc_rule_t *ga_remote_npc_rules;
+static uint16_t ga_remote_npc_rule_count;
+static uint8_t (*ga_remote_npc_apply)(const char *,uint16_t,uint8_t);
 static const game_adventure_close_gift_t *ga_close_gifts;
 static uint16_t ga_close_gift_count;
 static uint8_t ga_close_gift_claimed[GAME_ADVENTURE_CLOSE_GIFT_BYTES];
@@ -277,11 +283,26 @@ void game_adventure_npc_action(uint16_t npc, uint8_t action)
     else if (action == GAME_ADVENTURE_NPC_SHOW) ga_npc_visibility[npc] = 1u;
     else if (action == GAME_ADVENTURE_NPC_TOGGLE) ga_npc_visibility[npc] ^= 1u;
 }
+void game_adventure_spotlight_actions(const game_adventure_spotlight_rule_t *rules,
+                                     uint16_t count, void (*apply)(uint8_t))
+{
+    ga_spotlight_rules = rules;
+    ga_spotlight_rule_count = rules ? count : 0u;
+    ga_spotlight_apply = apply;
+}
 void game_adventure_npc_choice_actions(const game_adventure_npc_choice_action_t *rules,
                                        uint16_t count)
 {
     ga_npc_choice_actions = rules;
     ga_npc_choice_action_count = rules ? count : 0u;
+}
+void game_adventure_remote_npc_actions(const game_adventure_remote_npc_rule_t *rules,
+                                     uint16_t count,
+                                     uint8_t (*apply)(const char *,uint16_t,uint8_t))
+{
+    ga_remote_npc_rules = rules;
+    ga_remote_npc_rule_count = rules && apply ? count : 0u;
+    ga_remote_npc_apply = apply;
 }
 void game_adventure_save_npc_visibility(uint8_t out[GAME_ADVENTURE_NPC_VISIBILITY_BYTES])
 {
@@ -703,6 +724,8 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     for (uint16_t i = 0; i < ga_npc_count && i < 256u; ++i)
         ga_npc_visibility[i] = 1u;
     game_adventure_npc_choice_actions(0, 0);
+    game_adventure_remote_npc_actions(0, 0, 0);
+    game_adventure_spotlight_actions(0, 0, 0);
     game_adventure_close_gifts(0,0);
     memset(ga_close_gift_claimed,0,sizeof(ga_close_gift_claimed));
     ga_choice_flags = 0;
@@ -908,6 +931,10 @@ uint8_t game_adventure_trigger_sequence(uint16_t node)
  * sparse table. On-close IDs start at 3 * number_of_nodes. No frame polling. */
 static void ga_apply_npc_appearance(uint16_t event_id)
 {
+    if (ga_spotlight_rules && ga_spotlight_apply)
+        for (uint16_t i = 0; i < ga_spotlight_rule_count; ++i)
+            if (ga_spotlight_rules[i].event_id == event_id)
+                ga_spotlight_apply(ga_spotlight_rules[i].action);
     for (uint16_t i = 0; i < ga_npc_choice_action_count; ++i) {
         const game_adventure_npc_choice_action_t *rule = &ga_npc_choice_actions[i];
         if (rule->choice_id != event_id) continue;
@@ -915,6 +942,12 @@ static void ga_apply_npc_appearance(uint16_t event_id)
         if (rule->npc_b != UINT16_MAX) game_adventure_npc_action(rule->npc_b, rule->action_b);
         break;
     }
+    if (ga_remote_npc_rules && ga_remote_npc_apply)
+        for (uint16_t i=0; i<ga_remote_npc_rule_count; ++i)
+            if (ga_remote_npc_rules[i].event_id == event_id)
+                ga_remote_npc_apply(ga_remote_npc_rules[i].world,
+                                   ga_remote_npc_rules[i].npc_slot,
+                                   ga_remote_npc_rules[i].action);
 }
 /* Award terminal-node gifts once. On full inventory, retry next time rather
  * than marking the gift claimed and silently losing it. */

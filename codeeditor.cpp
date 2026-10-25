@@ -1238,15 +1238,15 @@ CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
             [this]() { updateOccurrenceSelection(); });
     connect(this, &CodeEditor::textChanged, this,
             [this]() { updateOccurrenceSelection(true); });
-    // Autocomplete is an idle-time typing aid, not a cursor-navigation action.
-    // Text changes also cover Backspace, paste and auto-paired punctuation;
-    // arrow keys do not emit textChanged and never schedule a popup.
+    // IntelliSense only after 400 ms with no keyboard activity. Edits from
+    // Enter/Delete/Space/formatting never arm it.
     m_completionDelayTimer->setSingleShot(true);
-    m_completionDelayTimer->setInterval(100);
+    m_completionDelayTimer->setInterval(400);
     connect(m_completionDelayTimer, &QTimer::timeout,
             this, &CodeEditor::showDelayedCompletion);
     connect(this, &CodeEditor::textChanged, this, [this]() {
-        if (!m_resourceMode && hasFocus() && !textCursor().hasSelection())
+        if (m_completionTypingEdit && !m_resourceMode && hasFocus()
+            && !textCursor().hasSelection())
             m_completionDelayTimer->start();
     });
     connect(this, &CodeEditor::cursorPositionChanged, this, [this]() {
@@ -3180,6 +3180,7 @@ void CodeEditor::applyFoldVisibility(
     if (m_lineNumberArea) {
         m_lineNumberArea->update();
     }
+    viewport()->update(); // Refresh [...] overlay on folding and unfolding.
 
     if (m_minimap) {
         static_cast<CodeMinimap *>(m_minimap)
@@ -3809,8 +3810,11 @@ void CodeEditor::insertAutoIndent()
     const QString beforeCursor = blockText.left(positionInBlock);
     const QString afterCursor = blockText.mid(positionInBlock);
 
+    // At column zero the line's existing indentation lies AFTER the caret.
+    // Copying it inserts a second prefix and pushes the original code right.
+    // Only inherit whitespace before the caret, never from the rest of line.
     QString baseIndent = tabbedIndentation(
-        blockText, leadingWhitespace(blockText).size());
+        beforeCursor, leadingWhitespace(beforeCursor).size());
     QString nextIndent = baseIndent;
     const QString trimmedBefore = beforeCursor.trimmed();
     const bool opensBlock = trimmedBefore.endsWith(QLatin1Char(123));
@@ -4136,6 +4140,37 @@ void CodeEditor::paintEvent(QPaintEvent *event)
      */
     QPlainTextEdit::paintEvent(event);
     drawIndentGuides(event);
+
+    // This [...] hint is painted, never inserted into the QTextDocument.
+    // It therefore cannot affect the C source, selections or undo history.
+    QPainter painter(viewport());
+    const QColor ink = palette().color(QPalette::Text);
+    const QColor fill = palette().color(QPalette::AlternateBase);
+    const QColor edge = palette().color(QPalette::Mid);
+    painter.setFont(font());
+    QTextBlock block = firstVisibleBlock();
+    while (block.isValid()) {
+        const int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+        const int height = qMax(1, qRound(blockBoundingRect(block).height()));
+        if (top > event->rect().bottom()) break;
+        if (top + height >= event->rect().top() && isFolded(block.blockNumber())
+            && foldEndForStart(block.blockNumber()) > block.blockNumber()) {
+            QTextCursor endOfHeader(block);
+            endOfHeader.movePosition(QTextCursor::EndOfBlock);
+            const QRect caret = cursorRect(endOfHeader);
+            const int x = caret.right() + fontMetrics().horizontalAdvance(QLatin1Char(' '));
+            const int labelWidth = fontMetrics().horizontalAdvance(QStringLiteral("[...]")) + 10;
+            const QRect hint(x, top + 1, labelWidth, qMax(1, height - 2));
+            if (hint.intersects(event->rect())) {
+                painter.setPen(edge);
+                painter.setBrush(fill);
+                painter.drawRect(hint.adjusted(0, 0, -1, -1));
+                painter.setPen(ink);
+                painter.drawText(hint, Qt::AlignCenter, QStringLiteral("[...]"));
+            }
+        }
+        block = nextVisibleBlockFast(block);
+    }
 }
 
 bool CodeEditor::handleAutoPairKey(QKeyEvent *event)
@@ -4259,6 +4294,31 @@ bool CodeEditor::handlePairedBackspace(QKeyEvent *event)
 
 void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
+    // Any key interrupts the waiting period; only a genuine identifier/path
+    // edit below will arm the timer again through textChanged.
+    m_completionDelayTimer->stop();
+    const QString keyText = event->text();
+    const bool plainTyping = !(event->modifiers() &
+        (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+    const bool completionCharacter = plainTyping && !keyText.isEmpty()
+        && (keyText.at(0).isLetterOrNumber()
+            || keyText.at(0) == QLatin1Char('_')
+            || keyText.at(0) == QLatin1Char('.')
+            || keyText.at(0) == QLatin1Char('>')
+            || keyText.at(0) == QLatin1Char('/')
+            || keyText.at(0) == QLatin1Char('"'));
+    const bool pasteKey = event->modifiers() == Qt::ControlModifier
+                          && event->key() == Qt::Key_V;
+    const bool ordinaryEnter = (event->key() == Qt::Key_Return
+        || event->key() == Qt::Key_Enter)
+        && event->modifiers() != Qt::ControlModifier;
+    if ((completionCharacter || pasteKey || ordinaryEnter
+         || event->key() == Qt::Key_Space
+         || event->key() == Qt::Key_Backspace
+         || event->key() == Qt::Key_Delete)
+        && m_completer && m_completer->popup()->isVisible()) {
+        dismissCompletionForNavigation();
+    }
     if (!m_resourceMode && event->key() == Qt::Key_F1) {
         emit quickTipRequested(textUnderCursor());
         event->accept();
@@ -4324,11 +4384,13 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
             break;
         case Qt::Key_Return:
         case Qt::Key_Enter:
-            if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            // Plain Enter must create a line. Ctrl+Enter deliberately accepts.
+            if (event->modifiers() == Qt::ControlModifier) {
                 acceptCurrentCompletion();
                 event->accept();
                 return;
             }
+            dismissCompletionForNavigation();
             break;
         case Qt::Key_Escape:
             dismissCompletionForNavigation();
@@ -4508,17 +4570,21 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    m_completionTypingEdit = completionCharacter || pasteKey;
     if (handlePairedBackspace(event)) {
+        m_completionTypingEdit = false;
         event->accept();
         return;
     }
 
     if (handleAutoPairKey(event)) {
+        m_completionTypingEdit = false;
         event->accept();
         return;
     }
 
     QPlainTextEdit::keyPressEvent(event);
+    m_completionTypingEdit = false;
 
     switch (event->key()) {
     case Qt::Key_Left:
@@ -4553,7 +4619,7 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    // textChanged already scheduled the completion after 100 ms of quiet.
+    // Only eligible typing keys schedule completion after 400 ms of quiet.
     // No immediate popup here (including inside #include and object.member).
 
 }
@@ -4644,13 +4710,37 @@ bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
                 }
                 return false;
             }
-            if (plainKey && (key->key() == Qt::Key_Return ||
-                             key->key() == Qt::Key_Enter)) {
-                acceptCurrentCompletion();
-                return true;
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+                if (key->modifiers() == Qt::ControlModifier) {
+                    acceptCurrentCompletion();
+                    return true;
+                }
+                // If Qt gave the popup focus, forward Enter back to the code
+                // editor as a NEWLINE, never as the first suggestion.
+                dismissCompletionForNavigation();
+                if (fromPopup) {
+                    QKeyEvent forwarded(key->type(), key->key(),
+                                         key->modifiers(), key->text(),
+                                         key->isAutoRepeat(), key->count());
+                    QCoreApplication::sendEvent(this, &forwarded);
+                    return true;
+                }
+                return false;
             }
             if (key->key() == Qt::Key_Escape) {
                 dismissCompletionForNavigation();
+                return true;
+            }
+            if (fromPopup && (key->key() == Qt::Key_Space
+                || key->key() == Qt::Key_Backspace
+                || key->key() == Qt::Key_Delete
+                || (!key->text().isEmpty() && plainKey))) {
+                // The suggestions list must not swallow ordinary typing.
+                dismissCompletionForNavigation();
+                QKeyEvent forwarded(key->type(), key->key(),
+                                    key->modifiers(), key->text(),
+                                    key->isAutoRepeat(), key->count());
+                QCoreApplication::sendEvent(this, &forwarded);
                 return true;
             }
             switch (key->key()) {

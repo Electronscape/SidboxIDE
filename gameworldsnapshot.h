@@ -7,6 +7,7 @@
 // Map output is staged privately in .codergirl/tilemap-staging/<world>/.
 // Project-root gamelevels/ is obsolete and is never compiled.
 #include <QDateTime>
+#include <QColor>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -113,7 +114,9 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
             "gameworlditems_save_state", "gameworlditems_restore_state",
-            "gameadventure_save_progress", "gameadventure_restore_progress"}) {
+            "gameworlditems_remote_action", "gameworlditems_remote_reset",
+            "gameworlditems_apply_remote", "gameadventure_save_progress", "gameadventure_restore_progress",
+            "gameadventure_npc_action", "gameadventure_npc_remote_action", "gameadventure_npc_remote_reset"}) {
         names.insert(QLatin1String(name));
     }
     return names;
@@ -202,11 +205,18 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "uint8_t " + id + "_gameworlditems_init(void);\n"
                      "void " + id + "_gameworlditems_save_state(void);\n"
                      "void " + id + "_gameworlditems_restore_state(void);\n"
+                     "void " + id + "_gameworlditems_set_active(uint16_t,uint8_t);\n"
+                     "void " + id + "_gameworlditems_remote_action(uint16_t,uint8_t);\n"
+                     "void " + id + "_gameworlditems_remote_reset(void);\n"
+                     "void " + id + "_gameworlditems_apply_remote(void);\n"
                      "void " + id + "_gameworlditems_update(uint16_t frames);\n"
                      "void " + id + "_gameworlditems_draw(int32_t x, int32_t y);\n"
                      "void " + id + "_gameadventure_setup(void);\n"
                      "void " + id + "_gameadventure_save_progress(void);\n"
                      "void " + id + "_gameadventure_restore_progress(void);\n"
+                     "void " + id + "_gameadventure_npc_action(uint16_t,uint8_t);\n"
+                     "void " + id + "_gameadventure_npc_remote_action(uint16_t,uint8_t);\n"
+                     "void " + id + "_gameadventure_npc_remote_reset(void);\n"
                      "void " + id + "_gameadventure_store_inventory(gameworlds_inventory_put_t,void *);\n"
                      "void " + id + "_gameadventure_load_inventory(gameworlds_inventory_get_t,void *);\n"
                      "void " + id + "_gameassets_show_background(void);\n";
@@ -318,6 +328,13 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         availableProfiles.insert(value.toObject().value(QStringLiteral("id")).toInt(-1));
     QStringList beforeFns, afterFns, checkFns, spawnFields, namedStartFields;
     QStringList spawnDeclarations, defaultTransitionIn, defaultTransitionOut, defaultTransitionFrames, defaultCircleOrigin;
+    QStringList defaultSpotlightEnabled, defaultSpotlightRadius, defaultSpotlightFeather;
+    QStringList defaultSpotlightCenter, defaultSpotlightOffsetX, defaultSpotlightOffsetY;
+    QStringList defaultSpotlightMaskIndex, defaultSpotlightMaskColour;
+    QStringList defaultSpotlightFlipX, defaultSpotlightFlipY, defaultSpotlightOpacity;
+    QStringList defaultSpotlightStable, defaultSpotlightAnimMode, defaultSpotlightAnimMin;
+    QStringList defaultSpotlightAnimMax, defaultSpotlightRandomMin, defaultSpotlightRandomMax;
+    QStringList defaultSpotlightPulseDelay;
     QStringList frontPaletteFns, backPaletteFns;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
@@ -426,6 +443,35 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         defaultTransitionFrames << QString::number(transitionFrames);
         defaultCircleOrigin << (start.value(QStringLiteral("circleOrigin")).toString() == QStringLiteral("location")
             ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultSpotlightEnabled << (start.value(QStringLiteral("spotlightEnabled")).toBool(false)
+            ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultSpotlightRadius << QString::number(qBound(16, start.value(QStringLiteral("spotlightRadius")).toInt(96), 240));
+        defaultSpotlightFeather << QString::number(qBound(0, start.value(QStringLiteral("spotlightFeather")).toInt(24), 96));
+        defaultSpotlightCenter << (start.value(QStringLiteral("spotlightCenter")).toBool(true)
+            ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultSpotlightOffsetX << QString::number(qBound(-240, start.value(QStringLiteral("spotlightOffsetX")).toInt(0), 240));
+        defaultSpotlightOffsetY << QString::number(qBound(-240, start.value(QStringLiteral("spotlightOffsetY")).toInt(0), 240));
+        defaultSpotlightFlipX << (start.value(QStringLiteral("spotlightFlipX")).toBool(false) ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultSpotlightFlipY << (start.value(QStringLiteral("spotlightFlipY")).toBool(false) ? QStringLiteral("1") : QStringLiteral("0"));
+        /* The runtime uses 0 for old generated rows (100% opacity). New values
+         * encode percent+1, so 1 means genuine zero-opacity darkness. */
+        defaultSpotlightOpacity << QString::number(qBound(0, start.value(QStringLiteral("spotlightOpacity")).toInt(100), 100) + 1);
+        defaultSpotlightStable << (start.value(QStringLiteral("spotlightStableDither")).toBool(true) ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultSpotlightAnimMode << QString::number(qBound(0, start.value(QStringLiteral("spotlightAnimMode")).toInt(0), 2));
+        const int amin = qBound(0, start.value(QStringLiteral("spotlightAnimMin")).toInt(12), 96);
+        defaultSpotlightAnimMin << QString::number(amin);
+        defaultSpotlightAnimMax << QString::number(qBound(amin, start.value(QStringLiteral("spotlightAnimMax")).toInt(32), 96));
+        const int dmin = qBound(1, start.value(QStringLiteral("spotlightAnimDelayMin")).toInt(3), 600);
+        defaultSpotlightRandomMin << QString::number(dmin);
+        defaultSpotlightRandomMax << QString::number(qBound(dmin, start.value(QStringLiteral("spotlightAnimDelayMax")).toInt(12), 600));
+        defaultSpotlightPulseDelay << QString::number(qBound(1, start.value(QStringLiteral("spotlightAnimPulseDelay")).toInt(3), 600));
+        defaultSpotlightMaskIndex << QString::number(qBound(1, start.value(QStringLiteral("spotlightMaskIndex")).toInt(255), 255));
+        {
+            QColor mask(start.value(QStringLiteral("spotlightMaskColour")).toString(QStringLiteral("#000000")));
+            if (!mask.isValid()) mask = QColor(Qt::black);
+            defaultSpotlightMaskColour << QStringLiteral("0xff%1u")
+                .arg(qulonglong(mask.rgb() & 0xffffffu), 6, 16, QLatin1Char('0'));
+        }
         spawnFields << QStringLiteral(", %1, %2, %3, %4")
             .arg(spawnX).arg(spawnY).arg(facing).arg(worldPhysicsId);
         QStringList entries;
@@ -485,11 +531,26 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         // Each named entrance overrides them in its own generated row.
         entry += QStringLiteral(", %1, %2, %3, %4").arg(defaultTransitionIn.at(i))
             .arg(defaultTransitionOut.at(i)).arg(defaultTransitionFrames.at(i)).arg(defaultCircleOrigin.at(i));
+        entry += QStringLiteral(", %1, %2, %3, %4, %5, %6").arg(defaultSpotlightEnabled.at(i))
+            .arg(defaultSpotlightRadius.at(i)).arg(defaultSpotlightFeather.at(i))
+            .arg(defaultSpotlightCenter.at(i)).arg(defaultSpotlightOffsetX.at(i))
+            .arg(defaultSpotlightOffsetY.at(i));
+        entry += QStringLiteral(", %1, %2").arg(defaultSpotlightMaskIndex.at(i), defaultSpotlightMaskColour.at(i));
+        entry += QStringLiteral(", %1, %2, %3").arg(defaultSpotlightFlipX.at(i))
+            .arg(defaultSpotlightFlipY.at(i)).arg(defaultSpotlightOpacity.at(i));
+        entry += QStringLiteral(", %1, %2, %3, %4, %5, %6, %7").arg(defaultSpotlightStable.at(i))
+            .arg(defaultSpotlightAnimMode.at(i)).arg(defaultSpotlightAnimMin.at(i))
+            .arg(defaultSpotlightAnimMax.at(i)).arg(defaultSpotlightRandomMin.at(i))
+            .arg(defaultSpotlightRandomMax.at(i)).arg(defaultSpotlightPulseDelay.at(i));
         entry += QStringLiteral(", %1, %2")
             .arg(frontPaletteFns.at(i), backPaletteFns.at(i));
         const QString id = published.at(i);
         entry += QStringLiteral(", %1_gameworlditems_save_state, %1_gameworlditems_restore_state, "
-                                "%1_gameadventure_save_progress, %1_gameadventure_restore_progress")
+                                "%1_gameadventure_save_progress, %1_gameadventure_restore_progress, "
+                                "%1_gameworlditems_set_active, %1_gameworlditems_remote_action, "
+                                "%1_gameworlditems_remote_reset, %1_gameworlditems_apply_remote, "
+                                "%1_gameadventure_npc_action, %1_gameadventure_npc_remote_action, "
+                                "%1_gameadventure_npc_remote_reset")
             .arg(id);
         entry += QLatin1Char('}');
     }

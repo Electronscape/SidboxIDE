@@ -1,6 +1,7 @@
 #include "gamedesigner.h"
 #include "gameglobalstamps.h"
 #include "gameworldsnapshot.h"
+#include "gamecrossworldlinks.h"
 #include "gameplayerprofile.h"
 #include "gamenpcitemindex.h"
 #include "gamedesigner_limits.h"
@@ -21,6 +22,7 @@
 #include "gameeditoricons.h"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QPaintEvent>
 #include <QDir>
@@ -1858,7 +1860,28 @@ void SidboxGameDesigner::editPlayerStart()
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Player Start — World Entry Point"));
     dialog.setStyleSheet(QStringLiteral("QDialog, QPushButton, QLineEdit, QSpinBox, QComboBox { border-radius: 0px; }"));
-    auto *layout=new QVBoxLayout(&dialog); auto *form=new QFormLayout(); layout->addLayout(form);
+    dialog.resize(1050, 720);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *contentRow = new QHBoxLayout();
+    layout->addLayout(contentRow, 1);
+    auto *settingsPanel = new QWidget(&dialog);
+    auto *form = new QFormLayout(settingsPanel);
+    auto *settingsScroll = new QScrollArea(&dialog);
+    settingsScroll->setWidgetResizable(true);
+    settingsScroll->setWidget(settingsPanel);
+    contentRow->addWidget(settingsScroll, 1);
+    auto *previewPanel = new QWidget(&dialog);
+    auto *previewLayout = new QVBoxLayout(previewPanel);
+    previewLayout->addWidget(new QLabel(tr("Player light position (live preview)"),previewPanel));
+    auto *lightPreview = new QLabel(previewPanel);
+    lightPreview->setFixedSize(320, 320);
+    lightPreview->setToolTip(tr("Uses your shared player's Idle frame. The light ring is a placement guide, not a simulated SIDBOX framebuffer."));
+    previewLayout->addWidget(lightPreview);
+    auto *previewHint = new QLabel(tr("Purple cross = light centre\nYellow cross = sprite origin\nThe aperture is a preview, not real lighting."),previewPanel);
+    previewHint->setWordWrap(true);
+    previewLayout->addWidget(previewHint);
+    previewLayout->addStretch(1);
+    contentRow->addWidget(previewPanel, 0, Qt::AlignTop);
     auto *profile=new QLineEdit(m_playerProfile,&dialog);
     profile->setReadOnly(true);
     form->addRow(tr("Shared player"),profile);
@@ -1905,10 +1928,278 @@ void SidboxGameDesigner::editPlayerStart()
     circleOrigin->setCurrentIndex(qMax(0, circleOrigin->findData(m_playerCircleOrigin)));
     transitionFrames->setValue(m_playerTransitionFrames);
     form->addRow(tr("Transition duration"), transitionFrames);
+    auto *spotlightEnabled = new QCheckBox(tr("Enable local darkness with player spotlight"), &dialog);
+    spotlightEnabled->setChecked(m_playerSpotlightEnabled);
+    spotlightEnabled->setToolTip(tr("Draw a black overlay across the playfield and cut out a circular viewing area around the player. Useful for dark houses, caves and mystery scenes."));
+    form->addRow(QString(), spotlightEnabled);
+    auto *spotlightRadius = new QSpinBox(&dialog);
+    spotlightRadius->setRange(16, 240);
+    spotlightRadius->setSuffix(tr(" px clear radius"));
+    spotlightRadius->setValue(m_playerSpotlightRadius);
+    auto *spotlightFeather = new QSpinBox(&dialog);
+    spotlightFeather->setRange(0, 96);
+    spotlightFeather->setSuffix(tr(" px feather"));
+    spotlightFeather->setValue(m_playerSpotlightFeather);
+    form->addRow(tr("Spotlight radius"), spotlightRadius);
+    form->addRow(tr("Spotlight feather"), spotlightFeather);
+    auto *spotlightAnchor = new QComboBox(&dialog);
+    spotlightAnchor->addItem(tr("Centre of player sprite"), true);
+    spotlightAnchor->addItem(tr("Player sprite origin (top-left)"), false);
+    spotlightAnchor->setCurrentIndex(m_playerSpotlightCenter ? 0 : 1);
+    spotlightAnchor->setToolTip(tr("Normally centres the light on the visible player sprite, not the physics origin. "
+        "Choose Origin for deliberately offset lights."));
+    form->addRow(tr("Spotlight anchor"), spotlightAnchor);
+    auto *spotlightOffsetX = new QSpinBox(&dialog);
+    auto *spotlightOffsetY = new QSpinBox(&dialog);
+    for (QSpinBox *spin : {spotlightOffsetX, spotlightOffsetY}) {
+        spin->setRange(-240, 240);
+        spin->setSuffix(tr(" px"));
+    }
+    spotlightOffsetX->setValue(m_playerSpotlightOffsetX);
+    spotlightOffsetY->setValue(m_playerSpotlightOffsetY);
+    spotlightOffsetX->setToolTip(tr("Positive = right, negative = left of the chosen anchor."));
+    spotlightOffsetY->setToolTip(tr("Positive = down, negative = up from the chosen anchor."));
+    form->addRow(tr("Light offset X"), spotlightOffsetX);
+    form->addRow(tr("Light offset Y"), spotlightOffsetY);
+    auto *spotlightFlipX = new QCheckBox(tr("Mirror X offset when player faces left"), &dialog);
+    spotlightFlipX->setChecked(m_playerSpotlightFlipX);
+    form->addRow(QString(), spotlightFlipX);
+    auto *spotlightFlipY = new QCheckBox(tr("Mirror Y offset when player sprite flips vertically"), &dialog);
+    spotlightFlipY->setChecked(m_playerSpotlightFlipY);
+    form->addRow(QString(), spotlightFlipY);
+    auto *spotlightOpacity = new QSpinBox(&dialog);
+    spotlightOpacity->setRange(0, 100);
+    spotlightOpacity->setSuffix(tr("% darkness"));
+    spotlightOpacity->setValue(m_playerSpotlightOpacity);
+    spotlightOpacity->setToolTip(tr("100% = normal opaque darkness, fastest. Smaller percentages use a patterned dark overlay and may reduce FPS."));
+    form->addRow(tr("Outside darkness opacity"), spotlightOpacity);
+    auto *stablePattern = new QCheckBox(tr("Stable 4x4 dither (avoids moving sparkle)"), &dialog);
+    stablePattern->setChecked(m_playerSpotlightStableDither);
+    stablePattern->setToolTip(tr("Align the light to a 4-pixel grid. This stabilises the ordered-dither dots as the player moves. The light position changes in small 4-pixel steps."));
+    form->addRow(QString(), stablePattern);
+    auto *animMode = new QComboBox(&dialog);
+    animMode->addItem(tr("Off (static feather)"), 0);
+    animMode->addItem(tr("Random flicker"), 1);
+    animMode->addItem(tr("Pulse (ping-pong)"), 2);
+    animMode->setCurrentIndex(qBound(0, m_playerSpotlightAnimMode, 2));
+    form->addRow(tr("Feather animation"), animMode);
+    auto *animMin = new QSpinBox(&dialog);
+    auto *animMax = new QSpinBox(&dialog);
+    for (auto *spin : {animMin, animMax}) { spin->setRange(0, 96); spin->setSuffix(tr(" px")); }
+    animMin->setValue(m_playerSpotlightAnimMin);
+    animMax->setValue(m_playerSpotlightAnimMax);
+    form->addRow(tr("Animation feather minimum"), animMin);
+    form->addRow(tr("Animation feather maximum"), animMax);
+    auto *randomMin = new QSpinBox(&dialog);
+    auto *randomMax = new QSpinBox(&dialog);
+    auto *pulseDelay = new QSpinBox(&dialog);
+    for (auto *spin : {randomMin, randomMax, pulseDelay}) { spin->setRange(1, 600); spin->setSuffix(tr(" frames")); }
+    randomMin->setValue(m_playerSpotlightAnimDelayMin);
+    randomMax->setValue(m_playerSpotlightAnimDelayMax);
+    pulseDelay->setValue(m_playerSpotlightAnimPulseDelay);
+    form->addRow(tr("Random time minimum"), randomMin);
+    form->addRow(tr("Random time maximum"), randomMax);
+    form->addRow(tr("Pulse frames per step"), pulseDelay);
+    QObject::connect(animMin, QOverload<int>::of(&QSpinBox::valueChanged), animMax,
+                     [animMax](int v) { animMax->setMinimum(v); });
+    QObject::connect(randomMin, QOverload<int>::of(&QSpinBox::valueChanged), randomMax,
+                     [randomMax](int v) { randomMax->setMinimum(v); });
+    animMax->setMinimum(animMin->value());
+    randomMax->setMinimum(randomMin->value());
+    auto updateAnimationWidgets = [=]() {
+        const bool on = spotlightEnabled->isChecked();
+        const int mode = animMode->currentData().toInt();
+        animMode->setEnabled(on);
+        animMin->setEnabled(on && mode != 0);
+        animMax->setEnabled(on && mode != 0);
+        randomMin->setEnabled(on && mode == 1);
+        randomMax->setEnabled(on && mode == 1);
+        pulseDelay->setEnabled(on && mode == 2);
+        stablePattern->setEnabled(on);
+    };
+    QObject::connect(animMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, updateAnimationWidgets);
+    QObject::connect(spotlightEnabled, &QCheckBox::toggled, &dialog, updateAnimationWidgets);
+    updateAnimationWidgets();
+    const QImage playerIdle = GamePlayerProfile::idlePreview(
+        QDir(QFileInfo(m_filePath).absolutePath()), m_playerFacing);
+    auto updateLightPreview = [=]() {
+        QImage preview(320, 320, QImage::Format_ARGB32_Premultiplied);
+        QPainter painter(&preview);
+        painter.fillRect(preview.rect(), QColor(27, 30, 39));
+        for (int y=0; y<320; y+=16) for (int x=0; x<320; x+=16)
+            if (((x+y)/16)&1) painter.fillRect(x,y,16,16,QColor(41,45,55));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const qreal magnify = 1.5;
+        const qreal spriteW = playerIdle.isNull() ? 32.0 : playerIdle.width();
+        const qreal spriteH = playerIdle.isNull() ? 48.0 : playerIdle.height();
+        const QPointF origin(160.0-spriteW*magnify/2.0,160.0-spriteH*magnify/2.0);
+        const int offsetX = (spotlightFlipX->isChecked() && face->currentData().toInt()==0)
+            ? -spotlightOffsetX->value() : spotlightOffsetX->value();
+        const int offsetY = spotlightOffsetY->value(); // Idle preview has no vertical facing control.
+        const QPointF light = origin + QPointF(
+            (spotlightAnchor->currentData().toBool() ? spriteW/2.0 : 0.0) + offsetX,
+            (spotlightAnchor->currentData().toBool() ? spriteH/2.0 : 0.0) + offsetY) * magnify;
+        if (spotlightEnabled->isChecked()) {
+            painter.setPen(QPen(QColor(210,215,225),1.0));
+            painter.drawText(QRect(5,5,307,22), Qt::AlignLeft,
+                QObject::tr("Outside darkness: %1%").arg(spotlightOpacity->value()));
+            painter.setPen(QPen(QColor(176,91,247),2.0));
+            painter.setBrush(Qt::NoBrush);
+            const qreal radius=spotlightRadius->value()*magnify;
+            painter.drawEllipse(light,radius,radius);
+            if (spotlightFeather->value()>0) {
+                painter.setPen(QPen(QColor(176,91,247,90),1.0,Qt::DashLine));
+                const qreal feather=(spotlightRadius->value()+spotlightFeather->value())*magnify;
+                painter.drawEllipse(light,feather,feather);
+            }
+            if (animMode->currentData().toInt() != 0) {
+                /* Editor previews the animation envelope, without allocating BOBs. */
+                const qreal rMin = (spotlightRadius->value()+animMin->value())*magnify;
+                const qreal rMax = (spotlightRadius->value()+animMax->value())*magnify;
+                painter.setPen(QPen(QColor(90,230,188,180),1.0,Qt::DashLine));
+                painter.drawEllipse(light,rMin,rMin);
+                painter.setPen(QPen(QColor(245,171,85,180),1.0,Qt::DashLine));
+                painter.drawEllipse(light,rMax,rMax);
+                painter.setPen(QPen(QColor(210,215,225),1.0));
+                painter.drawText(QRect(5,295,309,21), Qt::AlignLeft,
+                    QObject::tr("Cached feather: %1–%2 px").arg(animMin->value()).arg(animMax->value()));
+            }
+        }
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        if (!playerIdle.isNull())
+            painter.drawImage(QRectF(origin,QSizeF(spriteW*magnify,spriteH*magnify)),playerIdle,playerIdle.rect());
+        else {
+            painter.setPen(QPen(QColor(140,160,180),1));
+            painter.setBrush(QColor(65,78,100));
+            painter.drawRect(QRectF(origin,QSizeF(spriteW*magnify,spriteH*magnify)));
+        }
+        painter.setPen(QPen(QColor(255,213,93),2));
+        painter.drawLine(QPointF(origin.x()-6,origin.y()),QPointF(origin.x()+6,origin.y()));
+        painter.drawLine(QPointF(origin.x(),origin.y()-6),QPointF(origin.x(),origin.y()+6));
+        painter.setPen(QPen(QColor(183,102,255),2));
+        painter.drawLine(QPointF(light.x()-7,light.y()),QPointF(light.x()+7,light.y()));
+        painter.drawLine(QPointF(light.x(),light.y()-7),QPointF(light.x(),light.y()+7));
+        painter.end();
+        lightPreview->setPixmap(QPixmap::fromImage(preview));
+    };
+    QObject::connect(spotlightEnabled, &QCheckBox::toggled, &dialog, updateLightPreview);
+    QObject::connect(spotlightAnchor, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, updateLightPreview);
+    QObject::connect(spotlightFlipX, &QCheckBox::toggled, &dialog, updateLightPreview);
+    QObject::connect(spotlightFlipY, &QCheckBox::toggled, &dialog, updateLightPreview);
+    QObject::connect(face, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, updateLightPreview);
+    for (QSpinBox *spin: {spotlightOffsetX, spotlightOffsetY, spotlightRadius, spotlightFeather, spotlightOpacity, animMin, animMax})
+        QObject::connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), &dialog, updateLightPreview);
+    QObject::connect(animMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, updateLightPreview);
+    updateLightPreview();
+    auto *maskIndex = new QSpinBox(&dialog);
+    maskIndex->setRange(1, 255); // index 0 must stay transparent
+    maskIndex->setValue(m_playerSpotlightMaskIndex);
+    maskIndex->setToolTip(tr("Reserve this foreground palette index for the spotlight mask and circle transitions. Do not use it in your artwork."));
+    auto *maskIndexChooser = new QWidget(&dialog);
+    auto *maskIndexRow = new QHBoxLayout(maskIndexChooser);
+    maskIndexRow->setContentsMargins(0,0,0,0);
+    auto *paletteChoose = new QPushButton(tr("Pick from palette..."), maskIndexChooser);
+    paletteChoose->setToolTip(tr("Choose the reserved index visually from your active foreground palette."));
+    maskIndexRow->addWidget(maskIndex);
+    maskIndexRow->addWidget(paletteChoose);
+    form->addRow(tr("Reserved mask palette ID"), maskIndexChooser);
+    const QVector<QRgb> foregroundSwatches = activePalette(QStringLiteral("foreground"));
+    auto *currentPaletteColour = new QLabel(&dialog);
+    const auto updateIndexSwatch = [maskIndex,currentPaletteColour,foregroundSwatches]() {
+        const int index = maskIndex->value();
+        if (foregroundSwatches.size()!=256) {
+            currentPaletteColour->setText(QObject::tr("No active foreground palette selected"));
+            currentPaletteColour->setStyleSheet(QString());
+            return;
+        }
+        const QColor colour = QColor::fromRgb(foregroundSwatches.at(index));
+        currentPaletteColour->setText(QObject::tr("Current palette[%1]: %2  → overwritten by mask colour")
+            .arg(index).arg(colour.name().toUpper()));
+        currentPaletteColour->setStyleSheet(QStringLiteral("QLabel { border-radius:0px; padding:4px; background:%1; color:%2; }")
+            .arg(colour.name(),colour.lightness()>128?QStringLiteral("black"):QStringLiteral("white")));
+    };
+    QObject::connect(maskIndex,QOverload<int>::of(&QSpinBox::valueChanged),&dialog,updateIndexSwatch);
+    updateIndexSwatch();
+    form->addRow(tr("Existing palette colour"),currentPaletteColour);
+    QObject::connect(paletteChoose,&QPushButton::clicked,&dialog,[&dialog,maskIndex,foregroundSwatches]() {
+        if (foregroundSwatches.size()!=256) {
+            QMessageBox::information(&dialog,QObject::tr("Choose mask palette index"),
+                QObject::tr("Select an active foreground .pal resource first. You can still enter a palette index manually."));
+            return;
+        }
+        QDialog picker(&dialog);
+        picker.setWindowTitle(QObject::tr("Choose reserved foreground palette index"));
+        picker.setStyleSheet(QStringLiteral("QDialog, QPushButton { border-radius:0px; }"));
+        auto *pickerLayout = new QVBoxLayout(&picker);
+        auto *note = new QLabel(QObject::tr("Click the palette cell to RESERVE. Index 0 is transparent and cannot be used."),&picker);
+        note->setWordWrap(true);pickerLayout->addWidget(note);
+        auto *cells=new QGridLayout();cells->setSpacing(2);
+        for (int index=0;index<256;++index) {
+            auto *cell=new QPushButton(&picker);
+            cell->setFixedSize(23,23);
+            cell->setEnabled(index!=0);
+            const QColor colour=QColor::fromRgb(foregroundSwatches.at(index));
+            cell->setStyleSheet(QStringLiteral("QPushButton {border: %1px solid %2; border-radius:0px; background:%3;}")
+                .arg(index==maskIndex->value()?3:1)
+                .arg(index==maskIndex->value()?QStringLiteral("#ffcc00"):QStringLiteral("#616161"))
+                .arg(colour.name()));
+            cell->setToolTip(QObject::tr("Index %1: %2").arg(index).arg(colour.name().toUpper()));
+            cells->addWidget(cell,index/16,index%16);
+            QObject::connect(cell,&QPushButton::clicked,&picker,[maskIndex,&picker,index]() {
+                maskIndex->setValue(index);picker.accept();
+            });
+        }
+        pickerLayout->addLayout(cells);
+        picker.exec();
+    });
+    QColor chosenMaskColour(m_playerSpotlightMaskColour);
+    if (!chosenMaskColour.isValid()) chosenMaskColour = QColor(Qt::black);
+    auto *maskColourButton = new QPushButton(&dialog);
+    auto updateMaskColourButton = [maskColourButton, &chosenMaskColour]() {
+        maskColourButton->setText(QObject::tr("Mask colour: %1").arg(chosenMaskColour.name().toUpper()));
+        maskColourButton->setStyleSheet(QStringLiteral("QPushButton { border-radius: 0px; background: %1; color: %2; }")
+            .arg(chosenMaskColour.name(), chosenMaskColour.lightness() > 128 ? QStringLiteral("black") : QStringLiteral("white")));
+    };
+    updateMaskColourButton();
+    QObject::connect(maskColourButton, &QPushButton::clicked, &dialog,
+        [&dialog, &chosenMaskColour, updateMaskColourButton]() {
+            const QColor colour = QColorDialog::getColor(chosenMaskColour, &dialog,
+                QObject::tr("Choose reserved mask colour"));
+            if (!colour.isValid()) return;
+            chosenMaskColour = colour;
+            updateMaskColourButton();
+        });
+    form->addRow(tr("Mask colour"), maskColourButton);
+    auto *maskWarning = new QLabel(tr("The chosen foreground palette ID is reserved for darkness and circle wipes. "
+                                     "Any artwork using that index will also change colour. "
+                                     "Set it to the same colour in every world's palette for consistency."), &dialog);
+    maskWarning->setWordWrap(true);
+    form->addRow(QString(), maskWarning);
+    auto updateSpotlightWidgets = [spotlightEnabled, spotlightRadius, spotlightFeather,
+                                   spotlightAnchor, spotlightOffsetX, spotlightOffsetY,
+                                   spotlightFlipX, spotlightFlipY, spotlightOpacity,
+                                   maskIndex, maskIndexChooser, maskColourButton, maskWarning]() {
+        const bool on = spotlightEnabled->isChecked();
+        spotlightRadius->setEnabled(on);
+        spotlightFeather->setEnabled(on);
+        spotlightAnchor->setEnabled(on);
+        spotlightOffsetX->setEnabled(on);
+        spotlightOffsetY->setEnabled(on);
+        spotlightFlipX->setEnabled(on);
+        spotlightFlipY->setEnabled(on);
+        spotlightOpacity->setEnabled(on);
+        maskIndexChooser->setEnabled(on);
+        maskIndex->setEnabled(on);
+        maskColourButton->setEnabled(on);
+        maskWarning->setEnabled(on);
+    };
+    QObject::connect(spotlightEnabled, &QCheckBox::toggled, &dialog, updateSpotlightWidgets);
+    updateSpotlightWidgets();
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);
     layout->addWidget(buttons);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    dialog.showMaximized();
     if (dialog.exec()!=QDialog::Accepted) return;
     m_playerStartX=x->value();m_playerStartY=y->value();
     m_playerFacing=face->currentData().toInt();
@@ -1916,6 +2207,24 @@ void SidboxGameDesigner::editPlayerStart()
     m_playerTransitionOut=transitionOut->currentData().toString();
     m_playerCircleOrigin=circleOrigin->currentData().toString();
     m_playerTransitionFrames=transitionFrames->value();
+    m_playerSpotlightEnabled=spotlightEnabled->isChecked();
+    m_playerSpotlightRadius=spotlightRadius->value();
+    m_playerSpotlightFeather=spotlightFeather->value();
+    m_playerSpotlightCenter=spotlightAnchor->currentData().toBool();
+    m_playerSpotlightOffsetX=spotlightOffsetX->value();
+    m_playerSpotlightOffsetY=spotlightOffsetY->value();
+    m_playerSpotlightFlipX=spotlightFlipX->isChecked();
+    m_playerSpotlightFlipY=spotlightFlipY->isChecked();
+    m_playerSpotlightOpacity=spotlightOpacity->value();
+    m_playerSpotlightStableDither=stablePattern->isChecked();
+    m_playerSpotlightAnimMode=animMode->currentData().toInt();
+    m_playerSpotlightAnimMin=animMin->value();
+    m_playerSpotlightAnimMax=animMax->value();
+    m_playerSpotlightAnimDelayMin=randomMin->value();
+    m_playerSpotlightAnimDelayMax=randomMax->value();
+    m_playerSpotlightAnimPulseDelay=pulseDelay->value();
+    m_playerSpotlightMaskIndex=maskIndex->value();
+    m_playerSpotlightMaskColour=chosenMaskColour.name();
     m_playerEntry=entry->text().trimmed().isEmpty()?QStringLiteral("default"):entry->text().trimmed();
     setDirty();refreshResources();rebuildScene();
 }
@@ -4910,7 +5219,8 @@ void SidboxGameDesigner::pasteCopiedSprite()
             if (r.spriteStamp.active() && !QFileInfo(sourceFile(r.spriteStamp.sourcePath)).isFile())
                 missingFiles.append(sourceFile(r.spriteStamp.sourcePath));
             const auto checkId = [&](const QString &id) {
-                if (id.isEmpty()) return;
+                if (id.isEmpty() || id == QStringLiteral("@player_spotlight") ||
+                    id.startsWith(QStringLiteral("@world/"))) return;
                 const Resource *dep = sourceById(id);
                 if (dep) checkDependencies(*dep);
                 else missingFiles.append(tr("Missing linked resource ID: %1").arg(id));
@@ -5130,6 +5440,7 @@ void SidboxGameDesigner::pasteCopiedSprite()
         std::function<QString(const QString &)> importById;
         importById = [&](const QString &id) -> QString {
             if (id.isEmpty()) return {};
+            if (id == QStringLiteral("@player_spotlight")) return id;
             if (remapped.contains(id)) return remapped.value(id);
             const Resource *original = sourceById(id);
             if (!original) return {}; // already validated above
@@ -5172,9 +5483,11 @@ void SidboxGameDesigner::pasteCopiedSprite()
                 for (const auto field : soundFields)
                     r.*field = importById(r.*field);
                 r.triggerMusicId = importById(r.triggerMusicId);
-                r.targetObjectId = importById(r.targetObjectId);
+                if (!r.targetObjectId.startsWith(QStringLiteral("@world/")))
+                    r.targetObjectId = importById(r.targetObjectId);
                 for (Resource::LinkedAction &link : r.triggerExtraActions)
-                    link.objectId = importById(link.objectId);
+                    if (!link.objectId.startsWith(QStringLiteral("@world/")))
+                        link.objectId = importById(link.objectId);
                 r.breakDropCollectableId = importById(r.breakDropCollectableId);
             };
             remapFields(dep);
@@ -5186,9 +5499,11 @@ void SidboxGameDesigner::pasteCopiedSprite()
             for (const auto field : soundFields)
                 r.*field = importById(r.*field);
             r.triggerMusicId = importById(r.triggerMusicId);
-            r.targetObjectId = importById(r.targetObjectId);
+            if (!r.targetObjectId.startsWith(QStringLiteral("@world/")))
+                    r.targetObjectId = importById(r.targetObjectId);
             for (Resource::LinkedAction &link : r.triggerExtraActions)
-                link.objectId = importById(link.objectId);
+                if (!link.objectId.startsWith(QStringLiteral("@world/")))
+                        link.objectId = importById(link.objectId);
             r.breakDropCollectableId = importById(r.breakDropCollectableId);
         };
         attachAnimation(copy, s_copiedWorldObject.id);
@@ -6664,7 +6979,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     // A Trigger owns an ordered list; keys and enemies retain the familiar
     // single linked-object controls. Legacy targetObjectId/action = first row.
     auto *linkedActionRows = new QTableWidget(0, 2, &dialog);
-    linkedActionRows->setHorizontalHeaderLabels({tr("Game Object"), tr("Action")});
+    linkedActionRows->setHorizontalHeaderLabels({tr("Game Object / NPC"), tr("Action")});
     linkedActionRows->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     linkedActionRows->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
     linkedActionRows->verticalHeader()->hide();
@@ -6686,7 +7001,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Ordered linked actions"), linkedActionRows);
     form->addRow(QString(), actionRowControls);
     auto *linkedActionsHint = new QLabel(tr("Each action runs once when this Trigger activates. "
-        "Actions run top-to-bottom, then music/dialogue. Choose a placed object; "
+        "Actions run top-to-bottom, then music/dialogue. Choose a Game Object, NPC, or Player Spotlight; "
         "disabling an object with no INACTIVE frame hides it."),&dialog);
     linkedActionsHint->setWordWrap(true);
     form->addRow(QString(),linkedActionsHint);
@@ -6704,10 +7019,65 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto insertLink = [=](int row, const Resource::LinkedAction &link) {
         linkedActionRows->insertRow(row);
         auto *object = new GameComboBox(linkedActionRows);
+        object->addItem(tr("Select target..."), QString());
+        object->addItem(tr("Player Spotlight (world lighting)"), QStringLiteral("@player_spotlight"));
         for (const Resource &candidate : m_resources) {
             if (candidate.kind!=QStringLiteral("sprite") ||
-                candidate.objectType==QStringLiteral("decoration") || candidate.id==old.id) continue;
+                candidate.objectType==QStringLiteral("decoration") ||
+                candidate.objectType==QStringLiteral("collectable") || candidate.id==old.id) continue;
             object->addItem(tr("%1 [%2]").arg(candidate.name,candidate.objectType),candidate.id);
+        }
+        /* NPCs are Adventure entries, NOT Game Objects. The same sprite may
+           host an entirely different dialogue when a different NPC is shown. */
+        const QJsonArray localNpcs=m_adventure.value(QStringLiteral("npcs")).toArray();
+        for (int n=0; n<localNpcs.size(); ++n) {
+            const QString id=localNpcs[n].toObject().value(QStringLiteral("spriteId")).toString();
+            if (id.isEmpty()) continue;
+            QString name=id;
+            for (const Resource &candidate:m_resources)
+                if (candidate.id==id) {name=candidate.name;break;}
+            object->addItem(tr("NPC: %1 [%2]").arg(name).arg(n),
+                            QStringLiteral("@npc:%1:%2")
+                                .arg(sidboxTilemapWorldBaseName(m_filePath),id));
+        }
+        /* Read saved sibling designs; no other world needs opening or loading.
+           Runtime indices are resolved again during export from permanent IDs. */
+        const QDir siblings(QFileInfo(m_filePath).absolutePath());
+        const QString thisWorld=sidboxTilemapWorldBaseName(m_filePath);
+        for (const QFileInfo &worldFile : siblings.entryInfoList(
+                 QStringList{QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+            const QString world=sidboxTilemapWorldBaseName(worldFile.absoluteFilePath());
+            if (world==thisWorld) continue;
+            QFile input(worldFile.absoluteFilePath());
+            if (!input.open(QIODevice::ReadOnly)) continue;
+            const QJsonObject design=QJsonDocument::fromJson(input.readAll()).object();
+            const QJsonArray remoteNpcs=design.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("npcs")).toArray();
+            for (int n=0; n<remoteNpcs.size(); ++n) {
+                const QString id=remoteNpcs[n].toObject().value(QStringLiteral("spriteId")).toString();
+                if (id.isEmpty()) continue;
+                QString name=id;
+                for (const QJsonValue &v : design.value(QStringLiteral("resources")).toArray()) {
+                    const QJsonObject sprite=v.toObject();
+                    if (sprite.value(QStringLiteral("id")).toString()==id) {
+                        name=sprite.value(QStringLiteral("name")).toString(id);break;
+                    }
+                }
+                object->addItem(tr("%1: NPC %2 [%3]").arg(world,name).arg(n),
+                                QStringLiteral("@npc:%1:%2").arg(world,id));
+            }
+            for (const QJsonValue &entry : design.value(QStringLiteral("resources")).toArray()) {
+                const QJsonObject resource=entry.toObject();
+                const QString type=resource.value(QStringLiteral("gameObject")).toObject()
+                    .value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
+                if (resource.value(QStringLiteral("kind")).toString()!=QStringLiteral("sprite") ||
+                    type==QStringLiteral("decoration") || type==QStringLiteral("collectable")) continue;
+                const QString id=resource.value(QStringLiteral("id")).toString();
+                if (id.isEmpty()) continue;
+                object->addItem(tr("%1: %2 [%3]").arg(world,
+                    resource.value(QStringLiteral("name")).toString(),type),
+                    cgCrossWorldLink(world,id));
+            }
         }
         if (!link.objectId.isEmpty() && object->findData(link.objectId)<0)
             object->addItem(tr("MISSING: %1").arg(link.objectId),link.objectId);

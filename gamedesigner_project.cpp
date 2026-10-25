@@ -1,5 +1,6 @@
 // Stage 3.69: split from gamedesigner.cpp. Method bodies are unchanged.
 #include "gamedesigner.h"
+#include <QColor>
 #include "gameglobalstamps.h"
 #include "gameworldsnapshot.h"
 #include "gameplayerprofile.h"
@@ -133,6 +134,27 @@ bool SidboxGameDesigner::loadDesign()
     m_playerTransitionOut = start.value(QStringLiteral("transitionOut")).toString(QStringLiteral("none"));
     m_playerCircleOrigin = start.value(QStringLiteral("circleOrigin")).toString(QStringLiteral("center"));
     m_playerTransitionFrames = qBound(1, start.value(QStringLiteral("transitionFrames")).toInt(30), 150);
+    m_playerSpotlightEnabled = start.value(QStringLiteral("spotlightEnabled")).toBool(false);
+    m_playerSpotlightRadius = qBound(16, start.value(QStringLiteral("spotlightRadius")).toInt(96), 240);
+    m_playerSpotlightFeather = qBound(0, start.value(QStringLiteral("spotlightFeather")).toInt(24), 96);
+    m_playerSpotlightCenter = start.value(QStringLiteral("spotlightCenter")).toBool(true);
+    m_playerSpotlightOffsetX = qBound(-240, start.value(QStringLiteral("spotlightOffsetX")).toInt(0), 240);
+    m_playerSpotlightOffsetY = qBound(-240, start.value(QStringLiteral("spotlightOffsetY")).toInt(0), 240);
+    m_playerSpotlightFlipX = start.value(QStringLiteral("spotlightFlipX")).toBool(false);
+    m_playerSpotlightFlipY = start.value(QStringLiteral("spotlightFlipY")).toBool(false);
+    m_playerSpotlightOpacity = qBound(0, start.value(QStringLiteral("spotlightOpacity")).toInt(100), 100);
+    m_playerSpotlightStableDither = start.value(QStringLiteral("spotlightStableDither")).toBool(true);
+    m_playerSpotlightAnimMode = qBound(0, start.value(QStringLiteral("spotlightAnimMode")).toInt(0), 2);
+    m_playerSpotlightAnimMin = qBound(0, start.value(QStringLiteral("spotlightAnimMin")).toInt(12), 96);
+    m_playerSpotlightAnimMax = qBound(m_playerSpotlightAnimMin, start.value(QStringLiteral("spotlightAnimMax")).toInt(32), 96);
+    m_playerSpotlightAnimDelayMin = qBound(1, start.value(QStringLiteral("spotlightAnimDelayMin")).toInt(3), 600);
+    m_playerSpotlightAnimDelayMax = qBound(m_playerSpotlightAnimDelayMin, start.value(QStringLiteral("spotlightAnimDelayMax")).toInt(12), 600);
+    m_playerSpotlightAnimPulseDelay = qBound(1, start.value(QStringLiteral("spotlightAnimPulseDelay")).toInt(3), 600);
+    m_playerSpotlightMaskIndex = qBound(1, start.value(QStringLiteral("spotlightMaskIndex")).toInt(255), 255);
+    {
+        const QColor mask(start.value(QStringLiteral("spotlightMaskColour")).toString(QStringLiteral("#000000")));
+        m_playerSpotlightMaskColour = mask.isValid() ? mask.name() : QStringLiteral("#000000");
+    }
     m_otherPlayerStarts.clear();
     QSet<QString> seenStartIds{QStringLiteral("default")};
     for (const QJsonValue &v : obj.value(QStringLiteral("playerStarts")).toArray()) {
@@ -633,6 +655,24 @@ bool SidboxGameDesigner::saveDesign()
     start.insert(QStringLiteral("transitionOut"), m_playerTransitionOut);
     start.insert(QStringLiteral("circleOrigin"), m_playerCircleOrigin);
     start.insert(QStringLiteral("transitionFrames"), m_playerTransitionFrames);
+    start.insert(QStringLiteral("spotlightEnabled"), m_playerSpotlightEnabled);
+    start.insert(QStringLiteral("spotlightRadius"), m_playerSpotlightRadius);
+    start.insert(QStringLiteral("spotlightFeather"), m_playerSpotlightFeather);
+    start.insert(QStringLiteral("spotlightCenter"), m_playerSpotlightCenter);
+    start.insert(QStringLiteral("spotlightOffsetX"), m_playerSpotlightOffsetX);
+    start.insert(QStringLiteral("spotlightOffsetY"), m_playerSpotlightOffsetY);
+    start.insert(QStringLiteral("spotlightFlipX"), m_playerSpotlightFlipX);
+    start.insert(QStringLiteral("spotlightFlipY"), m_playerSpotlightFlipY);
+    start.insert(QStringLiteral("spotlightOpacity"), m_playerSpotlightOpacity);
+    start.insert(QStringLiteral("spotlightStableDither"), m_playerSpotlightStableDither);
+    start.insert(QStringLiteral("spotlightAnimMode"), m_playerSpotlightAnimMode);
+    start.insert(QStringLiteral("spotlightAnimMin"), m_playerSpotlightAnimMin);
+    start.insert(QStringLiteral("spotlightAnimMax"), m_playerSpotlightAnimMax);
+    start.insert(QStringLiteral("spotlightAnimDelayMin"), m_playerSpotlightAnimDelayMin);
+    start.insert(QStringLiteral("spotlightAnimDelayMax"), m_playerSpotlightAnimDelayMax);
+    start.insert(QStringLiteral("spotlightAnimPulseDelay"), m_playerSpotlightAnimPulseDelay);
+    start.insert(QStringLiteral("spotlightMaskIndex"), m_playerSpotlightMaskIndex);
+    start.insert(QStringLiteral("spotlightMaskColour"), m_playerSpotlightMaskColour);
     obj.insert(QStringLiteral("playerStart"), start);
     QJsonArray otherStarts;
     for (const PlayerStartLocation &location : m_otherPlayerStarts) {
