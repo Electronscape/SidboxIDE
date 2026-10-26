@@ -104,6 +104,7 @@ uint8_t gameworlds_player_start(gameworlds_spawn_t *out);
 void gameworlds_update(uint16_t frames);
 void gameworlds_draw(int32_t camera_x, int32_t camera_y);
 void gameworlds_draw_behind(int32_t camera_x, int32_t camera_y);
+void gameworlds_draw_overlay(int32_t camera_x, int32_t camera_y);
 @IDE_IF{HAS_WORLD_PHYSICS}
 void gameworlds_before(game_world_player_t *player);
 void gameworlds_after(game_world_player_t *player);

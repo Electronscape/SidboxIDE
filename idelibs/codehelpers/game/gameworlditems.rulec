@@ -95,6 +95,212 @@ static uint16_t cg_loop_gain[@IDE{WORLD_OBJECT_COUNT}];
 static uint16_t cg_loop_target[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
 @IDE{WORLD_DECLARATIONS}
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+/* Stage 5.143: decorative scenery particle pool. All values are WORLD-space
+   hundredths of a pixel. No per-frame heap allocation or player collision. */
+#define CG_PARTICLES_PER_EMITTER 32u
+
+typedef struct {
+    uint16_t object_index;
+    uint16_t width, height;
+    uint16_t lifetime;
+    int16_t wind100, fall100;
+    uint8_t max_count, interval, prepopulate, gravity100, flutter100;
+    uint8_t player_layer_mix; /* 1 = randomly split particles around the player. */
+    uint8_t fade_enabled, fade_in, fade_out, fade_speed;
+    uint8_t swirl_mode, swirl_radius, swirl_speed; /* Firefly mode, 0 = existing drift. */
+} cg_particle_source_t;
+
+typedef struct {
+    int32_t x100, y100;
+    int32_t centre_x100, centre_y100;
+    uint8_t swirl_phase, swirl_radius;
+    int16_t vy100;
+    uint16_t age;
+    uint8_t active;
+    uint8_t draw_after_player;
+    uint8_t fade; /* Patterned transparency: 0 = solid, 100 = invisible. */
+} cg_particle_t;
+
+static const cg_particle_source_t cg_particle_sources[@IDE{PARTICLE_EMITTER_COUNT}] = {
+@IDE{PARTICLE_EMITTER_ROWS}};
+static cg_particle_t cg_particles[@IDE{PARTICLE_EMITTER_COUNT}][CG_PARTICLES_PER_EMITTER];
+static uint8_t cg_particle_ticks[@IDE{PARTICLE_EMITTER_COUNT}];
+static uint32_t cg_particle_rng[@IDE{PARTICLE_EMITTER_COUNT}];
+
+static uint32_t cg_particle_random(uint16_t emitter)
+{
+    uint32_t v = cg_particle_rng[emitter];
+    v ^= v << 13;
+    v ^= v >> 17;
+    v ^= v << 5;
+    cg_particle_rng[emitter] = v;
+    return v;
+}
+
+static void cg_particle_reset(void)
+{
+    memset(cg_particles, 0, sizeof(cg_particles));
+    memset(cg_particle_ticks, 0, sizeof(cg_particle_ticks));
+    for (uint16_t i = 0; i < @IDE{PARTICLE_EMITTER_COUNT}; ++i)
+        cg_particle_rng[i] = 0xA8E5B173u ^ (uint32_t)(i + 1u) * 0x9E3779B9u ^
+            (uint32_t)cg_gwi_platforms[cg_particle_sources[i].object_index].x;
+}
+
+/* 64-entry sine table: smooth firefly orbits without per-frame sin(), floats or allocation. */
+static const int8_t cg_particle_sine[64] = {
+       0,   12,   25,   37,   49,   60,   71,   81,
+      90,   98,  106,  112,  117,  122,  125,  126,
+     127,  126,  125,  122,  117,  112,  106,   98,
+      90,   81,   71,   60,   49,   37,   25,   12,
+       0,  -12,  -25,  -37,  -49,  -60,  -71,  -81,
+     -90,  -98, -106, -112, -117, -122, -125, -126,
+    -127, -126, -125, -122, -117, -112, -106,  -98,
+     -90,  -81,  -71,  -60,  -49,  -37,  -25,  -12,
+};
+
+static void cg_particle_step(uint16_t e)
+{
+    const cg_particle_source_t *s = &cg_particle_sources[e];
+    const game_world_object_t *o = &cg_gwi_platforms[s->object_index];
+    if (!o->active) return; /* Also responds to Trigger enable/toggle. */
+    if (++cg_particle_ticks[e] >= s->interval) {
+        cg_particle_ticks[e] = 0u;
+        for (uint8_t i = 0; i < s->max_count; ++i) {
+            cg_particle_t *p = &cg_particles[e][i];
+            if (p->active) continue;
+            const uint32_t rx = cg_particle_random(e);
+            const uint32_t ry = cg_particle_random(e);
+            p->x100 = (o->x + (int32_t)(rx % s->width)) * 100;
+            p->y100 = (o->y + (int32_t)(ry % s->height)) * 100;
+            p->vy100 = s->fall100;
+            p->centre_x100 = p->x100;
+            p->centre_y100 = p->y100;
+            /* Each firefly follows its own offset ellipse. Do not consume
+               extra random values: existing leaf sequences stay unchanged. */
+            p->swirl_phase = (uint8_t)((rx >> 8) ^ ry);
+            p->swirl_radius = (uint8_t)(s->swirl_radius / 2u +
+                (ry % (s->swirl_radius / 2u + 1u)));
+            p->age = 0;
+            p->draw_after_player = (uint8_t)((!o->draw_behind_tiles && s->player_layer_mix && ((rx ^ ry) & 1u)) ? 1u : 0u);
+            p->fade = (s->fade_enabled && s->fade_in) ? 100u : 0u;
+            p->active = 1;
+            break;
+        }
+    }
+    for (uint8_t i = 0; i < s->max_count; ++i) {
+        cg_particle_t *particle = &cg_particles[e][i];
+        if (!particle->active) continue;
+        if (++particle->age >= s->lifetime) {
+            particle->active = 0;
+            continue;
+        }
+        if (s->fade_enabled) {
+            /* Each percentage is a portion of the lifetime. Combine
+               overlapping ramps by taking the MORE transparent ramp.
+               No floating-point math or heap allocation. */
+            uint32_t target = 0u;
+            const uint32_t in_frames = (uint32_t)s->lifetime * s->fade_in / 100u;
+            const uint32_t out_frames = (uint32_t)s->lifetime * s->fade_out / 100u;
+            if (in_frames && particle->age < in_frames)
+                target = 100u - (uint32_t)particle->age * 100u / in_frames;
+            if (out_frames && particle->age > (uint32_t)s->lifetime - out_frames) {
+                const uint32_t out = ((uint32_t)particle->age -
+                    ((uint32_t)s->lifetime - out_frames)) * 100u / out_frames;
+                if (out > target) target = out;
+            }
+            const uint32_t old_fade = particle->fade;
+            if (target > old_fade)
+                particle->fade = (uint8_t)(old_fade +
+                    ((target - old_fade) > s->fade_speed ? s->fade_speed : (target - old_fade)));
+            else if (target < old_fade)
+                particle->fade = (uint8_t)(old_fade -
+                    ((old_fade - target) > s->fade_speed ? s->fade_speed : (old_fade - target)));
+        }
+        /* Lightweight triangular gust. Unlike floating-point sine,
+           this does not cost an FPU/libm call for every leaf. */
+        if (s->swirl_mode) {
+            /* Base centre drifts gently. The sprite orbits that moving centre.
+               256 phase units/circle: speed 2 takes 128 ticks (~2.56 sec).
+               Each birth receives a random phase and half-to-full radius. */
+            particle->centre_x100 += s->wind100;
+            int32_t speed = (int32_t)particle->vy100 + s->gravity100;
+            if (speed > 1200) speed = 1200;
+            particle->vy100 = (int16_t)speed;
+            particle->centre_y100 += speed;
+            particle->swirl_phase = (uint8_t)(particle->swirl_phase + s->swirl_speed);
+            const uint8_t index = (uint8_t)(particle->swirl_phase >> 2);
+            const int32_t radius100 = (int32_t)particle->swirl_radius * 100;
+            particle->x100 = particle->centre_x100 + radius100 * cg_particle_sine[(index + 16u) & 63u] / 127;
+            particle->y100 = particle->centre_y100 + radius100 * cg_particle_sine[index] / 127;
+        } else {
+            /* Existing leaves/clouds/dust physics remains byte-for-byte unchanged. */
+            const int32_t phase = (particle->age + i * 9u) & 31;
+            const int32_t triangle = phase < 16 ? phase - 8 : 24 - phase;
+            const int32_t gust = triangle * (int32_t)s->flutter100 / 8;
+            particle->x100 += (int32_t)s->wind100 + gust;
+            int32_t speed = (int32_t)particle->vy100 + s->gravity100;
+            if (speed > 1200) speed = 1200;
+            particle->vy100 = (int16_t)speed;
+            particle->y100 += speed;
+        }
+        /* Lifetime, not emitter bounds, controls recycling. A leaf
+           can leave the spawn rectangle and continue travelling until
+           its configured age expires. Drawing separately clips to the
+           LCD viewport without destroying off-screen particles. */
+    }
+}
+
+static void cg_particle_update(uint16_t frames)
+{
+    for (uint16_t tick = 0; tick < frames; ++tick)
+        for (uint16_t e = 0; e < @IDE{PARTICLE_EMITTER_COUNT}; ++e)
+            cg_particle_step(e);
+}
+
+/* Prewarm each initially active emitter separately at level entry. The number
+   of simulated frames is the minimum of its lifetime and the time required to
+   fill its own pool, preserving its rate, age, wind, flutter and fade. This
+   performs no allocation and does not fast-forward player/world physics. */
+static void cg_particle_prewarm(void)
+{
+    for (uint16_t e = 0; e < @IDE{PARTICLE_EMITTER_COUNT}; ++e) {
+        const cg_particle_source_t *s = &cg_particle_sources[e];
+        const game_world_object_t *o = &cg_gwi_platforms[s->object_index];
+        if (!s->prepopulate || !o->active || !o->sprite) continue;
+        uint32_t frames = (uint32_t)s->max_count * (uint32_t)s->interval;
+        if (frames >= s->lifetime) frames = s->lifetime - 1u;
+        for (uint32_t t = 0; t < frames; ++t) cg_particle_step(e);
+    }
+}
+
+static void cg_particle_draw(int32_t camera_x, int32_t camera_y, uint8_t behind, uint8_t overlay_pass)
+{
+    for (uint16_t e = 0; e < @IDE{PARTICLE_EMITTER_COUNT}; ++e) {
+        const cg_particle_source_t *s = &cg_particle_sources[e];
+        const game_world_object_t *o = &cg_gwi_platforms[s->object_index];
+        if (!o->active || !o->sprite || !!o->draw_behind_tiles != !!behind) continue;
+        for (uint8_t i = 0; i < s->max_count; ++i) {
+            const cg_particle_t *particle = &cg_particles[e][i];
+            if (!particle->active || !!particle->draw_after_player != !!overlay_pass) continue;
+            const int32_t dx = particle->x100 / 100 - camera_x;
+            const int32_t dy = particle->y100 / 100 - camera_y;
+            if (dx <= -(int32_t)o->sprite->width || dy <= -(int32_t)o->sprite->height ||
+                dx >= 480 || dy >= 320) continue;
+            gfxbob_t sprite = *o->sprite;
+            sprite.drawx = (int16_t)dx;
+            sprite.drawy = (int16_t)dy;
+            if (s->fade_enabled) {
+                if (particle->fade >= 100u) continue;
+                sprite.flagval[BLIT_FLAG_TYPE_FADE_VALUE] = particle->fade;
+                sprite.flags = (uint8_t)((sprite.flags & (uint8_t)~BLIT_FLAG_ALPHABLEND) |
+                    (particle->fade ? BLIT_FLAG_ALPHABLEND : 0u));
+            }
+            gfx_drawbob(&sprite);
+        }
+    }
+}
+@IDE_END
 @IDE_IF{HAS_STAMPS}
 /* Stage 5.42: compact, read-only 8x8 cell lookup into existing PPB pixels. */
 typedef struct {
@@ -325,6 +531,10 @@ uint8_t gameworlditems_init(void)
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) { cg_was_moving[i] = 0; cg_previous_direction[i] = 0; cg_loop_playing[i] = 0; cg_loop_gain[i] = 0; cg_loop_target[i] = 0; }
 @IDE_END
 @IDE{INIT_BODY}
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+    cg_particle_reset();
+    cg_particle_prewarm();
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     /* Static state artwork applies independently of optional animation.
      * Inactive artwork is painted without restoring object collision. */
@@ -462,7 +672,11 @@ void gameworlditems_update(uint16_t frames)
         }
     }
 @IDE_END
-@IDE{UPDATE_BODY}}
+@IDE{UPDATE_BODY}
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+    cg_particle_update(frames);
+@IDE_END
+}
 
 @IDE_IF{HAS_TILEMAP_WORLDS}
 /* Use the same walls/slopes as game_tile_player_run() when
@@ -723,7 +937,8 @@ static void cg_draw_world_layer(int32_t camera_x, int32_t camera_y, uint8_t behi
 @IDE_IF{HAS_WORLDS}
     for (uint16_t i=0; i<@IDE{WORLD_OBJECT_COUNT}; ++i) {
         const game_world_object_t *o=&cg_gwi_platforms[i];
-        if ((!o->active && !o->enemy_dying) || !o->sprite ||
+        if (o->type == GAME_OBJECT_PARTICLE_EMITTER ||
+            (!o->active && !o->enemy_dying) || !o->sprite ||
             !!o->draw_behind_tiles != !!behind) continue;
         cg_draw_stamp(o->sprite,&cg_platform_stamps[i],o->x,o->y,camera_x,camera_y);
     }
@@ -742,7 +957,7 @@ static void cg_draw_inactive_state_frames(int32_t camera_x,int32_t camera_y,uint
 {
     for(uint16_t i=0;i<@IDE{WORLD_OBJECT_COUNT};++i) {
         const game_world_object_t *o=&cg_gwi_platforms[i];
-        if(o->active || !o->sprite || !!o->draw_behind_tiles!=!!behind ||
+        if(o->type == GAME_OBJECT_PARTICLE_EMITTER || o->active || !o->sprite || !!o->draw_behind_tiles!=!!behind ||
            cg_inactive_state_frames[i]==UINT16_MAX) continue;
         const int32_t draw_x=o->x-camera_x, draw_y=o->y-camera_y;
         if (draw_x<=-(int32_t)o->sprite->width || draw_y<=-(int32_t)o->sprite->height ||
@@ -770,7 +985,11 @@ void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y)
     game_collectables_draw_layer(cg_gwi_pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 1);
 @IDE_END
 @IDE_END
-@IDE{DRAW_BEHIND_BODY}}
+@IDE{DRAW_BEHIND_BODY}
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+    cg_particle_draw(camera_x, camera_y, 1u, 0u);
+@IDE_END
+}
 
 void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 {
@@ -790,7 +1009,20 @@ void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 @IDE_IF{HAS_AUDIO}
     cg_audio_camera_x = camera_x;
 @IDE_END
-@IDE{DRAW_BODY}}
+@IDE{DRAW_BODY}
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+    cg_particle_draw(camera_x, camera_y, 0u, 0u);
+@IDE_END
+}
+void gameworlditems_draw_overlay(int32_t camera_x, int32_t camera_y)
+{
+@IDE_IF{HAS_PARTICLE_EMITTERS}
+    cg_particle_draw(camera_x, camera_y, 0u, 1u);
+@IDE_ELSE
+    (void)camera_x; (void)camera_y;
+@IDE_END
+}
+
 @IDE_ELSE
 /* GENERATED by CoderGirl. No managed world objects. */
 #include "gameworlditems.h"
@@ -798,6 +1030,7 @@ void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 uint8_t gameworlditems_init(void) { return 1; }
 void gameworlditems_update(uint16_t frames) { gameassets_fade_update(frames); }
 void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
+void gameworlditems_draw_overlay(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_save_state(void) {}
 void gameworlditems_restore_state(void) {}
 void gameworlditems_set_active(uint16_t index,uint8_t state) { (void)index; (void)state; }

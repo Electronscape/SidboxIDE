@@ -1,4 +1,5 @@
 #include "gamehudeditor.h"
+#include "gamepalettepicker.h"
 #include "ppbcodec.h"
 #include "gamepalette.h"
 #include "guidesigner_detail.h"
@@ -7,6 +8,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSettings>
+#include <QStyle>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -431,32 +434,10 @@ static QImage hudPreview(const QImage &source,const QVector<QRgb> &target) {
 static int choosePaletteIndex(QWidget *parent, const QVector<QRgb> &palette, int current,
                               const QString &title) {
     if (palette.isEmpty()) return -1;
-    QDialog dlg(parent);
-    dlg.setWindowTitle(title);
-    auto *layout=new QVBoxLayout(&dlg);
-    layout->addWidget(new QLabel(QObject::tr("Select a foreground CLUT index (actual SIDBOX colour):"),&dlg));
-    auto *scroller=new QScrollArea(&dlg);scroller->setWidgetResizable(true);
-    auto *gridHost=new QWidget(scroller);
-    auto *grid=new QGridLayout(gridHost);
-    grid->setSpacing(2);grid->setContentsMargins(4,4,4,4);
-    const int count=qMin(256,int(palette.size()));
-    int chosen=-1;
-    for(int n=0;n<count;++n) {
-        QPushButton *button=new QPushButton(gridHost);
-        button->setFixedSize(30,26);
-        QColor color=QColor::fromRgba(palette[n]);
-        if(color.alpha()==0)color.setAlpha(255);
-        button->setStyleSheet(QStringLiteral("QPushButton { background-color: %1; border: %2px solid %3; border-radius: 0px; }")
-            .arg(color.name()).arg(n==current?3:1).arg(n==current?"#FFFFFF":"#404040"));
-        button->setToolTip(QObject::tr("Index %1  |  %2").arg(n).arg(color.name(QColor::HexArgb)));
-        grid->addWidget(button,n/16,n%16);
-        QObject::connect(button,&QPushButton::clicked,&dlg,[&dlg,&chosen,n](){chosen=n;dlg.accept();});
-    }
-    scroller->setWidget(gridHost);
-    layout->addWidget(scroller);
-    dlg.resize(610,510);
-    return dlg.exec()==QDialog::Accepted?chosen:-1;
+    return SidboxPalettePicker::chooseIndex(parent, palette, current, title,
+        QObject::tr("Select a foreground CLUT index (actual SIDBOX colour):"), true, true);
 }
+
 static void previewText(QPainter &p, const QString &text, int x, int y, int zoom,
                         QColor foreground, bool outline, QColor outlineColour) {
     if(text.isEmpty())return;
@@ -1159,7 +1140,6 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
     const QVector<Pickup> pickups=discover(projectRoot);
     updateCounterArtwork(doc,pickups); // migrate old first-cell HUD placements
     QDialog dialog(parent);dialog.setWindowTitle(QObject::tr("Shared HUD Designer"));
-    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     auto *outer=new QVBoxLayout(&dialog);
     auto *geometry=new QHBoxLayout;
     auto *columns=new QSpinBox(&dialog),*rows=new QSpinBox(&dialog),*cw=new QSpinBox(&dialog),*ch=new QSpinBox(&dialog);
@@ -1201,6 +1181,10 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
     auto *outlineColour=new QSpinBox(&dialog);
     outlineColour->setRange(0,255);outlineColour->setValue(doc.outlineColour);
     outlineColour->setEnabled(doc.outlineEnabled);
+    outlineColour->setProperty("adventureGuard", true);
+    outlineColour->style()->unpolish(outlineColour);
+    outlineColour->style()->polish(outlineColour);
+    outlineColour->setToolTip(QObject::tr("Only available when HUD text outline is enabled."));
     geometry->addWidget(new QLabel(QObject::tr("Outline colour"),&dialog));geometry->addWidget(outlineColour);
     auto *outlineSwatch=new QLabel(&dialog);outlineSwatch->setFixedSize(24,20);
     geometry->addWidget(outlineSwatch);
@@ -1571,6 +1555,12 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
         screenPreview->update();
     });
     posX->setEnabled(doc.dock=="overlay");posY->setEnabled(doc.dock=="overlay");
+    for (QSpinBox *position : {posX, posY}) {
+        position->setProperty("adventureGuard", true);
+        position->style()->unpolish(position);
+        position->style()->polish(position);
+        position->setToolTip(QObject::tr("Available only when HUD dock is set to Overlay. Other docking positions are automatic."));
+    }
     QObject::connect(flipX,&QCheckBox::toggled,&dialog,[&](bool b){canvas->flipX=b;});
     QObject::connect(flipY,&QCheckBox::toggled,&dialog,[&](bool b){canvas->flipY=b;});
     QObject::connect(textEdit,&QLineEdit::textChanged,&dialog,[&](const QString &s){
@@ -1625,7 +1615,13 @@ bool editGameHud(QWidget *parent,const QString &projectRoot,QString *error) {
         dialog.accept();
     });
     updateAtlas();canvas->refresh();
-    return dialog.exec()==QDialog::Accepted;
+    QSettings hudWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    if (!dialog.restoreGeometry(hudWindowSettings.value(
+            QStringLiteral("GameHudEditor/geometry")).toByteArray()))
+        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
+    const int hudResult = dialog.exec();
+    hudWindowSettings.setValue(QStringLiteral("GameHudEditor/geometry"), dialog.saveGeometry());
+    return hudResult == QDialog::Accepted;
 }
 
 

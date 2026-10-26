@@ -268,7 +268,8 @@ bool SidboxGameDesigner::loadDesign()
                 QStringLiteral("conveyor"), QStringLiteral("spring"),
                 QStringLiteral("trigger"), QStringLiteral("door"),
                 QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"),
-                QStringLiteral("enemy"), QStringLiteral("goto_world")}.contains(type)
+                QStringLiteral("enemy"), QStringLiteral("goto_world"),
+                QStringLiteral("particle_emitter")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -320,6 +321,27 @@ bool SidboxGameDesigner::loadDesign()
         r.enemyStompWidth = qBound(0, object.value(QStringLiteral("enemyStompWidth")).toInt(0), 512);
         r.enemyStompHeight = qBound(1, object.value(QStringLiteral("enemyStompHeight")).toInt(1), 64);
         r.objectInitiallyActive = object.value(QStringLiteral("initiallyActive")).toBool(true);
+        r.particlePreset = object.value(QStringLiteral("particlePreset")).toString(QStringLiteral("leaves"));
+        if (r.particlePreset != QStringLiteral("leaves") && r.particlePreset != QStringLiteral("clouds") &&
+            r.particlePreset != QStringLiteral("dust") && r.particlePreset != QStringLiteral("fireflies"))
+            r.particlePreset = QStringLiteral("leaves");
+        r.particleAreaW = qBound(8, object.value(QStringLiteral("particleAreaW")).toInt(240), 2048);
+        r.particleAreaH = qBound(8, object.value(QStringLiteral("particleAreaH")).toInt(96), 2048);
+        r.particleCount = qBound(1, object.value(QStringLiteral("particleCount")).toInt(12), 32);
+        r.particleInterval = qBound(1, object.value(QStringLiteral("particleInterval")).toInt(6), 255);
+        r.particlePrepopulate = object.value(QStringLiteral("particlePrepopulate")).toBool(true);
+        r.particleLifetime = qBound(30, object.value(QStringLiteral("particleLifetime")).toInt(250), 2000);
+        r.particleWind = qBound(-400, object.value(QStringLiteral("particleWind")).toInt(65), 400);
+        r.particleFall = qBound(-400, object.value(QStringLiteral("particleFall")).toInt(40), 400);
+        r.particleGravity = qBound(0, object.value(QStringLiteral("particleGravity")).toInt(2), 80);
+        r.particleFlutter = qBound(0, object.value(QStringLiteral("particleFlutter")).toInt(22), 100);
+        r.particleSwirlRadius = qBound(8, object.value(QStringLiteral("particleSwirlRadius")).toInt(24), 96);
+        r.particleSwirlSpeed = qBound(1, object.value(QStringLiteral("particleSwirlSpeed")).toInt(2), 12);
+        r.particlePlayerLayerMix = object.value(QStringLiteral("particlePlayerLayerMix")).toBool(false);
+        r.particleFadeEnabled = object.value(QStringLiteral("particleFadeEnabled")).toBool(false);
+        r.particleFadeIn = qBound(0, object.value(QStringLiteral("particleFadeIn")).toInt(20), 100);
+        r.particleFadeOut = qBound(0, object.value(QStringLiteral("particleFadeOut")).toInt(20), 100);
+        r.particleFadeSpeed = qBound(1, object.value(QStringLiteral("particleFadeSpeed")).toInt(8), 100);
         r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
         r.damageConfigured = object.contains(QStringLiteral("damageTarget"));
         r.damageTarget = object.value(QStringLiteral("damageTarget")).toString(QStringLiteral("health"));
@@ -768,6 +790,24 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("enemyStompWidth"), r.enemyStompWidth);
             object.insert(QStringLiteral("enemyStompHeight"), r.enemyStompHeight);
             object.insert(QStringLiteral("initiallyActive"), r.objectInitiallyActive);
+            object.insert(QStringLiteral("particlePreset"), r.particlePreset);
+            object.insert(QStringLiteral("particleAreaW"), r.particleAreaW);
+            object.insert(QStringLiteral("particleAreaH"), r.particleAreaH);
+            object.insert(QStringLiteral("particleCount"), r.particleCount);
+            object.insert(QStringLiteral("particleInterval"), r.particleInterval);
+            object.insert(QStringLiteral("particlePrepopulate"), r.particlePrepopulate);
+            object.insert(QStringLiteral("particleLifetime"), r.particleLifetime);
+            object.insert(QStringLiteral("particleWind"), r.particleWind);
+            object.insert(QStringLiteral("particleFall"), r.particleFall);
+            object.insert(QStringLiteral("particleGravity"), r.particleGravity);
+            object.insert(QStringLiteral("particleFlutter"), r.particleFlutter);
+            object.insert(QStringLiteral("particleSwirlRadius"), r.particleSwirlRadius);
+            object.insert(QStringLiteral("particleSwirlSpeed"), r.particleSwirlSpeed);
+            object.insert(QStringLiteral("particlePlayerLayerMix"), r.particlePlayerLayerMix);
+            object.insert(QStringLiteral("particleFadeEnabled"), r.particleFadeEnabled);
+            object.insert(QStringLiteral("particleFadeIn"), r.particleFadeIn);
+            object.insert(QStringLiteral("particleFadeOut"), r.particleFadeOut);
+            object.insert(QStringLiteral("particleFadeSpeed"), r.particleFadeSpeed);
             object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
             object.insert(QStringLiteral("damageTarget"), r.damageTarget);
             object.insert(QStringLiteral("damageDelta"), r.damageConfigured ? r.damageDelta : -r.hazardDamage);

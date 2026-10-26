@@ -124,6 +124,7 @@ class QComboBox;
 class QLabel;
 class QEvent;
 class QKeyEvent;
+class QCloseEvent;
 class QSpinBox;
 class QCheckBox;
 class QToolButton;
@@ -162,12 +163,18 @@ public:
 protected:
     bool eventFilter(QObject *target, QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
     void done(int result) override;
 private:
     class Canvas;
     class StampCanvas;
     class CollisionCanvas;
     SidboxTilemap m_map;
+    SidboxTilemap m_lastCommittedMap; // Rebased after each successful Save.
+    bool m_escapeCloseRequest = false;
+    bool m_closeAlreadyApproved = false;
+    bool saveCurrentMap();
+    bool confirmClose(bool forcePrompt);
     QImage m_atlas;
     QString m_designDirectory;
     Canvas *m_canvas = nullptr;

@@ -879,6 +879,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             type == QStringLiteral("breakable") ? QStringLiteral("GAME_OBJECT_BREAKABLE") :
             type == QStringLiteral("hazard") ? QStringLiteral("GAME_OBJECT_HAZARD") :
             type == QStringLiteral("enemy") ? QStringLiteral("GAME_OBJECT_ENEMY") :
+            type == QStringLiteral("particle_emitter") ? QStringLiteral("GAME_OBJECT_PARTICLE_EMITTER") :
             QStringLiteral("GAME_OBJECT_SPRING");
         f.insert(QStringLiteral("OBJECT_KIND"), kind);
         boolValue("TRIGGER_PRESS", type == QStringLiteral("goto_world") ? r.gotoPress : r.triggerPress);
@@ -1043,6 +1044,32 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if (!r.sfxPickup.isEmpty() && !renderWorldSection(QStringLiteral("PICKUP_EVENT_SOUND"),
                 audioFields(r.sfxPickup, i, r.audioRadius), &checkBody)) return false;
     }
+    QString particleEmitterRows;
+    int particleEmitterCount = 0;
+    for (int i = 0; i < nw; ++i) {
+        const Resource &r = *platforms.at(i);
+        if (r.objectType != QStringLiteral("particle_emitter")) continue;
+        particleEmitterRows += QStringLiteral("    {%1u, %2u, %3u, %4u, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19},\n")
+            .arg(i).arg(qBound(8, r.particleAreaW, 2048))
+            .arg(qBound(8, r.particleAreaH, 2048))
+            .arg(qBound(30, r.particleLifetime, 2000))
+            .arg(qBound(-400, r.particleWind, 400))
+            .arg(qBound(-400, r.particleFall, 400))
+            .arg(qBound(1, r.particleCount, 32))
+            .arg(qBound(1, r.particleInterval, 255))
+            .arg(r.particlePrepopulate ? 1 : 0)
+            .arg(qBound(0, r.particleGravity, 80))
+            .arg(qBound(0, r.particleFlutter, 100))
+            .arg(r.particlePlayerLayerMix ? 1 : 0)
+            .arg(r.particleFadeEnabled ? 1 : 0)
+            .arg(qBound(0, r.particleFadeIn, 100))
+            .arg(qBound(0, r.particleFadeOut, 100))
+            .arg(qBound(1, r.particleFadeSpeed, 100))
+            .arg(r.particlePreset == QStringLiteral("fireflies") ? 1 : 0)
+            .arg(qBound(8, r.particleSwirlRadius, 96))
+            .arg(qBound(1, r.particleSwirlSpeed, 12));
+        ++particleEmitterCount;
+    }
     QString interactionRows;
     QString interactionSoundActions;
     QString interactionPreflightActions;
@@ -1200,6 +1227,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     if (!renderWorldRule(QStringLiteral("gameworlditems.ruleh"), headerFields, &h)) return false;
     QMap<QString, QString> sourceFields;
     sourceFields.insert(QStringLiteral("HAS_ITEMS"), QStringLiteral("1"));
+    sourceFields.insert(QStringLiteral("HAS_PARTICLE_EMITTERS"), flag(particleEmitterCount > 0));
+    sourceFields.insert(QStringLiteral("PARTICLE_EMITTER_COUNT"), number(particleEmitterCount));
+    sourceFields.insert(QStringLiteral("PARTICLE_EMITTER_ROWS"), particleEmitterRows);
     sourceFields.insert(QStringLiteral("HAS_PATHS"), flag(anyPath));
     sourceFields.insert(QStringLiteral("HAS_TILEMAP_ANY"), flag((np || nw) && m_tilemapEnabled));
     sourceFields.insert(QStringLiteral("HAS_AUDIO"), flag(!usedSfx.isEmpty()));

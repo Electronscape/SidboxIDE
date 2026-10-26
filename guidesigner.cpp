@@ -1026,7 +1026,7 @@ private:
         auto *swatches = new QWidget(scroller);
         auto *grid = new QGridLayout(swatches);
         grid->setContentsMargins(4, 4, 4, 4);
-        grid->setSpacing(2);
+        grid->setSpacing(3);
         auto *selection = new QButtonGroup(&dialog);
         selection->setExclusive(true);
 
@@ -1057,12 +1057,12 @@ private:
 
         for (int index = 0; index < 256; ++index) {
             // Paint the swatches ourselves so alpha=0 is visibly transparent.
-            QPixmap sample(23, 23);
+            QPixmap sample(22, 22);
             sample.fill(Qt::transparent);
             {
                 QPainter painter(&sample);
-                for (int y = 0; y < 23; y += 6) {
-                    for (int x = 0; x < 23; x += 6) {
+                for (int y = 0; y < 22; y += 6) {
+                    for (int x = 0; x < 22; x += 6) {
                         painter.fillRect(QRect(x, y, 6, 6),
                             ((x + y) / 6) % 2 ? QColor(190, 190, 190)
                                                : QColor(100, 100, 100));
@@ -1076,7 +1076,7 @@ private:
             button->setCheckable(true);
             button->setFixedSize(28, 28);
             button->setIcon(QIcon(sample));
-            button->setIconSize(QSize(23, 23));
+            button->setIconSize(QSize(22, 22));
             button->setToolTip(
                 QObject::tr("Pen %1: #%2")
                     .arg(index)
@@ -1095,7 +1095,7 @@ private:
         swatches->setStyleSheet(QStringLiteral(
             "QToolButton { border: 1px solid #303030; border-radius: 0px; "
             "padding: 1px; background: #101010; } "
-            "QToolButton:checked { border: 2px solid #2858A8; } "
+            "QToolButton:checked { border: 2px solid #f5c747; } "
             "QToolButton:hover { border: 2px solid #ffffff; }"));
         scroller->setWidget(swatches);
         layout->addWidget(scroller, 1);

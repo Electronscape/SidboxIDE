@@ -42,6 +42,7 @@ typedef struct {
     void (*objects_update)(uint16_t);
     void (*objects_draw)(int32_t, int32_t);
     void (*objects_draw_behind)(int32_t, int32_t);
+    void (*objects_draw_overlay)(int32_t, int32_t);
     void (*assets_foreground)(void);
     void (*assets_background)(void);
     void (*assets_show_background)(void);
@@ -1003,6 +1004,8 @@ void gameworlds_draw(int32_t x, int32_t y)
 { if (active_world) active_world->objects_draw(x,y); }
 void gameworlds_draw_behind(int32_t x, int32_t y)
 { if (active_world && active_world->objects_draw_behind) active_world->objects_draw_behind(x,y); }
+void gameworlds_draw_overlay(int32_t x, int32_t y)
+{ if (active_world && active_world->objects_draw_overlay) active_world->objects_draw_overlay(x,y); }
 @IDE_IF{HAS_WORLD_PHYSICS}
 void gameworlds_before(game_world_player_t *p)
 { if (active_world && active_world->before) active_world->before(p); }

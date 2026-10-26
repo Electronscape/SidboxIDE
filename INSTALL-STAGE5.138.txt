@@ -1,0 +1,53 @@
+CoderGirl IDE Stage 5.138.251026 — Tilemap Editor ESC Close Guard
+
+BASE: Stage 5.137.251026
+
+Install
+-------
+Extract CoderGirl-Stage5.138-251026-DROPIN.zip into the ROOT of your
+Stage 5.137 IDE source directory, preserving paths, then rebuild the IDE.
+
+Changed production files:
+  gametilemap.cpp
+  gametilemap.h
+  splashscreenwidget.cpp
+
+Behaviour
+---------
+* While temporary copy/paste is active, ESC cancels that operation ONLY.
+* While editing a collision stamp, ESC cancels that sub-editor ONLY.
+* When neither operation is active, ESC opens a Save / No / Cancel
+  confirmation. Cancel returns to the editor even if ESC was pressed
+  repeatedly; No discards the current unsaved edits and closes; Save
+  calls the existing project Save callback and closes on success.
+* The window X and the bottom Cancel button ask the same question when
+  unsaved tilemap changes exist. If the tilemap has not been edited,
+  those actions close directly.
+* Actual tilemap data is compared with the last successful Save, not
+  merely whether Undo history exists. Changes undone back to the saved
+  state do not count as unsaved. Brush/zoom/pan preferences are not edits.
+* On Save failure, the editor stays open and retains the changes.
+* The existing Save (stay open), Apply to Design, Undo/Redo, paste, and
+  collision-stamp editing controls remain available.
+
+Test checklist on Fedora Qt 6.11.2
+--------------------------------
+1. Copy region; press ESC once: temporary region disappears, no prompt.
+2. Press ESC again: Save / No / Cancel appears; Cancel keeps editor open.
+3. Paint a few cells. ESC -> Cancel -> data stays present.
+4. ESC -> No -> editor closes; reopen and verify edits were discarded.
+5. Paint a few cells. ESC -> Save -> editor closes; reopen and verify
+   saved edits are present.
+6. Edit map -> press Save (bottom) without closing -> ESC -> Cancel / No.
+   Previously saved edits must remain on disk.
+7. Change a cell, Undo back to original, hit X: close without a dirty
+   warning (unless another unsaved map change remains).
+8. Paint a few cells -> click X or bottom Cancel: prompt before closing.
+9. Edit an individual collision stamp; ESC cancels the stamp editor only.
+
+Notes
+-----
+Qt development SDK was unavailable during patch preparation. The source
+regressions passed, but GUI compilation and interactive behaviour need
+checking on your Fedora Qt 6.11.2 installation.
+No changes to game runtime, main.c, saved-world schema or .pal editor.

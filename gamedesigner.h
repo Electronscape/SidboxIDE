@@ -24,6 +24,7 @@ class QGraphicsScene;
 class QGraphicsView;
 class QGraphicsItem;
 class QGraphicsRectItem;
+class QGraphicsPixmapItem;
 class QGraphicsPathItem;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -107,6 +108,25 @@ private:
         QString pickupStatTarget; // empty legacy = Health for pickup type 2, otherwise none
         bool pickupPersistent = false; // never respawn after pickup, including world visits
         int hitWidth = 16, hitHeight = 16;
+        // Cosmetic scenery particles, emitted within the world-space area
+        // starting at the placed sprite position. Never used for collision.
+        int particleAreaW = 240, particleAreaH = 96;
+        int particleCount = 12; // Max concurrent particles per emitter (1..32).
+        int particleInterval = 6; // Frames between births at 50 Hz.
+        bool particlePrepopulate = true; // Prewarm on world entry; existing worlds default ON.
+        int particleLifetime = 250; // Frames before recycling.
+        int particleWind = 65; // Signed hundredths of a pixel/frame.
+        int particleFall = 40; // Signed hundredths of a pixel/frame.
+        int particleGravity = 2; // Hundredths of a pixel/frame^2.
+        int particleFlutter = 22; // Gust amplitude, hundredths of pixel/frame.
+        int particleSwirlRadius = 24; // Firefly orbital radius in pixels (8..96).
+        int particleSwirlSpeed = 2; // Firefly orbit phase units per 50-Hz frame (1..12).
+        bool particlePlayerLayerMix = false; // Some particles draw after the player instead of all staying behind.
+        bool particleFadeEnabled = false; // Per-particle patterned BOB fade; legacy worlds stay unchanged.
+        int particleFadeIn = 20; // First N% of the particle lifetime.
+        int particleFadeOut = 20; // Last N% of the particle lifetime.
+        int particleFadeSpeed = 8; // Maximum patterned-fade percentage points per 50-Hz frame.
+        QString particlePreset = QStringLiteral("leaves");
         int conveyorSpeed = 2, springStrength = 11;
         int springLaunchX = 0; // Signed horizontal spring launch in pixels/frame; 0 = straight up.
         bool springJumpBoost = false; // Opt-in only, including older designs without this field.
@@ -251,6 +271,10 @@ private:
     bool loadDesign();
     void setDirty(bool dirty = true);
     void refreshResources();
+    void updateParticlePreview();
+    void resetParticlePreview();
+    void setParticlePreviewDraft(int resourceIndex, const Resource &draft);
+    void clearParticlePreviewDraft();
     void rebuildScene();
     void refreshColourCyclePreview();
     void refreshFrame();
@@ -360,10 +384,49 @@ private:
     QGraphicsRectItem *m_worldFrame = nullptr;
     QGraphicsItem *m_tilemapOverlayItem = nullptr;
     QVector<QGraphicsItem *> m_loopOverlayItems; // Visual-only, no collisions.
+    // World-canvas-only preview. Items belong to QGraphicsScene and never
+    // become project resources, save data or generated SIDBOX sprites.
+    struct ParticlePreviewParticle {
+        qint64 x100 = 0, y100 = 0;
+        qint64 centreX100 = 0, centreY100 = 0;
+        int swirlPhase = 0, swirlRadius = 0;
+        int vy100 = 0;
+        int age = 0;
+        int fade = 0;
+        bool active = false;
+        bool overPlayer = false;
+    };
+    // Every enabled spawner has its own editor-only pool. Selection controls
+    // handles and Properties, never which emitters appear on the canvas.
+    struct ParticlePreviewEmitter {
+        int resourceIndex = -1;
+        QString resourceId;
+        QString path;
+        int scale = 100;
+        int frame = 0;
+        QVector<QGraphicsPixmapItem *> items; // Owned by QGraphicsScene.
+        QVector<ParticlePreviewParticle> particles;
+        int step = 0;
+        bool prepopulate = true;
+        QString preset;
+        int swirlRadius = 24;
+        quint32 random = 1;
+    };
+    QCheckBox *m_showParticlePreview = nullptr;
+    QVector<ParticlePreviewEmitter> m_particlePreviewEmitters;
+    bool m_particlePreviewDraftActive = false;
+    int m_particlePreviewDraftIndex = -1;
+    Resource m_particlePreviewDraft;
     QTimer *m_objectPreviewTimer = nullptr;
     QElapsedTimer m_objectPreviewClock;
     QGraphicsPathItem *m_splineCurveItem = nullptr;
     QGraphicsRectItem *m_objectHitbox = nullptr;
+    QVector<QGraphicsRectItem *> m_particleResizeHandles; // Children of the selected spawner outline.
+    int m_particleResizeHandle = -1; // 0..7 (clockwise from top-left); -1 = not resizing.
+    int m_particleResizeIndex = -1;
+    QRect m_particleResizeStart;
+    QPointF m_particleResizeStartMouse;
+    bool m_particleResizeChanged = false;
     QVector<QGraphicsItem *> m_splineHandleItems;
     QVector<SplinePath> m_splinePaths;
     int m_activeSpline = -1;

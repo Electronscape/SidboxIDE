@@ -1,0 +1,98 @@
+CoderGirl IDE Stage 5.136.251026 — UI Consistency (1–4)
+======================================================
+BASE: Stage 5.135.251026
+
+HOW TO INSTALL
+1. Extract CoderGirl-Stage5.136-251026-DROPIN.zip into the root of your
+   EXISTING Stage 5.135 IDE source, preserving paths and replacing files.
+2. Rebuild CoderGirl using your installed Fedora Qt6 6.11.2 toolchain.
+3. This is an IDE-only release. Do NOT regenerate game code, change main.c,
+   edit .sbgm, or rebuild firmware to obtain these UI improvements.
+
+1. WINDOW BEHAVIOUR
+- Adventure Editor, Title Screen Designer, HUD Designer, Flow Debugger and
+  PPB Viewer still default to maximised on FIRST launch. Subsequently they
+  remember their own last size, position and maximised state in QSettings.
+- Player Animation Editor remembers its own geometry, retaining its existing
+  size on first launch. Game Object Properties now remembers full geometry,
+  not only its previous maximised flag.
+- Flow camera (pan/zoom per world) remains separately stored in the existing
+  .sidbox-flow-layout.json. These UI settings do not alter project files.
+- Embedded editors (GUI Designer and tilemap) retain their existing layout
+  persistence/behaviour; the .pal Palette Editor is deliberately untouched.
+
+2. SAVE / CANCEL
+- The main Adventure Editor uses Save / Cancel rather than OK / Cancel.
+- Game Object Properties also uses Save / Cancel.
+- IMPORTANT: Previous/Next in Game Object Properties has ALWAYS SAVED the
+  outgoing object, potentially including the associated player inventory.
+  A confirmation now explicitly warns BEFORE that save. Cancel later applies
+  to the current unsaved edits only, not to already committed navigation.
+- Apply was not added to unrelated dialogs; doing so would wrongly imply a
+  reversible transaction or create an extra disk-writing path.
+
+3. DEPENDENCY VISIBILITY
+- Game Object trigger/use, breakable and enemy controls use the existing
+  subdued red/green dependency styles; required-item controls explain why
+  they are disabled.
+- HUD overlay position and text-outline colour now visibly reflect whether
+  their prerequisites are enabled, with tooltips.
+- Title Screen text/PPB modes, PPB cell selection and outline controls use
+  the same styling and context-specific tooltips.
+- Player Animation custom preview-colour button also uses the standard
+  dependency style. Saved settings are never discarded when a control is
+  temporarily disabled.
+
+4. LISTS / TABLES
+- Adventure Inventory Items rows have an adjacent Delete button.
+  The existing confirmation and full dialogue/exchange index remapping
+  routine are reused (no new shortcut around data integrity).
+- Adventure NPC rows have an adjacent Delete button. Existing NPC action
+  reference cleanup and the confirmation are preserved. A deleted NPC entry
+  does not delete its placed world sprite or dialogue nodes.
+- Both buttons use their CURRENT row after other rows have moved/been deleted;
+  deletion is queued until the clicked Qt button's event returns, avoiding
+  self-deletion during its own clicked signal.
+- Player Animation frame removal now asks for confirmation identifying the
+  state, direction, position and atlas cell.
+- Inventory rows are deliberately NOT reorderable: numeric item references
+  in dialogue require explicit index remapping before that can be safe.
+
+CHANGED EXISTING PRODUCTION FILES
+  gameadventureeditor.cpp
+  gameanimationeditor.cpp
+  gameanimationeditor.h
+  gamedesigner.cpp
+  gamefloweditor.cpp
+  gamehudeditor.cpp
+  gametitlescreeneditor.cpp
+  mainwindow.cpp
+  splashscreenwidget.cpp
+
+ADDED TEST
+  development/tests/test_stage5136_ui_consistency.py
+
+VERIFICATION
+- New Stage 5.136 source-contract and compiled C runtime checks: PASS.
+- Stage 5.132 dropped-item-trigger runtime/source regression: PASS.
+- IDE-wide Qt6 build and visual GUI interaction: NOT performed in this
+  environment (Qt6 development SDK unavailable). Please compile on Fedora.
+- Existing runtime, export templates, game palette editor, world file formats,
+  PPB assets, main.c and game SDK are unchanged.
+
+ACCEPTANCE CHECKLIST ON FEDORA
+ A. Resize/restore/reopen Adventure, Flow, Title, HUD, PPB Viewer,
+    Player Animation and Game Object windows; confirm independent geometry.
+ B. Edit an object, press Next and refuse the warning; no save/navigation.
+    Then Save & navigate and verify the next Cancel does not falsely roll it back.
+ C. Check coloured disabled/enabled fields in Game Object / HUD / Title Screen.
+ D. Delete a SECOND (not first) inventory item and verify remapped dialogue
+    requirements; Cancel Adventure discards all this dialog's changes.
+ E. Delete an NPC row; verify associated placed sprite and dialogues remain.
+ F. Delete an animation frame after confirming, then Cancel its editor to keep
+    the original saved animation.
+
+DEFERRED TO NEXT STAGES (AS REQUESTED)
+  5. Import / Export consistency
+  6. Canvas navigation consistency
+  7. Help / warning presentation consistency

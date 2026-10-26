@@ -36,6 +36,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QCloseEvent>
 #include <QWheelEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -1730,9 +1731,27 @@ protected:
             event->accept();
             return;
         }
-        if ((event->modifiers() & Qt::KeypadModifier) &&
-            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Minus)) {
-            setZoom(zoom + (event->key() == Qt::Key_Plus ? 1 : -1),
+        // Common canvas shortcuts: +/- zoom, Ctrl+0 returns to 100%,
+        // Ctrl+F fits the current map (only while the canvas has focus).
+        if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_0) {
+            setZoom(1, keyboardZoomAnchor());
+            event->accept();
+            return;
+        }
+        if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_F && map) {
+            const QSize area = viewport()->size();
+            const int width = qMax(1, map->width * map->tileSize);
+            const int height = qMax(1, map->height * map->tileSize);
+            setZoom(qBound(1, qMin(area.width() / width, area.height() / height), maxZoom),
+                    viewport()->rect().center());
+            event->accept();
+            return;
+        }
+        if (((event->modifiers() & Qt::KeypadModifier) ||
+             (event->modifiers() & Qt::ControlModifier)) &&
+            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Minus ||
+             event->key() == Qt::Key_Equal)) {
+            setZoom(zoom + (event->key() == Qt::Key_Minus ? -1 : 1),
                     keyboardZoomAnchor());
             event->accept();
             return;
@@ -2522,13 +2541,13 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     layout->addLayout(form);
     connect(m_undoButton, &QPushButton::clicked, this, [this]() { undoEdit(); });
     connect(m_redoButton, &QPushButton::clicked, this, [this]() { redoEdit(); });
-    for (const QKeySequence &key : {QKeySequence(Qt::CTRL | Qt::Key_Z)}) {
+    for (const QKeySequence &key : {QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Z))}) {
         auto *shortcut = new QShortcut(key, this);
         shortcut->setContext(Qt::WidgetWithChildrenShortcut);
         connect(shortcut, &QShortcut::activated, this, [this]() { undoEdit(); });
     }
-    for (const QKeySequence &key : {QKeySequence(Qt::CTRL | Qt::Key_Y),
-                                     QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)}) {
+    for (const QKeySequence &key : {QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Y)),
+                                     QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Z))}) {
         auto *shortcut = new QShortcut(key, this);
         shortcut->setContext(Qt::WidgetWithChildrenShortcut);
         connect(shortcut, &QShortcut::activated, this, [this]() { redoEdit(); });
@@ -2866,6 +2885,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     sideLayout->addLayout(buttonRow);
 
     m_canvas = new Canvas(m_splitter);
+    m_canvas->setToolTip(tr("Middle-drag: pan. Wheel or Ctrl+/-: zoom around pointer. "
+        "Ctrl+0: 100%. Ctrl+F: fit to canvas (minimum 100%). "
+        "ESC cancels a temporary paste before asking whether to close."));
     m_canvas->setMinimumWidth(300);
     m_canvas->map = &m_map;
     m_canvas->atlas = &m_atlas;
@@ -3996,23 +4018,7 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     buttons->addWidget(cancel);
     layout->addLayout(buttons);
     connect(m_saveButton, &QPushButton::clicked, this, [this]() {
-        if (!m_saveCallback) return;
-        if (m_canvas && m_canvas->painting) return;
-        // Committing while the slope sub-editor is open must not leave a
-        // Cancel snapshot that can restore an already-saved global bank.
-        if (m_collisionEditActive) finishCollisionStampEdit(true);
-        // The saved project must contain the CURRENT pan, not the pan from
-        // the last time the editor was opened.
-        if (m_canvas) {
-            m_map.viewPanX = m_canvas->horizontalScrollBar()->value() / qMax(1, m_canvas->zoom);
-            m_map.viewPanY = m_canvas->verticalScrollBar()->value() / qMax(1, m_canvas->zoom);
-        }
-        if (m_saveCallback(m_map)) {
-            saveViewSettings();
-            m_saveStatus->setText(tr("Saved to game design"));
-        } else {
-            m_saveStatus->setText(tr("Save failed — changes remain in editor"));
-        }
+        saveCurrentMap();
     });
     connect(apply, &QPushButton::clicked, this, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
@@ -4291,6 +4297,9 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
         updateAnimationPreview();
     });
     m_animationTimer->start();
+    // Constructor setup can normalise old maps or the atlas stamp bank.
+    // Establish the baseline only after the editor has finished loading.
+    m_lastCommittedMap = m_map;
 }
 
 void SidboxTilemapEditor::setAtlas(const QString &absolutePath, bool switchBank)
@@ -4831,8 +4840,80 @@ void SidboxTilemapEditor::saveViewSettings()
     // not in application-global settings. Cancel must not modify the project.
 }
 
+bool SidboxTilemapEditor::saveCurrentMap()
+{
+    if (!m_saveCallback || (m_canvas && m_canvas->painting)) return false;
+    // Committing while editing a collision stamp must not leave behind a
+    // Cancel snapshot capable of restoring a global bank after Save.
+    if (m_collisionEditActive) finishCollisionStampEdit(true);
+    if (m_canvas) {
+        m_map.viewPanX = m_canvas->horizontalScrollBar()->value() /
+            qMax(1, m_canvas->zoom);
+        m_map.viewPanY = m_canvas->verticalScrollBar()->value() /
+            qMax(1, m_canvas->zoom);
+    }
+    if (!m_saveCallback(m_map)) {
+        if (m_saveStatus) m_saveStatus->setText(tr("Save failed — changes remain in editor"));
+        return false;
+    }
+    // Save can update global stamp identifiers via the owning editor's
+    // callback. Snapshot the final committed state, not the pre-Save copy.
+    m_lastCommittedMap = m_map;
+    saveViewSettings();
+    if (m_saveStatus) m_saveStatus->setText(tr("Saved to game design"));
+    return true;
+}
+
+bool SidboxTilemapEditor::confirmClose(bool forcePrompt)
+{
+    // Compare the actual data, not the undo stack: Undo may restore the
+    // saved state, and brush selection/panning alone are not map edits.
+    if (!forcePrompt && sameTilemap(m_map, m_lastCommittedMap)) return true;
+
+    QMessageBox prompt(this);
+    prompt.setIcon(QMessageBox::Question);
+    prompt.setWindowTitle(tr("Close Tilemap Editor"));
+    prompt.setText(tr("Do you want to save before closing?"));
+    prompt.setInformativeText(tr("Save keeps your map changes. No discards edits "
+        "since the last save. Cancel returns to the editor."));
+    QPushButton *save = prompt.addButton(tr("Save"), QMessageBox::AcceptRole);
+    QPushButton *no = prompt.addButton(tr("No"), QMessageBox::DestructiveRole);
+    QPushButton *cancel = prompt.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    prompt.setDefaultButton(cancel);
+    prompt.setEscapeButton(cancel);
+    prompt.exec();
+    if (prompt.clickedButton() == cancel || !prompt.clickedButton()) return false;
+    if (prompt.clickedButton() == no) return true;
+    if (prompt.clickedButton() == save) {
+        if (!saveCurrentMap()) {
+            QMessageBox::warning(this, tr("Save Failed"),
+                tr("The tilemap could not be saved. The editor will stay open."));
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+void SidboxTilemapEditor::closeEvent(QCloseEvent *event)
+{
+    // The window manager's X must not bypass the same unsaved-edit guard.
+    if (!m_closeAlreadyApproved && !confirmClose(false)) {
+        event->ignore();
+        return;
+    }
+    m_closeAlreadyApproved = true;
+    QDialog::closeEvent(event);
+    m_closeAlreadyApproved = false;
+}
+
 void SidboxTilemapEditor::done(int result)
 {
+    // ESC always asks, even when the data is unchanged, to protect against
+    // repeatedly pressing ESC to cancel the temporary copy/paste brush.
+    // Cancel / window-close ask only if there are uncommitted edits.
+    if (result == QDialog::Rejected && !m_closeAlreadyApproved &&
+        !confirmClose(m_escapeCloseRequest)) return;
     // QDialog::accept() reaches here before the owner calls result().
     // Cancel retains the previously committed pan in the project.
     if (result == QDialog::Accepted && m_canvas) {
@@ -4868,6 +4949,13 @@ void SidboxTilemapEditor::keyPressEvent(QKeyEvent *event)
         m_stampTabs && m_stampTabs->currentIndex() == 1 &&
         m_collisionViews->currentIndex() == 1) {
         finishCollisionStampEdit(false);
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape) {
+        m_escapeCloseRequest = true;
+        reject();
+        m_escapeCloseRequest = false;
         event->accept();
         return;
     }

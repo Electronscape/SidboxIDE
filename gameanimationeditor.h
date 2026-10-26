@@ -30,6 +30,7 @@ public:
                                int cellWidth, int cellHeight,
                                QWidget *parent = nullptr,
                                const IDETheme &theme = defaultIDETheme());
+    ~SidboxPlayerAnimationEditor() override;
     QString animationFile() const { return m_file; }
     bool isUsable() const { return !m_atlas.isNull(); }
     int cellWidth() const { return m_cellW; }

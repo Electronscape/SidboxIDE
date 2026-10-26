@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QSaveFile>
+#include <QImageWriter>
 #include <QSet>
 #include <QTextStream>
 #include <QtGlobal>
@@ -121,6 +122,31 @@ bool read(const QString &path, Picture *picture, QString *error)
     for (int y = 0; y < height; ++y)
         std::memcpy(image.scanLine(y), pixels + qint64(y) * width, size_t(width));
     picture->indexed = image;
+    return true;
+}
+
+bool exportPng(const QString &path, const Picture &picture, QString *error)
+{
+    if (!picture.isValid() || picture.indexed.colorCount() != 256) {
+        errorOut(error, QStringLiteral("Cannot export PNG: PPB has no valid 256-colour indexed image."));
+        return false;
+    }
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        errorOut(error, QStringLiteral("Cannot open PNG destination %1: %2")
+            .arg(path, file.errorString()));
+        return false;
+    }
+    QImageWriter writer(&file, "png");
+    if (!writer.write(picture.indexed)) {
+        errorOut(error, QStringLiteral("Could not encode PNG: %1").arg(writer.errorString()));
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        errorOut(error, QStringLiteral("Could not finish PNG export: %1").arg(file.errorString()));
+        return false;
+    }
     return true;
 }
 

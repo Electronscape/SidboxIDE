@@ -109,7 +109,7 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameassets_draw_background", "gameassets_draw_layers",
             "gameassets_show_background", "drawworld",
             "gameworlditems_init", "gameworlditems_update", "gameworlditems_draw",
-            "gameworlditems_draw_behind", "gameworlditems_check",
+            "gameworlditems_draw_behind", "gameworlditems_draw_overlay", "gameworlditems_check",
             "gameworlditems_before", "gameworlditems_after",
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
@@ -226,6 +226,8 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
             ? objectsHeader.readAll() : QByteArray();
         if (exported.contains("gameworlditems_draw_behind"))
             api += "void " + id + "_gameworlditems_draw_behind(int32_t,int32_t);\n";
+        if (exported.contains("gameworlditems_draw_overlay"))
+            api += "void " + id + "_gameworlditems_draw_overlay(int32_t,int32_t);\n";
         if (exported.contains("gameworlditems_before")) {
             api += "void " + id + "_gameworlditems_before(game_world_player_t*);\n";
             api += "void " + id + "_gameworlditems_after(game_world_player_t*);\n";
@@ -368,6 +370,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         const QByteArray exposed = publicApi.open(QIODevice::ReadOnly)
             ? publicApi.readAll() : QByteArray();
         const bool behind = exposed.contains("gameworlditems_draw_behind");
+        const bool overlay = exposed.contains("gameworlditems_draw_overlay");
         const bool inventoryApi = exposed.contains("gameadventure_store_inventory");
         const bool showBackground = exposed.contains("gameassets_show_background");
         // Old published worlds might still be Stage 5.45 while the user
@@ -387,6 +390,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         declarations << QStringLiteral("#include \"../worlds/%1/world_api.h\"").arg(name);
         const QString zero = QStringLiteral("0");
         const QString objectsBehind = behind ? stem + QStringLiteral("gameworlditems_draw_behind") : zero;
+        const QString objectsOverlay = overlay ? stem + QStringLiteral("gameworlditems_draw_overlay") : zero;
         const QString inventoryStore = inventoryApi
             ? stem + QStringLiteral("gameadventure_store_inventory") : zero;
         const QString inventoryLoad = inventoryApi
@@ -503,11 +507,11 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             namedStartFields << QStringLiteral(", %1, sizeof(%1) / sizeof(%1[0])").arg(symbol);
         }
         QString row = QStringLiteral("    {\"%1\", %2gameassets_init, %2gameassets_shutdown,\n"
-            "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3,\n"
-            "     %2gameassets_draw_foreground, %2gameassets_draw_background, %4,\n"
-            "     %2gameadventure_setup, %5, %6,\n"
-            "     %7, %8, %9, %10, %11, %12}");
-        const QStringList values = {name, stem, objectsBehind, showDirect,
+            "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3, %4,\n"
+            "     %2gameassets_draw_foreground, %2gameassets_draw_background, %5,\n"
+            "     %2gameadventure_setup, %6, %7,\n"
+            "     %8, %9, %10, %11, %12, %13}");
+        const QStringList values = {name, stem, objectsBehind, objectsOverlay, showDirect,
             inventoryStore, inventoryLoad, mapVar, mapLoad, mapUnload,
             atlasLoad, atlasUnload, mapPath};
         for (int i = values.size(); i >= 1; --i)

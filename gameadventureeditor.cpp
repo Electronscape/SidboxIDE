@@ -1,4 +1,5 @@
 #include "gameadventureeditor.h"
+#include "gamepalettepicker.h"
 #include "ppbcodec.h"
 #include "gametilemap.h"
 #include "guidesigner_detail.h"
@@ -9,6 +10,7 @@
 #include <QScreen>
 #include <QPointer>
 #include <QCheckBox>
+#include <QSettings>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -473,30 +475,9 @@ int chooseAdventurePaletteIndex(QWidget *parent,const QVector<QRgb> &palette,int
             QObject::tr("Select an active 256-colour foreground palette in World Designer first."));
         return -1;
     }
-    QDialog dialog(parent);dialog.setWindowTitle(QObject::tr("Pick Foreground Palette Colour"));
-    dialog.resize(665,575);
-    auto *layout=new QVBoxLayout(&dialog);
-    auto *hint=new QLabel(QObject::tr("Choose a foreground palette index. Index 0 is transparent."),&dialog);
-    layout->addWidget(hint);
-    auto *scroll=new QScrollArea(&dialog);scroll->setWidgetResizable(true);
-    auto *content=new QWidget(scroll);auto *swatches=new QGridLayout(content);
-    swatches->setSpacing(3);int chosen=previous;
-    for (int i=0;i<256;++i) {
-        auto *button=new QPushButton(content);
-        button->setFixedSize(32,32);
-        QPixmap px(23,23);px.fill(QColor::fromRgba(palette[i]));
-        button->setIcon(QIcon(px));button->setIconSize(QSize(23,23));
-        button->setToolTip(QObject::tr("Index %1 — RGB %2").arg(i)
-            .arg(QColor::fromRgba(palette[i]).name()));
-        if(i==previous) button->setStyleSheet(QStringLiteral("border: 2px solid #ffd600; border-radius:0px;"));
-        swatches->addWidget(button,i/16,i%16);
-        QObject::connect(button,&QPushButton::clicked,&dialog,[&,i]{chosen=i;dialog.accept();});
-    }
-    scroll->setWidget(content);layout->addWidget(scroll,1);
-    auto *cancel=new QDialogButtonBox(QDialogButtonBox::Cancel,&dialog);
-    layout->addWidget(cancel);
-    QObject::connect(cancel,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
-    return dialog.exec()==QDialog::Accepted?chosen:-1;
+    return SidboxPalettePicker::chooseIndex(parent, palette, previous,
+        QObject::tr("Pick Foreground Palette Colour"),
+        QObject::tr("Choose a foreground palette index. Index 0 is transparent."));
 }
 
 QImage indexedPreview(const QString &path,const QVector<QRgb> &palette) {
@@ -1957,10 +1938,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QSpinBox *inventoryIconCell = nullptr;
     bool editingIconControls = false;
     auto *itemsPage = new QWidget(tabs); auto *itemsLayout = new QVBoxLayout(itemsPage);
-    auto *items = new QTableWidget(0,8,itemsPage);
+    auto *items = new QTableWidget(0,9,itemsPage);
     items->setHorizontalHeaderLabels({QObject::tr("Item name (e.g. Brass Key)"),QObject::tr("Pick up from..."),
                                       QObject::tr("Max owned"),QObject::tr("Start with"),QObject::tr("Icon artwork"),
-                                      QObject::tr("Can drop?"),QObject::tr("Can discard?"),QObject::tr("USE effect")});
+                                      QObject::tr("Can drop?"),QObject::tr("Can discard?"),QObject::tr("USE effect"),QObject::tr("Row action")});
     items->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
     items->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(2,QHeaderView::ResizeToContents);
@@ -1969,6 +1950,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     items->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(6,QHeaderView::ResizeToContents);
     items->horizontalHeader()->setSectionResizeMode(7,QHeaderView::ResizeToContents);
+    items->horizontalHeader()->setSectionResizeMode(8,QHeaderView::ResizeToContents);
     items->setIconSize(QSize(36,36));
     items->verticalHeader()->setDefaultSectionSize(46);
     auto *collectionHelp=new QLabel(QObject::tr(
@@ -2479,6 +2461,27 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     itemButtons->addWidget(itemAdd); itemButtons->addWidget(itemDel);
     itemButtons->addWidget(itemSync); itemButtons->addStretch();
     const auto refreshItemButtons=[&] {
+        // The button remembers its own widget, not a row number that can go
+        // stale after deleting a preceding inventory item.
+        for (int row = 0; row < items->rowCount(); ++row) {
+            if (items->cellWidget(row,8)) continue;
+            auto *del = new QPushButton(QObject::tr("Delete"),items);
+            del->setToolTip(QObject::tr("Delete this exact inventory item (confirmation required). Dialogue item references are remapped."));
+            QObject::connect(del,&QPushButton::clicked,&dialog,[&,del] {
+                // Do not delete the clicked QPushButton during its own signal.
+                const QPointer<QPushButton> clicked(del);
+                QTimer::singleShot(0,&dialog,[&,clicked] {
+                    if (!clicked) return;
+                    for (int current = 0; current < items->rowCount(); ++current) {
+                        if (items->cellWidget(current,8) != clicked.data()) continue;
+                        items->setCurrentCell(current,0);
+                        itemDel->click(); // existing item-index remap and confirmation
+                        return;
+                    }
+                });
+            });
+            items->setCellWidget(row,8,del);
+        }
         const bool selected=items->currentRow()>=0 && items->item(items->currentRow(),0);
         adventureMarkDependent(itemDel); itemDel->setEnabled(selected);
         adventureMarkDependent(itemSync); itemSync->setEnabled(selected && !currentDesignFilePath.isEmpty());
@@ -2509,7 +2512,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     QObject::connect(itemDel,&QPushButton::clicked,&dialog,[&] {
         const int row=items->currentRow();
         if (row>=0 && QMessageBox::question(&dialog,QObject::tr("Remove Item"),
-                QObject::tr("Delete item %1? Dialogue choice item references will be cleared.").arg(row))
+                QObject::tr("Delete inventory item '%1' (row %2)? Dialogue and exchange item references will be remapped.")
+                    .arg(items->item(row,0) ? items->item(row,0)->text() : QString()).arg(row+1))
                 == QMessageBox::Yes) {
             items->removeRow(row);
             refreshItemButtons();
@@ -2554,10 +2558,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "to two NPCs; visibility survives world travel."),npcPage);
     npcHelp->setWordWrap(true);
     npcLayout->addWidget(npcHelp);
-    auto *npcs = new QTableWidget(0,5,npcPage);
+    auto *npcs = new QTableWidget(0,6,npcPage);
     npcs->setHorizontalHeaderLabels({QObject::tr("Sprite"),QObject::tr("Start node"),
         QObject::tr("Talk radius (px)"),QObject::tr("After helped (optional)"),
-        QObject::tr("Initially visible")});
+        QObject::tr("Initially visible"),QObject::tr("Row action")});
     // Give the two dialogue selectors their full selected titles. Sprite uses
     // the space left over; horizontal scrolling remains available on small screens.
     npcs->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
@@ -2565,6 +2569,7 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     npcs->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Interactive);
     npcs->horizontalHeader()->setSectionResizeMode(3,QHeaderView::Interactive);
     npcs->horizontalHeader()->setSectionResizeMode(4,QHeaderView::Interactive);
+    npcs->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
     npcs->setColumnWidth(4,140);
     npcs->horizontalHeader()->setMinimumSectionSize(100);
     npcs->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -2643,6 +2648,24 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     npcButtons->addWidget(npcAdd); npcButtons->addWidget(npcAnim); npcButtons->addWidget(npcDel); npcButtons->addStretch();
     npcLayout->addLayout(npcButtons);
     const auto refreshNpcButtons=[&] {
+        for (int row = 0; row < npcs->rowCount(); ++row) {
+            if (npcs->cellWidget(row,5)) continue;
+            auto *del = new QPushButton(QObject::tr("Delete"),npcs);
+            del->setToolTip(QObject::tr("Remove this NPC association. The placed sprite and dialogue nodes are preserved."));
+            QObject::connect(del,&QPushButton::clicked,&dialog,[&,del] {
+                const QPointer<QPushButton> clicked(del);
+                QTimer::singleShot(0,&dialog,[&,clicked] {
+                    if (!clicked) return;
+                    for (int current = 0; current < npcs->rowCount(); ++current) {
+                        if (npcs->cellWidget(current,5) != clicked.data()) continue;
+                        npcs->setCurrentCell(current,0);
+                        npcDel->click(); // existing confirmation and link cleanup
+                        return;
+                    }
+                });
+            });
+            npcs->setCellWidget(row,5,del);
+        }
         const bool selected=npcs->currentRow()>=0 && npcs->item(npcs->currentRow(),0);
         adventureMarkDependent(npcDel); npcDel->setEnabled(selected);
         adventureMarkDependent(npcAnim); npcAnim->setEnabled(selected);
@@ -3909,8 +3932,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         "red means the conversation exceeds the LCD height. Only two answers are shown at a time."),positionPage));
 
 
-    auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,&dialog);
+    auto *buttons=new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel,&dialog);
     main->addWidget(buttons);
+    if (auto *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setToolTip(QObject::tr("Discard all unsaved changes in the Adventure Editor."));
     QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
     QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     // Navigation shortcut from the World Designer's [NPC]-tagged sprite.
@@ -3926,8 +3951,13 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
             break;
         }
     }
-    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
-    if(dialog.exec()!=QDialog::Accepted)return false;
+    QSettings adventureWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    if (!dialog.restoreGeometry(adventureWindowSettings.value(
+            QStringLiteral("GameAdventureEditor/geometry")).toByteArray()))
+        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
+    const int adventureResult = dialog.exec();
+    adventureWindowSettings.setValue(QStringLiteral("GameAdventureEditor/geometry"), dialog.saveGeometry());
+    if (adventureResult != QDialog::Accepted) return false;
     QJsonObject result=old;
     const QJsonArray finalInventory = tableItems(items);
     result.insert("items", finalInventory);

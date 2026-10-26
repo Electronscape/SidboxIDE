@@ -61,6 +61,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
+#include <QShortcut>
 #include <QLabel>
 #include <QListWidget>
 #include <QTreeWidget>
@@ -11704,11 +11705,47 @@ public:
         if (next >= 0.05 && next <= 32.0) scale(factor, factor);
     }
 protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::MiddleButton) {
+            m_middlePanning = true;
+            m_lastPan = event->pos();
+            viewport()->setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+        QGraphicsView::mousePressEvent(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_middlePanning) {
+            const QPoint movement = event->pos() - m_lastPan;
+            m_lastPan = event->pos();
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() - movement.x());
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - movement.y());
+            event->accept();
+            return;
+        }
+        QGraphicsView::mouseMoveEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::MiddleButton && m_middlePanning) {
+            m_middlePanning = false;
+            viewport()->unsetCursor();
+            event->accept();
+            return;
+        }
+        QGraphicsView::mouseReleaseEvent(event);
+    }
     void wheelEvent(QWheelEvent *event) override
     {
         zoomBy(event->angleDelta().y() > 0 ? 1.25 : 0.8);
         event->accept();
     }
+private:
+    bool m_middlePanning = false;
+    QPoint m_lastPan;
 };
 
 bool MainWindow::openFile(const QString &filePath)
@@ -11732,21 +11769,28 @@ bool MainWindow::openFile(const QString &filePath)
         QDialog dialog(this);
         dialog.setWindowTitle(tr("PPB Viewer — %1").arg(QFileInfo(filePath).fileName()));
         dialog.resize(850, 600);
-        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
+        QSettings ppbWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        if (!dialog.restoreGeometry(ppbWindowSettings.value(
+                QStringLiteral("PpbViewer/geometry")).toByteArray()))
+            dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
         dialog.setStyleSheet(styleSheet());
         auto *layout = new QVBoxLayout(&dialog);
         auto *tools = new QHBoxLayout();
-        auto *info = new QLabel(tr("%1 × %2 pixels  •  embedded 256-colour CLUT  •  drag to pan; wheel to zoom")
+        auto *info = new QLabel(tr("%1 × %2 pixels  •  embedded 256-colour CLUT")
             .arg(picture.indexed.width()).arg(picture.indexed.height()), &dialog);
         tools->addWidget(info, 1);
         auto *minus = new QPushButton(tr("−"), &dialog);
         auto *plus = new QPushButton(tr("+"), &dialog);
         auto *actual = new QPushButton(tr("100%"), &dialog);
         auto *fit = new QPushButton(tr("Fit"), &dialog);
+        auto *exportPng = new QPushButton(tr("Export PNG..."), &dialog);
+        exportPng->setToolTip(tr("Write a lossless PNG using the PPB's embedded palette and transparency.\n"
+            "The PPB source is never changed."));
         tools->addWidget(minus);
         tools->addWidget(plus);
         tools->addWidget(actual);
         tools->addWidget(fit);
+        tools->addWidget(exportPng);
         layout->addLayout(tools);
         auto *view = new SidboxPpbView(&dialog);
         auto *scene = new QGraphicsScene(view);
@@ -11755,6 +11799,59 @@ bool MainWindow::openFile(const QString &filePath)
         pix->setTransformationMode(Qt::FastTransformation);
         scene->setSceneRect(pix->boundingRect());
         layout->addWidget(view, 1);
+        auto *guide = new QLabel(tr("Wheel: zoom  •  Middle-drag or left-drag: pan  •  Ctrl+/-: zoom  •  Ctrl+1: 100%  •  Ctrl+F: fit\n"
+            "Export PNG keeps pixel colours and transparency; it does not replace the PPB."), &dialog);
+        guide->setWordWrap(true);
+        guide->setToolTip(tr("PPB images contain indexed pixels and an embedded 256-colour palette. "
+            "Exported PNGs preserve that palette, including per-colour alpha. "
+            "The image is saved at its original pixel dimensions without smoothing, "
+            "scaling or colour quantisation. Zoom and pan only affect the preview."));
+        layout->addWidget(guide);
+        const auto bindViewerKey = [view, &dialog](Qt::Key key, QPushButton *button) {
+            auto *shortcut = new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, key)), view);
+            shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+            QObject::connect(shortcut, &QShortcut::activated, &dialog,
+                [button]() { button->click(); });
+        };
+        bindViewerKey(Qt::Key_Plus, plus);
+        bindViewerKey(Qt::Key_Equal, plus);
+        bindViewerKey(Qt::Key_Minus, minus);
+        bindViewerKey(Qt::Key_1, actual);
+        bindViewerKey(Qt::Key_F, fit);
+        connect(exportPng, &QPushButton::clicked, &dialog, [this, &dialog, &picture, filePath]() {
+            QSettings preferences(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+            QString directory = preferences.value(QStringLiteral("files/ppbPngExportLastDirectory"),
+                QFileInfo(filePath).absolutePath()).toString();
+            if (!QDir(directory).exists()) directory = QFileInfo(filePath).absolutePath();
+            const QString suggested = QDir(directory).filePath(
+                QFileInfo(filePath).completeBaseName() + QStringLiteral(".png"));
+            QString destination = QFileDialog::getSaveFileName(&dialog, tr("Export PPB as PNG"),
+                suggested, tr("PNG Images (*.png)"));
+            if (destination.isEmpty()) return;
+            if (QFileInfo(destination).suffix().isEmpty()) destination += QStringLiteral(".png");
+            if (QFileInfo(destination).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0) {
+                QMessageBox::warning(&dialog, tr("PPB → PNG"),
+                    tr("Choose a .png filename. This export creates PNG images only."));
+                return;
+            }
+            if (QFileInfo(destination).absoluteFilePath() == QFileInfo(filePath).absoluteFilePath()) {
+                QMessageBox::warning(&dialog, tr("PPB → PNG"),
+                    tr("The PNG destination must be different from the PPB source."));
+                return;
+            }
+            QString exportError;
+            if (!SidboxPpb::exportPng(destination, picture, &exportError)) {
+                QMessageBox::warning(&dialog, tr("PPB → PNG failed"),
+                    tr("The PPB was not modified.\n%1").arg(exportError));
+                return;
+            }
+            preferences.setValue(QStringLiteral("files/ppbPngExportLastDirectory"),
+                QFileInfo(destination).absolutePath());
+            QMessageBox::information(&dialog, tr("PNG exported"),
+                tr("Saved %1 × %2 PNG with the original indexed palette:\n%3")
+                    .arg(picture.indexed.width()).arg(picture.indexed.height())
+                    .arg(QDir::toNativeSeparators(destination)));
+        });
         connect(minus, &QPushButton::clicked, view, [view]() { view->zoomBy(0.8); });
         connect(plus, &QPushButton::clicked, view, [view]() { view->zoomBy(1.25); });
         connect(actual, &QPushButton::clicked, view, [view]() { view->resetTransform(); });
@@ -11765,6 +11862,7 @@ bool MainWindow::openFile(const QString &filePath)
             view->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
         });
         dialog.exec();
+        ppbWindowSettings.setValue(QStringLiteral("PpbViewer/geometry"), dialog.saveGeometry());
         return true;
     }
 

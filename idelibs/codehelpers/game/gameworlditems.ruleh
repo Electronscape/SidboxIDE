@@ -21,6 +21,7 @@ void gameworlditems_apply_remote(void);
 void gameworlditems_update(uint16_t frames);
 void gameworlditems_draw(int32_t camera_x, int32_t camera_y);
 void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y);
+void gameworlditems_draw_overlay(int32_t camera_x, int32_t camera_y);
 @IDE_IF{HAS_PICKUPS}
 uint16_t gameworlditems_check(int32_t player_x, int32_t player_y,
     uint16_t player_w, uint16_t player_h, game_pickup_callback_t callback, void *user);
@@ -61,5 +62,6 @@ void gameworlditems_remote_reset(void);
 void gameworlditems_apply_remote(void);
 void gameworlditems_update(uint16_t frames);
 void gameworlditems_draw(int32_t cx, int32_t cy);
+void gameworlditems_draw_overlay(int32_t cx, int32_t cy);
 #endif
 @IDE_END

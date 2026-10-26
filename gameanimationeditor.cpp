@@ -26,6 +26,7 @@
 #include <QFileDialog>
 #include <QColorDialog>
 #include <QSettings>
+#include <QStyle>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -46,6 +47,7 @@
 #include <QSaveFile>
 #include <QRegularExpression>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPaintEvent>
 #include <QAbstractItemModel>
 #include <QLineEdit>
@@ -396,6 +398,9 @@ class AnimationAtlasScrollArea final : public QScrollArea {
 public:
     explicit AnimationAtlasScrollArea(QWidget *parent = nullptr) : QScrollArea(parent) {
         viewport()->installEventFilter(this);
+        setFocusPolicy(Qt::StrongFocus);
+        setToolTip(QObject::tr("Wheel or Ctrl+/-: zoom. Middle-drag: pan. Ctrl+1: 100%. "
+            "Click a cell to select; double-click to add a frame."));
     }
     std::function<int()> currentZoom;
     std::function<void(int)> setZoom;
@@ -404,6 +409,18 @@ public:
         atlas->installEventFilter(this);
     }
 protected:
+    void keyPressEvent(QKeyEvent *event) override {
+        if (currentZoom && setZoom && (event->modifiers() & Qt::ControlModifier) &&
+            (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal ||
+             event->key() == Qt::Key_Minus || event->key() == Qt::Key_1)) {
+            const int value = event->key() == Qt::Key_1 ? 1 :
+                qBound(1, currentZoom() + (event->key() == Qt::Key_Minus ? -1 : 1), 16);
+            setZoom(value);
+            event->accept();
+            return;
+        }
+        QScrollArea::keyPressEvent(event);
+    }
     bool eventFilter(QObject *watched, QEvent *event) override {
         if (watched != viewport() && watched != widget())
             return QScrollArea::eventFilter(watched, event);
@@ -433,6 +450,7 @@ protected:
             auto *mouse = static_cast<QMouseEvent *>(event);
             if (mouse->button() == Qt::MiddleButton) {
                 m_dragging = true;
+                setFocus(Qt::MouseFocusReason);
                 m_lastGlobal = source->mapToGlobal(mouse->position().toPoint());
                 viewport()->setCursor(Qt::ClosedHandCursor);
                 if (widget()) widget()->setCursor(Qt::ClosedHandCursor);
@@ -522,6 +540,10 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
     setWindowTitle(tr("Player Animation Editor — %1").arg(QFileInfo(atlasFile).fileName()));
     setMinimumSize(1080, 690);
     resize(1370, 860);
+    QSettings animationWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    const QByteArray savedWindow = animationWindowSettings.value(
+        QStringLiteral("PlayerAnimationEditor/geometry")).toByteArray();
+    if (!savedWindow.isEmpty()) restoreGeometry(savedWindow);
     // Stage 4.14: global theme controls the entire dialog, including checks.
     // Only artwork/preview sections retain their own scoped styles below.
     m_states = {"Idle", "Walk", "Run", "Push", "Jump", "Fall", "Slide", "Balance", "Hurt", "Land"};
@@ -530,6 +552,12 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
     if (m_atlas.isNull()) {
         QMessageBox::warning(this, tr("Animation Atlas"), tr("Could not read sprite atlas:\n%1").arg(atlasFile));
     }
+}
+
+SidboxPlayerAnimationEditor::~SidboxPlayerAnimationEditor()
+{
+    QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    settings.setValue(QStringLiteral("PlayerAnimationEditor/geometry"), saveGeometry());
 }
 
 QString SidboxPlayerAnimationEditor::currentState() const
@@ -747,6 +775,10 @@ void SidboxPlayerAnimationEditor::createUi()
     m_previewColourButton = new QPushButton(tr("Colour…"), right);
     m_previewColourButton->setToolTip(tr("Choose a solid preview background colour."));
     m_previewColourButton->setEnabled(m_previewBackgroundMode == 2);
+    m_previewColourButton->setProperty("adventureGuard", true);
+    m_previewColourButton->style()->unpolish(m_previewColourButton);
+    m_previewColourButton->style()->polish(m_previewColourButton);
+    m_previewColourButton->setToolTip(tr("Available only when Preview Background is set to Custom. Changes the preview, not exported sprite art."));
     previewHeading->addWidget(m_previewColourButton);
     rightLayout->addLayout(previewHeading);
     connect(m_previewBackgroundChoice, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -1100,6 +1132,13 @@ void SidboxPlayerAnimationEditor::removeFrame()
         return;
     }
     if (position < 0 || position >= clip.frames.size()) return;
+    if (QMessageBox::question(this, tr("Delete animation frame?"),
+            tr("Remove frame %1 (atlas cell %2) from %3 / %4?\n"
+               "This edits only the current animation sequence until you Save.")
+                .arg(position+1).arg(clip.frames.at(position))
+                .arg(currentState(),currentDirection()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
     clip.frames.removeAt(position);
     if (position < clip.frameTicks.size()) clip.frameTicks.removeAt(position);
     refreshTimeline(); m_timeline->setCurrentRow(qMin(position, clip.frames.size() - 1)); refreshPreview();

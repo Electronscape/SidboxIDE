@@ -1,0 +1,55 @@
+CoderGirl Stage 5.135.251026 — Unified CLUT palette pickers
+============================================================
+BASE: Stage 5.134.251026
+
+PURPOSE
+Use the 16x16 Game Object Properties CLUT picker as the shared standard
+for choosing palette indices across game IDE panels. Preserve existing
+palette data, project keys and gameplay output.
+
+NEW: gamepalettepicker.h
+- Qt6 6.5+ compatible, 16x16 grid of 28x28 buttons / 22px icon swatches.
+- Yellow selected-cell border, cancel support, index+ARGB tooltips,
+  256-entry fixed CLUT indices, scroll on smaller screens.
+- Supports reserving index 0 (disabled) and palette-backed index selection.
+- Returning -1 on cancel preserves each editor's existing value.
+
+REPLACED DUPLICATE INDEX PICKER GRIDS
+- gameadventureeditor.cpp: dialogue / thought / outline foreground indices.
+- gamehudeditor.cpp: HUD foreground and outline indices.
+- gametitlescreeneditor.cpp: title/options text, outline and menu selector indices.
+- gamedesigner.cpp: Stompable Enemy/Murder Object flash CLUT and reserved
+  spotlight mask index. These now use the same shared picker as each other.
+- guidesigner.cpp: GUI Designer's existing pen grid now uses matching
+  swatch spacing/icon size/yellow selected border. Its copy-index, copy-ARGB,
+  default-pen and explicit-use buttons are preserved.
+- splashscreenwidget.cpp: Build: 5.135.251026.
+
+NOT CHANGED
+- gamepaletteeditor.cpp / .h: the familiar standard .pal Palette Editor
+  remains COMPLETELY UNCHANGED (two banks, alpha, cycles, Save, Save As).
+- Edits to .pal palette resources still use this Palette Editor.
+- The Title Screen's internal ARGB CLUT editor is not a .pal file picker:
+  it still edits component colours and alpha, so it remains unchanged.
+- Arbitrary RGB colour dialogs (preview background, reserved mask RGB)
+  remain true-colour editors, not indexed CLUT pickers.
+- No project format, generated runtime, save data, main.c or firmware edits.
+
+INSTALL
+1. Extract CoderGirl-Stage5.135-251026-DROPIN.zip into the source tree
+   of your installed Stage 5.134.251026, retaining paths.
+2. Rebuild CoderGirl on Fedora (Qt6 6.11.2 used in your previous backtrace;
+   the IDE requires Qt6 >=6.5).
+3. Open Adventure Dialogue Position, HUD, Title Screen, and Game Object
+   Properties to verify all index pickers display identical 16x16 swatches.
+4. Verify Cancel does not change the chosen index; check index 0 is
+   disabled only in the reserved spotlight mask index picker.
+5. Open an existing .pal resource to confirm its palette editor is unchanged.
+
+TESTS
+python3 development/tests/test_stage5135_palette_picker_standard.py
+python3 development/tests/test_stage5132_drop_triggers.py
+python3 development/tests/test_stage423_palette_save_close.py
+All passed in source/native checks. Qt6 dev kit is not available in the
+working environment, so a complete IDE GUI build and interaction test
+remains for Fedora.

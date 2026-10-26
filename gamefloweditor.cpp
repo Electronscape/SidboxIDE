@@ -6,6 +6,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSettings>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -1897,7 +1898,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     const QColor cardBorder = mix(theme.border, theme.mutedText, 0.45);
     QDialog dialog(parent);
     dialog.setWindowTitle(QObject::tr("Game Flow Debugger - Design Time"));
-    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     dialog.setMinimumSize(780,480);
     auto *rootLayout=new QVBoxLayout(&dialog);
     rootLayout->setContentsMargins(7,7,7,7);
@@ -1963,7 +1963,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     status->setWordWrap(true);
     statusLayout->addWidget(status);
     auto *quickHelp=new QLabel(QObject::tr(
-        "Pan: middle/Alt+drag  |  Zoom: wheel, +/- or Fit  |  Select: drag blank space / Ctrl+click\n"
+        "Pan: middle/Alt+drag  |  Zoom: wheel, Ctrl+/-; Ctrl+1 = 100%; Ctrl+F = Fit  |  Select: blank drag / Ctrl+click\n"
         "Groups: Ctrl+G / Ctrl+Shift+G  |  Expand: +/-  |  Rename: F2  |  Choice: double-click  |  View auto-saved"),statusBox);
     quickHelp->setWordWrap(true);
     quickHelp->setStyleSheet(QStringLiteral("color: %1;").arg(theme.mutedText.name()));
@@ -3145,6 +3145,17 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     });
     QObject::connect(greenLinks,&QCheckBox::toggled,&dialog,[&](bool){refreshHighlight();});
     QObject::connect(reload,&QPushButton::clicked,&dialog,reloadGraph);
+    const auto flowCanvasShortcut = [view](Qt::Key key, QPushButton *button) {
+        auto *shortcut = new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, key)), view);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        QObject::connect(shortcut, &QShortcut::activated, view,
+            [button]() { button->click(); });
+    };
+    flowCanvasShortcut(Qt::Key_Plus, zoomIn);
+    flowCanvasShortcut(Qt::Key_Equal, zoomIn);
+    flowCanvasShortcut(Qt::Key_Minus, zoomOut);
+    flowCanvasShortcut(Qt::Key_1, actualSize);
+    flowCanvasShortcut(Qt::Key_F, fit);
     QObject::connect(zoomIn,&QPushButton::clicked,&dialog,[&](){view->zoom(1.25);});
     QObject::connect(zoomOut,&QPushButton::clicked,&dialog,[&](){view->zoom(0.8);});
     QObject::connect(actualSize,&QPushButton::clicked,&dialog,[&](){
@@ -3303,9 +3314,9 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             static_cast<FlowCardItem *>(it.value())->setSnapToGrid(enabled);
         savePositions();
     });
-    auto *groupShortcut=new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_G),&dialog);
+    auto *groupShortcut=new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_G)),&dialog);
     QObject::connect(groupShortcut,&QShortcut::activated,&dialog,makeGroup);
-    auto *ungroupShortcut=new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G),&dialog);
+    auto *ungroupShortcut=new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G)),&dialog);
     QObject::connect(ungroupShortcut,&QShortcut::activated,&dialog,ungroup);
     auto *renameShortcut=new QShortcut(QKeySequence(Qt::Key_F2),&dialog);
     QObject::connect(renameShortcut,&QShortcut::activated,&dialog,renameSelectedGroup);
@@ -3317,7 +3328,12 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         restoreView();
         trackingView=true;
     });
+    QSettings flowWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    if (!dialog.restoreGeometry(flowWindowSettings.value(
+            QStringLiteral("GameFlowEditor/geometry")).toByteArray()))
+        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     dialog.exec();
+    flowWindowSettings.setValue(QStringLiteral("GameFlowEditor/geometry"), dialog.saveGeometry());
     viewSaveTimer.stop();
     captureView(); // also save the final camera when closing immediately
     // IMPORTANT: the dialog (and its child scene/widgets) outlives local graph

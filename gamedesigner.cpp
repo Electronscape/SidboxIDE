@@ -1,4 +1,5 @@
 #include "gamedesigner.h"
+#include "gamepalettepicker.h"
 #include "gameglobalstamps.h"
 #include "gameworldsnapshot.h"
 #include "gamecrossworldlinks.h"
@@ -15,6 +16,7 @@
 #include "gamehudeditor.h"
 #include "gamefloweditor.h"
 #include "gametitlescreeneditor.h"
+#include "gamepixarteditor.h"
 #include "gameadventuregen.h"
 #include "gameanimationeditor.h"
 #include "gamemainownership.h"
@@ -97,6 +99,7 @@
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QSettings>
+#include <QStyle>
 #include <QSizePolicy>
 #include <QListView>
 #include <QListWidget>
@@ -105,6 +108,7 @@
 #include <QSignalBlocker>
 #include <QTextStream>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QSplitter>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -704,6 +708,7 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
                 refreshColourCyclePreview();
             }
         }
+        updateParticlePreview();
         for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
             const Resource &r = m_resources.at(i);
             if (r.kind != QStringLiteral("sprite") ||
@@ -2127,31 +2132,12 @@ void SidboxGameDesigner::editPlayerStart()
                 QObject::tr("Select an active foreground .pal resource first. You can still enter a palette index manually."));
             return;
         }
-        QDialog picker(&dialog);
-        picker.setWindowTitle(QObject::tr("Choose reserved foreground palette index"));
-        picker.setStyleSheet(QStringLiteral("QDialog, QPushButton { border-radius:0px; }"));
-        auto *pickerLayout = new QVBoxLayout(&picker);
-        auto *note = new QLabel(QObject::tr("Click the palette cell to RESERVE. Index 0 is transparent and cannot be used."),&picker);
-        note->setWordWrap(true);pickerLayout->addWidget(note);
-        auto *cells=new QGridLayout();cells->setSpacing(2);
-        for (int index=0;index<256;++index) {
-            auto *cell=new QPushButton(&picker);
-            cell->setFixedSize(23,23);
-            cell->setEnabled(index!=0);
-            const QColor colour=QColor::fromRgb(foregroundSwatches.at(index));
-            cell->setStyleSheet(QStringLiteral("QPushButton {border: %1px solid %2; border-radius:0px; background:%3;}")
-                .arg(index==maskIndex->value()?3:1)
-                .arg(index==maskIndex->value()?QStringLiteral("#ffcc00"):QStringLiteral("#616161"))
-                .arg(colour.name()));
-            cell->setToolTip(QObject::tr("Index %1: %2").arg(index).arg(colour.name().toUpper()));
-            cells->addWidget(cell,index/16,index%16);
-            QObject::connect(cell,&QPushButton::clicked,&picker,[maskIndex,&picker,index]() {
-                maskIndex->setValue(index);picker.accept();
-            });
-        }
-        pickerLayout->addLayout(cells);
-        picker.exec();
+        const int selected = SidboxPalettePicker::chooseIndex(&dialog, foregroundSwatches,
+            maskIndex->value(), QObject::tr("Choose reserved foreground palette index"),
+            QObject::tr("Click the palette cell to RESERVE. Index 0 is transparent and cannot be used."), false);
+        if (selected >= 0) maskIndex->setValue(selected);
     });
+
     QColor chosenMaskColour(m_playerSpotlightMaskColour);
     if (!chosenMaskColour.isValid()) chosenMaskColour = QColor(Qt::black);
     auto *maskColourButton = new QPushButton(&dialog);
@@ -3256,6 +3242,18 @@ void SidboxGameDesigner::buildUi()
             QMessageBox::warning(this, tr("Title Screen Designer"), error);
         }
     });
+    auto *pixArtButton = new QPushButton(tr("PixArt..."), this);
+    pixArtButton->setToolTip(tr("Generate palette-aware pixel-art textures, loopable landscapes and backgrounds, then export them as PNG or PPB."));
+    pixArtButton->setMaximumWidth(96);
+    topActions->addWidget(pixArtButton);
+    connect(pixArtButton, &QPushButton::clicked, this, [this] {
+        QString error;
+        if (openGamePixArtEditor(this, QFileInfo(m_filePath).absolutePath(), &error)) {
+            if (assetFilesChanged) assetFilesChanged();
+        } else if (!error.isEmpty()) {
+            QMessageBox::warning(this, tr("PixArt"), error);
+        }
+    });
     topActions->addStretch(1);
     auto *generate = new QPushButton(tr("Generate V1 Game Code..."), this);
     generate->setToolTip(tr("Generate gameassets/gameassets.c and .h without modifying main.c, game logic or original assets."));
@@ -3412,6 +3410,13 @@ void SidboxGameDesigner::buildUi()
         QAction *addMusic = menu.addAction(tr("Add Music..."));
         menu.addSeparator();
         QAction *convertPng = menu.addAction(tr("Convert PNG → PPB..."));
+        QAction *exportPng = nullptr;
+        if (hasResource && QFileInfo(m_resources.at(resourceIndex).path).suffix().compare(
+                QStringLiteral("ppb"), Qt::CaseInsensitive) == 0) {
+            exportPng = menu.addAction(tr("Export This PPB as PNG..."));
+            exportPng->setToolTip(tr("Export the selected PPB resource to PNG, preserving the embedded "
+                "palette and alpha. Leaves the PPB and the resource reference unchanged."));
+        }
         QAction *buildClut = menu.addAction(tr("Build Shared CLUT..."));
         QAction *useAsPreview = nullptr;
         QAction *editPalette = menu.addAction(tr("Palette Editor (Import / Export)..."));
@@ -3537,6 +3542,41 @@ void SidboxGameDesigner::buildUi()
         else if (chosen == addSound) addResource(QStringLiteral("sound"));
         else if (chosen == addMusic) addResource(QStringLiteral("music"));
         else if (chosen == convertPng) importPngAsPpb(category);
+        else if (exportPng && chosen == exportPng) {
+            const QString source = resolvedPath(m_resources.at(resourceIndex).path);
+            SidboxPpb::Picture picture;
+            QString issue;
+            if (!SidboxPpb::read(source, &picture, &issue)) {
+                QMessageBox::warning(this, tr("PPB → PNG failed"),
+                    tr("Could not read the selected PPB resource:\n%1\n\n%2")
+                        .arg(QDir::toNativeSeparators(source), issue));
+            } else {
+                QSettings preferences(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+                QString directory = preferences.value(QStringLiteral("files/ppbPngExportLastDirectory"),
+                    QFileInfo(source).absolutePath()).toString();
+                if (!QDir(directory).exists()) directory = QFileInfo(source).absolutePath();
+                QString destination = QFileDialog::getSaveFileName(this, tr("Export PPB as PNG"),
+                    QDir(directory).filePath(QFileInfo(source).completeBaseName() + QStringLiteral(".png")),
+                    tr("PNG Images (*.png)"));
+                if (!destination.isEmpty()) {
+                    if (QFileInfo(destination).suffix().isEmpty()) destination += QStringLiteral(".png");
+                    if (QFileInfo(destination).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0) {
+                        QMessageBox::warning(this, tr("PPB → PNG"),
+                            tr("Choose a .png filename. This export creates PNG images only."));
+                    } else if (!SidboxPpb::exportPng(destination, picture, &issue)) {
+                        QMessageBox::warning(this, tr("PPB → PNG failed"),
+                            tr("The PPB was not modified.\n%1").arg(issue));
+                    } else {
+                        preferences.setValue(QStringLiteral("files/ppbPngExportLastDirectory"),
+                            QFileInfo(destination).absolutePath());
+                        QMessageBox::information(this, tr("PNG exported"),
+                            tr("Saved %1 × %2 PNG with the embedded palette:\n%3")
+                                .arg(picture.indexed.width()).arg(picture.indexed.height())
+                                .arg(QDir::toNativeSeparators(destination)));
+                    }
+                }
+            }
+        }
         else if (chosen == buildClut) buildSharedPalette();
         else if (chosen == editPalette) openPaletteEditor(-1);
         else if (chosen == editTiles) openTilemapEditor();
@@ -3674,6 +3714,16 @@ void SidboxGameDesigner::buildUi()
     m_showLabels = new QCheckBox(tr("Asset tags"), previewPanel);
     m_showLabels->setChecked(true);
     previewControls->addWidget(m_showLabels);
+    m_showParticlePreview = new QCheckBox(tr("Particles"), previewPanel);
+    m_showParticlePreview->setChecked(true);
+    m_showParticlePreview->setToolTip(tr("Animate ALL placed Particle Spawners together on the World Canvas at 50 Hz, "
+        "even when another object is selected. Selection only changes the resize handles. "
+        "Editor-only preview; no game rebuild or saved-world changes."));
+    previewControls->addWidget(m_showParticlePreview);
+    connect(m_showParticlePreview, &QCheckBox::toggled, this, [this](bool) {
+        resetParticlePreview();
+        updateParticlePreview();
+    });
     m_showTilemap = new QCheckBox(tr("Show Tilemap"), previewPanel);
     m_showTilemap->setToolTip(tr("Show the attached tilemap artwork in world coordinates. "
                                  "The preview follows world zoom and panning; "
@@ -4647,6 +4697,274 @@ void SidboxGameDesigner::refreshColourCyclePreview()
     }
 }
 
+// Stage 5.149: independent editor-only particle pools for ALL placed emitters.
+// The Particles checkbox controls visibility, never the resource selection.
+// These items belong only to QGraphicsScene, not to the saved .sbgm world.
+void SidboxGameDesigner::resetParticlePreview()
+{
+    for (ParticlePreviewEmitter &emitter : m_particlePreviewEmitters) {
+        if (emitter.resourceIndex >= 0 && emitter.resourceIndex < m_sceneItems.size() &&
+            emitter.resourceIndex < m_resources.size() &&
+            m_resources.at(emitter.resourceIndex).id == emitter.resourceId) {
+            if (QGraphicsItem *source = m_sceneItems.at(emitter.resourceIndex))
+                source->setOpacity(1.0);
+        }
+        for (QGraphicsPixmapItem *item : emitter.items) {
+            if (!item) continue;
+            if (m_scene) m_scene->removeItem(item);
+            delete item;
+        }
+    }
+    m_particlePreviewEmitters.clear();
+}
+
+void SidboxGameDesigner::setParticlePreviewDraft(int resourceIndex, const Resource &draft)
+{
+    // Only this emitter uses temporary values; all other pools keep moving.
+    m_particlePreviewDraftActive = true;
+    m_particlePreviewDraftIndex = resourceIndex;
+    m_particlePreviewDraft = draft;
+}
+
+void SidboxGameDesigner::clearParticlePreviewDraft()
+{
+    const int edited = m_particlePreviewDraftIndex;
+    m_particlePreviewDraftActive = false;
+    m_particlePreviewDraftIndex = -1;
+    // Rebuild only the edited emitter after Save/Cancel, not every spawner.
+    for (int i = m_particlePreviewEmitters.size() - 1; i >= 0; --i) {
+        ParticlePreviewEmitter &emitter = m_particlePreviewEmitters[i];
+        if (emitter.resourceIndex != edited) continue;
+        if (edited >= 0 && edited < m_sceneItems.size() && m_sceneItems.at(edited))
+            m_sceneItems.at(edited)->setOpacity(1.0);
+        for (QGraphicsPixmapItem *item : emitter.items) {
+            m_scene->removeItem(item);
+            delete item;
+        }
+        m_particlePreviewEmitters.removeAt(i);
+    }
+    updateParticlePreview();
+}
+
+void SidboxGameDesigner::updateParticlePreview()
+{
+    if (!m_scene || m_loading) return;
+    if (!m_showParticlePreview || !m_showParticlePreview->isChecked()) {
+        if (!m_particlePreviewEmitters.isEmpty()) resetParticlePreview();
+        return;
+    }
+
+    // Remove a missing/changed resource's pool without resetting the others.
+    const auto discardEmitter = [this](int pos) {
+        ParticlePreviewEmitter &emitter = m_particlePreviewEmitters[pos];
+        if (emitter.resourceIndex >= 0 && emitter.resourceIndex < m_resources.size() &&
+            emitter.resourceIndex < m_sceneItems.size() &&
+            m_resources.at(emitter.resourceIndex).id == emitter.resourceId) {
+            if (QGraphicsItem *source = m_sceneItems.at(emitter.resourceIndex))
+                source->setOpacity(1.0);
+        }
+        for (QGraphicsPixmapItem *item : emitter.items) {
+            if (!item) continue;
+            m_scene->removeItem(item);
+            delete item;
+        }
+        m_particlePreviewEmitters.removeAt(pos);
+    };
+
+    // The Properties dialog temporarily replaces ONE resource with its draft.
+    // Everything else continues animating, even while another object is
+    // selected, or while its Properties window is maximised.
+    for (int index = 0; index < m_resources.size(); ++index) {
+        const Resource &r = m_particlePreviewDraftActive && m_particlePreviewDraftIndex == index
+            ? m_particlePreviewDraft : m_resources.at(index);
+        if (r.kind != QStringLiteral("sprite") ||
+            r.objectType != QStringLiteral("particle_emitter")) continue;
+
+        int emitterPos = -1;
+        bool newlyCreated = false;
+        for (int j = 0; j < m_particlePreviewEmitters.size(); ++j) {
+            if (m_particlePreviewEmitters.at(j).resourceIndex == index) {
+                emitterPos = j;
+                break;
+            }
+        }
+        if (emitterPos >= 0) {
+            const ParticlePreviewEmitter &old = m_particlePreviewEmitters.at(emitterPos);
+            if (old.resourceId != r.id || old.path != r.path ||
+                old.scale != r.scale || old.frame != r.frame ||
+                old.prepopulate != r.particlePrepopulate ||
+                old.preset != r.particlePreset ||
+                (r.particlePreset == QStringLiteral("fireflies") &&
+                 old.swirlRadius != r.particleSwirlRadius) ||
+                old.particles.size() != 32) {
+                discardEmitter(emitterPos);
+                emitterPos = -1;
+            }
+        }
+        if (emitterPos < 0) {
+            const QImage source = resourcePreview(r);
+            if (source.isNull()) continue;
+            ParticlePreviewEmitter created;
+            created.resourceIndex = index;
+            created.resourceId = r.id;
+            created.path = r.path;
+            created.scale = r.scale;
+            created.frame = r.frame;
+            created.prepopulate = r.particlePrepopulate;
+            created.preset = r.particlePreset;
+            created.swirlRadius = r.particleSwirlRadius;
+            created.particles.resize(32);
+            created.random = 0xA8E5B173u ^
+                (quint32(index + 1) * 0x9E3779B9u) ^ quint32(r.x);
+            if (!created.random) created.random = 1u;
+            const QPixmap pixmap = QPixmap::fromImage(source);
+            for (int particleIndex = 0; particleIndex < 32; ++particleIndex) {
+                auto *item = new QGraphicsPixmapItem();
+                item->setAcceptedMouseButtons(Qt::NoButton);
+                item->setFlag(QGraphicsItem::ItemIsSelectable, false);
+                item->setTransformationMode(Qt::FastTransformation);
+                item->setPixmap(pixmap);
+                item->setScale(r.scale / 100.0);
+                item->setVisible(false);
+                m_scene->addItem(item);
+                created.items.append(item);
+            }
+            m_particlePreviewEmitters.append(created);
+            emitterPos = m_particlePreviewEmitters.size() - 1;
+            newlyCreated = true;
+            // The real emitter does not display its stationary source sprite.
+            // Retain a faint, clickable placement handle in the editor.
+            if (index < m_sceneItems.size() && m_sceneItems.at(index))
+                m_sceneItems.at(index)->setOpacity(0.22);
+        }
+
+        ParticlePreviewEmitter &emitter = m_particlePreviewEmitters[emitterPos];
+        const auto randomValue = [&emitter]() -> quint32 {
+            quint32 value = emitter.random;
+            value ^= value << 13;
+            value ^= value >> 17;
+            value ^= value << 5;
+            emitter.random = value ? value : 1u;
+            return value;
+        };
+        const int limit = qBound(1, r.particleCount, 32);
+        const int lifetime = qBound(30, r.particleLifetime, 2000);
+        const int interval = qBound(1, r.particleInterval, 255);
+        // Use exactly the same 50 Hz simulation for ordinary preview ticks
+        // and for the one-time prewarm. Do not touch QGraphicsScene items
+        // during the warmup: this avoids thousands of needless Qt repaints.
+        const auto stepParticles = [&]() {
+            if (++emitter.step >= interval) {
+                emitter.step = 0;
+                for (int i = 0; i < limit; ++i) {
+                    auto &particle = emitter.particles[i];
+                    if (particle.active) continue;
+                    const quint32 rx = randomValue();
+                    const quint32 ry = randomValue();
+                    particle.x100 = (qint64(r.x) + rx % quint32(qMax(8, r.particleAreaW))) * 100;
+                    particle.y100 = (qint64(r.y) + ry % quint32(qMax(8, r.particleAreaH))) * 100;
+                    particle.vy100 = r.particleFall;
+                    particle.centreX100 = particle.x100;
+                    particle.centreY100 = particle.y100;
+                    particle.swirlPhase = int((rx >> 8) ^ ry) & 255;
+                    const int halfRadius = qBound(8, r.particleSwirlRadius, 96) / 2;
+                    particle.swirlRadius = halfRadius + int(ry % quint32(halfRadius + 1));
+                    particle.age = 0;
+                    particle.fade = (r.particleFadeEnabled && r.particleFadeIn) ? 100 : 0;
+                    particle.overPlayer = !r.drawBehindTiles && r.particlePlayerLayerMix &&
+                        ((rx ^ ry) & 1u);
+                    particle.active = true;
+                    break;
+                }
+            }
+            for (int i = 0; i < emitter.particles.size(); ++i) {
+                auto &particle = emitter.particles[i];
+                if (i >= limit || !particle.active) {
+                    if (i >= limit) particle.active = false;
+                    continue;
+                }
+                if (++particle.age >= lifetime) {
+                    particle.active = false;
+                    continue;
+                }
+                if (r.particleFadeEnabled) {
+                    int target = 0;
+                    const int inFrames = lifetime * qBound(0, r.particleFadeIn, 100) / 100;
+                    const int outFrames = lifetime * qBound(0, r.particleFadeOut, 100) / 100;
+                    if (inFrames > 0 && particle.age < inFrames)
+                        target = 100 - particle.age * 100 / inFrames;
+                    if (outFrames > 0 && particle.age > lifetime - outFrames)
+                        target = qMax(target, (particle.age - (lifetime - outFrames)) * 100 / outFrames);
+                    const int step = qBound(1, r.particleFadeSpeed, 100);
+                    particle.fade += qBound(-step, target - particle.fade, step);
+                } else particle.fade = 0;
+                if (r.particlePreset == QStringLiteral("fireflies")) {
+                    // Matches the generated 64-value table and 256-phase orbit.
+                    static const qint8 swirlSine[64] = {
+                        0, 12, 25, 37, 49, 60, 71, 81,
+                        90, 98, 106, 112, 117, 122, 125, 126,
+                        127, 126, 125, 122, 117, 112, 106, 98,
+                        90, 81, 71, 60, 49, 37, 25, 12,
+                        0, -12, -25, -37, -49, -60, -71, -81,
+                        -90, -98, -106, -112, -117, -122, -125, -126,
+                        -127, -126, -125, -122, -117, -112, -106, -98,
+                        -90, -81, -71, -60, -49, -37, -25, -12,
+                    };
+                    particle.centreX100 += r.particleWind;
+                    particle.vy100 = qMin(1200, particle.vy100 + r.particleGravity);
+                    particle.centreY100 += particle.vy100;
+                    particle.swirlPhase = (particle.swirlPhase + qBound(1, r.particleSwirlSpeed, 12)) & 255;
+                    const int phase = particle.swirlPhase >> 2;
+                    const int radius100 = particle.swirlRadius * 100;
+                    particle.x100 = particle.centreX100 + radius100 * swirlSine[(phase + 16) & 63] / 127;
+                    particle.y100 = particle.centreY100 + radius100 * swirlSine[phase] / 127;
+                } else {
+                    const int phase = (particle.age + i * 9) & 31;
+                    const int triangle = phase < 16 ? phase - 8 : 24 - phase;
+                    const int gust = triangle * r.particleFlutter / 8;
+                    particle.x100 += r.particleWind + gust;
+                    particle.vy100 = qMin(1200, particle.vy100 + r.particleGravity);
+                    particle.y100 += particle.vy100;
+                }
+            }
+        };
+        if (newlyCreated && r.particlePrepopulate) {
+            const int warmFrames = qMin(lifetime - 1, limit * interval);
+            for (int frame = 0; frame < warmFrames; ++frame) stepParticles();
+        }
+        stepParticles();
+        for (int i = 0; i < emitter.particles.size(); ++i) {
+            const auto &particle = emitter.particles.at(i);
+            QGraphicsPixmapItem *item = emitter.items[i];
+            if (!particle.active || i >= limit) {
+                item->setVisible(false);
+                continue;
+            }
+            item->setPos(particle.x100 / 100, particle.y100 / 100);
+            item->setZValue(r.drawBehindTiles ? 1.95 : (particle.overPlayer ? 10501 : 10490));
+            item->setOpacity(1.0 - qBound(0, particle.fade, 100) / 100.0);
+            item->setVisible(particle.fade < 100);
+        }
+
+    }
+
+    // Removed spawners and objects temporarily changed away from the emitter
+    // type must not leave orphan leaf sprites behind on the world canvas.
+    for (int i = m_particlePreviewEmitters.size() - 1; i >= 0; --i) {
+        const ParticlePreviewEmitter &emitter = m_particlePreviewEmitters.at(i);
+        const int index = emitter.resourceIndex;
+        if (index < 0 || index >= m_resources.size()) {
+            discardEmitter(i);
+            continue;
+        }
+        const Resource &r = m_particlePreviewDraftActive && m_particlePreviewDraftIndex == index
+            ? m_particlePreviewDraft : m_resources.at(index);
+        if (r.kind != QStringLiteral("sprite") ||
+            r.objectType != QStringLiteral("particle_emitter") || r.id != emitter.resourceId)
+            discardEmitter(i);
+    }
+}
+
 void SidboxGameDesigner::rebuildScene()
 {
     m_loading = true;
@@ -4658,6 +4976,10 @@ void SidboxGameDesigner::rebuildScene()
     m_splineHandleItems.clear();
     m_splineCurveItem = nullptr;
     m_objectHitbox = nullptr;
+    m_particleResizeHandles.clear();
+    m_particleResizeHandle = -1;
+    m_particleResizeIndex = -1;
+    m_particlePreviewEmitters.clear(); // Scene owns and deletes every preview sprite.
     m_scene->clear();
     m_tilemapOverlayItem = nullptr;
     m_loopOverlayItems.clear(); // QGraphicsScene deleted the children above.
@@ -5620,8 +5942,12 @@ void SidboxGameDesigner::suggestSpriteCells(Resource &resource)
 void SidboxGameDesigner::addResource(const QString &kind, const QString &plane)
 {
     if (!QFileInfo(m_filePath).absoluteDir().exists()) return;
+    QSettings importPreferences(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    QString sourceDirectory = importPreferences.value(QStringLiteral("files/gameResourceImportLastDirectory"),
+        QFileInfo(m_filePath).absolutePath()).toString();
+    if (!QDir(sourceDirectory).exists()) sourceDirectory = QFileInfo(m_filePath).absolutePath();
     const QString path = QFileDialog::getOpenFileName(this, tr("Choose %1 resource").arg(kindTitle(kind)),
-        QFileInfo(m_filePath).absolutePath(),
+        sourceDirectory,
         kind == QStringLiteral("tileatlas")
             ? tr("SIDBOX Tile Atlas (*.ppb)")
             : kind == QStringLiteral("sprite") || kind == QStringLiteral("background")
@@ -5632,9 +5958,13 @@ void SidboxGameDesigner::addResource(const QString &kind, const QString &plane)
     if (path.isEmpty()) return;
     if (kind == QStringLiteral("tileatlas") &&
         QFileInfo(path).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive) != 0) {
-        QMessageBox::warning(this, tr("Tile Atlas"), tr("Tile atlases must be PPB files. Convert the image to PPB first."));
+        QMessageBox::warning(this, tr("Tile Atlas"),
+            tr("Tile atlases must use a .ppb file.\n"
+               "Use Game Resources → Convert PNG → PPB first, then import the resulting .ppb."));
         return;
     }
+    importPreferences.setValue(QStringLiteral("files/gameResourceImportLastDirectory"),
+        QFileInfo(path).absolutePath());
     Resource r;
     r.kind = kind;
     r.plane = kind == QStringLiteral("background") ? QStringLiteral("background")
@@ -5836,9 +6166,15 @@ void SidboxGameDesigner::importPngAsPpb(const QString &suggestedKind)
 {
     if (m_pngConversionRunning) return;
     // Intentionally PNG-only: keep the alpha channel and reserve palette index 0.
+    QSettings pngPreferences(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    QString pngDirectory = pngPreferences.value(QStringLiteral("files/pngImportLastDirectory"),
+        QFileInfo(m_filePath).absolutePath()).toString();
+    if (!QDir(pngDirectory).exists()) pngDirectory = QFileInfo(m_filePath).absolutePath();
     const QString pngPath = QFileDialog::getOpenFileName(this, tr("Import PNG Image"),
-        QFileInfo(m_filePath).absolutePath(), tr("PNG Images (*.png)"));
+        pngDirectory, tr("PNG Images (*.png)"));
     if (pngPath.isEmpty()) return;
+    pngPreferences.setValue(QStringLiteral("files/pngImportLastDirectory"),
+        QFileInfo(pngPath).absolutePath());
     if (QFileInfo(pngPath).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0) {
         QMessageBox::warning(this, tr("PNG Import"), tr("Only PNG images are supported by this importer."));
         return;
@@ -6178,8 +6514,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     dialog.resize(1180, 710);
     dialog.setMinimumSize(930, 580);
     QSettings objectWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
-    const bool objectWindowWasMaximized =
-        objectWindowSettings.value(QStringLiteral("GameObjectProperties/maximized"), false).toBool();
+    const QByteArray objectSavedGeometry = objectWindowSettings.value(
+        QStringLiteral("GameObjectProperties/geometry")).toByteArray();
+    const bool objectWindowWasMaximized = objectWindowSettings.value(
+        QStringLiteral("GameObjectProperties/maximized"), false).toBool();
     const auto colour = [](const QColor &c) { return ideThemeColorName(c); };
     // Selection foreground MUST contrast with the (potentially dark)
     // theme-accent selection background, including in light IDE themes.
@@ -6260,8 +6598,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         button->setFixedSize(30, 30);
         button->setAutoRaise(false);
     }
-    previousObject->setToolTip(tr("Save this object and edit the previous Game Object"));
-    nextObject->setToolTip(tr("Save this object and edit the next Game Object"));
+    previousObject->setToolTip(tr("Previous Game Object. Unchanged objects switch immediately; modified objects offer Save / No / Cancel."));
+    nextObject->setToolTip(tr("Next Game Object. Unchanged objects switch immediately; modified objects offer Save / No / Cancel."));
     int previousIndex = -1, nextIndex = -1;
     for (int i = 0; i < m_resources.size(); ++i) {
         const Resource &candidate = m_resources.at(i);
@@ -6282,6 +6620,32 @@ void SidboxGameDesigner::configureGameObject(int index)
     objectHeading->addWidget(nextObject);
     objectHeading->addStretch(1);
     layout.addLayout(objectHeading);
+
+    // The same animated WORLD scene is shown here at a useful zoom. This
+    // matters when the Properties dialog is maximised and hides the editor.
+    // It is read-only, and never creates a second particle simulation.
+    auto *particlePreviewDock = new QWidget(&dialog);
+    particlePreviewDock->setObjectName(QStringLiteral("ParticleWorldPreviewDock"));
+    auto *particlePreviewDockLayout = new QVBoxLayout(particlePreviewDock);
+    particlePreviewDockLayout->setContentsMargins(4, 2, 4, 2);
+    particlePreviewDockLayout->setSpacing(2);
+    auto *particlePreviewCaption = new QLabel(tr(
+        "LIVE WORLD CANVAS PREVIEW  •  Colours and movement are approximations of SIDBOX rendering"),
+        particlePreviewDock);
+    particlePreviewDockLayout->addWidget(particlePreviewCaption);
+    auto *particlePreviewCanvas = new QGraphicsView(m_scene, particlePreviewDock);
+    particlePreviewCanvas->setObjectName(QStringLiteral("ParticleWorldPreviewCanvas"));
+    particlePreviewCanvas->setInteractive(false);
+    particlePreviewCanvas->setDragMode(QGraphicsView::NoDrag);
+    particlePreviewCanvas->setRenderHint(QPainter::SmoothPixmapTransform, false);
+    particlePreviewCanvas->setBackgroundBrush(QColor(26, 31, 39));
+    particlePreviewCanvas->setMinimumHeight(140);
+    particlePreviewCanvas->setMaximumHeight(205);
+    particlePreviewDockLayout->addWidget(particlePreviewCanvas);
+    layout.addWidget(particlePreviewDock);
+    particlePreviewDock->hide();
+    QRectF particlePreviewLastBounds;
+    bool particlePreviewNeedsFit = true;
 
     // Each card can be collapsed. Hidden cards are real layouts rather than
     // disabled rows, so the editor adapts to the selected object behaviour.
@@ -6643,6 +7007,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard breakCard = makeCard(tr("Breakable"));
     const PropertyCard hazardCard = makeCard(tr("Damage / Knockback / Hurt Effects"));
     const PropertyCard enemyCard = makeCard(tr("Stompable Enemy"));
+    const PropertyCard particleCard = makeCard(tr("Scenery Particle Spawner"));
     const PropertyCard gotoCard = makeCard(tr("Goto World"));
     const PropertyCard audioCollectCard = makeCard(tr("Audio Events / Collectable"));
     const PropertyCard audioLiftCard = makeCard(tr("Audio Events / Moving Platform"));
@@ -6707,6 +7072,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Hazard / Murder Object (touch hurts)"), QStringLiteral("hazard"));
     type->addItem(tr("Stompable Enemy (jump on to defeat)"), QStringLiteral("enemy"));
     type->addItem(tr("Goto World"), QStringLiteral("goto_world"));
+    type->addItem(tr("Scenery Particle Spawner (leaves / clouds / dust)"), QStringLiteral("particle_emitter"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     // The left-hand list is the behaviour selector; keep the combo as the
     // original model for existing validation and signal connections.
@@ -6929,10 +7295,92 @@ void SidboxGameDesigner::configureGameObject(int index)
             [hiddenCollectable](bool active) { hiddenCollectable->setChecked(!active); });
     auto *behindTiles = new QCheckBox(tr("Draw behind tiles"), &dialog);
     behindTiles->setChecked(old.drawBehindTiles);
-    behindTiles->setToolTip(tr("Draw this placed sprite BEFORE tiles, so spikes can rise out of the ground. "
-                              "Works for decorations, collectables and all Game Objects. "
-                              "Foreground tiles intentionally marked as overdraw remain in front."));
+    behindTiles->setToolTip(tr("Draw this object's sprite or scenery particles BEFORE the tilemap. "
+                              "Unchecked draws them after the regular tile pass. "
+                              "Tiles explicitly marked for front overdraw remain in front."));
     form->addRow(QString(), behindTiles);
+    form = particleCard.form;
+    auto *particleInfo = new QLabel(tr(
+        "Uses this placed sprite as a particle image. Spawn area starts at the object's X/Y. "
+        "Particles are decorative, have NO player collision, and follow 'Draw behind tiles' "
+        "for background/foreground order. The source sprite itself is invisible in-game. "
+        "Wind, fall and gravity are in 1/100 pixel units per 50-Hz frame."), &dialog);
+    particleInfo->setWordWrap(true);
+    form->addRow(particleInfo);
+    auto *particlePreset = new GameComboBox(&dialog);
+    particlePreset->addItem(tr("Falling leaves"), QStringLiteral("leaves"));
+    particlePreset->addItem(tr("Drifting clouds"), QStringLiteral("clouds"));
+    particlePreset->addItem(tr("Floating dust / motes"), QStringLiteral("dust"));
+    particlePreset->addItem(tr("Swirling fireflies"), QStringLiteral("fireflies"));
+    particlePreset->setCurrentIndex(qMax(0, particlePreset->findData(old.particlePreset)));
+    auto *particleW = spin(8, 2048, old.particleAreaW);
+    auto *particleH = spin(8, 2048, old.particleAreaH);
+    auto *particleCount = spin(1, 32, old.particleCount);
+    auto *particleInterval = spin(1, 255, old.particleInterval);
+    auto *particlePrepopulate = new QCheckBox(tr("Pre-populate on world load"), &dialog);
+    particlePrepopulate->setChecked(old.particlePrepopulate);
+    particlePrepopulate->setToolTip(tr("Start this spawner with an already populated field of particles. Simulates enough history for natural ages and drift before the first frame. Leave unchecked for effects that should start empty, such as triggered explosions."));
+    auto *particleLifetime = spin(30, 2000, old.particleLifetime);
+    auto *particleWind = spin(-400, 400, old.particleWind);
+    auto *particleFall = spin(-400, 400, old.particleFall);
+    auto *particleGravity = spin(0, 80, old.particleGravity);
+    auto *particleFlutter = spin(0, 100, old.particleFlutter);
+    auto *particleSwirlRadius = spin(8, 96, old.particleSwirlRadius);
+    auto *particleSwirlSpeed = spin(1, 12, old.particleSwirlSpeed);
+    particleSwirlRadius->setToolTip(tr("Fireflies: orbit radius in pixels. Each firefly uses about half to all of this radius."));
+    particleSwirlSpeed->setToolTip(tr("Fireflies: speed of circular motion. At 50 FPS, 1 is a 5.12-second orbit, 2 is 2.56 seconds, 4 is 1.28 seconds."));
+    particleCount->setToolTip(tr("Maximum simultaneous particles for this spawner (1-32). Keep counts modest for smooth 50-Hz performance."));
+    particleInterval->setToolTip(tr("50 FPS: one new particle every N frames, until the maximum count is reached."));
+    particleLifetime->setToolTip(tr("Maximum lifespan for each particle at 50 Hz. A particle may leave the visible screen sooner, but it stays alive until its lifetime expires."));
+    particleWind->setToolTip(tr("Horizontal drift in hundredths of one pixel per frame; negative moves left."));
+    particleFall->setToolTip(tr("Initial vertical drift in hundredths of one pixel per frame; negative rises."));
+    particleGravity->setToolTip(tr("Vertical acceleration in hundredths of a pixel per frame squared. Zero is good for clouds."));
+    particleFlutter->setToolTip(tr("Subtle sideways gust / flutter added as each particle moves."));
+    particlePreset->setToolTip(tr("Pick a useful starting physics preset. Changing this option loads its wind, drift, gravity and flutter defaults; you can then customise them."));
+    connect(particlePreset, qOverload<int>(&QComboBox::activated), &dialog,
+            [particlePreset, particleWind, particleFall, particleGravity,
+             particleFlutter, particleLifetime, particleSwirlRadius, particleSwirlSpeed,
+             particleCount, particleInterval](int) {
+        const QString preset = particlePreset->currentData().toString();
+        if (preset == QStringLiteral("fireflies")) {
+            particleWind->setValue(2); particleFall->setValue(-1);
+            particleGravity->setValue(0); particleFlutter->setValue(0);
+            particleLifetime->setValue(500); particleCount->setValue(20);
+            particleInterval->setValue(12); particleSwirlRadius->setValue(24);
+            particleSwirlSpeed->setValue(2);
+        } else if (preset == QStringLiteral("clouds")) {
+            particleWind->setValue(45); particleFall->setValue(0);
+            particleGravity->setValue(0); particleFlutter->setValue(4);
+            particleLifetime->setValue(600);
+        } else if (preset == QStringLiteral("dust")) {
+            particleWind->setValue(12); particleFall->setValue(-12);
+            particleGravity->setValue(0); particleFlutter->setValue(16);
+            particleLifetime->setValue(400);
+        } else {
+            particleWind->setValue(65); particleFall->setValue(40);
+            particleGravity->setValue(2); particleFlutter->setValue(22);
+            particleLifetime->setValue(250);
+        }
+    });
+    form->addRow(tr("Particle behaviour"), particlePreset);
+    form->addRow(pairFields(tr("Spawn width (px)"), particleW, tr("Spawn height (px)"), particleH));
+    form->addRow(pairFields(tr("Maximum particles"), particleCount, tr("Spawn every N frames"), particleInterval));
+    form->addRow(particlePrepopulate);
+    form->addRow(tr("Lifetime (frames)"), particleLifetime);
+    form->addRow(pairFields(tr("Wind X (×0.01 px/frame)"), particleWind,
+                             tr("Drift Y (×0.01 px/frame)"), particleFall));
+    form->addRow(pairFields(tr("Gravity (×0.01 px/frame²)"), particleGravity,
+                             tr("Flutter strength"), particleFlutter));
+    QWidget *swirlFields = pairFields(tr("Swirl radius (px)"), particleSwirlRadius,
+        tr("Swirl speed"), particleSwirlSpeed);
+    form->addRow(swirlFields);
+    // These are firefly-only controls, never shown for existing leaf/cloud modes.
+    const auto refreshSwirlFields = [=]() {
+        swirlFields->setVisible(particlePreset->currentData().toString() == QStringLiteral("fireflies"));
+    };
+    connect(particlePreset, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+        [refreshSwirlFields](int) { refreshSwirlFields(); });
+    refreshSwirlFields();
     form = linkedCard.form;
     auto *targetObject = new GameComboBox(&dialog);
     targetObject->addItem(tr("None (no linked object)"), QString());
@@ -7411,6 +7859,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         const bool itemInteraction = isTrigger && requiresItem;
         interactRadius->setEnabled(itemInteraction);
         interactConsume->setEnabled(itemInteraction);
+        const QString itemHint = tr("Disabled: choose a required inventory item on a Trigger/Switch first.");
+        interactRadius->setToolTip(itemInteraction ? tr("Interaction radius in pixels for using this item.") : itemHint);
+        interactConsume->setToolTip(itemInteraction ? tr("Consume the matching item after successful activation.") : itemHint);
         // Item-required triggers already use FIRE2 to select an inventory item.
         // Keep the user's ordinary-trigger preference checked/unchecked so it
         // returns intact when "No required item" is selected again.
@@ -7422,6 +7873,9 @@ void SidboxGameDesigner::configureGameObject(int index)
             : tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
                  "otherwise the trigger activates on touch."));
         triggerDrop->setEnabled(itemInteraction);
+        triggerDrop->setToolTip(itemInteraction
+            ? tr("Activate when a matching dropped inventory item touches this Trigger.")
+            : tr("Disabled: select the required inventory item first."));
         triggerDrop->setToolTip(itemInteraction
             ? tr("Match the selected required inventory item against falling/dropped items. "
                  "Contact with the sensor runs normal success actions and dialogue. "
@@ -7862,34 +8316,13 @@ void SidboxGameDesigner::configureGameObject(int index)
                 tr("Select a foreground 256-colour palette or an indexed PPB first."));
             return;
         }
-        QDialog picker(&dialog);
-        picker.setWindowTitle(tr("Pick flash foreground CLUT colour"));
-        auto *layout = new QVBoxLayout(&picker);
-        layout->addWidget(new QLabel(tr("Select a colour from the foreground palette (index 0 is transparent)."),&picker));
-        auto *cells = new QGridLayout();
-        cells->setSpacing(3);
-        for (int index=0; index<256; ++index) {
-            auto *cell = new QPushButton(&picker);
-            cell->setFixedSize(28,28);
-            QPixmap swatch(22,22);
-            swatch.fill(QColor::fromRgba(flashBank.at(index)));
-            cell->setIcon(QIcon(swatch));
-            cell->setIconSize(QSize(22,22));
-            cell->setToolTip(tr("CLUT index %1: %2").arg(index)
-                .arg(QColor::fromRgba(flashBank.at(index)).name()));
-            if (index==chosenHazardColour)
-                cell->setStyleSheet(QStringLiteral("border: 2px solid #f5c747;"));
-            cells->addWidget(cell,index/16,index%16);
-            connect(cell, &QPushButton::clicked, &picker, [&,index]() {
-                chosenHazardColour=index;
-                picker.accept();
-            });
+        const int selected = SidboxPalettePicker::chooseIndex(&dialog, flashBank,
+            chosenHazardColour, tr("Pick flash foreground CLUT colour"),
+            tr("Select a colour from the foreground palette (index 0 is transparent)."));
+        if (selected >= 0) {
+            chosenHazardColour = selected;
+            updateFlashSwatch();
         }
-        layout->addLayout(cells);
-        auto *cancel=new QDialogButtonBox(QDialogButtonBox::Cancel,&picker);
-        layout->addWidget(cancel);
-        connect(cancel,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
-        if (picker.exec()==QDialog::Accepted) updateFlashSwatch();
     });
     auto *hazardFlashes = spin(1, 32, old.hazardFlashCount);
     auto *hazardFlashFrames = spin(1, 255, old.hazardFlashFrames);
@@ -8041,6 +8474,69 @@ void SidboxGameDesigner::configureGameObject(int index)
     };
     connect(fadeAnimate, &QCheckBox::toggled, &dialog, [=](bool) { refreshFadeControls(); });
     refreshFadeControls();
+    // Only scenery particles have a lifespan-based fade. Keep this under
+    // Visual Movements, immediately after the ordinary patterned BOB fade.
+    auto *particleFadeNote = new QLabel(tr(
+        "Particles: fade in during the first N% of lifetime, fade out during the last N%. "
+        "100% patterned fade is invisible; speed limits the percentage change per 50-Hz frame."), &dialog);
+    particleFadeNote->setWordWrap(true);
+    auto *particleFadeEnable = new QCheckBox(tr("Enable particle fade in / out"), &dialog);
+    particleFadeEnable->setChecked(old.particleFadeEnabled);
+    // Choosing the firefly preset starts with a gentle appearance/disappearance.
+    // This does not alter existing saved spawners; only an explicit preset
+    // selection changes the editor's current fade checkbox.
+    connect(particlePreset, qOverload<int>(&QComboBox::activated), &dialog,
+        [particlePreset, particleFadeEnable](int) {
+            if (particlePreset->currentData().toString() == QStringLiteral("fireflies"))
+                particleFadeEnable->setChecked(true);
+        });
+    auto *particlePlayerMix = new QCheckBox(tr("Allow some particles in front of player"), &dialog);
+    particlePlayerMix->setChecked(old.particlePlayerLayerMix);
+    auto *particleFadeIn = spin(0, 100, old.particleFadeIn);
+    auto *particleFadeOut = spin(0, 100, old.particleFadeOut);
+    auto *particleFadeSpeed = spin(1, 100, old.particleFadeSpeed);
+    particleFadeIn->setSuffix(tr(" % life"));
+    particleFadeOut->setSuffix(tr(" % life"));
+    particleFadeSpeed->setSuffix(tr(" % / frame"));
+    particleFadeEnable->setToolTip(tr("Applies independent 4x4 patterned fading to each particle. "
+        "Does not affect the source sprite, existing BOB fade, collisions or spawn rate."));
+    particlePlayerMix->setToolTip(tr("For Particle Spawners drawn after the regular tile pass, randomly splits new particles so some stay behind the player and some draw in front. FRONT map tiles still draw over both groups. Disabled when Draw behind tiles is checked."));
+    particleFadeIn->setToolTip(tr("0% = immediately visible. Otherwise fades from invisible to solid over "
+        "this percentage of the particle lifetime."));
+    particleFadeOut->setToolTip(tr("0% = no fade out. Otherwise fades from solid to invisible over "
+        "the final percentage of the particle lifetime."));
+    particleFadeSpeed->setToolTip(tr("Maximum percentage points of patterned fade adjusted each 50-Hz frame. "
+        "For example 8 means the fade can change by at most 8 points per frame."));
+    form->addRow(particleFadeEnable);
+    form->addRow(particlePlayerMix);
+    QWidget *particleFadeInRow = quickValue(particleFadeIn);
+    QWidget *particleFadeOutRow = quickValue(particleFadeOut);
+    QWidget *particleFadeSpeedRow = quickValue(particleFadeSpeed);
+    form->addRow(tr("Particle fade in"), particleFadeInRow);
+    form->addRow(tr("Particle fade out"), particleFadeOutRow);
+    form->addRow(tr("Particle fade speed"), particleFadeSpeedRow);
+    QLabel *particleFadeInLabel = qobject_cast<QLabel *>(form->labelForField(particleFadeInRow));
+    QLabel *particleFadeOutLabel = qobject_cast<QLabel *>(form->labelForField(particleFadeOutRow));
+    QLabel *particleFadeSpeedLabel = qobject_cast<QLabel *>(form->labelForField(particleFadeSpeedRow));
+    form->addRow(particleFadeNote);
+    auto refreshParticleFade = [=]() {
+        const bool valid = particleFadeEnable->isVisible() && particleFadeEnable->isChecked();
+        for (QWidget *w : {static_cast<QWidget *>(particleFadeIn),
+                           static_cast<QWidget *>(particleFadeOut),
+                           static_cast<QWidget *>(particleFadeSpeed)}) {
+            w->setEnabled(valid);
+        }
+        const bool mixValid = particlePlayerMix->isVisible() && !behindTiles->isChecked();
+        particlePlayerMix->setEnabled(mixValid);
+        particlePlayerMix->setToolTip(mixValid
+            ? tr("For Particle Spawners drawn after the regular tile pass, randomly splits new particles so some stay behind the player and some draw in front. FRONT map tiles still draw over both groups.")
+            : tr("Unavailable while Draw behind tiles is checked, because those particles must stay under the world tilemap."));
+    };
+    connect(particleFadeEnable, &QCheckBox::toggled, &dialog,
+            [refreshParticleFade](bool) { refreshParticleFade(); });
+    connect(behindTiles, &QCheckBox::toggled, &dialog,
+            [refreshParticleFade](bool) { refreshParticleFade(); });
+    refreshParticleFade();
     form = animationCard.form;
     auto *first = spin(0, 255, old.animFirst);
     auto *count = spin(1, 256, old.animCount);
@@ -8131,10 +8627,11 @@ void SidboxGameDesigner::configureGameObject(int index)
     const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
         QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
         QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
-        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"), QStringLiteral("⇥")};
+        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"), QStringLiteral("⇥"), QStringLiteral("❀")};
     const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
         tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
-        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"), tr("Goto World")};
+        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"), tr("Goto World"),
+        tr("Particle Spawner")};
     for (int n = 0; n < type->count(); ++n) {
         auto *item = new QListWidgetItem(icons.value(n) + QStringLiteral("   ") + titles.value(n));
         item->setData(Qt::UserRole, type->itemData(n));
@@ -8160,7 +8657,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     propertiesLayout->setSpacing(7);
     for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
          collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
-         enemyCard, gotoCard, hazardCard,
+         enemyCard, particleCard, gotoCard, hazardCard,
          audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
          audioBreakCard, audioHazardCard, audioOptionsCard}) {
         propertiesLayout->addWidget(card.panel);
@@ -8662,7 +9159,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         generalCard.panel->setVisible(true);
         visualCard.panel->setVisible(true);
         animationCard.panel->setVisible(isObject && animated->isChecked());
-        collisionCard.panel->setVisible(isObject);
+        collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
         linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
         triggerCard.panel->setVisible(isTrigger);
@@ -8672,6 +9169,26 @@ void SidboxGameDesigner::configureGameObject(int index)
         breakCard.panel->setVisible(isBreak);
         hazardCard.panel->setVisible(isHazard || isEnemy);
         enemyCard.panel->setVisible(isEnemy);
+        const bool isParticle = behaviour == QStringLiteral("particle_emitter");
+        particleCard.panel->setVisible(isParticle);
+        particlePreviewDock->setVisible(isParticle && m_showParticlePreview &&
+            m_showParticlePreview->isChecked());
+        for (QWidget *w : {static_cast<QWidget *>(particleFadeNote),
+                           static_cast<QWidget *>(particleFadeEnable),
+                           static_cast<QWidget *>(particlePlayerMix),
+                           static_cast<QWidget *>(particleFadeIn),
+                           static_cast<QWidget *>(particleFadeOut),
+                           static_cast<QWidget *>(particleFadeSpeed),
+                           particleFadeInRow, particleFadeOutRow, particleFadeSpeedRow,
+                           static_cast<QWidget *>(particleFadeInLabel),
+                           static_cast<QWidget *>(particleFadeOutLabel),
+                           static_cast<QWidget *>(particleFadeSpeedLabel)})
+            if (w) w->setVisible(isParticle);
+        for (QWidget *w : {static_cast<QWidget *>(particleFadeIn),
+                           static_cast<QWidget *>(particleFadeOut),
+                           static_cast<QWidget *>(particleFadeSpeed)})
+            w->setEnabled(isParticle && particleFadeEnable->isChecked());
+        particlePlayerMix->setEnabled(isParticle && !behindTiles->isChecked());
         gotoCard.panel->setVisible(isGoto);
         audioCollectCard.panel->setVisible(isCollect);
         audioLiftCard.panel->setVisible(isLift);
@@ -8707,6 +9224,84 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(musicAction, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [enableFields](int) { enableFields(); });
     enableFields();
+    // Stage 5.148: the world canvas previews unsaved particle settings while
+    // the Properties dialog is open. Cancel discards this temporary draft.
+    const auto updateParticleDraft = [this, &old, &index,
+        &particlePreviewLastBounds, &particlePreviewNeedsFit, type, behindTiles,
+        particleW, particleH, particleCount, particleInterval, particlePrepopulate, particleLifetime,
+        particleWind, particleFall, particleGravity, particleFlutter,
+        particlePreset, particleSwirlRadius, particleSwirlSpeed, particlePlayerMix, particleFadeEnable, particleFadeIn, particleFadeOut,
+        particleFadeSpeed]() {
+        Resource draft = old;
+        draft.objectType = type->currentData().toString();
+        draft.drawBehindTiles = behindTiles->isChecked();
+        draft.particleAreaW = particleW->value();
+        draft.particleAreaH = particleH->value();
+        draft.particleCount = particleCount->value();
+        draft.particleInterval = particleInterval->value();
+        draft.particlePrepopulate = particlePrepopulate->isChecked();
+        draft.particleLifetime = particleLifetime->value();
+        draft.particleWind = particleWind->value();
+        draft.particleFall = particleFall->value();
+        draft.particleGravity = particleGravity->value();
+        draft.particleFlutter = particleFlutter->value();
+        draft.particlePreset = particlePreset->currentData().toString();
+        draft.particleSwirlRadius = particleSwirlRadius->value();
+        draft.particleSwirlSpeed = particleSwirlSpeed->value();
+        draft.particlePlayerLayerMix = particlePlayerMix->isChecked();
+        draft.particleFadeEnabled = particleFadeEnable->isChecked();
+        draft.particleFadeIn = particleFadeIn->value();
+        draft.particleFadeOut = particleFadeOut->value();
+        draft.particleFadeSpeed = particleFadeSpeed->value();
+        setParticlePreviewDraft(index, draft);
+        const QRectF bounds(qreal(draft.x) - 24, qreal(draft.y) - 24,
+            qMax(240, draft.particleAreaW + 48), qMax(160, draft.particleAreaH + 48));
+        if (bounds != particlePreviewLastBounds) {
+            particlePreviewLastBounds = bounds;
+            particlePreviewNeedsFit = true;
+        }
+    };
+    for (QSpinBox *field : {particleW, particleH, particleCount, particleInterval,
+             particleLifetime, particleWind, particleFall, particleGravity,
+             particleFlutter, particleSwirlRadius, particleSwirlSpeed,
+             particleFadeIn, particleFadeOut, particleFadeSpeed})
+        connect(field, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [updateParticleDraft](int) { updateParticleDraft(); });
+    connect(particlePreset, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+        [updateParticleDraft](int) { updateParticleDraft(); });
+    for (QCheckBox *field : {behindTiles, particlePlayerMix, particleFadeEnable, particlePrepopulate})
+        connect(field, &QCheckBox::toggled, &dialog,
+                [updateParticleDraft](bool) { updateParticleDraft(); });
+    connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+            [updateParticleDraft](int) { updateParticleDraft(); });
+    updateParticleDraft();
+    // Stage 5.136: use the Adventure Editor's existing dependency colours on
+    // controls whose value can be ignored unless another setting is active.
+    for (QWidget *guarded : {static_cast<QWidget *>(interactRadius),
+                             static_cast<QWidget *>(interactConsume),
+                             static_cast<QWidget *>(triggerPress),
+                             static_cast<QWidget *>(triggerDrop),
+                             static_cast<QWidget *>(interactDialogue),
+                             static_cast<QWidget *>(interactDialogueMode),
+                             static_cast<QWidget *>(interactWrongDialogue),
+                             static_cast<QWidget *>(interactWrongDialogueMode),
+                             static_cast<QWidget *>(interactReward),
+                             static_cast<QWidget *>(interactRewardCount),
+                             static_cast<QWidget *>(interactStat),
+                             static_cast<QWidget *>(interactStatDelta),
+                             static_cast<QWidget *>(breakRewardImpulse),
+                             static_cast<QWidget *>(breakRewardVx),
+                             static_cast<QWidget *>(breakRewardVy),
+                             static_cast<QWidget *>(enemyRewardImpulse),
+                             static_cast<QWidget *>(enemyRewardXField),
+                             static_cast<QWidget *>(enemyRewardYField),
+                             static_cast<QWidget *>(enemyRoamSpeed),
+                             static_cast<QWidget *>(enemyStepHeight),
+                             static_cast<QWidget *>(enemyRoamLeft)}) {
+        guarded->setProperty("adventureGuard", true);
+        guarded->style()->unpolish(guarded);
+        guarded->style()->polish(guarded);
+    }
     // These are created after the World Editor: the QApplication-wide
     // palette/QSS also styles their popup lists without per-dialog copies.
     for (QComboBox *combo : dialog.findChildren<QComboBox *>()) {
@@ -8943,6 +9538,20 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.pickupStatTarget = pickupStat->currentData().toString();
     r.pickupPersistent = pickupPersistent->isChecked();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
+    r.particlePreset = particlePreset->currentData().toString();
+    r.particleAreaW = particleW->value(); r.particleAreaH = particleH->value();
+    r.particleCount = particleCount->value(); r.particleInterval = particleInterval->value();
+    r.particlePrepopulate = particlePrepopulate->isChecked();
+    r.particleLifetime = particleLifetime->value(); r.particleWind = particleWind->value();
+    r.particleFall = particleFall->value(); r.particleGravity = particleGravity->value();
+    r.particleFlutter = particleFlutter->value();
+    r.particleSwirlRadius = particleSwirlRadius->value();
+    r.particleSwirlSpeed = particleSwirlSpeed->value();
+    r.particlePlayerLayerMix = particlePlayerMix->isChecked();
+    r.particleFadeEnabled = particleFadeEnable->isChecked();
+    r.particleFadeIn = particleFadeIn->value();
+    r.particleFadeOut = particleFadeOut->value();
+    r.particleFadeSpeed = particleFadeSpeed->value();
     r.conveyorSpeed = conveyor->value(); r.springStrength = spring->value();
     r.springLaunchX = springLaunchX->value();
     r.springTouch = springTouch->isChecked();
@@ -9077,6 +9686,43 @@ void SidboxGameDesigner::configureGameObject(int index)
     setDirty();
     return true;
     };
+    // Snapshot only editable values, not transient preview frames, selection,
+    // scroll positions or other UI decoration. Compare the current draft with
+    // the values recorded AFTER each object is loaded. This also catches
+    // edits made in child dialogs (sprite stamps and custom pickup types).
+    const auto draftSnapshot = [&]() -> QVariantList {
+        QVariantList values;
+        for (QWidget *widget : dialog.findChildren<QWidget *>()) {
+            // Linked rows are recreated on each switch; inspect their actual
+            // row order below, not widgets awaiting Qt deferred deletion.
+            if (linkedActionRows->isAncestorOf(widget)) continue;
+            if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+                values << combo->currentData() << combo->currentText();
+            } else if (auto *check = qobject_cast<QCheckBox *>(widget)) {
+                values << check->isChecked();
+            } else if (auto *spin = qobject_cast<QSpinBox *>(widget)) {
+                values << spin->value();
+            } else if (auto *spin = qobject_cast<QDoubleSpinBox *>(widget)) {
+                values << spin->value();
+            } else if (auto *edit = qobject_cast<QLineEdit *>(widget)) {
+                values << edit->text();
+            } else if (auto *slider = qobject_cast<QSlider *>(widget)) {
+                values << slider->value();
+            }
+        }
+        values << linkedActionRows->rowCount();
+        for (int row = 0; row < linkedActionRows->rowCount(); ++row) {
+            auto *target = qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row, 0));
+            auto *action = qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row, 1));
+            values << (target ? target->currentData() : QVariant());
+            values << (action ? action->currentData() : QVariant());
+        }
+        values << QJsonDocument(customPickupTypes).toJson(QJsonDocument::Compact)
+               << QJsonDocument(draftSpriteStamp.toJson()).toJson(QJsonDocument::Compact)
+               << chosenHazardColour << pickupOptionsTouched << pickupStatTouched;
+        return values;
+    };
+    QVariantList loadedDraft = draftSnapshot();
     // Reload *every* setting into the same live dialog. A close/reopen would
     // lose maximised/scroll state and visibly flash on each arrow press.
     const auto showObject = [&](int selectedIndex) {
@@ -9114,6 +9760,24 @@ void SidboxGameDesigner::configureGameObject(int index)
                        candidate.breakDropCollectableId == old.id;
              })));
         behindTiles->setChecked(old.drawBehindTiles);
+        particlePreset->setCurrentIndex(qMax(0, particlePreset->findData(old.particlePreset)));
+        particleW->setValue(old.particleAreaW);
+        particleH->setValue(old.particleAreaH);
+        particleCount->setValue(old.particleCount);
+        particleInterval->setValue(old.particleInterval);
+        particlePrepopulate->setChecked(old.particlePrepopulate);
+        particleLifetime->setValue(old.particleLifetime);
+        particleWind->setValue(old.particleWind);
+        particleFall->setValue(old.particleFall);
+        particleGravity->setValue(old.particleGravity);
+        particleFlutter->setValue(old.particleFlutter);
+        particleSwirlRadius->setValue(old.particleSwirlRadius);
+        particleSwirlSpeed->setValue(old.particleSwirlSpeed);
+        particlePlayerMix->setChecked(old.particlePlayerLayerMix);
+        particleFadeEnable->setChecked(old.particleFadeEnabled);
+        particleFadeIn->setValue(old.particleFadeIn);
+        particleFadeOut->setValue(old.particleFadeOut);
+        particleFadeSpeed->setValue(old.particleFadeSpeed);
         targetObject->clear();
         targetObject->addItem(tr("None (no linked object)"), QString());
         for (const Resource &candidate : m_resources) {
@@ -9271,36 +9935,93 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         previousObject->setEnabled(previousIndex >= 0);
         nextObject->setEnabled(nextIndex >= 0);
+        // Programmatic setters above fire signals too. They are NOT user edits.
+        pickupOptionsTouched = false;
+        pickupStatTouched = false;
+        loadedDraft = draftSnapshot();
+        updateParticleDraft();
         dialog.setUpdatesEnabled(true);
         dialog.update();
     };
-    // Arrows commit this object first, then only update the controls/preview.
-    // The native QDialog is never closed or re-created during navigation.
+    // Previous/Next changes the selected object WITHOUT committing unchanged
+    // drafts. For edited objects: Save commits now, No discards the draft,
+    // Cancel keeps editing. An earlier Save remains committed as before.
+    const auto navigateObject = [&](int destination) {
+        if (destination < 0 || destination >= m_resources.size()) return;
+        if (draftSnapshot() != loadedDraft) {
+            const QMessageBox::StandardButton answer = QMessageBox::question(
+                &dialog, tr("Save changes before switching object?"),
+                tr("This Game Object has unsaved changes.\n\n"
+                   "Save: save this object and switch.\n"
+                   "No: discard its unsaved changes and switch.\n"
+                   "Cancel: stay here and continue editing.\n\n"
+                   "Changes already saved on previous objects are not undone."),
+                QMessageBox::Save | QMessageBox::No | QMessageBox::Cancel,
+                QMessageBox::Save);
+            if (answer == QMessageBox::Cancel || answer == QMessageBox::NoButton)
+                return;
+            if (answer == QMessageBox::Save) {
+                if (!commitObject()) return; // validation failed; don't switch
+            } else if (answer == QMessageBox::No) {
+                // These draft changes live outside the ordinary field widgets.
+                customPickupTypes = m_adventure.value(QStringLiteral("pickupTypes")).toArray();
+            } else {
+                return;
+            }
+        }
+        // The patterned-fade preview can temporarily alter the world canvas
+        // without saving. Restore the outgoing object's saved appearance.
+        fadePreviewPercent = m_resources.at(index).objectAlphaFadePercent;
+        fadeCanvasPercent = -1;
+        previewFadeOnCanvas();
+        showObject(destination);
+    };
     connect(previousObject, &QToolButton::clicked, &dialog, [&]() {
-        if (previousIndex >= 0 && commitObject()) showObject(previousIndex);
+        navigateObject(previousIndex);
     });
     connect(nextObject, &QToolButton::clicked, &dialog, [&]() {
-        if (nextIndex >= 0 && commitObject()) showObject(nextIndex);
+        navigateObject(nextIndex);
     });
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel,
                                          Qt::Horizontal, &dialog);
     layout.addWidget(buttons);
-    if (auto *ok = buttons->button(QDialogButtonBox::Ok))
+    if (auto *ok = buttons->button(QDialogButtonBox::Save))
         ok->setStyleSheet(QStringLiteral("QPushButton { background:%1; color:%2; "
             "border:1px solid %1; padding:6px 30px; border-radius:0px; }")
                 .arg(colour(m_theme.accent), colour(m_theme.brightText)));
+    if (auto *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setToolTip(tr("Discard edits to this object since the last Save. Objects saved using Previous/Next cannot be rolled back here."));
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
         if (commitObject()) dialog.accept();
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (objectWindowWasMaximized)
+    if (!objectSavedGeometry.isEmpty()) dialog.restoreGeometry(objectSavedGeometry);
+    else if (objectWindowWasMaximized)
         dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     // The modal fade preview owns this object's canvas pixels while open.
     // Prevent the world-canvas 50 Hz timer from repainting the saved values
     // on top of the live unsaved slider/animation preview.
     const bool restartCanvasTimer = m_objectPreviewTimer && m_objectPreviewTimer->isActive();
     if (restartCanvasTimer) m_objectPreviewTimer->stop();
+    // The modal dialog stops the ordinary animation preview, but the particle
+    // world-canvas simulation remains live. Its draft is NEVER saved on Cancel.
+    QTimer particleDialogPreviewTimer(&dialog);
+    particleDialogPreviewTimer.setInterval(20);
+    connect(&particleDialogPreviewTimer, &QTimer::timeout, &dialog,
+        [this, particlePreviewCanvas, &particlePreviewLastBounds, &particlePreviewNeedsFit]() {
+        if (!isVisible()) return;
+        updateParticlePreview();
+        if (particlePreviewNeedsFit && particlePreviewCanvas->isVisible() &&
+            !particlePreviewLastBounds.isNull() &&
+            particlePreviewCanvas->viewport()->width() > 20) {
+            particlePreviewCanvas->fitInView(particlePreviewLastBounds, Qt::KeepAspectRatio);
+            particlePreviewNeedsFit = false;
+        }
+    });
+    particleDialogPreviewTimer.start();
     const int result = dialog.exec();
+    particleDialogPreviewTimer.stop();
+    clearParticlePreviewDraft();
     if (restartCanvasTimer && m_objectPreviewTimer) m_objectPreviewTimer->start();
     if (result != QDialog::Accepted) {
         // Only the current object has uncommitted slider changes.
@@ -9323,6 +10044,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             break;
         }
     }
+    objectWindowSettings.setValue(QStringLiteral("GameObjectProperties/geometry"), dialog.saveGeometry());
     objectWindowSettings.setValue(QStringLiteral("GameObjectProperties/maximized"), dialog.isMaximized());
 }
 
@@ -9330,6 +10052,7 @@ void SidboxGameDesigner::refreshObjectHitbox()
 {
     if (!m_scene || m_loading) return;
     if (m_objectHitbox) {
+        m_particleResizeHandles.clear(); // The rectangle owns and deletes its child handles.
         m_scene->removeItem(m_objectHitbox);
         delete m_objectHitbox;
         m_objectHitbox = nullptr;
@@ -9338,11 +10061,40 @@ void SidboxGameDesigner::refreshObjectHitbox()
     if (index < 0 || index >= m_resources.size()) return;
     const Resource &r = m_resources.at(index);
     if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) return;
-    QPen pen(m_theme.accent, 1.5, Qt::DashLine);
-    m_objectHitbox = m_scene->addRect(r.x, r.y, r.hitWidth, r.hitHeight,
+    const bool emitter = r.objectType == QStringLiteral("particle_emitter");
+    QPen pen(emitter ? QColor(105, 210, 150) : m_theme.accent, 1.5, Qt::DashLine);
+    m_objectHitbox = m_scene->addRect(r.x, r.y,
+                                     emitter ? r.particleAreaW : r.hitWidth,
+                                     emitter ? r.particleAreaH : r.hitHeight,
                                      pen, Qt::NoBrush);
+    if (emitter)
+        m_objectHitbox->setToolTip(tr("Scenery particle spawn area: %1 x %2 pixels. Visual only; no player collision.")
+                                     .arg(r.particleAreaW).arg(r.particleAreaH));
     m_objectHitbox->setZValue(9900);
     m_objectHitbox->setAcceptedMouseButtons(Qt::NoButton);
+    if (emitter && !r.locked) {
+        // Eight conventional selection grips; fixed view-pixel size is not
+        // necessary for hit testing because eventFilter uses viewport distance.
+        const qreal x = r.x, y = r.y, w = r.particleAreaW, h = r.particleAreaH;
+        const QPointF grips[] = {
+            {x, y}, {x + w / 2, y}, {x + w, y}, {x + w, y + h / 2},
+            {x + w, y + h}, {x + w / 2, y + h}, {x, y + h}, {x, y + h / 2}
+        };
+        for (int side = 0; side < 8; ++side) {
+            auto *grip = new QGraphicsRectItem(QRectF(grips[side].x() - 4,
+                grips[side].y() - 4, 8, 8), m_objectHitbox);
+            grip->setPen(QPen(QColor(21, 63, 45), 1));
+            grip->setBrush(QColor(136, 244, 173));
+            grip->setZValue(1);
+            grip->setAcceptedMouseButtons(Qt::NoButton);
+            grip->setToolTip(tr("Drag to resize particle spawn area (world pixels)."));
+            m_particleResizeHandles.append(grip);
+        }
+        m_objectHitbox->setToolTip(tr(
+            "Particle spawn area %1 × %2. Drag green handles to resize; "
+            "the top-left anchor also moves the origin. Ctrl+Z undoes a resize.")
+            .arg(r.particleAreaW).arg(r.particleAreaH));
+    }
 }
 
 // Matches splinepaths' exported identifier de-duplication EXACTLY.
@@ -9726,6 +10478,32 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                 m_view->viewport()->setCursor(Qt::ClosedHandCursor);
                 return true;
             }
+            if (mouse->button() == Qt::LeftButton && !m_spaceHeld) {
+                const int resource = selectedIndex();
+                if (resource >= 0 && resource < m_resources.size() &&
+                    m_resources.at(resource).kind == QStringLiteral("sprite") &&
+                    m_resources.at(resource).objectType == QStringLiteral("particle_emitter") &&
+                    !m_resources.at(resource).locked) {
+                    for (int side = 0; side < m_particleResizeHandles.size(); ++side) {
+                        QGraphicsRectItem *handle = m_particleResizeHandles.at(side);
+                        if (!handle) continue;
+                        const QPointF centre = handle->sceneBoundingRect().center();
+                        if ((m_view->mapFromScene(centre) - where).manhattanLength() > 13) continue;
+                        const Resource &r = m_resources.at(resource);
+                        m_particleResizeHandle = side;
+                        m_particleResizeIndex = resource;
+                        m_particleResizeStart = QRect(r.x, r.y, r.particleAreaW, r.particleAreaH);
+                        m_particleResizeStartMouse = m_view->mapToScene(where);
+                        m_particleResizeChanged = false;
+                        const Qt::CursorShape shape = (side % 4 == 0)
+                            ? Qt::SizeFDiagCursor : ((side % 2 == 0)
+                                ? Qt::SizeBDiagCursor : ((side == 1 || side == 5)
+                                    ? Qt::SizeVerCursor : Qt::SizeHorCursor));
+                        m_view->viewport()->setCursor(shape);
+                        return true;
+                    }
+                }
+            }
             if (mouse->button() == Qt::LeftButton) {
                 m_dragResourceIndex = -1;
                 m_dragBefore.clear();
@@ -9832,6 +10610,58 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::MouseMove) {
             auto *mouse = static_cast<QMouseEvent *>(event);
             const QPoint next = mouse->position().toPoint();
+            if (m_particleResizeHandle >= 0 &&
+                m_particleResizeIndex >= 0 && m_particleResizeIndex < m_resources.size()) {
+                // Drag handles operate in WORLD coordinates, never screen pixels.
+                const QPointF delta = m_view->mapToScene(next) - m_particleResizeStartMouse;
+                const int step = m_snap->isChecked()
+                    ? m_snapStep->currentText().section(QLatin1Char(' '), 0, 0).toInt() : 0;
+                const auto snapped = [step](qreal coordinate) {
+                    const int pixel = qRound(coordinate);
+                    return step > 0 ? qRound(double(pixel) / step) * step : pixel;
+                };
+                const QRect start = m_particleResizeStart;
+                int left = start.left(), top = start.top();
+                int right = start.x() + start.width();
+                int bottom = start.y() + start.height();
+                const int side = m_particleResizeHandle;
+                const bool changeLeft = side == 0 || side == 6 || side == 7;
+                const bool changeRight = side == 2 || side == 3 || side == 4;
+                const bool changeTop = side == 0 || side == 1 || side == 2;
+                const bool changeBottom = side == 4 || side == 5 || side == 6;
+                if (changeLeft) left = qBound(qMax(0, right - 2048),
+                    snapped(start.left() + delta.x()), right - 8);
+                if (changeRight) right = qBound(left + 8,
+                    snapped(start.x() + start.width() + delta.x()),
+                    qMin(left + 2048, qMax(m_worldWidth->value(), left + 8)));
+                if (changeTop) top = qBound(qMax(0, bottom - 2048),
+                    snapped(start.top() + delta.y()), bottom - 8);
+                if (changeBottom) bottom = qBound(top + 8,
+                    snapped(start.y() + start.height() + delta.y()),
+                    qMin(top + 2048, qMax(m_worldHeight->value(), top + 8)));
+                Resource &r = m_resources[m_particleResizeIndex];
+                if (r.x == left && r.y == top && r.particleAreaW == right - left &&
+                    r.particleAreaH == bottom - top) return true;
+                if (!m_particleResizeChanged) {
+                    rememberResourceEdit(); // One Ctrl+Z entry for the complete drag.
+                    m_particleResizeChanged = true;
+                }
+                r.x = left; r.y = top;
+                r.particleAreaW = right - left;
+                r.particleAreaH = bottom - top;
+                if (m_particleResizeIndex < m_sceneItems.size() && m_sceneItems[m_particleResizeIndex]) {
+                    // Avoid re-entering syncFromSceneItem() while the resize
+                    // drag is updating the origin and rebuilding handles.
+                    const bool wasLoading = m_loading;
+                    m_loading = true;
+                    m_sceneItems[m_particleResizeIndex]->setPos(r.x, r.y);
+                    m_loading = wasLoading;
+                }
+                refreshObjectHitbox();
+                refreshProperties();
+                setDirty();
+                return true;
+            }
             if (m_middlePanning) {
                 const QPoint delta = next - m_panLastPos;
                 if (!delta.isNull()) m_worldPanMoved = true;
@@ -9887,6 +10717,13 @@ bool SidboxGameDesigner::eventFilter(QObject *watched, QEvent *event)
                 m_middlePanning = false;
                 if (m_worldPanMoved) setDirty();
                 m_worldPanMoved = false;
+                m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                return true;
+            }
+            if (mouse->button() == Qt::LeftButton && m_particleResizeHandle >= 0) {
+                m_particleResizeHandle = -1;
+                m_particleResizeIndex = -1;
+                m_particleResizeChanged = false;
                 m_view->viewport()->setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
                 return true;
             }

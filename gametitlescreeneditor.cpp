@@ -1,4 +1,5 @@
 #include "gametitlescreeneditor.h"
+#include "gamepalettepicker.h"
 #include "ppbcodec.h"
 #include "gamepalette.h"
 #include "guidesigner_detail.h"
@@ -15,6 +16,8 @@
 #include <QColorDialog>
 #include <QGridLayout>
 #include <QComboBox>
+#include <QSettings>
+#include <QStyle>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -43,6 +46,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QPlainTextEdit>
@@ -130,6 +134,8 @@ public:
         setFrameShape(QFrame::StyledPanel);
         setMinimumSize(480,350);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        setFocusPolicy(Qt::StrongFocus);
+        setToolTip(QObject::tr("Wheel or Ctrl+/-: zoom. Middle-drag: pan. Ctrl+1: 100%. Ctrl+F: fit."));
     }
     std::function<void()> dragFinished;
     void fitScreen() {
@@ -141,6 +147,28 @@ public:
         resetTransform();
     }
 protected:
+    void keyPressEvent(QKeyEvent *event) override {
+        if (!(event->modifiers() & Qt::ControlModifier)) {
+            QGraphicsView::keyPressEvent(event);
+            return;
+        }
+        if (event->key() == Qt::Key_1) {
+            actualSize();
+        } else if (event->key() == Qt::Key_F) {
+            fitScreen();
+        } else if (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal ||
+                   event->key() == Qt::Key_Minus) {
+            const qreal oldScale = transform().m11();
+            const qreal next = qBound(qreal(0.25), oldScale *
+                (event->key() == Qt::Key_Minus ? qreal(0.8) : qreal(1.25)), qreal(12.0));
+            m_fitOnResize = false;
+            scale(next / oldScale, next / oldScale);
+        } else {
+            QGraphicsView::keyPressEvent(event);
+            return;
+        }
+        event->accept();
+    }
     void resizeEvent(QResizeEvent *event) override {
         QGraphicsView::resizeEvent(event);
         if (m_fitOnResize) fitScreen();
@@ -370,32 +398,11 @@ bool editTitlePalette(QWidget *parent,QVector<QRgb> &clut) {
     return true;
 }
 int chooseTitleColour(QWidget *parent, const QVector<QRgb> &palette, int current, const QString &caption) {
-    QDialog chooser(parent);
-    chooser.setWindowTitle(caption);
-    auto *layout=new QVBoxLayout(&chooser);
-    layout->addWidget(new QLabel(QObject::tr("Choose a SIDBOX foreground CLUT index. The palette indices stay unchanged."),&chooser));
-    auto *scroller=new QScrollArea(&chooser);
-    auto *host=new QWidget(scroller);
-    auto *grid=new QGridLayout(host);
-    grid->setContentsMargins(4,4,4,4);grid->setSpacing(2);
-    int chosen=-1;
-    for (int i=0;i<256;++i) {
-        const QRgb rgb=i<palette.size()?palette[i]:qRgb(0,0,0);
-        QColor colour=QColor::fromRgba(rgb);
-        if (colour.alpha()==0) colour.setAlpha(255);
-        auto *button=new QPushButton(host);
-        button->setFixedSize(29,25);
-        button->setStyleSheet(QStringLiteral("QPushButton{background:%1;border:%2px solid %3;border-radius:0px;}")
-            .arg(colour.name()).arg(i==current?3:1).arg(i==current?QStringLiteral("#FFFFFF"):QStringLiteral("#666666")));
-        button->setToolTip(QObject::tr("Index %1  %2").arg(i).arg(colour.name(QColor::HexArgb)));
-        grid->addWidget(button,i/16,i%16);
-        QObject::connect(button,&QPushButton::clicked,&chooser,[&chooser,&chosen,i]{chosen=i;chooser.accept();});
-    }
-    scroller->setWidget(host);
-    layout->addWidget(scroller);
-    chooser.resize(610,510);
-    return chooser.exec()==QDialog::Accepted?chosen:-1;
+    return SidboxPalettePicker::chooseIndex(parent, palette, current, caption,
+        QObject::tr("Choose a SIDBOX foreground CLUT index. The palette indices stay unchanged."),
+        true, true);
 }
+
 QImage textImage(const QString &text, const Artwork &a, const QVector<QRgb> &palette) {
     if (text.isEmpty()) return {};
     // Reuse the canonical 8x8 SIDBOX glyphs drawn by the GUI Designer.
@@ -1072,7 +1079,6 @@ bool editGameTitleScreen(QWidget *parent, const QString &projectRoot, QString *e
     QDialog dialog(parent);
     dialog.setWindowTitle(QObject::tr("Title Screen Designer"));
     dialog.resize(1440,900);
-    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     auto *outer=new QVBoxLayout(&dialog);
     outer->setContentsMargins(8,8,8,8);
     outer->setSpacing(6);
@@ -1443,6 +1449,22 @@ bool editGameTitleScreen(QWidget *parent, const QString &projectRoot, QString *e
         if(selectedRow>=0 && selectedRow<table->rowCount())table->selectRow(selectedRow);
     };
 
+    // Theme-managed dependency indicators shared with the Adventure Editor.
+    for (QWidget *guarded : {static_cast<QWidget *>(fontSizeX),
+                             static_cast<QWidget *>(fontSizeY),
+                             static_cast<QWidget *>(foreground),
+                             static_cast<QWidget *>(fgPicker),
+                             static_cast<QWidget *>(outlineCheck),
+                             static_cast<QWidget *>(outline),
+                             static_cast<QWidget *>(outlinePicker),
+                             static_cast<QWidget *>(outlineThickness),
+                             static_cast<QWidget *>(atlas),
+                             static_cast<QWidget *>(cellSize),
+                             static_cast<QWidget *>(frame)}) {
+        guarded->setProperty("adventureGuard", true);
+        guarded->style()->unpolish(guarded);
+        guarded->style()->polish(guarded);
+    }
     updateProperties=[&]() {
         const Artwork *a=currentArt(target->currentIndex());
         if(!a)return;
@@ -1476,6 +1498,24 @@ bool editGameTitleScreen(QWidget *parent, const QString &projectRoot, QString *e
         atlas->setEnabled(a->mode==QStringLiteral("ppb"));
         cellSize->setEnabled(a->mode==QStringLiteral("ppb"));
         frame->setEnabled(a->mode==QStringLiteral("ppb")&&a->cellSize!=0);
+        const QString textHint = QObject::tr("Disabled: choose Text instead of PPB in Display mode.");
+        const QString ppbHint = QObject::tr("Disabled: choose PPB instead of Text in Display mode.");
+        for (QWidget *control : {static_cast<QWidget *>(fontSizeX),
+                                 static_cast<QWidget *>(fontSizeY),
+                                 static_cast<QWidget *>(foreground),
+                                 static_cast<QWidget *>(fgPicker),
+                                 static_cast<QWidget *>(outlineCheck)})
+            control->setToolTip(text ? QObject::tr("Text artwork setting.") : textHint);
+        for (QWidget *control : {static_cast<QWidget *>(outline),
+                                 static_cast<QWidget *>(outlinePicker),
+                                 static_cast<QWidget *>(outlineThickness)})
+            control->setToolTip(!text ? textHint : !a->outlineEnabled
+                ? QObject::tr("Disabled: enable Text outline first.") : QObject::tr("Text outline setting."));
+        for (QWidget *control : {static_cast<QWidget *>(atlas), static_cast<QWidget *>(cellSize)})
+            control->setToolTip(text ? ppbHint : QObject::tr("PPB artwork setting."));
+        frame->setToolTip(text ? ppbHint : a->cellSize == 0
+            ? QObject::tr("Disabled: choose a nonzero PPB cell size first.")
+            : QObject::tr("Choose the PPB cell to display."));
     };
     updateSelector=[&]() {
         if(!selectorOverlay) return;
@@ -1870,8 +1910,8 @@ bool editGameTitleScreen(QWidget *parent, const QString &projectRoot, QString *e
     QObject::connect(undoButton,&QPushButton::clicked,&dialog,[&](){restoreHistory(historyCursor-1);});
     QObject::connect(redoButton,&QPushButton::clicked,&dialog,[&](){restoreHistory(historyCursor+1);});
     auto *undoShortcut=new QShortcut(QKeySequence::Undo,&dialog);
-    auto *redoShortcut=new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Y),&dialog);
-    auto *redoAltShortcut=new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z),&dialog);
+    auto *redoShortcut=new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Y)),&dialog);
+    auto *redoAltShortcut=new QShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Z)),&dialog);
     // Deferring shortcut handling avoids deleting an in-place QTableWidget
     // editor while Qt is still processing that editor's key event.
     QObject::connect(undoShortcut,&QShortcut::activated,&dialog,[&](){
@@ -1944,7 +1984,12 @@ bool editGameTitleScreen(QWidget *parent, const QString &projectRoot, QString *e
     view->fitScreen();
     remember();
     // Widening/Maximising the window should not alter the virtual 480×320 canvas.
+    QSettings titleWindowSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    if (!dialog.restoreGeometry(titleWindowSettings.value(
+            QStringLiteral("GameTitleScreenEditor/geometry")).toByteArray()))
+        dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     const bool accepted=dialog.exec()==QDialog::Accepted;
+    titleWindowSettings.setValue(QStringLiteral("GameTitleScreenEditor/geometry"), dialog.saveGeometry());
     // Detach scene callbacks from model references before local state is torn down.
     QObject::disconnect(scene,nullptr,&dialog,nullptr);
     QObject::disconnect(table,nullptr,&dialog,nullptr);

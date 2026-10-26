@@ -950,6 +950,13 @@ int main(int argc, char *argv[])
 @IDE_ELSE
         gameworlds_draw_foreground();
 @IDE_END
+@IDE_IF{HAS_OBJECTS}
+        /* Optional scenery particles can be split around the player.
+         * This overlay pass draws ONLY the particles assigned to the
+         * over-player half, after the player but before FRONT tiles.
+         * That means map cells with the FRONT flag can still cover them. */
+        gameworlds_draw_overlay(camera_x, camera_y);
+@IDE_END
 @IDE_IF{HAS_MAP}
         /* Foreground tiles are deliberately drawn AFTER the player. */
         game_tilemap_blit_view_front((game_tilemap_t *)gameworlds_map(), camera_x, camera_y, VIEW_W, GAME_PLAY_H);

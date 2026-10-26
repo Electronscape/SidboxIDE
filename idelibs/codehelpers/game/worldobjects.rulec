@@ -10,7 +10,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
                                 gfxbob_t *sprite, int32_t x, int32_t y,
                                 uint16_t width, uint16_t height)
 {
-    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_ENEMY ||
+    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_PARTICLE_EMITTER ||
         !width || !height) return 0;
     object->sprite = sprite;
     object->animation = 0;
@@ -296,7 +296,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
             if (!o->active || o->type == GAME_OBJECT_TRIGGER ||
                 o->type == GAME_OBJECT_DEATH_ZONE ||
                 o->type == GAME_OBJECT_HAZARD ||
-                o->type == GAME_OBJECT_ENEMY ||
+                o->type == GAME_OBJECT_ENEMY || o->type == GAME_OBJECT_PARTICLE_EMITTER ||
                 (o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
                 (o->type == GAME_OBJECT_BREAKABLE && o->break_touch_mode) ||
                 feet != o->previous_y ||
@@ -493,7 +493,7 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         }
         // Switches are intangible: they never behave like a platform.
         if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE ||
-            o->type == GAME_OBJECT_HAZARD) continue;
+            o->type == GAME_OBJECT_HAZARD || o->type == GAME_OBJECT_PARTICLE_EMITTER) continue;
         // Door collision is resolved below, before the old one-way platform
         // rules. Only this new type uses blocking on all four sides.
         if (o->type == GAME_OBJECT_DOOR) {
@@ -915,7 +915,8 @@ void game_world_objects_draw_layer(const game_world_object_t *objects,
     if (!objects) return;
     for (uint16_t i = 0; i < count; ++i) {
         const game_world_object_t *object = &objects[i];
-        if ((!object->active && !object->enemy_dying) || !object->sprite ||
+        if (object->type == GAME_OBJECT_PARTICLE_EMITTER ||
+            (!object->active && !object->enemy_dying) || !object->sprite ||
             !!object->draw_behind_tiles != !!behind) continue;
         gfxbob_t visible = *object->sprite;
         visible.drawx = clamp16((int64_t)object->x - cx);
