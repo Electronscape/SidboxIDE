@@ -1,0 +1,11 @@
+CoderGirl IDE Stage 5.155.261026 — Optional Lightning Screen Overlay
+
+Copy the files from the drop-in ZIP over your Stage 5.154 IDE source tree.
+Rebuild the IDE, open the world's Player Start → WORLD WEATHER options,
+and untick "Enable lightning screen overlay" if you want palette-only lightning.
+Set "Palette flash strength" greater than zero, Save Design, then choose
+Update Game Project and rebuild/upload the SIDBOX game.
+No additional changes are required in your user-owned main.c.
+
+See README.md for behaviour, 0–100% strength, old-project compatibility,
+status flags, spotlight interplay and test results.

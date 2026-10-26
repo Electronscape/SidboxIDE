@@ -415,7 +415,9 @@ static void on_custom_zone(uint8_t zone, uint8_t event,
  * Game Object Properties -> Movement spline attaches the saved path.
  * The generated gameworlditems.c does ALL the spline setup and movement:
  *   gameworlds_start()       -> start_spline() + set_spline_pos()
- *   gameworlds_update(1)    -> run_spline() once per frame
+ *   gameworlds_update_gameplay(1) -> run_spline() once per unpaused gameplay frame.
+ *   game_update_particles(1) and game_update_weather(1) run every rendered
+ *   frame, even while Adventure dialogue pauses physics and enemies.
  *   Spline start delay in Game Object Properties freezes the path at its
  *   starting position for N game frames (50 frames = one second). It only
  *   delays spline movement, not sprite animation or collision checking.
@@ -710,6 +712,13 @@ int main(int argc, char *argv[])
         /* Freeze gameplay during entrance/exit effects. World objects stay
            visible; music and the 50 FPS rendering loop keep running. */
         if (!gameworlds_transition_busy()) {
+        /* AMBIENT EFFECTS KEEP MOVING WHILE TALKING:
+         * These calls live OUTSIDE the Adventure dialogue pause below.
+         * Do not also call gameworlds_update(1) in this same frame: that
+         * legacy convenience call already advances gameplay + both effects.
+         * Animating the rain/fireflies does NOT advance enemies or collisions. */
+        game_update_weather(1);
+        game_update_particles(1);
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_ADVENTURE}
         const uint8_t adventure_buttons = getjoyport();
@@ -723,12 +732,10 @@ int main(int argc, char *argv[])
         if (!game_adventure_open()) {
 @IDE_END
 @IDE_END
-@IDE_IF{HAS_OBJECTS}
 @IDE_IF{HAS_ATTACHED_SPLINES}
         /* This ALSO advances every attached spline exactly once. */
 @IDE_END
-        gameworlds_update(1);
-@IDE_END
+        gameworlds_update_gameplay(1); /* Enemies, splines and objects pause with dialogue. */
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_WORLD_PLAYER}
         gameworlds_before(&world_player);
@@ -969,7 +976,14 @@ int main(int argc, char *argv[])
 @IDE_ELSE
         gameworlds_spotlight_player(GAMERGIRL_PLAYER_BOB.drawx + camera_x, GAMERGIRL_PLAYER_BOB.drawy + camera_y);
 @IDE_END
+        /* Optional World Weather setting automatically suspends the
+         * spotlight on bright lightning frames. Advanced game code can query
+         * gameworlds_weather_status() for named status bits before this call. */
         gameworlds_spotlight_frame(VIEW_W, GAME_PLAY_H);
+        /* WORLD WEATHER: rain/snow and brief patterned lightning flashes.
+         * Draw here, AFTER FRONT tiles + spotlight, but BEFORE the HUD and
+         * adventure dialogue. For user-owned main.c, copy this ONE call. */
+        gameworlds_weather_frame(VIEW_W, GAME_PLAY_H);
 @IDE_IF{HAS_HUD}
         /* The scene has been rendered into the full framebuffer. Crop it to
            the docked playfield here, before drawing any HUD pixels. A top

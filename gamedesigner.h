@@ -338,6 +338,23 @@ private:
     QString m_playerTransitionOut = QStringLiteral("none");
     QString m_playerCircleOrigin = QStringLiteral("center");
     int m_playerTransitionFrames = 30;
+    // World-local weather, independent of decorative Particle Spawners.
+    // 0=None, 1=Rain, 2=Snow, 3=Thunderstorm. Old worlds default to None.
+    int m_weatherMode = 0;
+    int m_weatherDensity = 48;       // Visual streaks/flakes 1..64.
+    int m_weatherWind = 0;          // Pixels/frame -8..8.
+    int m_weatherPaletteIndex = 15; // User-chosen foreground palette colour (not alpha 0).
+    int m_weatherLightningInterval = 350; // Frames between storms (50 Hz).
+    int m_weatherLightningStrength = 75;  // Pattern coverage percentage, only for overlay.
+    bool m_weatherLightningOverlay = true; // Opt-out screen-space lightning flash; older worlds keep it.
+    int m_weatherPaletteFlashStrength = 0; // 0..100, optional true FRONT/BACK CLUT flash.
+    bool m_weatherSuspendSpotlight = false; // Opt-in: skip drawing player spotlight on lightning-pulse frames.
+    int m_dayNightMode = 0; // 0=off, 1=fixed palette tint, 2=day/night cycle.
+    QString m_dayNightColour = QStringLiteral("#233b68");
+    int m_dayNightStrength = 65; // Maximum tint strength (0..100).
+    int m_dayNightDayFrames = 3000, m_dayNightNightFrames = 3000;
+    int m_dayNightFadeFrames = 500; // Gentle dusk and dawn transitions.
+    bool m_dayNightStartAtNight = false;
     bool m_playerSpotlightEnabled = false;
     int m_playerSpotlightRadius = 96;
     int m_playerSpotlightFeather = 24;
@@ -412,6 +429,12 @@ private:
         int swirlRadius = 24;
         quint32 random = 1;
     };
+    QCheckBox *m_showWeatherPreview = nullptr;
+    QGraphicsPathItem *m_weatherPreviewDrops = nullptr;
+    QGraphicsRectItem *m_weatherPreviewFlash = nullptr;
+    QGraphicsRectItem *m_weatherPreviewPaletteFlash = nullptr;
+    QGraphicsRectItem *m_weatherPreviewDayNightTint = nullptr;
+    void updateWeatherPreview();
     QCheckBox *m_showParticlePreview = nullptr;
     QVector<ParticlePreviewEmitter> m_particlePreviewEmitters;
     bool m_particlePreviewDraftActive = false;

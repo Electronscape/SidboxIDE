@@ -108,7 +108,8 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameassets_find_ppb", "gameassets_draw_foreground",
             "gameassets_draw_background", "gameassets_draw_layers",
             "gameassets_show_background", "drawworld",
-            "gameworlditems_init", "gameworlditems_update", "gameworlditems_draw",
+            "gameworlditems_init", "gameworlditems_update",
+            "gameworlditems_update_gameplay", "gameworlditems_update_particles", "gameworlditems_draw",
             "gameworlditems_draw_behind", "gameworlditems_draw_overlay", "gameworlditems_check",
             "gameworlditems_before", "gameworlditems_after",
             "gameworlditems_set_active", "gameworlditems_trigger",
@@ -224,6 +225,10 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
         QFile objectsHeader(QDir(bundleDirectory).filePath(QStringLiteral("gamehelpers/gameworlditems.h")));
         const QByteArray exported = objectsHeader.open(QIODevice::ReadOnly)
             ? objectsHeader.readAll() : QByteArray();
+        if (exported.contains("gameworlditems_update_gameplay"))
+            api += "void " + id + "_gameworlditems_update_gameplay(uint16_t);\n";
+        if (exported.contains("gameworlditems_update_particles"))
+            api += "void " + id + "_gameworlditems_update_particles(uint16_t);\n";
         if (exported.contains("gameworlditems_draw_behind"))
             api += "void " + id + "_gameworlditems_draw_behind(int32_t,int32_t);\n";
         if (exported.contains("gameworlditems_draw_overlay"))
@@ -337,6 +342,12 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList defaultSpotlightStable, defaultSpotlightAnimMode, defaultSpotlightAnimMin;
     QStringList defaultSpotlightAnimMax, defaultSpotlightRandomMin, defaultSpotlightRandomMax;
     QStringList defaultSpotlightPulseDelay;
+    QStringList defaultWeatherMode, defaultWeatherDensity, defaultWeatherWind;
+    QStringList defaultWeatherColour, defaultWeatherInterval, defaultWeatherStrength, defaultWeatherPaletteStrength;
+    QStringList defaultWeatherOverlay;
+    QStringList defaultWeatherSuspendSpotlight;
+    QStringList defaultDayNightMode, defaultDayNightColour, defaultDayNightStrength;
+    QStringList defaultDayNightDayFrames, defaultDayNightNightFrames, defaultDayNightFadeFrames, defaultDayNightStartNight;
     QStringList frontPaletteFns, backPaletteFns;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
@@ -369,6 +380,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         QFile publicApi(QDir(directory).filePath(QStringLiteral("world_api.h")));
         const QByteArray exposed = publicApi.open(QIODevice::ReadOnly)
             ? publicApi.readAll() : QByteArray();
+        const bool splitGameplay = exposed.contains("gameworlditems_update_gameplay");
+        const bool splitParticles = exposed.contains("gameworlditems_update_particles");
         const bool behind = exposed.contains("gameworlditems_draw_behind");
         const bool overlay = exposed.contains("gameworlditems_draw_overlay");
         const bool inventoryApi = exposed.contains("gameadventure_store_inventory");
@@ -389,6 +402,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         anyAdventure |= meta.value(QStringLiteral("hasAdventure")).toBool();
         declarations << QStringLiteral("#include \"../worlds/%1/world_api.h\"").arg(name);
         const QString zero = QStringLiteral("0");
+        const QString objectsGameplay = splitGameplay ? stem + QStringLiteral("gameworlditems_update_gameplay") : zero;
+        const QString objectsParticles = splitParticles ? stem + QStringLiteral("gameworlditems_update_particles") : zero;
         const QString objectsBehind = behind ? stem + QStringLiteral("gameworlditems_draw_behind") : zero;
         const QString objectsOverlay = overlay ? stem + QStringLiteral("gameworlditems_draw_overlay") : zero;
         const QString inventoryStore = inventoryApi
@@ -411,6 +426,29 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         if (designFile.open(QIODevice::ReadOnly))
             design = QJsonDocument::fromJson(designFile.readAll()).object();
         const QJsonObject start = design.value(QStringLiteral("playerStart")).toObject();
+        const QJsonObject weather = design.value(QStringLiteral("weather")).toObject();
+        defaultWeatherMode << QString::number(qBound(0, weather.value(QStringLiteral("mode")).toInt(0), 3));
+        defaultWeatherDensity << QString::number(qBound(1, weather.value(QStringLiteral("density")).toInt(48), 64));
+        defaultWeatherWind << QString::number(qBound(-8, weather.value(QStringLiteral("wind")).toInt(0), 8));
+        defaultWeatherColour << QString::number(qBound(1, weather.value(QStringLiteral("paletteIndex")).toInt(15), 254));
+        defaultWeatherInterval << QString::number(qBound(100, weather.value(QStringLiteral("lightningInterval")).toInt(350), 2000));
+        defaultWeatherStrength << QString::number(qBound(10, weather.value(QStringLiteral("lightningStrength")).toInt(75), 100));
+        defaultWeatherOverlay << (weather.value(QStringLiteral("lightningOverlayEnabled")).toBool(true)
+            ? QStringLiteral("1") : QStringLiteral("0"));
+        defaultWeatherPaletteStrength << QString::number(qBound(0, weather.value(QStringLiteral("paletteFlashStrength")).toInt(0), 100));
+        defaultWeatherSuspendSpotlight << (weather.value(QStringLiteral("suspendSpotlightOnLightning")).toBool(false)
+            ? QStringLiteral("1") : QStringLiteral("0"));
+        const QJsonObject dayNight = design.value(QStringLiteral("dayNight")).toObject();
+        defaultDayNightMode << QString::number(qBound(0, dayNight.value(QStringLiteral("mode")).toInt(0), 2));
+        QColor targetTint(dayNight.value(QStringLiteral("targetColour")).toString(QStringLiteral("#233b68")));
+        if (!targetTint.isValid()) targetTint = QColor(QStringLiteral("#233b68"));
+        defaultDayNightColour << QStringLiteral("0x%1u").arg(targetTint.rgb() & 0xffffffu, 6, 16, QLatin1Char('0'));
+        defaultDayNightStrength << QString::number(qBound(0, dayNight.value(QStringLiteral("strength")).toInt(65), 100));
+        defaultDayNightDayFrames << QString::number(qBound(50, dayNight.value(QStringLiteral("dayFrames")).toInt(3000), 30000));
+        defaultDayNightNightFrames << QString::number(qBound(50, dayNight.value(QStringLiteral("nightFrames")).toInt(3000), 30000));
+        defaultDayNightFadeFrames << QString::number(qBound(25, dayNight.value(QStringLiteral("fadeFrames")).toInt(500), 10000));
+        defaultDayNightStartNight << (dayNight.value(QStringLiteral("startAtNight")).toBool(false)
+            ? QStringLiteral("1") : QStringLiteral("0"));
         int spawnX = start.value(QStringLiteral("x")).toInt(0);
         int spawnY = start.value(QStringLiteral("y")).toInt(0);
         if (start.isEmpty()) { // Backwards compatible with pre-5.4 player placement.
@@ -507,11 +545,11 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             namedStartFields << QStringLiteral(", %1, sizeof(%1) / sizeof(%1[0])").arg(symbol);
         }
         QString row = QStringLiteral("    {\"%1\", %2gameassets_init, %2gameassets_shutdown,\n"
-            "     %2gameworlditems_init, %2gameworlditems_update, %2gameworlditems_draw, %3, %4,\n"
-            "     %2gameassets_draw_foreground, %2gameassets_draw_background, %5,\n"
-            "     %2gameadventure_setup, %6, %7,\n"
-            "     %8, %9, %10, %11, %12, %13}");
-        const QStringList values = {name, stem, objectsBehind, objectsOverlay, showDirect,
+            "     %2gameworlditems_init, %2gameworlditems_update, %3, %4, %2gameworlditems_draw, %5, %6,\n"
+            "     %2gameassets_draw_foreground, %2gameassets_draw_background, %7,\n"
+            "     %2gameadventure_setup, %8, %9,\n"
+            "     %10, %11, %12, %13, %14, %15}");
+        const QStringList values = {name, stem, objectsGameplay, objectsParticles, objectsBehind, objectsOverlay, showDirect,
             inventoryStore, inventoryLoad, mapVar, mapLoad, mapUnload,
             atlasLoad, atlasUnload, mapPath};
         for (int i = values.size(); i >= 1; --i)
@@ -556,6 +594,17 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
                                 "%1_gameadventure_npc_action, %1_gameadventure_npc_remote_action, "
                                 "%1_gameadventure_npc_remote_reset")
             .arg(id);
+        entry += QStringLiteral(", %1, %2, %3, %4, %5, %6, %7, %8, %9")
+            .arg(defaultWeatherMode.at(i)).arg(defaultWeatherDensity.at(i))
+            .arg(defaultWeatherWind.at(i)).arg(defaultWeatherColour.at(i))
+            .arg(defaultWeatherInterval.at(i)).arg(defaultWeatherStrength.at(i))
+            .arg(defaultWeatherPaletteStrength.at(i)).arg(defaultWeatherSuspendSpotlight.at(i))
+            .arg(defaultWeatherOverlay.at(i));
+        entry += QStringLiteral(", %1, %2, %3, %4, %5, %6, %7")
+            .arg(defaultDayNightMode.at(i)).arg(defaultDayNightColour.at(i))
+            .arg(defaultDayNightStrength.at(i)).arg(defaultDayNightDayFrames.at(i))
+            .arg(defaultDayNightNightFrames.at(i)).arg(defaultDayNightFadeFrames.at(i))
+            .arg(defaultDayNightStartNight.at(i));
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to

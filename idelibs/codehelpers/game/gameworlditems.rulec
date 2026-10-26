@@ -596,7 +596,7 @@ static uint8_t cg_enemy_tile_blocked(int32_t x, int32_t y, uint16_t w, uint16_t 
 { return game_tilemap_actor_blocked((const game_tilemap_t *)ctx, x, y, w, h); }
 
 @IDE_END
-void gameworlditems_update(uint16_t frames)
+void gameworlditems_update_gameplay(uint16_t frames)
 {
     gameassets_fade_update(frames);
 @IDE_IF{HAS_WORLDS}
@@ -673,9 +673,22 @@ void gameworlditems_update(uint16_t frames)
     }
 @IDE_END
 @IDE{UPDATE_BODY}
+}
+
+/* Separate visual clock: gameplay/enemy/platform/spline state stays paused.
+ * The original combined update remains for existing hand-authored main.c. */
+void gameworlditems_update_particles(uint16_t frames)
+{
 @IDE_IF{HAS_PARTICLE_EMITTERS}
     cg_particle_update(frames);
+@IDE_ELSE
+    (void)frames;
 @IDE_END
+}
+void gameworlditems_update(uint16_t frames)
+{
+    gameworlditems_update_gameplay(frames);
+    gameworlditems_update_particles(frames);
 }
 
 @IDE_IF{HAS_TILEMAP_WORLDS}
@@ -1028,7 +1041,9 @@ void gameworlditems_draw_overlay(int32_t camera_x, int32_t camera_y)
 #include "gameworlditems.h"
 #include "../gameassets/gameassets.h"
 uint8_t gameworlditems_init(void) { return 1; }
-void gameworlditems_update(uint16_t frames) { gameassets_fade_update(frames); }
+void gameworlditems_update_gameplay(uint16_t frames) { gameassets_fade_update(frames); }
+void gameworlditems_update_particles(uint16_t frames) { (void)frames; }
+void gameworlditems_update(uint16_t frames) { gameworlditems_update_gameplay(frames); gameworlditems_update_particles(frames); }
 void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_draw_overlay(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_save_state(void) {}

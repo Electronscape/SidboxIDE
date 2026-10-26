@@ -42,5 +42,5 @@ assert 'updateParticlePreview();' in clear_draft
 assert 'm_particlePreviewEmitters.clear(); // Scene owns and deletes every preview sprite.' in cpp
 assert 'QTimer particleDialogPreviewTimer(&dialog)' in cpp
 assert 'new QGraphicsView(m_scene, particlePreviewDock)' in cpp
-assert 'Build: 5.151.261026' in splash
+assert 'Build: 5.158.261026' in splash
 print('Stage 5.149: per-emitter simulation, selection-independent preview, draft isolation, cleanup, splash version PASS')

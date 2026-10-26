@@ -39,7 +39,9 @@ typedef struct {
     int (*assets_init)(void);
     void (*assets_shutdown)(void);
     uint8_t (*objects_init)(void);
-    void (*objects_update)(uint16_t);
+    void (*objects_update)(uint16_t); /* Legacy: gameplay + particles. */
+    void (*objects_update_gameplay)(uint16_t);
+    void (*objects_update_particles)(uint16_t);
     void (*objects_draw)(int32_t, int32_t);
     void (*objects_draw_behind)(int32_t, int32_t);
     void (*objects_draw_overlay)(int32_t, int32_t);
@@ -91,6 +93,19 @@ typedef struct {
     void (*npc_set_active)(uint16_t, uint8_t);
     void (*npc_remote_action)(uint16_t, uint8_t);
     void (*npc_remote_reset)(void);
+    uint8_t weather_mode, weather_density;
+    int8_t weather_wind;
+    uint8_t weather_colour_index;
+    uint16_t weather_lightning_interval;
+    uint8_t weather_lightning_strength;
+    uint8_t weather_palette_flash_strength; /* 0=disabled, 100=full scene CLUT tint. */
+    uint8_t weather_suspend_spotlight; /* Opt in: lightning temporarily reveals the scene. */
+    uint8_t weather_lightning_overlay; /* 1 = patterned scene flash; palette can be independent. */
+    uint8_t day_night_mode; /* 0=off, 1=fixed tint, 2=cycle. */
+    uint32_t day_night_colour; /* 0xRRGGBB, never changes the .pal asset. */
+    uint8_t day_night_strength;
+    uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
+    uint8_t day_night_start_at_night;
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -169,6 +184,242 @@ static uint8_t spotlight_ring_width[SPOTLIGHT_RING_VARIANTS];
 static gfxbob_t spotlight_ring_bob[SPOTLIGHT_RING_VARIANTS] __attribute__((aligned(32)));
 static uint8_t spotlight_ring_count;
 #endif
+/* Stage 5.152: optional world-local rain/snow/thunder, constant RAM use.
+ * Each streak/flake has an implicit uniform starting position. Modulo view
+ * keeps the weather full from its first frame without expensive pre-warming.
+ * Lightning is drawn on the front framebuffer BEFORE the HUD, so text and
+ * interface graphics are not brightened by the flash. */
+static void transition_restore_palette(void); /* CLUT source palette reset after lightning. */
+static uint8_t weather_mode, weather_density, weather_colour_index, weather_strength;
+static uint8_t weather_palette_strength, weather_palette_active;
+static uint8_t weather_overlay_enabled;
+static uint8_t weather_suspend_spotlight;
+static int8_t weather_wind;
+static uint16_t weather_interval, weather_flash_delay;
+static uint8_t weather_flash_phase;
+static uint8_t weather_flash_peak;
+static uint8_t day_night_mode, day_night_strength;
+static uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
+static uint32_t day_night_colour, day_night_tick;
+static uint32_t weather_frame_tick;
+static uint32_t weather_random_state = 0x7beab187u;
+static uint32_t weather_rand(void)
+{
+    uint32_t r = weather_random_state;
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+    return weather_random_state = r ? r : 0x7beab187u;
+}
+static void weather_enter(const gameworlds_record_t *world)
+{
+    weather_mode = world->weather_mode <= 3u ? world->weather_mode : 0u;
+    weather_density = world->weather_density > 64u ? 64u : world->weather_density;
+    weather_wind = world->weather_wind;
+    weather_colour_index = world->weather_colour_index ? world->weather_colour_index : 15u;
+    weather_interval = world->weather_lightning_interval >= 100u
+        ? world->weather_lightning_interval : 350u;
+    weather_strength = world->weather_lightning_strength <= 100u
+        ? world->weather_lightning_strength : 75u;
+    weather_palette_strength = world->weather_palette_flash_strength <= 100u
+        ? world->weather_palette_flash_strength : 0u;
+    weather_suspend_spotlight = !!world->weather_suspend_spotlight;
+    weather_overlay_enabled = !!world->weather_lightning_overlay;
+    /* Preserve the pending CLUT-restoration flag across world changes.
+     * The next weather_frame() then restores the new world's originals
+     * if its weather and day/night palette effects are switched off. */
+    weather_frame_tick = 0u;
+    weather_flash_phase = 0u;
+    weather_flash_peak = 0u;
+    day_night_mode = world->day_night_mode <= 2u ? world->day_night_mode : 0u;
+    day_night_colour = 0xff000000u | (world->day_night_colour & 0xffffffu);
+    day_night_strength = world->day_night_strength > 100u ? 100u : world->day_night_strength;
+    day_night_day_frames = world->day_night_day_frames ? world->day_night_day_frames : 3000u;
+    day_night_night_frames = world->day_night_night_frames ? world->day_night_night_frames : 3000u;
+    day_night_fade_frames = world->day_night_fade_frames ? world->day_night_fade_frames : 500u;
+    day_night_tick = world->day_night_start_at_night ?
+        (uint32_t)day_night_day_frames + day_night_fade_frames : 0u;
+    weather_random_state ^= (uint32_t)world->start_x ^ ((uint32_t)world->start_y << 11);
+    if (!weather_random_state) weather_random_state = 0x7beab187u;
+    weather_flash_delay = weather_interval;
+}
+static void weather_update(uint16_t frames)
+{
+    if (!active_world) return;
+    if (day_night_mode == 2u) {
+        const uint32_t cycle = (uint32_t)day_night_day_frames + day_night_night_frames +
+            (uint32_t)day_night_fade_frames * 2u;
+        day_night_tick = (day_night_tick + frames) % cycle;
+    }
+    if (!weather_mode) return;
+    for (uint16_t f = 0; f < frames; ++f) {
+        if (++weather_frame_tick >= 16384u) weather_frame_tick = 0u;
+        if (weather_mode != 3u) continue;
+        if (weather_flash_phase) {
+            --weather_flash_phase;
+        } else if (weather_flash_delay > 1u) {
+            --weather_flash_delay;
+        } else {
+            /* Smooth, irregular single pulse: no instant white/black toggles. */
+            weather_flash_phase = 25u;
+            weather_flash_peak = (uint8_t)(65u + weather_rand() % 36u);
+            /* +/- 50% of the configured average flash interval. */
+            weather_flash_delay = (uint16_t)(weather_interval / 2u +
+                (weather_rand() % (uint32_t)weather_interval));
+            /* Minimum three seconds between pulses at 50 Hz. Still not
+             * a photosensitive-seizure safety certification. */
+            if (weather_flash_delay < 150u) weather_flash_delay = 150u;
+        }
+    }
+}
+/* Gentle, 0..100% envelope (~0.5 second at 50 Hz). Each storm
+ * picks a different peak; no abrupt 100->0 jump or rapid double flash.
+ * Reduced flashing is NOT a guarantee of photosensitive-seizure safety. */
+static const uint8_t weather_flash_curve[25] = {
+    0u, 3u, 8u, 17u, 29u, 45u, 63u, 79u, 92u, 100u,
+    95u, 88u, 79u, 68u, 56u, 45u, 35u, 26u, 19u, 13u,
+    8u, 5u, 3u, 1u, 0u
+};
+static uint8_t weather_pulse(void)
+{
+    if (weather_mode != 3u || !weather_flash_phase) return 0u;
+    return (uint8_t)((uint16_t)weather_flash_curve[25u - weather_flash_phase] *
+        weather_flash_peak / 100u);
+}
+/* RGB palette tint: 0=day original colours, 100=maximum chosen night/fog tint.
+ * Dusk and dawn use a cubic ease curve, without any floating-point work. */
+static uint8_t day_night_mix(void)
+{
+    if (!day_night_mode || !day_night_strength) return 0u;
+    if (day_night_mode == 1u) return day_night_strength;
+    const uint32_t day = day_night_day_frames, fade = day_night_fade_frames;
+    const uint32_t night = day_night_night_frames;
+    const uint32_t t = day_night_tick;
+    uint32_t progress;
+    if (t < day) return 0u;
+    if (t < day + fade) progress = (t - day) * 100u / fade;
+    else if (t < day + fade + night) return day_night_strength;
+    else progress = ((day + 2u*fade + night - t) * 100u) / fade;
+    const uint32_t eased = progress * progress * (300u - 2u*progress) / 10000u;
+    return (uint8_t)(eased * day_night_strength / 100u);
+}
+
+/* Stable, named status bits for user-authored main.c and engine effects.
+ * This can be queried before drawing the spotlight because weather_update()
+ * (called by gameworlds_update()) has already calculated the current pulse.
+ * The renderer returns the same bits after drawing for existing call sites. */
+uint8_t gameworlds_weather_status(void)
+{
+    if (!active_world || !weather_mode) return GAME_WEATHER_STATUS_NONE;
+    uint8_t status = GAME_WEATHER_STATUS_PRECIPITATION;
+    if (weather_pulse() != 0u && (weather_overlay_enabled || weather_palette_strength))
+        status |= GAME_WEATHER_STATUS_LIGHTNING_FLASH;
+    return status;
+}
+
+/* Palette blending is intentionally separate from the older on-screen bars.
+ * On indexed hardware it affects all drawn pixels (including HUD/dialogue),
+ * regardless of which framebuffer they were drawn into. On transition frames
+ * the transition CLUT owns the buffers, so suppress palette flashes there. */
+static uint32_t weather_palette_blend(uint32_t source, uint32_t tint, uint16_t strength)
+{
+    const uint32_t inv = 100u - strength;
+    const uint32_t r = (((source >> 16) & 255u) * inv + ((tint >> 16) & 255u) * strength + 50u) / 100u;
+    const uint32_t g = (((source >> 8) & 255u) * inv + ((tint >> 8) & 255u) * strength + 50u) / 100u;
+    const uint32_t b = ((source & 255u) * inv + (tint & 255u) * strength + 50u) / 100u;
+    return (source & 0xff000000u) | (r << 16) | (g << 8) | b;
+}
+static void weather_palette_frame(void)
+{
+    if (!active_world) return;
+    /* The transition renderer owns CLUTs during fades and wipes. */
+    if (transition_phase != GW_PHASE_IDLE) {
+        weather_palette_active = 0u;
+        return;
+    }
+    const uint16_t night_mix = day_night_mix();
+    const uint16_t flash_mix = (uint16_t)weather_pulse() * weather_palette_strength / 100u;
+    if (!night_mix && !flash_mix) {
+        if (weather_palette_active) {
+            weather_palette_active = 0u;
+            transition_restore_palette();
+        }
+        return;
+    }
+    const uint32_t *front = active_world->front_palette ? active_world->front_palette() : NULL;
+    const uint32_t *back = active_world->back_palette ? active_world->back_palette() : NULL;
+    if (!front && !back) return;
+    const uint32_t lightning_tint = front ? front[weather_colour_index] : 0xffffffffu;
+    if (front) {
+        for (uint16_t i = 0; i < 256u; ++i) {
+            uint32_t colour = weather_palette_blend(front[i], day_night_colour, night_mix);
+            transition_front[i] = weather_palette_blend(colour, lightning_tint, flash_mix);
+        }
+        /* Index 0 keeps original alpha; spotlight reserved mask never tints. */
+        if (spotlight_enabled) transition_front[spotlight_mask_index] = spotlight_mask_colour;
+#ifdef gfx_usefpalette
+        gfx_usefpalette(transition_front);
+#endif
+    }
+    if (back) {
+        for (uint16_t i = 0; i < 256u; ++i) {
+            uint32_t colour = weather_palette_blend(back[i], day_night_colour, night_mix);
+            transition_back[i] = weather_palette_blend(colour, lightning_tint, flash_mix);
+        }
+#ifdef gfx_usebpalette
+        gfx_usebpalette(transition_back);
+#endif
+    }
+    weather_palette_active = 1u;
+}
+
+/* Draw after FRONT tiles and spotlight but before the game HUD/dialogue.
+ * Also optionally updates temporary FRONT/BACK CLUT copies. Never edits the
+ * source .pal data; 0% restores the original unmodified world palette. */
+uint8_t gameworlds_weather_frame(uint16_t width, uint16_t height)
+{
+    const uint8_t status = gameworlds_weather_status();
+    if (!active_world || !width || !height) return status;
+    weather_palette_frame(); /* Also drives CLEAR worlds' day/night colours. */
+    if (!weather_mode) return status;
+#if defined(gfx_rectf) && defined(gfx_setcolour)
+    const uint16_t count = weather_density;
+    const uint32_t tick = weather_frame_tick;
+    gfx_setcolour(weather_colour_index);
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t bx = ((uint32_t)i * 97u + 37u) % width;
+        const uint32_t by = ((uint32_t)i * 137u + 23u) % height;
+        const int32_t rain = weather_mode != 2u;
+        const int32_t speed = rain ? 7 + (i % 3u) : 1 + (i % 2u);
+        int32_t x = (int32_t)bx + ((int32_t)tick * (int32_t)weather_wind);
+        int32_t y = (int32_t)by + ((int32_t)tick * speed);
+        x %= width; y %= height;
+        if (x < 0) x += width;
+        if (y < 0) y += height;
+        if (rain) {
+            /* 1 px falling streaks; each successive frame drifts in wind. */
+            const int32_t len = 5 + (i % 3u);
+            const int32_t draw_h = y + len < height ? len : (int32_t)height - y;
+            if (draw_h > 0) gfx_rectf(x, y, 1, draw_h);
+        } else {
+            gfx_rectf(x, y, x + 2 < width ? 2 : 1, 1);
+        }
+    }
+    if (weather_mode == 3u && weather_overlay_enabled && weather_flash_phase) {
+        const uint16_t strength = (uint16_t)weather_pulse() * weather_strength / 100u;
+        if (strength >= 100u) gfx_rectf(0, 0, width, height);
+        else if (strength) {
+            /* Sparse screen-space row coverage gives a very brief bright
+             * flash using O(height) spans only, safe on the STM32. */
+            for (uint16_t y = 0; y < height; ++y)
+                if (((uint32_t)y * 37u + 13u) % 100u < strength)
+                    gfx_rectf(0, y, width, 1);
+        }
+    }
+#else
+    (void)width; (void)height;
+#endif
+    return status;
+}
+
 static const uint8_t spotlight_bayer4[4][4] = {
     {0,8,2,10}, {12,4,14,6}, {3,11,1,9}, {15,7,13,5}
 };
@@ -481,6 +732,18 @@ void gameworlds_spotlight_player(int32_t world_x, int32_t world_y)
 void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
 {
     if (!spotlight_enabled || !active_world || !width || !height || !spotlight_opacity) return;
+    /* Lightning fades the darkness instead of abruptly switching the spotlight
+     * off. The normal opacity/state never changes, so overrides still work.
+     * A pulse value of 0 leaves darkness alone; 100 fully reveals the scene. */
+    uint8_t effective_spotlight_opacity = spotlight_opacity;
+    uint8_t spotlight_flash = 0u;
+    if (weather_suspend_spotlight &&
+        (gameworlds_weather_status() & GAME_WEATHER_STATUS_LIGHTNING_FLASH)) {
+        spotlight_flash = weather_pulse();
+        effective_spotlight_opacity = (uint8_t)((uint16_t)spotlight_opacity *
+            (100u - spotlight_flash) / 100u);
+    }
+    if (!effective_spotlight_opacity) return;
 #if defined(gfx_rectf) && defined(gfx_setcolour)
     /* The user-owned main.c still passes the player WORLD origin. Determine
      * the actual drawn sprite centre and current flip flags here. */
@@ -527,7 +790,7 @@ void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
         const int32_t dy = y - cy;
         const int32_t dy2 = dy * dy;
         if (dy2 >= outer2) {
-            spotlight_dither_segment(0, width, y, spotlight_opacity);
+            spotlight_dither_segment(0, width, y, effective_spotlight_opacity);
             continue;
         }
         const int32_t half = (int32_t)transition_isqrt((uint32_t)(outer2 - dy2));
@@ -535,18 +798,26 @@ void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
         int32_t right = cx + half + 1;
         if (left < 0) left = 0;
         if (right > width) right = width;
-        spotlight_dither_segment(0, left, y, spotlight_opacity);
-        spotlight_dither_segment(right, width, y, spotlight_opacity);
+        spotlight_dither_segment(0, left, y, effective_spotlight_opacity);
+        spotlight_dither_segment(right, width, y, effective_spotlight_opacity);
     }
     if (!spotlight_feather_current) return;
 #if defined(gfx_drawbob)
     if (spotlight_ring_count && spotlight_ring_pixels[spotlight_anim_frame]) {
         /* Indexed PPB-like ring. Index 0 transparent, other pixels use
          * the world's reserved mask index. No per-frame dither plotting. */
-        gfxbob_t *bob = &spotlight_ring_bob[spotlight_anim_frame];
-        bob->drawx = (int16_t)(cx - outer);
-        bob->drawy = (int16_t)(cy - outer);
-        gfx_drawbob(bob);
+        gfxbob_t bob = spotlight_ring_bob[spotlight_anim_frame];
+        bob.drawx = (int16_t)(cx - outer);
+        bob.drawy = (int16_t)(cy - outer);
+#if defined(BLIT_FLAG_ALPHABLEND) && defined(BLIT_FLAG_TYPE_FADE_VALUE)
+        if (spotlight_flash) {
+            /* Fade the feather BOB using the same patterned alpha as leaves.
+             * Temporary copy: never alter the precomputed BOB's attributes. */
+            bob.flags |= BLIT_FLAG_ALPHABLEND;
+            bob.flagval[BLIT_FLAG_TYPE_FADE_VALUE] = spotlight_flash;
+        }
+#endif
+        gfx_drawbob(&bob);
         return;
     }
 #endif
@@ -561,7 +832,7 @@ void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
             const int32_t d2 = dx * dx + dy * dy;
             if (d2 <= inner2 || d2 >= outer2) continue;
             const uint32_t threshold = (uint32_t)(((uint64_t)(d2 - inner2) *
-                spotlight_opacity * 16u) / (range * 100u));
+                effective_spotlight_opacity * 16u) / (range * 100u));
             if (spotlight_bayer4[(y-cy+outer)&3][(x-cx+outer)&3] < threshold)
                 gfx_plot(x, y);
         }
@@ -817,6 +1088,7 @@ static uint8_t activate(const gameworlds_record_t *world)
     if (world->object_apply_remote) world->object_apply_remote();
     active_world = world;
     const size_t spot_index = (size_t)(world - worlds);
+    weather_enter(world);
     spotlight_enabled = spot_index < WORLD_COUNT && spotlight_override_valid[spot_index]
         ? spotlight_override_value[spot_index] : world->spotlight_enabled;
     spotlight_radius = world->spotlight_radius;
@@ -998,8 +1270,38 @@ void gameworlds_shutdown(void)
     bound_player_physics = 0;
 @IDE_END
 }
+/* Three independent clocks for paused conversations. Old generated worlds
+ * have NULL split-update pointers; gameplay falls back to their legacy update
+ * while the particles-only call becomes a no-op until they are regenerated. */
+void gameworlds_update_gameplay(uint16_t frames)
+{
+    if (!active_world) return;
+    if (active_world->objects_update_gameplay)
+        active_world->objects_update_gameplay(frames);
+    else if (active_world->objects_update)
+        active_world->objects_update(frames);
+}
+void gameworlds_update_particles(uint16_t frames)
+{
+    if (active_world && active_world->objects_update_particles)
+        active_world->objects_update_particles(frames);
+}
+void gameworlds_update_weather(uint16_t frames)
+{
+    if (active_world) weather_update(frames);
+}
+/* Short names for authored main.c, matching game_update_weather(1) etc. */
+void game_update_gameplay(uint16_t frames) { gameworlds_update_gameplay(frames); }
+void game_update_particles(uint16_t frames) { gameworlds_update_particles(frames); }
+void game_update_weather(uint16_t frames) { gameworlds_update_weather(frames); }
+/* Backwards compatibility: exactly one update each for gameplay, ambient
+ * particles and weather when older code calls gameworlds_update(1). */
 void gameworlds_update(uint16_t frames)
-{ if (active_world) active_world->objects_update(frames); }
+{
+    if (!active_world) return;
+    if (active_world->objects_update) active_world->objects_update(frames);
+    weather_update(frames);
+}
 void gameworlds_draw(int32_t x, int32_t y)
 { if (active_world) active_world->objects_draw(x,y); }
 void gameworlds_draw_behind(int32_t x, int32_t y)

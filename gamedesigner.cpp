@@ -709,6 +709,7 @@ SidboxGameDesigner::SidboxGameDesigner(const QString &designFilePath, QWidget *p
             }
         }
         updateParticlePreview();
+        updateWeatherPreview();
         for (int i = 0; i < m_resources.size() && i < m_sceneItems.size(); ++i) {
             const Resource &r = m_resources.at(i);
             if (r.kind != QStringLiteral("sprite") ||
@@ -1870,7 +1871,31 @@ void SidboxGameDesigner::editPlayerStart()
     auto *contentRow = new QHBoxLayout();
     layout->addLayout(contentRow, 1);
     auto *settingsPanel = new QWidget(&dialog);
-    auto *form = new QFormLayout(settingsPanel);
+    auto *settingsLayout = new QVBoxLayout(settingsPanel);
+    settingsLayout->setContentsMargins(8, 8, 8, 8);
+    settingsLayout->setSpacing(6);
+    auto makeSection = [&](const QString &title) -> QFormLayout * {
+        auto *toggle = new QToolButton(settingsPanel);
+        toggle->setText(title);
+        toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggle->setArrowType(Qt::DownArrow);
+        toggle->setCheckable(true);
+        toggle->setChecked(true);
+        toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        toggle->setStyleSheet(QStringLiteral("QToolButton { font-weight: bold; padding: 8px; text-align: left; border: 1px solid palette(mid); }"));
+        auto *body = new QWidget(settingsPanel);
+        auto *section = new QFormLayout(body);
+        section->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        section->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        settingsLayout->addWidget(toggle);
+        settingsLayout->addWidget(body);
+        connect(toggle, &QToolButton::toggled, body, &QWidget::setVisible);
+        connect(toggle, &QToolButton::toggled, toggle, [toggle](bool expanded) {
+            toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        });
+        return section;
+    };
+    auto *form = makeSection(tr("Player Start"));
     auto *settingsScroll = new QScrollArea(&dialog);
     settingsScroll->setWidgetResizable(true);
     settingsScroll->setWidget(settingsPanel);
@@ -1933,6 +1958,218 @@ void SidboxGameDesigner::editPlayerStart()
     circleOrigin->setCurrentIndex(qMax(0, circleOrigin->findData(m_playerCircleOrigin)));
     transitionFrames->setValue(m_playerTransitionFrames);
     form->addRow(tr("Transition duration"), transitionFrames);
+    // Sliders are easier to tune than typing frame counts, but each slider
+    // retains the exact underlying frame value so old designs round-trip
+    // without changing their weather or day/night timing.
+    auto addFrameTimingSlider = [&dialog, &form](const QString &title,
+        int minimum, int maximum, int current, int singleStep, int pageStep,
+        const QString &tooltip) -> QSlider * {
+        auto *row = new QWidget(&dialog);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(10);
+        auto *slider = new QSlider(Qt::Horizontal, row);
+        slider->setRange(minimum, maximum);
+        slider->setSingleStep(singleStep);
+        slider->setPageStep(pageStep);
+        slider->setTracking(true);
+        slider->setToolTip(tooltip);
+        slider->setAccessibleName(title);
+        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        auto *readout = new QLabel(row);
+        readout->setMinimumWidth(156);
+        readout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        readout->setToolTip(tooltip);
+        const auto updateReadout = [readout](int frames) {
+            readout->setText(QObject::tr("%1 s (%2 frames)")
+                .arg(QString::number(frames / 50.0, 'f', 1))
+                .arg(frames));
+        };
+        QObject::connect(slider, &QSlider::valueChanged, row, updateReadout);
+        rowLayout->addWidget(slider, 1);
+        rowLayout->addWidget(readout);
+        form->addRow(title, row);
+        slider->setValue(qBound(minimum, current, maximum));
+        updateReadout(slider->value());
+        return slider;
+    };
+    // Collapsible per-world sections keep this busy editor readable.
+    form = makeSection(tr("Weather"));
+    auto *weatherMode = new QComboBox(&dialog);
+    weatherMode->addItem(tr("None / clear"), 0);
+    weatherMode->addItem(tr("Rain"), 1);
+    weatherMode->addItem(tr("Snow"), 2);
+    weatherMode->addItem(tr("Thunderstorm (rain + lightning)"), 3);
+    weatherMode->setCurrentIndex(qBound(0, m_weatherMode, 3));
+    form->addRow(tr("Weather"), weatherMode);
+    auto *weatherDensity = new QSpinBox(&dialog);
+    weatherDensity->setRange(1, 64);
+    weatherDensity->setValue(m_weatherDensity);
+    weatherDensity->setToolTip(tr("Maximum simultaneous rain streaks or snowflakes in the LCD view. Fixed pool; no heap allocations."));
+    form->addRow(tr("Weather particles"), weatherDensity);
+    auto *weatherWind = new QSpinBox(&dialog);
+    weatherWind->setRange(-8, 8);
+    weatherWind->setSuffix(tr(" px / frame"));
+    weatherWind->setValue(m_weatherWind);
+    form->addRow(tr("Weather wind X"), weatherWind);
+    auto *weatherColour = new QSpinBox(&dialog);
+    weatherColour->setRange(1, 254);
+    weatherColour->setValue(m_weatherPaletteIndex);
+    weatherColour->setToolTip(tr("Uses this existing FRONT .pal index for rain, snow and lightning. "
+        "Choose a pale blue or white palette entry. Index 0 and 255 are deliberately excluded."));
+    auto *weatherColourPickerRow = new QWidget(&dialog);
+    auto *weatherColourLayout = new QHBoxLayout(weatherColourPickerRow);
+    weatherColourLayout->setContentsMargins(0, 0, 0, 0);
+    auto *weatherPickColour = new QPushButton(tr("Choose from .pal..."), weatherColourPickerRow);
+    weatherColourLayout->addWidget(weatherColour);
+    weatherColourLayout->addWidget(weatherPickColour);
+    form->addRow(tr("Weather colour palette index"), weatherColourPickerRow);
+    connect(weatherPickColour, &QPushButton::clicked, &dialog, [this,&dialog,weatherColour]() {
+        const QVector<QRgb> bank = activePalette(QStringLiteral("foreground"));
+        if (bank.size() != 256) {
+            QMessageBox::information(&dialog, tr("Weather palette"),
+                tr("Select a foreground .pal palette first, or enter a palette index manually."));
+            return;
+        }
+        const int selected = SidboxPalettePicker::chooseIndex(&dialog, bank,
+            weatherColour->value(), tr("Choose weather / lightning colour"),
+            tr("Choose a pale rain, snow or lightning colour. Index 0 is transparent; avoid 255 for spotlight."), false);
+        if (selected >= 1 && selected <= 254) weatherColour->setValue(selected);
+    });
+    auto *weatherInterval = addFrameTimingSlider(tr("Lightning average interval"),
+        100, 2000, m_weatherLightningInterval, 25, 100,
+        tr("Thunderstorms only: average time between lightning bursts, from 2 to 40 seconds. "
+           "The runtime adds random variation. Drag the slider or use the arrow keys to fine-tune."));
+    auto *weatherOverlay = new QCheckBox(tr("Enable lightning screen overlay"), &dialog);
+    weatherOverlay->setChecked(m_weatherLightningOverlay);
+    weatherOverlay->setToolTip(tr("Draw the brief patterned flash across the world. Untick for palette-only lightning; "
+        "lightning timing, rain, palette flashes and the optional spotlight suspension still work."));
+    form->addRow(weatherOverlay);
+    auto *weatherStrength = new QSpinBox(&dialog);
+    weatherStrength->setRange(10, 100);
+    weatherStrength->setSuffix(tr(" %"));
+    weatherStrength->setValue(m_weatherLightningStrength);
+    weatherStrength->setToolTip(tr("Strength of the optional patterned screen overlay only. "
+        "The palette flash has its own independent 0-100% strength. "
+        "Overlay pixels are drawn before the HUD and dialogue."));
+    form->addRow(tr("Overlay flash strength"), weatherStrength);
+    // True indexed-colour lightning: blend temporary FRONT and BACK CLUTs
+    // towards the chosen lightning colour. Keep this separate from the screen
+    // overlay strength, and off by default for saved older worlds.
+    auto *weatherPaletteRow = new QWidget(&dialog);
+    auto *weatherPaletteLayout = new QHBoxLayout(weatherPaletteRow);
+    weatherPaletteLayout->setContentsMargins(0, 0, 0, 0);
+    auto *weatherPaletteSlider = new QSlider(Qt::Horizontal, weatherPaletteRow);
+    weatherPaletteSlider->setRange(0, 100);
+    weatherPaletteSlider->setValue(m_weatherPaletteFlashStrength);
+    auto *weatherPaletteStrength = new QSpinBox(weatherPaletteRow);
+    weatherPaletteStrength->setRange(0, 100);
+    weatherPaletteStrength->setSuffix(tr(" %"));
+    weatherPaletteStrength->setValue(m_weatherPaletteFlashStrength);
+    weatherPaletteSlider->setToolTip(tr("Blend both screen palettes toward the lightning colour. "
+        "0% leaves palettes untouched; independent of overlay strength. Because the CLUT is global, HUD/dialogue "
+        "colours also tint briefly while the flash is active."));
+    weatherPaletteStrength->setToolTip(weatherPaletteSlider->toolTip());
+    connect(weatherPaletteSlider, &QSlider::valueChanged, weatherPaletteStrength, &QSpinBox::setValue);
+    connect(weatherPaletteStrength, QOverload<int>::of(&QSpinBox::valueChanged),
+        weatherPaletteSlider, &QSlider::setValue);
+    weatherPaletteLayout->addWidget(weatherPaletteSlider, 1);
+    weatherPaletteLayout->addWidget(weatherPaletteStrength);
+    form->addRow(tr("Palette flash strength"), weatherPaletteRow);
+    auto *weatherSuspendSpotlight = new QCheckBox(tr("Suspend spotlight during lightning flashes"), &dialog);
+    weatherSuspendSpotlight->setChecked(m_weatherSuspendSpotlight);
+    weatherSuspendSpotlight->setToolTip(tr("Gradually lighten the player's darkness spotlight as lightning brightens, "
+        "then restore it along the same smooth curve. Does not alter the spotlight's saved On/Off state "
+        "or your existing main.c rendering calls."));
+    form->addRow(weatherSuspendSpotlight);
+    auto updateWeatherInputs = [=]() {
+        const int mode = weatherMode->currentData().toInt();
+        for (QWidget *w : {static_cast<QWidget *>(weatherDensity), static_cast<QWidget *>(weatherWind),
+                           static_cast<QWidget *>(weatherColour), static_cast<QWidget *>(weatherPickColour)})
+            w->setEnabled(mode != 0);
+        weatherInterval->parentWidget()->setEnabled(mode == 3);
+        weatherOverlay->setEnabled(mode == 3);
+        weatherStrength->setEnabled(mode == 3 && weatherOverlay->isChecked());
+        weatherPaletteSlider->setEnabled(mode == 3);
+        weatherPaletteStrength->setEnabled(mode == 3);
+        weatherSuspendSpotlight->setEnabled(mode == 3);
+    };
+    connect(weatherMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        &dialog, [updateWeatherInputs](int) { updateWeatherInputs(); });
+    connect(weatherOverlay, &QCheckBox::toggled, &dialog,
+        [updateWeatherInputs](bool) { updateWeatherInputs(); });
+    updateWeatherInputs();
+    form = makeSection(tr("Day & Night / Palette Tint"));
+    auto *dayNightMode = new QComboBox(&dialog);
+    dayNightMode->addItem(tr("Off (original colours)"), 0);
+    dayNightMode->addItem(tr("Fixed tint (night, fog, atmosphere)"), 1);
+    dayNightMode->addItem(tr("Automatic day and night cycle"), 2);
+    dayNightMode->setCurrentIndex(qBound(0, m_dayNightMode, 2));
+    form->addRow(tr("Lighting mode"), dayNightMode);
+    QColor chosenDayNight(m_dayNightColour);
+    if (!chosenDayNight.isValid()) chosenDayNight = QColor(QStringLiteral("#233b68"));
+    auto *dayNightColour = new QPushButton(&dialog);
+    auto updateDayNightButton = [&chosenDayNight, dayNightColour]() {
+        dayNightColour->setText(QObject::tr("Target colour: %1").arg(chosenDayNight.name().toUpper()));
+        dayNightColour->setStyleSheet(QStringLiteral("QPushButton { background: %1; color: %2; padding: 6px; }")
+            .arg(chosenDayNight.name(), chosenDayNight.lightness() > 128
+                ? QStringLiteral("black") : QStringLiteral("white")));
+    };
+    updateDayNightButton();
+    connect(dayNightColour, &QPushButton::clicked, &dialog,
+        [&dialog, &chosenDayNight, updateDayNightButton]() {
+            const QColor colour = QColorDialog::getColor(chosenDayNight, &dialog,
+                QObject::tr("Choose nighttime, fog or atmosphere tint"));
+            if (colour.isValid()) { chosenDayNight = colour; updateDayNightButton(); }
+        });
+    form->addRow(tr("Palette blend target"), dayNightColour);
+    auto *dayNightStrengthRow = new QWidget(&dialog);
+    auto *dayNightStrengthLayout = new QHBoxLayout(dayNightStrengthRow);
+    dayNightStrengthLayout->setContentsMargins(0, 0, 0, 0);
+    auto *dayNightSlider = new QSlider(Qt::Horizontal, dayNightStrengthRow);
+    dayNightSlider->setRange(0, 100);
+    dayNightSlider->setValue(m_dayNightStrength);
+    auto *dayNightStrength = new QSpinBox(dayNightStrengthRow);
+    dayNightStrength->setRange(0, 100);
+    dayNightStrength->setValue(m_dayNightStrength);
+    dayNightStrength->setSuffix(tr(" %"));
+    connect(dayNightSlider, &QSlider::valueChanged, dayNightStrength, &QSpinBox::setValue);
+    connect(dayNightStrength, QOverload<int>::of(&QSpinBox::valueChanged),
+        dayNightSlider, &QSlider::setValue);
+    dayNightStrengthLayout->addWidget(dayNightSlider, 1);
+    dayNightStrengthLayout->addWidget(dayNightStrength);
+    form->addRow(tr("Maximum tint strength"), dayNightStrengthRow);
+    auto *dayNightDayFrames = addFrameTimingSlider(tr("Day duration"),
+        50, 30000, m_dayNightDayFrames, 50, 500,
+        tr("How long the daylight portion lasts, from 1 second to 10 minutes at 50 FPS."));
+    auto *dayNightNightFrames = addFrameTimingSlider(tr("Night duration"),
+        50, 30000, m_dayNightNightFrames, 50, 500,
+        tr("How long the full nighttime portion lasts, from 1 second to 10 minutes at 50 FPS."));
+    auto *dayNightFadeFrames = addFrameTimingSlider(tr("Dusk / dawn duration"),
+        25, 10000, m_dayNightFadeFrames, 25, 250,
+        tr("Length of EACH smooth dusk and dawn colour blend, from 0.5 to 200 seconds. "
+           "No gameplay physics changes."));
+    auto *dayNightStartNight = new QCheckBox(tr("Begin world at night"), &dialog);
+    dayNightStartNight->setChecked(m_dayNightStartAtNight);
+    form->addRow(dayNightStartNight);
+    auto *dayNightHint = new QLabel(tr("Day uses your original .pal colours. Night blends FRONT and BACK palette copies toward the chosen colour. "
+        "Fixed tint is useful for fog. Your actual .pal files are never modified. "
+        "The same palette tables can also tint HUD and dialogue colours."), &dialog);
+    dayNightHint->setWordWrap(true);
+    form->addRow(dayNightHint);
+    auto updateDayNightWidgets = [=]() {
+        const int mode = dayNightMode->currentData().toInt();
+        dayNightColour->setEnabled(mode != 0);
+        dayNightStrengthRow->setEnabled(mode != 0);
+        // Dim the entire slider row, including the seconds/frame readout.
+        for (QSlider *slider : {dayNightDayFrames, dayNightNightFrames, dayNightFadeFrames})
+            slider->parentWidget()->setEnabled(mode == 2);
+        dayNightStartNight->setEnabled(mode == 2);
+    };
+    connect(dayNightMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        &dialog, [updateDayNightWidgets](int) { updateDayNightWidgets(); });
+    updateDayNightWidgets();
+    form = makeSection(tr("Spotlight"));
     auto *spotlightEnabled = new QCheckBox(tr("Enable local darkness with player spotlight"), &dialog);
     spotlightEnabled->setChecked(m_playerSpotlightEnabled);
     spotlightEnabled->setToolTip(tr("Draw a black overlay across the playfield and cut out a circular viewing area around the player. Useful for dark houses, caves and mystery scenes."));
@@ -2193,6 +2430,22 @@ void SidboxGameDesigner::editPlayerStart()
     m_playerTransitionOut=transitionOut->currentData().toString();
     m_playerCircleOrigin=circleOrigin->currentData().toString();
     m_playerTransitionFrames=transitionFrames->value();
+    m_weatherMode = weatherMode->currentData().toInt();
+    m_weatherDensity = weatherDensity->value();
+    m_weatherWind = weatherWind->value();
+    m_weatherPaletteIndex = weatherColour->value();
+    m_weatherLightningInterval = weatherInterval->value();
+    m_weatherLightningStrength = weatherStrength->value();
+    m_weatherLightningOverlay = weatherOverlay->isChecked();
+    m_weatherPaletteFlashStrength = weatherPaletteStrength->value();
+    m_weatherSuspendSpotlight = weatherSuspendSpotlight->isChecked();
+    m_dayNightMode = dayNightMode->currentData().toInt();
+    m_dayNightColour = chosenDayNight.name();
+    m_dayNightStrength = dayNightStrength->value();
+    m_dayNightDayFrames = dayNightDayFrames->value();
+    m_dayNightNightFrames = dayNightNightFrames->value();
+    m_dayNightFadeFrames = dayNightFadeFrames->value();
+    m_dayNightStartAtNight = dayNightStartNight->isChecked();
     m_playerSpotlightEnabled=spotlightEnabled->isChecked();
     m_playerSpotlightRadius=spotlightRadius->value();
     m_playerSpotlightFeather=spotlightFeather->value();
@@ -3714,6 +3967,13 @@ void SidboxGameDesigner::buildUi()
     m_showLabels = new QCheckBox(tr("Asset tags"), previewPanel);
     m_showLabels->setChecked(true);
     previewControls->addWidget(m_showLabels);
+    m_showWeatherPreview = new QCheckBox(tr("Weather"), previewPanel);
+    m_showWeatherPreview->setChecked(true);
+    m_showWeatherPreview->setToolTip(tr("Preview this world's rain, snow or thunderstorm on the LCD camera frame. "
+        "Configure it under Player Start → WORLD WEATHER."));
+    previewControls->addWidget(m_showWeatherPreview);
+    connect(m_showWeatherPreview, &QCheckBox::toggled, this,
+        [this](bool) { updateWeatherPreview(); });
     m_showParticlePreview = new QCheckBox(tr("Particles"), previewPanel);
     m_showParticlePreview->setChecked(true);
     m_showParticlePreview->setToolTip(tr("Animate ALL placed Particle Spawners together on the World Canvas at 50 Hz, "
@@ -4965,6 +5225,111 @@ void SidboxGameDesigner::updateParticlePreview()
     }
 }
 
+// Lightweight screen-space weather preview. The generated C renderer uses
+// the same deterministic spawn scatter and travel speeds; this is editor-only.
+void SidboxGameDesigner::updateWeatherPreview()
+{
+    if (!m_scene || !m_cameraX || !m_cameraY) return;
+    if (!m_weatherPreviewDrops) {
+        m_weatherPreviewDrops = m_scene->addPath(QPainterPath(), QPen(QColor(180, 225, 255), 1.2));
+        m_weatherPreviewDrops->setZValue(10505);
+        m_weatherPreviewDrops->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    if (!m_weatherPreviewFlash) {
+        m_weatherPreviewFlash = m_scene->addRect(QRectF(0, 0, 480, 320), Qt::NoPen,
+            QBrush(QColor(205, 230, 255)));
+        m_weatherPreviewFlash->setZValue(10506);
+        m_weatherPreviewFlash->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    if (!m_weatherPreviewPaletteFlash) {
+        // Qt scene-colour approximation: hardware instead blends the actual
+        // FRONT/BACK 256-entry CLUTs from their original source on each pulse.
+        m_weatherPreviewPaletteFlash = m_scene->addRect(QRectF(0, 0, 480, 320),
+            Qt::NoPen, QBrush(QColor(205, 230, 255)));
+        m_weatherPreviewPaletteFlash->setZValue(10507);
+        m_weatherPreviewPaletteFlash->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    if (!m_weatherPreviewDayNightTint) {
+        // Approximate the indexed FRONT/BACK palette blending in the Qt view.
+        m_weatherPreviewDayNightTint = m_scene->addRect(QRectF(0, 0, 480, 320),
+            Qt::NoPen, QBrush(QColor(QStringLiteral("#233b68"))));
+        m_weatherPreviewDayNightTint->setZValue(10504);
+        m_weatherPreviewDayNightTint->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    const bool enabled = m_showWeatherPreview && m_showWeatherPreview->isChecked();
+    const bool show = enabled && m_weatherMode > 0;
+    m_weatherPreviewDrops->setVisible(show);
+    m_weatherPreviewFlash->setVisible(show && m_weatherMode == 3 && m_weatherLightningOverlay);
+    m_weatherPreviewPaletteFlash->setVisible(show && m_weatherMode == 3 && m_weatherPaletteFlashStrength > 0);
+    m_weatherPreviewDayNightTint->setVisible(enabled && m_dayNightMode != 0 && m_dayNightStrength > 0);
+    if (!enabled) return;
+    const int cameraX = m_cameraX->value(), cameraY = m_cameraY->value();
+    const int width = 480, height = 320;
+    const qint64 ticks = m_objectPreviewClock.isValid() ? m_objectPreviewClock.elapsed() / 20 : 0;
+    // Approximate the same cubic 0-100% tint envelope as SIDBOX. Even a
+    // clear world can have night/fog tint if Weather preview is checked.
+    int nightMix = m_dayNightMode == 1 ? m_dayNightStrength : 0;
+    if (m_dayNightMode == 2) {
+        const qint64 day = m_dayNightDayFrames, night = m_dayNightNightFrames;
+        const qint64 fade = m_dayNightFadeFrames;
+        const qint64 span = day + night + 2 * fade;
+        const qint64 phase = (ticks + (m_dayNightStartAtNight ? day + fade : 0)) % span;
+        int progress = 0;
+        if (phase < day) progress = 0;
+        else if (phase < day + fade) progress = int((phase - day) * 100 / fade);
+        else if (phase < day + fade + night) progress = 100;
+        else progress = int((day + 2 * fade + night - phase) * 100 / fade);
+        const int eased = progress * progress * (300 - 2 * progress) / 10000;
+        nightMix = eased * m_dayNightStrength / 100;
+    }
+    QColor nightColour(m_dayNightColour);
+    if (!nightColour.isValid()) nightColour = QColor(QStringLiteral("#233b68"));
+    m_weatherPreviewDayNightTint->setRect(cameraX, cameraY, width, height);
+    m_weatherPreviewDayNightTint->setBrush(QBrush(nightColour));
+    m_weatherPreviewDayNightTint->setOpacity(nightMix / 100.0);
+    m_weatherPreviewDayNightTint->setVisible(m_dayNightMode != 0 && nightMix > 0);
+    if (!show) return;
+    QPainterPath drops;
+    const int rain = m_weatherMode == 1 || m_weatherMode == 3;
+    for (int i = 0; i < m_weatherDensity; ++i) {
+        // Sprite-free weather uses the camera viewport and is already populated.
+        const qint64 baseX = (i * 97 + 37) % width;
+        const qint64 baseY = (i * 137 + 23) % height;
+        const int speed = rain ? 7 + (i % 3) : 1 + (i % 2);
+        int x = int((baseX + ticks * m_weatherWind + width * 8192LL) % width);
+        int y = int((baseY + ticks * speed) % height);
+        if (x < 0) x += width;
+        if (y < 0) y += height;
+        if (rain) {
+            drops.moveTo(cameraX + x, cameraY + y);
+            drops.lineTo(cameraX + x, cameraY + y + 5 + i % 3);
+        } else {
+            drops.addEllipse(cameraX + x, cameraY + y, 2, 2);
+        }
+    }
+    m_weatherPreviewDrops->setPath(drops);
+    const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
+    const QColor colour = palette.size() == 256
+        ? QColor::fromRgb(palette.at(m_weatherPaletteIndex)) : QColor(192, 230, 255);
+    m_weatherPreviewDrops->setPen(QPen(colour, rain ? 1.1 : 1.4));
+    m_weatherPreviewFlash->setRect(cameraX, cameraY, width, height);
+    m_weatherPreviewFlash->setBrush(QBrush(colour));
+    // Editor approximation of the new soft pulse. SIDBOX randomises both
+    // peak and interval; this repeats a representative 85%-peak envelope.
+    static const int flashCurve[25] = {0,3,8,17,29,45,63,79,92,100,
+        95,88,79,68,56,45,35,26,19,13,8,5,3,1,0};
+    const int interval = qMax(175, m_weatherLightningInterval);
+    const int phase = int(ticks % interval);
+    const int pulse = phase < 25 ? flashCurve[phase] * 85 / 100 : 0;
+    m_weatherPreviewFlash->setOpacity(pulse * m_weatherLightningStrength / 10000.0);
+    m_weatherPreviewFlash->setVisible(m_weatherMode == 3 && m_weatherLightningOverlay && pulse != 0);
+    m_weatherPreviewPaletteFlash->setRect(cameraX, cameraY, width, height);
+    m_weatherPreviewPaletteFlash->setBrush(QBrush(colour));
+    m_weatherPreviewPaletteFlash->setOpacity(pulse * m_weatherPaletteFlashStrength / 10000.0);
+    m_weatherPreviewPaletteFlash->setVisible(m_weatherMode == 3 && pulse != 0 &&
+        m_weatherPaletteFlashStrength > 0);
+}
+
 void SidboxGameDesigner::rebuildScene()
 {
     m_loading = true;
@@ -4980,6 +5345,10 @@ void SidboxGameDesigner::rebuildScene()
     m_particleResizeHandle = -1;
     m_particleResizeIndex = -1;
     m_particlePreviewEmitters.clear(); // Scene owns and deletes every preview sprite.
+    m_weatherPreviewDrops = nullptr;
+    m_weatherPreviewFlash = nullptr;
+    m_weatherPreviewPaletteFlash = nullptr;
+    m_weatherPreviewDayNightTint = nullptr;
     m_scene->clear();
     m_tilemapOverlayItem = nullptr;
     m_loopOverlayItems.clear(); // QGraphicsScene deleted the children above.

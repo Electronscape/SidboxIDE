@@ -1,0 +1,21 @@
+CoderGirl IDE Stage 5.156.261026 -- Ambient updates while chatting
+
+1. Back up your CoderGirl IDE and game project.
+2. Extract Stage 5.156 DROPIN.zip into the existing Stage 5.155 IDE source tree,
+   preserving the relative paths under idelibs/codehelpers/game/.
+3. Rebuild the IDE. Splash version: Build: 5.156.261026.
+4. For EACH game world (.sbgm): Save Design, then Update Game Project.
+   Regenerate the published worlds and final world manager registry.
+5. Update your own main.c once: replace gameworlds_update(1) with the three
+   split clocks, leaving weather and particles OUTSIDE the dialogue guard,
+   but gameplay INSIDE it. See README.md for the full snippet.
+6. Rebuild and upload your SIDBOX game.
+
+NB: The original gameworlds_update() still works for untouched main.c,
+but it intentionally pauses ALL effects when you gate it during dialogues.
+Do NOT call the combined and split updates in the same frame.
+No modifications to your user-owned main.c are made automatically.
+
+Validation: python3 tests/test_stage5156.py
+Native GCC and stage 5.146-5.155 regression tests passed.
+Qt IDE compilation and STM32 hardware test are still to be confirmed.

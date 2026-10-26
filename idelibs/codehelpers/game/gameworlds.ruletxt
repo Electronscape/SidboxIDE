@@ -124,3 +124,59 @@ Fade uses temporary front/back CLUT copies (original PPB pixel indices are
 unchanged). Spatial effects use foreground index 255 temporarily as black;
 reserve that index if you want clean wipes. Regenerate ALL world designs and
 the project-level registry when upgrading. No extra PPB files are created.
+
+STAGE 5.154: LIGHTNING-AWARE SPOTLIGHT / WEATHER STATUS
+------------------------------------------------------
+Within each WORLD WEATHER panel, "Suspend spotlight during lightning flashes"
+skips spotlight rendering on only the bright lightning-pulse frames. This is
+off by default for backward compatibility; enabling it needs no main.c edits.
+The weather renderer still runs after spotlight and before the HUD.
+
+For custom effects, the generated gameworlds.h supplies the named bit flags
+GAME_WEATHER_STATUS_PRECIPITATION and GAME_WEATHER_STATUS_LIGHTNING_FLASH,
+with gameworlds_weather_status() safe to query before the spotlight draw call.
+gameworlds_weather_frame() now returns the same bit mask without changing its
+rendering effect, so old code that ignores its return value still works.
+See Stage 5.154 README.md for the exact optional main.c code snippet.
+
+STAGE 5.155: OPTIONAL LIGHTNING SCREEN OVERLAY
+---------------------------------------------
+WORLD WEATHER now includes "Enable lightning screen overlay" (checked by
+legacy default). You can untick it to retain only the optional FRONT/BACK
+palette flash. "Overlay flash strength" and "Palette flash strength" are
+independent and share the same double-flash timing. Palette-only pulses still
+report GAME_WEATHER_STATUS_LIGHTNING_FLASH, so optional spotlight suspension
+continues to work. If both effects are off, the status flash bit is clear.
+The original .pal files are untouched. Real palette flashes can also tint
+HUD/dialogue colours because they share the indexed display colour tables.
+Re-export the world/registry when upgrading; main.c requires no new calls.
+
+STAGE 5.156: INDEPENDENT GAMEPLAY / PARTICLE / WEATHER CLOCKS
+-------------------------------------------------------------
+Your hand-maintained main.c can PAUSE only gameplay during a conversation:
+
+    /* Outside the game_adventure_open() / dialogue guard, once per 50-Hz frame: */
+    game_update_weather(1);
+    game_update_particles(1);
+
+    /* In the existing gameplay guard, replacing gameworlds_update(1): */
+    if (!game_adventure_open()) {
+        gameworlds_update_gameplay(1);
+        /* your existing player physics, enemies, collision, etc. */
+    }
+
+The long API names gameworlds_update_weather/particles/gameplay are
+identical to the short helpers. Pick ONE spelling; don't call both.
+The old gameworlds_update(1) remains supported and still updates all three,
+so DON'T call it in a frame where you use the split calls (double update).
+For world-transition safety, keep the two ambience update calls under your
+existing !gameworlds_transition_busy() outer guard.
+
+IMPORTANT: Regenerate ALL published worlds and then Update Game Project so
+new world registry function pointers are present. Older published worlds
+still load, but their legacy object update cannot independently animate
+particles while the game is paused until that world is re-exported.
+
+Stage 5.156 maingame.c.txt already demonstrates the proper placement. The
+IDE never overwrites your authored main.c. No changes to the weather and
+particle rendering calls, pre-population, or drawing order are required.

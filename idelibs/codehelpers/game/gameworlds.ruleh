@@ -87,6 +87,17 @@ void gameworlds_transition_frame(uint16_t view_width, uint16_t view_height);
 void gameworlds_spotlight_camera(int32_t camera_x, int32_t camera_y);
 void gameworlds_spotlight_player(int32_t world_x, int32_t world_y);
 void gameworlds_spotlight_frame(uint16_t view_width, uint16_t view_height);
+/* World weather: named bit flags, not magic return values.
+ * Query BEFORE drawing the spotlight, after gameworlds_update(), to inspect
+ * this frame's weather. LIGHTNING_FLASH is set only on BRIGHT pulse frames,
+ * not in the dark gap of a thunder double-flash. */
+#define GAME_WEATHER_STATUS_NONE          0u
+#define GAME_WEATHER_STATUS_PRECIPITATION (1u << 0)
+#define GAME_WEATHER_STATUS_LIGHTNING_FLASH (1u << 1)
+uint8_t gameworlds_weather_status(void);
+/* Render AFTER spotlight and FRONT tiles, BEFORE HUD/dialogue. Existing calls
+ * may ignore the returned status without changing main.c. */
+uint8_t gameworlds_weather_frame(uint16_t view_width, uint16_t view_height);
 /* 0 = off, 1 = on, 2 = toggle. Applies to currently loaded world. */
 void gameworlds_spotlight_action(uint8_t action);
 /* Trigger action targeting a live or unloaded world by compiled object slot.
@@ -101,7 +112,18 @@ void *gameworlds_map(void);
 /* Spawn belongs to the active WORLD; player graphics/stats belong to GAME. */
 typedef struct { int32_t x, y; uint8_t facing; } gameworlds_spawn_t;
 uint8_t gameworlds_player_start(gameworlds_spawn_t *out);
+/* Original combined update advances gameplay, particles and weather. */
 void gameworlds_update(uint16_t frames);
+/* Split updates: use these INSTEAD of gameworlds_update() for dialogue pauses.
+ * Gameplay includes object animation, enemies, splines, pickups and asset fades.
+ * Particles and weather are purely visual, so can run every rendered frame. */
+void gameworlds_update_gameplay(uint16_t frames);
+void gameworlds_update_particles(uint16_t frames);
+void gameworlds_update_weather(uint16_t frames);
+/* Optional short aliases for hand-authored main.c. */
+void game_update_gameplay(uint16_t frames);
+void game_update_particles(uint16_t frames);
+void game_update_weather(uint16_t frames);
 void gameworlds_draw(int32_t camera_x, int32_t camera_y);
 void gameworlds_draw_behind(int32_t camera_x, int32_t camera_y);
 void gameworlds_draw_overlay(int32_t camera_x, int32_t camera_y);

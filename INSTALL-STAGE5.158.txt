@@ -1,0 +1,11 @@
+CoderGirl Stage 5.158.261026
+
+Change: Player Start / World Entry Point now has sliders and seconds/frame labels
+for Lightning average interval, Day duration, Night duration, Dusk/Dawn duration.
+Old saved frames and values are preserved, no runtime changes.
+
+Install: unzip CoderGirl-Stage5.158-261026-DROPIN.zip into IDE source root
+on top of Stage 5.157, then rebuild CoderGirl.
+
+If you change world timing settings: Save Design > Update Game Project >
+rebuild game. User-owned main.c is untouched.

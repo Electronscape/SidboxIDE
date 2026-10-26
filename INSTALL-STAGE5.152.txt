@@ -1,0 +1,58 @@
+# CoderGirl IDE Stage 5.152.261026: World Weather + Lightning
+
+**Based on Stage 5.151.261026.** Changes are additive; the existing leaves, clouds, dust and swirling fireflies remain independent of world weather.
+
+## Features
+
+- World-level weather mode: **None**, **Rain**, **Snow**, or **Thunderstorm** (rain + lightning).
+- 1–64 inexpensive, procedural, palette-coloured precipitation particles, already distributed over the screen on the **first rendered frame**.
+- Horizontal wind (-8 to +8 screen pixels per frame), chosen FRONT .pal colour index (1–254), and configured particle count.
+- Thunderstorms have short, staggered **double lightning pulses**, with adjustable average interval (100–2000 frames at 50 FPS) and flash strength (10–100%). The runtime randomises the actual gaps by ±50%.
+- Lightning uses a brief patterned colour overlay drawn to the foreground framebuffer **after** the spotlight, but **before** the HUD/dialogue. It is not a true light source or a full-screen palette rewrite; the HUD is protected and no palette entries are changed.
+- Independent editor-only **Weather** checkbox in World Canvas, with a 50-Hz animation preview confined to the LCD camera frame. The preview uses smooth Qt opacity for lightning, rather than exact SIDBOX row-pattern blending.
+- Settings are saved per world under the new root-level `.sbgm` `weather` object and exported through the shared generated `gameworlds` registry.
+- Old projects and old worlds default to **None/clear**. Weather does not affect BOB particle spawners or collision.
+- Game drawing and weather update involve no per-frame heap allocation; at most 64 precipitation primitives and approximately 320 temporary flash strips on the STM32.
+- Updated splash build version to **5.152.261026**.
+
+## Where the settings live
+
+**Game Designer → Player Start (World Entry Point) → WORLD WEATHER**.
+
+This is per world, not a global game setting and not a Particle Spawner object. Choose the weather type, number of streaks/flakes, wind speed, and foreground palette index (use **Choose from .pal...** for a pale blue/white index). The lightning controls become active only for Thunderstorm.
+
+Tick **Weather** at the top of the World Canvas to see rain, snow and approximate lightning while editing. This is an IDE-only preview; no weather particles are saved as Game Objects.
+
+## Important: hand-maintained `main.c` integration
+
+Your `main.c` is **never overwritten** by these updates. The generated `maingame.c.txt` has the new call in the correct place, but your existing file must copy it manually:
+
+```c
+/* Draw the player's local darkness/spotlight (if enabled). */
+gameworlds_spotlight_frame(VIEW_W, GAME_PLAY_H);
+
+/* Stage 5.152 world weather, before gamehud / adventure dialogue. */
+gameworlds_weather_frame(VIEW_W, GAME_PLAY_H);
+
+/* Draw HUD and adventure/dialogue AFTER weather. */
+```
+
+The new world weather is advanced by your existing **once-per-active-50-Hz-frame** call to `gameworlds_update(1)`. **Do not add a second update call** if your game already has one. If your user-maintained `main.c` doesn't call it, add one in the ordinary unpaused update block.
+
+**Exported game headers:** `gamehelpers/gameworlds.h` declares the weather function. The editor's generated `maingame.c.txt` is updated, but it does not modify your own `main.c`.
+
+After installing the drop-in:
+
+1. Rebuild/relaunch CoderGirl.
+2. Open the chosen world; configure weather under World Entry Point; save the `.sbgm`.
+3. Choose **Update Game Project** so the world registry contains that world's weather settings and its generated helper sources are refreshed.
+4. Add the one-line render call in your user-owned `main.c` if not already present. Check that `gameworlds_update(1)` is already there.
+5. Rebuild and upload your SIDBOX game.
+
+## Test coverage / caveats
+
+- Stage 5.152 native host GCC harness checks clean, rainy, snowy and stormy worlds, initial population, brief double flash and switching world settings.
+- Stage 5.146–5.151 regression tests are included and pass with the new build version.
+- Qt6 GUI compilation, and the actual STM32H743 screen and 50-Hz performance, still need testing on your hardware.
+- Flash is a **patterned overlay** in the configured palette colour, not a true hardware brightness change or sky bolt; there is no thunder sound in this stage.
+- The weather is always drawn across the camera view; FRONT tiles do not occlude it. Existing Game Object particle spawners retain their own FRONT/behind-player handling.

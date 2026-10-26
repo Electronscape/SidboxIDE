@@ -18,6 +18,10 @@ void gameworlditems_restore_state(void);
 void gameworlditems_remote_action(uint16_t index, uint8_t state);
 void gameworlditems_remote_reset(void);
 void gameworlditems_apply_remote(void);
+/* Use these separately to pause gameplay but keep ambient particles moving.
+ * Do not mix separate calls and the combined update in the same frame. */
+void gameworlditems_update_gameplay(uint16_t frames);
+void gameworlditems_update_particles(uint16_t frames);
 void gameworlditems_update(uint16_t frames);
 void gameworlditems_draw(int32_t camera_x, int32_t camera_y);
 void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y);
@@ -60,6 +64,10 @@ void gameworlditems_restore_state(void);
 void gameworlditems_remote_action(uint16_t index, uint8_t state);
 void gameworlditems_remote_reset(void);
 void gameworlditems_apply_remote(void);
+/* Use these separately to pause gameplay but keep ambient particles moving.
+ * Do not mix separate calls and the combined update in the same frame. */
+void gameworlditems_update_gameplay(uint16_t frames);
+void gameworlditems_update_particles(uint16_t frames);
 void gameworlditems_update(uint16_t frames);
 void gameworlditems_draw(int32_t cx, int32_t cy);
 void gameworlditems_draw_overlay(int32_t cx, int32_t cy);

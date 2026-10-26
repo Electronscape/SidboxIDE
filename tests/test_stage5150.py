@@ -18,7 +18,7 @@ assert 'if (newlyCreated && r.particlePrepopulate)' in editor
 assert 'const int warmFrames = qMin(lifetime - 1, limit * interval);' in editor
 assert 'for (int frame = 0; frame < warmFrames; ++frame) stepParticles();' in editor
 assert 'old.prepopulate != r.particlePrepopulate' in editor
-assert 'Build: 5.151.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
 
 start=rule.index('@IDE_IF{HAS_PARTICLE_EMITTERS}\n')
 end=rule.index('@IDE_END\n',start)

@@ -1,59 +1,35 @@
-# CoderGirl IDE Stage 5.151.261026: Swirling Fireflies ✨
+# CoderGirl IDE Stage 5.158.261026
 
-## New Particle Spawner movement mode
+## Player Start / World Entry Point: friendly timing sliders
 
-Game Designer → select a **Particle Spawner** → **Game Object Properties** → **Scenery Particle Spawner** → **Particle behaviour**:
+This stage changes **four frame-count spin boxes** into horizontal **draggable sliders**, each with a live readout showing seconds and underlying 50 Hz frames:
 
-- **Falling leaves** (unchanged)
-- **Drifting clouds** (unchanged)
-- **Floating dust / motes** (unchanged)
-- **Swirling fireflies** (new)
+| Player Start section | Control | Range | Keyboard arrow step |
+| --- | --- | --- | --- |
+| Weather | Lightning average interval | 100–2000 frames (2–40 seconds) | 25 frames (0.5 s) |
+| Day & Night / Palette Tint | Day duration | 50–30000 frames (1–600 seconds) | 50 frames (1 s) |
+| Day & Night / Palette Tint | Night duration | 50–30000 frames (1–600 seconds) | 50 frames (1 s) |
+| Day & Night / Palette Tint | Dusk / dawn duration | 25–10000 frames (0.5–200 seconds) | 25 frames (0.5 s) |
 
-When you choose the new preset, the controls are initialized for gentle, free-floating fireflies:
+The tooltip and current readout are visible while editing. Drag a slider, use the keyboard arrow keys for smaller adjustments or Page Up/Down for larger adjustments. Inactive controls, including readouts, are dimmed when the applicable weather or day/night mode is off.
 
-| Property | Firefly default |
-| --- | ---: |
-| Wind X | 2 |
-| Drift Y | -1 |
-| Gravity | 0 |
-| Flutter | 0 (orbital movement replaces flutter) |
-| Lifetime | 500 frames |
-| Max active particles | 20 (you may increase to 32) |
-| Birth interval | 12 frames |
-| **Swirl radius** | 24 pixels |
-| **Swirl speed** | 2 |
+### Compatibility
 
-The **Swirl radius** and **Swirl speed** controls only appear when **Swirling fireflies** is selected. Each particle has its own random starting phase and varied orbit radius, from roughly half to the full configured radius. The orbit centre still drifts with Wind X and Drift Y, and Gravity remains available if desired. Speed 1 is about 5.12 s per orbit at 50 Hz; speed 2 about 2.56 s; speed 4 about 1.28 s. Existing fade in/out is compatible. Selecting the firefly preset enables the fade checkbox for a soft entry/exit; you can turn it off.
+The sliders preserve the **exact integer frame count** of previously saved `.sbgm` designs. Saved field names, ranges, defaults, exported C code and timing calculations are **unchanged**. The UI no longer requires users to type those four values into small number boxes.
 
-## Live preview and runtime
+## Installation
 
-- All spawners animate in the **World Canvas**, not just the selected one.
-- The little **Game Object Properties** preview also updates while adjusting swirl radius and speed.
-- **Pre-populate on world load** works with fireflies, so the scene starts already alive when enabled.
-- Each emitter still has a fixed 32-particle pool. No heap allocations or per-frame floating-point trigonometry: firmware uses a small 64-value signed sine lookup.
-- Fireflies respect fade, behind-tile draw order, optional over-player particle split and map FRONT cells.
-- Saved `.sbgm` worlds store the firefly preset, swirl radius and swirl speed; older worlds default to their previous modes.
-- The user-owned `main.c` does **not** require any new code. Its existing world drawing and overlay calls are reused.
+1. Make a backup of the current CoderGirl source before replacing files.
+2. Extract `CoderGirl-Stage5.158-261026-DROPIN.zip` into the CoderGirl IDE source folder over Stage 5.157, preserving file paths.
+3. Rebuild and launch CoderGirl on Fedora.
+4. Open **Game Designer → Player Start / World Entry Point** and expand **Weather** or **Day & Night / Palette Tint**.
+5. Tune the durations using their sliders, then save the world.
+6. When a duration has been changed and you want to update SIDBOX, use **Save Design → Update Game Project**, then rebuild/upload the game normally.
 
-### A visual tip
+This stage is **IDE-only**, with no additional `main.c` integration or game runtime changes. You don't need a new SIDBOX build merely to install the sliders.
 
-Use a tiny bright PPB sprite (for example a small pale-yellow dot or a 2–4 pixel glow). Larger sprites work but will make the fireflies look like floating lanterns! The runtime draws the chosen sprite; it does not create light sources or cast dynamic illumination.
+## Testing
 
-## Install
-
-Unpack the Stage 5.151 drop-in **over Stage 5.150**, retaining the paths, or use the complete source archive.
-
-1. Rebuild CoderGirl Qt6.
-2. Open the world and choose **Swirling fireflies** for a Particle Spawner.
-3. Set radius/speed and watch the live preview; optionally enable **Pre-populate**.
-4. **Save Design → Update Game Project → rebuild and upload your SIDBOX game**.
-
-No `main.c` edits or firmware changes required.
-
-## Changed files
-
-`gamedesigner.cpp`, `gamedesigner.h`, `gamedesigner_project.cpp`, `gamedesigner_export.cpp`, `idelibs/codehelpers/game/gameworlditems.rulec`, `splashscreenwidget.cpp`, plus regression fixtures and Stage 5.151 native test.
-
-## Verification
-
-Native GCC tests pass with `-Wall -Wextra -Werror` for the orbit period, legacy leaf physics, save/load/export fields and matching Qt/runtime movement tables. Previous native particle regressions pass after updating their emitter fixture records to include the new fields. The graphical Qt6 build and real SIDBOX 50 Hz performance still need your Fedora/SIDBOX test.
+- All 13 focused Python and native-GCC regression suites pass (the Stage 5.146 through 5.158 tests).
+- New regression checks verify four sliders, original bounds, live seconds/frame readout, accessible names, saved field compatibility and correct disabled-state behaviour.
+- **Qt6 GUI build was unavailable in this environment**, so the final graphical build and drag interaction need testing on Fedora.
