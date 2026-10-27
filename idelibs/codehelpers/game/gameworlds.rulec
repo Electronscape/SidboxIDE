@@ -33,6 +33,7 @@ typedef struct {
     uint8_t circle_origin; /* 0 screen centre; 1 transition location */
 } gameworlds_named_spawn_t;
 
+typedef struct { uint16_t slot; uint8_t npc, action; } gw_time_action_t;
 @IDE{WORLD_DECLARATIONS}
 
 typedef struct {
@@ -112,6 +113,8 @@ typedef struct {
     uint8_t (*object_disk_import)(uint8_t (*)(void *, uint32_t, void *), void *);
     void (*story_disk_export)(void (*)(const void *, uint32_t, void *), void *);
     uint8_t (*story_disk_import)(uint8_t (*)(void *, uint32_t, void *), void *);
+    const gw_time_action_t *day_actions, *night_actions;
+    uint16_t day_action_count, night_action_count;
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -122,6 +125,13 @@ static const gameworlds_record_t worlds[] = {
 /* Project-wide quest declarations generated from .codergirl/quests.json. */
 @IDE{QUEST_DATA}
 static uint8_t gw_quest_status[64]; /* 0 hidden/locked, 1 active, 2 complete, 3 excluded, 4 offered but waiting prerequisite */
+/* Lightweight journal notification state. Not part of the save ABI. The
+ * first refresh after a fresh game/load is a baseline, not a gameplay event. */
+static uint8_t gw_quest_notice_known[64];
+static uint16_t gw_quest_notice_steps[64];
+static uint8_t gw_quest_notice_ready,gw_quest_notice_kind;
+static uint16_t gw_quest_notice_index;
+static uint32_t gw_quest_notice_revision;
 static uint16_t gw_quest_step[64];
 static uint8_t gw_quest_tracked=255u, gw_quest_ready;
 static void gw_quest_refresh(void);
@@ -146,6 +156,8 @@ static int32_t pending_exit_x, pending_exit_y;
 static uint8_t pending_has_exit;
 static uint8_t saved_player_is_valid; /* Never restore zeroed state on first start. */
 static uint8_t save_checkpoint_pending; /* slot+1, processed at frame boundary */
+static uint8_t pending_reload_slot; /* Slot+1 for deferred in-game defeat recovery. */
+static uint8_t gw_last_save_slot=255u;
 static uint8_t pending_title_load_slot; /* slot+1; preserves owner-maintained main.c */
 static uint8_t save_checkpoint_status;
 static char saved_world_id[64];
@@ -289,14 +301,16 @@ static void weather_enter(const gameworlds_record_t *world)
         ((uint32_t)world->start_y * 0x85ebca6bu));
     weather_flash_delay = weather_interval;
 }
+static void gw_time_refresh(void);
 static void weather_update(uint16_t frames)
 {
     if (!active_world) return;
     if (day_night_mode == 2u) {
         const uint32_t cycle = (uint32_t)day_night_day_frames + day_night_night_frames +
             (uint32_t)day_night_fade_frames * 2u;
-        day_night_tick = (day_night_tick + frames) % cycle;
+        if(cycle)day_night_tick = (day_night_tick + frames) % cycle;
     }
+    gw_time_refresh();
     if (!weather_mode) return;
     for (uint16_t f = 0; f < frames; ++f) {
         ++weather_frame_tick; /* 32-bit clock: no visible restart every 5 minutes. */
@@ -531,6 +545,34 @@ static const uint8_t spotlight_bayer4[4][4] = {
 
 /* Restore the clock for this world only; inactive worlds do not advance.
  * No change to the generated per-world record layout or saved project JSON. */
+/* A phase is DAY until full night begins; dawn becomes DAY when its
+ * transition completes. Exactly one callback batch per boundary. */
+static uint8_t gw_time_phase=255u;
+static uint8_t gw_time_current_phase(void)
+{
+    if(day_night_mode==1u)return 1u; /* Fixed tint is deliberately NIGHT. */
+    if(day_night_mode!=2u)return 0u;
+    const uint32_t night_start=(uint32_t)day_night_day_frames+day_night_fade_frames;
+    return day_night_tick>=night_start?1u:0u;
+}
+static void gw_time_dispatch(uint8_t phase)
+{
+    if(!active_world)return;
+    const gw_time_action_t *actions=phase?active_world->night_actions:active_world->day_actions;
+    uint16_t count=phase?active_world->night_action_count:active_world->day_action_count;
+    if(!actions)return;
+    for(uint16_t i=0;i<count;++i){
+        const gw_time_action_t *a=&actions[i];
+        if(a->npc){if(active_world->npc_set_active)active_world->npc_set_active(a->slot,a->action);}
+        else if(active_world->object_set_active)active_world->object_set_active(a->slot,a->action);
+    }
+}
+static void gw_time_refresh(void)
+{
+    if(!active_world || !day_night_mode)return;
+    const uint8_t phase=gw_time_current_phase();
+    if(phase!=gw_time_phase){gw_time_phase=phase;gw_time_dispatch(phase);}
+}
 static void day_night_save_active(void)
 {
     if (!active_world || day_night_mode != 2u) return;
@@ -1184,6 +1226,7 @@ static void gw_quest_reset(void)
     memset(gw_quest_status,0,sizeof(gw_quest_status));
     memset(gw_quest_step,0,sizeof(gw_quest_step));
     gw_quest_tracked=255u;gw_quest_ready=0u;
+    gw_quest_notice_ready=0u;gw_quest_notice_kind=0u;gw_quest_notice_revision=0u;
 }
 static void gw_quest_unlock(void)
 {
@@ -1201,6 +1244,39 @@ static void gw_quest_unlock(void)
         if (prerequisite<0 || gw_quest_status[prerequisite]==2u)
             gw_quest_status[i]=1u;
     }
+}
+static void gw_quest_notice_refresh(void)
+{
+    if (!gw_quest_notice_ready) {
+        memcpy(gw_quest_notice_known,gw_quest_status,sizeof(gw_quest_notice_known));
+        memcpy(gw_quest_notice_steps,gw_quest_step,sizeof(gw_quest_notice_steps));
+        gw_quest_notice_ready=1u;
+        return;
+    }
+    for(uint16_t i=0u;i<GW_QUEST_COUNT;++i) {
+        const uint8_t before=gw_quest_notice_known[i],now=gw_quest_status[i];
+        const uint16_t old_step=gw_quest_notice_steps[i],step=gw_quest_step[i];
+        if(now!=before || step!=old_step) {
+            /* A branch becoming excluded/locked is not a player notification.
+             * Repeated refreshes produce no new event. */
+            const uint8_t kind=now==2u?3u:(step>old_step?2u:
+                                ((now==1u || now==4u) && before!=now?1u:0u));
+            if(kind) {
+                gw_quest_notice_index=i;
+                gw_quest_notice_kind=kind;
+                ++gw_quest_notice_revision;
+                if(!gw_quest_notice_revision)++gw_quest_notice_revision;
+            }
+        }
+        gw_quest_notice_known[i]=now;
+        gw_quest_notice_steps[i]=step;
+    }
+}
+uint8_t gameworlds_quest_notice(uint16_t *quest_index,uint32_t *revision)
+{
+    if(quest_index)*quest_index=gw_quest_notice_index;
+    if(revision)*revision=gw_quest_notice_revision;
+    return gw_quest_notice_kind;
 }
 static void gw_quest_refresh(void)
 {
@@ -1235,6 +1311,7 @@ static void gw_quest_refresh(void)
     if (gw_quest_tracked==255u)
         for(uint16_t i=0;i<GW_QUEST_COUNT;++i)
             if(gw_quest_status[i]==1u) {gw_quest_tracked=(uint8_t)i;break;}
+    gw_quest_notice_refresh();
 }
 /* Triggered when the player REACHES an authored dialogue node. Repeated
  * visits must not reset a completed or already accepted quest. */
@@ -1436,6 +1513,8 @@ static uint8_t activate(const gameworlds_record_t *world)
     const size_t spot_index = (size_t)(world - worlds);
     weather_enter(world);
     day_night_restore_world(world);
+    gw_time_phase=255u;
+    gw_time_refresh();
     spotlight_enabled = spot_index < WORLD_COUNT && spotlight_override_valid[spot_index]
         ? spotlight_override_value[spot_index] : world->spotlight_enabled;
     spotlight_radius = world->spotlight_radius;
@@ -1718,6 +1797,7 @@ static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
         gw_quest_reset();
         if (version>=2u) {
             memcpy(gw_quest_status,questData.status,sizeof(gw_quest_status));
+            gw_quest_notice_ready=0u;gw_quest_notice_kind=0u;gw_quest_notice_revision=0u;
             memcpy(gw_quest_step,questData.step,sizeof(gw_quest_step));
             gw_quest_tracked=questData.tracked;
             gw_quest_ready=1u;
@@ -1864,6 +1944,7 @@ uint8_t gameworlds_save_slot(uint8_t slot)
         if (sfclose(0)!=FR_OK) ok=0;
     }
     free(stream.bytes);
+    if(ok)gw_last_save_slot=slot;
     return ok;
 }
 uint8_t gameworlds_load_slot(uint8_t slot)
@@ -1874,7 +1955,16 @@ uint8_t gameworlds_load_slot(uint8_t slot)
     const uint8_t ok=gw_save_decode(bytes,header.length,0,0,header.version) &&
                      gw_save_decode(bytes,header.length,1,0,header.version);
     free(bytes);
+    if(ok)gw_last_save_slot=slot;
     return ok;
+}
+uint8_t gameworlds_last_saved_slot(void){return gw_last_save_slot;}
+uint8_t gameworlds_reload_request(uint8_t slot)
+{
+    if(!active_world || applying || slot>=GW_SAVE_SLOT_COUNT ||
+       !gameworlds_slot_exists(slot))return 0u;
+    pending_reload_slot=(uint8_t)(slot+1u);
+    return 1u;
 }
 const char *gameworlds_saved_world(void)
 { return saved_position_valid ? saved_world_id : 0; }
@@ -1984,6 +2074,19 @@ uint8_t gameworlds_request(const char *name)
 { return gameworlds_request_at(name, "default"); }
 uint8_t gameworlds_apply_pending(void)
 {
+    /* Recover at the safe world boundary. Never load a save from an
+     * Adventure input/draw callback or while world assets are still in use.
+     * The slot was validated when the player chose it. */
+    if(pending_reload_slot){
+        const uint8_t slot=(uint8_t)(pending_reload_slot-1u);
+        pending_reload_slot=0u;
+        pending_world=0;
+        if(active_world)unload_active();
+        saved_position_valid=0u;
+        if(!gameworlds_load_slot(slot))return 0u;
+        const char *saved=gameworlds_saved_world();
+        return saved && gameworlds_start(saved);
+    }
     if (pending_title_load_slot) {
         const uint8_t slot=(uint8_t)(pending_title_load_slot-1u);
         pending_title_load_slot=0u;
@@ -2066,6 +2169,7 @@ void gameworlds_shutdown(void)
     saved_position_valid=0;
     save_checkpoint_pending=0;
     pending_title_load_slot=0;
+    pending_reload_slot=0;
     strcpy(active_spawn_id, "default");
     strcpy(pending_spawn_id, "default");
 @IDE_IF{HAS_SHARED_PLAYER}

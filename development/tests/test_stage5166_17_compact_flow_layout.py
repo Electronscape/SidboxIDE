@@ -7,7 +7,7 @@ from pathlib import Path
 from math import ceil
 root=Path(__file__).resolve().parents[2]
 s=(root/'gamefloweditor.cpp').read_text()
-assert 'Build: 5.166.17.271026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.17.1.271026' in (root/'splashscreenwidget.cpp').read_text()
 assert 'constexpr qreal columnGap=40.0' in s
 assert 'constexpr qreal rowGap=16.0' in s
 assert 'constexpr qreal componentGap=40.0' in s

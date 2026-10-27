@@ -7,7 +7,7 @@ from pathlib import Path
 from collections import deque
 root=Path(__file__).resolve().parents[2]
 s=(root/'gamefloweditor.cpp').read_text()
-assert 'Build: 5.166.17.271026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.17.1.271026' in (root/'splashscreenwidget.cpp').read_text()
 
 assert 'Clean Logic Flow layout?' in s and 'QMessageBox::Cancel' in s
 assert 'rememberLayout();' in s and 'undoHistory.append(layout)' in s

@@ -2171,6 +2171,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     auto *worldSelect=new QComboBox(&dialog);
     worldSelect->setMinimumWidth(160);
     auto *questView=new QPushButton(QObject::tr("Quest Lines"),&dialog);
+    auto *questDebugger=new QPushButton(QObject::tr("Quest Debugger"),&dialog);
+    questDebugger->setToolTip(QObject::tr("Audit authored quests and show quest-related Logic Flow warnings without changing game data."));
     questView->setToolTip(QObject::tr("Show project-wide quests, their objectives and their event links."));
     auto *search=new QLineEdit(&dialog);
     search->setPlaceholderText(QObject::tr("Find object, NPC, dialogue, stat..."));
@@ -2200,6 +2202,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     tools->addWidget(new QLabel(QObject::tr("World:"),&dialog));
     tools->addWidget(worldSelect);
     tools->addWidget(questView);
+    tools->addWidget(questDebugger);
     tools->addWidget(search,1);
     tools->addWidget(connectionsOnly);
     tools->addWidget(greenLinks);
@@ -2859,6 +2862,10 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 sub->setAllowLeaveParent(true);
                                 const QSizeF nestedSize=flowArrayGroupSize(inner,graph,layout);
                                 const qreal nestedW=nestedSize.width(),nestedH=nestedSize.height();
+                                // flowArrayGroupSize() returns 2*cellWidth + 54 for
+                                // expanded arrays. Derive mini-card spacing from
+                                // that SAME measured frame, including wide triggers.
+                                const qreal nestedCellWidth=(nestedW-54.0)/2.0;
                                 sub->setRect(0,0,nestedW,nestedH);
                                 sub->setPos(miniPositions.value(embeddedId));
                                 sub->setZValue(3);
@@ -3299,6 +3306,99 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QObject::connect(questView,&QPushButton::clicked,&dialog,[&]() {
         const int index=worldSelect->findData(QStringLiteral("@project-quests"));
         if(index>=0)worldSelect->setCurrentIndex(index);
+    });
+    QObject::connect(questDebugger,&QPushButton::clicked,&dialog,[&]() {
+        /* Design-time only. Reuse the exact graph/diagnostics the user sees
+         * in Logic Flow; do not invent a second parser or mutate quest JSON. */
+        QFile file(QDir(projectRoot).filePath(QStringLiteral(".codergirl/quests.json")));
+        QStringList lines;
+        int questCount=0,objectiveCount=0,hiddenCount=0;
+        if(!file.exists()) {
+            lines<<QObject::tr("No project quests have been authored yet.");
+        } else if(!file.open(QIODevice::ReadOnly)) {
+            lines<<QObject::tr("ERROR: Cannot read project quests.json.");
+        } else {
+            QJsonParseError error;
+            const QJsonDocument doc=QJsonDocument::fromJson(file.readAll(),&error);
+            if(error.error!=QJsonParseError::NoError || !doc.isObject() ||
+               doc.object().value(QStringLiteral("version")).toInt()!=1 ||
+               !doc.object().value(QStringLiteral("quests")).isArray()) {
+                lines<<QObject::tr("ERROR: Invalid project quests.json format.");
+            } else {
+                const QJsonArray quests=doc.object().value(QStringLiteral("quests")).toArray();
+                questCount=quests.size();
+                QSet<QString> ids;
+                for(const QJsonValue &item:quests)
+                    ids.insert(item.toObject().value(QStringLiteral("id")).toString());
+                for(const QJsonValue &item:quests) {
+                    const QJsonObject q=item.toObject();
+                    const QString id=q.value(QStringLiteral("id")).toString();
+                    const QString name=q.value(QStringLiteral("title")).toString();
+                    const QJsonArray steps=q.value(QStringLiteral("objectives")).toArray();
+                    objectiveCount+=steps.size();
+                    const bool hidden=q.value(QStringLiteral("initiallyHidden")).toBool(false);
+                    if(hidden)++hiddenCount;
+                    lines<<QStringLiteral("%1  [%2] (%3 objectives)%4")
+                        .arg(name,id).arg(steps.size())
+                        .arg(hidden?QStringLiteral("  [Initially hidden]"):QString());
+                    if(steps.isEmpty())
+                        lines<<QStringLiteral("  WARNING: No objectives authored.");
+                    for(const char *field:{"requires","excludes"}) {
+                        const QString ref=q.value(QLatin1String(field)).toString();
+                        if(!ref.isEmpty() && !ids.contains(ref))
+                            lines<<QStringLiteral("  ERROR: %1 references missing quest '%2'.")
+                                .arg(QLatin1String(field),ref);
+                    }
+                    for(const QJsonValue &value:steps) {
+                        const QJsonObject o=value.toObject();
+                        const QString title=o.value(QStringLiteral("title")).toString();
+                        const QString kind=o.value(QStringLiteral("kind")).toString();
+                        const QString target=o.value(QStringLiteral("target")).toString();
+                        lines<<QStringLiteral("    • %1  [%2: %3]").arg(title,kind,target);
+                        if(target.trimmed().isEmpty())
+                            lines<<QStringLiteral("      ERROR: Objective target is empty.");
+                    }
+                    if(hidden)lines<<QObject::tr("  CHECK: Confirm a dialogue node explicitly enables this hidden quest.");
+                    lines<<QString();
+                }
+            }
+        }
+        const QStringList warnings=[&]() {
+            QStringList result;
+            for(const QString &warning:graph.diagnostics)
+                if(warning.contains(QStringLiteral("quest"),Qt::CaseInsensitive) ||
+                   warning.contains(QStringLiteral("objective"),Qt::CaseInsensitive) ||
+                   warning.contains(QStringLiteral("dialogue"),Qt::CaseInsensitive))
+                    result<<warning;
+            return result;
+        }();
+        lines.prepend(QObject::tr("Quests: %1    Objectives: %2    Initially hidden: %3")
+                      .arg(questCount).arg(objectiveCount).arg(hiddenCount));
+        lines.prepend(QObject::tr("QUEST DEBUGGER - AUTHORING AUDIT"));
+        lines<<QObject::tr("LOGIC FLOW DIAGNOSTICS: %1").arg(warnings.size());
+        if(warnings.isEmpty())lines<<QObject::tr("No quest-related link problems detected by Logic Flow.");
+        else lines.append(warnings);
+        lines<<QString()<<QObject::tr("This is a design-time audit, not a simulation of saved game progress.");
+        QDialog audit(&dialog);
+        audit.setWindowTitle(QObject::tr("Quest Debugger - Logic Flow"));
+        audit.resize(750,560);
+        auto *vertical=new QVBoxLayout(&audit);
+        auto *report=new QPlainTextEdit(&audit);
+        report->setReadOnly(true);
+        report->setPlainText(lines.join(QLatin1Char('\n')));
+        vertical->addWidget(report,1);
+        auto *goToQuests=new QPushButton(QObject::tr("Show Quest Lines"),&audit);
+        auto *done=new QPushButton(QObject::tr("Close"),&audit);
+        auto *buttons=new QHBoxLayout();
+        buttons->addWidget(goToQuests);buttons->addStretch(1);buttons->addWidget(done);
+        vertical->addLayout(buttons);
+        QObject::connect(goToQuests,&QPushButton::clicked,&audit,[&]() {
+            const int index=worldSelect->findData(QStringLiteral("@project-quests"));
+            if(index>=0)worldSelect->setCurrentIndex(index);
+            audit.accept();
+        });
+        QObject::connect(done,&QPushButton::clicked,&audit,&QDialog::accept);
+        audit.exec();
     });
     QObject::connect(worldSelect,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int){
         viewSaveTimer.stop();

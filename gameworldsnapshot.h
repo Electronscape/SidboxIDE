@@ -360,6 +360,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList defaultWeatherSuspendSpotlight;
     QStringList defaultDayNightMode, defaultDayNightColour, defaultDayNightStrength;
     QStringList defaultDayNightDayFrames, defaultDayNightNightFrames, defaultDayNightFadeFrames, defaultDayNightStartNight;
+    QStringList timeEventData, timeDayPtrs, timeNightPtrs, timeDayCounts, timeNightCounts;
     QStringList frontPaletteFns, backPaletteFns;
     bool anyAdventure = false, anyWorldPhysics = false, anyPickups = false;
     for (const QString &name : names) {
@@ -462,6 +463,53 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         defaultDayNightFadeFrames << QString::number(qBound(25, dayNight.value(QStringLiteral("fadeFrames")).toInt(500), 10000));
         defaultDayNightStartNight << (dayNight.value(QStringLiteral("startAtNight")).toBool(false)
             ? QStringLiteral("1") : QStringLiteral("0"));
+        // Resolve stable resource IDs to the *actual generated per-world slots*.
+        // This mirrors Game Designer's exported worldObjects ordering.
+        QHash<QString,int> objectSlots, npcSlots;
+        int objectSlot=0;
+        for(const QJsonValue &v:design.value(QStringLiteral("resources")).toArray()) {
+            const QJsonObject resource=v.toObject();
+            if(resource.value(QStringLiteral("kind")).toString()!=QStringLiteral("sprite"))continue;
+            const QString type=resource.value(QStringLiteral("gameObject")).toObject()
+                .value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
+            if(type!=QStringLiteral("decoration") && type!=QStringLiteral("collectable"))
+                objectSlots.insert(resource.value(QStringLiteral("id")).toString(),objectSlot++);
+        }
+        const QJsonArray npcs=design.value(QStringLiteral("adventure")).toObject()
+            .value(QStringLiteral("npcs")).toArray();
+        for(int n=0;n<npcs.size();++n)
+            npcSlots.insert(npcs[n].toObject().value(QStringLiteral("spriteId")).toString(),n);
+        auto compileTimeActions=[&](const QJsonArray &list,const QString &suffix,
+                                    QStringList &pointers,QStringList &counts)->bool {
+            QStringList rows;
+            for(const QJsonValue &v:list) {
+                const QJsonObject a=v.toObject();
+                const QString target=a.value(QStringLiteral("target")).toString();
+                const bool npc=target.startsWith(QStringLiteral("npc:"));
+                const QString id=target.mid(npc?4:7);
+                // Qt defines `slots` as a keyword macro. Never use it as a
+                // local identifier in a Qt translation unit.
+                const auto &resolvedSlots=npc?npcSlots:objectSlots;
+                if(!(npc||target.startsWith(QStringLiteral("object:")))||!resolvedSlots.contains(id)) {
+                    if(error)*error=QStringLiteral("Day/night %1 action targets a missing %2 in world %3. Edit World Settings.")
+                        .arg(suffix,target,name);
+                    return false;
+                }
+                const int action=qBound(0,a.value(QStringLiteral("action")).toInt(1),2);
+                rows<<QStringLiteral("{%1u,%2u,%3u}").arg(resolvedSlots.value(id)).arg(npc?1:0).arg(action);
+            }
+            if(rows.isEmpty()){pointers<<QStringLiteral("0");counts<<QStringLiteral("0");return true;}
+            const QString symbol=QStringLiteral("gw_time_%1_%2").arg(name,suffix);
+            timeEventData<<QStringLiteral("static const gw_time_action_t %1[] = {%2};")
+                .arg(symbol,rows.join(QLatin1Char(',')));
+            pointers<<symbol;
+            counts<<QString::number(rows.size());
+            return true;
+        };
+        if(!compileTimeActions(dayNight.value(QStringLiteral("dayActions")).toArray(),
+                               QStringLiteral("day"),timeDayPtrs,timeDayCounts) ||
+           !compileTimeActions(dayNight.value(QStringLiteral("nightActions")).toArray(),
+                               QStringLiteral("night"),timeNightPtrs,timeNightCounts))return false;
         int spawnX = start.value(QStringLiteral("x")).toInt(0);
         int spawnY = start.value(QStringLiteral("y")).toInt(0);
         if (start.isEmpty()) { // Backwards compatible with pre-5.4 player placement.
@@ -622,6 +670,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         entry += QStringLiteral(", %1").arg(defaultWeatherCurve.at(i));
         entry += QStringLiteral(", %1_gameworlditems_disk_export, %1_gameworlditems_disk_import, "
                                 "%1_gameadventure_disk_export, %1_gameadventure_disk_import").arg(id);
+        entry += QStringLiteral(", %1, %2, %3, %4")
+            .arg(timeDayPtrs.at(i),timeNightPtrs.at(i),timeDayCounts.at(i),timeNightCounts.at(i));
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to
@@ -650,7 +700,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     }
     QByteArray generated = source.readAll();
     generated.replace("@IDE{WORLD_DECLARATIONS}",
-        (declarations + spawnDeclarations).join(QLatin1Char('\n')).toUtf8());
+        (declarations + spawnDeclarations + timeEventData).join(QLatin1Char('\n')).toUtf8());
     generated.replace("@IDE{WORLD_RECORDS}", ordered.join(QStringLiteral(",\n")).toUtf8());
     /* Stable per-project TFCard namespace. Do not use randomised qHash(). */
     uint32_t saveKey=2166136261u;

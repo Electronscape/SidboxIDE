@@ -310,6 +310,82 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         fields.insert(QStringLiteral("QUEST_ICON_MODES"),questIconModes.join(QLatin1Char(',')));
         fields.insert(QStringLiteral("QUEST_ICON_PARTS"),questIconParts.join(QLatin1Char(',')));
     }
+    /* Defeat Screen: project-wide authored UI. Legacy projects default OFF.
+     * The actual recovery is queued and applied by gameworlds, not UI input. */
+    {
+        QJsonObject defeat;
+        const QString fileName=QDir(projectRoot).filePath(QStringLiteral(".codergirl/defeat-screen.json"));
+        QFile file(fileName);
+        if(file.exists()){
+            if(!file.open(QIODevice::ReadOnly)){
+                if(error)*error=QStringLiteral("Cannot read Defeat Screen settings: %1").arg(fileName);
+                return false;
+            }
+            const QJsonDocument doc=QJsonDocument::fromJson(file.readAll());
+            if(!doc.isObject()||doc.object().value(QStringLiteral("version")).toInt()!=1){
+                if(error)*error=QStringLiteral("Invalid Defeat Screen settings: %1").arg(fileName);
+                return false;
+            }
+            defeat=doc.object();
+        }
+        fields.insert(QStringLiteral("DEFEAT_ENABLED"),defeat.value(QStringLiteral("enabled")).toBool(false)?QStringLiteral("1"):QStringLiteral("0"));
+        fields.insert(QStringLiteral("DEFEAT_TITLE"),quoted(defeat.value(QStringLiteral("title")).toString(QStringLiteral("YOU ARE DEAD")).left(40)));
+        fields.insert(QStringLiteral("DEFEAT_SUBTITLE"),quoted(defeat.value(QStringLiteral("subtitle")).toString(QStringLiteral("Choose a save to retry")).left(50)));
+        const struct {const char *token,*key;int defaultValue,lo,hi;} options[]={
+            {"DEFEAT_BG","background",2,0,255},
+            {"DEFEAT_BORDER","border",15,0,255},
+            {"DEFEAT_TEXT","text",15,0,255},
+            {"DEFEAT_ACCENT","accent",14,0,255},
+            {"DEFEAT_X","titleX",50,8,400},
+            {"DEFEAT_Y","titleY",45,16,72}};
+        for(const auto &option:options)
+            fields.insert(QLatin1String(option.token),QString::number(std::clamp(
+                defeat.value(QLatin1String(option.key)).toInt(option.defaultValue),
+                option.lo,option.hi)));
+    }
+    /* Stage 5.166.19 schematic World Map. All point IDs are world names;
+     * the map artwork is deliberately independent of per-world tilemaps. */
+    {
+        QJsonObject map;
+        const QString fileName=QDir(projectRoot).filePath(QStringLiteral(".codergirl/world-map.json"));
+        QFile file(fileName);
+        if(file.exists()){
+            if(!file.open(QIODevice::ReadOnly)){
+                if(error)*error=QStringLiteral("Cannot read World Map settings: %1").arg(fileName);
+                return false;
+            }
+            const QJsonDocument doc=QJsonDocument::fromJson(file.readAll());
+            if(!doc.isObject()||doc.object().value(QStringLiteral("version")).toInt()!=1){
+                if(error)*error=QStringLiteral("Invalid World Map settings: %1").arg(fileName);
+                return false;
+            }
+            map=doc.object();
+        }
+        const int mapW=std::clamp(map.value(QStringLiteral("width")).toInt(1024),480,4096);
+        const int mapH=std::clamp(map.value(QStringLiteral("height")).toInt(768),320,4096);
+        fields.insert(QStringLiteral("WORLD_MAP_WIDTH"),QString::number(mapW));
+        fields.insert(QStringLiteral("WORLD_MAP_HEIGHT"),QString::number(mapH));
+        QStringList rows;
+        const QJsonArray points=map.value(QStringLiteral("points")).toArray();
+        if(points.size()>64){if(error)*error=QStringLiteral("World Map supports at most 64 world markers.");return false;}
+        QSet<QString> names;
+        for(const QJsonValue &v:points){
+            const QJsonObject point=v.toObject();
+            const QString name=point.value(QStringLiteral("name")).toString();
+            if(name.isEmpty()||names.contains(name)||name.size()>48){
+                if(error)*error=QStringLiteral("World Map has an empty, duplicate or excessive world name: %1").arg(name);
+                return false;
+            }
+            names.insert(name);
+            rows<<QStringLiteral("{%1,%2,%3}")
+                .arg(std::clamp(point.value(QStringLiteral("x")).toInt(),0,mapW-16))
+                .arg(std::clamp(point.value(QStringLiteral("y")).toInt(),0,mapH-16))
+                .arg(quoted(name));
+        }
+        fields.insert(QStringLiteral("WORLD_MAP_COUNT"),QString::number(rows.size()));
+        fields.insert(QStringLiteral("WORLD_MAP_POINTS"),rows.isEmpty()
+            ?QStringLiteral("{0,0,0}"):rows.join(QLatin1Char(',')));
+    }
     fields.insert(QStringLiteral("HAS_DROP_TILEMAP"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.h")))
         && QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.c")))
@@ -976,6 +1052,12 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("QUEST_CELLS"),QStringLiteral("QUEST_FLIPS"),
         QStringLiteral("QUEST_ICON_CELLS"),QStringLiteral("QUEST_ICON_FLIPS"),
         QStringLiteral("QUEST_ICON_MODES"),QStringLiteral("QUEST_ICON_PARTS"),
+        QStringLiteral("DEFEAT_ENABLED"),QStringLiteral("DEFEAT_TITLE"),
+        QStringLiteral("DEFEAT_SUBTITLE"),QStringLiteral("DEFEAT_BG"),
+        QStringLiteral("DEFEAT_BORDER"),QStringLiteral("DEFEAT_TEXT"),
+        QStringLiteral("DEFEAT_ACCENT"),QStringLiteral("DEFEAT_X"),QStringLiteral("DEFEAT_Y"),
+        QStringLiteral("WORLD_MAP_COUNT"),QStringLiteral("WORLD_MAP_WIDTH"),
+        QStringLiteral("WORLD_MAP_HEIGHT"),QStringLiteral("WORLD_MAP_POINTS"),
         QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
         QStringLiteral("DROP_HITBOX_W"),QStringLiteral("DROP_HITBOX_H")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),

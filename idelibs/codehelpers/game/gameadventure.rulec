@@ -345,6 +345,16 @@ void gameadventure_setup(void)
     game_adventure_set_node_signal(on_quest_node);
     game_adventure_save_slot_callbacks(gameworlds_checkpoint_request,
                                         gameworlds_slot_exists);
+    game_adventure_defeat_setup(&gameworlds_state()->health,
+        gameworlds_reload_request,gameworlds_slot_exists,gameworlds_last_saved_slot,
+        @IDE{DEFEAT_ENABLED}u,@IDE{DEFEAT_TITLE},@IDE{DEFEAT_SUBTITLE},
+        @IDE{DEFEAT_BG}u,@IDE{DEFEAT_BORDER}u,@IDE{DEFEAT_TEXT}u,
+        @IDE{DEFEAT_ACCENT}u,@IDE{DEFEAT_X}u,@IDE{DEFEAT_Y}u);
+    {
+        static const game_adventure_map_point_t map_points[]={@IDE{WORLD_MAP_POINTS}};
+        game_adventure_world_map(map_points,@IDE{WORLD_MAP_COUNT}u,
+           @IDE{WORLD_MAP_WIDTH}u,@IDE{WORLD_MAP_HEIGHT}u,gameworlds_active);
+    }
     /* Keep the runtime journal pointed at the project-wide quest manager.
      * Registration follows game_adventure_start() because a world load resets
      * the previous world's renderer state. */
@@ -355,6 +365,7 @@ void gameadventure_setup(void)
         gameworlds_quest_tracked, gameworlds_quest_track,
         gameworlds_quest_visible
     };
+    game_adventure_quest_notices(gameworlds_quest_notice);
     game_adventure_set_quest_journal(&quest_journal);
     static const game_adventure_quest_style_t quest_style={
         @IDE{QUEST_MARGIN}u,@IDE{QUEST_SPLIT}u,@IDE{QUEST_BG}u,

@@ -357,6 +357,7 @@ private:
     int m_dayNightDayFrames = 3000, m_dayNightNightFrames = 3000;
     int m_dayNightFadeFrames = 500; // Gentle dusk and dawn transitions.
     bool m_dayNightStartAtNight = false;
+    QJsonArray m_dayEvents, m_nightEvents; // Stable target IDs; not runtime indices.
     bool m_playerSpotlightEnabled = false;
     int m_playerSpotlightRadius = 96;
     int m_playerSpotlightFeather = 24;

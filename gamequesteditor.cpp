@@ -1,5 +1,6 @@
 #include "gamequesteditor.h"
 #include "gamequestjournaleditor.h"
+#include "gamerpguieditors.h"
 #include "gamequestgen.h"
 #include <QComboBox>
 #include <QCheckBox>
@@ -237,6 +238,20 @@ public:
         });
         auto *bottomActions=new QHBoxLayout;
         bottomActions->addWidget(journalDesign);
+        auto *defeatDesign=new QPushButton(tr("Defeat Screen..."),this);
+        connect(defeatDesign,&QPushButton::clicked,this,[this,projectRoot]{
+            QString error;
+            if(!editGameDefeatScreen(this,projectRoot,&error)&&!error.isEmpty())
+                QMessageBox::warning(this,tr("Defeat Screen Designer"),error);
+        });
+        bottomActions->addWidget(defeatDesign);
+        auto *mapDesign=new QPushButton(tr("World Map Designer..."),this);
+        connect(mapDesign,&QPushButton::clicked,this,[this,projectRoot]{
+            QString error;
+            if(!editGameWorldMap(this,projectRoot,&error)&&!error.isEmpty())
+                QMessageBox::warning(this,tr("World Map Designer"),error);
+        });
+        bottomActions->addWidget(mapDesign);
         bottomActions->addStretch(1);
         bottomActions->addWidget(buttons);
         root->addLayout(bottomActions);

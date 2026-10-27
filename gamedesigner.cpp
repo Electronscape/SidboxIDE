@@ -76,6 +76,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QInputDialog>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QMessageBox>
 #include <QMenu>
 #include <QAction>
@@ -2181,6 +2183,65 @@ void SidboxGameDesigner::editPlayerStart()
     auto *dayNightStartNight = new QCheckBox(tr("Begin world at night"), &dialog);
     dayNightStartNight->setChecked(m_dayNightStartAtNight);
     form->addRow(dayNightStartNight);
+    // Day/night actions reuse the existing NPC and Game Object activation
+    // system. Stable resource IDs survive renames and item reordering.
+    auto createTimeEvents = [this,&dialog](const QString &heading, const QJsonArray &original) {
+        auto *area = new QWidget(&dialog);
+        auto *layout = new QVBoxLayout(area);
+        layout->setContentsMargins(0,0,0,0);
+        auto *list = new QTableWidget(0,2,area);
+        list->setObjectName(heading);
+        list->setHorizontalHeaderLabels({tr("NPC or Game Object"),tr("Action")});
+        list->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        list->verticalHeader()->hide();
+        list->setMinimumHeight(130);
+        layout->addWidget(list);
+        auto *controls=new QHBoxLayout();
+        auto *add=new QPushButton(tr("+ Add action"),area);
+        auto *remove=new QPushButton(tr("Remove selected"),area);
+        controls->addWidget(add);controls->addWidget(remove);controls->addStretch();
+        layout->addLayout(controls);
+        auto insert=[this,list](const QJsonObject &saved) {
+            const int row=list->rowCount();list->insertRow(row);
+            auto *target=new QComboBox(list);
+            target->addItem(tr("Choose NPC / object..."),QString());
+            for(const Resource &r:m_resources)
+                if(r.kind==QStringLiteral("sprite") && r.objectType!=QStringLiteral("decoration") &&
+                   r.objectType!=QStringLiteral("collectable"))
+                    target->addItem(tr("Object: %1").arg(r.name),QStringLiteral("object:")+r.id);
+            const QJsonArray npcs=m_adventure.value(QStringLiteral("npcs")).toArray();
+            for(const QJsonValue &v:npcs) {
+                const QString id=v.toObject().value(QStringLiteral("spriteId")).toString();
+                if(id.isEmpty())continue;
+                QString name=id;
+                for(const Resource &r:m_resources)if(r.id==id){name=r.name;break;}
+                target->addItem(tr("NPC: %1").arg(name),QStringLiteral("npc:")+id);
+            }
+            const QString savedTarget=saved.value(QStringLiteral("target")).toString();
+            if(!savedTarget.isEmpty() && target->findData(savedTarget)<0)
+                target->addItem(tr("MISSING target: %1").arg(savedTarget),savedTarget);
+            target->setCurrentIndex(qMax(0,target->findData(savedTarget)));
+            auto *action=new QComboBox(list);
+            action->addItem(tr("Hide / disable"),0);
+            action->addItem(tr("Show / enable"),1);
+            action->addItem(tr("Toggle"),2);
+            action->setCurrentIndex(qBound(0,saved.value(QStringLiteral("action")).toInt(1),2));
+            list->setCellWidget(row,0,target);list->setCellWidget(row,1,action);
+        };
+        for(const QJsonValue &v:original)insert(v.toObject());
+        connect(add,&QPushButton::clicked,&dialog,[insert](){insert(QJsonObject());});
+        connect(remove,&QPushButton::clicked,&dialog,[list](){if(list->currentRow()>=0)list->removeRow(list->currentRow());});
+        return area;
+    };
+    auto *dayEvents=createTimeEvents(QStringLiteral("dayEvents"),m_dayEvents);
+    auto *nightEvents=createTimeEvents(QStringLiteral("nightEvents"),m_nightEvents);
+    form->addRow(tr("On DAY (sunrise)"),dayEvents);
+    form->addRow(tr("On NIGHT (sunset)"),nightEvents);
+    auto *eventsHint=new QLabel(tr("Run these actions when the world enters DAY or NIGHT, and when that world first loads. "
+        "An inactive Game Object has no collision. Choose Show / Hide for predictable behaviour; "
+        "Toggle executes once per phase, not every frame. Uses existing NPC/object state."),&dialog);
+    eventsHint->setWordWrap(true);
+    form->addRow(eventsHint);
     auto *dayNightHint = new QLabel(tr("Day uses your original .pal colours. Night blends FRONT and BACK palette copies toward the chosen colour. "
         "Fixed tint is useful for fog. Your actual .pal files are never modified. "
         "The same palette tables can also tint HUD and dialogue colours."), &dialog);
@@ -2194,6 +2255,8 @@ void SidboxGameDesigner::editPlayerStart()
         for (QSlider *slider : {dayNightDayFrames, dayNightNightFrames, dayNightFadeFrames})
             slider->parentWidget()->setEnabled(mode == 2);
         dayNightStartNight->setEnabled(mode == 2);
+        dayEvents->setEnabled(mode != 0);
+        nightEvents->setEnabled(mode != 0);
     };
     connect(dayNightMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
         &dialog, [updateDayNightWidgets](int) { updateDayNightWidgets(); });
@@ -2476,6 +2539,21 @@ void SidboxGameDesigner::editPlayerStart()
     m_dayNightNightFrames = dayNightNightFrames->value();
     m_dayNightFadeFrames = dayNightFadeFrames->value();
     m_dayNightStartAtNight = dayNightStartNight->isChecked();
+    auto collectTimeEvents=[](QWidget *area) {
+        QJsonArray result;
+        auto *list=area->findChild<QTableWidget *>();
+        if(!list)return result;
+        for(int i=0;i<list->rowCount();++i) {
+            auto *target=qobject_cast<QComboBox *>(list->cellWidget(i,0));
+            auto *action=qobject_cast<QComboBox *>(list->cellWidget(i,1));
+            if(!target||!action||target->currentData().toString().isEmpty())continue;
+            result.append(QJsonObject{{QStringLiteral("target"),target->currentData().toString()},
+                {QStringLiteral("action"),action->currentData().toInt()}});
+        }
+        return result;
+    };
+    m_dayEvents=collectTimeEvents(dayEvents);
+    m_nightEvents=collectTimeEvents(nightEvents);
     m_playerSpotlightEnabled=spotlightEnabled->isChecked();
     m_playerSpotlightRadius=spotlightRadius->value();
     m_playerSpotlightFeather=spotlightFeather->value();

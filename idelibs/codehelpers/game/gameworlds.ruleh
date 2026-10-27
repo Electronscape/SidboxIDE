@@ -65,6 +65,10 @@ uint8_t gameworlds_start(const char *name);
 uint8_t gameworlds_save_slot(uint8_t slot);
 uint8_t gameworlds_load_slot(uint8_t slot);
 uint8_t gameworlds_slot_exists(uint8_t slot);
+/* In-game load: validate now, then restore at gameworlds_apply_pending(),
+ * preserving the dual-bank save format and live world lifetime rules. */
+uint8_t gameworlds_reload_request(uint8_t slot);
+uint8_t gameworlds_last_saved_slot(void); /* 255 if none in this session */
 uint8_t gameworlds_checkpoint_request(uint8_t slot);
 const char *gameworlds_saved_world(void);
 /* 0 idle, 1 saved, 2 write failure (clear by querying). */
@@ -89,6 +93,12 @@ uint8_t gameworlds_quest_event_number(uint16_t event_id); /* Active world + nume
 uint8_t gameworlds_quest_visible(uint16_t i); /* Hide undiscovered quest lines */
 uint8_t gameworlds_quest_enable(const char *quest_id); /* Offer initially hidden quest at dialogue node */
 uint8_t gameworlds_quest_dialogue_choice(const char *stable_choice_id); /* Auto IDs, active world */
+/* Latest QUEST UPDATED event. Revision changes only on an actual authored
+ * quest activation/objective advance/completion, never merely opening the UI.
+ * A read does not consume the event and never accesses the TFCard.
+ * kind: 1 quest offered/unlocked, 2 objective advanced, 3 quest completed.
+ * A revision of zero means there has been no gameplay quest update. */
+uint8_t gameworlds_quest_notice(uint16_t *quest_index, uint32_t *revision);
 /* Safe inside callbacks: only queues a change. Does NOT unload anything. */
 uint8_t gameworlds_request(const char *name);
 /* Request a specific named entrance in the destination world.

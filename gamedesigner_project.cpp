@@ -154,6 +154,8 @@ bool SidboxGameDesigner::loadDesign()
     m_dayNightNightFrames = qBound(50, dayNight.value(QStringLiteral("nightFrames")).toInt(3000), 30000);
     m_dayNightFadeFrames = qBound(25, dayNight.value(QStringLiteral("fadeFrames")).toInt(500), 10000);
     m_dayNightStartAtNight = dayNight.value(QStringLiteral("startAtNight")).toBool(false);
+    m_dayEvents = dayNight.value(QStringLiteral("dayActions")).toArray();
+    m_nightEvents = dayNight.value(QStringLiteral("nightActions")).toArray();
     m_playerSpotlightEnabled = start.value(QStringLiteral("spotlightEnabled")).toBool(false);
     m_playerSpotlightRadius = qBound(16, start.value(QStringLiteral("spotlightRadius")).toInt(96), 240);
     m_playerSpotlightFeather = qBound(0, start.value(QStringLiteral("spotlightFeather")).toInt(24), 96);
@@ -773,6 +775,8 @@ bool SidboxGameDesigner::saveDesign()
     dayNight.insert(QStringLiteral("nightFrames"), m_dayNightNightFrames);
     dayNight.insert(QStringLiteral("fadeFrames"), m_dayNightFadeFrames);
     dayNight.insert(QStringLiteral("startAtNight"), m_dayNightStartAtNight);
+    dayNight.insert(QStringLiteral("dayActions"), m_dayEvents);
+    dayNight.insert(QStringLiteral("nightActions"), m_nightEvents);
     obj.insert(QStringLiteral("dayNight"), dayNight);
     obj.insert(QStringLiteral("weather"), weather);
     QJsonArray otherStarts;
