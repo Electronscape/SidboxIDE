@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'development/tests'))
 from test_stage5163_rules_flow_audit import render
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,
-       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False}
+       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
 folder=ROOT/'idelibs/codehelpers/game'
 data='''#define GW_QUEST_COUNT 2u
 #define GW_OBJECTIVE_COUNT 2u

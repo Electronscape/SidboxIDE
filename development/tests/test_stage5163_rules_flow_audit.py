@@ -60,13 +60,14 @@ header = (folder / 'gameworlds.ruleh').read_text()
 assert source.count('@IDE_IF{HAS_PICKUPS}') >= 1
 assert source.count('@IDE_IF{HAS_ADVENTURE_RUNTIME}') >= 4
 assert source.count('@IDE_IF{HAS_SHARED_PLAYER}') >= 1
-for adventure, pickups, shared, physics in product((False, True), repeat=4):
+for adventure, pickups, shared, physics, title in product((False, True), repeat=5):
     flags = {
         'HAS_ADVENTURE_RUNTIME': adventure,
         'HAS_PICKUPS': pickups,
         'HAS_SHARED_PLAYER': shared,
         'HAS_WORLD_PHYSICS': physics,
         'HAS_PLAYER_VISIBILITY': adventure and shared,
+        'HAS_TITLE': title,
     }
     for label, template in (('source', source), ('header', header)):
         rendered = render(template, flags)
@@ -75,6 +76,7 @@ for adventure, pickups, shared, physics in product((False, True), repeat=4):
         body = strip_c_comments_strings(rendered)
         assert body.count('{') == body.count('}'), (flags, label, 'unbalanced braces')
         if label == 'source':
+            assert ('#include "gametitle.h"' in rendered) == title, flags
             assert ('uint16_t gameworlds_check(' in rendered) == pickups, flags
             assert ('void gameworlds_before(' in rendered) == physics, flags
             assert ('static uint8_t gameworlds_hud_inventory_kinds[256];' in rendered) == (pickups and adventure), flags
@@ -89,5 +91,5 @@ assert 'description,3,invalid);' in flow
 assert 'else if (g.nodes.at(g.byId.value(to)).problem)' in flow
 assert 'g.missing(w,from,QStringLiteral("valid spline (needs 2+ points)"),spline);' in flow
 assert 'g.link(to,from,QStringLiteral("Moves along path"));' in flow
-assert 'Build: 5.166.12.271026' in (root / 'splashscreenwidget.cpp').read_text()
-print('PASS Stage 5.163: 16 world flag configurations x C/H, balanced directives/braces, invalid spline diagnostics')
+assert __import__('re').search(r'Build: 5\.166\.(?:2[8-9]|[3-9]\d)\.271026', (root / 'splashscreenwidget.cpp').read_text())
+print('PASS Stage 5.163: 32 world flag configurations x C/H, balanced directives/braces, invalid spline diagnostics')

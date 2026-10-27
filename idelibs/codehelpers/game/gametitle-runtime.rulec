@@ -387,6 +387,11 @@ uint8_t gametitle_run(const char **world, const char **start)
     uint8_t load_open=0, load_selected=0;
     title_loaded_slot=-1;
     uint8_t previous=0;
+    /* A Defeat-screen FIRE1 can still be physically held when the title
+     * opens at the next safe world boundary. Do NOT treat that same press
+     * as Start Game or Load Game. Arm title controls only after BOTH FIRE
+     * buttons have been released at least once in this title session. */
+    uint8_t title_input_armed=0u;
     uint8_t playing=0;
     if (!world || !start) return 0;
     *world=title_default_world; *start="default";
@@ -414,7 +419,13 @@ uint8_t gametitle_run(const char **world, const char **start)
     for (;;) {
         gfx_lcdwait();
         const uint8_t buttons=getjoyport();
-        const uint8_t pressed=(uint8_t)(buttons & (uint8_t)~previous);
+        const uint8_t pressed=title_input_armed
+                ? (uint8_t)(buttons & (uint8_t)~previous) : 0u;
+        /* A held confirm/back button from gameplay or the defeat modal
+         * is never a new title-menu press. If released on this frame,
+         * accept the NEXT physical press, not the release itself. */
+        if(!title_input_armed && !(buttons & (BTN_FIRE|BTN_FIRE2)))
+            title_input_armed=1u;
         previous=buttons;
         if(load_open) {
             if (pressed & BTN_FIRE2) load_open=0;

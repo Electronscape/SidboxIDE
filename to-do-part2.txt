@@ -1,3 +1,52 @@
+runtime:
+world map still has an awful green border. ALSO its not height aware of the docked HUD either by the looks of it, IF its possible can i change the colour of the thick border (since run time world boundery is pretty good idea)
+so in the IDE the world map tile painter, deff needs a colour picker for the world map boundery colour
+
+The IDE the Fill empty cells with selected tile, could i have an actual floodfill bucket thing so i can CLICK that button, an click on the tile map an it fills the "adjacent flood" a bit like how the amiga uses the floodfill routine.
+REMEMBER the stack issue here, cos QT6 LOVES stack overflowing out its ass!
+
+so its "click the tile->click floodfill (or click it again to cancel) -> click on a tile in the map -> flood fill the tiles matching that tile with the selected tile"
+its NOT a "replacement" tool
+
+
+runtime death knell:
+When dead, and the player hasnt got a save point (or just started a new game) they should be sent to the title screen after closing the message "u carc'd it" hehe
+
+the death load where it says the heading: you removed the description:
+i only wanted the bitthat said "CHOOSE save to reload" to be removed.
+COULD we add a bit below the heading, to add a description? THIS will allow for messages like "You where killed by spikey mushroom"
+(this also means that the game objects will need a "death note" so the death screen can tell what killed them)
+
+
+
+but gettin seriously close to whats needed!!!!!
+
+
+
+
+runtime: Death
+the transition, should just be a fade out, and fade back in. not the mosiac effect.
+also the height of the thing is not height aware, Since a docked HUD is present, the instructions at the bottom are pushed off the bottom
+Remove the words "CHOOSE SAVE TO RELOAD" and use that space to move things up
+ALSO i think, if you start a new game, and not from a load, this option should not open unless you've at least saved one slot during that session
+
+From the title screen: Load game, and continue from there, would allow the player to replay from a save
+BUT from "start game", if you die before you get to your first save point, you just start again from a fresh game.
+(this opens up cheating xD)
+
+also when dead, and offered to reload, the player should start from the way point they saved at. right now reloading seems to restore the game but the player remains at the place they died at.
+
+
+
+World Map Tile Painter, I think needs to have a "fill" feature, that way we can fill the area with a water background. right now its a horrible green colour xD
+
+
+
+
+
+
+
+
 
 in the spotlight mode, could we have a tick box(s) enable where that the offset on the x, (or y) if the player is flipped (directions) makes holding a candle more believable
 the next option is the overall feather, like so we have a 0 to 100% opaque effect, this might be a little intelisense on the cpu so im hoping that people wont use this option much. but it would make for more atmospheric (i can just barely see into the distance) in dark rooms

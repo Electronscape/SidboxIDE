@@ -365,6 +365,7 @@ bool SidboxGameDesigner::loadDesign()
         r.particleFadeOut = qBound(0, object.value(QStringLiteral("particleFadeOut")).toInt(20), 100);
         r.particleFadeSpeed = qBound(1, object.value(QStringLiteral("particleFadeSpeed")).toInt(8), 100);
         r.hazardDamage = qBound(0, object.value(QStringLiteral("hazardDamage")).toInt(1), 65535);
+        r.deathNote = object.value(QStringLiteral("deathNote")).toString().left(110);
         r.damageConfigured = object.contains(QStringLiteral("damageTarget"));
         r.damageTarget = object.value(QStringLiteral("damageTarget")).toString(QStringLiteral("health"));
         if (r.damageTarget != QStringLiteral("health") && r.damageTarget != QStringLiteral("lives") &&
@@ -891,6 +892,7 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("particleFadeOut"), r.particleFadeOut);
             object.insert(QStringLiteral("particleFadeSpeed"), r.particleFadeSpeed);
             object.insert(QStringLiteral("hazardDamage"), r.hazardDamage);
+            object.insert(QStringLiteral("deathNote"), r.deathNote);
             object.insert(QStringLiteral("damageTarget"), r.damageTarget);
             object.insert(QStringLiteral("damageDelta"), r.damageConfigured ? r.damageDelta : -r.hazardDamage);
             object.insert(QStringLiteral("hazardKickX"), r.hazardKickX);

@@ -1,0 +1,31 @@
+SIDBOX CoderGirl IDE Stage 5.166.34.271026
+World Map Editor: first-open animated tile cache-index fix.
+
+APPLY
+1. Start with Stage 5.166.33 IDE sources.
+2. Extract IDE-Stage-5.166.34-HOTFIX.tar.gz over the IDE source root.
+3. Rebuild the IDE. Splash screen should show Build: 5.166.34.271026.
+4. Open a world map with animated cells in its upper and lower rows.
+   All animated rows should update immediately on opening, without painting.
+
+ROOT CAUSE
+editGameWorldMap() called rebuildAnimatedSections() before resizeMap()
+calculated chunkColumns. At first open chunkColumns was still zero,
+so animated cells in separate rows were indexed to the same first row of
+256px cached graphics chunks. A brush stroke fixed it because changeCell()
+reindexed the animated chunks after geometry had been initialized.
+
+FIX
+The chunk layout and QGraphicsPixmapItem sections are created first.
+Then animated section membership is rebuilt and previousFrames is cleared,
+before loadAtlas() paints the initial map. This also keeps resizing correct.
+
+NO CHANGES to generated game runtime, main.c, world-map.json, or saved games.
+No Update ALL Worlds / Update Game Project necessary for this editor-only change.
+
+TESTS
+- New Stage 5.166.34 regression: first-open/resized chunk-index ordering,
+  multi-row coverage for 8px and 16px tiles: passed.
+- Existing Stage 5.166.26, 27, 28, 29, 30, 31, 32, 33 tests: passed.
+- Full Qt GUI build unavailable here (Qt6 development libraries missing).
+  Confirm interactive rendering in your IDE.

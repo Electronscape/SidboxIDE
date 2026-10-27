@@ -1,0 +1,40 @@
+SIDBOX / CoderGirl IDE — Stage 5.166.25.271026
+World Bundle HAS_TITLE rule generation hotfix
+
+BASE: Stage 5.166.24 (27 October 2026)
+
+FIXED
+1. World Bundle publishing no longer fails with:
+   Unknown/non-boolean condition HAS_TITLE at gameworlds.rulec:11.
+   gameworldsnapshot.h now supplies the real project's title-screen setting to
+   the strict rule renderer, matching the existing maingame.rulec configuration.
+2. The newly added return-to-title runtime contained an unresolved
+   @IDE{WORLD_BASE} substitution (not available in shared world-registry
+   generation). It now retains the first successfully entered game's world
+   through later map transitions, using the published default as fallback.
+   No unexpanded world-name tokens enter the generated C.
+3. Stage 5.166.24 defeat note, World Map palette and flag flash choices
+   are preserved unchanged.
+
+INSTALL
+1. Back up your IDE tree and game project.
+2. Install the complete IDE Stage 5.166.25 source archive over Stage 5.166.24,
+   or replace gameworldsnapshot.h,
+   idelibs/codehelpers/game/gameworlds.rulec and splashscreenwidget.cpp.
+3. Rebuild the Qt desktop IDE; splash screen should read 5.166.25.271026.
+4. Reopen your game. Use Update ALL Worlds / Update Game Project. Regeneration
+   refreshes project/gamehelpers/gameworlds.c and the published world registry.
+5. Build and test the V1 game on SIDBOX, including death without a save after
+   travelling to a second world and death with a save available.
+
+VALIDATION
+- Strict source/header rendering in all 32 combinations of the world-manager
+  title/physics/pickup/adventure/shared-player switches.
+- Native GCC compile+execution of actual generated C with title ON and OFF:
+  fresh death title/restart policy, first-world fallback after world transfer,
+  saved slot retention, and clean shutdown.
+- Stage 5.166.24 native defeat/death-note/palette-flag test passed.
+- Qt6 GUI build and real STM32H743 device execution were not available here.
+
+No updates to user-owned main.c, resource files, world design files, quests,
+project save format, existing save data, or SIDBOX SDK are required.

@@ -8,6 +8,9 @@
 #include <string.h>
 #include <stdio.h>
 #include "apis.h"
+@IDE_IF{HAS_TITLE}
+#include "gametitle.h"
+@IDE_END
 @IDE_IF{HAS_WORLD_PHYSICS}
 #include "gameworldobjects.h"
 @IDE_END
@@ -157,12 +160,32 @@ static uint8_t pending_has_exit;
 static uint8_t saved_player_is_valid; /* Never restore zeroed state on first start. */
 static uint8_t save_checkpoint_pending; /* slot+1, processed at frame boundary */
 static uint8_t pending_reload_slot; /* Slot+1 for deferred in-game defeat recovery. */
+static uint8_t pending_restart_new_game;
+static uint8_t pending_title_return;
+/* The game entry world is remembered through later world transitions. */
+static const char *gw_initial_world; /* diagnostic first entry, never a title-menu default */
+@IDE_IF{HAS_WORLD_PHYSICS}
+/* World-object hurt grace/animation is not part of save data. Keep the live
+ * adapter supplied by existing main.c (no main.c changes required). */
+static game_world_player_t *gw_bound_world_player;
+@IDE_END
+static const char *gw_last_health_hit_note;
+const char *gameworlds_fatal_hit_note(void){return gw_last_health_hit_note;}
+static uint8_t gw_session_can_reload; /* Start Game does not inherit old TFCard saves. */
+static uint32_t gw_reload_revision; /* Includes same-world restores. */
+static uint8_t gw_restoring_checkpoint;
 static uint8_t gw_last_save_slot=255u;
 static uint8_t pending_title_load_slot; /* slot+1; preserves owner-maintained main.c */
 static uint8_t save_checkpoint_status;
 static char saved_world_id[64];
 static gameworlds_spawn_t saved_position;
 static uint8_t saved_position_valid;
+/* Preserve only the fresh run's initial state, up to the existing SAVE_LIMIT.
+ * It is released as soon as the run writes its first TFCard checkpoint. */
+static uint8_t *gw_fresh_bytes;
+static uint32_t gw_fresh_length;
+static uint8_t gw_fresh_capture_tried;
+static uint8_t gw_fresh_start_enabled;
 /* Three-phase, frame-synchronised transitions. All buffers remain owned by
  * the existing graphics system. Only 2 x 256 temporary CLUT words are used. */
 #define GW_TRANSITION_NONE   0u
@@ -687,6 +710,27 @@ static uint32_t transition_dim(uint32_t source, uint16_t brightness)
     uint32_t g = ((source >> 8) & 255u) * brightness / 255u;
     uint32_t b = (source & 255u) * brightness / 255u;
     return (source & 0xff000000u) | (r << 16) | (g << 8) | b;
+}
+/* True uniform CLUT fade for the defeat modal. Unlike tiled/dither masks,
+ * every pixel dims smoothly together. Operates on temporary palette copies,
+ * never mutating the PPB source or permanent world palette. */
+void gameworlds_ui_fade(uint8_t brightness)
+{
+    if(!active_world)return;
+#ifdef gfx_usefpalette
+    const uint32_t *front=active_world->front_palette?active_world->front_palette():NULL;
+    if(front){
+        for(uint16_t i=0;i<256u;++i)transition_front[i]=transition_dim(front[i],brightness);
+        gfx_usefpalette(transition_front);
+    }
+#endif
+#ifdef gfx_usebpalette
+    const uint32_t *back=active_world->back_palette?active_world->back_palette():NULL;
+    if(back){
+        for(uint16_t i=0;i<256u;++i)transition_back[i]=transition_dim(back[i],brightness);
+        gfx_usebpalette(transition_back);
+    }
+#endif
 }
 #if defined(gfx_rectf) && defined(gfx_setcolour)
 static uint32_t transition_isqrt(uint32_t number)
@@ -1884,6 +1928,29 @@ static void gw_save_encode(gw_save_stream_t *stream)
     GW_WRITE(questData);
 #undef GW_WRITE
 }
+void gameworlds_fresh_start_enable(uint8_t enabled)
+{ gw_fresh_start_enabled=enabled?1u:0u; }
+static void gw_capture_fresh_start(void)
+{
+    if(!gw_fresh_start_enabled || gw_fresh_capture_tried || !active_world ||
+       gw_session_can_reload)return;
+    gw_fresh_capture_tried=1u;
+    /* Capture only after main.c has bound the real player and game update
+     * starts. Save encode rejects fabricated level-start player locations. */
+    if(save_player){save_player(&persistent,player_context);saved_player_is_valid=1u;}
+    if(active_world->inventory_store)active_world->inventory_store(inventory_put,0);
+    if(active_world->world_state_save)active_world->world_state_save();
+    if(active_world->story_save)active_world->story_save();
+    day_night_save_active();gw_quest_refresh();
+    gw_save_stream_t measuring={0};gw_save_encode(&measuring);
+    if(measuring.failed || !measuring.offset || measuring.offset>GW_SAVE_LIMIT)return;
+    uint8_t *bytes=(uint8_t*)malloc(measuring.offset);
+    if(!bytes)return;
+    gw_save_stream_t capture={0};capture.bytes=bytes;capture.capacity=measuring.offset;
+    gw_save_encode(&capture);
+    if(capture.failed || capture.offset!=capture.capacity){free(bytes);return;}
+    gw_fresh_bytes=bytes;gw_fresh_length=capture.offset;
+}
 uint8_t gameworlds_slot_exists(uint8_t slot)
 {
     if (slot>=GW_SAVE_SLOT_COUNT) return 0;
@@ -1944,7 +2011,10 @@ uint8_t gameworlds_save_slot(uint8_t slot)
         if (sfclose(0)!=FR_OK) ok=0;
     }
     free(stream.bytes);
-    if(ok)gw_last_save_slot=slot;
+    if(ok){
+        gw_last_save_slot=slot;gw_session_can_reload=1u;
+        free(gw_fresh_bytes);gw_fresh_bytes=0;gw_fresh_length=0u;
+    }
     return ok;
 }
 uint8_t gameworlds_load_slot(uint8_t slot)
@@ -1955,12 +2025,37 @@ uint8_t gameworlds_load_slot(uint8_t slot)
     const uint8_t ok=gw_save_decode(bytes,header.length,0,0,header.version) &&
                      gw_save_decode(bytes,header.length,1,0,header.version);
     free(bytes);
-    if(ok)gw_last_save_slot=slot;
+    if(ok){gw_last_save_slot=slot;gw_session_can_reload=1u;
+        free(gw_fresh_bytes);gw_fresh_bytes=0;gw_fresh_length=0u;}
     return ok;
+}
+uint8_t gameworlds_session_can_reload(void){return gw_session_can_reload;}
+uint32_t gameworlds_reload_revision(void){return gw_reload_revision;}
+uint8_t gameworlds_restart_request(void){
+    if(!active_world || applying || gw_session_can_reload ||
+       !gw_fresh_bytes || !gw_fresh_length)return 0u;
+    pending_restart_new_game=1u;return 1u;
+}
+uint8_t gameworlds_title_request(void)
+{
+    if(!active_world || applying)return 0u;
+@IDE_IF{HAS_TITLE}
+    /* The title belongs to EVERY play session, including one loaded from
+     * a saved slot. The fresh-start snapshot is only required for the
+     * no-save case; saved sessions use an explicit New Game reset below. */
+    pending_title_return=1u;
+    return 1u;
+@IDE_ELSE
+    /* Without a title, preserve the existing unsaved restart fallback.
+     * A loaded session cannot safely fake a fresh start from its save. */
+    return gameworlds_restart_request();
+@IDE_END
 }
 uint8_t gameworlds_last_saved_slot(void){return gw_last_save_slot;}
 uint8_t gameworlds_reload_request(uint8_t slot)
 {
+    /* The Defeat UI enforces the run's save eligibility. Keep this general
+     * public API available for authored events and explicit game loads. */
     if(!active_world || applying || slot>=GW_SAVE_SLOT_COUNT ||
        !gameworlds_slot_exists(slot))return 0u;
     pending_reload_slot=(uint8_t)(slot+1u);
@@ -2025,6 +2120,7 @@ uint8_t gameworlds_start(const char *name)
         gameplayer_apply_physics(bound_player_physics, target->physics_profile);
 @IDE_END
     applying = 0;
+    if (success && !gw_initial_world) gw_initial_world=target->name;
     if (success) gw_quest_refresh();
     if (success && first_world && transition_enabled) {
         uint8_t in, out, frames;
@@ -2072,20 +2168,217 @@ uint8_t gameworlds_request_at_from(const char *name, const char *start_id,
 }
 uint8_t gameworlds_request(const char *name)
 { return gameworlds_request_at(name, "default"); }
+/* A title selection is a NEW session, never a continuation of the world
+ * that happened to be active before death. Do not restore the "fresh-start"
+ * RAM snapshot: it is recorded after gameplay has begun and may represent a
+ * different spawn/world than the title menu requests. A saved slot is decoded
+ * separately AFTER this reset. */
+static void gw_reset_title_session(void)
+{
+    pending_world=0;
+    pending_title_load_slot=0u;
+    pending_reload_slot=0u;
+    pending_restart_new_game=0u;
+    pending_title_return=0u;
+    save_checkpoint_pending=0u;
+    save_checkpoint_status=0u;
+    pending_has_exit=0u;
+    pending_exit_x=0;
+    pending_exit_y=0;
+    strcpy(pending_spawn_id,"default");
+    strcpy(active_spawn_id,"default");
+    transition_restore_palette();
+    transition_phase=GW_PHASE_IDLE;
+    transition_mode=GW_TRANSITION_NONE;
+    transition_step=0u;
+    transition_camera_valid=0u;
+    for(size_t i=0;i<WORLD_COUNT;++i){
+        if(worlds[i].object_remote_reset)worlds[i].object_remote_reset();
+        if(worlds[i].npc_remote_reset)worlds[i].npc_remote_reset();
+    }
+    memset(day_night_saved_tick,0,sizeof(day_night_saved_tick));
+    memset(day_night_saved_valid,0,sizeof(day_night_saved_valid));
+    memset(spotlight_override_valid,0,sizeof(spotlight_override_valid));
+    memset(spotlight_override_value,0,sizeof(spotlight_override_value));
+    gw_quest_reset();
+    inventory_count=0u;
+    memset(inventory,0,sizeof(inventory));
+    memset(&persistent,0,sizeof(persistent));
+    saved_player_is_valid=0u;
+    saved_position_valid=0u;
+    memset(&saved_position,0,sizeof(saved_position));
+    saved_world_id[0]=0;
+    gw_session_can_reload=0u;
+    gw_last_save_slot=255u;
+    gw_last_health_hit_note=0;
+    gw_initial_world=0;
+    gw_restoring_checkpoint=0u;
+    gw_fresh_capture_tried=0u;
+    free(gw_fresh_bytes);gw_fresh_bytes=0;gw_fresh_length=0u;
+@IDE_IF{HAS_PICKUPS}
+    gameworlds_hud_reset();
+@IDE_END
+@IDE_IF{HAS_SHARED_PLAYER}
+    persistent.health=gameplayer_defaults.health;
+    persistent.lives=gameplayer_defaults.lives;
+    persistent.score=gameplayer_defaults.score;
+    gameplayer_reset_stats();
+    {
+        uint16_t count=0u;
+        const gameplayer_inventory_entry_t *items=gameplayer_initial_inventory(&count);
+        for(uint16_t i=0u;i<count;++i)
+            gameworlds_seed_inventory(items[i].name,items[i].initial);
+    }
+@IDE_END
+@IDE_IF{HAS_WORLD_PHYSICS}
+    /* Preserve the adapter's pointers to game-owned physics; clear only
+     * transient combat and spring state that belongs to the deceased run. */
+    if(gw_bound_world_player){
+        gw_bound_world_player->hurt_damage_this_frame=0u;
+        gw_bound_world_player->hurt_stat_delta=0;
+        gw_bound_world_player->hurt_stat_target=0u;
+        gw_bound_world_player->hurt_stat_name=0;
+        gw_bound_world_player->hurt_death_note=0;
+        gw_bound_world_player->hurt_triggered=0u;
+        gw_bound_world_player->hurt_anim_active=0u;
+        gw_bound_world_player->hurt_flash_active=0u;
+        gw_bound_world_player->hurt_flash_colour=0u;
+        gw_bound_world_player->hurt_flash_frames=0u;
+        gw_bound_world_player->hurt_ticks_remaining=0u;
+        gw_bound_world_player->hurt_elapsed=0u;
+        gw_bound_world_player->spring_x100=0;
+        gw_bound_world_player->spring_remainder_x100=0;
+        gw_bound_world_player->spring_sliding=0u;
+        gw_bound_world_player->break_stomp_armed=0u;
+    }
+@IDE_END
+}
 uint8_t gameworlds_apply_pending(void)
 {
+    /* Always run the title at a safe frame boundary. The menu returns the
+     * authoritative New Game WORLD + NAMED SPAWN or a Load Game slot. */
+    if(pending_title_return){
+        pending_title_return=0u;
+@IDE_IF{HAS_TITLE}
+        pending_world=0;pending_has_exit=0;pending_reload_slot=0u;
+        pending_restart_new_game=0u;save_checkpoint_pending=0u;
+        pending_title_load_slot=0u;
+        transition_restore_palette();transition_phase=GW_PHASE_IDLE;
+        if(active_world)unload_active();
+        gameworlds_ui_full_brightness();
+        /* gametitle_run() sets its configured Start Game destination itself.
+         * Never substitute last visited world, first registry entry or a
+         * previously captured snapshot. */
+        const char *title_world=worlds[0].name;
+        const char *title_start="default";
+        if(!gametitle_run(&title_world,&title_start))return 0u;
+        const int8_t selected_slot=gametitle_load_slot();
+        gw_reset_title_session();
+        if(selected_slot>=0){
+            if(!gameworlds_load_slot((uint8_t)selected_slot))return 0u;
+            const char *saved=gameworlds_saved_world();
+            if(!saved || !gameworlds_start(saved))return 0u;
+        }else{
+            if(!gameworlds_request_at(title_world,title_start) ||
+               !gameworlds_apply_pending())return 0u;
+        }
+@IDE_IF{HAS_SHARED_PLAYER}
+        /* main.c may be user-owned and only notice a change of world NAME.
+         * Force the correct restored/spawn position and rearm death physics. */
+        game_tile_player_t *live=bound_player_physics ? bound_player_physics :
+            (game_tile_player_t*)game_tile_player_current();
+        if(live && live->sprite && gameworlds_map()){
+            gameworlds_spawn_t arrival={0};
+            if(gameworlds_player_start(&arrival)){
+                live->map=(const game_tilemap_t*)gameworlds_map();
+                live->sprite->drawx=(int16_t)arrival.x;
+                live->sprite->drawy=(int16_t)arrival.y;
+                live->sprite->flags=(uint8_t)((live->sprite->flags & (uint8_t)~BLIT_FLAG_FLIP_X) |
+                    (arrival.facing ? 0u : BLIT_FLAG_FLIP_X));
+                game_tile_player_reset(live,(int16_t)arrival.x,(int16_t)arrival.y);
+            }
+        }
+@IDE_END
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+        {
+            gameworlds_spawn_t arrival={0};
+            if(gameworlds_player_start(&arrival))
+                game_adventure_set_player_facing(arrival.facing);
+        }
+@IDE_END
+        if(active_world && active_world->assets_show_background)
+            gameworlds_show_background();
+        ++gw_reload_revision;
+        return 1u;
+@IDE_ELSE
+        return gameworlds_restart_request();
+@IDE_END
+    }
     /* Recover at the safe world boundary. Never load a save from an
      * Adventure input/draw callback or while world assets are still in use.
      * The slot was validated when the player chose it. */
-    if(pending_reload_slot){
-        const uint8_t slot=(uint8_t)(pending_reload_slot-1u);
-        pending_reload_slot=0u;
-        pending_world=0;
+    if(pending_reload_slot || pending_restart_new_game){
+        const uint8_t restart=pending_restart_new_game;
+        const uint8_t slot=pending_reload_slot?(uint8_t)(pending_reload_slot-1u):0u;
+        pending_reload_slot=0u;pending_restart_new_game=0u;pending_world=0;
+        /* Unload captures the *dying* world's story state. Decode the
+         * checkpoint AFTER unloading so the old state cannot overwrite it. */
         if(active_world)unload_active();
         saved_position_valid=0u;
-        if(!gameworlds_load_slot(slot))return 0u;
+        if(restart){
+            if(!gw_fresh_bytes || !gw_fresh_length ||
+               !gw_save_decode(gw_fresh_bytes,gw_fresh_length,0,0,GW_SAVE_VERSION) ||
+               !gw_save_decode(gw_fresh_bytes,gw_fresh_length,1,0,GW_SAVE_VERSION))return 0u;
+        } else if(!gameworlds_load_slot(slot))return 0u;
         const char *saved=gameworlds_saved_world();
-        return saved && gameworlds_start(saved);
+        if(!saved)return 0u;
+        gw_restoring_checkpoint=1u;
+        const uint8_t ok=gameworlds_start(saved);
+        gw_restoring_checkpoint=0u;
+        if(!ok)return 0u;
+@IDE_IF{HAS_WORLD_PHYSICS}
+        /* A Defeat-screen FIRE1 save reload is a new life too. Do not
+         * carry an old damage grace period, Hurt animation or flash into
+         * the restored player (even when the saved world has the same name). */
+        if(gw_bound_world_player){
+            gw_bound_world_player->hurt_damage_this_frame=0u;
+            gw_bound_world_player->hurt_stat_delta=0;
+            gw_bound_world_player->hurt_stat_target=0u;
+            gw_bound_world_player->hurt_stat_name=0;
+            gw_bound_world_player->hurt_death_note=0;
+            gw_bound_world_player->hurt_triggered=0u;
+            gw_bound_world_player->hurt_anim_active=0u;
+            gw_bound_world_player->hurt_flash_active=0u;
+            gw_bound_world_player->hurt_flash_colour=0u;
+            gw_bound_world_player->hurt_flash_frames=0u;
+            gw_bound_world_player->hurt_ticks_remaining=0u;
+            gw_bound_world_player->hurt_elapsed=0u;
+            gw_bound_world_player->spring_x100=0;
+            gw_bound_world_player->spring_remainder_x100=0;
+            gw_bound_world_player->spring_sliding=0u;
+            gw_bound_world_player->break_stomp_armed=0u;
+        }
+@IDE_END
+@IDE_IF{HAS_SHARED_PLAYER}
+        /* Owner-maintained main.c may only rebind physics when the world NAME
+         * changes. Same-world death reloads still need their saved position.
+         * Rebind the live sprite/map here at the safe frame boundary. */
+        game_tile_player_t *live=bound_player_physics ? bound_player_physics :
+            (game_tile_player_t*)game_tile_player_current();
+        if(live && live->sprite && gameworlds_map()){
+            live->map=(const game_tilemap_t*)gameworlds_map();
+            live->sprite->drawx=(int16_t)saved_position.x;
+            live->sprite->drawy=(int16_t)saved_position.y;
+            live->sprite->flags=(uint8_t)((live->sprite->flags & (uint8_t)~BLIT_FLAG_FLIP_X) |
+                       (saved_position.facing?0u:BLIT_FLAG_FLIP_X));
+            game_tile_player_reset(live,(int16_t)saved_position.x,(int16_t)saved_position.y);
+        }
+@IDE_END
+@IDE_IF{HAS_ADVENTURE_RUNTIME}
+        game_adventure_set_player_facing(saved_position.facing);
+@IDE_END
+        ++gw_reload_revision;
+        return 1u;
     }
     if (pending_title_load_slot) {
         const uint8_t slot=(uint8_t)(pending_title_load_slot-1u);
@@ -2170,10 +2463,18 @@ void gameworlds_shutdown(void)
     save_checkpoint_pending=0;
     pending_title_load_slot=0;
     pending_reload_slot=0;
+    pending_restart_new_game=0u;pending_title_return=0u;gw_last_health_hit_note=0;gw_session_can_reload=0u;
+    gw_initial_world=0;
+    gw_last_save_slot=255u;
+    free(gw_fresh_bytes);gw_fresh_bytes=0;gw_fresh_length=0u;
+    gw_fresh_capture_tried=0u;gw_fresh_start_enabled=0u;gw_reload_revision=0u;
     strcpy(active_spawn_id, "default");
     strcpy(pending_spawn_id, "default");
 @IDE_IF{HAS_SHARED_PLAYER}
     bound_player_physics = 0;
+@IDE_END
+@IDE_IF{HAS_WORLD_PHYSICS}
+    gw_bound_world_player=0;
 @IDE_END
 }
 /* Three independent clocks for paused conversations. Old generated worlds
@@ -2182,6 +2483,7 @@ void gameworlds_shutdown(void)
 void gameworlds_update_gameplay(uint16_t frames)
 {
     if (!active_world) return;
+    gw_capture_fresh_start();
     if (active_world->objects_update_gameplay)
         active_world->objects_update_gameplay(frames);
     else if (active_world->objects_update)
@@ -2206,6 +2508,7 @@ void game_update_weather(uint16_t frames) { gameworlds_update_weather(frames); }
 void gameworlds_update(uint16_t frames)
 {
     if (!active_world) return;
+    gw_capture_fresh_start();
     if (active_world->objects_update) active_world->objects_update(frames);
     gw_quest_refresh();
     weather_update(frames);
@@ -2218,9 +2521,19 @@ void gameworlds_draw_overlay(int32_t x, int32_t y)
 { if (active_world && active_world->objects_draw_overlay) active_world->objects_draw_overlay(x,y); }
 @IDE_IF{HAS_WORLD_PHYSICS}
 void gameworlds_before(game_world_player_t *p)
-{ if (active_world && active_world->before) active_world->before(p); }
+{
+    if(p)gw_bound_world_player=p;
+    /* A nonfatal hit has no right to decorate a later, unrelated death. */
+    if(persistent.health>0u)gw_last_health_hit_note=0;
+    if (active_world && active_world->before) active_world->before(p);
+}
 void gameworlds_after(game_world_player_t *p)
-{ if (active_world && active_world->after) active_world->after(p); }
+{
+    if(p)gw_bound_world_player=p;
+    if (active_world && active_world->after) active_world->after(p);
+    if(p && p->hurt_triggered && p->hurt_stat_target==0u &&
+       p->hurt_stat_delta<0)gw_last_health_hit_note=p->hurt_death_note;
+}
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
 /* HUD-only pickups retain their lifetime "number collected" counter.

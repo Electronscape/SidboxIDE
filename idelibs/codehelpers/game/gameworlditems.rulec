@@ -4,7 +4,11 @@
 #include "gameworlds.h"
 #include "../gameassets/gameassets.h"
 #include <string.h>
+@IDE_IF{HAS_ADVENTURE}
+#include "gameadventureruntime.h"
+@IDE_END
 @IDE_IF{HAS_INTERACT_OUTCOMES}
+/* Adventure header may already be included by the optional death-note path. */
 #include "gameadventureruntime.h"
 extern uint8_t gameadventure_apply_item_stat(const char *stat, int32_t delta);
 @IDE_END
@@ -807,7 +811,19 @@ void gameworlditems_after(game_world_player_t *player)
         else if (was_in_hazard_zone)
             game_hazard_notify(GAME_HAZARD_ZONE_EXITED, *player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y);
         /* Callback may explicitly kill or teleport the player. */
-        if (game_death_is_dead()) return;
+        if (game_death_is_dead()) {
+@IDE_IF{HAS_ADVENTURE}
+            if (in_hazard_zone && player->width && player->height) {
+                const char *note = game_world_objects_death_zone_note(
+                    cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT},
+                    *player->x100 / 100 + player->offset_x,
+                    *player->y100 / 100 + player->offset_y,
+                    player->width, player->height);
+                game_adventure_defeat_note(note);
+            }
+@IDE_END
+            return;
+        }
     }
 @IDE_END
 @IDE{WORLD_EVENT_ACTIONS}
@@ -1175,6 +1191,7 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     cg_gwi_platforms[@IDE{INDEX}].damage_target = @IDE{DAMAGE_TARGET};
     cg_gwi_platforms[@IDE{INDEX}].damage_delta = @IDE{DAMAGE_DELTA};
     cg_gwi_platforms[@IDE{INDEX}].damage_stat_name = @IDE{DAMAGE_NAME};
+    cg_gwi_platforms[@IDE{INDEX}].death_note = @IDE{DEATH_NOTE};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};
@@ -1196,11 +1213,15 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_width = @IDE{ENEMY_STOMP_WIDTH};
     cg_gwi_platforms[@IDE{INDEX}].enemy_stomp_height = @IDE{ENEMY_STOMP_HEIGHT};
 @IDE_END
+@IDE_IF{IS_DEATH_ZONE}
+    cg_gwi_platforms[@IDE{INDEX}].death_note = @IDE{DEATH_NOTE};
+@IDE_END
 @IDE_IF{IS_HAZARD}
     cg_gwi_platforms[@IDE{INDEX}].hazard_damage = @IDE{HAZARD_DAMAGE};
     cg_gwi_platforms[@IDE{INDEX}].damage_target = @IDE{DAMAGE_TARGET};
     cg_gwi_platforms[@IDE{INDEX}].damage_delta = @IDE{DAMAGE_DELTA};
     cg_gwi_platforms[@IDE{INDEX}].damage_stat_name = @IDE{DAMAGE_NAME};
+    cg_gwi_platforms[@IDE{INDEX}].death_note = @IDE{DEATH_NOTE};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick = @IDE{HAZARD_KICK};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_x = @IDE{HAZARD_KICK_X};
     cg_gwi_platforms[@IDE{INDEX}].hazard_kick_y = @IDE{HAZARD_KICK_Y};

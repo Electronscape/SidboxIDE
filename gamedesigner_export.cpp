@@ -833,6 +833,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         boolValue("IS_BREAKABLE", type == QStringLiteral("breakable"));
         boolValue("IS_ENEMY", enemy);
         boolValue("IS_HAZARD", type == QStringLiteral("hazard"));
+        boolValue("IS_DEATH_ZONE", type == QStringLiteral("deathzone"));
         boolValue("IS_SPRING", type == QStringLiteral("spring"));
         boolValue("HAS_PATH", path >= 0);
         boolValue("HAS_ACTIVE_PATH", activePath);
@@ -905,6 +906,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             statTarget==QStringLiteral("lives") ? 1 :
             statTarget==QStringLiteral("score") ? 2 :
             statTarget==QStringLiteral("coins") ? 3 : 4;
+        f.insert(QStringLiteral("DEATH_NOTE"), r.deathNote.trimmed().isEmpty() ?
+            QStringLiteral("0") : QString::fromUtf8(QJsonDocument(QJsonArray{r.deathNote.left(110)})
+                       .toJson(QJsonDocument::Compact)).mid(1).chopped(1));
         value("DAMAGE_TARGET",statKind);
         value("DAMAGE_DELTA",r.damageConfigured ? r.damageDelta :
             -(type==QStringLiteral("enemy") ? r.enemyDamage : r.hazardDamage));
@@ -1235,6 +1239,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     if (!renderWorldRule(QStringLiteral("gameworlditems.ruleh"), headerFields, &h)) return false;
     QMap<QString, QString> sourceFields;
     sourceFields.insert(QStringLiteral("HAS_ITEMS"), QStringLiteral("1"));
+    sourceFields.insert(QStringLiteral("HAS_ADVENTURE"),flag(hasAdventure()));
     sourceFields.insert(QStringLiteral("HAS_PARTICLE_EMITTERS"), flag(particleEmitterCount > 0));
     sourceFields.insert(QStringLiteral("PARTICLE_EMITTER_COUNT"), number(particleEmitterCount));
     sourceFields.insert(QStringLiteral("PARTICLE_EMITTER_ROWS"), particleEmitterRows);

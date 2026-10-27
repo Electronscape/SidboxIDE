@@ -1,3 +1,84 @@
+# Latest: CoderGirl Stage 5.166.31.271026 — Qt Lambda Compile Hotfix
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.31.txt`.
+Corrects a C++ compilation error introduced in Stage 5.166.30, in
+`gamerpguieditors.h` at `editGameWorldMap()`: the `selectMode` lambda was
+erroneously declared `auto *` instead of `auto`. The lambda remains functionally
+identical; only its declaration is fixed. No game or world regeneration is
+required. A repository-wide lambda-pointer source scan plus a standalone C++
+compiler regression are included. Qt6 development packages are not available in
+this environment; a complete GUI build remains to be verified locally.
+
+---
+
+# Latest: CoderGirl Stage 5.166.30.271026 — World Map Editor + Animations + Death Notes
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.30.txt`.
+World Map tools now appear on the left with the atlas above painting controls;
+map boundary/flag flash colour selectors are at the top, and Paint Tiles vs
+Choose Flag Art are separate exclusive toggles. Animated map tiles now share
+Visual Tilemap Editor playback semantics (frames, VBlanks/frame, loop, ping-pong)
+and display in both designer and SIDBOX runtime. Hazard Zones now have their
+own Death Note in Game Object properties, without changing their callback-only
+kill policy. Murder Objects and Enemies retain existing notes. Regenerate ALL
+Worlds / Game Project and rebuild V1. No new user-owned main.c changes beyond
+the pre-existing Stage 5.166.29 fast-path integration. Native C regressions pass;
+Qt6 GUI compilation and SIDBOX hardware acceptance remain outstanding.
+
+---
+
+# Latest: CoderGirl Stage 5.166.29.271026 — World Map Render Fast Path
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.29.txt`.
+The generated V1 game now skips background, tilemap (both layers), objects,
+player, NPCs, spotlight and weather **drawing** while the World Map is open.
+The HUD, World Map, display and music still run. The Quest Journal was not
+being drawn underneath. **User-authored `main.c` must be updated using the
+included exact render-brace instructions:** the IDE never overwrites it.
+Regenerate ALL Worlds / Game Project and rebuild V1. The native map, title
+and render-gate regressions pass; Qt/hardware still need checking.
+
+---
+
+# Latest: CoderGirl Stage 5.166.28.271026 — World Map Four-Rectangle Runtime Frame
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.28.txt`.
+The runtime World Map now draws its map art first, then four solid panels
+(top 24px, bottom 32px, left/right 8px) in **the World Map boundary colour**.
+The active-world name and control instructions are drawn on top. This removes
+the accidental Quest Journal-coloured green top/bottom bars. The established
+HUD-aware viewport, flag flashing, panning, save/title behaviour and user
+`main.c` remain unchanged. Rebuild the IDE, save the boundary selection,
+**Update ALL Worlds / Update Game Project**, then rebuild the V1 game.
+Native rendering and selected regressions pass; Qt GUI and hardware remain untested.
+
+---
+
+# Latest: CoderGirl Stage 5.166.27.271026 — Death Title Start + Map Boundary
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.27.txt`.
+A no-save death returning to the title now starts the validated original
+fresh-snapshot world on New Game, regardless of the title menu's new-world
+selection or published registry order. Title Load Game retains saved world.
+The runtime World Map's thick surround and 5-pixel frame both use the
+World Map boundary colour rather than the Quest Journal's background index.
+Regenerate ALL Worlds and rebuild the game. Native C regressions pass;
+Qt6 GUI and real SIDBOX hardware remain to test.
+
+---
+
+# Latest: CoderGirl Stage 5.166.25.271026 — World Bundle HAS_TITLE hotfix
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.25.txt`.
+Fixes World Bundle failure `Unknown/non-boolean condition HAS_TITLE at gameworlds.rulec:11`,
+plus the unresolved `@IDE{WORLD_BASE}` in the recent death return-to-title path.
+The game now remembers its initial world if the player visits another world
+before dying. **Rebuild the IDE and Update ALL Worlds / Game Project**.
+No user `main.c` or saved-game changes. Native title ON/OFF tests pass; Qt GUI
+and physical SIDBOX remain untested here.
+
+---
+
 # Latest: CoderGirl Stage 5.166.2.271026 — Quest Journal Designer & joystick navigation
 
 **Start here:** `INSTALL-STAGE5.166.2.txt`. The project-wide Quest Journal Designer

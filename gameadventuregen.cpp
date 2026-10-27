@@ -2,6 +2,8 @@
 #include "gamehelpertemplates.h"
 #include "gametilemap.h"
 #include "ppbcodec.h"
+#include <array>
+#include <utility>
 #include <QDir>
 #include <QDirIterator>
 #include <QJsonDocument>
@@ -330,7 +332,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         }
         fields.insert(QStringLiteral("DEFEAT_ENABLED"),defeat.value(QStringLiteral("enabled")).toBool(false)?QStringLiteral("1"):QStringLiteral("0"));
         fields.insert(QStringLiteral("DEFEAT_TITLE"),quoted(defeat.value(QStringLiteral("title")).toString(QStringLiteral("YOU ARE DEAD")).left(40)));
-        fields.insert(QStringLiteral("DEFEAT_SUBTITLE"),quoted(defeat.value(QStringLiteral("subtitle")).toString(QStringLiteral("Choose a save to retry")).left(50)));
+        fields.insert(QStringLiteral("DEFEAT_SUBTITLE"),quoted(defeat.value(QStringLiteral("subtitle")).toString(QStringLiteral("You carc'd it!")).left(110)));
         const struct {const char *token,*key;int defaultValue,lo,hi;} options[]={
             {"DEFEAT_BG","background",2,0,255},
             {"DEFEAT_BORDER","border",15,0,255},
@@ -342,6 +344,48 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
             fields.insert(QLatin1String(option.token),QString::number(std::clamp(
                 defeat.value(QLatin1String(option.key)).toInt(option.defaultValue),
                 option.lo,option.hi)));
+        fields.insert(QStringLiteral("DEFEAT_OUTLINE"),defeat.value(QStringLiteral("outlineEnabled")).toBool(false)?QStringLiteral("1"):QStringLiteral("0"));
+        fields.insert(QStringLiteral("DEFEAT_OUTLINE_COLOUR"),QString::number(std::clamp(defeat.value(QStringLiteral("outlineColour")).toInt(0),0,255)));
+        for(const auto &entry:std::array<std::pair<const char*,const char*>,2>{{
+            {"DEFEAT_SCALE_X","fontScaleX"},{"DEFEAT_SCALE_Y","fontScaleY"}}}){
+            const int val=defeat.value(QLatin1String(entry.second)).toInt(QLatin1String(entry.second)==QStringLiteral("fontScaleX")?1:2);
+            fields.insert(QLatin1String(entry.first),QString::number((val==1||val==2||val==4||val==8)?val:1));
+        }
+        const QString atlas=defeat.value(QStringLiteral("atlas")).toString();
+        const int tile=defeat.value(QStringLiteral("tileSize")).toInt(8);
+        if(tile<4||tile>32){if(error)*error=QStringLiteral("Invalid Defeat Screen atlas tile size.");return false;}
+        int atlasW=0,atlasH=0;QStringList cells,flips;
+        if(!atlas.isEmpty()){
+            const QString path=QDir::cleanPath(atlas);
+            if(QDir::isAbsolutePath(path)||path==QStringLiteral("..")||path.startsWith(QStringLiteral("../"))){
+                if(error)*error=QStringLiteral("Defeat Screen atlas must be inside the game project.");return false;
+            }
+            SidboxPpb::Picture picture;QString readError;
+            if(!SidboxPpb::read(QDir(projectRoot).filePath(path),&picture,&readError)){
+                if(error)*error=QStringLiteral("Defeat Screen atlas: %1").arg(readError);return false;
+            }
+            atlasW=picture.indexed.width();atlasH=picture.indexed.height();
+            if(atlasW<3*tile||atlasH<3*tile||atlasW%tile||atlasH%tile){
+                if(error)*error=QStringLiteral("Defeat Screen skin requires at least a 3x3 PPB tile grid.");return false;
+            }
+        }
+        const QJsonArray savedCells=defeat.value(QStringLiteral("cells")).toArray();
+        const QJsonArray savedFlips=defeat.value(QStringLiteral("flips")).toArray();
+        for(int i=0;i<9;++i){
+            const int cell=i<savedCells.size()?savedCells[i].toInt(i):i;
+            if(!atlas.isEmpty() && (cell<0||cell>=(atlasW/tile)*(atlasH/tile))){
+                if(error)*error=QStringLiteral("Defeat Screen skin cell %1 is outside the atlas.").arg(i+1);return false;
+            }
+            cells<<QString::number(cell);
+            flips<<QString::number(i<savedFlips.size()?savedFlips[i].toInt()&12:0);
+        }
+        fields.insert(QStringLiteral("DEFEAT_ATLAS"),quoted(atlas));
+        fields.insert(QStringLiteral("DEFEAT_ATLAS_W"),QString::number(atlasW));
+        fields.insert(QStringLiteral("DEFEAT_ATLAS_H"),QString::number(atlasH));
+        fields.insert(QStringLiteral("DEFEAT_TILE"),QString::number(tile));
+        fields.insert(QStringLiteral("DEFEAT_CELLS"),cells.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("DEFEAT_FLIPS"),flips.join(QLatin1Char(',')));
+
     }
     /* Stage 5.166.19 schematic World Map. All point IDs are world names;
      * the map artwork is deliberately independent of per-world tilemaps. */
@@ -377,14 +421,128 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 return false;
             }
             names.insert(name);
-            rows<<QStringLiteral("{%1,%2,%3}")
+            rows<<QStringLiteral("{%1,%2,%3,%4,%5}")
                 .arg(std::clamp(point.value(QStringLiteral("x")).toInt(),0,mapW-16))
                 .arg(std::clamp(point.value(QStringLiteral("y")).toInt(),0,mapH-16))
-                .arg(quoted(name));
+                .arg(quoted(name))
+                .arg(point.value(QStringLiteral("flagCell")).toInt(65535))
+                .arg(point.value(QStringLiteral("flag2x2")).toBool(false)?1:0);
+        }
+        /* Native atlas tile map. Old schematic maps remain valid and simply
+         * produce an empty tile layer until the artist selects an atlas. */
+        const int tile=map.value(QStringLiteral("tileSize")).toInt(16);
+        if(tile!=8 && tile!=16){
+            if(error)*error=QStringLiteral("World Map tile size must be 8 or 16 pixels.");
+            return false;
+        }
+        const QString atlasRel=map.value(QStringLiteral("atlas")).toString();
+        const QJsonArray painted=map.value(QStringLiteral("tiles")).toArray();
+        bool hasPaint=false;
+        for(const QJsonValue &v:painted)
+            if(v.toInt(65535)!=65535){hasPaint=true;break;}
+        /* Version-1 marker-only maps may predate tile alignment and allow
+         * 4096px canvases. Preserve them without an unnecessary 6-32KB
+         * all-empty array in the V1 game memory budget. */
+        const bool schematicOnly=atlasRel.isEmpty() && !hasPaint;
+        if(!schematicOnly && (mapW%tile || mapH%tile || (mapW/tile)*(mapH/tile)>16384)){
+            if(error)*error=QStringLiteral("World Map grid exceeds 16,384 cells or is not tile aligned. Reduce its size.");
+            return false;
+        }
+        int atlasW=0,atlasH=0,atlasCount=0,atlasCols=0;
+        if(!atlasRel.isEmpty()){
+            const QString clean=QDir::cleanPath(atlasRel);
+            if(QDir::isAbsolutePath(clean)||clean==QStringLiteral("..")||
+               clean.startsWith(QStringLiteral("../"))){
+                if(error)*error=QStringLiteral("World Map PPB atlas must be inside the game project.");
+                return false;
+            }
+            const QString absolute=QDir(projectRoot).filePath(clean);
+            SidboxPpb::Picture picture;QString readError;
+            if(!SidboxPpb::read(absolute,&picture,&readError)){
+                if(error)*error=QStringLiteral("Cannot read World Map PPB atlas '%1': %2").arg(clean,readError);
+                return false;
+            }
+            atlasW=picture.indexed.width();atlasH=picture.indexed.height();
+            if(atlasW%tile||atlasH%tile||atlasW<tile||atlasH<tile){
+                if(error)*error=QStringLiteral("World Map atlas dimensions must be multiples of the cell size.");
+                return false;
+            }
+            atlasCols=atlasW/tile;atlasCount=atlasCols*(atlasH/tile);
+        }
+        QStringList tileRows;
+        const int count=schematicOnly?0:(mapW/tile)*(mapH/tile);
+        if(!schematicOnly && !painted.isEmpty() && painted.size()!=count){
+            if(error)*error=QStringLiteral("World Map tile count disagrees with the map dimensions.");
+            return false;
+        }
+        for(int i=0;i<count;++i){
+            const int cell=painted.isEmpty()?65535:painted.at(i).toInt(65535);
+            if(cell!=65535 && (cell<0||cell>=atlasCount)){
+                if(error)*error=QStringLiteral("World Map tile %1 references a missing PPB cell.").arg(i);
+                return false;
+            }
+            tileRows<<QString::number(cell);
+        }
+        /* Per-atlas-cell animations, matching the Visual Tilemap editor.
+         * Existing version-1 maps simply have no animations. */
+        QStringList animationRows;
+        QSet<int> usedAnimationCells;
+        const QJsonArray animations=map.value(QStringLiteral("animations")).toArray();
+        if(animations.size()>256){
+            if(error)*error=QStringLiteral("World Map supports at most 256 animated atlas cells.");
+            return false;
+        }
+        struct MapAnim { int cell,frames,ticks; bool loop,bounce; };
+        QVector<MapAnim> orderedAnimations;
+        for(const QJsonValue &v:animations){
+            const QJsonObject a=v.toObject();
+            const int cell=a.value(QStringLiteral("cell")).toInt(-1);
+            const int frames=a.value(QStringLiteral("frames")).toInt(1);
+            const int ticks=a.value(QStringLiteral("ticks")).toInt(5);
+            if(cell<0 || cell>=atlasCount || frames<2 || frames>16 ||
+               ticks<1 || ticks>255 || cell+frames>atlasCount ||
+               usedAnimationCells.contains(cell)){
+                if(error)*error=QStringLiteral("World Map has an invalid or duplicate tile animation at cell %1.").arg(cell);
+                return false;
+            }
+            usedAnimationCells.insert(cell);
+            orderedAnimations.push_back({cell,frames,ticks,
+                a.value(QStringLiteral("loop")).toBool(true),
+                a.value(QStringLiteral("bounce")).toBool(false)});
+        }
+        std::sort(orderedAnimations.begin(),orderedAnimations.end(),
+            [](const MapAnim &a,const MapAnim &b){return a.cell<b.cell;});
+        for(const MapAnim &a:orderedAnimations)
+            animationRows<<QStringLiteral("{%1,%2,%3,%4,%5}")
+                .arg(a.cell).arg(a.frames).arg(a.ticks).arg(a.loop?1:0).arg(a.bounce?1:0);
+        fields.insert(QStringLiteral("WORLD_MAP_ANIM_COUNT"),QString::number(animationRows.size()));
+        fields.insert(QStringLiteral("WORLD_MAP_ANIMATIONS"),animationRows.isEmpty()
+            ?QStringLiteral("{0,1,1,0,0}") : animationRows.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("WORLD_MAP_BORDER_COLOUR"),
+                      QString::number(std::clamp(map.value(QStringLiteral("borderColour")).toInt(15),0,255)));
+        fields.insert(QStringLiteral("WORLD_MAP_FLAG_FLASH_COLOUR"),
+                      QString::number(std::clamp(map.value(QStringLiteral("flagFlashColour")).toInt(14),0,255)));
+        fields.insert(QStringLiteral("WORLD_MAP_TILES"),tileRows.isEmpty()?QStringLiteral("65535"):tileRows.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("WORLD_MAP_COLS"),QString::number(schematicOnly?0:mapW/tile));
+        fields.insert(QStringLiteral("WORLD_MAP_ROWS"),QString::number(schematicOnly?0:mapH/tile));
+        fields.insert(QStringLiteral("WORLD_MAP_TILE_SIZE"),QString::number(tile));
+        fields.insert(QStringLiteral("WORLD_MAP_ATLAS"),quoted(atlasRel));
+        fields.insert(QStringLiteral("WORLD_MAP_ATLAS_W"),QString::number(atlasW));
+        fields.insert(QStringLiteral("WORLD_MAP_ATLAS_H"),QString::number(atlasH));
+        for(const QJsonValue &v:points){
+            const QJsonObject pt=v.toObject();
+            const int fc=pt.value(QStringLiteral("flagCell")).toInt(65535);
+            const bool large=pt.value(QStringLiteral("flag2x2")).toBool(false);
+            if(fc!=65535 && (fc<0 || fc>=atlasCount ||
+                (large && ((fc%atlasCols)+1>=atlasCols || fc+atlasCols>=atlasCount)))){
+                if(error)*error=QStringLiteral("World Map marker '%1' uses an invalid flag cell.")
+                    .arg(pt.value(QStringLiteral("name")).toString());
+                return false;
+            }
         }
         fields.insert(QStringLiteral("WORLD_MAP_COUNT"),QString::number(rows.size()));
         fields.insert(QStringLiteral("WORLD_MAP_POINTS"),rows.isEmpty()
-            ?QStringLiteral("{0,0,0}"):rows.join(QLatin1Char(',')));
+            ?QStringLiteral("{0,0,0,65535,0}"):rows.join(QLatin1Char(',')));
     }
     fields.insert(QStringLiteral("HAS_DROP_TILEMAP"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.h")))
@@ -1056,8 +1214,16 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("DEFEAT_SUBTITLE"),QStringLiteral("DEFEAT_BG"),
         QStringLiteral("DEFEAT_BORDER"),QStringLiteral("DEFEAT_TEXT"),
         QStringLiteral("DEFEAT_ACCENT"),QStringLiteral("DEFEAT_X"),QStringLiteral("DEFEAT_Y"),
+        QStringLiteral("DEFEAT_OUTLINE"),QStringLiteral("DEFEAT_OUTLINE_COLOUR"),
+        QStringLiteral("DEFEAT_SCALE_X"),QStringLiteral("DEFEAT_SCALE_Y"),
+        QStringLiteral("DEFEAT_ATLAS"),QStringLiteral("DEFEAT_ATLAS_W"),QStringLiteral("DEFEAT_ATLAS_H"),
+        QStringLiteral("DEFEAT_TILE"),QStringLiteral("DEFEAT_CELLS"),QStringLiteral("DEFEAT_FLIPS"),
         QStringLiteral("WORLD_MAP_COUNT"),QStringLiteral("WORLD_MAP_WIDTH"),
         QStringLiteral("WORLD_MAP_HEIGHT"),QStringLiteral("WORLD_MAP_POINTS"),
+        QStringLiteral("WORLD_MAP_BORDER_COLOUR"),QStringLiteral("WORLD_MAP_FLAG_FLASH_COLOUR"),
+        QStringLiteral("WORLD_MAP_TILES"),QStringLiteral("WORLD_MAP_COLS"),QStringLiteral("WORLD_MAP_ROWS"),
+        QStringLiteral("WORLD_MAP_TILE_SIZE"),QStringLiteral("WORLD_MAP_ATLAS"),
+        QStringLiteral("WORLD_MAP_ATLAS_W"),QStringLiteral("WORLD_MAP_ATLAS_H"),
         QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
         QStringLiteral("DROP_HITBOX_W"),QStringLiteral("DROP_HITBOX_H")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),

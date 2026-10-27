@@ -350,10 +350,34 @@ void gameadventure_setup(void)
         @IDE{DEFEAT_ENABLED}u,@IDE{DEFEAT_TITLE},@IDE{DEFEAT_SUBTITLE},
         @IDE{DEFEAT_BG}u,@IDE{DEFEAT_BORDER}u,@IDE{DEFEAT_TEXT}u,
         @IDE{DEFEAT_ACCENT}u,@IDE{DEFEAT_X}u,@IDE{DEFEAT_Y}u);
+    game_adventure_defeat_note_source(gameworlds_fatal_hit_note);
+    gameworlds_fresh_start_enable(@IDE{DEFEAT_ENABLED}u);
+    game_adventure_defeat_session(gameworlds_session_can_reload,
+                                  gameworlds_title_request,gameworlds_ui_fade);
+    {
+        static const uint16_t defeat_cells[9]={@IDE{DEFEAT_CELLS}};
+        static const uint8_t defeat_flips[9]={@IDE{DEFEAT_FLIPS}};
+        uint16_t defeat_aw=0u,defeat_ah=0u;
+        const uint8_t *defeat_pixels=gameassets_find_ppb(@IDE{DEFEAT_ATLAS},&defeat_aw,&defeat_ah);
+        game_adventure_defeat_style(@IDE{DEFEAT_SCALE_X}u,@IDE{DEFEAT_SCALE_Y}u,
+            @IDE{DEFEAT_OUTLINE}u,@IDE{DEFEAT_OUTLINE_COLOUR}u,
+            defeat_pixels,@IDE{DEFEAT_ATLAS},@IDE{DEFEAT_ATLAS_W}u,@IDE{DEFEAT_ATLAS_H}u,
+            @IDE{DEFEAT_TILE}u,defeat_cells,defeat_flips);
+    }
     {
         static const game_adventure_map_point_t map_points[]={@IDE{WORLD_MAP_POINTS}};
+        static const uint16_t map_tiles[]={@IDE{WORLD_MAP_TILES}};
+        static const game_adventure_map_animation_t map_animations[]={@IDE{WORLD_MAP_ANIMATIONS}};
+        uint16_t map_aw=0u,map_ah=0u;
+        const uint8_t *map_pixels=gameassets_find_ppb(@IDE{WORLD_MAP_ATLAS},&map_aw,&map_ah);
+        game_adventure_world_map_boundary(@IDE{WORLD_MAP_BORDER_COLOUR}u);
+        game_adventure_world_map_flag_flash(@IDE{WORLD_MAP_FLAG_FLASH_COLOUR}u);
+        game_adventure_world_map_animations(map_animations,@IDE{WORLD_MAP_ANIM_COUNT}u);
         game_adventure_world_map(map_points,@IDE{WORLD_MAP_COUNT}u,
            @IDE{WORLD_MAP_WIDTH}u,@IDE{WORLD_MAP_HEIGHT}u,gameworlds_active);
+        game_adventure_world_map_tiles(map_tiles,@IDE{WORLD_MAP_COLS}u,@IDE{WORLD_MAP_ROWS}u,
+             map_pixels,@IDE{WORLD_MAP_ATLAS},@IDE{WORLD_MAP_ATLAS_W}u,
+             @IDE{WORLD_MAP_ATLAS_H}u,@IDE{WORLD_MAP_TILE_SIZE}u);
     }
     /* Keep the runtime journal pointed at the project-wide quest manager.
      * Registration follows game_adventure_start() because a world load resets

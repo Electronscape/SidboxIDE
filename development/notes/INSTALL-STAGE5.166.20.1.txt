@@ -1,0 +1,50 @@
+SIDBOX / CODERGIRL IDE - STAGE 5.166.20.1 HOTFIX
+27 October 2026
+================================================
+
+INSTALLATION
+------------
+Apply this small drop-in over Stage 5.166.20, retaining paths.
+Rebuild CoderGirl IDE on Fedora. The splash should say:
+    Build: 5.166.20.1.271026
+
+ROOT CAUSE AND FIX
+------------------
+In gamerpguieditors.h:152, the Defeat Screen PPB chooser callback
+used [=] and accessed the local QDialog named dialog. The implicit
+capture attempted to copy a noncopyable QDialog into the callback.
+It also made &dialog a pointer to const inside the callback, which
+QFileDialog::getOpenFileName and QMessageBox::warning cannot accept.
+The chooser now explicitly captures dialog by reference ([=, &dialog]).
+The lifetime is safe: the callback is bound to that same modal dialog
+and runs only until the modal designer returns.
+
+The Defeat Screen PPB preview uses QImage::flipped(Qt::Orientations)
+instead of deprecated QImage::mirrored(bool,bool), matching other
+Qt6 source in this IDE. No visual or flip-axis changes intended.
+
+CONTENTS
+--------
+  gamerpguieditors.h  (fix QDialog capture and Qt6 flipping)
+  splashscreenwidget.cpp  (updated build version)
+  development/tests/test_stage5166_20_1_qt_dialog_capture.py
+  INSTALL-STAGE5.166.20.1.txt
+
+NO NEED TO REBUILD THE GAME
+---------------------------
+This is an IDE Qt6 compilation hotfix only. No game-generation,
+Adventure runtime, TFCard save, quest, world-map data or main.c changes.
+
+TESTING HERE
+------------
+* Actual callback capture compiled with a deliberately noncopyable
+  C++ dialog mock; ensures accidental [=] regresses with a compile error.
+* Qt6 flip API/source contract confirmed.
+* Native painted world-map and defeat/fade renderer test passed.
+* Qt slots-macro hotfix regression passed.
+* Day/night, save/reload, quest notification, save-slot selector,
+  budget guard, Logic Flow, TFCard, journal layout and glyph tests passed.
+
+Qt6 development headers and a Fedora IDE GUI build are unavailable in
+this environment; the actual Qt6 build and live dialog still need
+checking on the user's Fedora machine.

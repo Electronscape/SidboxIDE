@@ -1,0 +1,37 @@
+SIDBOX / CoderGirl IDE - Stage 5.166.26 (27 October 2026)
+======================================================
+
+Apply the complete source archive over Stage 5.166.25 and rebuild the IDE.
+The splash screen must show Build: 5.166.26.271026.
+
+World Map Designer
+- Runtime world boundary colour now lives in the RIGHT-HAND sidebar immediately
+  below Preview palette (game resources), alongside the flag flash colour.
+- The chosen boundary CLUT index also colours the canvas boundary preview.
+- Palette changes redraw 256px cached map sections rather than removing and
+  recreating up to 16,384 individual Qt scene items.
+- Flood fill and Fill empty paint all cells in memory, then repaint each
+  affected section only once. Pixel/tile IDs saved in world-map.json are NOT
+  changed by the cache; the format remains version 1.
+- Each palette change now reads the palette resources once instead of doing a
+  separate disk read for every world marker. The selected atlas is decoded
+  only once per selection, rather than on every palette change.
+
+Return to Title -> New Game / Load Game
+- The gameworlds manager explicitly redisplays the selected world's direct
+  background PPB after returning from the title menu, including same-world
+  restarts. This does not depend on the old user-owned main.c detecting a world
+  name change. Existing reload_revision logic remains available in new mains.
+- No edits to user-owned main.c are required for the direct-background case.
+
+After installation
+1. Open the World Map Designer, choose the desired boundary CLUT colour and
+   save the map. Generate/Update ALL worlds so the new colour is embedded.
+2. Regenerate the game project (V1), rebuild and refresh TFCard files.
+3. Test no-save death -> title -> New Game, and death -> title -> Load Game
+   with a prior saved slot. Confirm the direct background is visible.
+
+Validation
+- C runtime title-enabled and title-disabled regression tests passed.
+- Existing native defeat/flood-fill runtime tests passed.
+- Qt6 GUI and real SIDBOX hardware were not available for build/testing here.

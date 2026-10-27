@@ -1,0 +1,49 @@
+SIDBOX CoderGirl IDE Stage 5.166.36.271026
+DEFEAT FIRE1 -> TITLE INPUT RELEASE GATE (V1)
+=============================================
+
+CAUSE
+-----
+The Defeat screen (with no available checkpoints) correctly requests a title
+return when FIRE1 is pressed. However, the generated title runtime started its
+input edge detector with previous=0, so the very same physically held FIRE1
+was read as a NEW title-menu confirm on the first title VBlank. If the first
+Start Game action targeted Forest, it automatically loaded Forest without
+allowing the player to select anything in the title menu.
+
+FIX
+---
+File: idelibs/codehelpers/game/gametitle-runtime.rulec
+Function: gametitle_run()
+The title now waits for BOTH FIRE1 and FIRE2 to be released once before it
+accepts new menu presses. After release, a FRESH press works normally.
+This fixes the no-checkpoint death -> FIRE1 -> accidental instant New Game
+sequence without changing defeat slot logic, save formats, world transitions,
+or user-owned main.c.
+
+NOTE: TITLE TARGET
+------------------
+The user's previously uploaded .sidbox-title-screen.json specifies its first
+Start Game action's world as "forest". The title runtime intentionally follows
+that configuration after a NEW press. If World1 should be the starting level,
+change the Start Game destination in the Title Screen Designer to world1 and
+select the intended named spawn position.
+
+INSTALL
+-------
+1. Apply the hotfix over Stage 5.166.35, or install the complete IDE.
+2. Rebuild the IDE; confirm splash Build: 5.166.36.271026.
+3. Run Update ALL Worlds / Update Game Project so gamehelpers/gametitle.c is
+   regenerated from the corrected template.
+4. Rebuild the V1 game and deploy to SIDBOX.
+
+DO NOT replace or edit the hand-owned main.c for this fix.
+
+TESTS
+-----
+PASS: native C11 compilation and execution of the actual gametitle_run()
+function extracted from the edited production template. Tests held FIRE1 from
+defeat, release + fresh press, initial released state, and held FIRE2.
+PASS: existing Stage 5.166.31-5.166.35 selected regressions (Qt lambda syntax
+check, World Map Undo, animation cache, death FIRE2/reload, clean title sessions).
+Full Qt6 GUI build and actual SIDBOX hardware verification remain outstanding.

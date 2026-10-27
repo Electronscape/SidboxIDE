@@ -34,7 +34,7 @@ static const char *current(void){return "Forest";}
 void test_colour(uint8_t c){(void)c;}
 void test_text(int x,int y,const char *s){(void)x;(void)y;
   if(strstr(s,"DEFEATED"))drawn_defeat++;
-  if(strstr(s,"WORLD MAP"))drawn_map++;
+  if(strstr(s,"WORLD MAP") || !strcmp(s,"Forest"))drawn_map++;
 }
 void test_rect(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 void test_bob(gfxbob_t *b){(void)b;}
@@ -45,6 +45,7 @@ int main(void){
  input(0);assert(!ga_defeat_open && ga_defeat_armed);
  hp=0;input(0);assert(ga_defeat_open && ga_defeat_slot==8u);
  assert(game_adventure_open());assert(game_adventure_gameplay_buttons(BTN_FIRE)==0u);
+ for(int i=0;i<50;++i)input(0); /* Current death screen fades in over 50 frames. */
  game_adventure_draw(0,0,0,0);assert(drawn_defeat);
  input(BTN_FIRE);assert(reloads==1u && chosen==8u);
  input(0);input(BTN_LEFT);assert(ga_defeat_slot==3u);
@@ -54,7 +55,7 @@ int main(void){
  /* A successful world reload reinitialises Adventure, removing the modal. */
  game_adventure_start(0,0,0,0,0,0,0,0,0,8,0,1,0,0);
  assert(!ga_defeat_open);
- static const game_adventure_map_point_t points[]={{600,400,"Forest"},{200,120,"World1"}};
+ static const game_adventure_map_point_t points[]={{600,400,"Forest",65535u,0u},{200,120,"World1",65535u,0u}};
  game_adventure_world_map(points,2,1024,768,current);
  ga_map_open=1u;
  game_adventure_draw(0,0,0,0);assert(drawn_map>0u);
@@ -69,7 +70,7 @@ int main(void){
  subprocess.run([str(p/'adv')],check=True)
  # The Adventure harness uses a minimal SDK mock. The world tests need full SDK headers.
  (p/'apis.h').unlink()
- flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False}
+ flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
  extra=r'''
 static unsigned object_calls,npc_calls;
 static uint8_t last_object_action,last_npc_action;

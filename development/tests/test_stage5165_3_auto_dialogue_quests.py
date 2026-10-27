@@ -39,7 +39,7 @@ sys.path.insert(0,str(ROOT/'development/tests'))
 from test_stage5163_rules_flow_audit import render
 folder=ROOT/'idelibs/codehelpers/game'
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,
-       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False}
+       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
 quest_data='''#define GW_QUEST_COUNT 1u
 #define GW_OBJECTIVE_COUNT 1u
 typedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;

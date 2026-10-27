@@ -1,0 +1,12 @@
+CODERGIRL STAGE 5.166.23 (27 Oct 2026)
+Install: Extract the DROPIN ZIP over Stage 5.166.22, preserving paths, then rebuild the Qt IDE.
+Splash: Build: 5.166.23.271026
+Runtime updates: Update ALL Worlds / Update Game Project, rebuild game and transfer.
+
+World Map: Runtime boundary uses its own project palette index. Rendering is constrained to the HUD-aware journal viewport. Designer exposes boundary colour picker and one-shot, arm/cancel flood-fill bucket. Select replacement atlas tile first, arm bucket, click source tile. Flood uses iterative heap-backed storage (not recursion or a large stack array).
+
+Defeat: Reserved description line below heading; optional Game Object Death note authored in object properties, passed from fatal Health hits. Unsaved new-game death requests actual generated title when available; no-title projects retain the safe snapshot restart. This is deferred to the game-world update boundary. Loaded/checkpoint games still use saved-slot recovery.
+
+Compatibility: Save format and user-owned main.c unchanged. Regenerate world/game sources to get runtime changes. The title return needs physical SIDBOX testing, especially with hand-maintained main.c and game-specific title initialization; do not assume hardware verified.
+
+Tests: Native existing Stage 5.166.22 fade, recovery, world map and Stage 5.166.20 map rendering plus 5.166.18 quest toast checks passed. Full Qt6 GUI compilation and real hardware remain unverified here.

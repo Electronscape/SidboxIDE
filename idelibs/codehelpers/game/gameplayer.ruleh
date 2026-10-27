@@ -34,5 +34,6 @@ uint8_t gameplayer_inventory_visible(const char *name);
 uint16_t gameplayer_custom_stat_count(void);
 const char *gameplayer_custom_stat_name(uint16_t index);
 uint8_t gameplayer_stat_get(const char *name, int32_t *out_value); /* 0 = missing */
+void gameplayer_reset_stats(void); /* New Game from title: clear loaded custom stats. */
 uint8_t gameplayer_stat_set(const char *name, int32_t value); /* 0 = missing */
 #endif

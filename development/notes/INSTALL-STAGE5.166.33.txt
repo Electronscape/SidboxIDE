@@ -1,0 +1,16 @@
+Stage 5.166.33.271026 - Death FIRE2 title exit (saved + unsaved)
+===============================================================
+Apply this stage after Stage 5.166.32. Rebuild the Qt IDE.
+
+1. Generate your project with Update ALL Worlds / Update Game Project.
+2. Check generated gamehelpers/gameworlds.c, gamehelpers/gameplayer.c,
+   and gamehelpers/gameadventureruntime.c are from this stage.
+3. Rebuild the V1 game; game source main.c belongs to the user and is not changed.
+4. On SIDBOX: Load Game, die, FIRE2 => title. Then choose Start Game and
+   Load Game on separate runs to verify correct state restoration.
+5. Check title Start Game world matches your intended starting world.
+   The supplied test-game archive selected 'forest' in title settings
+   while the user's own main.c hardcodes WORLDLEVEL 'world1'.
+
+FIRE1 = selected occupied slot; FIRE2 = title. With no saves either FIRE works.
+No save-file schema change. Complete native C tests pass. Qt GUI/hardware untested.

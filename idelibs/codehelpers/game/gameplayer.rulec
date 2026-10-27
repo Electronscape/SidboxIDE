@@ -59,6 +59,10 @@ typedef struct {
 static gameplayer_stat_entry_t gameplayer_stats[] = {
 @IDE{CUSTOM_STAT_ROWS}    {0, 0, 0}
 };
+void gameplayer_reset_stats(void) {
+    for(uint16_t i=0;i<@IDE{CUSTOM_STAT_COUNT}u;++i)
+        gameplayer_stats[i].value=gameplayer_stats[i].initial;
+}
 uint16_t gameplayer_custom_stat_count(void) { return @IDE{CUSTOM_STAT_COUNT}u; }
 const char *gameplayer_custom_stat_name(uint16_t index) {
     return index < gameplayer_custom_stat_count() ? gameplayer_stats[index].name : 0;

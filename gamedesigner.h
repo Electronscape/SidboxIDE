@@ -168,6 +168,7 @@ private:
         int objectFadeDelay = 2; // 50 Hz game frames between steps.
         bool objectFadePingpong = true; // Reverse, or loop from high back to low.
         int hazardDamage = 1; // Legacy damage magnitude.
+        QString deathNote; // Optional message shown if this Game Object delivers a fatal Health hit.
         QString damageTarget = QStringLiteral("health"); // health/lives/score/coins/stat:<name>
         int damageDelta = -1; // Signed change on an accepted hit. Positive heals.
         bool damageConfigured = false; // Older files retain their historic hazardDamage setting.

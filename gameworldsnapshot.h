@@ -23,6 +23,7 @@
 #include <QUuid>
 #include "gametilemap.h"
 #include "gamehelpertemplates.h"
+#include "gametitleruntime.h"
 #include "gameplayerprofile.h"
 #include "gamequestgen.h"
 
@@ -726,6 +727,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     // block (notably HAS_PICKUPS / HAS_ADVENTURE_RUNTIME / HAS_SHARED_PLAYER).
     // That could emit malformed C or leave stray directives in valid worlds.
     const QMap<QString, QString> conditionFlags = {
+        {QStringLiteral("HAS_TITLE"), GameTitleRuntime::enabled(project.absolutePath()) ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_ADVENTURE_RUNTIME"), anyAdventure ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_WORLD_PHYSICS"), anyWorldPhysics ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_PICKUPS"), anyPickups ? QStringLiteral("1") : QStringLiteral("0")},

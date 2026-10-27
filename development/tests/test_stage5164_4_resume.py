@@ -28,7 +28,7 @@ assert 'existingH.contains("game_tile_player_current(void)")' in ui
 # hand-maintained main.c ignores the marker and starts a default world.
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,
        'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,
-       'HAS_PLAYER_VISIBILITY':False}
+       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
 source=render(world,flags)
 functions='''static void fake_save(void (*)(const void*,uint32_t,void*),void*);
 static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);

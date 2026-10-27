@@ -110,11 +110,43 @@ void game_adventure_defeat_setup(const uint32_t *health,
                                  uint8_t enabled,const char *heading,const char *subtitle,
                                  uint8_t background,uint8_t border,uint8_t text,
                                  uint8_t accent,uint16_t title_x,uint16_t title_y);
-typedef struct {int16_t x,y;const char *name;} game_adventure_map_point_t;
+/* Optional run policy and CLUT fade. Null callbacks preserve older clients. */
+/* Call immediately after applying a fatal Health hit, before the next draw.
+ * Passing null/empty uses the project's default Defeat description. */
+void game_adventure_defeat_note(const char *note);
+void game_adventure_defeat_note_source(const char *(*source)(void));
+void game_adventure_defeat_session(uint8_t (*allowed)(void),uint8_t (*restart)(void),
+                                  void (*fade)(uint8_t));
+void game_adventure_defeat_style(uint8_t scale_x,uint8_t scale_y,
+                               uint8_t outline,uint8_t outline_colour,
+                               const uint8_t *pixels,const char *path,
+                               uint16_t atlas_w,uint16_t atlas_h,uint8_t tile,
+                               const uint16_t cells[9],const uint8_t flips[9]);
+typedef struct {int16_t x,y;const char *name;uint16_t flag_cell;uint8_t flag_2x2;} game_adventure_map_point_t;
+/* Sorted ascending by 0-based atlas cell. Same VBlank/loop/ping-pong
+ * semantics as the Visual Tilemap Editor. */
+typedef struct {
+    uint16_t cell;
+    uint8_t frames, frame_ticks, loop, bounce;
+} game_adventure_map_animation_t;
 /* All map coordinates are project-wide canvas positions in pixels. */
+/* Runtime boundary CLUT index, independent of the Quest Journal skin. */
+void game_adventure_world_map_boundary(uint8_t colour);
+void game_adventure_world_map_flag_flash(uint8_t colour);
+/* Nonzero only while the World Map modal is visible. For user-owned main.c,
+ * gate the scene render with this; keep HUD, adventure draw and swap active. */
+uint8_t game_adventure_world_map_is_open(void);
 void game_adventure_world_map(const game_adventure_map_point_t *points,
                               uint16_t count,uint16_t width,uint16_t height,
                               const char *(*current_world)(void));
+/* Tiles use 0xffff for empty; atlas cell IDs are 0-based, row-major.
+ * Shared map PPB lives in the project and can be read from TFCard. */
+void game_adventure_world_map_animations(const game_adventure_map_animation_t *animations,
+                                          uint16_t count);
+void game_adventure_world_map_tiles(const uint16_t *cells,uint16_t columns,uint16_t rows,
+                                    const uint8_t *pixels,const char *path,
+                                    uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size);
+
 
 
 typedef void (*game_adventure_choice_signal_t)(uint16_t node, uint8_t answer);

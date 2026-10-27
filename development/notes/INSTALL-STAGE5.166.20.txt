@@ -1,0 +1,57 @@
+SIDBOX / CODERGIRL IDE  STAGE 5.166.20  27 October 2026
+======================================================
+
+INSTALL
+  Install this drop-in OVER the complete Stage 5.166.19.1 IDE source tree.
+  Preserve relative paths, then rebuild the IDE on Fedora/Qt6.
+  Verify splash: Build: 5.166.20.271026
+  Open the game and run Update ALL Worlds / Update Game Project, then rebuild
+  the V1 applet for runtime features. The user-owned main.c stays untouched.
+
+WORLD MAP TILE PAINTER
+  Quests > World Map Designer...
+  The designer now edits .codergirl/world-map.json using a project-local PPB
+  atlas and a 2D paint grid. Choose 8px or 16px native cells (default 16px).
+  Click a PPB atlas tile to select it, LEFT-DRAG over the map to paint,
+  RIGHT-DRAG to erase. Drag a world marker in the editor to position it.
+  Each world has independent flag art using either one atlas cell or a
+  contiguous 2x2 block. Select flags in the right-hand editor controls.
+  The active world flag blinks at runtime and the map automatically pans to
+  the current world on opening. Top-left text names that world.
+  Runtime touch-DRAG panning was REMOVED; the D-pad pans and FIRE2 returns to
+  the Quest Journal. Touching the open Quest Journal still opens the map.
+
+  Artwork uses the game's existing PPB format and native palette indices.
+  Maximum 16,384 painted map cells. 16x16 is the recommended default for
+  the 480x320 SIDBOX; a fully painted 8x8 screen may draw many more BOBs.
+  An old marker-only world-map.json remains loadable and now exports no
+  empty artwork array, preserving your V1 applet RAM allowance.
+  The map art and positions remain project-wide, not game save data.
+
+DEFEAT SCREEN DESIGNER
+  Quests > Defeat Screen...
+  Enable the defeat screen, choose heading/subtitle and palette indices,
+  glyph X/Y scaling, optional outline and outline palette index. You can
+  select a separate PPB nine-slice frame using nine individually configured
+  cell indices and X/Y flip settings. A live Qt preview shows the frame.
+  Styling is saved in .codergirl/defeat-screen.json (compatible version 1).
+  The game first fades gameplay to black via an ordered 4x4 dither mask
+  over 25 frames, then fades in the styled defeat screen over 25 frames.
+  Existing ten-slot selection and safe deferred load behaviour are retained.
+  With no saved game, NO SAVED GAME AVAILABLE is shown. A new-game restart
+  is not implemented in this release.
+
+SAFETY AND COMPATIBILITY
+  Retains Stage 5.166.19.1's Qt `slots` macro hotfix.
+  Uses the same dual-bank TFCard save format and loaded quest state.
+  No changes to world day/night actions, save-slot selector, inventory,
+  journal, or Logic Flow. No new main.c integration required.
+
+VALIDATION PERFORMED HERE
+  Native GCC render/input regression for painted map, 2x2 flags, camera
+  centring, D-pad, defeat style and fade passed. Existing RPG/day-night,
+  save reload, checkpoint, quest discovery, journal layout and logic-flow
+  tests passed. Static checks cover source/template field presence.
+  WARNING: Qt6 development headers and a physical SIDBOX are unavailable in
+  this environment. The full IDE GUI compilation, visual preview behaviour,
+  PPB performance, and actual LCD transitions need Fedora/hardware testing.

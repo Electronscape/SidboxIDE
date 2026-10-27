@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native compiled save test: exact live-player position, not world start."""
-EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
+EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
 
 from pathlib import Path
 import subprocess, sys, tempfile
@@ -10,7 +10,7 @@ from test_stage5163_rules_flow_audit import render
 src=ROOT/'idelibs/codehelpers/game'
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,
        'HAS_SHARED_PLAYER':True,'HAS_WORLD_PHYSICS':False,
-       'HAS_PLAYER_VISIBILITY':False}
+       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
 text=render((src/'gameworlds.rulec').read_text(),flags)
 record='''{.name="world1",.start_x=10,.start_y=20,.start_facing=1,.map=(void*)0x1234,
 .object_disk_export=fake_save,.story_disk_export=fake_save,
@@ -33,6 +33,12 @@ static uint8_t player_available=1;
 gfxbob_t gameplayer_sprite;
 const game_tile_player_t *game_tile_player_current(void) {
     return player_available ? &fake_player : NULL;
+}
+/* New same-world defeat reload repositions live physics without requiring
+ * owner-maintained main.c to implement an explicit reload callback. */
+void game_tile_player_reset(game_tile_player_t *p,int16_t x,int16_t y) {
+    p->x100=(int32_t)x*100;p->y100=(int32_t)y*100;
+    p->vy100=0;p->on_ground=0;
 }
 uint8_t gameplayer_apply_physics(game_tile_player_t *p,uint8_t profile) {
     (void)p;(void)profile;return 1;

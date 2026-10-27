@@ -46,7 +46,7 @@ flags = {
     'HAS_SHARED_PLAYER': False,
     'HAS_WORLD_PHYSICS': False,
     'HAS_PLAYER_VISIBILITY': False,
-}
+ 'HAS_TITLE':False}
 text = render(source.read_text(), flags)
 rows = []
 for world in ('world1', 'forest'):

@@ -26,6 +26,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->damage_target = 0;
     object->damage_delta = -1;
     object->damage_stat_name = 0;
+    object->death_note = 0;
     object->conveyor_speed = 0;
     object->spring_strength = @IDE{SPRING_STRENGTH_DEFAULT};
     object->spring_launch_x = 0; /* Default remains a straight-up bounce. */
@@ -235,6 +236,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
     p->hurt_damage_this_frame = 0;
     p->hurt_stat_delta = 0;
     p->hurt_stat_target = 0;
+    p->hurt_death_note = 0;
     p->hurt_stat_name = 0;
     if (p->hurt_ticks_remaining) {
         --p->hurt_ticks_remaining;
@@ -708,6 +710,22 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
 }
 
 /* Death Zones are sensors, not solid objects or standing surfaces. */
+const char *game_world_objects_death_zone_note(const game_world_object_t *objects,
+    uint16_t count, int32_t x, int32_t y, uint16_t w, uint16_t h)
+{
+    if (!objects || !w || !h) return 0;
+    for (uint16_t i = 0; i < count; ++i) {
+        const game_world_object_t *o = &objects[i];
+        if (!o->active || o->type != GAME_OBJECT_DEATH_ZONE ||
+            !o->width || !o->height) continue;
+        if ((int64_t)x < (int64_t)o->x + o->width &&
+            (int64_t)x + w > o->x &&
+            (int64_t)y < (int64_t)o->y + o->height &&
+            (int64_t)y + h > o->y) return o->death_note;
+    }
+    return 0;
+}
+
 uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
                                       uint16_t count, int32_t x, int32_t y,
                                       uint16_t w, uint16_t h)
@@ -839,6 +857,7 @@ void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
         p->hurt_stat_delta = o->damage_delta;
         p->hurt_stat_target = o->damage_target;
         p->hurt_stat_name = o->damage_stat_name;
+        p->hurt_death_note = o->death_note;
         p->hurt_anim_active = o->hazard_hurt_animation;
         p->hurt_flash_active = o->hazard_flash;
         p->hurt_flash_colour = o->hazard_flash_colour;

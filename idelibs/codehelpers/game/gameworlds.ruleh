@@ -68,6 +68,26 @@ uint8_t gameworlds_slot_exists(uint8_t slot);
 /* In-game load: validate now, then restore at gameworlds_apply_pending(),
  * preserving the dual-bank save format and live world lifetime rules. */
 uint8_t gameworlds_reload_request(uint8_t slot);
+/* Session policy: Start Game may only recover saves written in this run;
+ * Load Game explicitly enables existing saved slots. */
+uint8_t gameworlds_session_can_reload(void);
+/* Without a title screen, recover an unsaved run from its initial memory
+ * snapshot at the next safe world boundary. With a title screen, New Game
+ * ALWAYS starts a clean session at the title action's world/named spawn. */
+uint8_t gameworlds_restart_request(void);
+/* Return to the generated title menu at the NEXT safe world boundary,
+ * whether playing fresh or from a selected save slot. Without a title the
+ * old unsaved-only fresh restart fallback remains available. */
+uint8_t gameworlds_title_request(void);
+/* Latest accepted health hit, cleared while player remains alive. */
+const char *gameworlds_fatal_hit_note(void);
+/* Opt in only when a Defeat Screen is actually enabled, avoiding otherwise
+ * unnecessary initial-run snapshot memory in existing games. */
+void gameworlds_fresh_start_enable(uint8_t enabled);
+/* Same-world reload still counts as a new world/player binding. */
+uint32_t gameworlds_reload_revision(void);
+/* True uniform screen fade for the Adventure defeat overlay. */
+void gameworlds_ui_fade(uint8_t brightness);
 uint8_t gameworlds_last_saved_slot(void); /* 255 if none in this session */
 uint8_t gameworlds_checkpoint_request(uint8_t slot);
 const char *gameworlds_saved_world(void);

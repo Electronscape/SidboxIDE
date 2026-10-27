@@ -7533,6 +7533,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard springCard = makeCard(tr("Spring / Bouncer"));
     const PropertyCard breakCard = makeCard(tr("Breakable"));
     const PropertyCard hazardCard = makeCard(tr("Damage / Knockback / Hurt Effects"));
+    const PropertyCard deathNoteCard = makeCard(tr("Defeat Screen / Death Note"));
     const PropertyCard enemyCard = makeCard(tr("Stompable Enemy"));
     const PropertyCard particleCard = makeCard(tr("Scenery Particle Spawner"));
     const PropertyCard gotoCard = makeCard(tr("Goto World"));
@@ -8897,6 +8898,12 @@ void SidboxGameDesigner::configureGameObject(int index)
                               "Negative removes, positive rewards or heals."));
     form->addRow(tr("Damage target stat"),damageTarget);
     form->addRow(tr("Stat change (+/-)"),damageDelta);
+    auto *deathNote=new QLineEdit(old.deathNote,&dialog);
+    deathNote->setMaxLength(110);
+    deathNote->setPlaceholderText(tr("You were killed by a spikey mushroom"));
+    deathNote->setToolTip(tr("Optional Defeat Screen description for a fatal Murder Object / Enemy Health hit, "
+                             "or when a Hazard Zone callback kills the player. Blank uses the default description."));
+    deathNoteCard.form->addRow(tr("Death note"),deathNote);
     form->addRow(QString(), hazardKick);
     form->addRow(tr("Knockback X"), quickValue(hazardKickX));
     form->addRow(tr("Knockback Y"), quickValue(hazardKickY));
@@ -9206,7 +9213,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     propertiesLayout->setSpacing(7);
     for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
          collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
-         enemyCard, particleCard, gotoCard, hazardCard,
+         enemyCard, particleCard, gotoCard, hazardCard, deathNoteCard,
          audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
          audioBreakCard, audioHazardCard, audioOptionsCard}) {
         propertiesLayout->addWidget(card.panel);
@@ -9729,6 +9736,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         springCard.panel->setVisible(isSpring);
         breakCard.panel->setVisible(isBreak);
         hazardCard.panel->setVisible(isHazard || isEnemy);
+        deathNoteCard.panel->setVisible(isHazard || isEnemy || behaviour == QStringLiteral("deathzone"));
         enemyCard.panel->setVisible(isEnemy);
         const bool isParticle = behaviour == QStringLiteral("particle_emitter");
         particleCard.panel->setVisible(isParticle);
@@ -10159,6 +10167,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.objectFadeDelay = fadeDelay->value();
     r.objectFadePingpong = fadePingpong->isChecked();
     r.hazardDamage = qAbs(damageDelta->value());
+    r.deathNote = deathNote->text().trimmed().left(110);
     r.damageTarget = damageTarget->currentData().toString();
     r.damageDelta = damageDelta->value();
     r.damageConfigured = true;

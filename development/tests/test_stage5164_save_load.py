@@ -14,7 +14,7 @@ from test_stage5163_rules_flow_audit import render
 folder=ROOT/'idelibs/codehelpers/game'
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,
        'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,
-       'HAS_PLAYER_VISIBILITY':False}
+       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
 declarations='''static void fake_save(void (*)(const void*,uint32_t,void*),void*);
 static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);
 '''

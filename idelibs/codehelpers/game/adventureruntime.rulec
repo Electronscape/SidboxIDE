@@ -67,8 +67,8 @@ typedef struct {
     uint8_t *pixels;
     uint16_t width, height;
 } ga_owned_ppb_t;
-/* Reserve one extra resident PPB for the project-wide Quest Journal skin. */
-static ga_owned_ppb_t ga_loaded_ppbs[GA_MAX_ITEMS+1u];
+/* Reserve three extra PPBs for Quest Journal, Defeat Screen and World Map. */
+static ga_owned_ppb_t ga_loaded_ppbs[GA_MAX_ITEMS+3u];
 static uint16_t ga_loaded_ppb_count;
 static void ga_release_owned_ppbs(void)
 {
@@ -86,7 +86,7 @@ static const uint8_t *ga_load_ppb(const char *path,uint16_t width,uint16_t heigh
             return ga_loaded_ppbs[i].width==width && ga_loaded_ppbs[i].height==height
                 ? ga_loaded_ppbs[i].pixels : 0;
         }
-    if(ga_loaded_ppb_count>=GA_MAX_ITEMS+1u) return 0;
+    if(ga_loaded_ppb_count>=GA_MAX_ITEMS+3u) return 0;
     ga_owned_ppb_t *entry=&ga_loaded_ppbs[ga_loaded_ppb_count++];
     entry->path=path; entry->width=width; entry->height=height;
     const uint32_t size=(uint32_t)width*height;
@@ -427,25 +427,79 @@ static uint8_t (*ga_save_request)(uint8_t);
 static uint8_t (*ga_save_exists)(uint8_t);
 /* These UI-only values never enter the TFCard save schema. */
 static const uint32_t *ga_defeat_health;
+static uint8_t (*ga_defeat_session_can_reload)(void),(*ga_defeat_restart)(void);
+static void (*ga_defeat_fade_palette)(uint8_t);
 static uint8_t (*ga_defeat_reload)(uint8_t),(*ga_defeat_exists)(uint8_t),(*ga_defeat_last)(void);
 static uint8_t ga_defeat_enabled,ga_defeat_open,ga_defeat_armed,ga_defeat_slot;
+static uint8_t ga_defeat_restart_failed;
 static uint8_t ga_defeat_occupied[10],ga_defeat_bg,ga_defeat_border,ga_defeat_text,ga_defeat_accent;
 static uint16_t ga_defeat_title_x,ga_defeat_title_y;
-static const char *ga_defeat_heading,*ga_defeat_subtitle;
+static uint16_t ga_defeat_fade_tick;
+static uint8_t ga_defeat_scale_x=1u,ga_defeat_scale_y=2u,ga_defeat_outline,ga_defeat_outline_colour;
+static const uint8_t *ga_defeat_skin_pixels;
+static uint16_t ga_defeat_skin_w,ga_defeat_skin_h,ga_defeat_cells[9];
+static uint8_t ga_defeat_tile,ga_defeat_flips[9];
+static const char *ga_defeat_heading,*ga_defeat_subtitle,*ga_defeat_hit_note;
+static const char *(*ga_defeat_note_source)(void);
+void game_adventure_defeat_note(const char *note){ga_defeat_hit_note=(note&&*note)?note:0;}
+void game_adventure_defeat_note_source(const char *(*source)(void))
+{ga_defeat_note_source=source;}
 static const game_adventure_map_point_t *ga_map_points;
 static uint16_t ga_map_count,ga_map_w,ga_map_h;
 static const char *(*ga_map_current)(void);
-static uint8_t ga_map_open,ga_map_drag;
+static uint8_t ga_map_open;
 static int16_t ga_map_pan_x,ga_map_pan_y;
-#if GA_QUEST_HAS_TOUCH
-static int16_t ga_map_touch_x,ga_map_touch_y;
-#endif
+static const uint16_t *ga_map_cells;
+static uint16_t ga_map_columns,ga_map_rows,ga_map_atlas_w,ga_map_atlas_h;
+static const uint8_t *ga_map_pixels;
+static uint8_t ga_map_tile_size;
+static uint16_t ga_map_flash_frames;
+static const game_adventure_map_animation_t *ga_map_animations;
+static uint16_t ga_map_animation_count;
+void game_adventure_world_map_animations(const game_adventure_map_animation_t *animations,
+                                          uint16_t count)
+{
+    ga_map_animations=animations;
+    ga_map_animation_count=animations && count<=256u ? count : 0u;
+}
+/* Binary lookup keeps moving water cheap even on large painted maps. */
+static uint16_t ga_map_animated_cell(uint16_t cell)
+{
+    uint16_t lo=0u,hi=ga_map_animation_count;
+    while(lo<hi){
+        const uint16_t m=(uint16_t)(lo+(hi-lo)/2u);
+        if(ga_map_animations[m].cell<cell)lo=(uint16_t)(m+1u);
+        else hi=m;
+    }
+    if(lo==ga_map_animation_count || ga_map_animations[lo].cell!=cell)return cell;
+    const game_adventure_map_animation_t *a=&ga_map_animations[lo];
+    if(a->frames<2u || !a->frame_ticks)return cell;
+    const uint32_t step=(uint32_t)ga_map_flash_frames/a->frame_ticks;
+    uint32_t offset;
+    if(a->bounce){
+        const uint32_t last=(uint32_t)a->frames-1u,cycle=2u*last;
+        const uint32_t pos=a->loop ? step%cycle : (step<cycle?step:cycle);
+        offset=pos<=last?pos:cycle-pos;
+    }else{
+        const uint32_t last=(uint32_t)a->frames-1u;
+        offset=a->loop ? step%a->frames : (step<last?step:last);
+    }
+    return (uint16_t)(cell+offset);
+}
+static uint8_t ga_map_border_colour=15u,ga_map_flag_flash_colour=14u;
+void game_adventure_world_map_boundary(uint8_t colour){ga_map_border_colour=colour;}
+void game_adventure_world_map_flag_flash(uint8_t colour){ga_map_flag_flash_colour=colour;}
+static int ga_map_view_top(void);
+static int ga_map_view_height(void);
 static void ga_map_clamp(void)
 {
-    const int max_x=ga_map_w>480u?(int)ga_map_w-480:0;
-    const int max_y=ga_map_h>320u?(int)ga_map_h-320:0;
-    if(ga_map_pan_x<0)ga_map_pan_x=0;
-    if(ga_map_pan_y<0)ga_map_pan_y=0;
+    /* Allow 32px of camera overtravel at the canvas edge. Otherwise a
+       marker on row zero would hide under the fixed map header. */
+    const int max_x=(ga_map_w>480u?(int)ga_map_w-480:0)+32;
+    const int map_view=ga_map_view_height();
+    const int max_y=(ga_map_h>(uint16_t)map_view?(int)ga_map_h-map_view:0)+32;
+    if(ga_map_pan_x< -32)ga_map_pan_x= -32;
+    if(ga_map_pan_y< -32)ga_map_pan_y= -32;
     if(ga_map_pan_x>max_x)ga_map_pan_x=(int16_t)max_x;
     if(ga_map_pan_y>max_y)ga_map_pan_y=(int16_t)max_y;
 }
@@ -457,8 +511,33 @@ void game_adventure_world_map(const game_adventure_map_point_t *points,
     ga_map_w=width<480u?480u:width;
     ga_map_h=height<320u?320u:height;
     ga_map_current=current_world;
-    ga_map_open=ga_map_drag=0u;
+    ga_map_open=0u;
     ga_map_pan_x=ga_map_pan_y=0;
+}
+void game_adventure_world_map_tiles(const uint16_t *cells,uint16_t columns,uint16_t rows,
+                                    const uint8_t *pixels,const char *path,
+                                    uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size)
+{
+    ga_map_cells=0;ga_map_pixels=0;ga_map_columns=ga_map_rows=0u;
+    if(!cells || !columns || !rows || !tile_size ||
+       (tile_size!=8u && tile_size!=16u) ||
+       (uint32_t)columns*rows>16384u ||
+       atlas_w%tile_size || atlas_h%tile_size ||
+       !atlas_w || !atlas_h)return;
+    ga_map_cells=cells;ga_map_columns=columns;ga_map_rows=rows;
+    ga_map_atlas_w=atlas_w;ga_map_atlas_h=atlas_h;ga_map_tile_size=tile_size;
+    ga_map_pixels=pixels?pixels:ga_load_ppb(path,atlas_w,atlas_h);
+}
+static void ga_map_center_current(void)
+{
+    const char *current=ga_map_current?ga_map_current():0;
+    if(!current || !ga_map_points)return;
+    for(uint16_t i=0u;i<ga_map_count;++i){
+        if(strcmp(current,ga_map_points[i].name)!=0)continue;
+        ga_map_pan_x=(int16_t)((int32_t)ga_map_points[i].x-240);
+        ga_map_pan_y=(int16_t)((int32_t)ga_map_points[i].y-ga_map_view_height()/2);
+        ga_map_clamp();break;
+    }
 }
 void game_adventure_defeat_setup(const uint32_t *health,
                                  uint8_t (*reload)(uint8_t),
@@ -471,7 +550,9 @@ void game_adventure_defeat_setup(const uint32_t *health,
     ga_defeat_health=health;ga_defeat_reload=reload;
     ga_defeat_exists=exists;ga_defeat_last=last_saved;
     ga_defeat_enabled=enabled&&health&&reload&&exists;
-    ga_defeat_open=ga_defeat_armed=0u;
+    ga_defeat_open=ga_defeat_armed=0u;ga_defeat_fade_tick=0u;
+    ga_defeat_restart_failed=0u;
+    ga_defeat_hit_note=0;
     ga_defeat_heading=heading?heading:"YOU ARE DEAD";
     ga_defeat_subtitle=subtitle?subtitle:"";
     ga_defeat_bg=background;ga_defeat_border=border;
@@ -479,6 +560,34 @@ void game_adventure_defeat_setup(const uint32_t *health,
     ga_defeat_title_x=title_x;ga_defeat_title_y=title_y;
 }
 
+void game_adventure_defeat_session(uint8_t (*allowed)(void),uint8_t (*restart)(void),
+                                  void (*fade)(uint8_t))
+{
+    ga_defeat_session_can_reload=allowed;
+    ga_defeat_restart=restart;
+    ga_defeat_fade_palette=fade;
+}
+void game_adventure_defeat_style(uint8_t scale_x,uint8_t scale_y,
+                               uint8_t outline,uint8_t outline_colour,
+                               const uint8_t *pixels,const char *path,
+                               uint16_t atlas_w,uint16_t atlas_h,uint8_t tile,
+                               const uint16_t cells[9],const uint8_t flips[9])
+{
+    ga_defeat_scale_x=(scale_x==1u||scale_x==2u||scale_x==4u||scale_x==8u)?scale_x:1u;
+    ga_defeat_scale_y=(scale_y==1u||scale_y==2u||scale_y==4u||scale_y==8u)?scale_y:2u;
+    ga_defeat_outline=outline?1u:0u;
+    ga_defeat_outline_colour=outline_colour;
+    ga_defeat_skin_pixels=0;ga_defeat_tile=0u;
+    if(!cells || !tile || tile>32u || tile<4u ||
+       !atlas_w || !atlas_h || atlas_w%tile || atlas_h%tile)return;
+    const uint32_t count=(uint32_t)(atlas_w/tile)*(atlas_h/tile);
+    for(uint8_t i=0;i<9u;++i){
+        if(cells[i]>=count)return;
+        ga_defeat_cells[i]=cells[i];ga_defeat_flips[i]=flips?flips[i]&12u:0u;
+    }
+    ga_defeat_skin_pixels=pixels?pixels:ga_load_ppb(path,atlas_w,atlas_h);
+    ga_defeat_skin_w=atlas_w;ga_defeat_skin_h=atlas_h;ga_defeat_tile=tile;
+}
 void game_adventure_save_slot_callbacks(uint8_t (*request)(uint8_t),
                                         uint8_t (*exists)(uint8_t))
 { ga_save_request=request; ga_save_exists=exists; }
@@ -496,6 +605,8 @@ uint8_t game_adventure_choose_save_slot(uint8_t preferred_slot)
 
 static uint16_t ga_quest_selected, ga_quest_scroll;
 static uint16_t ga_quest_top=0u,ga_quest_height=320u;
+static int ga_map_view_top(void){return (int)ga_quest_top;}
+static int ga_map_view_height(void){return (int)ga_quest_height;}
 static game_adventure_quest_style_t ga_quest_style={6u,42u,2u,15u,15u,14u,10u,11u,8u,1u,2u,0u,0u};
 static const uint8_t *ga_quest_skin_pixels;
 static uint16_t ga_quest_skin_w,ga_quest_skin_h;
@@ -601,7 +712,7 @@ void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source)
                    source->tracked && source->track) ? source : 0;
     ga_quest_open=0u; ga_quest_selected=ga_quest_scroll=0u; ga_quest_desc_scroll=0u;
     ga_save_menu_open=ga_save_menu_confirm=0u;
-    ga_map_open=ga_map_drag=0u;
+    ga_map_open=0u;
     ga_defeat_open=0u;
     ga_quest_notice_frames=0u;
     ga_quest_notice_seen=0u;
@@ -713,8 +824,8 @@ static uint8_t ga_quest_input(uint8_t fire2_edge,uint8_t fire1_edge,
     ga_quest_touch_latched=down;
     if(ga_quest_open) {
         if(tap && ga_map_points && ga_map_count){
-            ga_map_open=1u;ga_map_drag=0u;
-            ga_map_pan_x=ga_map_pan_y=0;
+            ga_map_open=1u;ga_map_flash_frames=0u;
+            ga_map_center_current();
             /* The open-gesture stays latched until touch is released. */
             return 1u;
         }
@@ -1061,6 +1172,7 @@ static void ga_tick_animations(uint16_t frames)
 }
 
 uint8_t game_adventure_open(void) { return ga_state != 0 || ga_quest_open || ga_save_menu_open || ga_defeat_open || ga_map_open; }
+uint8_t game_adventure_world_map_is_open(void) { return ga_map_open; }
 /* Optional world-manager hook: register an Adventure pickup kind before
  * the HUD first queries it. A standalone Adventure build needs no world
  * manager, so this default implementation deliberately does nothing. */
@@ -1220,7 +1332,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     /* A world switch ends any journal modal. Registration happens in
      * gameadventure_setup(), after this reset. */
     ga_quest_open=0u; ga_save_menu_open=ga_save_menu_confirm=0u;
-    ga_map_open=ga_map_drag=0u; ga_defeat_open=ga_defeat_armed=0u;
+    ga_map_open=0u; ga_defeat_open=ga_defeat_armed=0u;
     ga_quest_notice_frames=0u; ga_quest_notice_seen=0u;
     ga_quest_ui=0; ga_quest_notice_source=0;
     ga_quest_touch_latched=1u;
@@ -1728,9 +1840,21 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     if(ga_defeat_enabled && ga_defeat_health){
         if(*ga_defeat_health>0u)ga_defeat_armed=1u;
         if(!ga_defeat_open && ga_defeat_armed && *ga_defeat_health==0u){
-            ga_defeat_open=1u;
+            /* Pull the accepted fatal object's own text before beginning
+             * the transition. This also works with a user-maintained main.c. */
+            if(ga_defeat_note_source) {
+                const char *fatal_note=ga_defeat_note_source();
+                /* A callback-driven Death Zone can supply its own note. Do
+                 * not erase it when the Health-hit source has no note. */
+                if(fatal_note && *fatal_note)
+                    game_adventure_defeat_note(fatal_note);
+            }
+            ga_defeat_open=1u;ga_defeat_fade_tick=0u;
             ga_defeat_slot=ga_defeat_last?ga_defeat_last():255u;
-            for(uint8_t n=0u;n<10u;++n)ga_defeat_occupied[n]=ga_defeat_exists(n);
+            const uint8_t can_load=ga_defeat_session_can_reload?
+                    ga_defeat_session_can_reload():1u;
+            for(uint8_t n=0u;n<10u;++n)
+                ga_defeat_occupied[n]=can_load?ga_defeat_exists(n):0u;
             if(ga_defeat_slot>=10u || !ga_defeat_occupied[ga_defeat_slot]){
                 ga_defeat_slot=0u;
                 while(ga_defeat_slot<9u && !ga_defeat_occupied[ga_defeat_slot])++ga_defeat_slot;
@@ -1739,37 +1863,45 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
         }
     }
     if(ga_defeat_open){
+        if(ga_defeat_fade_tick<50u)ga_defeat_fade_tick=(uint16_t)(ga_defeat_fade_tick+frames>50u?50u:ga_defeat_fade_tick+frames);
         ga_fire1_blocked=1u;
+        if(ga_defeat_fade_tick<50u)return 1u;
         if(up && ga_defeat_slot%5u) --ga_defeat_slot;
         if(down && ga_defeat_slot%5u<4u) ++ga_defeat_slot;
         if(left && ga_defeat_slot>=5u)ga_defeat_slot-=5u;
         if(right && ga_defeat_slot<5u)ga_defeat_slot+=5u;
-        if(fire && ga_defeat_occupied[ga_defeat_slot])
-            (void)ga_defeat_reload(ga_defeat_slot);
-        if(press && ga_defeat_last){
-            const uint8_t last=ga_defeat_last();
-            if(last<10u && ga_defeat_occupied[last])(void)ga_defeat_reload(last);
+        const uint8_t can_load=ga_defeat_session_can_reload?
+                                 ga_defeat_session_can_reload():1u;
+        if(!can_load){
+            /* An unsaved run cannot load an old slot: dismissing the death
+             * message with either FIRE button returns to the title menu. */
+            if((fire||press) && !ga_defeat_restart_failed){
+                if(!ga_defeat_restart || !ga_defeat_restart())
+                    ga_defeat_restart_failed=1u;
+            }
+        }else{
+            /* FIRE1 loads the highlighted checkpoint; FIRE2 ALWAYS goes
+             * back to the title, including after Load Game. Never turn
+             * FIRE2 into an implicit "load last save" shortcut. */
+            if(press){
+                if(!ga_defeat_restart_failed &&
+                   (!ga_defeat_restart || !ga_defeat_restart()))
+                    ga_defeat_restart_failed=1u;
+            }else if(fire && ga_defeat_occupied[ga_defeat_slot]){
+                (void)ga_defeat_reload(ga_defeat_slot);
+            }
         }
         return 1u;
     }
     if(ga_map_open){
-        /* Panning is independent of the Quest Journal's selection controls. */
-        if(press){ga_map_open=ga_map_drag=0u;return 1u;}
+        /* Hardware touch dragging was jumpy; journal touch still opens the map.
+         * Holding a direction pans smoothly at four pixels per input tick. */
+        if(press){ga_map_open=0u;return 1u;}
         if(buttons&BTN_LEFT)ga_map_pan_x-=4;
         if(buttons&BTN_RIGHT)ga_map_pan_x+=4;
         if(buttons&BTN_UP)ga_map_pan_y-=4;
         if(buttons&BTN_DOWN)ga_map_pan_y+=4;
-#if GA_QUEST_HAS_TOUCH
-        if(API&&API->touch&&API->touch->ispressed && apiTouchDown()){
-            int16_t tx=0,ty=0;
-            GA_QUEST_GETXY(&tx,&ty);
-            if(ga_map_drag){
-                ga_map_pan_x+=(int16_t)(ga_map_touch_x-tx);
-                ga_map_pan_y+=(int16_t)(ga_map_touch_y-ty);
-            }
-            ga_map_touch_x=tx;ga_map_touch_y=ty;ga_map_drag=1u;
-        }else ga_map_drag=0u;
-#endif
+        ga_map_flash_frames=(uint16_t)(ga_map_flash_frames+frames);
         ga_map_clamp();return 1u;
     }
     if(ga_quest_ui && ga_quest_notice_source) {
@@ -2640,44 +2772,182 @@ static void ga_defeat_window(void)
 {
     if(!ga_defeat_open)return;
     const uint8_t old_text=ga_text_colour,old_outline=ga_outline_enabled;
-    ga_text_colour=ga_defeat_text;ga_outline_enabled=0u;
-    gfx_setcolour(ga_defeat_bg);gfx_rectf(0,0,480,320);
-    gfx_setcolour(ga_defeat_border);ga_quest_border(10,10,460,300);
-    ga_text(ga_defeat_title_x,ga_defeat_title_y,ga_defeat_heading);
-    ga_text(ga_defeat_title_x,ga_defeat_title_y+24,ga_defeat_subtitle);
-    ga_text(34,94,"CHOOSE SAVE TO RELOAD");
-    uint8_t saves=0u;
-    for(uint8_t n=0u;n<10u;++n){
-        char label[24];const int x=36+(n/5u)*212,y=127+(n%5u)*23;
-        if(ga_defeat_occupied[n])++saves;
-        snprintf(label,sizeof(label),"%c SLOT %02u  %s",
-            ga_defeat_slot==n?'>':' ',(unsigned)(n+1u),
-            ga_defeat_occupied[n]?"SAVED":"EMPTY");
-        if(ga_defeat_slot==n){gfx_setcolour(ga_defeat_accent);ga_quest_border(x-4,y-4,198,22);}
-        ga_text(x,y,label);
+    const uint8_t old_outline_colour=ga_outline_colour;
+    /* True palette fade: game visible -> uniformly black -> styled UI.
+     * Avoid the previous ordered mosaic masks entirely. */
+    if(ga_defeat_fade_palette){
+        const uint8_t brightness=ga_defeat_fade_tick<25u
+            ?(uint8_t)(255u-(uint32_t)ga_defeat_fade_tick*255u/25u)
+            :(uint8_t)(((uint32_t)(ga_defeat_fade_tick-25u)*255u)/25u);
+        ga_defeat_fade_palette(brightness);
     }
-    ga_text(28,278,saves?"FIRE1 LOAD SLOT  FIRE2 LAST SAVE":"NO SAVED GAME AVAILABLE");
+    if(ga_defeat_fade_tick<25u)return;
+    ga_text_colour=ga_defeat_text;
+    ga_outline_enabled=ga_defeat_outline;
+    ga_outline_colour=ga_defeat_outline_colour;
+    /* The Journal viewport excludes the docked HUD, if any. Never draw the
+     * defeat footer below that viewport, or into the actual LCD border. */
+    const int margin=(int)ga_quest_style.margin;
+    const int x=margin,y=(int)ga_quest_top+margin;
+    const int w=480-2*margin,h=(int)ga_quest_height-2*margin;
+    const int bottom=y+h;
+    ga_frame_skin((int16_t)x,(int16_t)y,(uint16_t)w,(uint16_t)h,
+                  ga_defeat_cells,ga_defeat_flips,
+                  ga_defeat_skin_pixels,ga_defeat_skin_w,ga_defeat_skin_h,
+                  ga_defeat_tile,ga_defeat_bg);
+    if(!ga_defeat_skin_pixels){gfx_setcolour(ga_defeat_border);ga_quest_border(x,y,w,h);}
+    const int title_y=y+((int)ga_defeat_title_y>12?(int)ga_defeat_title_y-10:8);
+    const int title_x=x+((int)ga_defeat_title_x>12?(int)ga_defeat_title_x-10:8);
+    const int line_height=8*(int)ga_defeat_scale_y;
+    const int footer_y=bottom-26;
+    ga_dialog_text(title_x,title_y,ga_defeat_heading,
+                   ga_defeat_scale_x,ga_defeat_scale_y);
+    const char *note=(ga_defeat_hit_note&&*ga_defeat_hit_note)?
+                      ga_defeat_hit_note:ga_defeat_subtitle;
+    const int note_y=title_y+line_height+5;
+    const int note_cols=(x+w-title_x-12)/8;
+    int note_rows=0;
+    if(note && *note && note_cols>0){
+        const char *cursor=note;
+        while(*cursor && note_rows<3){
+            char line[56];
+            const int limit=note_cols<55?note_cols:55;
+            int count=0,last_space=-1;
+            while(cursor[count] && count<limit){
+                if(cursor[count]==' ')last_space=count;
+                ++count;
+            }
+            if(cursor[count] && last_space>0)count=last_space;
+            if(count<1)break;
+            memcpy(line,cursor,(size_t)count);line[count]=0;
+            ga_dialog_text(title_x,note_y+note_rows*16,line,1u,2u);
+            cursor+=count;
+            while(*cursor==' ')++cursor;
+            ++note_rows;
+        }
+    }
+    int list_y=note_y+note_rows*16+8;
+    if(list_y<y+43)list_y=y+43;
+    /* Keep the description visible even with a docked HUD. The five save
+     * rows tighten slightly when less height is available. */
+    const int row_step=(footer_y-list_y>=108)?20:18;
+    const uint8_t can_load=ga_defeat_session_can_reload?
+                 ga_defeat_session_can_reload():1u;
+    if(can_load){
+        uint8_t saves=0u;
+        for(uint8_t n=0u;n<10u;++n){
+            char label[24];const int cell_x=x+25+(n/5u)*212;
+            const int cell_y=list_y+(n%5u)*row_step;
+            if(ga_defeat_occupied[n])++saves;
+            snprintf(label,sizeof(label),"%c SLOT %02u  %s",
+                ga_defeat_slot==n?'>':' ',(unsigned)(n+1u),
+                ga_defeat_occupied[n]?"SAVED":"EMPTY");
+            if(ga_defeat_slot==n){gfx_setcolour(ga_defeat_accent);
+                ga_quest_border(cell_x-4,cell_y-2,198,19);}
+            ga_text(cell_x,cell_y,label);
+        }
+        ga_text(x+18,footer_y,saves?"FIRE1 LOAD SLOT  FIRE2 TITLE":"FIRE2 RETURN TO TITLE");
+    }else{
+        ga_text(x+24,list_y+24,"NO CHECKPOINT SAVED THIS RUN");
+        ga_text(x+24,footer_y,ga_defeat_restart_failed
+            ?"TITLE UNAVAILABLE" : "FIRE1 / FIRE2  RETURN TO TITLE");
+    }
     ga_text_colour=old_text;ga_outline_enabled=old_outline;
+    ga_outline_colour=old_outline_colour;
 }
 static void ga_world_map_window(void)
 {
     if(!ga_map_open)return;
     const uint8_t old_text=ga_text_colour,old_outline=ga_outline_enabled;
     ga_text_colour=ga_quest_style.text_colour;ga_outline_enabled=0u;
-    gfx_setcolour(ga_quest_style.background_colour);gfx_rectf(0,0,480,320);
-    gfx_setcolour(ga_quest_style.border_colour);ga_quest_border(0,0,480,320);
-    ga_text(12,8,"WORLD MAP");
+    const int view_top=ga_map_view_top();
+    const int view_height=ga_map_view_height();
+    const int view_bottom=view_top+view_height;
+    /* Render within the playable framebuffer. A top- or bottom-docked HUD
+     * has already reduced this viewport (and a top dock shifts the output).
+     * The four boundary strips are composited AFTER the map art. */
+    const int header_h=24,footer_h=32,side_w=8;
+    const int content_top=view_top+header_h;
+    const int content_bottom=view_bottom-footer_h;
+    if(view_height<96){
+        ga_text_colour=old_text;ga_outline_enabled=old_outline;
+        return;
+    }
+    /* Clear holes/unpainted cells to the authored World Map boundary colour,
+     * never to a Quest Journal colour. */
+    gfx_setcolour(ga_map_border_colour);
+    gfx_rectf(0,view_top,480,view_height);
+    const uint8_t tile=ga_map_tile_size;
+    if(ga_map_cells && ga_map_pixels && tile){
+        const uint16_t atlas_cols=ga_map_atlas_w/tile;
+        const uint32_t total=(uint32_t)atlas_cols*(ga_map_atlas_h/tile);
+        const int first_col=ga_map_pan_x/tile,first_row=ga_map_pan_y/tile;
+        /* gfx_drawbob has no scissor. Keep tiles inside the HUD-aware
+         * framebuffer; the four strips below conceal their outer edges. */
+        for(int my=first_row;my<first_row+((view_height/(int)tile)+3) && my<(int)ga_map_rows;++my){
+            if(my<0)continue;
+            for(int mx=first_col;mx<first_col+((480/(int)tile)+2) && mx<(int)ga_map_columns;++mx){
+                if(mx<0)continue;
+                const int x=mx*(int)tile-ga_map_pan_x;
+                const int y=view_top+my*(int)tile-ga_map_pan_y;
+                if(x<0 || x+tile>480 || y<view_top || y+tile>view_bottom)continue;
+                const uint16_t base=ga_map_cells[(uint32_t)my*ga_map_columns+(uint32_t)mx];
+                if(base==65535u || base>=total)continue;
+                const uint16_t index=ga_map_animated_cell(base);
+                if(index>=total)continue;
+                gfxbob_t b;memset(&b,0,sizeof(b));
+                b.imgdat=ga_map_pixels+(uint32_t)(index/atlas_cols)*tile*ga_map_atlas_w+(index%atlas_cols)*tile;
+                b.atlas_stride=ga_map_atlas_w;b.atlas_height=tile;
+                b.width=tile;b.height=tile;b.scale=100u;b.index=0u;
+                b.drawx=(int16_t)x;b.drawy=(int16_t)y;gfx_drawbob(&b);
+            }
+        }
+    }
     const char *current=ga_map_current?ga_map_current():0;
+    const char *active_name=0;
     for(uint16_t i=0;i<ga_map_count;++i){
         const game_adventure_map_point_t *point=&ga_map_points[i];
-        const int x=(int)point->x-ga_map_pan_x,y=(int)point->y-ga_map_pan_y;
-        if(x<12 || x>408 || y<36 || y>276)continue;
+        const int x=(int)point->x-ga_map_pan_x,y=view_top+(int)point->y-ga_map_pan_y;
         const uint8_t selected=current&&strcmp(current,point->name)==0;
-        gfx_setcolour(selected?ga_quest_style.selection_colour:ga_quest_style.border_colour);
-        gfx_rectf(x,y,12,12);
-        ga_quest_label(x+16,y,point->name,5u);
+        if(selected)active_name=point->name;
+        const int flag_size=(point->flag_2x2 && tile)?2*(int)tile:(tile?tile:12);
+        if(x<side_w+3 || x+flag_size+3>480-side_w || y<content_top+3 ||
+           y+flag_size+3>content_bottom)continue;
+        if(ga_map_pixels && tile && point->flag_cell!=65535u){
+            const uint16_t acols=ga_map_atlas_w/tile;
+            const uint32_t total=(uint32_t)acols*(ga_map_atlas_h/tile);
+            for(uint8_t dy=0;dy<(point->flag_2x2?2u:1u);++dy){
+                for(uint8_t dx=0;dx<(point->flag_2x2?2u:1u);++dx){
+                    const uint32_t cell=(uint32_t)point->flag_cell+dy*acols+dx;
+                    if(cell>=total || (uint32_t)(point->flag_cell%acols)+dx>=acols)continue;
+                    gfxbob_t b;memset(&b,0,sizeof(b));
+                    b.imgdat=ga_map_pixels+(cell/acols)*tile*ga_map_atlas_w+(cell%acols)*tile;
+                    b.atlas_stride=ga_map_atlas_w;b.atlas_height=tile;
+                    b.width=tile;b.height=tile;b.scale=100u;
+                    b.drawx=(int16_t)(x+(int)dx*tile);b.drawy=(int16_t)(y+(int)dy*tile);
+                    gfx_drawbob(&b);
+                }
+            }
+        }else{
+            gfx_setcolour(ga_quest_style.selection_colour);gfx_rectf(x,y,flag_size,flag_size);
+        }
+        /* 25-frame blink, using existing palette indices. Never obscure art. */
+        if(selected && ((ga_map_flash_frames/25u)&1u)==0u){
+            gfx_setcolour(ga_map_flag_flash_colour);
+            ga_quest_border((int16_t)(x-2),(int16_t)(y-2),
+                            (int16_t)(flag_size+4),(int16_t)(flag_size+4));
+        }
     }
-    ga_text(12,298,"DRAG/D-PAD PAN    FIRE2 JOURNAL");
+    /* One simple mask around the rendered map: top title strip, bottom
+     * control strip and two solid sides. All four use ONLY the World Map
+     * boundary palette index. Do not inherit Quest Journal background. */
+    gfx_setcolour(ga_map_border_colour);
+    gfx_rectf(0,view_top,480,header_h);
+    gfx_rectf(0,content_bottom,480,footer_h);
+    gfx_rectf(0,content_top,side_w,content_bottom-content_top);
+    gfx_rectf(480-side_w,content_top,side_w,content_bottom-content_top);
+    ga_text(12,view_top+6,active_name?active_name:"WORLD MAP");
+    ga_text(12,view_bottom-22,"D-PAD PAN    FIRE2 JOURNAL");
     ga_text_colour=old_text;ga_outline_enabled=old_outline;
 }
 /* A compact, non-modal banner. It uses the authored journal palette but

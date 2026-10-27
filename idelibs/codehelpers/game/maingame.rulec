@@ -477,12 +477,27 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_TITLE}
     /* Play the project title BEFORE any world is loaded. FIRE1 starts the
        selected destination, FIRE2 is reserved, Quit returns to the desktop.
-       Load Game now restores persistent TFCard slots; Options works as before. */
+       Load Game now restores persistent TFCard slots; Options works as before.
+       Stage 5.166.33 defeat integration: FIRE1 loads the highlighted death
+       save slot; FIRE2 always requests the title, even after a saved game.
+       Returning to title is handled by gameworlds_apply_pending() at the frame
+       boundary, NOT by main.c. Regenerate gameworlds.c, gameplayer.c and
+       gameadventureruntime.c when applying this stage. User-owned main.c
+       needs no edits for this fix. */
     const char *title_world = "@IDE{WORLD_BASE}";
     const char *title_start = "default";
     if (!gametitle_run(&title_world, &title_start)) goto cleanup;
 @IDE_END
 
+    /* Stage 5.166.35 USER-OWNED main.c integration:
+     * - At FIRST title launch, use title_world + title_start via request_at
+     *   (or load the chosen save slot). Never hard-code WORLDLEVEL instead.
+     * - After each apply_pending(), compare gameworlds_reload_revision()
+     *   as well as the world NAME. Same-world title/save reloads must rebind
+     *   the player and reset player_anim.started to Idle.
+     * The generated example below implements both rules; see installation
+     * notes for a drop-in copy of the user's supplied main.c.
+     */
     /* 2. One loader for ONE or MANY published worlds. It initialises the
      * chosen world's graphics, atlas/map, splines, objects and Adventure.
      * Do not separately call gameassets_init() or gameworlditems_init(). */
@@ -637,6 +652,7 @@ int main(int argc, char *argv[])
     gameworlds_transitions_enable(1);
     /* 3. The frame loop. Leave the helper calls in this order. */
     const char *running_world = gameworlds_active();
+    uint32_t running_reload_revision=gameworlds_reload_revision();
     while (1) {
         gfx_lcdwait();
         /* A Goto World contact QUEUES a request. Unload/reload only here,
@@ -644,8 +660,23 @@ int main(int argc, char *argv[])
         if (!gameworlds_apply_pending()) { result = 8; goto cleanup; }
         const char *now_world = gameworlds_active();
         if (!now_world) { result = 9; goto cleanup; }
-        if (!running_world || strcmp(running_world, now_world) != 0) {
+        const uint32_t current_reload_revision=gameworlds_reload_revision();
+        if (!running_world || strcmp(running_world, now_world) != 0 ||
+            running_reload_revision!=current_reload_revision) {
             running_world = now_world;
+            running_reload_revision=current_reload_revision;
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS
+            /* TITLE / LOAD / NEW GAME (Stage 5.166.35): Forget the previous
+             * Hurt frame and timer. The world manager clears world_player's
+             * transient hurt grace; this resets the game-owned animation
+             * playback as well, including a same-world title restart.
+             * Copy this block into USER-OWNED main.c if you manage animation. */
+            player_anim.started=0u;
+            player_anim.position=0u;
+            player_anim.elapsed=0u;
+#endif
+@IDE_END
 @IDE_IF{HAS_PHYSICS}
             /* The sprite is global; tile collision and spawn are per-world.
              * Never dereference the old map after apply_pending(). */
@@ -699,6 +730,16 @@ int main(int argc, char *argv[])
             world_player.height = player_physics.hitbox_h ? player_physics.hitbox_h : GAMERGIRL_PLAYER_BOB.height;
             world_player.offset_x = player_physics.hitbox_x;
             world_player.offset_y = player_physics.hitbox_y;
+@IDE_END
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS
+            /* Render the first frame of IDLE immediately on every world
+             * activation. A fresh game / loaded save must never first show
+             * the previous life's Hurt BOB index. */
+            player_anim.started=0u;
+            player_anim_step(&player_anim,&GAMERGIRL_PLAYER_BOB,
+                PLAYER_ANIM_STATE_IDLE,player_anim_facing,0u);
+#endif
 @IDE_END
 @IDE_IF{HAS_MAP}
             game_tilemap_animation_reset();
@@ -800,7 +841,12 @@ int main(int argc, char *argv[])
                 *target=(uint32_t)next;
             }
             player_health=gameworlds_state()->health;
-            /* TODO: handle death when gameworlds_state()->health == 0. */
+@IDE_IF{HAS_ADVENTURE}
+            if(world_player.hurt_stat_target==0u &&
+               gameworlds_state()->health==0u)
+                game_adventure_defeat_note(world_player.hurt_death_note);
+@IDE_END
+            /* The Adventure overlay handles fatal Health hits. */
         }
 @IDE_END
 @IDE_IF{HAS_PLAYER_ANIMATION}
@@ -881,14 +927,26 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_MAPLESS_SCENE}
         (void)camera_x; (void)camera_y;
 @IDE_END
-@IDE_IF{HAS_MAP}
-        game_tilemap_animation_tick(1);
-@IDE_END
-
-        /* Draw into the hidden buffer, then display and swap. */
+        /* Clear the framebuffer for every frame, including World Map mode.
+         * The map renderer supplies its own background and boundary strips. */
         gfx_usebuffer(front[draw_index]);
         gfx_setcolour(0);
         gfx_rectf(0, 0, VIEW_W, VIEW_H);
+@IDE_IF{HAS_ADVENTURE_PHYSICS}
+        /* WORLD MAP FAST PATH (Stage 5.166.29): skip the full scene render.
+         * Stage 5.166.30: World Map water/terrain animations use the 50 Hz
+         * tick already passed through game_adventure_input(). No new main.c
+         * animation call is needed. Existing hand-owned main.c must retain
+         * the surrounding map-only render guard from Stage 5.166.29.
+         * Tilemap, background, game objects, NPCs, player, spotlight and
+         * weather are all obscured by the modal map. Preserve the docked
+         * HUD, the World Map itself, display/swap and music processing.
+         * Leave every other adventure modal's scene unchanged. */
+        if (!game_adventure_world_map_is_open()) {
+@IDE_END
+@IDE_IF{HAS_MAP}
+        game_tilemap_animation_tick(1);
+@IDE_END
 @IDE_IF{SINGLE_PLANE_BACKGROUND}
         gameworlds_draw_background(); /* Single-plane background */
 @IDE_END
@@ -987,6 +1045,9 @@ int main(int argc, char *argv[])
          * Draw here, AFTER FRONT tiles + spotlight, but BEFORE the HUD and
          * adventure dialogue. For user-owned main.c, copy this ONE call. */
         gameworlds_weather_frame(VIEW_W, GAME_PLAY_H);
+@IDE_IF{HAS_ADVENTURE_PHYSICS}
+        } /* Normal world render ends. World Map draws without background work. */
+@IDE_END
 @IDE_IF{HAS_HUD}
         /* The scene has been rendered into the full framebuffer. Crop it to
            the docked playfield here, before drawing any HUD pixels. A top

@@ -69,6 +69,7 @@ typedef struct {
     int32_t damage_delta; /* signed stat change; negative loses, positive gains */
     uint8_t damage_target; /* 0 health, 1 lives, 2 score, 3 coins, 4 custom */
     const char *damage_stat_name;
+    const char *death_note; /* Optional fatal-Health description; static generated string. */
     int16_t hazard_kick_x, hazard_kick_y; /* Signed px/frame; Y up is negative. */
     uint8_t hazard_kick;
     uint8_t hazard_hurt_animation, hazard_flash;
@@ -112,6 +113,7 @@ typedef struct {
     int32_t hurt_stat_delta;
     uint8_t hurt_stat_target;
     const char *hurt_stat_name;
+    const char *hurt_death_note; /* Source of the latest accepted hit, not saved to disk. */
     uint8_t hurt_triggered;
     uint8_t hurt_anim_active;
     uint8_t hurt_flash_active;
@@ -163,8 +165,11 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
 /* Evaluate switches AFTER the normal player physics, one call per frame.
    'pressed' is nonzero when FIRE2 is held. Returns number of fired switches.
    Each object sets trigger_fired for the wrapper to apply its linked action. */
-/* Return 1 if an active Death Zone overlaps the player.
-   No callback is performed here: caller dispatches the shared death event. */
+/* Death Zone is callback-driven; return the note for the first intersecting zone.
+ * This does not itself damage the player or change the callback policy. */
+const char *game_world_objects_death_zone_note(const game_world_object_t *objects,
+    uint16_t count, int32_t x, int32_t y, uint16_t w, uint16_t h);
+/* Return 1 if an active Death Zone overlaps; caller fires the event. */
 uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
                                       uint16_t count, int32_t x, int32_t y,
                                       uint16_t w, uint16_t h);
