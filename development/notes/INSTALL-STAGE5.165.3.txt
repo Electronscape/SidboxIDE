@@ -1,0 +1,67 @@
+SIDBOX / CoderGirl Stage 5.165.3 (27 October 2026)
+==================================================
+Automatic dialogue-choice quest IDs, without manual Custom C event numbers.
+
+INSTALL
+1. Back up your IDE source and Platformer3 project including .sbgm worlds,
+   .codergirl/quests.json, and TFCard saves.
+2. Extract the DROPIN ZIP over your working Stage 5.165.2 IDE source,
+   preserving file paths; rebuild CoderGirl.
+3. Confirm splash: Build: 5.165.3.271026.
+4. SAVE any unsaved world edits before opening Quests.
+5. Open Game Designer > Quests... > select an objective.
+   Choose Condition: Dialogue answer (automatic ID).
+   Choose the world, then pick the answer by speaker and text.
+   All saved dialogue answers are available, even without Custom C IDs.
+6. Click Save. Stage 5.165.3 assigns missing stable `questChoiceId` values
+   to the corresponding saved .sbgm answers. It verifies the source file
+   hasn't changed during editing before overwriting it.
+7. Run Update ALL Worlds / Update Game Project. IMPORTANT: agree to refresh
+   the shared Adventure runtime gamehelpers/gameadventureruntime.c AND .h.
+   Rebuild the complete game. Keep your hand-maintained main.c.
+8. In Logic Flow choose All Worlds to see dialogue-answer -> objective links;
+   Quest Lines opens the project-wide objectives lane.
+9. Verify on SIDBOX: selecting the matching answer completes the objective;
+   a wrong item/incomplete GIVE does not. Verify existing custom event and
+   Game Object actions still work from the same answer.
+
+IMPORTANT COMPATIBILITY
+- No TFCard save format changes and no quest/objective ID rewrites.
+- Existing condition 'Adventure event ID' still uses world:NUMBER unchanged.
+- Existing Custom C events are still supported. New kind `dialogue_choice`
+  uses world:stableAnswerId and does not consume numeric event IDs.
+- Choice IDs are stored in .sbgm, not in quest data alone. Keep/back up world
+  files together with .codergirl/quests.json.
+- If another process changes .sbgm while Quests is open, the editor refuses
+  to save IDs over that change; reopen Quest Designer.
+- A world tab left open during ID migration can keep old in-memory data;
+  Save World preserves IDs from matching answer slots, even after text edits,
+  but ideally reopen saved worlds before editing/reordering dialogue answers.
+- The first test remains source/native; Qt6 IDE and STM32H743 hardware tests
+  have not been performed in this environment.
+
+CHANGED FILES
+- gamequesteditor.cpp: automatic stable-answer dropdown, saved-world migration
+- gamequestgen.h: validate new condition kind
+- gameadventureeditor.cpp: preserve/generate choice IDs when editing
+- gamedesigner_project.cpp: generate/preserve choice IDs on world save
+- gameadventuregen.cpp: emit per-world stable answer ID lookup table
+- idelibs/codehelpers/game/adventureruntime.rulec/.ruleh: successful-answer callback
+- idelibs/codehelpers/game/gameadventure.rulec: emit world quest events on answer
+- idelibs/codehelpers/game/gameworlds.rulec/.ruleh: quest completion by stable ID
+- gamefloweditor.cpp: draw direct dialogue answer -> quest objective links
+- splashscreenwidget.cpp: build version
+- development/tests/test_stage5165_3_auto_dialogue_quests.py + baseline assertions
+
+REGRESSIONS PASSED
+- New native generated worldmanager quest callback test, stable IDs
+- Existing quest/save v1-v2 migration, two-bank recovery
+- Two-world callback generator regression
+- Checkpoint inventory and native save flow
+- 16 conditional rule configurations
+- Existing dialogue runtime / thought bubble native checks
+
+NOT TESTED
+- Complete Qt6 GUI build (Qt6 dev libraries unavailable here)
+- Real SIDBOX hardware
+- Complete ARM game build

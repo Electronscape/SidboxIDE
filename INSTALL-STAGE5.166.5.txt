@@ -1,0 +1,43 @@
+SIDBOX / CoderGirl Stage 5.166.5 (27 October 2026)
+Quest Journal Designer crash hotfix
+
+SYMPTOM
+Clicking Quest Designer -> Journal Appearance crashes CoderGirl while
+constructing the Qt form (GDB top frames in QFormLayout::insertRow/QLabel).
+
+ROOT CAUSE
+Stage 5.166.4 added a fifth colour (text outline) and iterated over 5
+palette controls, but JournalDesigner::indices was still int indices[4].
+Writing indices[4] invoked undefined behaviour and could corrupt editor
+memory. No game runtime or TFCard save data is implicated.
+
+SOURCE FIX
+- gamequestjournaleditor.cpp, JournalDesigner private members:
+  int indices[4]{} -> int indices[5]{}
+- splashscreenwidget.cpp: Build 5.166.5.271026
+- Added test_stage5166_5_journal_palette_bounds.py to check all sizes and
+  deliberately verify that the old bad declaration fails validation.
+- Updated the stale touchscreen regression expectation to honor the existing
+  UP/DOWN, FIRE1/FIRE2 UI (LEFT/RIGHT do nothing); runtime code unchanged.
+
+INSTALL
+1. Extract CoderGirl-Stage5.166.5-271026-DROPIN.zip over your existing
+   Stage 5.166.4 IDE source directory, preserving paths.
+2. Rebuild CoderGirl. Splash should show Build: 5.166.5.271026.
+3. Open Game Designer -> Quests -> Journal Appearance.
+4. Verify the window opens. Choose an outline colour, save, close,
+   and reopen to verify persistence.
+
+IMPORTANT
+- Do NOT run Update All Worlds for this desktop-editor-only fix.
+- Do NOT regenerate the game, touch main.c, or change the TFCard.
+- Existing quest-journal.json and game saves are unchanged.
+- If a crash persists, please provide a fresh GDB bt from 5.166.5.
+
+VALIDATION
+21 Stage 5.163-5.166 focused Python/native GCC regressions passed,
+including journal drawing, joystick controls, quest progression, saves,
+checkpoints and generated world manager compilation.
+The new test reproduces detection of the original four-element mistake.
+Full Qt6 desktop build and GUI click-through were not available here; your
+local build and opening the dialog remain the necessary acceptance test.

@@ -341,7 +341,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     const int np = pickups.size(), nw = platforms.size();
     int nt = 0;
     for (const Resource *r : platforms)
-        if (r->objectType == QStringLiteral("trigger") || r->objectType == QStringLiteral("goto_world")) ++nt;
+        if (r->objectType == QStringLiteral("trigger") || r->objectType == QStringLiteral("goto_world") || r->objectType == QStringLiteral("save_checkpoint")) ++nt;
     // Reject old/missing target worlds at generation, rather than generating
     // a door that silently fails on the SIDBOX.
     const QDir projectDir(QFileInfo(m_filePath).absolutePath());
@@ -532,7 +532,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if (!name.isEmpty()) availableInteractionItems.insert(name);
     }
     for (const Resource *r : platforms) {
-        if (r->objectType != QStringLiteral("trigger") || r->interactItemName.isEmpty()) continue;
+        if ((r->objectType != QStringLiteral("trigger") &&
+             r->objectType != QStringLiteral("save_checkpoint")) || r->interactItemName.isEmpty()) continue;
         if (!availableInteractionItems.contains(r->interactItemName)) {
             if (error) *error=tr("Interactable '%1' requires inventory item '%2', "
                 "but this world does not define it in Adventure Editor → Inventory Items. "
@@ -543,7 +544,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     const QJsonArray dialogueNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
     for (const Resource *r:platforms) {
-        if (r->objectType!=QStringLiteral("trigger") || r->interactItemName.isEmpty()) continue;
+        if ((r->objectType!=QStringLiteral("trigger") &&
+             r->objectType!=QStringLiteral("save_checkpoint")) || r->interactItemName.isEmpty()) continue;
         if(r->interactDialogueNode>=dialogueNodes.size() || r->interactDialogueNode < -1) {
             if(error) *error=tr("Trigger '%1': success dialogue node no longer exists. Select one in Game Object Properties.").arg(r->name);
             return false;
@@ -584,7 +586,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             usedSfx.insert(obj->sfxRespawn);
     }
     for (const Resource *obj : platforms) {
-        if (obj->objectType == QStringLiteral("trigger") && !obj->interactItemName.isEmpty()) {
+        if ((obj->objectType == QStringLiteral("trigger") ||
+             obj->objectType == QStringLiteral("save_checkpoint")) && !obj->interactItemName.isEmpty()) {
             for (const QString &id : {obj->sfxInteractWrong, obj->sfxInteractSuccess,
                                       obj->sfxInteractCancel})
                 if (!id.isEmpty()) usedSfx.insert(id);
@@ -825,7 +828,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         f.insert(QStringLiteral("ANIM_VAR"), QStringLiteral("%1_anim_%2").arg(collect ? QStringLiteral("pickup") : QStringLiteral("platform")).arg(ix));
         f.insert(QStringLiteral("PATH_SYMBOL"), path >= 0 ? splineSymbol(path) : QString());
         boolValue("IS_PICKUP", collect);
-        boolValue("IS_TRIGGER", type == QStringLiteral("trigger") || type == QStringLiteral("goto_world"));
+        boolValue("IS_TRIGGER", type == QStringLiteral("trigger") || type == QStringLiteral("goto_world") || type == QStringLiteral("save_checkpoint"));
         boolValue("IS_CONVEYOR", type == QStringLiteral("conveyor"));
         boolValue("IS_BREAKABLE", type == QStringLiteral("breakable"));
         boolValue("IS_ENEMY", enemy);
@@ -873,7 +876,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             ? pickupsKinds.at(qBound(1, r.pickupKind, 4)) : QStringLiteral("%1u").arg(qBound(5, r.pickupKind, 255)));
         const QString kind = type == QStringLiteral("lift") ? QStringLiteral("GAME_OBJECT_LIFT") :
             type == QStringLiteral("conveyor") ? QStringLiteral("GAME_OBJECT_CONVEYOR") :
-            (type == QStringLiteral("trigger") || type == QStringLiteral("goto_world")) ? QStringLiteral("GAME_OBJECT_TRIGGER") :
+            (type == QStringLiteral("trigger") || type == QStringLiteral("goto_world") || type == QStringLiteral("save_checkpoint")) ? QStringLiteral("GAME_OBJECT_TRIGGER") :
             type == QStringLiteral("door") ? QStringLiteral("GAME_OBJECT_DOOR") :
             type == QStringLiteral("deathzone") ? QStringLiteral("GAME_OBJECT_DEATH_ZONE") :
             type == QStringLiteral("breakable") ? QStringLiteral("GAME_OBJECT_BREAKABLE") :
@@ -883,8 +886,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             QStringLiteral("GAME_OBJECT_SPRING");
         f.insert(QStringLiteral("OBJECT_KIND"), kind);
         boolValue("TRIGGER_PRESS", type == QStringLiteral("goto_world") ? r.gotoPress : r.triggerPress);
-        boolValue("TRIGGER_ONESHOT", type == QStringLiteral("goto_world") ? false : r.triggerOneShot);
-        boolValue("INTERACT_ENABLED", type == QStringLiteral("trigger") && !r.interactItemName.isEmpty());
+        boolValue("TRIGGER_ONESHOT", (type == QStringLiteral("goto_world") || type == QStringLiteral("save_checkpoint")) ? false : r.triggerOneShot);
+        boolValue("INTERACT_ENABLED", (type == QStringLiteral("trigger") ||
+            type == QStringLiteral("save_checkpoint")) && !r.interactItemName.isEmpty());
         value("CONVEYOR_SPEED", r.conveyorSpeed);
         value("BREAK_HITS", r.breakHits);
         boolValue("BREAK_TOUCH", r.breakTouch && !r.breakFromBelow);
@@ -1089,7 +1093,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     for (int i=0; i<nw; ++i) {
         const Resource &r=*platforms.at(i);
-        if (r.objectType!=QStringLiteral("trigger") || r.interactItemName.isEmpty()) continue;
+        if ((r.objectType!=QStringLiteral("trigger") &&
+             r.objectType!=QStringLiteral("save_checkpoint")) || r.interactItemName.isEmpty()) continue;
         // QJson escaping is valid inside a C string literal for item names.
         const QString quoted=QString::fromUtf8(QJsonDocument(
             QJsonArray{r.interactItemName}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
@@ -1159,9 +1164,12 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
         if (r.objectType != QStringLiteral("trigger") &&
-            r.objectType != QStringLiteral("goto_world")) continue;
+            r.objectType != QStringLiteral("goto_world") &&
+            r.objectType != QStringLiteral("save_checkpoint")) continue;
         QString action;
-        if (r.objectType == QStringLiteral("goto_world")) {
+        if (r.objectType == QStringLiteral("save_checkpoint")) {
+            action = QStringLiteral("        gameworlds_checkpoint_request(%1u);\n").arg(qBound(0, r.checkpointSlot, 9));
+        } else if (r.objectType == QStringLiteral("goto_world")) {
             action = QStringLiteral("        gameworlds_request_at_from(\"%1\", \"%2\", "
                 "cg_gwi_platforms[%3].x + cg_gwi_platforms[%3].width / 2, "
                 "cg_gwi_platforms[%3].y + cg_gwi_platforms[%3].height / 2);\n")

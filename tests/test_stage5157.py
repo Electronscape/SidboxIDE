@@ -8,7 +8,7 @@ project=(root/'gamedesigner_project.cpp').read_text()
 registry=(root/'gameworldsnapshot.h').read_text()
 world=(root/'idelibs/codehelpers/game/gameworlds.rulec').read_text()
 header=(root/'gamedesigner.h').read_text()
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 for name in ('Player Start','Weather','Spotlight','Day & Night / Palette Tint'):
     assert f'makeSection(tr("{name}"))' in editor
 for key,field in [('mode','m_dayNightMode'),('targetColour','m_dayNightColour'),('strength','m_dayNightStrength'),
@@ -20,7 +20,7 @@ for key,field in [('mode','m_dayNightMode'),('targetColour','m_dayNightColour'),
 assert 'obj.insert(QStringLiteral("dayNight"), dayNight);' in project
 assert 'design.value(QStringLiteral("dayNight"))' in registry
 assert 'defaultDayNightColour.at(i)' in registry
-assert 'weather_palette_blend(colour, lightning_tint, flash_mix)' in world
+assert 'weather_palette_brighten(colour, flash_colour, flash_mix)' in world
 assert 'weather_palette_frame(); /* Also drives CLEAR worlds' in world
 assert 'm_weatherPreviewDayNightTint->setOpacity(nightMix / 100.0);' in editor
 assert 'if (weather_flash_delay < 150u)' in world
@@ -70,6 +70,7 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames,day_night_night_frames,day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code;
     const uint32_t *(*front_palette)(void);
     const uint32_t *(*back_palette)(void);
 } gameworlds_record_t;
@@ -145,7 +146,7 @@ int main(void) {
     assert(gameworlds_weather_status() & GAME_WEATHER_STATUS_LIGHTNING_FLASH);
     gameworlds_weather_frame(480,320);
     uint32_t base=weather_palette_blend(front_src[4],0xff102040u,50);
-    assert(front_display[4]==weather_palette_blend(base,front_src[15],near_peak*50/100));
+    assert(front_display[4]==weather_palette_brighten(base,front_src[15],near_peak*50/100));
     const uint8_t previous=weather_pulse();
     weather_update(4);
     assert(weather_pulse()<previous);

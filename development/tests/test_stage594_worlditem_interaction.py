@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'idelibs/codehelpers/game/gameworlditems.rulec').read_text()
-a=s.index('uint8_t gameworlditems_interaction_use(const char *item_name)')
-b=s.index('@IDE_END',a)
+a=s.index('static uint8_t cg_complete_item_interaction(uint16_t rule_index, uint8_t dropped)')
+b=s.index('uint8_t gameworlditems_drop_contact(',a)
 func=s[a:b].replace('@IDE{WORLD_OBJECT_COUNT}', '2u')
 assert 'consumed_here' in func
 func=func.replace('@IDE{INTERACT_WRONG_DIALOGUE_ACTIONS}', '')
@@ -24,8 +24,8 @@ code='''#include <assert.h>
 #include <string.h>
 #include <stdio.h>
 typedef struct { uint8_t active, trigger_fired, trigger_one_shot; } game_world_object_t;
-typedef struct { uint16_t object,reach; uint8_t consume; const char *item; } cg_interaction_rule_t;
-static const cg_interaction_rule_t cg_interaction_rules[]={{0u,32u,1u,"Key"},{65535u,0u,0u,0}};
+typedef struct { uint16_t object,reach; uint8_t consume,drop; const char *item; } cg_interaction_rule_t;
+static const cg_interaction_rule_t cg_interaction_rules[]={{0u,32u,1u,0u,"Key"},{65535u,0u,0u,0u,0}};
 static uint16_t cg_interaction_target;
 static game_world_object_t cg_gwi_platforms[2]={{1,0,1},{1,0,0}};
 static int reward_full,awarded,spent,dialogue,stat,sounds;

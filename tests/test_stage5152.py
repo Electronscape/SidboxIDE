@@ -22,7 +22,7 @@ assert 'defaultWeatherMode.at(i)' in registry and 'defaultWeatherStrength.at(i)'
 assert 'uint8_t gameworlds_weather_frame(uint16_t view_width, uint16_t view_height);' in api
 assert 'weather_enter(world);' in world
 assert 'weather_update(frames);' in world
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 assert 'updateWeatherPreview();' in editor and 'm_showWeatherPreview = new QCheckBox' in editor
 assert 'gameworlds_weather_frame(VIEW_W, GAME_PLAY_H);' in main
 assert main.index('game_tilemap_blit_view_front') < main.index('gameworlds_weather_frame(VIEW_W, GAME_PLAY_H)') < main.index('game_show_hud(0, 0)')
@@ -56,6 +56,7 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code;
 } gameworlds_record_t;
 static const gameworlds_record_t *active_world;
 #define GW_PHASE_IDLE 0u

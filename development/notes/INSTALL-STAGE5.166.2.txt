@@ -1,0 +1,79 @@
+SIDBOX / CoderGirl Stage 5.166.2 (27 October 2026)
+Quest Journal Designer, Joystick Navigation, Untinted Modal UI, HUD-aware Viewport
+
+INSTALL ON TOP OF STAGE 5.166.1
+
+1. BACK UP the working CoderGirl source tree and the Platformer3 game project.
+2. Extract CoderGirl-Stage5.166.2-271026-DROPIN.zip over the IDE SOURCE root,
+   preserving relative paths. Do not extract into the game project itself.
+3. Rebuild CoderGirl. Splash should say Build: 5.166.2.271026.
+4. Open your game project and the Game Designer, then select Quests...
+   Press Journal Appearance... to open the maximised Quest Journal Designer.
+   Configure a margin, quest-list width, foreground/text/border/selection
+   palette indices, and optional reuse of the Adventure dialogue 9-slice skin.
+   Preview no dock, dock top and dock bottom. Click Save.
+5. Run Update ALL Worlds / Update Game Project. This change updates MORE than
+   just the Adventure helper. Allow replacement of the generated shared
+   gameadventureruntime.c/.h if prompted. Per-world gameadventure.c files and
+   the shared gameworlds.c/.h must all be regenerated.
+6. Build/transfer the game and test on SIDBOX hardware.
+   Keep your user-authored main.c untouched. This relies on its existing
+   game_adventure_input()/game_adventure_draw() calls each frame.
+
+RUNTIME CONTROLS
+
+- Touch anywhere during ordinary gameplay: OPEN journal only.
+- Touch inside journal: no action; no on-screen TRACK/SCROLL/CLOSE buttons.
+- Joystick UP/DOWN: highlight previous/next quest (scrolls as needed).
+- FIRE1 or joystick RIGHT: TRACK highlighted quest, if active.
+- FIRE2 or joystick LEFT: CLOSE and resume.
+- Touch during inventory/dialogue: ignored by the journal.
+- The first touch never selects a quest or closes the journal.
+
+LAYOUT AND WEATHER
+
+- Journal is sized to the 480x320 screen minus the docked HUD area; top docks
+  add a top offset, bottom docks reduce height, floating/undocked HUD keeps
+  the full 480x320 viewport. When very little room remains, it falls back
+  to a full-screen overlay instead of overflowing/clipping its content.
+- The modal (Quest Journal OR Adventure dialogue/inventory) temporarily binds
+  the world's ORIGINAL palette to remove the day/night/fog tint. The weather
+  clock, precipitation, lightning settings and original palettes are unchanged;
+  the world renderer resumes the normal tint on the next frame after closing.
+- The preview approximates colours for the classic first 16 palette entries.
+  Indices above 15 depend on your actual game's palette, and require SIDBOX
+  verification. Existing dialogue 9-slice skin is reused, not re-authored.
+
+FILES CHANGED (SOURCE OF TRUTH)
+
+- gamequestjournaleditor.cpp/.h (new maximised project-wide designer)
+- gamequesteditor.cpp (Journal Appearance entry)
+- gameadventuregen.cpp (read style JSON, inject per-world style + HUD flag)
+- idelibs/codehelpers/game/gameadventure.rulec (register style, HUD-safe view,
+  full-brightness callback after game_adventure_start())
+- idelibs/codehelpers/game/adventureruntime.rulec/.ruleh (joystick navigation,
+  dynamic layout, touch-only opening, modal palette callback)
+- idelibs/codehelpers/game/gameworlds.rulec/.ruleh (temporary untinted CLUT)
+- mainwindow.cpp (project build-stale detection for appearance changes)
+- CMakeLists.txt (register new Qt source files)
+- splashscreenwidget.cpp (build version)
+- development/tests (native joystick/inventory/dock/source contracts)
+
+The new project-level design file is .codergirl/quest-journal.json (version 1).
+The previously working .codergirl/quests.json, all quest IDs, Adventure dialogue
+IDs, TFCard save data format and your main.c are unchanged.
+
+TESTS RUN
+
+PASS native touch-open-only + joystick tracking/close + top/bottom dock tests
+PASS actual SIDBOX SDK header C syntax for generated Adventure runtime
+PASS 16 nested rule permutations and two-world generated callback compile
+PASS quest progression, automatic dialogue IDs, version-1 and version-2
+     save recovery, and inventory-triggered checkpoint regressions
+PASS source-contract checks for designer/exporter and build version
+
+NOT YET VERIFIED
+
+Qt6 IDE GUI couldn't be compiled in this environment (Qt6 dev packages absent).
+Real SIDBOX touch/joystick/docked HUD/CLUT interactions require hardware
+acceptance; your user-maintained main.c was not changed or retested here.

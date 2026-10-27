@@ -1805,7 +1805,13 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     node.insert("text",text->toPlainText().left(512));
     QJsonArray updated;
     for (int i=0;i<3;++i) {
-        QJsonObject c; c.insert("text",fields[i].label->toPlainText().left(180));
+        QJsonObject c;
+        // Independent stable quest signal: never replace user-authored Custom C events.
+        QString choiceId=choices.at(i).toObject().value("questChoiceId").toString();
+        if (choiceId.isEmpty() && !fields[i].label->toPlainText().trimmed().isEmpty())
+            choiceId=QStringLiteral("dlg_")+QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-').left(16);
+        if (!choiceId.isEmpty())c.insert("questChoiceId",choiceId);
+        c.insert("text",fields[i].label->toPlainText().left(180));
         c.insert("reply",fields[i].reply->toPlainText().left(150));
         c.insert("thoughtBubble",fields[i].thought->isChecked());
         c.insert("thoughtBubbleThis",fields[i].thoughtThis->isChecked());

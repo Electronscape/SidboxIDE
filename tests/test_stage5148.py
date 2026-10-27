@@ -31,7 +31,7 @@ assert 'particleDialogPreviewTimer.start()' in cpp
 assert 'clearParticlePreviewDraft();' in cpp
 assert 'QVector<ParticlePreviewParticle> particles;' in h
 assert 'm_particlePreviewDraftActive = false;' in h
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 # The runtime is not patched for an IDE preview; world data remain unchanged.
 assert (root/'idelibs/codehelpers/game/gameworlditems.rulec').exists()
 print('Stage 5.148 source checks: canvas-only 50 Hz preview, 32 pool, live modal draft, cleanup, fade and layer settings passed')

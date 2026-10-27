@@ -477,7 +477,7 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_TITLE}
     /* Play the project title BEFORE any world is loaded. FIRE1 starts the
        selected destination, FIRE2 is reserved, Quit returns to the desktop.
-       Load Game and Options are deliberately inactive in Stage 5.64. */
+       Load Game now restores persistent TFCard slots; Options works as before. */
     const char *title_world = "@IDE{WORLD_BASE}";
     const char *title_start = "default";
     if (!gametitle_run(&title_world, &title_start)) goto cleanup;
@@ -509,7 +509,12 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_TITLE}
     /* Queueing the FIRST world preserves its selected named Player Start.
        gameworlds_start() alone always resets the spawn to Default. */
-    if (!gameworlds_request_at(title_world, title_start) ||
+    if (gametitle_load_slot() >= 0) {
+        if (!gameworlds_load_slot((uint8_t)gametitle_load_slot()) ||
+            !gameworlds_start(gameworlds_saved_world())) {
+            result = 11; goto cleanup;
+        }
+    } else if (!gameworlds_request_at(title_world, title_start) ||
         !gameworlds_apply_pending()) { result = 1; goto cleanup; }
 @IDE_ELSE
     if (!gameworlds_start("@IDE{WORLD_BASE}")) { result = 1; goto cleanup; }
@@ -709,16 +714,14 @@ int main(int argc, char *argv[])
             gfx_scrollb(0, 0);
             gfx_scrollf(0, 0);
         }
-        /* Freeze gameplay during entrance/exit effects. World objects stay
-           visible; music and the 50 FPS rendering loop keep running. */
-        if (!gameworlds_transition_busy()) {
-        /* AMBIENT EFFECTS KEEP MOVING WHILE TALKING:
-         * These calls live OUTSIDE the Adventure dialogue pause below.
-         * Do not also call gameworlds_update(1) in this same frame: that
-         * legacy convenience call already advances gameplay + both effects.
-         * Animating the rain/fireflies does NOT advance enemies or collisions. */
+        /* Stage 5.161: ambient weather and scenery particles keep moving
+         * during BOTH conversations AND Goto World entrance/exit transitions.
+         * Do not call gameworlds_update(1) in the same frame. That legacy
+         * helper already advances gameplay, weather, and particles together. */
         game_update_weather(1);
         game_update_particles(1);
+        /* Freeze only gameplay during the entrance/exit transitions. */
+        if (!gameworlds_transition_busy()) {
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_ADVENTURE}
         const uint8_t adventure_buttons = getjoyport();

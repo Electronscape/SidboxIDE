@@ -14,6 +14,10 @@ static void *cg_death_user;
 static uint8_t cg_player_dead;
 static game_zone_callback_t cg_zone_callback;
 static void *cg_zone_user;
+/* Stage 5.164.4: the last successfully started physical player is the
+ * live avatar, even when main.c has not registered world-manager hooks. */
+static game_tile_player_t *cg_live_player;
+const game_tile_player_t *game_tile_player_current(void) { return cg_live_player; }
 void game_tile_set_zone_callback(game_zone_callback_t callback, void *user)
 {
     cg_zone_callback = callback;
@@ -1114,6 +1118,7 @@ uint8_t game_tile_player_start(game_tile_player_t *p,
     p->walk_speed = 3; p->jump_speed = 7;
     p->gravity = 35; p->max_fall_speed = 9; p->force_drag_percent = 12;
     game_tile_player_reset(p, sprite->drawx, sprite->drawy);
+    cg_live_player=p;
     return 1;
 }
 uint8_t game_tile_player_set_hitbox(game_tile_player_t *p,

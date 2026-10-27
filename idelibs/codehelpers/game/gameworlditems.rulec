@@ -432,6 +432,57 @@ void gameworlditems_save_state(void)
     cg_world_snapshot_valid = 1;
 }
 
+
+/* Stage 5.164: deterministic TFCard snapshot. Functions work on the already
+ * saved value copies, NEVER on live sprite, map, spline or audio pointers. */
+void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
+{
+    if (!emit) return;
+#define CG_SAVE_BYTES(v) emit(&(v), (uint32_t)sizeof(v), ctx)
+    CG_SAVE_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_WORLDS}
+    CG_SAVE_BYTES(cg_saved_objects);
+    CG_SAVE_BYTES(cg_remote_valid);
+    CG_SAVE_BYTES(cg_remote_active);
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    CG_SAVE_BYTES(cg_saved_pickups);
+    CG_SAVE_BYTES(cg_pickup_permanently_collected);
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+    CG_SAVE_BYTES(cg_saved_reward_falling);
+    CG_SAVE_BYTES(cg_saved_reward_x100);
+    CG_SAVE_BYTES(cg_saved_reward_y100);
+    CG_SAVE_BYTES(cg_saved_reward_vx100);
+    CG_SAVE_BYTES(cg_saved_reward_vy100);
+@IDE_END
+#undef CG_SAVE_BYTES
+}
+uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)
+{
+    if (!take) return 0;
+#define CG_LOAD_BYTES(v) if (!take(&(v), (uint32_t)sizeof(v), ctx)) return 0
+    CG_LOAD_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_WORLDS}
+    CG_LOAD_BYTES(cg_saved_objects);
+    CG_LOAD_BYTES(cg_remote_valid);
+    CG_LOAD_BYTES(cg_remote_active);
+@IDE_END
+@IDE_IF{HAS_PICKUPS}
+    CG_LOAD_BYTES(cg_saved_pickups);
+    CG_LOAD_BYTES(cg_pickup_permanently_collected);
+@IDE_END
+@IDE_IF{HAS_REWARDS}
+    CG_LOAD_BYTES(cg_saved_reward_falling);
+    CG_LOAD_BYTES(cg_saved_reward_x100);
+    CG_LOAD_BYTES(cg_saved_reward_y100);
+    CG_LOAD_BYTES(cg_saved_reward_vx100);
+    CG_LOAD_BYTES(cg_saved_reward_vy100);
+@IDE_END
+#undef CG_LOAD_BYTES
+    return 1;
+}
+
 void gameworlditems_restore_state(void)
 {
     if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
@@ -1048,6 +1099,10 @@ void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_draw_overlay(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_save_state(void) {}
 void gameworlditems_restore_state(void) {}
+void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
+{ (void)emit; (void)ctx; }
+uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)
+{ (void)take; (void)ctx; return 1; }
 void gameworlditems_set_active(uint16_t index,uint8_t state) { (void)index; (void)state; }
 void gameworlditems_remote_action(uint16_t index,uint8_t state) { (void)index; (void)state; }
 void gameworlditems_remote_reset(void) {}

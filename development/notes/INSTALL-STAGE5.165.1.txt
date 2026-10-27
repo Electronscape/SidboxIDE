@@ -1,0 +1,60 @@
+SIDBOX / CODERGIRL STAGE 5.165.1 (27 October 2026)
+Quest Publisher Stable-ID Hotfix
+====================================
+
+SYMPTOM
+-------
+World Bundle reports:
+  Invalid/duplicate quest ID or missing title: quest_2005cee2-aae
+when updating worlds, even though the Quest Designer saved a quest with
+an ordinary title and a filled-in objective.
+
+CAUSE
+-----
+The Quest Designer created UUID-derived stable IDs containing '-'. The
+world-bundle publisher accepted only letters, digits and underscores.
+That made automatically created quests impossible to publish.
+
+FIX
+---
+1. gamequestgen.h: accept existing generated hyphenated quest/objective IDs.
+   Extract validation into GameQuestGen::validate() and use it for publishing.
+2. gamequesteditor.cpp: run the same validation before Save, so the editor
+   cannot save a quest which the bundle publisher then rejects. Newly
+   generated stable IDs have their '-' UUID separators removed.
+3. splashscreenwidget.cpp: Build: 5.165.1.271026.
+
+Crucially, existing IDs in .codergirl/quests.json are NEVER rewritten.
+Quest IDs/objective IDs must stay stable once saves depend on them.
+The generated C runtime, existing save format (v2), checkpoint logic,
+Flow Debugger and game-owned main.c are unchanged in this hotfix.
+
+INSTALLATION
+------------
+1. Back up your Stage 5.165 IDE source and TFCard save files.
+2. Extract the DROPIN ZIP over your Stage 5.165 IDE source, preserving paths.
+3. Rebuild CoderGirl. Splash: Build: 5.165.1.271026.
+4. Open Platformer3. You do NOT have to delete/recreate The Forest Mystery.
+5. Run Update ALL Worlds / Update Game Project, then recompile the game.
+6. If quest objective is 'Enter world' with exact target 'forest', enter the
+   published world 'forest' in the game. The engine records quest progress
+   automatically. A visible on-screen Quest Journal is NOT in Stage 5.165.x;
+   journal/tracked status is currently available through the runtime API.
+
+TARGETED TESTS PASSED
+--------------------
+- Stage 5.165.1 quest-ID source/regression validation: original failing ID,
+  old objective IDs, new ID format, editor/publisher shared validator.
+- Stage 5.165 native quest/runtime test: events, branches, tracking,
+  TFCard v2 persistence and v1 compatibility.
+- Stage 5.164.3 two-world generated-C callback compiler regression.
+- Stage 5.163 16 world conditional C/header cases.
+- Stage 5.164.5 dual-bank and legacy save-path compatibility.
+- Stage 5.164.2 inventory-operated checkpoint regression.
+- Stage 5.164.1 object selector/preview contract regression.
+
+LIMITATION
+----------
+Qt6 toolchain is unavailable in this environment; IDE GUI rebuild and full
+ARM V1 compile remain for the user's machine. This hotfix fixes the proven
+ID mismatch but does not claim physical SIDBOX validation.

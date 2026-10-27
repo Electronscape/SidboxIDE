@@ -1,0 +1,108 @@
+CODERGIRL / SIDBOX: STAGE 5.164.261026
+TFCard SAVE / LOAD + CHECKPOINT GAME OBJECT
+============================================================
+
+Install
+-------
+1. Back up your currently working Stage 5.163 IDE and game project.
+2. Extract CoderGirl-Stage5.164-261026-DROPIN.zip over the Stage 5.163 IDE
+   SOURCE directory, preserving the existing relative paths.
+3. Rebuild the IDE. The splash must read Build: 5.164.261026.
+4. Open your game project in CoderGirl and use Update Game Project to publish
+   all worlds and regenerate the generated gamehelpers code.
+5. Rebuild your game, copy it and its updated TFCard resources onto the card.
+   Keep the hand-maintained main.c. In particular, do NOT overwrite main.c
+   with maingame.c.txt when upgrading an existing, working project.
+
+Checkpoint editor
+-----------------
+Game Designer -> select/add Sprite -> Game Object properties -> Type:
+  Save Game Checkpoint
+  Checkpoint save slot: 1 through 10
+  Require FIRE2 while touching: checked -> press FIRE2 in the hitbox;
+                                unchecked -> save on entering the hitbox.
+Checkpoint uses the existing one-entry/one-press trigger edge, so standing
+still against it does not write the TFCard 50 times per second.
+The new type and slot survive saving/reopening .sbgm. The Flow Debugger
+links each checkpoint to its corresponding TFCard Save Slot node.
+
+Load Game
+---------
+The existing title menu's Load Game action now opens a ten-slot selector.
+UP/DOWN selects; FIRE1 loads an occupied slot; FIRE2 returns. An empty slot
+cannot be selected. File availability is scanned on entering the menu, not
+per rendered frame.
+
+For custom user-maintained main.c using gametitle_run() followed by the
+existing gameworlds_request_at(title_world,title_start) and
+ gameworlds_apply_pending() startup flow, Load Game automatically works via
+an internal title-world marker; this preserves your original main.c.
+If your main.c implements a different, custom startup flow, use
+ gametitle_load_slot() (>=0 when Load was selected), then call
+ gameworlds_load_slot(slot) BEFORE the FIRST gameworlds_start(), after
+ gameplayer_init() (if applicable). Then start the returned
+ gameworlds_saved_world(). DO NOT call load_slot() after a world starts.
+
+Files/format
+------------
+On TFCard: /CGSAVES/XXXXXXsA.SAV and XXXXXXsB.SAV per slot.
+XXXXXX is a deterministic six-hex-digit project namespace; s=0..9.
+A/B are alternating banks, so a power failure during a write normally leaves
+an older verified generation available. Each save has version, sequence,
+project key, layout fingerprint, payload length and FNV-1a checksum.
+Ten save slots are supported; up to 256 KiB for one payload (actual payload
+size depends on the game's world/object/dialogue counts).
+
+Saved: selected world, player position/facing and persistent stats, shared
+custom stats, world inventory by item name and quantity, each world's object
+and collectible snapshots, Adventure conversations/NPC progress and drops,
+per-world day/night clocks and spotlight overrides.
+Pointer-based assets, renderer surfaces, in-progress audio and temporary
+particle positions are NOT stored and will reload/rebuild normally.
+
+A new game build with different world layout may reject a save rather than
+apply incompatible data. Do not treat this binary format as a forever-stable
+migration format; save-schema migration is not implemented in Stage 5.164.
+The gameworlds_save_status() API returns 1 success, 2 failed, 0 no new
+result, and clears the status when read. This stage does not add a popup
+or SFX when a checkpoint finishes saving.
+
+Developer API, generated gamehelpers/gameworlds.h
+-------------------------------------------------
+  uint8_t gameworlds_save_slot(uint8_t slot);        // 0..9; active world
+  uint8_t gameworlds_load_slot(uint8_t slot);        // 0..9; BEFORE first start
+  uint8_t gameworlds_slot_exists(uint8_t slot);
+  uint8_t gameworlds_checkpoint_request(uint8_t slot); // queued save; callbacks
+  const char *gameworlds_saved_world(void);
+  uint8_t gameworlds_save_status(void);
+
+IMPORTANT: Do not write files directly from collision or draw callbacks.
+The Checkpoint Game Object calls gameworlds_checkpoint_request() and the
+normal per-frame gameworlds_apply_pending() performs the TFCard operation.
+
+Tests performed in development environment
+------------------------------------------
+PASS: all 16 nested world-rule-flag variants x .rulec/.ruleh.
+PASS: native GNU C generated world manager: dual bank saves, persist/restore
+      of player state, world data and inventory, valid-checksum/invalid-layout
+      fallback, all-banks-corrupt rejection and queued checkpoint.
+PASS: source checks for editor object type, persisted slot, title Load menu,
+      Game Flow Debugger connection, stage splash string.
+NOT RUN HERE: Qt6 GUI build, arm-none-eabi firmware compile, physical TFCard
+      and SIDBOX hardware execution. Those must be checked on your setup.
+
+Recommended hardware acceptance test
+------------------------------------
+1. Back up a working game and any existing /CGSAVES files.
+2. Add a checkpoint in World1, slot 1, touch mode. Publish/regenerate/build.
+3. Pick up an item; alter a conversation/NPC; enter checkpoint once.
+4. Verify a new file in /CGSAVES and the game still plays smoothly.
+5. Exit game, restart, choose Load Game > Slot 1. Confirm world, position,
+   inventory, object state, conversation and day/night clock are restored.
+6. Add checkpoint in Forest, slot 2, FIRE2 mode. Repeat and confirm slots
+   1 and 2 are independent. Check Flow Debugger arrows for each checkpoint.
+7. Test a power-cycle and return-to-world; DO NOT deliberately interrupt a
+   write on the only copy of your real save.
+
+This is a new feature release. Keep Stage 5.163 as fallback until the
+physical-hardware tests pass.

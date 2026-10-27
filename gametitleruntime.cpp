@@ -344,6 +344,7 @@ bool generate(const QString &root,const QString &fallbackWorld,
 #include <stdint.h>
 /* Returns 1 when a world is selected, otherwise 0 on Quit. */
 uint8_t gametitle_run(const char **world,const char **start);
+int8_t gametitle_load_slot(void);
 /* Settings are in-memory for this first pass: no TFCard writes while MP3 plays. */
 uint8_t gametitle_music_enabled(void);
 uint8_t gametitle_sfx_enabled(void);

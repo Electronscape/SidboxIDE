@@ -1,0 +1,76 @@
+SIDBOX / CoderGirl Stage 5.166.3 (27 October 2026)
+Quest Journal Atlas Designer, Palette Picker, Automatic HUD Dock
+
+INSTALL ON TOP OF STAGE 5.166.2
+
+1. Back up the working IDE source and Platformer3 project.
+2. Extract CoderGirl-Stage5.166.3-271026-DROPIN.zip over the IDE SOURCE
+   directory, preserving paths, then rebuild CoderGirl.
+3. Confirm splash: Build: 5.166.3.271026.
+4. Game Designer -> Quests... -> Journal Appearance...
+5. The Journal Designer now has its OWN optional .ppb atlas, a 3x3 grid of
+   selectable nine-slice cells (each with X/Y flip), and the shared 256-colour
+   CLUT picker for Background/Border/Text/Selected Quest. The live preview
+   renders the selected cells with the chosen CLUT.
+6. The HUD preview reads gamehud.sbhud automatically; there is no separate
+   No Dock / Top Dock / Bottom Dock selector. Edit docking in the HUD Editor.
+7. Save the appearance, then Update ALL Worlds / Update Game Project. Accept
+   replacement of generated Adventure helper files when prompted.
+8. Rebuild/transfer Platformer3. Keep your hand-maintained main.c unchanged.
+
+IMPORTANT ATLAS RESOURCE NOTE
+
+- This design is project-wide. Choose a .ppb INSIDE the game project.
+- The generated runtime first looks for that PPB in the current world's
+  registered gameassets; if not present there, it loads the same project-
+  relative path from TFCard. The chosen .ppb must exist on TFCard at that
+  relative path if you expect the skin to work across worlds in which it is
+  not registered as an asset. A missing file produces a readable solid-colour
+  journal, not a crash. Keep the chosen atlas on TFCard when testing.
+- The atlas must contain at least 3 x 3 tiles of the chosen tile size and
+  have whole-tile dimensions. The generator rejects invalid cell indices.
+- The journal no longer borrows any dialogue nine-slice graphics.
+
+HUD AND CONTROLS
+
+- The renderer derives available journal HEIGHT from gamehud_dock_height().
+  A top dock's existing frame shift is NOT added a second time by the journal
+  viewport. This corrects the reported double-displacement in the user's
+  custom-game draw order. Verify the placement on real hardware, especially
+  for a hand-maintained main.c with different draw order.
+- Touch opens the journal only, joystick UP/DOWN navigates, FIRE1/RIGHT
+  tracks, FIRE2/LEFT closes. Existing Adventure dialogue/inventory protected.
+- Temporary full-brightness palettes for dialogue, inventory and journal are
+  unchanged. The weather clock continues while UI is open.
+
+UNCHANGED DATA / GAMEPLAY
+
+- No quest IDs or objective semantics changed.
+- No .sbgm format, TFCard save format, checkpoint logic or main.c changes.
+- Existing .codergirl/quest-journal.json remains version 1; legacy layout and
+  colour fields are read, with the new independent atlas fields optional.
+
+SOURCE FILES MODIFIED
+
+- gamequestjournaleditor.cpp
+- gameadventuregen.cpp
+- idelibs/codehelpers/game/gameadventure.rulec
+- idelibs/codehelpers/game/adventureruntime.rulec
+- idelibs/codehelpers/game/adventureruntime.ruleh
+- splashscreenwidget.cpp
+- development/tests/* (version expectations; new 5.166.3 regression)
+
+CHECKED IN THIS ENVIRONMENT
+
+- Native C journal input/runtime test, including touch opening and physical
+  joystick navigation, compiled and passed.
+- Quest runtime, save/load corruption recovery, Adventure dialogue IDs,
+  checkpoint USE, and two-world save-callback regressions passed.
+- Nested-rule 16-combination regression passed.
+- New independent atlas/palette/HUD source contract passed.
+
+NOT TESTED
+
+- A complete Qt6 IDE build (Qt6 development packages unavailable here).
+- Actual visual skin/CLUT rendering and HUD positioning on the STM32/LCD.
+- Whether your TFCard already has the selected .ppb at the expected path.

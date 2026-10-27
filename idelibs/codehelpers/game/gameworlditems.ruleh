@@ -14,6 +14,8 @@
 uint8_t gameworlditems_init(void);
 void gameworlditems_save_state(void);
 void gameworlditems_restore_state(void);
+void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
+uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */
 void gameworlditems_remote_action(uint16_t index, uint8_t state);
 void gameworlditems_remote_reset(void);
@@ -60,6 +62,8 @@ uint16_t gameworlditems_trigger(int32_t player_x, int32_t player_y,
 uint8_t gameworlditems_init(void);
 void gameworlditems_save_state(void);
 void gameworlditems_restore_state(void);
+void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
+uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */
 void gameworlditems_remote_action(uint16_t index, uint8_t state);
 void gameworlditems_remote_reset(void);

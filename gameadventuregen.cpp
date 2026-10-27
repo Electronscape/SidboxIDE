@@ -1,6 +1,7 @@
 #include "gameadventuregen.h"
 #include "gamehelpertemplates.h"
 #include "gametilemap.h"
+#include "ppbcodec.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QJsonDocument>
@@ -173,6 +174,94 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     fields.insert(QStringLiteral("HAS_SHARED_PLAYER"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("players/player.sbpi")))
             ? QStringLiteral("1") : QStringLiteral("0"));
+    fields.insert(QStringLiteral("HAS_PROJECT_HUD"),
+        QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gamehud.h")))
+            ? QStringLiteral("1") : QStringLiteral("0"));
+    /* Quest Journal appearance belongs to the project; never store it in
+     * a per-world .sbgm or in the versioned TFCard save format. */
+    {
+        const QString config=QDir(projectRoot).filePath(QStringLiteral(".codergirl/quest-journal.json"));
+        QJsonObject appearance;
+        QFile file(config);
+        if(file.exists()) {
+            if(!file.open(QIODevice::ReadOnly)){
+                if(error)*error=QStringLiteral("Could not read %1").arg(config);
+                return false;
+            }
+            QJsonParseError parse;
+            const QJsonDocument doc=QJsonDocument::fromJson(file.readAll(),&parse);
+            if(parse.error!=QJsonParseError::NoError || !doc.isObject() ||
+               doc.object().value(QStringLiteral("version")).toInt()!=1) {
+                if(error)*error=QStringLiteral("Invalid Quest Journal Designer file: %1").arg(config);
+                return false;
+            }
+            appearance=doc.object();
+        }
+        const struct {const char *token;const char *key;int lo,hi,fallback;} values[]={
+            {"QUEST_MARGIN","margin",2,20,6},{"QUEST_SPLIT","split",30,60,42},
+            {"QUEST_BG","background",0,255,2},{"QUEST_BORDER","border",0,255,15},
+            {"QUEST_TEXT","text",0,255,15},{"QUEST_HIGHLIGHT","selection",0,255,14},
+            {"QUEST_LIST_LEFT","listLeft",8,80,10},
+            {"QUEST_TITLE_X","titleX",8,240,11},{"QUEST_TITLE_Y","titleY",8,48,8},
+            {"QUEST_OUTLINE_COLOUR","outlineColour",0,255,0}
+        };
+        for(const auto &setting:values)
+            fields.insert(QString::fromLatin1(setting.token),
+                QString::number(std::clamp(appearance.value(QLatin1String(setting.key)).toInt(setting.fallback),
+                                           setting.lo,setting.hi)));
+        fields.insert(QStringLiteral("QUEST_OUTLINE_ENABLED"),
+                      appearance.value(QStringLiteral("outlineEnabled")).toBool(false)?QStringLiteral("1"):QStringLiteral("0"));
+        const struct {const char *token,*key;int fallback;} fontScales[]={
+            {"QUEST_TITLE_FONT_X","titleFontX",1},{"QUEST_TITLE_FONT_Y","titleFontY",2}};
+        for(const auto &spec:fontScales){
+            const int scale=appearance.value(QLatin1String(spec.key)).toInt(spec.fallback);
+            fields.insert(QLatin1String(spec.token),QString::number(
+                scale==1||scale==2||scale==4||scale==8?scale:spec.fallback));
+        }
+        const QString questAtlas=appearance.value(QStringLiteral("atlas")).toString();
+        QString questPath;
+        int questW=0,questH=0,questTile=std::clamp(appearance.value(QStringLiteral("tileSize")).toInt(8),4,32);
+        QStringList questCells,questFlips;
+        if(!questAtlas.isEmpty()) {
+            const QString clean=QDir::cleanPath(questAtlas);
+            const QString absolute=QDir(projectRoot).filePath(clean);
+            if(clean==QStringLiteral("..") || clean.startsWith(QStringLiteral("../")) ||
+               QDir::isAbsolutePath(clean) || !QFileInfo::exists(absolute)) {
+                if(error)*error=QStringLiteral("Quest Journal atlas missing or outside game project: %1").arg(questAtlas);
+                return false;
+            }
+            SidboxPpb::Picture picture;QString readError;
+            if(!SidboxPpb::read(absolute,&picture,&readError)) {
+                if(error)*error=QStringLiteral("Cannot read Quest Journal atlas: %1").arg(readError);
+                return false;
+            }
+            questW=picture.indexed.width();questH=picture.indexed.height();
+            if(questW<questTile*3 || questH<questTile*3 || questW%questTile || questH%questTile) {
+                if(error)*error=QStringLiteral("Quest Journal atlas must contain at least 3x3 whole %1px tiles").arg(questTile);
+                return false;
+            }
+            const int total=(questW/questTile)*(questH/questTile);
+            const QJsonArray cells=appearance.value(QStringLiteral("cells")).toArray();
+            const QJsonArray flips=appearance.value(QStringLiteral("flips")).toArray();
+            for(int i=0;i<9;++i){
+                const int index=i<cells.size()?cells[i].toInt(i):i;
+                if(index<0 || index>=total){
+                    if(error)*error=QStringLiteral("Journal frame tile %1 is outside the selected atlas").arg(i+1);
+                    return false;
+                }
+                questCells<<QString::number(index);
+                questFlips<<QString::number(i<flips.size()?(flips[i].toInt()&12):0);
+            }
+            questPath=clean;
+        }
+        fields.insert(QStringLiteral("HAS_QUEST_ATLAS"),questPath.isEmpty()?QStringLiteral("0"):QStringLiteral("1"));
+        fields.insert(QStringLiteral("QUEST_ATLAS_PATH"),quoted(questPath));
+        fields.insert(QStringLiteral("QUEST_ATLAS_WIDTH"),QString::number(questW));
+        fields.insert(QStringLiteral("QUEST_ATLAS_HEIGHT"),QString::number(questH));
+        fields.insert(QStringLiteral("QUEST_ATLAS_TILE"),QString::number(questTile));
+        fields.insert(QStringLiteral("QUEST_CELLS"),questCells.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("QUEST_FLIPS"),questFlips.join(QLatin1Char(',')));
+    }
     fields.insert(QStringLiteral("HAS_DROP_TILEMAP"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.h")))
         && QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.c")))
@@ -326,6 +415,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
             .arg(where,spriteId);
         return false;
     };
+    QStringList questChoiceTokens;
     int nodeIndex = 0;
     for (const QJsonValue &v : nodes) {
         const QJsonObject o = v.toObject();
@@ -334,6 +424,11 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 << quoted(o.value("text").toString().left(512)) << ", {\n";
         for (int i=0; i<3; ++i) {
             const QJsonObject choice = i < choices.size() ? choices[i].toObject() : QJsonObject();
+            // Auto-assigned choice IDs are independent of Custom C event actions.
+            // Empty answers are not selectable, and must never emit quest signals.
+            const QString choiceToken=choice.value(QStringLiteral("questChoiceId")).toString();
+            questChoiceTokens << quoted(choice.value("text").toString().trimmed().isEmpty()
+                                             ? QString() : choiceToken);
             int action = clampInt(choice,"action",-1,29999,-1);
             const QString targetId = choice.value("targetObjectId").toString();
             if (!targetId.isEmpty()) {
@@ -552,6 +647,10 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         ++nodeIndex;
     }
     fields.insert(QStringLiteral("NODE_ROWS"), nodeRows.trimmed());
+    fields.insert(QStringLiteral("STORY_NODE_COUNT"),QString::number(nodes.size()));
+    fields.insert(QStringLiteral("QUEST_CHOICE_TOKENS"),
+                  questChoiceTokens.isEmpty()?QStringLiteral("0")
+                    :questChoiceTokens.join(QStringLiteral(",\n    ")));
     fields.insert(QStringLiteral("NPC_CHOICE_ACTION_ROWS"),npcChoiceActionRows.isEmpty()
         ? QStringLiteral("    {0u,65535u,65535u,0u,0u},")
         : npcChoiceActionRows.join(QLatin1Char('\n')));
@@ -793,7 +892,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("MAX_INVENTORY_SLOTS"),
         QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
         QStringLiteral("WRONG_REPEAT_ROWS"),QStringLiteral("WRONG_REPEAT_COUNT"),
-        QStringLiteral("NODE_ROWS"),QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
+        QStringLiteral("NODE_ROWS"),QStringLiteral("QUEST_CHOICE_TOKENS"),
+        QStringLiteral("STORY_NODE_COUNT"),
+        QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_CHOICE_ACTION_ROWS"),QStringLiteral("NPC_CHOICE_ACTION_COUNT"),
         QStringLiteral("REMOTE_NPC_ACTION_ROWS"),QStringLiteral("REMOTE_NPC_ACTION_COUNT"),
         QStringLiteral("CLOSE_GIFT_ROWS"),QStringLiteral("CLOSE_GIFT_COUNT"),
@@ -812,6 +913,15 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("DIALOG_X"),QStringLiteral("DIALOG_Y"),
         QStringLiteral("DIALOG_WIDTH"),QStringLiteral("DIALOG_HEIGHT"),
         QStringLiteral("DIALOG_PADDING"),
+        QStringLiteral("QUEST_MARGIN"),QStringLiteral("QUEST_SPLIT"),
+        QStringLiteral("QUEST_BG"),QStringLiteral("QUEST_BORDER"),
+        QStringLiteral("QUEST_TEXT"),QStringLiteral("QUEST_HIGHLIGHT"),
+        QStringLiteral("QUEST_LIST_LEFT"),QStringLiteral("QUEST_TITLE_X"),QStringLiteral("QUEST_TITLE_Y"),
+        QStringLiteral("QUEST_TITLE_FONT_X"),QStringLiteral("QUEST_TITLE_FONT_Y"),
+        QStringLiteral("QUEST_OUTLINE_ENABLED"),QStringLiteral("QUEST_OUTLINE_COLOUR"),
+        QStringLiteral("QUEST_ATLAS_PATH"),QStringLiteral("QUEST_ATLAS_WIDTH"),
+        QStringLiteral("QUEST_ATLAS_HEIGHT"),QStringLiteral("QUEST_ATLAS_TILE"),
+        QStringLiteral("QUEST_CELLS"),QStringLiteral("QUEST_FLIPS"),
         QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
         QStringLiteral("DROP_HITBOX_W"),QStringLiteral("DROP_HITBOX_H")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),

@@ -151,6 +151,9 @@ QString brief(const QString &value, int length = 76) {
 QString describedAction(const QJsonObject &object) {
     const QString type = object.value(QStringLiteral("type")).toString();
     if (type == QStringLiteral("goto_world")) return QStringLiteral("World exit / transition");
+    if (type == QStringLiteral("save_checkpoint"))
+        return QStringLiteral("Save Game checkpoint (TFCard slot %1)")
+            .arg(object.value(QStringLiteral("checkpointSlot")).toInt(0)+1);
     if (type == QStringLiteral("collectable")) return QStringLiteral("Collectable pickup");
     if (type == QStringLiteral("trigger")) return QStringLiteral("Touch / button trigger");
     if (type == QStringLiteral("door")) return QStringLiteral("Door / toggle object");
@@ -212,11 +215,20 @@ FlowGraph loadGraph(const QString &root) {
             const QJsonObject s = v.toObject();
             const QString id = s.value(QStringLiteral("id")).toString();
             if (id.isEmpty()) continue;
+            const int pointCount = s.value(QStringLiteral("points")).toArray().size();
+            const bool invalid = pointCount < 2;
+            QString description = QStringLiteral("Spline path\n%1 nodes, %2 frames, loop: %3")
+                .arg(pointCount).arg(s.value("frames").toInt())
+                .arg(s.value("loop").toBool() ? QStringLiteral("yes") : QStringLiteral("no"));
+            if (invalid) {
+                description += QStringLiteral("\nINVALID: movement paths need at least 2 points.");
+                g.diagnostics.append(QStringLiteral("%1: spline '%2' has %3 point(s); "
+                                                    "game export requires at least 2.")
+                    .arg(w,id).arg(pointCount));
+            }
             g.addNode(splineKey(w,id),w,QStringLiteral("Spline"),
                       s.value(QStringLiteral("name")).toString("Path"),
-                      QStringLiteral("Spline path\n%1 nodes, %2 frames, loop: %3")
-                          .arg(s.value("points").toArray().size()).arg(s.value("frames").toInt())
-                          .arg(s.value("loop").toBool() ? QStringLiteral("yes") : QStringLiteral("no")),3);
+                      description,3,invalid);
         }
         const QJsonArray resources = doc.value(QStringLiteral("resources")).toArray();
         for (const QJsonValue &v : resources) {
@@ -247,13 +259,15 @@ FlowGraph loadGraph(const QString &root) {
                     description += QStringLiteral("\nDirect player stat: %1 (+%2)")
                                        .arg(stat).arg(o.value(QStringLiteral("value")).toInt(10));
             }
-            if (type==QStringLiteral("trigger") && !o.value(QStringLiteral("interactItemName")).toString().isEmpty()) {
+            if ((type==QStringLiteral("trigger") || type==QStringLiteral("save_checkpoint")) &&
+                !o.value(QStringLiteral("interactItemName")).toString().isEmpty()) {
                 description += QStringLiteral("\nFIRE2: use %1 within %2px of hitbox"
                     "\nConsume on success: %3\nOne-shot: %4")
                     .arg(o.value(QStringLiteral("interactItemName")).toString())
                     .arg(o.value(QStringLiteral("interactRadius")).toInt(32))
                     .arg(o.value(QStringLiteral("interactConsume")).toBool() ? "yes" : "no")
-                    .arg(o.value(QStringLiteral("triggerOneShot")).toBool() ? "yes" : "no");
+                    .arg(type==QStringLiteral("save_checkpoint") ? "no" :
+                         (o.value(QStringLiteral("triggerOneShot")).toBool() ? "yes" : "no"));
                 if (o.value(QStringLiteral("interactDialogueNode")).toInt(-1)>=0)
                     description+=QStringLiteral("\nSuccess dialogue node: %1")
                         .arg(o.value(QStringLiteral("interactDialogueNode")).toInt(-1))
@@ -575,7 +589,10 @@ FlowGraph loadGraph(const QString &root) {
                     else g.missing(w,from,QStringLiteral("object"),target);
                 }
             }
-            if (type==QStringLiteral("trigger")) {
+            if (type==QStringLiteral("trigger") || type==QStringLiteral("save_checkpoint")) {
+                // Only ordinary Triggers export linked actions. Checkpoints
+                // share inventory USE outcomes but must not inherit stale links.
+                if (type==QStringLiteral("trigger"))
                 for (const QJsonValue &entry : obj.value(QStringLiteral("triggerExtraActions")).toArray()) {
                     const QJsonObject link=entry.toObject();
                     const QString id=link.value(QStringLiteral("objectId")).toString();
@@ -663,8 +680,14 @@ FlowGraph loadGraph(const QString &root) {
             const QString spline=obj.value(QStringLiteral("splineId")).toString();
             if (!spline.isEmpty()) {
                 const QString to=splineKey(w,spline);
-                if (g.byId.contains(to)) g.link(to,from,QStringLiteral("Moves along path"));
-                else g.missing(w,from,QStringLiteral("spline"),spline);
+                if (!g.byId.contains(to))
+                    g.missing(w,from,QStringLiteral("spline"),spline);
+                else if (g.nodes.at(g.byId.value(to)).problem)
+                    // Do not show a working movement arrow for a path which
+                    // the game exporter itself refuses (<2 spline points).
+                    g.missing(w,from,QStringLiteral("valid spline (needs 2+ points)"),spline);
+                else
+                    g.link(to,from,QStringLiteral("Moves along path"));
             }
             if (type == QStringLiteral("collectable")) {
                 const int kind=obj.value(QStringLiteral("pickupKind")).toInt(1);
@@ -697,6 +720,18 @@ FlowGraph loadGraph(const QString &root) {
                         }
                     }
                 }
+            }
+            if (type == QStringLiteral("save_checkpoint")) {
+                const int slot=qBound(0,obj.value(QStringLiteral("checkpointSlot")).toInt(0),9);
+                const QString to=w+QStringLiteral("/save-slot/")+QString::number(slot);
+                g.addNode(to,w,QStringLiteral("TFCard Save Slot"),
+                    QStringLiteral("Save Slot %1").arg(slot+1),
+                    QStringLiteral("Persistent save: player, world, inventory, objects and conversations"),5);
+                g.link(from,to,!obj.value(QStringLiteral("interactItemName")).toString().isEmpty()
+                    ? QStringLiteral("Inventory USE → Save Game")
+                    : obj.value(QStringLiteral("triggerPress")).toBool()
+                        ? QStringLiteral("FIRE2 → Save Game")
+                        : QStringLiteral("Touch → Save Game"));
             }
             const QString destination=obj.value(QStringLiteral("gotoWorldName")).toString().trimmed();
             if (type == QStringLiteral("goto_world") && !destination.isEmpty()) {
@@ -943,6 +978,147 @@ FlowGraph loadGraph(const QString &root) {
                                                 .arg(name,documents.at(a).name,documents.at(b).name);
                         if (!g.diagnostics.contains(issue))g.diagnostics.append(issue);
                     }
+                }
+            }
+        }
+    }
+    // Project-wide quests have their own visible lane. Previously every
+    // quest card had world="", so the lane-only renderer drew none of them.
+    const QString questLane=QStringLiteral("@project-quests");
+    // Project-wide quest lines are authored separately from .sbgm worlds.
+    // Each objective is a real condition; event signals remain explicit
+    // until the author wires them to an Adventure/Game Object action.
+    QFile questFile(dir.filePath(QStringLiteral(".codergirl/quests.json")));
+    if (questFile.exists()) {
+        if (!questFile.open(QIODevice::ReadOnly)) {
+            g.diagnostics.append(QStringLiteral("Could not read project quests.json"));
+        } else {
+            QJsonParseError e;
+            const QJsonDocument qdoc=QJsonDocument::fromJson(questFile.readAll(),&e);
+            if (e.error!=QJsonParseError::NoError || !qdoc.isObject() ||
+                qdoc.object().value(QStringLiteral("version")).toInt()!=1) {
+                g.diagnostics.append(QStringLiteral("Invalid project quest definitions"));
+            } else {
+                const QJsonArray quests=qdoc.object().value(QStringLiteral("quests")).toArray();
+                if(!quests.isEmpty())g.worlds.prepend(questLane);
+                for (const auto &qv:quests) {
+                    const QJsonObject q=qv.toObject();
+                    const QString id=q.value(QStringLiteral("id")).toString();
+                    const QString questKey=QStringLiteral("quests/quest/")+id;
+                    g.addNode(questKey,questLane,QStringLiteral("Quest"),
+                        q.value(QStringLiteral("title")).toString(),
+                        q.value(QStringLiteral("description")).toString(),1);
+                    const QJsonArray steps=q.value(QStringLiteral("objectives")).toArray();
+                    QString last=questKey;
+                    for (const auto &sv:steps) {
+                        const QJsonObject step=sv.toObject();
+                        const QString target=step.value(QStringLiteral("target")).toString();
+                        const QString kind=step.value(QStringLiteral("kind")).toString();
+                        const QString stepKey=QStringLiteral("quests/objective/")+
+                            step.value(QStringLiteral("id")).toString();
+                        const bool bad=kind==QStringLiteral("world") && !g.byId.contains(target+QStringLiteral("/world"));
+                        g.addNode(stepKey,questLane,QStringLiteral("Quest Objective"),
+                            step.value(QStringLiteral("title")).toString(),
+                            QStringLiteral("Condition: %1\nTarget: %2\nHint: %3")
+                                .arg(kind,target,step.value(QStringLiteral("hint")).toString()),3,bad);
+                        g.link(last,stepKey,QStringLiteral("Next objective"));
+                        if(kind==QStringLiteral("world")) {
+                            if(!bad)g.link(target+QStringLiteral("/world"),stepKey,QStringLiteral("Enter world"));
+                            else g.diagnostics.append(QStringLiteral("Quest %1: missing world %2").arg(id,target));
+                        } else if(kind==QStringLiteral("item")) {
+                            bool found=false;
+                            for(const auto &entry:documents) {
+                                const QJsonArray items=entry.doc.value(QStringLiteral("adventure"))
+                                    .toObject().value(QStringLiteral("items")).toArray();
+                                for(int i=0;i<items.size();++i)if(items.at(i).toObject().value(QStringLiteral("name")).toString()==target) {
+                                    g.link(itemKey(entry.name,i),stepKey,QStringLiteral("Own item"));found=true;
+                                }
+                            }
+                            if(!found)g.diagnostics.append(QStringLiteral("Quest %1: inventory item '%2' not found").arg(id,target));
+                        } else if(kind==QStringLiteral("dialogue_choice")) {
+                            const QString world=target.section(QLatin1Char(':'),0,0);
+                            const QString choiceId=target.section(QLatin1Char(':'),1);
+                            bool found=false;
+                            for(const SavedWorld &entry:documents) {
+                                if(entry.name!=world)continue;
+                                const QJsonArray nodes=entry.doc.value(QStringLiteral("adventure"))
+                                    .toObject().value(QStringLiteral("nodes")).toArray();
+                                for(int ni=0;ni<nodes.size();++ni) {
+                                    const QJsonArray choices=nodes[ni].toObject()
+                                        .value(QStringLiteral("choices")).toArray();
+                                    for(int ci=0;ci<choices.size();++ci) {
+                                        if(choices[ci].toObject().value(QStringLiteral("questChoiceId")).toString()!=choiceId)continue;
+                                        const QString source=dialogueKey(world,ni)+
+                                            QStringLiteral("/choice/")+QString::number(ci);
+                                        if(g.byId.contains(source)) {
+                                            g.link(source,stepKey,QStringLiteral("Successful dialogue answer advances quest"));
+                                            found=true;
+                                        }
+                                    }
+                                }
+                            }
+                            if(!found)g.diagnostics.append(QStringLiteral("Quest %1: missing dialogue answer %2").arg(id,target));
+                        } else if(kind==QStringLiteral("adventure_event")) {
+                            const QString signal=QStringLiteral("quests/adventure-event/")+target;
+                            g.addNode(signal,questLane,QStringLiteral("Quest Event"),target,
+                                QStringLiteral("Triggered by Adventure callback ID"),2);
+                            g.link(signal,stepKey,QStringLiteral("Adventure event received"));
+                            const QString sourceWorld=target.section(QLatin1Char(':'),0,0);
+                            if(g.byId.contains(sourceWorld+QStringLiteral("/world"))) {
+                                bool linkedDialogue=false;
+                                const QString eventNumber=target.section(QLatin1Char(':'),1);
+                                for(const SavedWorld &entry:documents) {
+                                    if(entry.name!=sourceWorld)continue;
+                                    const QJsonArray nodes=entry.doc.value(QStringLiteral("adventure"))
+                                        .toObject().value(QStringLiteral("nodes")).toArray();
+                                    for(int nodeIndex=0;nodeIndex<nodes.size();++nodeIndex) {
+                                        const QJsonArray choices=nodes.at(nodeIndex).toObject()
+                                            .value(QStringLiteral("choices")).toArray();
+                                        for(int choiceIndex=0;choiceIndex<choices.size();++choiceIndex) {
+                                            const QJsonObject choice=choices.at(choiceIndex).toObject();
+                                            const int action=choice.value(QStringLiteral("action")).toInt(-1);
+                                            if(action<0 || QString::number(action)!=eventNumber ||
+                                               choice.value(QStringLiteral("text")).toString().trimmed().isEmpty() ||
+                                               !choice.value(QStringLiteral("targetObjectId")).toString().isEmpty())continue;
+                                            const QString source=dialogueKey(sourceWorld,nodeIndex)+
+                                                QStringLiteral("/choice/")+QString::number(choiceIndex);
+                                            if(g.byId.contains(source)) {
+                                                g.link(source,signal,QStringLiteral("Custom event %1 → quest")
+                                                    .arg(action));
+                                                FlowNode &eventNode=g.nodes[g.byId.value(signal)];
+                                                const QString speaker=nodes.at(nodeIndex).toObject()
+                                                    .value(QStringLiteral("speaker")).toString();
+                                                eventNode.description+=QStringLiteral("\nSource dialogue: %1 [%2], answer: %3")
+                                                    .arg(speaker).arg(nodeIndex)
+                                                    .arg(choice.value(QStringLiteral("text")).toString().simplified());
+                                                linkedDialogue=true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if(!linkedDialogue) {
+                                    g.link(sourceWorld+QStringLiteral("/world"),signal,
+                                        QStringLiteral("Event %1 (source not identified)").arg(eventNumber));
+                                    g.diagnostics.append(QStringLiteral("Quest %1: no saved dialogue choice in %2 fires event %3. "
+                                        "The event may be emitted by custom code.").arg(id,sourceWorld,eventNumber));
+                                }
+                            } else g.diagnostics.append(QStringLiteral("Quest %1: unknown Adventure event world %2").arg(id,sourceWorld));
+                        } else if(kind==QStringLiteral("event")) {
+                            const QString signal=QStringLiteral("quests/event/")+target;
+                            g.addNode(signal,questLane,QStringLiteral("Quest Event"),target,
+                                QStringLiteral("Game code must call gameworlds_quest_event(\"%1\")").arg(target),2);
+                            g.link(signal,stepKey,QStringLiteral("Event received"));
+                        }
+                        last=stepKey;
+                    }
+                }
+                for(const auto &qv:quests) {
+                    const QJsonObject q=qv.toObject();
+                    const QString source=QStringLiteral("quests/quest/")+q.value(QStringLiteral("id")).toString();
+                    const QString req=q.value(QStringLiteral("requires")).toString();
+                    const QString exc=q.value(QStringLiteral("excludes")).toString();
+                    if(!req.isEmpty())g.link(QStringLiteral("quests/quest/")+req,source,QStringLiteral("Unlock on completion"));
+                    if(!exc.isEmpty())g.link(QStringLiteral("quests/quest/")+exc,source,QStringLiteral("Exclude on completion"));
                 }
             }
         }
@@ -1905,6 +2081,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     auto *tools=new QHBoxLayout();
     auto *worldSelect=new QComboBox(&dialog);
     worldSelect->setMinimumWidth(160);
+    auto *questView=new QPushButton(QObject::tr("Quest Lines"),&dialog);
+    questView->setToolTip(QObject::tr("Show project-wide quests, their objectives and their event links."));
     auto *search=new QLineEdit(&dialog);
     search->setPlaceholderText(QObject::tr("Find object, NPC, dialogue, stat..."));
     search->setMaximumWidth(320);
@@ -1927,6 +2105,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     for (QPushButton *b : {zoomIn,zoomOut})b->setFixedWidth(28);
     tools->addWidget(new QLabel(QObject::tr("World:"),&dialog));
     tools->addWidget(worldSelect);
+    tools->addWidget(questView);
     tools->addWidget(search,1);
     tools->addWidget(connectionsOnly);
     tools->addWidget(greenLinks);
@@ -2845,7 +3024,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             auto *band=scene->addRect(bandRect,QPen(theme.border),QBrush(theme.alternateBackground));
             band->setZValue(-5);band->setAcceptedMouseButtons(Qt::NoButton);
             worldBands.insert(world,band);
-            auto *header=scene->addSimpleText(world.toUpper());
+            auto *header=scene->addSimpleText(world==QStringLiteral("@project-quests")
+                ? QObject::tr("PROJECT QUESTS") : world.toUpper());
             worldHeaders.insert(world,header);
             header->setBrush(theme.text);
             header->setPos(bandRect.left()+20,bandRect.top()+8);
@@ -3101,7 +3281,10 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         buildFlowGroups(graph,layout,groups,memberGroup);
         worldSelect->blockSignals(true);
         worldSelect->clear();worldSelect->addItem(QObject::tr("All Worlds"),QString());
-        for (const QString &name:graph.worlds)worldSelect->addItem(name,name);
+        for (const QString &name:graph.worlds)
+            worldSelect->addItem(name==QStringLiteral("@project-quests")
+                ? QObject::tr("Project Quests") : name,name);
+        questView->setEnabled(graph.worlds.contains(QStringLiteral("@project-quests")));
         const int index=worldSelect->findData(previous);
         worldSelect->setCurrentIndex(qMax(0,index));
         worldSelect->blockSignals(false);
@@ -3126,6 +3309,10 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             if (cards.contains(id)) {selectedId=id;break;}
         }
         setDetails();refreshHighlight();
+    });
+    QObject::connect(questView,&QPushButton::clicked,&dialog,[&]() {
+        const int index=worldSelect->findData(QStringLiteral("@project-quests"));
+        if(index>=0)worldSelect->setCurrentIndex(index);
     });
     QObject::connect(worldSelect,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int){
         viewSaveTimer.stop();

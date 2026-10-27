@@ -19,7 +19,7 @@ assert 'old.preset != r.particlePreset' in editor
 assert 'old.swirlRadius != r.particleSwirlRadius' in editor
 assert 'for (int frame = 0; frame < warmFrames; ++frame) stepParticles();' in editor
 assert 's->swirl_mode' in rule and 'if (s->swirl_mode)' in rule
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 # Keep the LUT used in Qt's live preview numerically identical to firmware.
 m1=re.search(r'static const int8_t cg_particle_sine\[64\] = \{([^}]+)\};',rule)
 m2=re.search(r'static const qint8 swirlSine\[64\] = \{([^}]+)\};',editor)

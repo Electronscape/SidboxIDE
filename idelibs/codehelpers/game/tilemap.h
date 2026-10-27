@@ -264,6 +264,9 @@ typedef struct {
 
 uint8_t game_tile_player_start(game_tile_player_t *p,
                                 const game_tilemap_t *map, gfxbob_t *sprite);
+/* Stage 5.164.4: live player automatically captured by start(). It lets
+ * TFCard checkpoints work with older user-maintained main.c files. */
+const game_tile_player_t *game_tile_player_current(void);
 void game_tile_player_reset(game_tile_player_t *p, int16_t x, int16_t y);
 /* Set the physical hitbox relative to the visible BOB top-left. Returns 0
    for invalid/out-of-sprite rectangles; then keeps the previous bounds.

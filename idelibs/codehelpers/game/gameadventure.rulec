@@ -5,6 +5,9 @@
  */
 #include "gameadventure.h"
 #include "gameadventureruntime.h"
+@IDE_IF{HAS_PROJECT_HUD}
+#include "gamehud.h"
+@IDE_END
 #include "../gameassets/gameassets.h"
 #include <string.h>
 #include <stdint.h>
@@ -129,6 +132,18 @@ static const game_adventure_wrong_repeat_t wrong_repeat_rules[] = {
 static const game_adventure_node_t nodes[] = {
 @IDE{NODE_ROWS}
 };
+/* IDs belong to authored dialogue answers; generated numeric node positions
+ * only index this table. Reordering answers will preserve the authored IDs. */
+static const char *const quest_choice_ids[] = {
+    @IDE{QUEST_CHOICE_TOKENS}
+};
+static void on_quest_choice(uint16_t node, uint8_t answer)
+{
+    const uint32_t index=(uint32_t)node*3u+(uint32_t)answer;
+    if (index>=@IDE{STORY_NODE_COUNT}u*3u)return;
+    const char *id=quest_choice_ids[index];
+    if (id && *id)gameworlds_quest_dialogue_choice(id);
+}
 
 static const uint8_t story_choice_flags[] = {
 @IDE{CHOICE_FLAGS}
@@ -195,6 +210,9 @@ __attribute__((weak)) void gameadventure_on_event(uint16_t event_id)
 static void on_event(uint16_t event_id, void *user)
 {
     (void)user;
+    /* Project-wide quest objectives can follow Adventure numeric callbacks
+     * without hand-edited main.c or a second event dispatcher. */
+    gameworlds_quest_event_number(event_id);
     switch (event_id) {
 @IDE{LINKED_ACTION_CASES}
     default: gameadventure_on_event(event_id); break;
@@ -238,6 +256,42 @@ void gameadventure_npc_remote_reset(void)
 static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
 static uint8_t cg_saved_exchanges[GAME_ADVENTURE_EXCHANGE_SLOTS];
 static uint8_t cg_saved_wrong_repeats[GAME_ADVENTURE_EXCHANGE_SLOTS];
+
+/* Static per-world Adventure progress, excluding pointers and live renderer. */
+void gameadventure_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
+{
+    if (!emit) return;
+#define CG_STORY_SAVE(v) emit(&(v), (uint32_t)sizeof(v), ctx)
+    CG_STORY_SAVE(cg_saved_story_valid);
+    CG_STORY_SAVE(cg_saved_story_choices);
+    CG_STORY_SAVE(cg_saved_story_npcs);
+    CG_STORY_SAVE(cg_saved_npc_visibility);
+    CG_STORY_SAVE(cg_saved_close_gifts);
+    CG_STORY_SAVE(cg_saved_world_drops);
+    CG_STORY_SAVE(cg_saved_exchanges);
+    CG_STORY_SAVE(cg_saved_wrong_repeats);
+    CG_STORY_SAVE(cg_pending_npc_mask);
+    CG_STORY_SAVE(cg_pending_npc_state);
+#undef CG_STORY_SAVE
+}
+uint8_t gameadventure_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)
+{
+    if (!take) return 0;
+#define CG_STORY_LOAD(v) if (!take(&(v), (uint32_t)sizeof(v), ctx)) return 0
+    CG_STORY_LOAD(cg_saved_story_valid);
+    CG_STORY_LOAD(cg_saved_story_choices);
+    CG_STORY_LOAD(cg_saved_story_npcs);
+    CG_STORY_LOAD(cg_saved_npc_visibility);
+    CG_STORY_LOAD(cg_saved_close_gifts);
+    CG_STORY_LOAD(cg_saved_world_drops);
+    CG_STORY_LOAD(cg_saved_exchanges);
+    CG_STORY_LOAD(cg_saved_wrong_repeats);
+    CG_STORY_LOAD(cg_pending_npc_mask);
+    CG_STORY_LOAD(cg_pending_npc_state);
+#undef CG_STORY_LOAD
+    return 1;
+}
+
 void gameadventure_save_progress(void)
 {
     game_adventure_save_progress(cg_saved_story_choices, cg_saved_story_npcs);
@@ -277,6 +331,51 @@ void gameadventure_setup(void)
         npcs, GAME_ADVENTURE_STORY_NPC_COUNT,
         skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
         @IDE{FRAMES_PER_CHAR}u, on_event, 0);
+    game_adventure_set_choice_signal(on_quest_choice);
+    /* Keep the runtime journal pointed at the project-wide quest manager.
+     * Registration follows game_adventure_start() because a world load resets
+     * the previous world's renderer state. */
+    static const game_adventure_quest_ui_t quest_journal = {
+        gameworlds_quest_count, gameworlds_quest_id,
+        gameworlds_quest_title, gameworlds_quest_description,
+        gameworlds_quest_objective, gameworlds_quest_status,
+        gameworlds_quest_tracked, gameworlds_quest_track
+    };
+    game_adventure_set_quest_journal(&quest_journal);
+    static const game_adventure_quest_style_t quest_style={
+        @IDE{QUEST_MARGIN}u,@IDE{QUEST_SPLIT}u,@IDE{QUEST_BG}u,
+        @IDE{QUEST_BORDER}u,@IDE{QUEST_TEXT}u,@IDE{QUEST_HIGHLIGHT}u,
+        @IDE{QUEST_LIST_LEFT}u,@IDE{QUEST_TITLE_X}u,@IDE{QUEST_TITLE_Y}u,
+        @IDE{QUEST_TITLE_FONT_X}u,@IDE{QUEST_TITLE_FONT_Y}u,
+        @IDE{QUEST_OUTLINE_ENABLED}u,@IDE{QUEST_OUTLINE_COLOUR}u
+    };
+    game_adventure_quest_style(&quest_style);
+@IDE_IF{HAS_QUEST_ATLAS}
+    {
+        static const uint16_t quest_cells[9]={@IDE{QUEST_CELLS}};
+        static const uint8_t quest_flips[9]={@IDE{QUEST_FLIPS}};
+        uint16_t quest_w=0u,quest_h=0u;
+        const uint8_t *quest_pixels=gameassets_find_ppb(@IDE{QUEST_ATLAS_PATH},&quest_w,&quest_h);
+        game_adventure_quest_skin_file(quest_pixels,@IDE{QUEST_ATLAS_PATH},quest_w,quest_h,
+            @IDE{QUEST_ATLAS_WIDTH}u,@IDE{QUEST_ATLAS_HEIGHT}u,@IDE{QUEST_ATLAS_TILE}u,
+            quest_cells,quest_flips);
+    }
+@IDE_ELSE
+    game_adventure_quest_skin_file(0,0,0u,0u,0u,0u,0u,0,0);
+@IDE_END
+@IDE_IF{HAS_PROJECT_HUD}
+    {
+        const uint16_t dock=gamehud_dock_height();
+        /* gamehud_apply_dock() already shifts the top-docked framebuffer.
+         * A second top offset in the journal displaced it by twice the dock. */
+        game_adventure_quest_viewport(0u,
+                                      dock<320u?(uint16_t)(320u-dock):320u);
+    }
+@IDE_ELSE
+    game_adventure_quest_viewport(0u,320u);
+@IDE_END
+    game_adventure_set_modal_fullbright(gameworlds_ui_full_brightness);
+
 @IDE_IF{HAS_SHARED_PLAYER}
     game_adventure_set_drop_anchor(gameadventure_live_sprite_origin,
         @IDE{DROP_FOOT_X}, @IDE{DROP_FOOT_Y},

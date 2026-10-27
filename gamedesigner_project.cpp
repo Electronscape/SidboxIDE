@@ -141,6 +141,7 @@ bool SidboxGameDesigner::loadDesign()
     m_weatherPaletteIndex = qBound(1, weather.value(QStringLiteral("paletteIndex")).toInt(15), 254);
     m_weatherLightningInterval = qBound(100, weather.value(QStringLiteral("lightningInterval")).toInt(350), 2000);
     m_weatherLightningStrength = qBound(10, weather.value(QStringLiteral("lightningStrength")).toInt(75), 100);
+    m_weatherLightningCurve = qBound(0, weather.value(QStringLiteral("lightningCurve")).toInt(25), 100);
     m_weatherLightningOverlay = weather.value(QStringLiteral("lightningOverlayEnabled")).toBool(true);
     m_weatherPaletteFlashStrength = qBound(0, weather.value(QStringLiteral("paletteFlashStrength")).toInt(0), 100);
     m_weatherSuspendSpotlight = weather.value(QStringLiteral("suspendSpotlightOnLightning")).toBool(false);
@@ -288,7 +289,7 @@ bool SidboxGameDesigner::loadDesign()
                 QStringLiteral("trigger"), QStringLiteral("door"),
                 QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"),
                 QStringLiteral("enemy"), QStringLiteral("goto_world"),
-                QStringLiteral("particle_emitter")}.contains(type)
+                QStringLiteral("particle_emitter"), QStringLiteral("save_checkpoint")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -393,6 +394,7 @@ bool SidboxGameDesigner::loadDesign()
         r.gotoWorldName = object.value(QStringLiteral("gotoWorldName")).toString();
         r.gotoPress = object.value(QStringLiteral("gotoPress")).toBool(false);
         r.gotoStartId = object.value(QStringLiteral("gotoStartId")).toString(QStringLiteral("default"));
+        r.checkpointSlot = qBound(0, object.value(QStringLiteral("checkpointSlot")).toInt(0), 9);
         r.triggerPress = object.value(QStringLiteral("triggerPress")).toBool(false);
         r.triggerDrop = object.value(QStringLiteral("triggerDrop")).toBool(false);
         r.triggerOneShot = object.value(QStringLiteral("triggerOneShot")).toBool(false);
@@ -686,6 +688,42 @@ bool SidboxGameDesigner::saveDesign()
     obj.insert(QStringLiteral("previewPaletteAlpha"), m_previewPaletteAlpha->isChecked());
     obj.insert(QStringLiteral("activeForegroundPalette"), m_activeForegroundPalette);
     obj.insert(QStringLiteral("activeBackgroundPalette"), m_activeBackgroundPalette);
+    // Stable dialogue quest IDs are data, not numeric callbacks. A Quest Designer
+    // may have upgraded saved world data while this world tab remained open;
+    // preserve such IDs instead of overwriting them on the next Save World.
+    QJsonArray dialogNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
+    QJsonArray diskNodes;
+    QFile previousDesign(m_filePath);
+    if(previousDesign.open(QIODevice::ReadOnly))
+        diskNodes=QJsonDocument::fromJson(previousDesign.readAll()).object()
+            .value(QStringLiteral("adventure")).toObject()
+            .value(QStringLiteral("nodes")).toArray();
+    for(int ni=0;ni<dialogNodes.size();++ni) {
+        QJsonObject node=dialogNodes[ni].toObject();
+        QJsonArray answers=node.value(QStringLiteral("choices")).toArray();
+        const QJsonArray oldAnswers=ni<diskNodes.size()
+            ?diskNodes[ni].toObject().value(QStringLiteral("choices")).toArray():QJsonArray{};
+        for(int ci=0;ci<answers.size();++ci) {
+            QJsonObject answer=answers[ci].toObject();
+            if(answer.value(QStringLiteral("text")).toString().trimmed().isEmpty())continue;
+            if(answer.value(QStringLiteral("questChoiceId")).toString().isEmpty()) {
+                const QJsonObject old=ci<oldAnswers.size()?oldAnswers[ci].toObject():QJsonObject{};
+                QString id;
+                // Keep an established answer ID even when its wording changes.
+                // Replacing a non-empty answer by editing text must not break
+                // quests created in the project-wide Quest Designer.
+                if(!old.value(QStringLiteral("text")).toString().trimmed().isEmpty())
+                    id=old.value(QStringLiteral("questChoiceId")).toString();
+                if(id.isEmpty())id=QStringLiteral("dlg_")+
+                    QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-').left(16);
+                answer.insert(QStringLiteral("questChoiceId"),id);
+                answers.replace(ci,answer);
+            }
+        }
+        node.insert(QStringLiteral("choices"),answers);
+        dialogNodes.replace(ni,node);
+    }
+    m_adventure.insert(QStringLiteral("nodes"),dialogNodes);
     obj.insert(QStringLiteral("adventure"), m_adventure);
     QJsonObject start;
     start.insert(QStringLiteral("profile"), m_playerProfile);
@@ -723,6 +761,7 @@ bool SidboxGameDesigner::saveDesign()
     weather.insert(QStringLiteral("paletteIndex"), m_weatherPaletteIndex);
     weather.insert(QStringLiteral("lightningInterval"), m_weatherLightningInterval);
     weather.insert(QStringLiteral("lightningStrength"), m_weatherLightningStrength);
+    weather.insert(QStringLiteral("lightningCurve"), m_weatherLightningCurve);
     weather.insert(QStringLiteral("lightningOverlayEnabled"), m_weatherLightningOverlay);
     weather.insert(QStringLiteral("paletteFlashStrength"), m_weatherPaletteFlashStrength);
     weather.insert(QStringLiteral("suspendSpotlightOnLightning"), m_weatherSuspendSpotlight);
@@ -870,6 +909,7 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("gotoWorldName"), r.gotoWorldName);
             object.insert(QStringLiteral("gotoPress"), r.gotoPress);
             object.insert(QStringLiteral("gotoStartId"), r.gotoStartId);
+            object.insert(QStringLiteral("checkpointSlot"), qBound(0, r.checkpointSlot, 9));
             object.insert(QStringLiteral("triggerPress"), r.triggerPress);
             object.insert(QStringLiteral("triggerDrop"), r.triggerDrop);
             object.insert(QStringLiteral("triggerOneShot"), r.triggerOneShot);

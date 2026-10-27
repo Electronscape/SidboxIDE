@@ -1,9 +1,10 @@
 /* GENERATED SIDBOX TITLE SCREEN RUNTIME — Stage 5.68.
  * Origin: .sidbox-title-screen.json. Never hand-edit this file.
- * Load Game remains a no-op; Options opens the second 480x320 screen.
+ * Load Game opens a ten-slot selector; Options opens the second 480x320 screen.
  */
 #include "gametitle.h"
 #include "apis.h"
+#include "gameworlds.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,10 @@ static const int16_t title_options_bar_pos[3][2] = {@TITLE_OPTIONS_BAR_POS@};
 static const uint8_t title_options_bar_colour[3] = {@TITLE_OPTIONS_BAR_COLOURS@};
 static const int title_options_background = @TITLE_OPTIONS_BACKGROUND@;
 static const int title_options_bg_mode = @TITLE_OPTIONS_BG_MODE@;
+static char title_load_marker[16];
+static int8_t title_loaded_slot = -1;
+static uint8_t title_slot_exists[10];
+int8_t gametitle_load_slot(void) { return title_loaded_slot; }
 static uint8_t opt_music = @TITLE_OPT_DEFAULT_MUSIC@;
 static uint8_t opt_music_volume = @TITLE_OPT_DEFAULT_MUSIC_VOL@;
 static uint8_t opt_sfx = @TITLE_OPT_DEFAULT_SFX@;
@@ -250,6 +255,52 @@ static void title_frame(gfx_bitmap_t *front, uint16_t selected, uint8_t dual_lay
 /* The live options menu deliberately avoids disk writes. If a game wants
  * persistent preferences, it should save these from a controlled point after
  * streaming is stopped, not from the 50Hz menu render loop. */
+/* Load Game inherits the configured Load Game menu item's text styling.
+ * The slot list uses compact glyph sizes to fit ten entries on the LCD,
+ * but foreground, outline colour, enabled outline and its thickness are
+ * copied unchanged. Never assume palette index 15 is readable. */
+static title_art_t title_load_text_style(void)
+{
+    title_art_t style=title_menu_length ? title_menu[0].art : title_options_heading;
+    for (int i=0;i<title_menu_length;++i)
+        if (title_menu[i].action==3u) { style=title_menu[i].art; break; }
+    style.image=-1;
+    style.cell=0;
+    style.frame=0;
+    style.size_x=1;
+    style.size_y=1;
+    return style;
+}
+static void title_load_frame(gfx_bitmap_t *front,uint8_t selected,uint8_t dual_layer)
+{
+    gfx_usebuffer(front);
+    gfx_cls();
+    if (!dual_layer) title_draw_background(front,title_background_image,title_background_mode);
+    title_art_t art=title_load_text_style();
+    art.text="LOAD GAME";
+    art.size_x=2;
+    art.size_y=2;
+    art.x=(int16_t)((480-title_width(&art))/2);
+    art.y=36;
+    title_draw_art(&art);
+    art.size_x=1;
+    art.size_y=1;
+    for (uint8_t i=0;i<10u;++i) {
+        char label[42];
+        snprintf(label,sizeof(label),"SLOT %u   %s",(unsigned)(i+1u),
+                 title_slot_exists[i] ? "SAVED" : "EMPTY");
+        art.text=label;
+        art.x=(int16_t)((480-title_width(&art))/2);
+        art.y=(int16_t)(80+(int)i*19);
+        if (i==selected) title_draw_selector(&art,1);
+        title_draw_art(&art);
+        if (i==selected) title_draw_selector(&art,0);
+    }
+    art.text="FIRE LOAD   FIRE2 BACK";
+    art.x=(int16_t)((480-title_width(&art))/2);
+    art.y=282;
+    title_draw_art(&art);
+}
 static void title_options_frame(gfx_bitmap_t *front,uint8_t selected,uint8_t dual_layer)
 {
     gfx_usebuffer(front);
@@ -333,6 +384,8 @@ uint8_t gametitle_run(const char **world, const char **start)
     uint16_t selected=0;
     uint8_t options_selected=title_first_option();
     uint8_t options_open=0;
+    uint8_t load_open=0, load_selected=0;
+    title_loaded_slot=-1;
     uint8_t previous=0;
     uint8_t playing=0;
     if (!world || !start) return 0;
@@ -363,7 +416,23 @@ uint8_t gametitle_run(const char **world, const char **start)
         const uint8_t buttons=getjoyport();
         const uint8_t pressed=(uint8_t)(buttons & (uint8_t)~previous);
         previous=buttons;
-        if(options_open) {
+        if(load_open) {
+            if (pressed & BTN_FIRE2) load_open=0;
+            else if (pressed & BTN_UP) load_selected=(uint8_t)((load_selected+9u)%10u);
+            else if (pressed & BTN_DOWN) load_selected=(uint8_t)((load_selected+1u)%10u);
+            else if ((pressed & BTN_FIRE) && title_slot_exists[load_selected]) {
+                snprintf(title_load_marker,sizeof(title_load_marker),"__CGSAVE%u__",(unsigned)load_selected);
+                /* Stage 5.164.4: stage the slot in the world manager now.
+                 * Older hand-owned main.c may call gameworlds_start() directly
+                 * instead of forwarding the returned marker. */
+                if (gameworlds_request_at(title_load_marker,"default")) {
+                    title_loaded_slot=(int8_t)load_selected;
+                    *world=title_load_marker;
+                    *start="default";
+                    break;
+                }
+            }
+        } else if(options_open) {
             if(pressed & BTN_FIRE2) {
                 options_open=0;
                 if(dual_layer) title_set_background(back,0);
@@ -408,10 +477,16 @@ uint8_t gametitle_run(const char **world, const char **start)
                     title_release_images();
                     return 0;
                 }
-                /* Load Game remains inactive until the save-slot system exists. */
+                if (item->action==3) {
+                    load_open=1;
+                    load_selected=0;
+                    for (uint8_t i=0; i<10u; ++i)
+                        title_slot_exists[i]=gameworlds_slot_exists(i);
+                }
             }
         }
-        if(options_open)title_options_frame(buffers[drawn],options_selected,dual_layer);
+        if(load_open)title_load_frame(buffers[drawn],load_selected,dual_layer);
+        else if(options_open)title_options_frame(buffers[drawn],options_selected,dual_layer);
         else title_frame(buffers[drawn],selected,dual_layer);
         gfx_dispfbuffer(buffers[drawn],buffers[drawn^1u]);
         gfx_displaynow();

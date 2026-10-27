@@ -7,12 +7,28 @@
 #define BTN_FIRE 0x01u
 #endif
 /* Older host mocks may omit the directional button constants. */
+#ifndef BTN_UP
+#define BTN_UP 0x04u
+#endif
+#ifndef BTN_DOWN
+#define BTN_DOWN 0x08u
+#endif
 #ifndef BTN_LEFT
 #define BTN_LEFT 0x10u
 #endif
 #ifndef BTN_RIGHT
 #define BTN_RIGHT 0x20u
 #endif
+/* Standalone native runtime tests use a minimal apis.h without touchscreen.
+ * The actual SIDBOX SDK exposes all three macros. */
+#if defined(apiTouchDown) && defined(apiTouchGetXY) && defined(apiTouchInit)
+#define GA_QUEST_HAS_TOUCH 1
+#define GA_QUEST_GETXY(x,y) apiTouchGetXY((x),(y))
+#else
+#define GA_QUEST_HAS_TOUCH 0
+#define GA_QUEST_GETXY(x,y) ((void)0)
+#endif
+
 
 /* Bounded static memory: 64 inventory types, up to 3 choices per node. */
 #define GA_MAX_ITEMS GAME_ADVENTURE_MAX_ITEMS
@@ -50,7 +66,8 @@ typedef struct {
     uint8_t *pixels;
     uint16_t width, height;
 } ga_owned_ppb_t;
-static ga_owned_ppb_t ga_loaded_ppbs[GA_MAX_ITEMS];
+/* Reserve one extra resident PPB for the project-wide Quest Journal skin. */
+static ga_owned_ppb_t ga_loaded_ppbs[GA_MAX_ITEMS+1u];
 static uint16_t ga_loaded_ppb_count;
 static void ga_release_owned_ppbs(void)
 {
@@ -68,7 +85,7 @@ static const uint8_t *ga_load_ppb(const char *path,uint16_t width,uint16_t heigh
             return ga_loaded_ppbs[i].width==width && ga_loaded_ppbs[i].height==height
                 ? ga_loaded_ppbs[i].pixels : 0;
         }
-    if(ga_loaded_ppb_count>=GA_MAX_ITEMS) return 0;
+    if(ga_loaded_ppb_count>=GA_MAX_ITEMS+1u) return 0;
     ga_owned_ppb_t *entry=&ga_loaded_ppbs[ga_loaded_ppb_count++];
     entry->path=path; entry->width=width; entry->height=height;
     const uint32_t size=(uint32_t)width*height;
@@ -393,8 +410,159 @@ static uint8_t ga_prev_buttons, ga_choice, ga_inventory_offset;
    The latch is held until release, so closing a box with FIRE1 cannot
    cause a jump on that same frame or on a following held frame. */
 static uint8_t ga_fire1_blocked;
+/* Quest Journal is an independent modal above ordinary Adventure dialogs.
+ * None of these UI flags are saved. Tracking itself is saved by gameworlds. */
+static const game_adventure_quest_ui_t *ga_quest_ui;
+static uint8_t ga_quest_open, ga_quest_touch_latched;
+static uint16_t ga_quest_selected, ga_quest_scroll;
+static uint16_t ga_quest_top=0u,ga_quest_height=320u;
+static game_adventure_quest_style_t ga_quest_style={6u,42u,2u,15u,15u,14u,10u,11u,8u,1u,2u,0u,0u};
+static const uint8_t *ga_quest_skin_pixels;
+static uint16_t ga_quest_skin_w,ga_quest_skin_h;
+static uint8_t ga_quest_skin_tile;
+static uint16_t ga_quest_skin_cells[9];
+static uint8_t ga_quest_skin_flips[9];
+void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path,
+                                    uint16_t asset_width,uint16_t asset_height,
+                                    uint16_t width,uint16_t height,
+                                    uint8_t tile,const uint16_t cells[9],
+                                    const uint8_t flips[9])
+{
+    ga_quest_skin_pixels=0;ga_quest_skin_w=ga_quest_skin_h=0u;
+    ga_quest_skin_tile=0u;
+    if(!path || !*path || tile<4u || tile>32u || width<3u*tile || height<3u*tile ||
+       width%tile || height%tile || !cells)return;
+    const uint32_t count=(uint32_t)(width/tile)*(height/tile);
+    for(uint8_t i=0u;i<9u;++i){
+        if(cells[i]>=count)return;
+        ga_quest_skin_cells[i]=cells[i];
+        ga_quest_skin_flips[i]=flips?(flips[i]&12u):0u;
+    }
+    ga_quest_skin_pixels=(asset_pixels && asset_width==width && asset_height==height)
+        ? asset_pixels : ga_load_ppb(path,width,height);
+    if(!ga_quest_skin_pixels)return; /* Always readable without the optional PPB. */
+    ga_quest_skin_w=width;ga_quest_skin_h=height;ga_quest_skin_tile=tile;
+}
+
+static void (*ga_modal_fullbright)(void);
+void game_adventure_set_modal_fullbright(void (*callback)(void))
+{ ga_modal_fullbright=callback; }
+void game_adventure_quest_viewport(uint16_t top,uint16_t height)
+{
+    /* If a very tall dock leaves too little usable room, prefer an overlay
+     * over the HUD to an inaccessible journal. No out-of-bounds pixels. */
+    if(top>=320u || height<(uint16_t)(208u+2u*ga_quest_style.margin) ||
+       (uint32_t)top+height>320u)
+        {ga_quest_top=0u;ga_quest_height=320u;}
+    else {ga_quest_top=top;ga_quest_height=height;}
+}
+void game_adventure_quest_style(const game_adventure_quest_style_t *style)
+{
+    const game_adventure_quest_style_t def={6u,42u,2u,15u,15u,14u,10u,11u,8u,1u,2u,0u,0u};
+    ga_quest_style=style?*style:def;
+    if(ga_quest_style.margin<2u || ga_quest_style.margin>20u)ga_quest_style.margin=6u;
+    if(ga_quest_style.split_percent<30u || ga_quest_style.split_percent>60u)
+        ga_quest_style.split_percent=42u;
+    if(ga_quest_style.list_left<8u || ga_quest_style.list_left>80u)ga_quest_style.list_left=10u;
+    if(ga_quest_style.title_x<8u || ga_quest_style.title_x>240u)ga_quest_style.title_x=11u;
+    if(ga_quest_style.title_y<8u || ga_quest_style.title_y>48u)ga_quest_style.title_y=8u;
+    if(ga_quest_style.title_font_x!=1u && ga_quest_style.title_font_x!=2u &&
+       ga_quest_style.title_font_x!=4u && ga_quest_style.title_font_x!=8u)
+        ga_quest_style.title_font_x=1u;
+    if(ga_quest_style.title_font_y!=1u && ga_quest_style.title_font_y!=2u &&
+       ga_quest_style.title_font_y!=4u && ga_quest_style.title_font_y!=8u)
+        ga_quest_style.title_font_y=2u;
+    ga_quest_style.outline_enabled=ga_quest_style.outline_enabled?1u:0u;
+}
+static int ga_quest_heading_height(void)
+{
+    const int bottom=(int)ga_quest_style.title_y+8*(int)ga_quest_style.title_font_y+10;
+    return bottom>34?bottom:34;
+}
+static uint16_t ga_quest_rows(void)
+{
+    /* The list stops above the footer, including the atlas tile and 8px padding.
+     * Old -35 assumed a flat border and could put rows inside a skinned footer. */
+    const int inset=ga_quest_skin_pixels?(int)ga_quest_skin_tile+8:8;
+    const int available=(int)ga_quest_height-2*(int)ga_quest_style.margin-
+                        ga_quest_heading_height()-32-(inset+26);
+    if(available<24)return 1u;
+    return (uint16_t)(available/24>8?8:available/24);
+}
+
+void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source)
+{
+    ga_quest_ui = (source && source->count && source->id && source->title &&
+                   source->description && source->objective && source->status &&
+                   source->tracked && source->track) ? source : 0;
+    ga_quest_open=0u; ga_quest_selected=ga_quest_scroll=0u;
+    /* A held finger during world travel must first be released. */
+    ga_quest_touch_latched=1u;
+    /* Reinitialise on every world registration. The launcher or another
+     * screen may have disabled touch since this applet last used it.
+     * Older firmware without a touch provider is skipped safely. */
+#if GA_QUEST_HAS_TOUCH
+    if (ga_quest_ui && API && API->touch && API->touch->init)
+        apiTouchInit();
+#endif
+}
+
+static uint16_t ga_quest_count(void)
+{
+    if(!ga_quest_ui)return 0u;
+    const uint16_t count=ga_quest_ui->count();
+    return count>64u ? 64u : count;
+}
+
+/* Touch only OPENS the journal. UP/DOWN selects, FIRE1 tracks, FIRE2 closes.
+ * Left/right are reserved for other gameplay uses, not quest navigation. */
+static uint8_t ga_quest_input(uint8_t fire2_edge,uint8_t fire1_edge,
+                              uint8_t up_edge,uint8_t down_edge,
+                              uint8_t left_edge,uint8_t right_edge)
+{
+    (void)left_edge;(void)right_edge; /* Reserved, no journal action. */
+    const uint16_t count=ga_quest_count();
+#if GA_QUEST_HAS_TOUCH
+    const uint8_t down=(count && API && API->touch && API->touch->ispressed) ?
+        apiTouchDown() : 0u;
+#else
+    const uint8_t down=0u;
+#endif
+    const uint8_t tap=down && !ga_quest_touch_latched;
+    ga_quest_touch_latched=down;
+    if(ga_quest_open) {
+        if(fire2_edge) {ga_quest_open=0u;return 1u;}
+        if(count) {
+            if(up_edge && ga_quest_selected) --ga_quest_selected;
+            if(down_edge && ga_quest_selected+1u<count) ++ga_quest_selected;
+            const uint16_t rows=ga_quest_rows();
+            if(ga_quest_scroll>ga_quest_selected)ga_quest_scroll=ga_quest_selected;
+            if(ga_quest_selected>=ga_quest_scroll+rows)
+                ga_quest_scroll=(uint16_t)(ga_quest_selected-rows+1u);
+            if(fire1_edge &&
+               ga_quest_ui->status(ga_quest_selected)==1u) {
+                const char *id=ga_quest_ui->id(ga_quest_selected);
+                if(id)ga_quest_ui->track(id);
+            }
+        }
+        /* Touches on an open journal have NO function. */
+        return 1u;
+    }
+    if(ga_state==0u && count && tap) {
+        const int16_t tracked=ga_quest_ui->tracked();
+        ga_quest_selected=(tracked>=0 && (uint16_t)tracked<count)?(uint16_t)tracked:0u;
+        const uint16_t rows=ga_quest_rows();
+        ga_quest_scroll=ga_quest_selected>=rows?
+            (uint16_t)(ga_quest_selected-rows+1u):0u;
+        ga_quest_open=1u;
+        return 1u;
+    }
+    return 0u;
+}
+
 uint8_t game_adventure_gameplay_buttons(uint8_t buttons)
 {
+    if (ga_quest_open) return 0u;
     return (uint8_t)(buttons & (uint8_t)~((ga_state || ga_fire1_blocked) ? BTN_FIRE : 0u));
 }
 
@@ -594,6 +762,9 @@ static uint16_t ga_animation_count, ga_active_npc;
 static uint16_t ga_animation_ticks[256];
 static uint8_t ga_animation_frames[256], ga_animation_mode[256];
 static uint8_t ga_animation_original_index[256];
+static game_adventure_choice_signal_t ga_choice_signal;
+void game_adventure_set_choice_signal(game_adventure_choice_signal_t callback)
+{ ga_choice_signal=callback; }
 static game_adventure_action_t ga_action;
 static void *ga_user;
 
@@ -683,7 +854,7 @@ static void ga_tick_animations(uint16_t frames)
     }
 }
 
-uint8_t game_adventure_open(void) { return ga_state != 0; }
+uint8_t game_adventure_open(void) { return ga_state != 0 || ga_quest_open; }
 /* Optional world-manager hook: register an Adventure pickup kind before
  * the HUD first queries it. A standalone Adventure build needs no world
  * manager, so this default implementation deliberately does nothing. */
@@ -816,6 +987,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     for (uint16_t i = 0; i < ga_npc_count && i < 256u; ++i)
         ga_npc_visibility[i] = 1u;
     game_adventure_npc_choice_actions(0, 0);
+    ga_choice_signal=0; /* World transitions must not retain the last world's callback. */
     game_adventure_remote_npc_actions(0, 0, 0);
     game_adventure_spotlight_actions(0, 0, 0);
     game_adventure_close_gifts(0,0);
@@ -838,6 +1010,11 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     for (uint16_t i=0;i<ga_item_count;++i)
         if(ga_counts[i]) ga_touch_item(i,0u);
     ga_state = ga_choice = ga_inventory_offset = 0;
+    /* A world switch ends any journal modal. Registration happens in
+     * gameadventure_setup(), after this reset. */
+    ga_quest_open=0u;
+    ga_quest_ui=0;
+    ga_quest_touch_latched=1u;
     ga_trigger_message_mode=0u;
     ga_inventory_selection = ga_inventory_action = ga_confirm_yes = 0;
     ga_bracket_restart();
@@ -1119,6 +1296,7 @@ static void ga_success_choice(const game_adventure_choice_t *c, uint16_t node, u
 {
     if (c->give >= 0) game_adventure_add((uint16_t)c->give,1u);
     if (c->action >= 0 && ga_action) ga_action((uint16_t)c->action,ga_user);
+    if (ga_choice_signal) ga_choice_signal(node,choice);
     const uint16_t flag_index=(uint16_t)(node*3u+choice);
     ga_apply_npc_appearance(flag_index);
     const uint8_t flags=ga_choice_flags ? ga_choice_flags[flag_index] : 0u;
@@ -1335,8 +1513,14 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     const uint8_t right = (buttons & BTN_RIGHT) && !(ga_prev_buttons & BTN_RIGHT);
     /* Record modal FIRE1 before an item action changes ga_state to idle. */
     if (!(buttons & BTN_FIRE)) ga_fire1_blocked=0u;
-    else if (ga_state != 0u) ga_fire1_blocked=1u;
+    else if (ga_state != 0u || ga_quest_open) ga_fire1_blocked=1u;
     ga_prev_buttons = buttons;
+    /* Journal steals neither FIRE2 nor touch while dialogue/inventory runs.
+     * When open, it suspends animation, drop physics and world gameplay. */
+    if (ga_quest_input(press,fire,up,down,left,right)) {
+        if (buttons & BTN_FIRE) ga_fire1_blocked=1u;
+        return 1u;
+    }
     ga_step_drops(frames);
     ga_tick_animations(frames);
     ga_bracket_frames=(uint8_t)(((uint32_t)ga_bracket_frames + frames) % 20u);
@@ -1641,28 +1825,30 @@ static int ga_dialog_bottom_inset(void)
 /* Draw the nine atlas cells as a stretched tiled frame. The LCD canvas is
    assumed to be 480x320; the frame is drawn last, after all world sprites. */
 static void ga_frame_skin(int16_t x,int16_t y,uint16_t width,uint16_t height,
-                          const uint16_t skin_indices[9],const uint8_t skin_flips[9])
+                          const uint16_t skin_indices[9],const uint8_t skin_flips[9],
+                          const uint8_t *pixels,uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size,
+                          uint8_t background)
 {
-    gfx_setcolour(2); gfx_rectf(x, y, width, height);
-    if (!ga_skin_pixels || ga_skin_w < ga_tile * 3 || ga_skin_h < ga_tile * 3) return;
-    const uint16_t columns = ga_skin_w / ga_tile;
-    const uint16_t rows = ga_skin_h / ga_tile;
+    gfx_setcolour(background); gfx_rectf(x, y, width, height);
+    if (!pixels || !tile_size || atlas_w < tile_size * 3 || atlas_h < tile_size * 3) return;
+    const uint16_t columns = atlas_w / tile_size;
+    const uint16_t rows = atlas_h / tile_size;
     const uint32_t cells = (uint32_t)columns * rows;
-    for (uint16_t iy = 0; iy < height; iy += ga_tile) {
-        for (uint16_t ix = 0; ix < width; ix += ga_tile) {
-            const uint8_t pos = (uint8_t)((iy == 0 ? 0 : iy + ga_tile >= height ? 2 : 1) * 3 +
-                                          (ix == 0 ? 0 : ix + ga_tile >= width ? 2 : 1));
+    for (uint16_t iy = 0; iy < height; iy += tile_size) {
+        for (uint16_t ix = 0; ix < width; ix += tile_size) {
+            const uint8_t pos = (uint8_t)((iy == 0 ? 0 : iy + tile_size >= height ? 2 : 1) * 3 +
+                                          (ix == 0 ? 0 : ix + tile_size >= width ? 2 : 1));
             const uint16_t index = skin_indices[pos];
             if (index >= cells) continue;
             gfxbob_t tile;
             memset(&tile, 0, sizeof(tile));
             /* gfxbob_t.index is uint8_t. Rebase the pixel pointer to the
                selected cell so tile IDs beyond 255 render correctly too. */
-            const uint32_t pixel_offset = ((uint32_t)(index / columns) * ga_tile * ga_skin_w)
-                                        + (uint32_t)(index % columns) * ga_tile;
-            tile.imgdat = ga_skin_pixels + pixel_offset;
-            tile.atlas_stride = ga_skin_w;
-            tile.atlas_height = ga_tile; tile.width = ga_tile; tile.height = ga_tile;
+            const uint32_t pixel_offset = ((uint32_t)(index / columns) * tile_size * atlas_w)
+                                        + (uint32_t)(index % columns) * tile_size;
+            tile.imgdat = pixels + pixel_offset;
+            tile.atlas_stride = atlas_w;
+            tile.atlas_height = tile_size; tile.width = tile_size; tile.height = tile_size;
             tile.drawx = x + ix; tile.drawy = y + iy;
             tile.scale = 100; tile.index = 0;
             tile.flags = skin_flips[pos];
@@ -1671,7 +1857,8 @@ static void ga_frame_skin(int16_t x,int16_t y,uint16_t width,uint16_t height,
     }
 }
 static void ga_frame(int16_t x,int16_t y,uint16_t w,uint16_t h)
-{ ga_frame_skin(x,y,w,h,ga_skin_indices,ga_skin_flips); }
+{ ga_frame_skin(x,y,w,h,ga_skin_indices,ga_skin_flips,
+                ga_skin_pixels,ga_skin_w,ga_skin_h,ga_tile,2u); }
 static void ga_text(int x, int y, const char *text)
 {
     if (!text || !text[0]) return;
@@ -1826,7 +2013,8 @@ static void ga_draw_thought(void)
     if(h>320)h=320;
     const int y=ga_thought_y+h>320?320-h:ga_thought_y;
     ga_frame_skin(ga_thought_x,(int16_t)y,ga_thought_w,(uint16_t)h,
-                  ga_thought_indices,ga_thought_flips);
+                  ga_thought_indices,ga_thought_flips,
+                  ga_skin_pixels,ga_skin_w,ga_skin_h,ga_tile,2u);
     int visible=(h-2*inset)/line_h;
     if(visible<0)visible=0;
     if(visible>16)visible=16;
@@ -1867,10 +2055,154 @@ void game_adventure_draw_npcs(int32_t camera_x, int32_t camera_y)
     }
 }
 
+/* Quest Journal uses the existing 8-pixel font and Adventure text style.
+ * Text is always clipped to the panel; no allocations or new PPB assets. */
+static void ga_quest_label(int x,int y,const char *value,uint8_t columns)
+{
+    if (!value) return;
+    char line[40];
+    if(columns>39u)columns=39u;
+    uint8_t n=0;
+    while (n<columns && value[n] && value[n]!='\n') {line[n]=value[n];++n;}
+    if (value[n] && columns>3u) {
+        line[columns-3u]='.';line[columns-2u]='.';line[columns-1u]='.';
+        n=columns;
+    }
+    line[n]=0;
+    ga_text(x,y,line);
+}
+static uint16_t ga_quest_text_length(const char *text)
+{
+    if (!text)return 0u;
+    const size_t n=strlen(text);
+    return n>65535u ? 65535u : (uint16_t)n;
+}
+static void ga_quest_border(int16_t x,int16_t y,int16_t w,int16_t h)
+{
+    if(w<1 || h<1)return;
+#if defined(gfx_drawline)
+    gfx_drawline(x,y,x+w-1,y);
+    gfx_drawline(x,y+h-1,x+w-1,y+h-1);
+    gfx_drawline(x,y,x,y+h-1);
+    gfx_drawline(x+w-1,y,x+w-1,y+h-1);
+#else
+    gfx_rectf(x,y,w,1);gfx_rectf(x,y+h-1,w,1);
+    gfx_rectf(x,y,1,h);gfx_rectf(x+w-1,y,1,h);
+#endif
+}
+static void ga_quest_window(void)
+{
+    const uint16_t count=ga_quest_count();
+    const int margin=ga_quest_style.margin;
+    const int x=margin,y=(int)ga_quest_top+margin;
+    const int w=480-2*margin,h=(int)ga_quest_height-2*margin;
+    const int split=x+w*(int)ga_quest_style.split_percent/100;
+    /* Keep glyphs eight pixels INSIDE the atlas frame, not on top of its edges. */
+    const int inset=ga_quest_skin_pixels?(int)ga_quest_skin_tile+8:8;
+    const int list_x=x+((int)ga_quest_style.list_left>inset?(int)ga_quest_style.list_left:inset);
+    const int header=ga_quest_heading_height();
+    const int rows_y=y+header+32;
+    /* Native SIDBOX text is 8x16, plus an optional one-pixel outline.
+     * Position the entire footer ABOVE the atlas tile and its 8px inset. */
+    const int footer_y=y+h-inset-18;
+    const int footer_separator_y=footer_y-8;
+    const int objective_y=footer_separator_y-55;
+    const int right=split+inset;
+    const int right_cols=(x+w-right-inset)/8;
+    const uint16_t rows=ga_quest_rows();
+    const uint8_t saved_colour=ga_text_colour;
+    const uint8_t saved_outline=ga_outline_enabled;
+    const uint8_t saved_outline_colour=ga_outline_colour;
+    ga_text_colour=ga_quest_style.text_colour;
+    ga_outline_enabled=ga_quest_style.outline_enabled;
+    ga_outline_colour=ga_quest_style.outline_colour;
+    if(ga_quest_skin_pixels) {
+        ga_frame_skin((int16_t)x,(int16_t)y,(uint16_t)w,(uint16_t)h,
+                      ga_quest_skin_cells,ga_quest_skin_flips,
+                      ga_quest_skin_pixels,ga_quest_skin_w,ga_quest_skin_h,ga_quest_skin_tile,
+                      ga_quest_style.background_colour);
+    } else {gfx_setcolour(ga_quest_style.background_colour);
+            gfx_rectf(x,y,w,h);}
+    /* The nine-slice already contains its OWN border. Do not draw another. */
+    if(!ga_quest_skin_pixels) {
+        gfx_setcolour(ga_quest_style.border_colour);ga_quest_border(x,y,w,h);
+    }
+    {
+        const int tx=x+((int)ga_quest_style.title_x>inset?(int)ga_quest_style.title_x:inset);
+        const int avail=(x+w-inset-tx)/(8*(int)ga_quest_style.title_font_x);
+        if(avail>0){
+            char heading[14]="QUEST JOURNAL";
+            if(avail<13)heading[avail]=0; /* Do not print beyond right frame padding. */
+            ga_dialog_text(tx,y+(int)ga_quest_style.title_y,heading,
+                           ga_quest_style.title_font_x,ga_quest_style.title_font_y);
+        }
+    }
+    gfx_setcolour(ga_quest_style.border_colour);
+    gfx_rectf(x+inset,y+header,w-2*inset,1);
+    if(footer_separator_y>y+header+4)
+        gfx_rectf(split,y+header+4,1,footer_separator_y-y-header-4);
+    ga_text(list_x,y+header+8,"QUESTS");
+    if(!count)ga_text(list_x,y+header+40,"No quests yet.");
+    else {
+        if(ga_quest_selected>=count)ga_quest_selected=0u;
+        if(ga_quest_scroll>ga_quest_selected)ga_quest_scroll=ga_quest_selected;
+        if(ga_quest_selected>=ga_quest_scroll+rows)
+            ga_quest_scroll=(uint16_t)(ga_quest_selected-rows+1u);
+        const uint8_t title_cols=(uint8_t)((split-list_x-22)/8>1?(split-list_x-22)/8:1);
+        for(uint16_t row=0;row<rows;++row) {
+            const uint16_t index=(uint16_t)(ga_quest_scroll+row);
+            if(index>=count)break;
+            const int line_y=rows_y+(int)row*24;
+            if(index==ga_quest_selected) {
+                gfx_setcolour(ga_quest_style.selection_colour);
+                ga_quest_border(list_x-3,line_y-3,split-list_x+1,23);
+            }
+            const uint8_t status=ga_quest_ui->status(index);
+            ga_text(list_x,line_y,status==2u?"+":status==1u?">":status==3u?"x":"-");
+            ga_quest_label(list_x+16,line_y,ga_quest_ui->title(index),title_cols);
+        }
+        const uint16_t selected=ga_quest_selected;
+        const uint8_t status=ga_quest_ui->status(selected);
+        const int16_t tracked=ga_quest_ui->tracked();
+        ga_quest_label(right,y+header+8,ga_quest_ui->title(selected),(uint8_t)right_cols);
+        ga_text(right,y+header+30,status==1u?"ACTIVE":status==2u?"COMPLETED":
+                          status==3u?"EXCLUDED":"LOCKED");
+        if(tracked==(int16_t)selected && right_cols>=18)ga_text(right+80,y+header+30,"TRACKED");
+        const int description_y=y+header+69;
+        int desc_lines=(objective_y-description_y-6)/(16+(ga_outline_enabled?4:0));
+        if(desc_lines>4)desc_lines=4;
+        if(desc_lines>0){
+            ga_text(right,y+header+52,"DESCRIPTION");
+            const char *description=ga_quest_ui->description(selected);
+            ga_wrapped_scaled(description,ga_quest_text_length(description),right,description_y,
+                              (uint8_t)right_cols,(uint8_t)desc_lines,1u,2u);
+        }
+        ga_text(right,objective_y,"CURRENT OBJECTIVE");
+        const char *objective=ga_quest_ui->objective(selected);
+        if(objective && *objective)
+            ga_wrapped_scaled(objective,ga_quest_text_length(objective),right,
+                              objective_y+18,(uint8_t)right_cols,2u,1u,2u);
+        else ga_quest_label(right,objective_y+18,
+            status==2u?"Quest completed":"No active objective",(uint8_t)right_cols);
+    }
+    gfx_setcolour(ga_quest_style.border_colour);
+    gfx_rectf(x+inset,footer_separator_y,w-2*inset,1);
+    ga_text(x+inset,footer_y,"UP/DOWN SELECT");
+    ga_quest_label(right,footer_y,"FIRE1 TRACK  FIRE2 BACK",(uint8_t)right_cols);
+    ga_text_colour=saved_colour;
+    ga_outline_enabled=saved_outline;
+    ga_outline_colour=saved_outline_colour;
+}
+
 void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y)
 {
-    if (!ga_state) return;
+    if (!ga_state && !ga_quest_open) return;
+    /* Weather/night uses indexed CLUT tint, including the GUI colours.
+     * Restore original palette ONLY while a modal UI is visible. Next
+     * world frame reapplies the weather palette without altering clocks. */
+    if(ga_modal_fullbright)ga_modal_fullbright();
+    if (ga_quest_open) {ga_quest_window();return;}
     if (ga_state == 2 || ga_state == 4 || ga_state == 5 || ga_state == 6) {
         const uint16_t visible = ga_visible_count();
         if (ga_inventory_selection >= visible)

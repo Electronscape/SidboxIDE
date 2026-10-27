@@ -6,6 +6,7 @@
 // worlds; public per-world C identifiers are renamed by a generated header.
 // Map output is staged privately in .codergirl/tilemap-staging/<world>/.
 // Project-root gamelevels/ is obsolete and is never compiled.
+#include <cstdint>
 #include <QDateTime>
 #include <QColor>
 #include <QDir>
@@ -21,7 +22,9 @@
 #include <QStringList>
 #include <QUuid>
 #include "gametilemap.h"
+#include "gamehelpertemplates.h"
 #include "gameplayerprofile.h"
+#include "gamequestgen.h"
 
 namespace GameWorldSnapshot {
 
@@ -115,6 +118,8 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
             "gameworlditems_save_state", "gameworlditems_restore_state",
+            "gameworlditems_disk_export", "gameworlditems_disk_import",
+            "gameadventure_disk_export", "gameadventure_disk_import",
             "gameworlditems_remote_action", "gameworlditems_remote_reset",
             "gameworlditems_apply_remote", "gameadventure_save_progress", "gameadventure_restore_progress",
             "gameadventure_npc_action", "gameadventure_npc_remote_action", "gameadventure_npc_remote_reset"}) {
@@ -206,6 +211,10 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "uint8_t " + id + "_gameworlditems_init(void);\n"
                      "void " + id + "_gameworlditems_save_state(void);\n"
                      "void " + id + "_gameworlditems_restore_state(void);\n"
+                     // Stage 5.164.3: registry save callbacks MUST be declared
+                     // in each world's PUBLIC API, not only its private header.
+                     "void " + id + "_gameworlditems_disk_export(void (*)(const void *, uint32_t, void *), void *);\n"
+                     "uint8_t " + id + "_gameworlditems_disk_import(uint8_t (*)(void *, uint32_t, void *), void *);\n"
                      "void " + id + "_gameworlditems_set_active(uint16_t,uint8_t);\n"
                      "void " + id + "_gameworlditems_remote_action(uint16_t,uint8_t);\n"
                      "void " + id + "_gameworlditems_remote_reset(void);\n"
@@ -215,6 +224,8 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "void " + id + "_gameadventure_setup(void);\n"
                      "void " + id + "_gameadventure_save_progress(void);\n"
                      "void " + id + "_gameadventure_restore_progress(void);\n"
+                     "void " + id + "_gameadventure_disk_export(void (*)(const void *, uint32_t, void *), void *);\n"
+                     "uint8_t " + id + "_gameadventure_disk_import(uint8_t (*)(void *, uint32_t, void *), void *);\n"
                      "void " + id + "_gameadventure_npc_action(uint16_t,uint8_t);\n"
                      "void " + id + "_gameadventure_npc_remote_action(uint16_t,uint8_t);\n"
                      "void " + id + "_gameadventure_npc_remote_reset(void);\n"
@@ -344,6 +355,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList defaultSpotlightPulseDelay;
     QStringList defaultWeatherMode, defaultWeatherDensity, defaultWeatherWind;
     QStringList defaultWeatherColour, defaultWeatherInterval, defaultWeatherStrength, defaultWeatherPaletteStrength;
+    QStringList defaultWeatherCurve;
     QStringList defaultWeatherOverlay;
     QStringList defaultWeatherSuspendSpotlight;
     QStringList defaultDayNightMode, defaultDayNightColour, defaultDayNightStrength;
@@ -433,6 +445,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         defaultWeatherColour << QString::number(qBound(1, weather.value(QStringLiteral("paletteIndex")).toInt(15), 254));
         defaultWeatherInterval << QString::number(qBound(100, weather.value(QStringLiteral("lightningInterval")).toInt(350), 2000));
         defaultWeatherStrength << QString::number(qBound(10, weather.value(QStringLiteral("lightningStrength")).toInt(75), 100));
+        defaultWeatherCurve << QString::number(qBound(0, weather.value(QStringLiteral("lightningCurve")).toInt(25), 100) + 1);
         defaultWeatherOverlay << (weather.value(QStringLiteral("lightningOverlayEnabled")).toBool(true)
             ? QStringLiteral("1") : QStringLiteral("0"));
         defaultWeatherPaletteStrength << QString::number(qBound(0, weather.value(QStringLiteral("paletteFlashStrength")).toInt(0), 100));
@@ -605,6 +618,10 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             .arg(defaultDayNightStrength.at(i)).arg(defaultDayNightDayFrames.at(i))
             .arg(defaultDayNightNightFrames.at(i)).arg(defaultDayNightFadeFrames.at(i))
             .arg(defaultDayNightStartNight.at(i));
+        /* Trailing encoded field keeps previously generated world rows valid. */
+        entry += QStringLiteral(", %1").arg(defaultWeatherCurve.at(i));
+        entry += QStringLiteral(", %1_gameworlditems_disk_export, %1_gameworlditems_disk_import, "
+                                "%1_gameadventure_disk_export, %1_gameadventure_disk_import").arg(id);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to
@@ -635,35 +652,43 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     generated.replace("@IDE{WORLD_DECLARATIONS}",
         (declarations + spawnDeclarations).join(QLatin1Char('\n')).toUtf8());
     generated.replace("@IDE{WORLD_RECORDS}", ordered.join(QStringLiteral(",\n")).toUtf8());
-    const auto renderConditions = [&](QByteArray *content) -> bool {
-        const QByteArray flagEnd = "@IDE_END\n";
-        const QList<QPair<QByteArray, bool>> flags = {
-            {"@IDE_IF{HAS_ADVENTURE_RUNTIME}\n", anyAdventure},
-            {"@IDE_IF{HAS_WORLD_PHYSICS}\n", anyWorldPhysics},
-            {"@IDE_IF{HAS_PICKUPS}\n", anyPickups},
-            {"@IDE_IF{HAS_PLAYER_VISIBILITY}\n", anyAdventure && hasSharedPlayer},
-            {"@IDE_IF{HAS_SHARED_PLAYER}\n", hasSharedPlayer}
-        };
-        for (const auto &flag : flags) {
-            int cursor = 0;
-            while ((cursor = content->indexOf(flag.first, cursor)) >= 0) {
-                const int end = content->indexOf(flagEnd, cursor + flag.first.size());
-                if (end < 0) return false;
-                const QByteArray block = content->mid(cursor + flag.first.size(),
-                                                     end - cursor - flag.first.size());
-                content->replace(cursor, end + flagEnd.size() - cursor,
-                                 flag.second ? block : QByteArray());
-                cursor += flag.second ? block.size() : 0;
-            }
-        }
-        return !content->contains("@IDE_IF{") && !content->contains("@IDE_END");
-    };
-    if (!renderConditions(&generated)) {
-        if (error) *error = QStringLiteral("Invalid conditions in gameworlds.rulec.");
+    /* Stable per-project TFCard namespace. Do not use randomised qHash(). */
+    uint32_t saveKey=2166136261u;
+    QStringList stableWorldNames=published;
+    stableWorldNames.sort();
+    const QByteArray fingerprintSource = project.dirName().toUtf8() + '/' +
+        stableWorldNames.join(QLatin1Char('/')).toUtf8();
+    for (const char ch : fingerprintSource) {
+        saveKey ^= (uint8_t)ch;
+        saveKey *= 16777619u;
+    }
+    generated.replace("@IDE{SAVE_KEY}", QByteArray::number(saveKey));
+    if (!generated.contains("@IDE{QUEST_DATA}")) {
+        if(error)*error=QStringLiteral("SDK gameworlds.rulec is missing the Stage 5.165 quest data marker.");
         return false;
     }
-    if (generated.contains("@IDE{") || generated.contains("@IDE_IF{") || generated.contains("@IDE_END")) {
-        if (error) *error = QStringLiteral("Unresolved world registry rule token.");
+    QJsonArray projectQuests;
+    if (!GameQuestGen::read(project,&projectQuests,error)) return false;
+    generated.replace("@IDE{QUEST_DATA}",GameQuestGen::generateData(projectQuests));
+    // Stage 5.163: the world manager must use the SAME nested condition
+    // renderer as every other rule-owned helper. The previous substring-based
+    // expander stopped at the first @IDE_END, even when it closed an inner
+    // block (notably HAS_PICKUPS / HAS_ADVENTURE_RUNTIME / HAS_SHARED_PLAYER).
+    // That could emit malformed C or leave stray directives in valid worlds.
+    const QMap<QString, QString> conditionFlags = {
+        {QStringLiteral("HAS_ADVENTURE_RUNTIME"), anyAdventure ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_WORLD_PHYSICS"), anyWorldPhysics ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_PICKUPS"), anyPickups ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_PLAYER_VISIBILITY"), (anyAdventure && hasSharedPlayer) ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_SHARED_PLAYER"), hasSharedPlayer ? QStringLiteral("1") : QStringLiteral("0")}
+    };
+    QByteArray renderedSource;
+    if (!GameHelperTemplates::renderConditionals(generated, conditionFlags,
+                                                  QStringLiteral("gameworlds.rulec"),
+                                                  &renderedSource, error)) return false;
+    if (renderedSource.contains("@IDE{") || renderedSource.contains("@IDE_IF{") ||
+        renderedSource.contains("@IDE_ELSE") || renderedSource.contains("@IDE_END")) {
+        if (error) *error = QStringLiteral("Unresolved world registry rule token in gameworlds.rulec.");
         return false;
     }
     const QString root = project.filePath(QStringLiteral("gamehelpers"));
@@ -673,12 +698,16 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     }
     const QStringList dests = {QDir(root).filePath(QStringLiteral("gameworlds.h")),
                                QDir(root).filePath(QStringLiteral("gameworlds.c"))};
-    QByteArray renderedHeader = header.readAll();
-    if (!renderConditions(&renderedHeader)) {
-        if (error) *error = QStringLiteral("Invalid conditions in gameworlds.ruleh.");
+    QByteArray renderedHeader;
+    if (!GameHelperTemplates::renderConditionals(header.readAll(), conditionFlags,
+                                                  QStringLiteral("gameworlds.ruleh"),
+                                                  &renderedHeader, error)) return false;
+    if (renderedHeader.contains("@IDE{") || renderedHeader.contains("@IDE_IF{") ||
+        renderedHeader.contains("@IDE_ELSE") || renderedHeader.contains("@IDE_END")) {
+        if (error) *error = QStringLiteral("Unresolved world registry rule token in gameworlds.ruleh.");
         return false;
     }
-    const QList<QByteArray> bytes = {renderedHeader, generated};
+    const QList<QByteArray> bytes = {renderedHeader, renderedSource};
     // Check BOTH destinations before writing EITHER: a user-owned .c must
     // not leave a newly updated .h behind on a failed publication.
     for (const QString &destination : dests) {

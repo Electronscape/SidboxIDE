@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "apis.h"
 @IDE_IF{HAS_WORLD_PHYSICS}
 #include "gameworldobjects.h"
@@ -98,7 +99,7 @@ typedef struct {
     uint8_t weather_colour_index;
     uint16_t weather_lightning_interval;
     uint8_t weather_lightning_strength;
-    uint8_t weather_palette_flash_strength; /* 0=disabled, 100=full scene CLUT tint. */
+    uint8_t weather_palette_flash_strength; /* 0=disabled, 100=full scene palette brightening. */
     uint8_t weather_suspend_spotlight; /* Opt in: lightning temporarily reveals the scene. */
     uint8_t weather_lightning_overlay; /* 1 = patterned scene flash; palette can be independent. */
     uint8_t day_night_mode; /* 0=off, 1=fixed tint, 2=cycle. */
@@ -106,6 +107,11 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code; /* 0=default 25%; 1..101 encodes 0..100% lightning duration. */
+    void (*object_disk_export)(void (*)(const void *, uint32_t, void *), void *);
+    uint8_t (*object_disk_import)(uint8_t (*)(void *, uint32_t, void *), void *);
+    void (*story_disk_export)(void (*)(const void *, uint32_t, void *), void *);
+    uint8_t (*story_disk_import)(uint8_t (*)(void *, uint32_t, void *), void *);
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -113,6 +119,14 @@ static const gameworlds_record_t worlds[] = {
 };
 #define WORLD_COUNT (sizeof(worlds) / sizeof(worlds[0]))
 #define GAMEWORLDS_MAX_INVENTORY 64u
+/* Project-wide quest declarations generated from .codergirl/quests.json. */
+@IDE{QUEST_DATA}
+static uint8_t gw_quest_status[64]; /* 0 locked, 1 active, 2 complete, 3 excluded */
+static uint16_t gw_quest_step[64];
+static uint8_t gw_quest_tracked=255u, gw_quest_ready;
+static void gw_quest_refresh(void);
+static void gw_quest_reset(void);
+
 /* Identity is the item NAME, not its per-world index. Different worlds can
  * arrange their Adventure item lists differently and still share inventory.
  * Hash collisions (FNV-1a) are handled by a second string check using the
@@ -131,6 +145,12 @@ static char active_spawn_id[64] = "default";
 static int32_t pending_exit_x, pending_exit_y;
 static uint8_t pending_has_exit;
 static uint8_t saved_player_is_valid; /* Never restore zeroed state on first start. */
+static uint8_t save_checkpoint_pending; /* slot+1, processed at frame boundary */
+static uint8_t pending_title_load_slot; /* slot+1; preserves owner-maintained main.c */
+static uint8_t save_checkpoint_status;
+static char saved_world_id[64];
+static gameworlds_spawn_t saved_position;
+static uint8_t saved_position_valid;
 /* Three-phase, frame-synchronised transitions. All buffers remain owned by
  * the existing graphics system. Only 2 x 256 temporary CLUT words are used. */
 #define GW_TRANSITION_NONE   0u
@@ -153,6 +173,10 @@ static int32_t transition_camera_x, transition_camera_y;
 static uint32_t transition_front[256] __attribute__((aligned(32)));
 static uint32_t transition_back[256] __attribute__((aligned(32)));
 /* World-local lighting changes survive leaving and re-entering a world. */
+/* Save the day/night phase for every visited world. Inactive worlds pause their
+ * local clocks, rather than restarting at dawn each time a door is used. */
+static uint32_t day_night_saved_tick[WORLD_COUNT];
+static uint8_t day_night_saved_valid[WORLD_COUNT];
 static uint8_t spotlight_override_valid[WORLD_COUNT];
 static uint8_t spotlight_override_value[WORLD_COUNT];
 static uint8_t spotlight_enabled;
@@ -185,10 +209,10 @@ static gfxbob_t spotlight_ring_bob[SPOTLIGHT_RING_VARIANTS] __attribute__((align
 static uint8_t spotlight_ring_count;
 #endif
 /* Stage 5.152: optional world-local rain/snow/thunder, constant RAM use.
- * Each streak/flake has an implicit uniform starting position. Modulo view
- * keeps the weather full from its first frame without expensive pre-warming.
- * Lightning is drawn on the front framebuffer BEFORE the HUD, so text and
- * interface graphics are not brightened by the flash. */
+ * Stage 5.162:
+ * hashed per-drop phases, three rain speed/length layers, and fresh horizontal
+ * positions at every wrap remove the old three-column repeating appearance.
+ * Nothing is rendered beyond the view. Existing storm/CLUT lighting unchanged. */
 static void transition_restore_palette(void); /* CLUT source palette reset after lightning. */
 static uint8_t weather_mode, weather_density, weather_colour_index, weather_strength;
 static uint8_t weather_palette_strength, weather_palette_active;
@@ -198,11 +222,23 @@ static int8_t weather_wind;
 static uint16_t weather_interval, weather_flash_delay;
 static uint8_t weather_flash_phase;
 static uint8_t weather_flash_peak;
+static uint8_t weather_flash_duration; /* 6..80 frames, controlled by 0..100% duration slider. */
 static uint8_t day_night_mode, day_night_strength;
 static uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
 static uint32_t day_night_colour, day_night_tick;
 static uint32_t weather_frame_tick;
+static uint32_t weather_scatter_seed;
 static uint32_t weather_random_state = 0x7beab187u;
+/* Independent from the lightning PRNG, so rearranging raindrops never changes
+ * the artist's carefully tuned lightning sequence, brightness or timing. */
+static uint32_t weather_scatter_hash(uint32_t v)
+{
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    v *= 0x846ca68bu;
+    return v ^ (v >> 16);
+}
 static uint32_t weather_rand(void)
 {
     uint32_t r = weather_random_state;
@@ -223,9 +259,16 @@ static void weather_enter(const gameworlds_record_t *world)
         ? world->weather_palette_flash_strength : 0u;
     weather_suspend_spotlight = !!world->weather_suspend_spotlight;
     weather_overlay_enabled = !!world->weather_lightning_overlay;
-    /* Preserve the pending CLUT-restoration flag across world changes.
-     * The next weather_frame() then restores the new world's originals
-     * if its weather and day/night palette effects are switched off. */
+    /* Keep the encoded trailing registry field compatible. It now controls
+     * the actual lightning pulse LENGTH, not just an easing profile.
+     * 0% = 6 frames, 100% = 80 frames; 12% is a quick ~0.28s pulse. */
+    const uint16_t length_percent = world->weather_curve_code >= 1u && world->weather_curve_code <= 101u
+        ? (uint16_t)(world->weather_curve_code - 1u) : 25u;
+    weather_flash_duration = (uint8_t)(6u + (length_percent * 74u) / 100u);
+    /* Force the new world's palette binding, even when the target has clear
+     * weather and no tint. Without this a previously tinted world can leak
+     * into the first frame of an incoming transition. */
+    weather_palette_active = 1u;
     weather_frame_tick = 0u;
     weather_flash_phase = 0u;
     weather_flash_peak = 0u;
@@ -239,6 +282,11 @@ static void weather_enter(const gameworlds_record_t *world)
         (uint32_t)day_night_day_frames + day_night_fade_frames : 0u;
     weather_random_state ^= (uint32_t)world->start_x ^ ((uint32_t)world->start_y << 11);
     if (!weather_random_state) weather_random_state = 0x7beab187u;
+    /* Stable scatter based on this world's entry position. Do NOT consume a
+     * weather_rand() call: that would alter the established lightning timing. */
+    weather_scatter_seed = weather_scatter_hash(0x7beab187u ^
+        ((uint32_t)world->start_x * 0x9e3779b9u) ^
+        ((uint32_t)world->start_y * 0x85ebca6bu));
     weather_flash_delay = weather_interval;
 }
 static void weather_update(uint16_t frames)
@@ -251,7 +299,7 @@ static void weather_update(uint16_t frames)
     }
     if (!weather_mode) return;
     for (uint16_t f = 0; f < frames; ++f) {
-        if (++weather_frame_tick >= 16384u) weather_frame_tick = 0u;
+        ++weather_frame_tick; /* 32-bit clock: no visible restart every 5 minutes. */
         if (weather_mode != 3u) continue;
         if (weather_flash_phase) {
             --weather_flash_phase;
@@ -259,7 +307,7 @@ static void weather_update(uint16_t frames)
             --weather_flash_delay;
         } else {
             /* Smooth, irregular single pulse: no instant white/black toggles. */
-            weather_flash_phase = 25u;
+            weather_flash_phase = weather_flash_duration;
             weather_flash_peak = (uint8_t)(65u + weather_rand() % 36u);
             /* +/- 50% of the configured average flash interval. */
             weather_flash_delay = (uint16_t)(weather_interval / 2u +
@@ -270,18 +318,28 @@ static void weather_update(uint16_t frames)
         }
     }
 }
-/* Gentle, 0..100% envelope (~0.5 second at 50 Hz). Each storm
- * picks a different peak; no abrupt 100->0 jump or rapid double flash.
- * Reduced flashing is NOT a guarantee of photosensitive-seizure safety. */
-static const uint8_t weather_flash_curve[25] = {
-    0u, 3u, 8u, 17u, 29u, 45u, 63u, 79u, 92u, 100u,
-    95u, 88u, 79u, 68u, 56u, 45u, 35u, 26u, 19u, 13u,
-    8u, 5u, 3u, 1u, 0u
-};
+/* Duration-dependent, smooth lightning envelope at 50 Hz.
+ * 0..100% adjusts the WHOLE pulse from 6 to 80 frames. Its apex is roughly
+ * one third through the duration, with a longer, rounded fade-out. No peak
+ * brightness or spotlight intensity is changed by the duration slider.
+ * Reduced flashing is not a photosensitive-seizure safety guarantee. */
+static uint8_t weather_curve_envelope(uint8_t position, uint8_t duration)
+{
+    if (duration < 6u || position >= duration - 1u) return 0u;
+    const uint32_t peak = ((uint32_t)(duration - 1u) * 35u + 50u) / 100u;
+    const uint32_t rise = peak > 1u ? peak : 2u;
+    const uint32_t fall = (uint32_t)(duration - 1u) - rise;
+    const uint32_t progress = position <= rise
+        ? (uint32_t)position * 100u / rise
+        : (uint32_t)(duration - 1u - position) * 100u / fall;
+    /* Cubic smoothstep gives continuous attack/release intensity. */
+    return (uint8_t)(progress * progress * (300u - 2u * progress) / 10000u);
+}
 static uint8_t weather_pulse(void)
 {
     if (weather_mode != 3u || !weather_flash_phase) return 0u;
-    return (uint8_t)((uint16_t)weather_flash_curve[25u - weather_flash_phase] *
+    return (uint8_t)((uint16_t)weather_curve_envelope(
+        (uint8_t)(weather_flash_duration - weather_flash_phase), weather_flash_duration) *
         weather_flash_peak / 100u);
 }
 /* RGB palette tint: 0=day original colours, 100=maximum chosen night/fog tint.
@@ -315,10 +373,10 @@ uint8_t gameworlds_weather_status(void)
     return status;
 }
 
-/* Palette blending is intentionally separate from the older on-screen bars.
- * On indexed hardware it affects all drawn pixels (including HUD/dialogue),
- * regardless of which framebuffer they were drawn into. On transition frames
- * the transition CLUT owns the buffers, so suppress palette flashes there. */
+/* Day/night tint and lightning brightness share a single scene-palette path.
+ * Indexed CLUT effects also colour HUD/dialogue pixels using those entries.
+ * World transitions use the same composited colours, rather than reverting
+ * to the un-tinted source palette until the wipe/fade has finished. */
 static uint32_t weather_palette_blend(uint32_t source, uint32_t tint, uint16_t strength)
 {
     const uint32_t inv = 100u - strength;
@@ -327,18 +385,43 @@ static uint32_t weather_palette_blend(uint32_t source, uint32_t tint, uint16_t s
     const uint32_t b = ((source & 255u) * inv + (tint & 255u) * strength + 50u) / 100u;
     return (source & 0xff000000u) | (r << 16) | (g << 8) | b;
 }
+/* Colour used for lightning is derived from the selected weather entry.
+ * Lightning must increase channel brightness, even if that palette entry is
+ * blue or relatively dark. This never mutates the game's source .pal data. */
+static uint32_t weather_palette_brighten(uint32_t colour, uint32_t flash_colour, uint16_t strength)
+{
+    uint32_t out = colour & 0xff000000u;
+    for (uint8_t channel = 0; channel < 3u; ++channel) {
+        const uint8_t shift = (uint8_t)(channel * 8u);
+        const uint32_t value = (colour >> shift) & 255u;
+        const uint32_t tint = (flash_colour >> shift) & 255u;
+        /* 50%-100% of remaining headroom, tinted towards the selected hue.
+         * Every channel stays the same or brightens; none become darker. */
+        const uint32_t brighten = (255u - value) * (255u + tint) * strength / (510u * 100u);
+        out |= (value + brighten) << shift;
+    }
+    return out;
+}
+static uint32_t weather_scene_colour(uint32_t source, uint32_t flash_colour,
+                                     uint16_t night_mix, uint16_t flash_mix)
+{
+    uint32_t colour = night_mix ? weather_palette_blend(source, day_night_colour, night_mix) : source;
+    if (flash_mix) colour = weather_palette_brighten(colour, flash_colour, flash_mix);
+    return colour;
+}
 static void weather_palette_frame(void)
 {
     if (!active_world) return;
-    /* The transition renderer owns CLUTs during fades and wipes. */
-    if (transition_phase != GW_PHASE_IDLE) {
-        weather_palette_active = 0u;
-        return;
-    }
+    /* Rebind the ACTIVE world's composited palette before drawing every
+     * transition frame. Previously this returned early during IN/OUT, leaving
+     * the outgoing world's CLUT in use until transition_frame() at the end of
+     * the draw loop. In a two-world change that produces visible old-world
+     * fog/night colours while the new scene is being rendered. The wipe/fade
+     * still applies its brightness/mask on top at the end of the frame. */
     const uint16_t night_mix = day_night_mix();
     const uint16_t flash_mix = (uint16_t)weather_pulse() * weather_palette_strength / 100u;
     if (!night_mix && !flash_mix) {
-        if (weather_palette_active) {
+        if (weather_palette_active || transition_phase != GW_PHASE_IDLE) {
             weather_palette_active = 0u;
             transition_restore_palette();
         }
@@ -349,26 +432,34 @@ static void weather_palette_frame(void)
     if (!front && !back) return;
     const uint32_t lightning_tint = front ? front[weather_colour_index] : 0xffffffffu;
     if (front) {
-        for (uint16_t i = 0; i < 256u; ++i) {
-            uint32_t colour = weather_palette_blend(front[i], day_night_colour, night_mix);
-            transition_front[i] = weather_palette_blend(colour, lightning_tint, flash_mix);
-        }
-        /* Index 0 keeps original alpha; spotlight reserved mask never tints. */
+        for (uint16_t i = 0; i < 256u; ++i)
+            transition_front[i] = weather_scene_colour(front[i], lightning_tint, night_mix, flash_mix);
         if (spotlight_enabled) transition_front[spotlight_mask_index] = spotlight_mask_colour;
 #ifdef gfx_usefpalette
         gfx_usefpalette(transition_front);
 #endif
     }
     if (back) {
-        for (uint16_t i = 0; i < 256u; ++i) {
-            uint32_t colour = weather_palette_blend(back[i], day_night_colour, night_mix);
-            transition_back[i] = weather_palette_blend(colour, lightning_tint, flash_mix);
-        }
+        for (uint16_t i = 0; i < 256u; ++i)
+            transition_back[i] = weather_scene_colour(back[i], lightning_tint, night_mix, flash_mix);
 #ifdef gfx_usebpalette
         gfx_usebpalette(transition_back);
 #endif
     }
     weather_palette_active = 1u;
+}
+
+void gameworlds_ui_full_brightness(void)
+{
+    if(!active_world)return;
+    const uint32_t *front=active_world->front_palette?active_world->front_palette():NULL;
+    const uint32_t *back=active_world->back_palette?active_world->back_palette():NULL;
+#ifdef gfx_usefpalette
+    if(front)gfx_usefpalette((uint32_t *)front);
+#endif
+#ifdef gfx_usebpalette
+    if(back)gfx_usebpalette((uint32_t *)back);
+#endif
 }
 
 /* Draw after FRONT tiles and spotlight but before the game HUD/dialogue.
@@ -385,19 +476,33 @@ uint8_t gameworlds_weather_frame(uint16_t width, uint16_t height)
     const uint32_t tick = weather_frame_tick;
     gfx_setcolour(weather_colour_index);
     for (uint16_t i = 0; i < count; ++i) {
-        const uint32_t bx = ((uint32_t)i * 97u + 37u) % width;
-        const uint32_t by = ((uint32_t)i * 137u + 23u) % height;
-        const int32_t rain = weather_mode != 2u;
-        const int32_t speed = rain ? 7 + (i % 3u) : 1 + (i % 2u);
-        int32_t x = (int32_t)bx + ((int32_t)tick * (int32_t)weather_wind);
-        int32_t y = (int32_t)by + ((int32_t)tick * speed);
-        x %= width; y %= height;
+        /* Fully scattered, repeatable without per-drop RAM or frame RNG.
+         * Three depth-like rain layers differ in fall rate and streak length,
+         * NOT in density. Each raindrop gets a new X only when it wraps.
+         * Using a 64-bit travel accumulator avoids visible long-session jumps. */
+        const uint32_t seed = weather_scatter_hash(weather_scatter_seed ^
+            ((uint32_t)(i + 1u) * 0x9e3779b9u));
+        const uint8_t layer = (uint8_t)((seed >> 23) % 3u);
+        const uint8_t rain = weather_mode != 2u;
+        const uint8_t speed = rain
+            ? (uint8_t)((layer == 0u ? 4u : layer == 1u ? 7u : 11u) +
+                ((seed >> 16) % (layer == 0u ? 3u : layer == 1u ? 4u : 5u)))
+            : (uint8_t)(1u + ((seed >> 16) % 3u));
+        const uint8_t len = rain
+            ? (uint8_t)((layer == 0u ? 3u : layer == 1u ? 5u : 7u) +
+                ((seed >> 12) % (layer == 0u ? 3u : layer == 1u ? 3u : 4u))) : 1u;
+        const uint64_t travel = (uint64_t)(seed % height) + (uint64_t)tick * speed;
+        const int32_t y = (int32_t)(travel % height);
+        const uint32_t wrap = (uint32_t)(travel / height);
+        int32_t x = (int32_t)(weather_scatter_hash(seed ^
+            (wrap * 0x85ebca6bu)) % width);
+        /* Wind stays screen-relative; the modulo is done before multiplication
+         * to avoid signed overflow after long SIDBOX sessions. */
+        x += ((int32_t)(tick % width) * (int32_t)weather_wind);
+        x %= (int32_t)width;
         if (x < 0) x += width;
-        if (y < 0) y += height;
         if (rain) {
-            /* 1 px falling streaks; each successive frame drifts in wind. */
-            const int32_t len = 5 + (i % 3u);
-            const int32_t draw_h = y + len < height ? len : (int32_t)height - y;
+            const int32_t draw_h = y + len <= height ? len : (int32_t)height - y;
             if (draw_h > 0) gfx_rectf(x, y, 1, draw_h);
         } else {
             gfx_rectf(x, y, x + 2 < width ? 2 : 1, 1);
@@ -423,6 +528,28 @@ uint8_t gameworlds_weather_frame(uint16_t width, uint16_t height)
 static const uint8_t spotlight_bayer4[4][4] = {
     {0,8,2,10}, {12,4,14,6}, {3,11,1,9}, {15,7,13,5}
 };
+
+/* Restore the clock for this world only; inactive worlds do not advance.
+ * No change to the generated per-world record layout or saved project JSON. */
+static void day_night_save_active(void)
+{
+    if (!active_world || day_night_mode != 2u) return;
+    const size_t index = (size_t)(active_world - worlds);
+    if (index < WORLD_COUNT) {
+        day_night_saved_tick[index] = day_night_tick;
+        day_night_saved_valid[index] = 1u;
+    }
+}
+static void day_night_restore_world(const gameworlds_record_t *world)
+{
+    if (!world || day_night_mode != 2u) return;
+    const size_t index = (size_t)(world - worlds);
+    if (index < WORLD_COUNT && day_night_saved_valid[index]) {
+        const uint32_t cycle = (uint32_t)day_night_day_frames + day_night_night_frames +
+            (uint32_t)day_night_fade_frames * 2u;
+        if (cycle) day_night_tick = day_night_saved_tick[index] % cycle;
+    }
+}
 
 /* Both effects on a Goto World doorway are configured on its selected
  * DESTINATION Player Start: OUT on the departing scene, IN on arrival.
@@ -505,7 +632,11 @@ void gameworlds_spotlight_action(uint8_t action)
         spotlight_override_valid[index] = 1u;
         spotlight_override_value[index] = next;
     }
-    if (transition_phase == GW_PHASE_IDLE) transition_restore_palette();
+    if (transition_phase == GW_PHASE_IDLE) {
+        transition_restore_palette();
+        weather_palette_active = 0u;
+        weather_palette_frame();
+    }
 }
 static uint32_t transition_dim(uint32_t source, uint16_t brightness)
 {
@@ -776,13 +907,14 @@ void gameworlds_spotlight_frame(uint16_t width, uint16_t height)
     const int32_t inner = spotlight_radius > 0u ? (int32_t)spotlight_radius : 1;
     const int32_t outer = inner + (int32_t)spotlight_feather_current;
     const int32_t outer2 = outer * outer;
-    const uint32_t *front = active_world->front_palette ? active_world->front_palette() : NULL;
-    if (front) {
-        spotlight_palette_copy(front);
-#ifdef gfx_usefpalette
-        gfx_usefpalette(transition_front);
-#endif
-    }
+    /* Stage 5.161: the spotlight's reserved mask entry is already prepared
+     * by weather_palette_frame(). NEVER rebuild transition_front from the
+     * original .pal here: on entering a spotlight-enabled night world that
+     * silently overwrote the destination's night tint with untinted colours.
+     * In particular this happened between the weather pass and an incoming
+     * circle transition in user-owned main.c. Recompose the ACTIVE world's
+     * palette now, with its weather tint and spotlight mask intact. */
+    weather_palette_frame();
     gfx_setcolour(spotlight_mask_index);
     /* Two solid outer strips per row. Cheap at 100% opacity; optional 4x4
      * patterned segments at lower opacity, with no full-frame buffer copy. */
@@ -847,13 +979,19 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         transition_phase == GW_PHASE_OUT_DONE || !width || !height) return;
     const uint32_t *front = active_world->front_palette ? active_world->front_palette() : NULL;
     const uint32_t *back = active_world->back_palette ? active_world->back_palette() : NULL;
+    /* The outgoing and incoming transitions use the CURRENT world's tint.
+     * Otherwise the normal .pal reappears during fades and circle wipes. */
+    const uint16_t night_mix = day_night_mix();
+    const uint16_t flash_mix = (uint16_t)weather_pulse() * weather_palette_strength / 100u;
+    const uint32_t lightning_tint = front ? front[weather_colour_index] : 0xffffffffu;
     const uint32_t progress = ((uint32_t)(transition_step + 1u) * 255u) / transition_frames;
     const uint32_t coverage = transition_phase == GW_PHASE_OUT ? progress : 255u - progress;
     if (transition_mode == GW_TRANSITION_FADE) {
         const uint16_t light = (uint16_t)(255u - coverage);
         if (front) {
             for (uint16_t i = 0; i < 256; ++i)
-                transition_front[i] = transition_dim(front[i], light);
+                transition_front[i] = transition_dim(
+                    weather_scene_colour(front[i], lightning_tint, night_mix, flash_mix), light);
             /* The spotlight aperture must never inherit a fading title/world
              * colour. Its mask entry stays constant, even during Fade IN. */
             if (spotlight_enabled)
@@ -864,7 +1002,8 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         }
         if (back) {
             for (uint16_t i = 0; i < 256; ++i)
-                transition_back[i] = transition_dim(back[i], light);
+                transition_back[i] = transition_dim(
+                    weather_scene_colour(back[i], lightning_tint, night_mix, flash_mix), light);
 #ifdef gfx_usebpalette
             gfx_usebpalette(transition_back);
 #endif
@@ -873,9 +1012,19 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         /* Mask drawing uses the same reserved index as the spotlight. Old
          * non-spotlight worlds retain the original temporary index 255. */
         if (front) {
-            spotlight_palette_copy(front);
+            for (uint16_t i = 0; i < 256u; ++i)
+                transition_front[i] = weather_scene_colour(front[i], lightning_tint, night_mix, flash_mix);
+            transition_front[spotlight_enabled ? spotlight_mask_index : 255u] =
+                spotlight_enabled ? spotlight_mask_colour : 0xff000000u;
 #ifdef gfx_usefpalette
             gfx_usefpalette(transition_front);
+#endif
+        }
+        if (back) {
+            for (uint16_t i = 0; i < 256u; ++i)
+                transition_back[i] = weather_scene_colour(back[i], lightning_tint, night_mix, flash_mix);
+#ifdef gfx_usebpalette
+            gfx_usebpalette(transition_back);
 #endif
         }
 #if defined(gfx_rectf) && defined(gfx_setcolour)
@@ -930,6 +1079,7 @@ void gameworlds_transition_frame(uint16_t width, uint16_t height)
         } else {
             transition_phase = GW_PHASE_IDLE;
             transition_restore_palette();
+            weather_palette_frame(); /* No untinted single-frame pop at transition end. */
         }
     }
 }
@@ -1019,6 +1169,175 @@ static uint32_t inventory_get(const char *name, void *user)
         if (strcmp(inventory[i].name, name) == 0) return inventory[i].amount;
     return UINT32_MAX; /* Not yet in backpack: retain world-defined initial. */
 }
+/* Stage 5.165: quest state is global, not per-world. No heap allocation.
+ * Auto conditions recheck on world entry and gameplay ticks. Explicit event
+ * conditions are signalled by gameplay via gameworlds_quest_event(). */
+static int gw_quest_find(const char *id)
+{
+    if (!id || !*id) return -1;
+    for (uint16_t i=0;i<GW_QUEST_COUNT;++i)
+        if (strcmp(gw_quest_defs[i].id,id)==0) return (int)i;
+    return -1;
+}
+static void gw_quest_reset(void)
+{
+    memset(gw_quest_status,0,sizeof(gw_quest_status));
+    memset(gw_quest_step,0,sizeof(gw_quest_step));
+    gw_quest_tracked=255u;gw_quest_ready=0u;
+}
+static void gw_quest_unlock(void)
+{
+    for (uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+        if (gw_quest_status[i]==2u || gw_quest_status[i]==3u) continue;
+        const int exclude=gw_quest_find(gw_quest_defs[i].excludes);
+        if (exclude>=0 && gw_quest_status[exclude]==2u) {
+            gw_quest_status[i]=3u;continue;
+        }
+        if (gw_quest_status[i]!=0u) continue;
+        const int prerequisite=gw_quest_find(gw_quest_defs[i].requires);
+        if (prerequisite<0 || gw_quest_status[prerequisite]==2u)
+            gw_quest_status[i]=1u;
+    }
+}
+static void gw_quest_refresh(void)
+{
+    if (!gw_quest_ready) {gw_quest_ready=1u;gw_quest_unlock();}
+    if (active_world && active_world->inventory_store)
+        active_world->inventory_store(inventory_put,0);
+    /* Bounded loop: one quest completes at most its authored step count. */
+    for (uint16_t iteration=0;iteration<GW_OBJECTIVE_COUNT+GW_QUEST_COUNT+1u;++iteration) {
+        uint8_t changed=0;
+        gw_quest_unlock();
+        for (uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+            if (gw_quest_status[i]!=1u) continue;
+            const gw_quest_def_t *q=&gw_quest_defs[i];
+            if (gw_quest_step[i]>=q->count) {
+                gw_quest_status[i]=2u; changed=1;continue;
+            }
+            const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
+            const uint8_t world=strcmp(o->kind,"world")==0 && active_world &&
+                                    strcmp(active_world->name,o->target)==0;
+            const uint8_t item=strcmp(o->kind,"item")==0 &&
+                                   inventory_get(o->target,0)!=UINT32_MAX &&
+                                   inventory_get(o->target,0)>0u;
+            if (world || item) {
+                ++gw_quest_step[i]; changed=1;
+                if (gw_quest_step[i]==q->count) gw_quest_status[i]=2u;
+            }
+        }
+        if (!changed)break;
+    }
+    if (gw_quest_tracked>=GW_QUEST_COUNT || gw_quest_status[gw_quest_tracked]!=1u)
+        gw_quest_tracked=255u;
+    if (gw_quest_tracked==255u)
+        for(uint16_t i=0;i<GW_QUEST_COUNT;++i)
+            if(gw_quest_status[i]==1u) {gw_quest_tracked=(uint8_t)i;break;}
+}
+uint16_t gameworlds_quest_count(void) {return GW_QUEST_COUNT;}
+const char *gameworlds_quest_id(uint16_t i)
+{return i<GW_QUEST_COUNT ? gw_quest_defs[i].id : 0;}
+const char *gameworlds_quest_title(uint16_t i)
+{return i<GW_QUEST_COUNT ? gw_quest_defs[i].title : 0;}
+const char *gameworlds_quest_description(uint16_t i)
+{return i<GW_QUEST_COUNT ? gw_quest_defs[i].description : 0;}
+uint8_t gameworlds_quest_status(uint16_t i)
+{gw_quest_refresh();return i<GW_QUEST_COUNT ? gw_quest_status[i] : 0u;}
+uint16_t gameworlds_quest_current_step(uint16_t i)
+{gw_quest_refresh();return i<GW_QUEST_COUNT ? gw_quest_step[i] : 0u;}
+const char *gameworlds_quest_objective(uint16_t i)
+{
+    gw_quest_refresh();
+    if(i>=GW_QUEST_COUNT || gw_quest_status[i]!=1u ||
+       gw_quest_step[i]>=gw_quest_defs[i].count)return 0;
+    return gw_objective_defs[gw_quest_defs[i].first+gw_quest_step[i]].title;
+}
+const char *gameworlds_quest_hint(uint16_t i)
+{
+    gw_quest_refresh();
+    if(i>=GW_QUEST_COUNT || gw_quest_status[i]!=1u ||
+       gw_quest_step[i]>=gw_quest_defs[i].count)return 0;
+    return gw_objective_defs[gw_quest_defs[i].first+gw_quest_step[i]].hint;
+}
+int16_t gameworlds_quest_tracked(void)
+{gw_quest_refresh();return gw_quest_tracked==255u ? -1 : (int16_t)gw_quest_tracked;}
+uint8_t gameworlds_quest_track(const char *id)
+{
+    gw_quest_refresh();
+    const int index=gw_quest_find(id);
+    if(index<0 || gw_quest_status[index]!=1u)return 0u;
+    gw_quest_tracked=(uint8_t)index;return 1u;
+}
+uint8_t gameworlds_quest_event(const char *event_id)
+{
+    if(!event_id || !*event_id)return 0u;
+    gw_quest_refresh();
+    uint8_t advances=0u;
+    for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+        if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
+        const gw_quest_def_t *q=&gw_quest_defs[i];
+        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
+        if(strcmp(o->kind,"event")!=0 || strcmp(o->target,event_id)!=0)continue;
+        ++gw_quest_step[i];++advances;
+        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+    }
+    if(advances)gw_quest_refresh();
+    return advances;
+}
+uint8_t gameworlds_quest_event_number(uint16_t event_id)
+{
+    if(!active_world)return 0u;
+    char token[320];
+    snprintf(token,sizeof(token),"%s:%u",active_world->name,(unsigned)event_id);
+    gw_quest_refresh();
+    uint8_t count=0u;
+    for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+        if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
+        const gw_quest_def_t *q=&gw_quest_defs[i];
+        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
+        if(strcmp(o->kind,"adventure_event")!=0 || strcmp(o->target,token)!=0)continue;
+        ++gw_quest_step[i];++count;
+        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+    }
+    if(count)gw_quest_refresh();
+    return count;
+}
+/* Auto-generated dialogue-choice IDs are independent of numeric callbacks.
+ * This lets a successful answer run an object action AND complete a quest. */
+uint8_t gameworlds_quest_dialogue_choice(const char *stable_choice_id)
+{
+    if(!active_world || !stable_choice_id || !*stable_choice_id)return 0u;
+    char token[320];
+    const int length=snprintf(token,sizeof(token),"%s:%s",active_world->name,stable_choice_id);
+    if(length<0 || (size_t)length>=sizeof(token))return 0u;
+    gw_quest_refresh();
+    uint8_t count=0u;
+    for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+        if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
+        const gw_quest_def_t *q=&gw_quest_defs[i];
+        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
+        if(strcmp(o->kind,"dialogue_choice")!=0 || strcmp(o->target,token)!=0)continue;
+        ++gw_quest_step[i];++count;
+        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+    }
+    if(count)gw_quest_refresh();
+    return count;
+}
+/* IDs and their ordered steps make up the save schema; title/hint edits
+ * do not invalidate existing save progress. */
+static uint32_t gw_quest_schema(void)
+{
+    uint32_t h=2166136261u;
+    for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+        const char *p=gw_quest_defs[i].id;
+        while(*p){h^=(uint8_t)*p++;h*=16777619u;}
+        h^=gw_quest_defs[i].count;h*=16777619u;
+    }
+    for(uint16_t i=0;i<GW_OBJECTIVE_COUNT;++i) {
+        const char *p=gw_objective_defs[i].id;
+        while(*p){h^=(uint8_t)*p++;h*=16777619u;}
+    }
+    return h;
+}
 void gameworlds_seed_inventory(const char *name, uint16_t initial)
 { inventory_put(name, initial, 0); }
 void gameworlds_player_hooks(gameworlds_player_hook_t save,
@@ -1047,6 +1366,8 @@ uint8_t gameworlds_player_start(gameworlds_spawn_t *out) {
             break;
         }
     }
+    if (saved_position_valid && strcmp(active_world->name,saved_world_id)==0)
+        *out=saved_position;
     return 1;
 }
 
@@ -1054,6 +1375,7 @@ static void unload_active(void)
 {
     spotlight_ring_release();
     if (!active_world) return;
+    day_night_save_active();
     music_stop(); /* Never free sample buffers while DMA/audio still use them. */
     if (active_world->inventory_store)
         active_world->inventory_store(inventory_put, 0);
@@ -1089,6 +1411,7 @@ static uint8_t activate(const gameworlds_record_t *world)
     active_world = world;
     const size_t spot_index = (size_t)(world - worlds);
     weather_enter(world);
+    day_night_restore_world(world);
     spotlight_enabled = spot_index < WORLD_COUNT && spotlight_override_valid[spot_index]
         ? spotlight_override_value[spot_index] : world->spotlight_enabled;
     spotlight_radius = world->spotlight_radius;
@@ -1121,6 +1444,7 @@ static uint8_t activate(const gameworlds_record_t *world)
     /* Immediately replace any title-screen CLUT before the first spotlight
      * frame, without modifying original palette arrays. */
     if (spotlight_enabled) transition_restore_palette();
+    weather_palette_frame(); /* Night/fog is ready before the first visible frame. */
     return 1;
 failed:
     music_stop();
@@ -1129,11 +1453,438 @@ failed:
     world->assets_shutdown();
     return 0;
 }
+/* Stage 5.164.5 TFCard save runtime. Uses two independent files per slot: an
+ * interrupted write cannot damage the other copy. Neither contains pointers.
+ * Save files use the application's TFCard working directory, beside the game
+ * when the SIDBOX launcher sets that directory to the app's folder.
+ * The old /CGSAVES directory remains readable for existing save slots.
+ * Files use a FAT 8.3 project-key/slot/bank basename; max 256 KiB each. */
+#define GW_SAVE_VERSION 2u
+#define GW_SAVE_LIMIT 262144u
+#define GW_SAVE_PROJECT_KEY @IDE{SAVE_KEY}u
+#define GW_SAVE_SLOT_COUNT 10u
+#define GW_SAVE_MAX_NAME 64u
+
+typedef struct {
+    uint32_t magic, version, key, sequence;
+    uint32_t length, checksum, world_layout;
+} gw_save_header_t;
+typedef struct {
+    uint8_t *bytes;
+    uint32_t capacity, offset;
+    uint8_t failed;
+} gw_save_stream_t;
+typedef struct {
+    char name[GW_SAVE_MAX_NAME];
+    uint16_t quantity;
+} gw_save_item_t;
+typedef struct {
+    char name[GW_SAVE_MAX_NAME];
+    int32_t value;
+} gw_save_stat_t;
+static char gw_save_inventory_names[GAMEWORLDS_MAX_INVENTORY][GW_SAVE_MAX_NAME];
+typedef struct {
+    uint32_t marker, schema;
+    uint16_t count;
+    uint8_t tracked, reserved;
+    uint8_t status[64];
+    uint16_t step[64];
+} gw_save_quests_t;
+
+
+static void gw_save_emit(const void *src, uint32_t amount, void *context)
+{
+    gw_save_stream_t *stream=(gw_save_stream_t *)context;
+    if (stream->failed || amount > GW_SAVE_LIMIT - stream->offset) {
+        stream->failed=1; return;
+    }
+    if (stream->bytes) {
+        if (amount > stream->capacity - stream->offset) {
+            stream->failed=1; return;
+        }
+        memcpy(stream->bytes+stream->offset,src,amount);
+    }
+    stream->offset+=amount;
+}
+static uint8_t gw_save_take(void *dst, uint32_t amount, void *context)
+{
+    gw_save_stream_t *stream=(gw_save_stream_t *)context;
+    if (stream->failed || amount > stream->capacity-stream->offset) {
+        stream->failed=1; return 0;
+    }
+    if (dst) memcpy(dst,stream->bytes+stream->offset,amount);
+    stream->offset+=amount;
+    return 1;
+}
+static uint32_t gw_save_checksum(const uint8_t *data, uint32_t length)
+{
+    /* FNV-1a. Detects truncated, altered and partially-written payloads. */
+    uint32_t hash=2166136261u;
+    for (uint32_t i=0;i<length;++i) { hash^=data[i]; hash*=16777619u; }
+    return hash;
+}
+static uint32_t gw_save_world_layout(void)
+{
+    uint32_t hash=2166136261u;
+    for (size_t i=0;i<WORLD_COUNT;++i) {
+        const unsigned char *p=(const unsigned char *)worlds[i].name;
+        while (*p) { hash^=*p++; hash*=16777619u; }
+        gw_save_stream_t measure={0};
+        worlds[i].object_disk_export(gw_save_emit,&measure);
+        hash^=measure.offset; hash*=16777619u;
+        measure.offset=0;
+        worlds[i].story_disk_export(gw_save_emit,&measure);
+        hash^=measure.offset; hash*=16777619u;
+    }
+    return hash;
+}
+static void gw_save_filename(char path[40], uint8_t slot, char bank)
+{
+    /* Relative to the TFCard working directory. FAT-compatible 8.3 name. */
+    snprintf(path,40,"%06lX%1u%c.SAV",
+        (unsigned long)(GW_SAVE_PROJECT_KEY&0xffffffu), (unsigned)slot, bank);
+}
+static void gw_save_legacy_filename(char path[40], uint8_t slot, char bank)
+{
+    /* Read-only compatibility with Stage 5.164 through 5.164.4. */
+    snprintf(path,40,"/CGSAVES/%06lX%1u%c.SAV",
+        (unsigned long)(GW_SAVE_PROJECT_KEY&0xffffffu), (unsigned)slot, bank);
+}
+static uint8_t gw_save_read_bank(uint8_t slot, char bank, uint8_t legacy,
+                                 uint8_t **out, gw_save_header_t *header)
+{
+    char path[40];
+    if (legacy) gw_save_legacy_filename(path,slot,bank);
+    else gw_save_filename(path,slot,bank);
+    if (sfopen(0,path,SD_READ)!=FR_OK) return 0;
+    uint32_t got=0;
+    gw_save_header_t temp;
+    uint8_t *buffer=0;
+    if (sfread(0,&temp,(uint32_t)sizeof(temp),&got)!=FR_OK ||
+        got!=sizeof(temp) || temp.magic!=0x56534743u ||
+        (temp.version!=1u && temp.version!=GW_SAVE_VERSION) || temp.key!=GW_SAVE_PROJECT_KEY ||
+        temp.length>GW_SAVE_LIMIT || temp.length<sizeof(gameworlds_player_state_t) ||
+        temp.world_layout!=gw_save_world_layout() ||
+        SYSFileSystem->sbfilelen(0)!=(uint32_t)sizeof(temp)+temp.length)
+        goto failure;
+    buffer=(uint8_t *)malloc(temp.length);
+    if (!buffer) goto failure;
+    if (sfread(0,buffer,temp.length,&got)!=FR_OK || got!=temp.length ||
+        gw_save_checksum(buffer,temp.length)!=temp.checksum)
+        goto failure;
+    sfclose(0);
+    *out=buffer; *header=temp;
+    return 1;
+failure:
+    free(buffer);
+    sfclose(0);
+    return 0;
+}
+/* Validate the full payload structure before considering a bank usable.
+ * A checksum alone can be valid for an incompatible/malformed payload. */
+static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
+                              uint32_t *world_number, uint32_t version);
+static uint8_t gw_save_best(uint8_t slot, uint8_t **bytes, gw_save_header_t *header)
+{
+    /* Prefer the new game-local save. Only consult legacy root files when
+     * no valid local bank survives. Do not move or overwrite legacy files. */
+    for (uint8_t legacy=0;legacy<2u;++legacy) {
+        uint8_t *a=0,*b=0;
+        gw_save_header_t ha={0},hb={0};
+        uint8_t va=gw_save_read_bank(slot,'A',legacy,&a,&ha);
+        uint8_t vb=gw_save_read_bank(slot,'B',legacy,&b,&hb);
+        if (va && !gw_save_decode(a,ha.length,0,0,ha.version)) { free(a); a=0;va=0; }
+        if (vb && !gw_save_decode(b,hb.length,0,0,hb.version)) { free(b); b=0;vb=0; }
+        if (!va && !vb) continue;
+        /* Signed subtraction keeps wraparound sequence ordering sensible. */
+        if (vb && (!va || (int32_t)(hb.sequence-ha.sequence)>0)) {
+            free(a); *bytes=b; *header=hb;
+        } else { free(b); *bytes=a; *header=ha; }
+        return 1;
+    }
+    return 0;
+}
+/* Decode once without modifying live state, THEN decode again to apply.
+ * Matching world layout and bounds are checked before any arrays change. */
+static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
+                              uint32_t *world_number, uint32_t version)
+{
+    gw_save_stream_t stream={bytes,length,0,0};
+    gameworlds_player_state_t player={0};
+    uint32_t world_index=0;
+    gameworlds_spawn_t spawn={0};
+    uint16_t num_items=0,num_stats=0;
+#define GW_READ(v) if (!gw_save_take(&(v),(uint32_t)sizeof(v),&stream)) return 0
+    GW_READ(player);
+    GW_READ(world_index);
+    if (world_index>=WORLD_COUNT) return 0;
+    GW_READ(spawn);
+    if (spawn.facing>1u) return 0;
+    GW_READ(num_items);
+    if (num_items>GAMEWORLDS_MAX_INVENTORY) return 0;
+    gw_save_item_t item;
+    for (uint16_t i=0;i<num_items;++i) {
+        GW_READ(item);
+        if (!memchr(item.name,0,sizeof(item.name)) || !item.name[0]) return 0;
+        if (apply) {
+            memcpy(gw_save_inventory_names[i],item.name,sizeof(item.name));
+            inventory[i].name=gw_save_inventory_names[i];
+            inventory[i].amount=item.quantity;
+        }
+    }
+    GW_READ(num_stats);
+@IDE_IF{HAS_SHARED_PLAYER}
+    if (num_stats!=gameplayer_custom_stat_count()) return 0;
+@IDE_ELSE
+    if (num_stats) return 0;
+@IDE_END
+    for (uint16_t i=0;i<num_stats;++i) {
+        gw_save_stat_t stat;
+        GW_READ(stat);
+        if (!memchr(stat.name,0,sizeof(stat.name))) return 0;
+@IDE_IF{HAS_SHARED_PLAYER}
+        const char *expected=gameplayer_custom_stat_name(i);
+        if (!expected || strcmp(expected,stat.name)!=0) return 0;
+        if (apply && !gameplayer_stat_set(stat.name,stat.value)) return 0;
+@IDE_END
+    }
+    if (!gw_save_take(apply ? day_night_saved_tick : 0,
+            (uint32_t)sizeof(day_night_saved_tick),&stream) ||
+        !gw_save_take(apply ? day_night_saved_valid : 0,
+            (uint32_t)sizeof(day_night_saved_valid),&stream) ||
+        !gw_save_take(apply ? spotlight_override_valid : 0,
+            (uint32_t)sizeof(spotlight_override_valid),&stream) ||
+        !gw_save_take(apply ? spotlight_override_value : 0,
+            (uint32_t)sizeof(spotlight_override_value),&stream)) return 0;
+    for (size_t i=0;i<WORLD_COUNT;++i) {
+        gw_save_stream_t size={0};
+        worlds[i].object_disk_export(gw_save_emit,&size);
+        uint32_t stored=0;
+        GW_READ(stored);
+        if (stored!=size.offset) return 0;
+        if (apply) {
+            const uint32_t before=stream.offset;
+            if (!worlds[i].object_disk_import(gw_save_take,&stream) ||
+                stream.offset-before!=stored) return 0;
+        } else if (!gw_save_take(0,stored,&stream)) return 0;
+        size.offset=0;
+        worlds[i].story_disk_export(gw_save_emit,&size);
+        GW_READ(stored);
+        if (stored!=size.offset) return 0;
+        if (apply) {
+            const uint32_t before=stream.offset;
+            if (!worlds[i].story_disk_import(gw_save_take,&stream) ||
+                stream.offset-before!=stored) return 0;
+        } else if (!gw_save_take(0,stored,&stream)) return 0;
+    }
+#undef GW_READ
+    gw_save_quests_t questData={0};
+    if (version>=2u) {
+        if (!gw_save_take(&questData,(uint32_t)sizeof(questData),&stream) ||
+            questData.marker!=0x54534551u || questData.schema!=gw_quest_schema() ||
+            questData.count!=GW_QUEST_COUNT ||
+            (questData.tracked!=255u && questData.tracked>=GW_QUEST_COUNT))return 0;
+        for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
+            if(questData.status[i]>3u || questData.step[i]>gw_quest_defs[i].count ||
+               (questData.status[i]==2u && questData.step[i]!=gw_quest_defs[i].count))return 0;
+        }
+    } else if (version!=1u) return 0;
+    if (stream.failed || stream.offset!=length) return 0;
+    if (apply) {
+        gw_quest_reset();
+        if (version>=2u) {
+            memcpy(gw_quest_status,questData.status,sizeof(gw_quest_status));
+            memcpy(gw_quest_step,questData.step,sizeof(gw_quest_step));
+            gw_quest_tracked=questData.tracked;
+            gw_quest_ready=1u;
+        }
+        persistent=player;
+        inventory_count=num_items;
+        saved_player_is_valid=1;
+        saved_position=spawn;
+        saved_position_valid=1;
+        strncpy(saved_world_id,worlds[world_index].name,sizeof(saved_world_id)-1u);
+        saved_world_id[sizeof(saved_world_id)-1u]=0;
+    }
+    if (world_number) *world_number=world_index;
+    return 1;
+}
+static void gw_save_encode(gw_save_stream_t *stream)
+{
+    uint32_t world_index=(uint32_t)(active_world-worlds);
+    gameworlds_spawn_t spawn={0};
+    /* Capture the live tile-player, including owner-maintained main.c that
+     * predates the explicit gameworlds_bind_player_physics() API. A world
+     * start is NOT a valid substitute for the current checkpoint position. */
+    if (!gameworlds_player_start(&spawn)) stream->failed=1;
+@IDE_IF{HAS_SHARED_PLAYER}
+    const game_tile_player_t *live=bound_player_physics ? bound_player_physics : game_tile_player_current();
+    if (live && live->map==gameworlds_map() && live->sprite) {
+        spawn.x=live->x100/100;
+        spawn.y=live->y100/100;
+        spawn.facing=(live->sprite->flags & BLIT_FLAG_FLIP_X) ? 0u : 1u;
+    } else {
+        /* Reject the save instead of silently claiming the level start is
+         * the checkpoint. Do not replace a previously verified TFCard bank. */
+        stream->failed=1;
+    }
+@IDE_END
+#define GW_WRITE(v) gw_save_emit(&(v),(uint32_t)sizeof(v),stream)
+    GW_WRITE(persistent);
+    GW_WRITE(world_index);
+    GW_WRITE(spawn);
+    GW_WRITE(inventory_count);
+    for (uint16_t i=0;i<inventory_count;++i) {
+        gw_save_item_t item={0};
+        if (strlen(inventory[i].name)>=sizeof(item.name)) { stream->failed=1; return; }
+        strcpy(item.name,inventory[i].name);
+        item.quantity=inventory[i].amount;
+        GW_WRITE(item);
+    }
+    uint16_t num_stats=0;
+@IDE_IF{HAS_SHARED_PLAYER}
+    num_stats=gameplayer_custom_stat_count();
+@IDE_END
+    GW_WRITE(num_stats);
+@IDE_IF{HAS_SHARED_PLAYER}
+    for (uint16_t i=0;i<num_stats;++i) {
+        gw_save_stat_t stat={0};
+        const char *name=gameplayer_custom_stat_name(i);
+        if (!name || strlen(name)>=sizeof(stat.name) ||
+            !gameplayer_stat_get(name,&stat.value)) { stream->failed=1;return; }
+        strcpy(stat.name,name);
+        GW_WRITE(stat);
+    }
+@IDE_END
+    GW_WRITE(day_night_saved_tick);
+    GW_WRITE(day_night_saved_valid);
+    GW_WRITE(spotlight_override_valid);
+    GW_WRITE(spotlight_override_value);
+    for (size_t i=0;i<WORLD_COUNT;++i) {
+        gw_save_stream_t measure={0};
+        worlds[i].object_disk_export(gw_save_emit,&measure);
+        GW_WRITE(measure.offset);
+        worlds[i].object_disk_export(gw_save_emit,stream);
+        measure.offset=0;
+        worlds[i].story_disk_export(gw_save_emit,&measure);
+        GW_WRITE(measure.offset);
+        worlds[i].story_disk_export(gw_save_emit,stream);
+    }
+    gw_save_quests_t questData={0};
+    questData.marker=0x54534551u;
+    questData.schema=gw_quest_schema();
+    questData.count=GW_QUEST_COUNT;
+    questData.tracked=gw_quest_tracked;
+    memcpy(questData.status,gw_quest_status,sizeof(gw_quest_status));
+    memcpy(questData.step,gw_quest_step,sizeof(gw_quest_step));
+    GW_WRITE(questData);
+#undef GW_WRITE
+}
+uint8_t gameworlds_slot_exists(uint8_t slot)
+{
+    if (slot>=GW_SAVE_SLOT_COUNT) return 0;
+    uint8_t *bytes=0; gw_save_header_t header={0};
+    if (!gw_save_best(slot,&bytes,&header)) return 0;
+    const uint8_t valid=gw_save_decode(bytes,header.length,0,0,header.version);
+    free(bytes);
+    return valid;
+}
+uint8_t gameworlds_save_slot(uint8_t slot)
+{
+    if (slot>=GW_SAVE_SLOT_COUNT || !active_world || applying ||
+        gameworlds_transition_busy()) return 0;
+    /* Snapshot the active world before any asset/palette destruction. */
+    if (save_player) { save_player(&persistent,player_context); saved_player_is_valid=1; }
+    if (active_world->inventory_store) active_world->inventory_store(inventory_put,0);
+    if (active_world->world_state_save) active_world->world_state_save();
+    if (active_world->story_save) active_world->story_save();
+    day_night_save_active();
+    gw_quest_refresh();
+    gw_save_stream_t sizing={0};
+    gw_save_encode(&sizing);
+    if (sizing.failed || !sizing.offset || sizing.offset>GW_SAVE_LIMIT) return 0;
+    gw_save_stream_t stream={0};
+    stream.bytes=(uint8_t *)malloc(sizing.offset);
+    if (!stream.bytes) return 0;
+    stream.capacity=sizing.offset;
+    gw_save_encode(&stream);
+    if (stream.failed || stream.offset!=stream.capacity) { free(stream.bytes);return 0; }
+    gw_save_header_t header={0};
+    header.magic=0x56534743u;
+    header.version=GW_SAVE_VERSION;
+    header.key=GW_SAVE_PROJECT_KEY;
+    header.length=stream.offset;
+    header.checksum=gw_save_checksum(stream.bytes,stream.offset);
+    header.world_layout=gw_save_world_layout();
+    /* Write the *older* bank; never erase the newest verified save.
+     * Also reject internally malformed payloads with valid checksums. */
+    gw_save_header_t a={0},b={0}; uint8_t *tmp=0;
+    uint8_t va=gw_save_read_bank(slot,'A',0,&tmp,&a);
+    if (va && !gw_save_decode(tmp,a.length,0,0,a.version)) va=0;
+    free(tmp);tmp=0;
+    uint8_t vb=gw_save_read_bank(slot,'B',0,&tmp,&b);
+    if (vb && !gw_save_decode(tmp,b.length,0,0,b.version)) vb=0;
+    free(tmp);
+    header.sequence=va && vb ? ((int32_t)(a.sequence-b.sequence)>0 ? a.sequence+1u : b.sequence+1u)
+                     : va ? a.sequence+1u : vb ? b.sequence+1u : 1u;
+    const char bank=!va ? 'A' : !vb ? 'B' :
+        ((int32_t)(a.sequence-b.sequence)>0 ? 'B' : 'A');
+    char path[40]; gw_save_filename(path,slot,bank);
+    uint8_t ok=0;
+    if (sfopen(0,path,SD_WRITE|SD_CREATE_ALWAYS)==FR_OK) {
+        uint32_t written=0;
+        if (sfwrite(0,&header,(uint32_t)sizeof(header),&written)==FR_OK &&
+            written==sizeof(header) &&
+            sfwrite(0,stream.bytes,stream.offset,&written)==FR_OK &&
+            written==stream.offset) ok=1;
+        if (sfclose(0)!=FR_OK) ok=0;
+    }
+    free(stream.bytes);
+    return ok;
+}
+uint8_t gameworlds_load_slot(uint8_t slot)
+{
+    if (slot>=GW_SAVE_SLOT_COUNT || active_world || applying) return 0;
+    uint8_t *bytes=0; gw_save_header_t header={0};
+    if (!gw_save_best(slot,&bytes,&header)) return 0;
+    const uint8_t ok=gw_save_decode(bytes,header.length,0,0,header.version) &&
+                     gw_save_decode(bytes,header.length,1,0,header.version);
+    free(bytes);
+    return ok;
+}
+const char *gameworlds_saved_world(void)
+{ return saved_position_valid ? saved_world_id : 0; }
+uint8_t gameworlds_checkpoint_request(uint8_t slot)
+{
+    if (!active_world || slot>=GW_SAVE_SLOT_COUNT || applying) return 0;
+    if (save_checkpoint_pending==slot+1u) return 1;
+    save_checkpoint_pending=(uint8_t)(slot+1u);
+    return 1;
+}
+uint8_t gameworlds_save_status(void)
+{
+    const uint8_t result=save_checkpoint_status;
+    save_checkpoint_status=0;
+    return result;
+}
+
 uint8_t gameworlds_start(const char *name)
 {
+    /* Accept the title's selected save even in hand-maintained main.c files
+     * that call gameworlds_start(DEFAULT_WORLD) without request_at(). If a
+     * newer main already decoded the slot, reuse that snapshot once. */
+    if (pending_title_load_slot && !active_world && !applying) {
+        const uint8_t slot=(uint8_t)(pending_title_load_slot-1u);
+        pending_title_load_slot=0;
+        if (!saved_position_valid && !gameworlds_load_slot(slot)) return 0;
+        name=gameworlds_saved_world();
+        if (!name) return 0;
+    }
     const gameworlds_record_t *target = find_world(name);
     if (!target || applying) return 0;
     if (target == active_world) return 1;
+    if (saved_position_valid && strcmp(target->name,saved_world_id)!=0)
+        saved_position_valid=0;
     const uint8_t first_world = active_world == NULL;
     /* An OUT fade must stay black while the world is being exchanged.
      * Restoring the old CLUT here would expose its last visible frame. */
@@ -1160,6 +1911,7 @@ uint8_t gameworlds_start(const char *name)
         gameplayer_apply_physics(bound_player_physics, target->physics_profile);
 @IDE_END
     applying = 0;
+    if (success) gw_quest_refresh();
     if (success && first_world && transition_enabled) {
         uint8_t in, out, frames;
         uint8_t origin;
@@ -1171,6 +1923,15 @@ uint8_t gameworlds_start(const char *name)
 }
 uint8_t gameworlds_request_at(const char *name, const char *start_id)
 {
+    /* The title screen's private marker lets existing user-owned main.c
+     * continue calling request_at()+apply_pending() without any source edit.
+     * Loading happens AFTER shared player initialisation, never in title. */
+    if (name && !active_world && !applying &&
+        strlen(name)==11u && strncmp(name,"__CGSAVE",8u)==0 &&
+        name[8]>='0' && name[8]<='9' && strcmp(name+9,"__")==0) {
+        pending_title_load_slot=(uint8_t)(name[8]-'0'+1);
+        return 1;
+    }
     const gameworlds_record_t *target = find_world(name);
     if (!name || !*name || !target || applying) return 0;
     if (!start_id || !*start_id) start_id = "default";
@@ -1199,6 +1960,17 @@ uint8_t gameworlds_request(const char *name)
 { return gameworlds_request_at(name, "default"); }
 uint8_t gameworlds_apply_pending(void)
 {
+    if (pending_title_load_slot) {
+        const uint8_t slot=(uint8_t)(pending_title_load_slot-1u);
+        pending_title_load_slot=0u;
+        if (!gameworlds_load_slot(slot)) return 0;
+        return gameworlds_start(gameworlds_saved_world());
+    }
+    if (save_checkpoint_pending) {
+        const uint8_t slot=(uint8_t)(save_checkpoint_pending-1u);
+        save_checkpoint_pending=0;
+        save_checkpoint_status=gameworlds_save_slot(slot) ? 1u : 2u;
+    }
     if (!pending_world) return 1;
     if (transition_enabled &&
         (transition_phase == GW_PHASE_OUT || transition_phase == GW_PHASE_IN))
@@ -1262,8 +2034,14 @@ void gameworlds_shutdown(void)
     }
     memset(spotlight_override_valid,0,sizeof(spotlight_override_valid));
     memset(spotlight_override_value,0,sizeof(spotlight_override_value));
+    memset(day_night_saved_tick,0,sizeof(day_night_saved_tick));
+    memset(day_night_saved_valid,0,sizeof(day_night_saved_valid));
     pending_world = 0;
     pending_has_exit = 0;
+    gw_quest_reset();
+    saved_position_valid=0;
+    save_checkpoint_pending=0;
+    pending_title_load_slot=0;
     strcpy(active_spawn_id, "default");
     strcpy(pending_spawn_id, "default");
 @IDE_IF{HAS_SHARED_PLAYER}
@@ -1280,6 +2058,7 @@ void gameworlds_update_gameplay(uint16_t frames)
         active_world->objects_update_gameplay(frames);
     else if (active_world->objects_update)
         active_world->objects_update(frames);
+    gw_quest_refresh();
 }
 void gameworlds_update_particles(uint16_t frames)
 {
@@ -1300,6 +2079,7 @@ void gameworlds_update(uint16_t frames)
 {
     if (!active_world) return;
     if (active_world->objects_update) active_world->objects_update(frames);
+    gw_quest_refresh();
     weather_update(frames);
 }
 void gameworlds_draw(int32_t x, int32_t y)
@@ -1421,4 +2201,10 @@ void gameworlds_draw_foreground(void)
 void gameworlds_draw_background(void)
 { if (active_world) active_world->assets_background(); }
 void gameworlds_show_background(void)
-{ if (active_world) active_world->assets_show_background(); }
+{
+    if (!active_world) return;
+    active_world->assets_show_background();
+    /* Some display back-buffer bindings can select their own palette.
+     * Put the current destination WORLD's tint back before the first frame. */
+    weather_palette_frame();
+}

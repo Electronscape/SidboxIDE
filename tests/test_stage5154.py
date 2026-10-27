@@ -27,7 +27,7 @@ assert 'uint8_t gameworlds_weather_frame(uint16_t view_width, uint16_t view_heig
 assert 'effective_spotlight_opacity = (uint8_t)((uint16_t)spotlight_opacity *' in world
 assert 'gameworlds_spotlight_frame(VIEW_W, GAME_PLAY_H);' in main
 assert main.index('gameworlds_spotlight_frame(VIEW_W, GAME_PLAY_H);') < main.index('gameworlds_weather_frame(VIEW_W, GAME_PLAY_H);')
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 print('source: opt-in UI + .sbgm read/write + registry export + named API + no main.c changes PASS')
 
 begin = world.index('/* Stage 5.152: optional world-local rain/snow/thunder')
@@ -82,6 +82,7 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code;
 } gameworlds_record_t;
 static const gameworlds_record_t *active_world;
 static void mock_rectf(int x,int y,int w,int h) { (void)x;(void)y;(void)w;(void)h; }

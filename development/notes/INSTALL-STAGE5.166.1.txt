@@ -1,0 +1,56 @@
+SIDBOX / CoderGirl Stage 5.166.1 (27 October 2026)
+Tap-Anywhere Quest Journal, source-tested hotfix
+
+INSTALL ON TOP OF STAGE 5.166
+
+1. Back up the working CoderGirl IDE and Platformer3 game project.
+2. Extract CoderGirl-Stage5.166.1-271026-DROPIN.zip into the IDE source root
+   preserving directory paths. DO NOT extract into the Platformer3 project.
+3. Rebuild CoderGirl. The splash should show Build: 5.166.1.271026.
+4. Open the game project, run Update Game Project, and ACCEPT the upgrade of
+   gamehelpers/gameadventureruntime.c. The project-owned main.c remains untouched.
+   A regeneration of all worlds is not required for this helper-only change.
+5. Rebuild and transfer the game .APP as usual.
+
+SIDBOX TEST
+- Start World1/forest normally. The small QUESTS corner label is now gone.
+- Tap any unused part of the 480x320 gameplay area to open Quest Journal.
+- Lift your finger before tapping a journal quest; the opening touch does not
+  select anything or close the journal.
+- Select an active quest, then tap TRACK. Tap CLOSE or press FIRE2 to exit.
+- While the inventory or a dialogue is open, touching the screen must NOT open
+  the journal.
+- Travel to another world and repeat: touch is reinitialised when each world
+  registers the journal.
+
+NOTES
+- This change does NOT enable the touchscreen in the firmware if the API touch
+  provider is actually absent or returns no touch presses. The 5.166 code
+  already called apiTouchInit() once; 5.166.1 retries initialisation on each
+  world registration and removes the need for a calibrated opening hotspot.
+- The journal's internal TRACK, UP, DOWN and CLOSE actions still require
+  calibrated coordinates. FIRE2 remains an independent close/back control.
+- The existing game_adventure_input() and game_adventure_draw() calls MUST run
+  each gameplay frame in the user-maintained main.c. The original uploaded
+  Platformer3Testing main.c (22 October) did call both each frame, but the
+  current local game copy has not been inspected here.
+- No new touch buttons, HUD glyphs, save format revisions, world changes,
+  quest IDs or changes to the Game Objects system.
+
+EXACT SOURCE MODIFICATIONS
+- idelibs/codehelpers/game/adventureruntime.rulec:
+  game_adventure_set_quest_journal(): reinitialise touch every registration.
+  ga_quest_input(): any new touch edge opens the journal during idle gameplay.
+  game_adventure_draw(): removes obsolete HUD button drawing.
+- splashscreenwidget.cpp: Build: 5.166.1.271026
+- development/tests/test_stage5166_touch_journal.py: extended native tests.
+- Nine older test files: only update their exact splash-version assertion.
+
+VALIDATION ON HOST
+- PASS: native mocked touchscreen test: open anywhere, no held-touch
+  double-actions, quest selection/tracking, FIRE2 closing, inventory modal,
+  per-world touch init.
+- PASS: generated Adventure runtime syntax against supplied SIDBOX SDK headers.
+- PASS: quest progression, dialogue IDs, legacy saves, two-bank recovery,
+  world registry callback compilation, checkpoint USE and rules tests.
+- NOT TESTED: full Qt6 GUI build, full ARM link, real SIDBOX touchscreen API.

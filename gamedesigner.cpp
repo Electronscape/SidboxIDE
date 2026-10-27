@@ -15,6 +15,7 @@
 #include "gameadventureeditor.h"
 #include "gamehudeditor.h"
 #include "gamefloweditor.h"
+#include "gamequesteditor.h"
 #include "gametitlescreeneditor.h"
 #include "gamepixarteditor.h"
 #include "gameadventuregen.h"
@@ -2053,8 +2054,35 @@ void SidboxGameDesigner::editPlayerStart()
         "The palette flash has its own independent 0-100% strength. "
         "Overlay pixels are drawn before the HUD and dialogue."));
     form->addRow(tr("Overlay flash strength"), weatherStrength);
-    // True indexed-colour lightning: blend temporary FRONT and BACK CLUTs
-    // towards the chosen lightning colour. Keep this separate from the screen
+    // The slider controls the lightning pulse LENGTH, not its peak brightness.
+    auto *weatherCurveRow = new QWidget(&dialog);
+    auto *weatherCurveLayout = new QHBoxLayout(weatherCurveRow);
+    weatherCurveLayout->setContentsMargins(0, 0, 0, 0);
+    auto *weatherCurve = new QSlider(Qt::Horizontal, weatherCurveRow);
+    weatherCurve->setRange(0, 100);
+    weatherCurve->setValue(m_weatherLightningCurve);
+    weatherCurve->setSingleStep(1);
+    weatherCurve->setPageStep(10);
+    weatherCurve->setToolTip(tr("Controls the length of the entire lightning flash: "
+        "0% = 6 frames (0.12 s), 12% = about 14 frames (0.28 s), "
+        "100% = 80 frames (1.6 s). Peak brightness stays unchanged. "
+        "This is not a photosensitive-seizure safety guarantee."));
+    auto *weatherCurveReadout = new QLabel(weatherCurveRow);
+    weatherCurveReadout->setMinimumWidth(70);
+    weatherCurveReadout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    const auto updateFlashDurationLabel = [weatherCurveReadout](int value) {
+        const int frames = 6 + (value * 74) / 100;
+        weatherCurveReadout->setText(QStringLiteral("%1% · %2 f / %3 s")
+            .arg(value).arg(frames).arg(QString::number(frames / 50.0, 'f', 2)));
+    };
+    weatherCurveReadout->setMinimumWidth(152);
+    connect(weatherCurve, &QSlider::valueChanged, weatherCurveReadout, updateFlashDurationLabel);
+    updateFlashDurationLabel(weatherCurve->value());
+    weatherCurveLayout->addWidget(weatherCurve, 1);
+    weatherCurveLayout->addWidget(weatherCurveReadout);
+    form->addRow(tr("Lightning flash duration"), weatherCurveRow);
+    // True indexed-colour lightning: BRIGHTEN temporary FRONT and BACK CLUTs
+    // with a bias toward the chosen lightning hue. Keep separate from screen
     // overlay strength, and off by default for saved older worlds.
     auto *weatherPaletteRow = new QWidget(&dialog);
     auto *weatherPaletteLayout = new QHBoxLayout(weatherPaletteRow);
@@ -2066,7 +2094,7 @@ void SidboxGameDesigner::editPlayerStart()
     weatherPaletteStrength->setRange(0, 100);
     weatherPaletteStrength->setSuffix(tr(" %"));
     weatherPaletteStrength->setValue(m_weatherPaletteFlashStrength);
-    weatherPaletteSlider->setToolTip(tr("Blend both screen palettes toward the lightning colour. "
+    weatherPaletteSlider->setToolTip(tr("Brighten both screen palettes with a hint of the selected lightning colour. "
         "0% leaves palettes untouched; independent of overlay strength. Because the CLUT is global, HUD/dialogue "
         "colours also tint briefly while the flash is active."));
     weatherPaletteStrength->setToolTip(weatherPaletteSlider->toolTip());
@@ -2090,6 +2118,7 @@ void SidboxGameDesigner::editPlayerStart()
         weatherInterval->parentWidget()->setEnabled(mode == 3);
         weatherOverlay->setEnabled(mode == 3);
         weatherStrength->setEnabled(mode == 3 && weatherOverlay->isChecked());
+        weatherCurveRow->setEnabled(mode == 3);
         weatherPaletteSlider->setEnabled(mode == 3);
         weatherPaletteStrength->setEnabled(mode == 3);
         weatherSuspendSpotlight->setEnabled(mode == 3);
@@ -2436,6 +2465,7 @@ void SidboxGameDesigner::editPlayerStart()
     m_weatherPaletteIndex = weatherColour->value();
     m_weatherLightningInterval = weatherInterval->value();
     m_weatherLightningStrength = weatherStrength->value();
+    m_weatherLightningCurve = weatherCurve->value();
     m_weatherLightningOverlay = weatherOverlay->isChecked();
     m_weatherPaletteFlashStrength = weatherPaletteStrength->value();
     m_weatherSuspendSpotlight = weatherSuspendSpotlight->isChecked();
@@ -2806,13 +2836,15 @@ bool SidboxGameDesigner::exportTilemap(bool showMessage, bool includeMissingHelp
                                        existingH.contains("GAME_TILE_DRAW_FRONT"))) &&
                 (!needsCustomZones || (existingC.contains("game_zone_at_player") &&
                                         existingH.contains("GAME_ZONE_ENTERED"))) &&
-                (!hasAdventure() || existingC.contains("GAME_ADVENTURE_FIRE1_INPUT_GUARD_V1"));
+                (!hasAdventure() || existingC.contains("GAME_ADVENTURE_FIRE1_INPUT_GUARD_V1")) &&
+                existingC.contains("game_tile_player_current(void)") &&
+                existingH.contains("game_tile_player_current(void)");
         }
         cCheck.close(); hCheck.close();
         if (!current) {
             if (QMessageBox::question(this, tr("Upgrade Tilemap Helpers"),
-                    tr("This project's tilemap helper is older than the current runtime "
-                       "and may still reject modified PPB/.map assets by checksum. "
+                    tr("This project's tilemap helper is missing current runtime support, "
+                       "including live player-position capture for accurate checkpoint saves. "
                        "Update its gamehelpers/gametilemap.c/.h now?\n\n"
                        "Back up the existing helper files and install the new "
                        "versions from the IDE? Your edited helpers will be "
@@ -3475,6 +3507,16 @@ void SidboxGameDesigner::buildUi()
         } else if (!error.isEmpty()) {
             QMessageBox::warning(this, tr("HUD Editor"), error);
         }
+    });
+    auto *questButton = new QPushButton(tr("Quests..."), this);
+    questButton->setToolTip(tr("Project-wide quest lines, objectives and persistent journal progress."));
+    questButton->setMaximumWidth(96);
+    topActions->addWidget(questButton);
+    connect(questButton, &QPushButton::clicked, this, [this] {
+        QString error;
+        if (editGameQuests(this,QFileInfo(m_filePath).absolutePath(),&error)) {
+            if (assetFilesChanged) assetFilesChanged();
+        } else if (!error.isEmpty()) QMessageBox::warning(this,tr("Quest Designer"),error);
     });
     auto *flowButton = new QPushButton(tr("Logic Flow..."), this);
     flowButton->setToolTip(tr("Read-only logic map of all saved worlds, inventory, NPC dialogue and links."));
@@ -5291,20 +5333,39 @@ void SidboxGameDesigner::updateWeatherPreview()
     if (!show) return;
     QPainterPath drops;
     const int rain = m_weatherMode == 1 || m_weatherMode == 3;
+    // Keep the world preview's scatter identical to the SIDBOX rain renderer.
+    const auto scatterHash = [](quint32 v) -> quint32 {
+        v ^= v >> 16;
+        v *= 0x7feb352du;
+        v ^= v >> 15;
+        v *= 0x846ca68bu;
+        return v ^ (v >> 16);
+    };
+    const quint32 scatterSeed = scatterHash(0x7beab187u ^
+        (quint32(m_playerStartX) * 0x9e3779b9u) ^
+        (quint32(m_playerStartY) * 0x85ebca6bu));
     for (int i = 0; i < m_weatherDensity; ++i) {
-        // Sprite-free weather uses the camera viewport and is already populated.
-        const qint64 baseX = (i * 97 + 37) % width;
-        const qint64 baseY = (i * 137 + 23) % height;
-        const int speed = rain ? 7 + (i % 3) : 1 + (i % 2);
-        int x = int((baseX + ticks * m_weatherWind + width * 8192LL) % width);
-        int y = int((baseY + ticks * speed) % height);
+        const quint32 seed = scatterHash(scatterSeed ^
+            (quint32(i + 1) * 0x9e3779b9u));
+        const int layer = int((seed >> 23) % 3u);
+        const int speed = rain
+            ? (layer == 0 ? 4 : layer == 1 ? 7 : 11) +
+                int((seed >> 16) % (layer == 0 ? 3u : layer == 1 ? 4u : 5u))
+            : 1 + int((seed >> 16) % 3u);
+        const int len = rain
+            ? (layer == 0 ? 3 : layer == 1 ? 5 : 7) +
+                int((seed >> 12) % (layer == 2 ? 4u : 3u)) : 1;
+        const quint64 travel = quint64(seed % quint32(height)) + quint64(ticks) * speed;
+        const int y = int(travel % quint64(height));
+        const quint32 wrap = quint32(travel / quint64(height));
+        int x = int(scatterHash(seed ^ (wrap * 0x85ebca6bu)) % quint32(width));
+        x = (x + int(ticks % width) * m_weatherWind) % width;
         if (x < 0) x += width;
-        if (y < 0) y += height;
         if (rain) {
             drops.moveTo(cameraX + x, cameraY + y);
-            drops.lineTo(cameraX + x, cameraY + y + 5 + i % 3);
+            drops.lineTo(cameraX + x, cameraY + y + qMin(len, height - y));
         } else {
-            drops.addEllipse(cameraX + x, cameraY + y, 2, 2);
+            drops.addEllipse(cameraX + x, cameraY + y, qMin(2, width - x), 1);
         }
     }
     m_weatherPreviewDrops->setPath(drops);
@@ -5314,17 +5375,27 @@ void SidboxGameDesigner::updateWeatherPreview()
     m_weatherPreviewDrops->setPen(QPen(colour, rain ? 1.1 : 1.4));
     m_weatherPreviewFlash->setRect(cameraX, cameraY, width, height);
     m_weatherPreviewFlash->setBrush(QBrush(colour));
-    // Editor approximation of the new soft pulse. SIDBOX randomises both
-    // peak and interval; this repeats a representative 85%-peak envelope.
-    static const int flashCurve[25] = {0,3,8,17,29,45,63,79,92,100,
-        95,88,79,68,56,45,35,26,19,13,8,5,3,1,0};
+    // Match SIDBOX's variable-length rounded lightning pulse. Both the
+    // screen overlay and palette flash use identical timing and peak.
     const int interval = qMax(175, m_weatherLightningInterval);
-    const int phase = int(ticks % interval);
-    const int pulse = phase < 25 ? flashCurve[phase] * 85 / 100 : 0;
+    const int duration = 6 + (m_weatherLightningCurve * 74) / 100;
+    const int phase = int(ticks % (interval + duration));
+    const int position = phase - interval;
+    int envelope = 0;
+    if (position >= 0 && position < duration - 1) {
+        const int rise = qMax(2, ((duration - 1) * 35 + 50) / 100);
+        const int progress = position <= rise
+            ? position * 100 / rise
+            : (duration - 1 - position) * 100 / (duration - 1 - rise);
+        envelope = progress * progress * (300 - 2 * progress) / 10000;
+    }
+    const int pulse = envelope * 85 / 100;
     m_weatherPreviewFlash->setOpacity(pulse * m_weatherLightningStrength / 10000.0);
     m_weatherPreviewFlash->setVisible(m_weatherMode == 3 && m_weatherLightningOverlay && pulse != 0);
     m_weatherPreviewPaletteFlash->setRect(cameraX, cameraY, width, height);
-    m_weatherPreviewPaletteFlash->setBrush(QBrush(colour));
+    // Preview the palette's additive brightening instead of tint replacement.
+    m_weatherPreviewPaletteFlash->setBrush(QBrush(QColor(
+        (255 + colour.red()) / 2, (255 + colour.green()) / 2, (255 + colour.blue()) / 2)));
     m_weatherPreviewPaletteFlash->setOpacity(pulse * m_weatherPaletteFlashStrength / 10000.0);
     m_weatherPreviewPaletteFlash->setVisible(m_weatherMode == 3 && pulse != 0 &&
         m_weatherPaletteFlashStrength > 0);
@@ -7008,6 +7079,15 @@ void SidboxGameDesigner::configureGameObject(int index)
     particlePreviewCanvas->setDragMode(QGraphicsView::NoDrag);
     particlePreviewCanvas->setRenderHint(QPainter::SmoothPixmapTransform, false);
     particlePreviewCanvas->setBackgroundBrush(QColor(26, 31, 39));
+    // This view shares the world's *moving* scene. Automatic scene bounds
+    // grow/shrink as particle items move, which shifts Qt's scrollbars and
+    // makes the little modal preview twitch at 50 Hz. Keep this VIEW's bounds
+    // fixed to the selected emitter instead (never alter m_scene's bounds).
+    particlePreviewCanvas->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    particlePreviewCanvas->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    particlePreviewCanvas->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+    particlePreviewCanvas->setTransformationAnchor(QGraphicsView::NoAnchor);
+    particlePreviewCanvas->setResizeAnchor(QGraphicsView::AnchorViewCenter);
     particlePreviewCanvas->setMinimumHeight(140);
     particlePreviewCanvas->setMaximumHeight(205);
     particlePreviewDockLayout->addWidget(particlePreviewCanvas);
@@ -7369,7 +7449,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard collisionCard = makeCard(tr("Physics / Collision"));
     const PropertyCard collectCard = makeCard(tr("Collectable"));
     const PropertyCard linkedCard = makeCard(tr("Linked Object"));
-    const PropertyCard triggerCard = makeCard(tr("Switch & Trigger"));
+    const PropertyCard triggerCard = makeCard(tr("Switch, Trigger & Save Checkpoint"));
     const PropertyCard liftCard = makeCard(tr("Moving Platform"));
     const PropertyCard conveyorCard = makeCard(tr("Conveyor"));
     const PropertyCard springCard = makeCard(tr("Spring / Bouncer"));
@@ -7441,6 +7521,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     type->addItem(tr("Hazard / Murder Object (touch hurts)"), QStringLiteral("hazard"));
     type->addItem(tr("Stompable Enemy (jump on to defeat)"), QStringLiteral("enemy"));
     type->addItem(tr("Goto World"), QStringLiteral("goto_world"));
+    type->addItem(tr("Save Game Checkpoint"), QStringLiteral("save_checkpoint"));
     type->addItem(tr("Scenery Particle Spawner (leaves / clouds / dust)"), QStringLiteral("particle_emitter"));
     type->setCurrentIndex(qMax(0, type->findData(old.objectType)));
     // The left-hand list is the behaviour selector; keep the combo as the
@@ -8029,6 +8110,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("ACTIVE state frame (-1 = default)"), activeStateFrame);
     form->addRow(tr("INACTIVE state frame (-1 = hidden)"), inactiveStateFrame);
     form = triggerCard.form;
+    auto *checkpointSlot = spin(1, 10, old.checkpointSlot + 1);
+    checkpointSlot->setToolTip(tr("Save Game checkpoint: select which TFCard save slot (1 to 10) to overwrite."));
+    form->addRow(tr("Checkpoint save slot"), checkpointSlot);
+    auto *checkpointHelp = new QLabel(tr("Checkpoint activation: no required item means touch or FIRE2; "
+        "choose an inventory item below to require USE instead. Wrong-item / success / cancel "
+        "options then become available."), &dialog);
+    checkpointHelp->setWordWrap(true);
+    form->addRow(QString(), checkpointHelp);
     auto *triggerPress = new QCheckBox(tr("Require FIRE2 while touching (otherwise activate on touch)"), &dialog);
     triggerPress->setChecked(old.triggerPress);
     triggerPress->setToolTip(tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
@@ -8050,7 +8139,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     triggerOneShot->setChecked(old.triggerOneShot);
     form->addRow(QString(), triggerOneShot);
     auto *interactItem = new GameComboBox(&dialog);
-    interactItem->addItem(tr("No required item (ordinary trigger)"), QString());
+    interactItem->addItem(tr("No required item (touch / FIRE2 activation)"), QString());
     for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
         const QString name = entry.toObject().value(QStringLiteral("name")).toString().trimmed();
         if (!name.isEmpty() && interactItem->findData(name) < 0)
@@ -8061,7 +8150,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     interactItem->setCurrentIndex(qMax(0, interactItem->findData(old.interactItemName)));
     interactItem->setToolTip(tr("Require the player to USE this inventory item while near the trigger. "
         "Item identity follows the Adventure Inventory name across worlds. "
-        "Other inventory items won't activate this trigger."));
+        "This also works for Save Game Checkpoints: the matching item saves the chosen slot, "
+        "and touch alone will no longer activate it."));
     form->addRow(tr("Interact with inventory item"), interactItem);
     auto *interactRadius = spin(0, 128, old.interactRadius);
     interactRadius->setToolTip(tr("Extra distance in pixels outside this object's hitbox. "
@@ -8108,7 +8198,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     interactDialogueHint->setWordWrap(true);
     form->addRow(QString(),interactDialogueHint);
     const auto refreshDialogueHint = [=]() {
-        interactDialogueMode->setEnabled(type->currentData().toString()==QStringLiteral("trigger") &&
+        interactDialogueMode->setEnabled((type->currentData().toString()==QStringLiteral("trigger") ||
+             type->currentData().toString()==QStringLiteral("save_checkpoint")) &&
             !interactItem->currentData().toString().isEmpty() &&
             interactDialogue->currentData().toInt()>=0);
         const int id=interactDialogue->currentData().toInt();
@@ -8223,12 +8314,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *interactStatDelta=spin(-65535,65535,old.interactStatDelta);
     form->addRow(tr("Stat change (+ / -)"),interactStatDelta);
     const auto updateItemInteraction = [=]() {
-        const bool isTrigger = type->currentData().toString() == QStringLiteral("trigger");
+        const QString interactionType = type->currentData().toString();
+        const bool isTrigger = interactionType == QStringLiteral("trigger") ||
+                               interactionType == QStringLiteral("save_checkpoint");
         const bool requiresItem = !interactItem->currentData().toString().isEmpty();
         const bool itemInteraction = isTrigger && requiresItem;
         interactRadius->setEnabled(itemInteraction);
         interactConsume->setEnabled(itemInteraction);
-        const QString itemHint = tr("Disabled: choose a required inventory item on a Trigger/Switch first.");
+        const QString itemHint = tr("Disabled: choose a required inventory item on a Trigger/Switch or Save Checkpoint first.");
         interactRadius->setToolTip(itemInteraction ? tr("Interaction radius in pixels for using this item.") : itemHint);
         interactConsume->setToolTip(itemInteraction ? tr("Consume the matching item after successful activation.") : itemHint);
         // Item-required triggers already use FIRE2 to select an inventory item.
@@ -8239,8 +8332,8 @@ void SidboxGameDesigner::configureGameObject(int index)
             ? tr("Not used for inventory-item interactions: FIRE2 already opens "
                  "the item selector when the player is nearby. "
                  "Choose 'No required item' to enable this option again.")
-            : tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
-                 "otherwise the trigger activates on touch."));
+            : tr("Require FIRE2 while touching; otherwise activate on touch. "
+                 "A required inventory item overrides both options."));
         triggerDrop->setEnabled(itemInteraction);
         triggerDrop->setToolTip(itemInteraction
             ? tr("Activate when a matching dropped inventory item touches this Trigger.")
@@ -8250,16 +8343,19 @@ void SidboxGameDesigner::configureGameObject(int index)
                  "Contact with the sensor runs normal success actions and dialogue. "
                  "The consume checkbox determines whether the dropped item vanishes. "
                  "The dropped item is not required to remain in the player's bag.")
-            : tr("Choose a Required inventory item below first. Only Trigger / Switch objects "
-                 "with an item requirement can accept dropped objects."));
+            : tr("Choose a required inventory item below first. Only Trigger / Switch and "
+                 "Save Checkpoint objects with an item requirement can accept dropped objects."));
         triggerDropHint->setText(!isTrigger
-            ? tr("Dropped-item activation is available for Trigger / Switch objects only.")
+            ? tr("Dropped-item activation is available for Trigger / Switch and Save Checkpoint objects only.")
             : !requiresItem
                 ? tr("To use falling items: choose a Required inventory item, then tick Activate when matching dropped item touches switch.")
                 : triggerDrop->isChecked()
-                    ? tr("DROP ACTIVE: a matching 16x16 item touching this sensor (even mid-fall) runs the normal success dialogue, reward, sound and linked actions. "
-                         "Consume on success removes the physical item; otherwise it can still be collected. Wrong items do nothing.")
-                    : tr("Dropped items will not activate this Trigger until you tick the option above. Normal inventory USE still works."));
+                    ? interactionType==QStringLiteral("save_checkpoint")
+                        ? tr("DROP ACTIVE: a matching dropped item requests a checkpoint save. "
+                             "Configured success dialogue, rewards and sound also run. Wrong dropped items do nothing.")
+                        : tr("DROP ACTIVE: a matching 16x16 item touching this sensor (even mid-fall) runs the normal success dialogue, reward, sound and linked actions. "
+                             "Consume on success removes the physical item; otherwise it can still be collected. Wrong items do nothing.")
+                    : tr("Dropped items will not activate this object until you tick the option above. Normal inventory USE still works."));
     };
     connect(interactItem, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateItemInteraction](int) { updateItemInteraction(); });
@@ -8996,13 +9092,19 @@ void SidboxGameDesigner::configureGameObject(int index)
     const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
         QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
         QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
-        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"), QStringLiteral("⇥"), QStringLiteral("❀")};
+        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"),
+        QStringLiteral("⇥"), QStringLiteral("▣"), QStringLiteral("❀")};
     const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
         tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
-        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"), tr("Goto World"),
-        tr("Particle Spawner")};
+        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"),
+        tr("Goto World"), tr("Save Game Checkpoint"), tr("Particle Spawner")};
+    // Both lists must match the canonical `type` combo. Use its label as a
+    // release-build fallback if an object type is added without a short title.
+    Q_ASSERT(icons.size() == type->count() && titles.size() == type->count());
     for (int n = 0; n < type->count(); ++n) {
-        auto *item = new QListWidgetItem(icons.value(n) + QStringLiteral("   ") + titles.value(n));
+        const QString icon = icons.value(n, QStringLiteral("◆"));
+        const QString title = titles.value(n, type->itemText(n));
+        auto *item = new QListWidgetItem(icon + QStringLiteral("   ") + title);
         item->setData(Qt::UserRole, type->itemData(n));
         item->setToolTip(type->itemText(n));
         item->setSizeHint(QSize(180, 43));
@@ -9465,11 +9567,22 @@ void SidboxGameDesigner::configureGameObject(int index)
             label->setVisible(isTrigger);
         // updateItemInteraction() owns triggerPress enabled state so an
         // inventory requirement cannot be accidentally overridden here.
+        checkpointSlot->setVisible(behaviour == QStringLiteral("save_checkpoint"));
+        checkpointHelp->setVisible(behaviour == QStringLiteral("save_checkpoint"));
+        if (QWidget *slotLabel=triggerCard.form->labelForField(checkpointSlot))
+            slotLabel->setVisible(behaviour == QStringLiteral("save_checkpoint"));
         triggerOneShot->setEnabled(isTrigger);
-        interactItem->setEnabled(isTrigger);
+        triggerOneShot->setVisible(isTrigger);
+        interactItem->setEnabled(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
+        // A required item disables touch/FIRE2 activation for checkpoints too.
         updateItemInteraction();
         musicAction->setEnabled(isTrigger);
         musicTrack->setEnabled(isTrigger && musicAction->currentData().toString() == QStringLiteral("play"));
+        musicAction->setVisible(isTrigger);
+        musicTrack->setVisible(isTrigger);
+        for (QWidget *field : {static_cast<QWidget *>(musicAction), static_cast<QWidget *>(musicTrack)})
+            if (QWidget *label=triggerCard.form->labelForField(field))
+                label->setVisible(isTrigger);
         hitW->setEnabled(isObject); hitH->setEnabled(isObject);
         conveyor->setEnabled(behaviour == QStringLiteral("conveyor"));
         spring->setEnabled(behaviour == QStringLiteral("spring"));
@@ -9477,7 +9590,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         springTouch->setEnabled(behaviour == QStringLiteral("spring"));
         springSlide->setEnabled(behaviour == QStringLiteral("spring"));
         springJumpBoost->setEnabled(behaviour == QStringLiteral("spring"));
-        const bool soundsForInteraction = isTrigger && !interactItem->currentData().toString().isEmpty();
+        const bool soundsForInteraction = (isTrigger || behaviour == QStringLiteral("save_checkpoint")) &&
+            !interactItem->currentData().toString().isEmpty();
         sfxInteractWrong->setEnabled(soundsForInteraction);
         sfxInteractSuccess->setEnabled(soundsForInteraction);
         sfxInteractCancel->setEnabled(soundsForInteraction);
@@ -9531,7 +9645,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
         linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
-        triggerCard.panel->setVisible(isTrigger);
+        triggerCard.panel->setVisible(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
         conveyorCard.panel->setVisible(isConveyor);
         springCard.panel->setVisible(isSpring);
@@ -9991,6 +10105,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.gotoWorldName = gotoWorld->currentData().toString();
     r.gotoPress = gotoActivation->currentData().toBool();
     r.gotoStartId = gotoStart->currentData().toString();
+    r.checkpointSlot = checkpointSlot->value()-1;
     r.triggerPress = triggerPress->isChecked();
     r.triggerDrop = triggerDrop->isChecked();
     r.triggerOneShot = triggerOneShot->isChecked();
@@ -10161,6 +10276,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
         populateGotoStarts(old.gotoStartId);
         gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
+        checkpointSlot->setValue(old.checkpointSlot+1);
         triggerPress->setChecked(old.triggerPress);
         triggerDrop->setChecked(old.triggerDrop);
         triggerOneShot->setChecked(old.triggerOneShot);
@@ -10383,6 +10499,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         if (particlePreviewNeedsFit && particlePreviewCanvas->isVisible() &&
             !particlePreviewLastBounds.isNull() &&
             particlePreviewCanvas->viewport()->width() > 20) {
+            // The view-specific sceneRect prevents auto-scroll recalculation
+            // as leaves/fireflies drift outside the emitter's preview region.
+            particlePreviewCanvas->setSceneRect(particlePreviewLastBounds);
             particlePreviewCanvas->fitInView(particlePreviewLastBounds, Qt::KeepAspectRatio);
             particlePreviewNeedsFit = false;
         }

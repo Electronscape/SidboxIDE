@@ -7,7 +7,7 @@ cpp = (root / 'gamedesigner.cpp').read_text()
 project = (root / 'gamedesigner_project.cpp').read_text()
 header = (root / 'gamedesigner.h').read_text()
 splash = (root / 'splashscreenwidget.cpp').read_text()
-assert 'Build: 5.158.261026' in splash
+assert 'Build: 5.159.261026' in splash
 
 # The new helper must use a horizontal slider and a live readable time label.
 assert 'auto addFrameTimingSlider =' in cpp

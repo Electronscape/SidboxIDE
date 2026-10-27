@@ -3,6 +3,10 @@
 void gameadventure_setup(void) {}
 void gameadventure_save_progress(void) {}
 void gameadventure_restore_progress(void) {}
+void gameadventure_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
+{ (void)emit; (void)ctx; }
+uint8_t gameadventure_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)
+{ (void)take; (void)ctx; return 1; }
 void gameadventure_store_inventory(gameworlds_inventory_put_t sink, void *user)
 { (void)sink; (void)user; }
 void gameadventure_load_inventory(gameworlds_inventory_get_t lookup, void *user)

@@ -23,7 +23,7 @@ assert 'm_weatherPreviewPaletteFlash->setOpacity(pulse * m_weatherPaletteFlashSt
 assert 'weather_lightning_overlay' in world and 'weather_overlay_enabled' in world
 assert 'if (weather_mode == 3u && weather_overlay_enabled && weather_flash_phase)' in world
 assert 'weather_palette_strength / 100u' in world
-assert 'Build: 5.158.261026' in (root / 'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root / 'splashscreenwidget.cpp').read_text()
 print('source checks: UI, save/load, old-world default, registry, canvas preview, runtime and splash PASS')
 
 begin=world.index('/* Stage 5.152: optional world-local rain/snow/thunder')
@@ -68,6 +68,7 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code;
 } gameworlds_record_t;
 static const gameworlds_record_t *active_world;
 static int rectangles, full_screen;
@@ -110,7 +111,7 @@ int main(void) {
     assert(gameworlds_weather_status() & GAME_WEATHER_STATUS_LIGHTNING_FLASH);
     gameworlds_weather_frame(480,320);
     assert(rectangles==4 && full_screen==0);
-    assert(front_display[9]==front_src[15] && back_display[9]==front_src[15]);
+    assert(front_display[9]==weather_palette_brighten(front_src[9],front_src[15],100) && back_display[9]==weather_palette_brighten(back_src[9],front_src[15],100));
     assert(front_display[0] >> 24 == 0u);
     assert(back_display[0] >> 24 == 255u);
     assert(weather_palette_active);
@@ -139,7 +140,7 @@ int main(void) {
     assert(gameworlds_weather_status() & GAME_WEATHER_STATUS_LIGHTNING_FLASH);
     gameworlds_weather_frame(480,320);
     assert(rectangles>4); /* stable dither rows at peak, not an abrupt full-screen fill */
-    assert(front_display[9]==weather_palette_blend(front_src[9],front_src[15],50));
+    assert(front_display[9]==weather_palette_brighten(front_src[9],front_src[15],50));
 
     /* Neither: no flash flag and no unwanted spotlight suspension, although
        thunderstorm precipitation still remains active. */

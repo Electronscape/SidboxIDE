@@ -108,6 +108,7 @@ private:
         QString pickupStatTarget; // empty legacy = Health for pickup type 2, otherwise none
         bool pickupPersistent = false; // never respawn after pickup, including world visits
         int hitWidth = 16, hitHeight = 16;
+        int checkpointSlot = 0; // 0..9, TFCard Save Game checkpoint
         // Cosmetic scenery particles, emitted within the world-space area
         // starting at the placed sprite position. Never used for collision.
         int particleAreaW = 240, particleAreaH = 96;
@@ -346,6 +347,7 @@ private:
     int m_weatherPaletteIndex = 15; // User-chosen foreground palette colour (not alpha 0).
     int m_weatherLightningInterval = 350; // Frames between storms (50 Hz).
     int m_weatherLightningStrength = 75;  // Pattern coverage percentage, only for overlay.
+    int m_weatherLightningCurve = 25; // 0..100% changes total lightning duration (6..80 frames).
     bool m_weatherLightningOverlay = true; // Opt-out screen-space lightning flash; older worlds keep it.
     int m_weatherPaletteFlashStrength = 0; // 0..100, optional true FRONT/BACK CLUT flash.
     bool m_weatherSuspendSpotlight = false; // Opt-in: skip drawing player spotlight on lightning-pulse frames.

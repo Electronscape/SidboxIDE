@@ -1,0 +1,71 @@
+SIDBOX / CoderGirl Stage 5.166 (27 October 2026)
+Touchscreen Quest Journal, source-tested release
+
+Install over the complete Stage 5.165.4 CoderGirl IDE source:
+1. Back up the working IDE source and game project.
+2. Extract CoderGirl-Stage5.166-271026-DROPIN.zip into the IDE source root,
+   preserving paths. Do not extract into the Platformer3 project.
+3. Rebuild CoderGirl. The splash should show Build: 5.166.271026.
+4. Open Platformer3 and run Update ALL Worlds / Update Game Project.
+   ACCEPT replacement of the existing gamehelpers/gameadventureruntime.c AND .h.
+   The update creates a project backup before replacement.
+5. Regenerate ALL game worlds to register the shared project Quest Journal
+   callbacks in each world's generated gameadventure.c.
+6. Compile the game, transfer its APP and any updated game assets normally.
+7. On SIDBOX, tap QUESTS at the upper right while exploring (not in dialogue).
+   Tap a quest in the list; tap TRACK to make an ACTIVE quest the tracked quest.
+   Tap CLOSE or press FIRE2 to return to gameplay. UP and DOWN scroll the list.
+
+The runtime's game_adventure_input()/game_adventure_draw() pair handles the
+journal, so a normally structured user-owned main.c is not modified.
+A custom main.c MUST already call game_adventure_input() and
+ game_adventure_draw() each gameplay frame. The bundled generated maingame.c.txt
+shows the canonical flow if you need to compare. Do not overwrite a custom
+main.c with the generated example just to enable this feature.
+
+GAMEPLAY:
+- Touchscreen journal only appears in projects with quests.
+- Quests show locked, active, completed and excluded states.
+- Selecting a quest displays description and current objective.
+- TRACK is available only for an active quest. Selection alone does not track.
+- Tracking is persisted by the existing quest save/load system; journal view
+  state is not saved.
+- During the journal, gameplay movement and animation updates pause via the
+  existing Adventure modal hooks. FIRE2 remains the close/back button.
+- The touchscreen is ignored for journal actions while Adventure dialogs or
+  inventory menus are open.
+- The journal uses the current world's Adventure text/outline colours.
+- No hint spending or additional quest conditions added in this release.
+
+SDK:
+The supplied idelibs/api/touch/touch.h defines apiTouchInit(),
+apiTouchDown(), apiTouchGetXY(). No firmware changes required if the actual
+SIDBOX firmware exports its standard touch API at API->touch. The GUI cannot
+be hardware verified here, so check tapping and display scaling on SIDBOX.
+Touch coordinates assume the API returns calibrated 480x320 LCD coordinates.
+
+SOURCE FILES:
+- idelibs/codehelpers/game/adventureruntime.rulec
+- idelibs/codehelpers/game/adventureruntime.ruleh
+- idelibs/codehelpers/game/gameadventure.rulec
+- splashscreenwidget.cpp
+- development/tests/test_stage5166_touch_journal.py and updated old test
+  build-version expectations
+
+TESTING:
+- PASS: Stage 5.166 native simulated touchscreen taps, modal pause,
+  selected vs tracked quest, touch edge handling, FIRE2 close and world reset.
+- PASS: generated Adventure runtime GCC syntax check against the actual
+  SIDBOX SDK headers.
+- PASS: project-wide quest runtime, save/load migration and recovery,
+  two-world callback and world conditional generation, dialogue IDs,
+  checkpoint/inventory interactions, quest UI/Logic Flow contracts.
+- NOT TESTED: Qt6 IDE build, full STM32 ARM game link and real touchscreen.
+- No TFCard save format, quest IDs, or project JSON schema change.
+
+If QUESTS is missing:
+1. Confirm at least one quest is defined in Quest Designer.
+2. Confirm Update Game Project installed/replaced gameadventureruntime.c/.h.
+3. Confirm Update ALL Worlds regenerated world gameadventure.c files.
+4. Confirm your custom main.c calls game_adventure_draw() even when there is
+   no dialogue or inventory modal currently open.

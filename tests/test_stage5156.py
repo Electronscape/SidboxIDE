@@ -31,7 +31,7 @@ assert 'else if (active_world->objects_update)' in world
 assert 'if (active_world && active_world->objects_update_particles)' in world
 assert 'objectsGameplay, objectsParticles' in registry
 assert '"     %2gameworlditems_init, %2gameworlditems_update, %3, %4,' in registry
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 
 # Main template must tick visual effects outside the Adventure-dialogue guard,
 # and gameplay only after the guard. Also preserve the transition guard.

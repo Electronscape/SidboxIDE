@@ -1,0 +1,70 @@
+CODERGIRL IDE - STAGE 5.164.2 (26 OCT 2026)
+Checkpoint inventory interaction integration
+
+INSTALL
+1. Back up your functioning Stage 5.164.1 IDE source and the game folder.
+2. Extract CoderGirl-Stage5.164.2-261026-DROPIN.zip over the ROOT
+   of the Stage 5.164.1 IDE source tree (preserve internal paths).
+   Alternatively use the FULL source archive instead of the drop-in.
+3. Rebuild the Qt6 IDE. Splash: Build: 5.164.2.261026
+4. Open the .sbgm Game Designer project. Choose your Save Game Checkpoint.
+5. In Switch, Trigger & Save Checkpoint, set checkpoint slot (1..10).
+6. Choose one of these activation modes:
+   - No required inventory item: checkbox selects touch or FIRE2 to save.
+   - Required inventory item: inventory USE of the exact matching item
+     near the checkpoint requests the save; touch alone does not save.
+7. With a required item, optional interaction reach, consume, matching
+   dropped-item activation, success / wrong-item dialogue and audio,
+   inventory reward and stat outcomes are enabled. The required item must
+   exist in this world's Adventure Editor inventory definitions.
+8. Update Game Project / regenerate generated gamehelpers to apply the
+   new object and interaction rules; rebuild and upload the game.
+   DO NOT overwrite your hand-maintained main.c.
+
+EXACT SOURCE CHANGES
+- gamedesigner.cpp: enable item interaction on Checkpoint; disable plain
+  FIRE2 activation when item is required, show clear hint, hide unrelated
+  Trigger-only one-shot/music fields; enable the USE sound/dialogue paths.
+- gamedesigner_export.cpp: validate and emit Checkpoint interaction rules,
+  sounds, dialogue/reward/stat outcomes; preserve checkpoint slot action
+  and non-one-shot behaviour.
+- gamefloweditor.cpp: draw required Inventory Item -> Checkpoint ->
+  TFCard Save Slot; use appropriate edge label; do not invent trigger
+  linked actions on checkpoints.
+- splashscreenwidget.cpp: updated release label.
+- development/tests/: updated vintage regression expectations, added
+  Stage 5.164.2 UI/export/flow/source contract and real C interaction test.
+
+RUNTIME NOTE
+Uses the EXISTING shared gameworlditems inventory interaction pipeline,
+which calls the normal trigger action; the checkpoint action queues the
+existing gameworlds_checkpoint_request(slot) for the safe frame boundary.
+No TFCard save-format change. Old touch/FIRE2 checkpoints remain valid.
+No C game-rule templates, atmosphere, particle runtime or manually
+maintained main.c were modified in this release.
+
+SUGGESTED HARDWARE TESTS
+A. Place a checkpoint with no item, slot 1: verify both touch and FIRE2
+   modes and restore the save using title-screen Load Game.
+B. Place a checkpoint requiring Key, slot 2, do not consume Key.
+   Walk over it without opening inventory: it must NOT save. Press FIRE2,
+   USE a WRONG item: wrong sound/dialogue, no save. USE Key: success sound,
+   save request; after a restart Load Game slot 2 should restore progress.
+C. Enable Consume used item: confirm inventory updates in the saved game.
+D. Enable dropped-item activation: matching dropped Key saves; unrelated
+   dropped item does not activate the checkpoint.
+E. Open Game Flow Debugger: Key -> Checkpoint -> Save Slot 2 connections.
+F. Repeat a matching-item USE after exiting and re-entering its reach:
+   checkpoint remains repeatable, unlike one-shot switches.
+
+VALIDATION DONE HERE
+- Source-contract test: checkpoint GUI, exporter, and chart wiring PASS.
+- Native GCC compiled inventory USE-to-checkpoint callback PASS:
+  wrong item no save, matching USE queues correct slot, repeatable.
+- Native Stage 5.164 save/load corruption fallback and 10 slots PASS.
+- Stage 5.163: 16 rule flag combinations / nested parser PASS.
+- Stage 5.164.1: selector layout / particle preview source checks PASS.
+- Stage 5.94 generated interaction USE path PASS (test updated to current
+  shared function implementation).
+- Qt6 GUI build, generated ARM project and real SIDBOX hardware still
+  REQUIRE YOUR TEST. No claim of full end-to-end physical verification.

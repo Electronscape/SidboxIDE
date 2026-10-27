@@ -52,6 +52,45 @@ typedef uint8_t (*game_adventure_use_stat_t)(const char *stat, int32_t delta, vo
 void game_adventure_use_effects(const game_adventure_item_use_t *effects, uint16_t count,
                                 game_adventure_use_stat_t handler, void *user);
 
+/* Optional quest signal after an answer successfully commits (including GIVE).
+ * Separate from Custom C events; invalid/wrong-item answers do not signal. */
+/* Stage 5.166: Optional project-wide Quest Journal touchscreen bridge.
+ * Set once per world, AFTER game_adventure_start(). The callbacks point to
+ * the existing persistent world manager; no new game-loop/main.c API is needed.
+ * This bridge is intentionally independent of gameworlds.h, so standalone
+ * Adventure projects and older test programs can still link the renderer. */
+typedef struct {
+    uint16_t (*count)(void);
+    const char *(*id)(uint16_t);
+    const char *(*title)(uint16_t);
+    const char *(*description)(uint16_t);
+    const char *(*objective)(uint16_t);
+    uint8_t (*status)(uint16_t);
+    int16_t (*tracked)(void);
+    uint8_t (*track)(const char *);
+} game_adventure_quest_ui_t;
+void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source);
+/* Project-wide visual layout; colours are 8-bit SIDBOX palette indices. */
+typedef struct {
+    uint8_t margin,split_percent,background_colour,border_colour;
+    uint8_t text_colour,selection_colour;
+    uint8_t list_left,title_x,title_y,title_font_x,title_font_y;
+    uint8_t outline_enabled,outline_colour;
+} game_adventure_quest_style_t;
+void game_adventure_quest_style(const game_adventure_quest_style_t *style);
+/* Journal artwork is independent of dialogue nine-slice skin.
+ * Invalid/missing atlas falls back to a solid palette-colour journal. */
+void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path,
+                                    uint16_t asset_width,uint16_t asset_height,
+                                    uint16_t width,uint16_t height,
+                                    uint8_t tile,const uint16_t cells[9],
+                                    const uint8_t flips[9]);
+void game_adventure_quest_viewport(uint16_t top,uint16_t height);
+/* Reset scene CLUT tint before UI only; the next world frame restores weather. */
+void game_adventure_set_modal_fullbright(void (*callback)(void));
+
+typedef void (*game_adventure_choice_signal_t)(uint16_t node, uint8_t answer);
+void game_adventure_set_choice_signal(game_adventure_choice_signal_t callback);
 typedef struct {
     const char *label;
     const char *reply; /* Player's response above their head */

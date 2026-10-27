@@ -1,0 +1,44 @@
+# CoderGirl Stage 5.162.261026 — natural layered rain + persistent world day/night clocks
+
+## Changes
+
+### Layered, natural rain (plus scattered snow)
+
+* Old fixed `i * 97 / i * 137` positions and `i % 3` speed lanes replaced with stable 32-bit-hashed starting positions.
+* Three interleaved **rain fall-rate/length layers**, all using the **existing density** setting. Slow 4–6 px/frame / 3–5px streaks, mid 7–10 / 5–7px, quick 11–15 / 7–10px, 50 Hz. No additional near-camera density.
+* A drop gets a new, deterministic random X after each bottom-to-top wrap, so repeating vertical columns cannot form. Wind remains active. Rain/snow rectangles stay inside the 480×320 viewport; drops begin populated immediately, without pre-warming or heap allocations.
+* Snow also uses scattered positions and 1–3 px/frame fall speeds.
+* Long-running rain no longer resets its animation every 16,384 frames (about 5.5 minutes).
+* World Canvas Weather preview follows the same scatter/three speed layers, clipped to the viewport.
+* Existing lightning duration/brightness/shape, spotlight, weather colour and palette tint logic **unchanged**.
+
+### Remember time-of-day when returning to a world
+
+* During world unload, save its current day/night phase **per world index**. When that world is entered again, restore its clock before the first rendered palette frame. A different world's cycle can have different durations and current progress.
+* Inactive worlds' day/night clocks **pause** while away, then continue from their saved point on re-entry. They do not advance off-screen. (Future enhancement, if desired, could make world clocks use shared global time.)
+* Fixed tint (e.g. World 1 fog) stays fixed and is unaffected by saved cycle state; first visits still respect "Start at night".
+* Shutdown resets the saved clocks for a fresh game session.
+* Memory cost is 5 bytes per world (32-bit tick + validity byte); no change to serialized world files, `.pal` files, world registry or main.c API.
+
+## Install option A: CoderGirl IDE
+
+1. Install `CoderGirl-Stage5.162-261026-DROPIN.zip` **over Stage 5.161** using the files' relative paths (not inside a new subdirectory).
+2. Rebuild CoderGirl; splash should say `Build: 5.162.261026`.
+3. Open the project and run **Update Game Project** to regenerate `gamehelpers/gameworlds.c`, then rebuild/upload the game.
+4. Your **hand-maintained `main.c` must be left untouched**. Keep the Stage 5.161 arrangement: update `game_update_weather(1)` and `game_update_particles(1)` exactly once per frame outside the dialogue/transition pause, but keep `game_update_gameplay(1)` inside that pause. Render spotlight before weather.
+
+## Install option B: immediate Tiny Red Riot game test
+
+`TinyRedRiot-Stage5.162-GameTest-PATCH.zip` contains a ready-patched **`gamehelpers/gameworlds.c` only**, adapted from the **Stage 5.161 game patch produced from your uploaded Tiny Red Riot project**. Back up your game source, replace only that generated `.c`, rebuild and upload. **There are no changes to your `main.c` in this stage.** When you later use Update Game Project, ensure CoderGirl is at Stage 5.162, otherwise the generated manager could revert.
+
+## SIDBOX test checklist
+
+1. In rainy Forest, inspect the 64 drops at 50 FPS: they should scatter horizontally and fall at mixed speeds/lengths, not in three regimented lanes. Wind and density controls should still behave.
+2. Let it rain longer than 5.5 minutes. The pattern should not abruptly reset.
+3. Configure a world with an automatic day → dusk → night → dawn cycle. Leave it **mid-dusk**, visit another world, and return: it should resume from the saved dusk progress, rather than starting from daytime.
+4. Leave Forest and enter World 1 (fixed fog), then return Forest. Each world's palette should be correct through the circular transition, while Forest remembers its own cycle position.
+5. Ensure lightning shape/duration/strength, pause-during-dialogue and spotlight rendering remain unchanged.
+
+## Validation
+
+Stage 5.162 native GCC test checks real extracted renderer functions: 64 drops remain within viewport, >45 distinct initial X columns, three different speed layers, new X positions after wraps, no short animation-clock reset, and separate saved day/night phases on multiple world visits. All Stage 5.146–5.161 focused regression suites also pass (17 total). Native host compiler is **not** a Qt6 GUI compile or a real SIDBOX performance test.

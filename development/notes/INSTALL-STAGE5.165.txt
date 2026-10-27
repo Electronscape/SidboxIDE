@@ -1,0 +1,86 @@
+SIDBOX / CODERGIRL STAGE 5.165 (27 October 2026)
+Quest Designer / quest progression / tracked journal data / TFCard persistence
+============================================================================
+
+INSTALLATION
+------------
+1. Back up the working Stage 5.164.5 IDE source AND current TFCard save files.
+2. Extract the Stage 5.165 DROPIN ZIP into the Stage 5.164.5 IDE source folder,
+   keeping directory paths. Rebuild the Qt6 CoderGirl IDE.
+3. Splash screen must say: Build: 5.165.271026.
+4. Open a .sbgm world in Game Designer and click "Quests...".
+5. Add a quest, give it a title, and add one or more objectives in order.
+   Edit condition/target fields directly in the objective table.
+6. Save quests. They live in .codergirl/quests.json beside the .sbgm files;
+   never in a particular world's .sbgm. The editor does not touch main.c.
+7. Run Update ALL Worlds / Update Game Project, then rebuild the game.
+8. Play, trigger an objective, save at a checkpoint, power-cycle, and load.
+9. Open Logic Flow (All Worlds) to see authored quest and objective links.
+
+OBJECTIVE TYPES
+---------------
+Enter world        Target = exact published world name (e.g. forest)
+Own inventory item Target = exact Adventure item name (case-sensitive)
+Event signal       Target = a name; invoke gameworlds_quest_event("name")
+Adventure event ID Target = WorldName:integer (e.g. forest:42), from the
+                   existing Adventure event callback. No user main.c edit.
+
+QUEST STATES
+------------
+0 locked | 1 active | 2 completed | 3 excluded by completed alternative.
+Each quest can depend on a completed prerequisite, and optionally exclude
+itself when another quest is completed. Every active quest progresses whether
+or not the player is currently tracking it. Steps always progress in order.
+
+PUBLIC RUNTIME API (gamehelpers/gameworlds.h)
+---------------------------------------------
+uint16_t gameworlds_quest_count(void);
+const char *gameworlds_quest_id(uint16_t index);
+const char *gameworlds_quest_title(uint16_t index);
+const char *gameworlds_quest_description(uint16_t index);
+uint8_t gameworlds_quest_status(uint16_t index);
+uint16_t gameworlds_quest_current_step(uint16_t index);
+const char *gameworlds_quest_objective(uint16_t index);
+const char *gameworlds_quest_hint(uint16_t index);
+int16_t gameworlds_quest_tracked(void); // -1 = none
+uint8_t gameworlds_quest_track(const char *quest_id);
+uint8_t gameworlds_quest_event(const char *event_id);
+uint8_t gameworlds_quest_event_number(uint16_t id); // called by generated Adventure
+
+Journal / tracked-quest state can be shown by a game's existing HUD or UI using
+these APIs. This foundation intentionally DOES NOT automatically draw a new
+journal menu or change FIRE1/FIRE2/game input. The in-game journal selector,
+quest notifications and Big Steve's hint-token exchange remain for later UI
+work after hardware acceptance.
+
+PERSISTENCE / ROLLBACK
+----------------------
+- The existing 10 TFCard slots and dual-bank corruption recovery remain.
+- Stage 5.165 writes save payload version 2: existing player/world/inventory/
+  stats/weather data plus quest progress and selected quest.
+- Version-1 saves from 5.164.5 remain readable, with NEW/default quest progress.
+- IMPORTANT: 5.164.5 does NOT understand version-2 files. KEEP AN EXTERNAL
+  BACKUP of your good save files before testing; two new saves can eventually
+  replace both old banks. No old save is overwritten until a checkpoint saves.
+- Changing the quest ID/order or objective ID/order after writing v2 saves
+  changes the quest schema and rejects incompatible v2 saves (protects against
+  silently assigning old progress to a different quest). Keep stable IDs.
+- Changing title, description and hint text does NOT invalidate save data.
+- Existing game-owned main.c is not modified or regenerated.
+
+VALIDATION PERFORMED HERE
+-------------------------
+- Native generated-C test: quest prerequisites, optional branches, completion,
+  tracked selection, matching/nonmatching Adventure callback, TFCard v2 save/
+  load, and back-compat test recreating a valid v1 payload.
+- Existing 5.164.5 dual-bank save and legacy /CGSAVES compatibility tests.
+- Existing two-world GCC callback compilation test.
+- 16 combinations of world rule conditionals (syntax/brace checks).
+- Existing checkpoint and title-load source regressions.
+- Source-level Quest Designer, Flow and stale-build integration checks.
+
+NOT VALIDATED HERE
+------------------
+- Native Qt6 GUI build is unavailable in this environment.
+- Full real ARM V1 project compile and physical STM32H743/TFCard run must be
+  tested on the user's machine. Keep 5.164.5 source and save backups.

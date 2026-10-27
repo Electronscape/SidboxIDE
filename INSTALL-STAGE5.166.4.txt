@@ -1,0 +1,64 @@
+SIDBOX / CoderGirl Stage 5.166.4 (27 October 2026)
+Quest Journal font, title position, list inset, outline and controls
+
+INSTALL ON TOP OF STAGE 5.166.3
+
+1. Back up your working IDE source and Platformer3 project.
+2. Extract CoderGirl-Stage5.166.4-271026-DROPIN.zip into the IDE SOURCE
+   directory (preserve paths, overwrite the changed files).
+3. Rebuild CoderGirl. Splash: Build: 5.166.4.271026.
+4. Game Designer -> Quests... -> Journal Appearance...
+5. Set Journal heading X/Y (pixel offsets inside journal panel),
+   Heading glyph X/Y size (same native 1x/2x/4x/8x scales as Title Editor),
+   Quest list left offset, and optional journal text outline and CLUT colour.
+   Text is kept at least 8 pixels from the frame; a tile-atlas frame receives
+   8 extra pixels beyond the atlas' border tiles. Large fonts may be clipped
+   to the available horizontal space rather than crossing the frame.
+6. Preview uses the SIDBOX raster font, atlas and project HUD docking layout.
+7. Save the appearance and Update ALL Worlds / Update Game Project.
+   Accept the generated Adventure helper update if CoderGirl requests it.
+8. Recompile the game, transfer to SIDBOX and test with both undocked and
+   docked HUDs. Leave your hand-maintained main.c untouched.
+
+CONTROLS
+
+Touch anywhere in normal gameplay: OPEN the journal only.
+Joystick UP/DOWN: select a quest.
+FIRE1: track highlighted active quest.
+FIRE2: close journal.
+LEFT/RIGHT: no journal action.
+Touch while journal is already open: ignored.
+
+SKIN AND UI
+
+The journal's own nine-slice frame supplies its outline if an atlas is in use.
+An extra rectangular outer border is now drawn ONLY when no usable atlas is
+loaded. Colour-index Border still controls dividers and selected quest ink.
+All journal text has an optional 1-pixel outline using the palette index you
+choose. The journal temporarily restores the old Adventure text style on exit.
+Existing weather full-bright modal drawing, quest progress, checkpoint and
+TFCard save mechanisms are unchanged.
+
+BACKWARD COMPATIBILITY
+
+Existing .codergirl/quest-journal.json stays version 1. Missing new keys get
+safe defaults. Old atlas/CLUT settings remain intact; no quest IDs, .sbgm,
+TFCard save format or hand-maintained main.c changes.
+
+CHANGED CODE
+
+gamequestjournaleditor.cpp
+gameadventuregen.cpp
+idelibs/codehelpers/game/adventureruntime.rulec
+idelibs/codehelpers/game/adventureruntime.ruleh
+idelibs/codehelpers/game/gameadventure.rulec
+splashscreenwidget.cpp
+development/tests (version expectations + new native journal layout test)
+
+CHECKS
+
+- 18 focused legacy regression tests passed (quests, save/load, inventory
+  checkpoint, two-world generator, dialogue ID, HUD journal controls).
+- New native rendered-C test passed for title glyph scaling, heading position,
+  list offset, outline colour and skipping duplicate atlas border.
+- Not verified here: complete Qt6 IDE build or real STM32/LCD visual test.

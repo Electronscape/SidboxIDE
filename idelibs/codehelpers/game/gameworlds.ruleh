@@ -58,6 +58,35 @@ uint8_t gameworlds_player_pickup_rect(int32_t *x, int32_t *y,
 @IDE_END
 /* NULL or empty starts the project's selected/default world. */
 uint8_t gameworlds_start(const char *name);
+/* Stage 5.164: TFCard saves. Slots 0..9, all worlds and Adventure state.
+ * Never call save_slot() directly inside object/contact callbacks; use
+ * checkpoint_request() and allow gameworlds_apply_pending() to write safely.
+ * load_slot() runs BEFORE the first gameworlds_start(), after gameplayer_init(). */
+uint8_t gameworlds_save_slot(uint8_t slot);
+uint8_t gameworlds_load_slot(uint8_t slot);
+uint8_t gameworlds_slot_exists(uint8_t slot);
+uint8_t gameworlds_checkpoint_request(uint8_t slot);
+const char *gameworlds_saved_world(void);
+/* 0 idle, 1 saved, 2 write failure (clear by querying). */
+uint8_t gameworlds_save_status(void);
+/* Stage 5.165 project-wide Quest Journal API. Index is 0..count-1;
+ * status: 0 locked, 1 active, 2 completed, 3 excluded by branch.
+ * No quest progress is tied to which quest is tracked for display.
+ * Call gameworlds_quest_event("event_id") from authored events; safe inside
+ * gameplay callbacks, unlike TFCard writes or world transitions. */
+uint16_t gameworlds_quest_count(void);
+const char *gameworlds_quest_id(uint16_t index);
+const char *gameworlds_quest_title(uint16_t index);
+const char *gameworlds_quest_description(uint16_t index);
+uint8_t gameworlds_quest_status(uint16_t index);
+uint16_t gameworlds_quest_current_step(uint16_t index);
+const char *gameworlds_quest_objective(uint16_t index);
+const char *gameworlds_quest_hint(uint16_t index);
+int16_t gameworlds_quest_tracked(void); /* -1 = none */
+uint8_t gameworlds_quest_track(const char *quest_id);
+uint8_t gameworlds_quest_event(const char *event_id);
+uint8_t gameworlds_quest_event_number(uint16_t event_id); /* Active world + numeric Adventure event */
+uint8_t gameworlds_quest_dialogue_choice(const char *stable_choice_id); /* Auto IDs, active world */
 /* Safe inside callbacks: only queues a change. Does NOT unload anything. */
 uint8_t gameworlds_request(const char *name);
 /* Request a specific named entrance in the destination world.
@@ -95,6 +124,9 @@ void gameworlds_spotlight_frame(uint16_t view_width, uint16_t view_height);
 #define GAME_WEATHER_STATUS_PRECIPITATION (1u << 0)
 #define GAME_WEATHER_STATUS_LIGHTNING_FLASH (1u << 1)
 uint8_t gameworlds_weather_status(void);
+/* Temporary UI visibility: bind original, untinted palettes without
+ * modifying source CLUTs or stopping day/night/weather progression. */
+void gameworlds_ui_full_brightness(void);
 /* Render AFTER spotlight and FRONT tiles, BEFORE HUD/dialogue. Existing calls
  * may ignore the returned status without changing main.c. */
 uint8_t gameworlds_weather_frame(uint16_t view_width, uint16_t view_height);

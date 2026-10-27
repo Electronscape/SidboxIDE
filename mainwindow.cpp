@@ -9452,6 +9452,32 @@ bool MainWindow::gameBuildFilesOutdated(const QString &designPath) const
     };
     for (const QString &path : required)
         if (!QFileInfo::exists(project.filePath(path))) return true;
+    // Stage 5.164.3: a world exported before the save callback API fix can
+    // have newer timestamps but lack the four declarations required by the
+    // shared world registry. Mark every affected world as outdated so F5
+    // offers to regenerate them, instead of showing eight ARM C errors.
+    QFile publicHeader(project.filePath(worldDir + QStringLiteral("world_api.h")));
+    if (!publicHeader.open(QIODevice::ReadOnly)) return true;
+    const QByteArray apiText = publicHeader.readAll();
+    const QByteArray worldPrefix = name.toUtf8() + '_';
+    for (const char *callback : {"gameworlditems_disk_export", "gameworlditems_disk_import",
+                                 "gameadventure_disk_export", "gameadventure_disk_import"})
+        if (!apiText.contains(worldPrefix + callback)) return true;
+    // Stage 5.165: editing a project-wide quest definition must invalidate
+    // stale generated C even when none of the .sbgm worlds was touched.
+    const QFileInfo journalConfig(project.filePath(QStringLiteral(".codergirl/quest-journal.json")));
+    if(journalConfig.isFile()) {
+        const QFileInfo generatedAdventure(project.filePath(worldDir + QStringLiteral("gamehelpers/gameadventure.c")));
+        if(!generatedAdventure.isFile() || journalConfig.lastModified()>generatedAdventure.lastModified()) return true;
+    }
+    const QFileInfo questConfig(project.filePath(QStringLiteral(".codergirl/quests.json")));
+    if (questConfig.isFile()) {
+        const QFileInfo worldManager(project.filePath(QStringLiteral("gamehelpers/gameworlds.c")));
+        if (!worldManager.isFile() || questConfig.lastModified()>worldManager.lastModified()) return true;
+        QFile generatedManager(worldManager.absoluteFilePath());
+        if (!generatedManager.open(QIODevice::ReadOnly) ||
+            !generatedManager.readAll().contains("GW_QUEST_COUNT")) return true;
+    }
     const QJsonArray generatedFiles = buildMeta.value(QStringLiteral("files")).toArray();
     if (generatedFiles.isEmpty()) return true;
     for (const QJsonValue &entry : generatedFiles) {

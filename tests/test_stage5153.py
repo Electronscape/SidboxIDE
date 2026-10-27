@@ -20,7 +20,7 @@ assert 'weatherPaletteSlider->setRange(0, 100);' in editor
 assert 'm_weatherPreviewPaletteFlash->setVisible' in editor
 assert 'weather_palette_flash_strength' in world
 assert 'uint8_t gameworlds_weather_frame(' in world
-assert 'Build: 5.158.261026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.159.261026' in (root/'splashscreenwidget.cpp').read_text()
 print('source: 0..100 strength UI, save/load, world-registry export, live preview and build string PASS')
 
 start = world.index('/* Stage 5.152: optional world-local rain/snow/thunder')
@@ -66,6 +66,7 @@ typedef struct {
     uint8_t day_night_strength;
     uint16_t day_night_day_frames, day_night_night_frames, day_night_fade_frames;
     uint8_t day_night_start_at_night;
+    uint8_t weather_curve_code;
 } gameworlds_record_t;
 static const gameworlds_record_t *active_world;
 static int rectangles;
@@ -85,9 +86,6 @@ static void init_pals(void) {
     back_src[0]=0xff203040u; // background index zero is opaque
     mock_usefront(front_src);mock_useback(back_src);
 }
-static uint32_t mix100(uint32_t source,uint32_t tint, unsigned strength) {
-    return weather_palette_blend(source,tint,strength);
-}
 int main(void) {
     init_pals(); active_world=&world;weather_enter(active_world);
     weather_update(100);
@@ -100,8 +98,8 @@ int main(void) {
     world.weather_palette_flash_strength=100;
     weather_enter(&world); weather_update(109); weather_flash_peak=100u;
     gameworlds_weather_frame(480,320);
-    assert(front_display[9]==front_src[15]);
-    assert(back_display[9]==front_src[15]);
+    assert(front_display[9]==weather_palette_brighten(front_src[9],front_src[15],100));
+    assert(back_display[9]==weather_palette_brighten(back_src[9],front_src[15],100));
     assert(front_display[0] >> 24 == 0); // front zero alpha preserved
     assert(back_display[0] >> 24 == 0xffu); // background zero stays opaque
     assert(weather_palette_active);
@@ -117,8 +115,8 @@ int main(void) {
     world.weather_palette_flash_strength=50;
     weather_enter(&world); weather_update(109); weather_flash_peak=100u;
     gameworlds_weather_frame(480,320);
-    assert(front_display[9]==mix100(front_src[9],front_src[15],50));
-    assert(back_display[9]==mix100(back_src[9],front_src[15],50));
+    assert(front_display[9]==weather_palette_brighten(front_src[9],front_src[15],50));
+    assert(back_display[9]==weather_palette_brighten(back_src[9],front_src[15],50));
 
     // The spotlight mask's dedicated palette entry must stay unmodified.
     spotlight_enabled=1;
@@ -132,10 +130,10 @@ int main(void) {
     int before=use_front_count;
     gameworlds_weather_frame(480,320); // ownership goes to transition CLUT
     assert(use_front_count==before);
-    assert(!weather_palette_active);
+    assert(weather_palette_active);
     transition_phase=GW_PHASE_IDLE;
     gameworlds_weather_frame(480,320); // resumed when transition ends
-    assert(front_display[9]==mix100(front_src[9],front_src[15],50));
+    assert(front_display[9]==weather_palette_brighten(front_src[9],front_src[15],50));
 
     world.weather_palette_flash_strength=0;
     weather_enter(&world);

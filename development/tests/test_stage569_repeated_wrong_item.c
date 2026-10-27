@@ -68,9 +68,12 @@ int main(void){
  for(int i=0;i<5;i++)offer_feather(3);
  game_adventure_save_wrong_repeats(saved);
  assert(saved[0]==4 && reveal_hits==1);
- /* Other wrong items still take the original fallback. */
- open_give();tap(BTN_DOWN);tap(BTN_DOWN);tap(BTN_FIRE);
- assert(wrong_hits==1 && game_adventure_quantity(2)==1);
+ /* Other wrong items still take the original fallback. The backpack is
+  * ordered by acquisition (newest first), NOT item-definition order:
+  * Apple is row 0, Feather row 1, Key row 2. Choosing row 2 would
+  * correctly hand over the Key, not exercise the wrong-item action. */
+ open_give();tap(BTN_FIRE);
+ assert(wrong_hits==1 && game_adventure_quantity(2)==1 && game_adventure_quantity(0)==1);
  /* No repeat rule: original exchange is unchanged. */
  start();game_adventure_wrong_repeat_rules(0,0);
  open_give();tap(BTN_DOWN);tap(BTN_FIRE);
