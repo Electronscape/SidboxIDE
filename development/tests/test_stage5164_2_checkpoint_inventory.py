@@ -30,5 +30,5 @@ assert 'if (o->type != GAME_OBJECT_TRIGGER || o->trigger_requires_item) continue
 assert 'save_checkpoint_status=gameworlds_save_slot(slot)' in world
 assert 'QStringLiteral("Inventory USE → Save Game")' in flow
 assert 'if (type==QStringLiteral("trigger") || type==QStringLiteral("save_checkpoint"))' in flow
-assert 'Build: 5.166.5.271026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.12.271026' in (root/'splashscreenwidget.cpp').read_text()
 print('PASS Stage 5.164.2: checkpoint inventory USE, callbacks, flow, slot-save handoff')

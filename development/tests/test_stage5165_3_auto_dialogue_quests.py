@@ -13,7 +13,7 @@ adv_rt=read('idelibs/codehelpers/game/adventureruntime.rulec')
 adv_rt_h=read('idelibs/codehelpers/game/adventureruntime.ruleh')
 adv_world=read('idelibs/codehelpers/game/gameadventure.rulec')
 flow=read('gamefloweditor.cpp')
-assert 'Build: 5.166.5.271026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.12.271026' in read('splashscreenwidget.cpp')
 assert 'QSaveFile upgraded(world.filePath)' in editor
 assert 'current.readAll()!=world.original' in editor
 assert 'game_adventure_set_choice_signal(on_quest_choice)' in adv_world
@@ -42,7 +42,7 @@ flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':Fal
        'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False}
 quest_data='''#define GW_QUEST_COUNT 1u
 #define GW_OBJECTIVE_COUNT 1u
-typedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;} gw_quest_def_t;
+typedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;
 typedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;
 static const gw_quest_def_t gw_quest_defs[]={ {"q","Quest","","","",0,1} };
 static const gw_objective_def_t gw_objective_defs[]={ {"o","Talk","dialogue_choice","world1:dlg_abcdef",""} };

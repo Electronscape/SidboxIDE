@@ -2,6 +2,7 @@
 #include "gamequestjournaleditor.h"
 #include "gamequestgen.h"
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileInfo>
@@ -13,6 +14,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFormLayout>
+#include <QFrame>
+#include <QTreeWidget>
+#include <QIcon>
+#include <QPointer>
+#include <QHash>
+#include <QKeyEvent>
+#include <QScreen>
+#include <QGuiApplication>
+#include <functional>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -40,9 +50,128 @@ QString newId(const QString &prefix) {
 QString savePath(const QString &projectRoot) {
     return QDir(projectRoot).filePath(QStringLiteral(".codergirl/quests.json"));
 }
+/* Same folder-based dialogue navigation as the Adventure Node editor,
+ * with a leaf for every answer. The stored value remains the stable choice ID
+ * (or legacy numeric event), not its display location. */
+class QuestDialogueTreeCombo final : public QComboBox {
+public:
+    explicit QuestDialogueTreeCombo(QWidget *parent):QComboBox(parent) {}
+    void setDialogueTree(const QJsonArray &nodes,const QJsonArray &folders) {
+        m_nodes=nodes; m_folders=folders;
+    }
+    void setAnswerLocation(int item,int node,int choice) {
+        setItemData(item,node,Qt::UserRole+1);
+        setItemData(item,choice,Qt::UserRole+2);
+    }
+    void showPopup() override {
+        if(m_popup){m_popup->raise();m_popup->activateWindow();return;}
+        if(m_nodes.isEmpty()){QComboBox::showPopup();return;}
+        auto *popup=new QFrame(this,Qt::Popup);
+        popup->setObjectName(QStringLiteral("questDialogueTreePopup"));
+        popup->setAttribute(Qt::WA_DeleteOnClose);
+        m_popup=popup;
+        auto *layout=new QVBoxLayout(popup);
+        layout->setContentsMargins(5,5,5,5);
+        auto *search=new QLineEdit(popup);
+        search->setPlaceholderText(tr("Search dialogue folders, speakers, answers..."));
+        search->setClearButtonEnabled(true);
+        layout->addWidget(search);
+        auto *tree=new QTreeWidget(popup);
+        tree->setHeaderHidden(true);
+        tree->setUniformRowHeights(true);
+        layout->addWidget(tree,1);
+        QHash<QString,QTreeWidgetItem*> folderNodes;
+        QSet<QString> visited;
+        for(int pass=0;pass<=m_folders.size();++pass) {
+            for(const auto &value:m_folders) {
+                const QJsonObject folder=value.toObject();
+                const QString id=folder.value(QStringLiteral("id")).toString();
+                const QString parent=folder.value(QStringLiteral("parentId")).toString();
+                if(id.isEmpty() || visited.contains(id))continue;
+                if(!parent.isEmpty() && !folderNodes.contains(parent) && pass<m_folders.size())continue;
+                QTreeWidgetItem *parentItem=folderNodes.value(parent,nullptr);
+                auto *item=parentItem?new QTreeWidgetItem(parentItem):new QTreeWidgetItem(tree);
+                item->setText(0,folder.value(QStringLiteral("name")).toString(tr("Unnamed folder")));
+                item->setIcon(0,QIcon::fromTheme(QStringLiteral("folder")));
+                folderNodes.insert(id,item);visited.insert(id);
+            }
+        }
+        auto *unfiled=new QTreeWidgetItem(tree);
+        unfiled->setText(0,tr("Unfiled dialogues"));
+        unfiled->setIcon(0,QIcon::fromTheme(QStringLiteral("folder-open")));
+        QHash<int,QTreeWidgetItem*> nodeItems;
+        QTreeWidgetItem *highlight=nullptr;
+        for(int row=1;row<count();++row) {
+            const int ni=itemData(row,Qt::UserRole+1).toInt();
+            if(ni<0 || ni>=m_nodes.size())continue;
+            QTreeWidgetItem *nodeItem=nodeItems.value(ni,nullptr);
+            if(!nodeItem) {
+                const QJsonObject node=m_nodes.at(ni).toObject();
+                auto *parent=folderNodes.value(node.value(QStringLiteral("folderId")).toString(),unfiled);
+                nodeItem=new QTreeWidgetItem(parent);
+                nodeItem->setText(0,tr("%1: %2 — %3").arg(ni)
+                    .arg(node.value(QStringLiteral("speaker")).toString().left(30),
+                         node.value(QStringLiteral("text")).toString().simplified().left(48)));
+                nodeItems.insert(ni,nodeItem);
+            }
+            auto *item=new QTreeWidgetItem(nodeItem);
+            item->setText(0,itemText(row));
+            item->setData(0,Qt::UserRole,row);
+            if(!model()->index(row,modelColumn()).flags().testFlag(Qt::ItemIsEnabled))
+                item->setDisabled(true);
+            if(row==currentIndex())highlight=item;
+        }
+        if(unfiled->childCount()==0)delete unfiled;
+        tree->collapseAll();
+        if(highlight){
+            for(QTreeWidgetItem *parent=highlight->parent();parent;parent=parent->parent())
+                parent->setExpanded(true);
+            tree->setCurrentItem(highlight);
+            tree->scrollToItem(highlight);
+        }
+        auto pick=[this,popup](QTreeWidgetItem *item) {
+            if(!item || item->isDisabled() || !item->data(0,Qt::UserRole).isValid())return;
+            const int row=item->data(0,Qt::UserRole).toInt();
+            if(row>0 && row<count()){setCurrentIndex(row);popup->close();}
+        };
+        connect(tree,&QTreeWidget::itemClicked,popup,[pick](QTreeWidgetItem *i,int){pick(i);});
+        connect(tree,&QTreeWidget::itemActivated,popup,[pick](QTreeWidgetItem *i,int){pick(i);});
+        connect(tree,&QTreeWidget::itemDoubleClicked,popup,[pick](QTreeWidgetItem *i,int){pick(i);});
+        connect(search,&QLineEdit::textChanged,popup,[tree](const QString &query){
+            const auto filter=[&](auto &&self,QTreeWidgetItem *item)->bool {
+                bool childMatch=false;
+                for(int i=0;i<item->childCount();++i)
+                    if(self(self,item->child(i)))childMatch=true;
+                const bool match=query.isEmpty() || item->text(0).contains(query,Qt::CaseInsensitive);
+                item->setHidden(!match && !childMatch);
+                if(childMatch && !query.isEmpty())item->setExpanded(true);
+                return match || childMatch;
+            };
+            for(int i=0;i<tree->topLevelItemCount();++i)
+                filter(filter,tree->topLevelItem(i));
+        });
+        popup->resize(qMax(440,width()),420);
+        QPoint location=mapToGlobal(QPoint(0,height()));
+        if(QScreen *screen=window()->screen()) {
+            const QRect screenRect=screen->availableGeometry();
+            if(location.x()+popup->width()>screenRect.right())
+                location.setX(screenRect.right()-popup->width());
+            if(location.y()+popup->height()>screenRect.bottom())
+                location.setY(mapToGlobal(QPoint(0,0)).y()-popup->height());
+        }
+        popup->move(location);
+        popup->show();
+        search->setFocus();
+    }
+private:
+    QJsonArray m_nodes,m_folders;
+    QPointer<QFrame> m_popup;
+};
+
 class QuestEditor final : public QDialog {
 public:
-    explicit QuestEditor(const QString &projectRoot, QWidget *parent)
+    explicit QuestEditor(const QString &projectRoot, QWidget *parent,
+                         const QString &selectQuestId)
         : QDialog(parent), path(savePath(projectRoot)) {
         readProjectTargets(projectRoot);
         setWindowTitle(tr("Quest Designer | Project-wide"));
@@ -70,11 +199,13 @@ public:
         description = new QLineEdit(right);
         requires = new QComboBox(right);
         excludes = new QComboBox(right);
+        initiallyHidden = new QCheckBox(tr("Hide until dialogue enables this quest"),right);
         form->addRow(tr("Stable quest ID"),questId);
         form->addRow(tr("Title"),title);
         form->addRow(tr("Journal description"),description);
         form->addRow(tr("Unlock when quest completed"),requires);
         form->addRow(tr("Lock if quest completed"),excludes);
+        form->addRow(tr("Quest discovery"),initiallyHidden);
         rv->addLayout(form);
         rv->addWidget(new QLabel(tr("OBJECTIVES (in order, one active step per quest)")));
         objectives = new QTableWidget(right);
@@ -130,7 +261,7 @@ public:
             flushQuest();
             if (quests.size()>=64) { QMessageBox::warning(this,tr("Quest limit"),tr("Maximum 64 quests.")); return; }
             QJsonObject q; q["id"]=newId("quest_"); q["title"]=tr("New Quest");
-            q["description"]=QString();q["requires"]=QString();q["excludes"]=QString();
+            q["description"]=QString();q["requires"]=QString();q["excludes"]=QString();q["initiallyHidden"]=false;
             q["objectives"]=QJsonArray{}; quests.append(q);
             refreshList();questList->setCurrentRow(quests.size()-1);
         });
@@ -201,7 +332,15 @@ public:
             }
             accept();
         });
-        if (!quests.isEmpty()) questList->setCurrentRow(0);
+        if (!quests.isEmpty()) {
+            int first=0;
+            if(!selectQuestId.isEmpty()){
+                for(int i=0;i<quests.size();++i)
+                    if(quests.at(i).toObject().value(QStringLiteral("id")).toString()==selectQuestId)
+                        {first=i;break;}
+            }
+            questList->setCurrentRow(first);
+        }
     }
     QString loadError;
 private:
@@ -211,11 +350,13 @@ private:
     QListWidget *questList=nullptr;
     QLineEdit *questId=nullptr,*title=nullptr,*description=nullptr;
     QComboBox *requires=nullptr,*excludes=nullptr;
+    QCheckBox *initiallyHidden=nullptr;
     QTableWidget *objectives=nullptr;
     struct DialogueAction { int id, node, choice; QString stableId,label; };
     struct PendingWorld { QString filePath; QByteArray original; QByteArray updated; };
     QVector<PendingWorld> pendingWorlds;
     QMap<QString,QVector<DialogueAction>> actionsByWorld;
+    QMap<QString,QJsonArray> dialogueNodesByWorld,dialogueFoldersByWorld;
     QStringList worldNames, itemNames;
 
     // The quest runtime stores adventure event targets as "world:eventNumber".
@@ -237,6 +378,8 @@ private:
                 if(!name.isEmpty() && !itemNames.contains(name))itemNames.append(name);
             }
             QJsonArray nodes=adv.value(QStringLiteral("nodes")).toArray();
+            dialogueNodesByWorld.insert(world,nodes);
+            dialogueFoldersByWorld.insert(world,adv.value(QStringLiteral("dialogueFolders")).toArray());
             bool changed=false;
             QSet<QString> usedChoiceIds;
             for(const QJsonValue &nv:nodes)
@@ -305,7 +448,7 @@ private:
             target->addItem(tr("Missing: %1").arg(world),world);
         if(!target->isEditable())target->setCurrentIndex(qMax(0,target->findData(world)));
         objectives->setCellWidget(row,2,target);
-        auto *event=new QComboBox(objectives);
+        auto *event=new QuestDialogueTreeCombo(objectives);
         if(kind==QStringLiteral("adventure_event") || kind==QStringLiteral("dialogue_choice")) {
             const QString eventText=savedTarget.section(QLatin1Char(':'),1);
             updateDialogueChoices(event,world,eventText,kind==QStringLiteral("dialogue_choice"));
@@ -321,16 +464,19 @@ private:
         objectives->setCellWidget(row,3,event);
     }
 
-    void updateDialogueChoices(QComboBox *combo,const QString &world,const QString &savedId,
+    void updateDialogueChoices(QuestDialogueTreeCombo *combo,const QString &world,const QString &savedId,
                                bool automatic) {
         QSignalBlocker block(combo);
         combo->clear();
         combo->addItem(automatic ? tr("Select dialogue answer...")
                                  : tr("Select a configured dialogue event..."),QString());
+        combo->setDialogueTree(dialogueNodesByWorld.value(world),
+                               dialogueFoldersByWorld.value(world));
         for(const DialogueAction &action:actionsByWorld.value(world)) {
             const QString value=automatic?action.stableId
                                          :(action.id<0?QString():QString::number(action.id));
             combo->addItem(automatic ? action.label.section(QStringLiteral("  ["),0,0) : action.label,value);
+            combo->setAnswerLocation(combo->count()-1,action.node,action.choice);
             if(!automatic && action.id<0) {
                 // Show unconfigured answers for discoverability, but never let
                 // them silently create an objective that cannot be completed.
@@ -368,9 +514,9 @@ private:
     void refreshDetails() {
         const bool valid=selected>=0 && selected<quests.size();
         title->setEnabled(valid);description->setEnabled(valid);
-        requires->setEnabled(valid);excludes->setEnabled(valid); objectives->setEnabled(valid);
+        requires->setEnabled(valid);excludes->setEnabled(valid);initiallyHidden->setEnabled(valid);objectives->setEnabled(valid);
         QSignalBlocker b1(objectives),b2(requires),b3(excludes);
-        questId->clear(); title->clear();description->clear();objectives->setRowCount(0);
+        questId->clear(); title->clear();description->clear();initiallyHidden->setChecked(false);objectives->setRowCount(0);
         requires->clear();excludes->clear();
         requires->addItem(tr("None"),QString()); excludes->addItem(tr("None"),QString());
         for(int i=0;i<quests.size();++i) if(i!=selected) {
@@ -382,6 +528,7 @@ private:
         const QJsonObject q=quests.at(selected).toObject();
         questId->setText(q.value("id").toString());title->setText(q.value("title").toString());
         description->setText(q.value("description").toString());
+        initiallyHidden->setChecked(q.value("initiallyHidden").toBool(false));
         requires->setCurrentIndex(qMax(0,requires->findData(q.value("requires").toString())));
         excludes->setCurrentIndex(qMax(0,excludes->findData(q.value("excludes").toString())));
         const QJsonArray a=q.value("objectives").toArray(); objectives->setRowCount(a.size());
@@ -411,6 +558,7 @@ private:
         QJsonObject q=quests.at(selected).toObject();
         q["title"]=title->text().trimmed();q["description"]=description->text().trimmed();
         q["requires"]=requires->currentData().toString();q["excludes"]=excludes->currentData().toString();
+        q["initiallyHidden"]=initiallyHidden->isChecked();
         QJsonArray old=q.value("objectives").toArray(),next;
         for(int i=0;i<objectives->rowCount();++i) {
             QJsonObject o=i<old.size()?old.at(i).toObject():QJsonObject{};
@@ -477,9 +625,10 @@ private:
     }
 };
 }
-bool editGameQuests(QWidget *parent, const QString &projectRoot, QString *error)
+bool editGameQuests(QWidget *parent, const QString &projectRoot, QString *error,
+                    const QString &selectQuestId)
 {
-    QuestEditor dialog(projectRoot,parent);
+    QuestEditor dialog(projectRoot,parent,selectQuestId);
     if(!dialog.loadError.isEmpty()) {if(error)*error=dialog.loadError;return false;}
     // Open at the user's available desktop size, not a cramped fixed dialog.
     dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);

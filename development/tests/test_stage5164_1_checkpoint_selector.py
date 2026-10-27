@@ -36,5 +36,5 @@ assert 'particlePreviewCanvas->fitInView(particlePreviewLastBounds, Qt::KeepAspe
 assert 'particlePreviewCanvas->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);' in source
 assert 'm_scene->setSceneRect(particlePreviewLastBounds)' not in source
 
-assert 'Build: 5.166.5.271026' in (root / 'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.12.271026' in (root / 'splashscreenwidget.cpp').read_text()
 print('PASS Stage 5.164.1: all 14 object-type rows in order; checkpoint & particle labels; stable preview view')

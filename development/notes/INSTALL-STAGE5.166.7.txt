@@ -1,0 +1,54 @@
+SIDBOX CoderGirl Stage 5.166.7 - Quest Discovery & Dialogue Tree Picker
+Date: 27 October 2026
+Base: Stage 5.166.6
+
+INSTALL
+1. Back up Stage 5.166.6 IDE sources, .sbgm worlds, .codergirl/quests.json,
+   your TFCard saves, and hand-maintained main.c before upgrading.
+2. Extract the drop-in ZIP over Stage 5.166.6 source, preserving paths.
+3. Rebuild CoderGirl; splash must show Build: 5.166.7.271026.
+4. Open Game Designer > Quests. Select the quest, enable
+   'Hide until dialogue enables this quest', and SAVE.
+5. Open Adventure Designer in the world with the relevant NPC. Edit the node
+   the player will REACH and choose 'Enable quest line on reaching this dialogue'.
+   The Dialogue Node editor opens maximised. Save the world.
+6. Quest objective dialogue target selections now use a searchable, expandable
+   tree grouped by saved dialogue folders and node text, with answers as leaves.
+7. Update ALL Worlds / Update Game Project, accepting regenerated shared
+   Adventure helpers gameadventureruntime.c/.h and gameworlds.c/.h.
+   Do not hand-edit or replace your own main.c.
+8. Rebuild the game for SIDBOX and verify that a hidden quest does not appear
+   before speaking to the NPC. Entering its designated node reveals the quest.
+9. Save at a checkpoint, restart and load. The unlocked quest remains visible.
+
+BEHAVIOUR
+- Default quests remain available as before (initiallyHidden defaults false).
+- A hidden quest stays unlisted and cannot auto-complete its objectives until
+  offered. A dialogue node can offer a quest just by becoming active.
+- Offering the same quest again never resets completed or current progress.
+- If prerequisites are unfinished, the offer persists and waits. The journal
+  lists it as LOCKED until that prerequisite is satisfied.
+- The same dialogue node can still use existing per-answer dialogue/item/game
+  object/custom event actions; discovery is a separate node-entry callback.
+- Logic Flow draws dialogue-node -> Quest links for configured discovery actions.
+- The journal uses its existing touch-to-open / joystick controls.
+- Quest IDs, objective IDs, and the TFCard save payload layout are unchanged.
+
+COMPATIBILITY / ROLLBACK
+- Existing Stage 5.166.6 quest saves can load when their quest ID/objective
+  schema remains identical. Changing the number or IDs of quests/objectives
+  is still subject to the existing strict save schema check.
+- The new pending-offer state (status=4) is stored in the same status bytes;
+  old Stage 5.166.6 game builds do not understand that value. Do not roll
+  back a game while reusing saves written with pending quest offers.
+- Always back up the TFCard saves before the first hardware test.
+- No firmware update or user main.c edit is required.
+
+TESTING
+24 focused Python/native regression tests passed, including:
+ * newly hidden quest with prerequisite and pending save/load recovery
+ * quest journal visible-index mapping
+ * legacy quest, dialogue, save, checkpoint, generated two-world registry
+ * existing quest typography and atlas rendering
+
+The complete Qt6 GUI and physical SIDBOX were NOT available for final testing.

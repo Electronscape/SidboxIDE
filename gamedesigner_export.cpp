@@ -1168,7 +1168,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             r.objectType != QStringLiteral("save_checkpoint")) continue;
         QString action;
         if (r.objectType == QStringLiteral("save_checkpoint")) {
-            action = QStringLiteral("        gameworlds_checkpoint_request(%1u);\n").arg(qBound(0, r.checkpointSlot, 9));
+            action = QStringLiteral("        game_adventure_choose_save_slot(%1u);\n").arg(qBound(0, r.checkpointSlot, 9));
         } else if (r.objectType == QStringLiteral("goto_world")) {
             action = QStringLiteral("        gameworlds_request_at_from(\"%1\", \"%2\", "
                 "cg_gwi_platforms[%3].x + cg_gwi_platforms[%3].width / 2, "

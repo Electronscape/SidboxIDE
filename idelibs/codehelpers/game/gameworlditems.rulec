@@ -65,6 +65,7 @@ static int32_t cg_reward_vy100[@IDE{PICKUP_COUNT}];
 static uint8_t cg_pickup_was_inactive[@IDE{PICKUP_COUNT}];
 @IDE_END
 @IDE_IF{HAS_WORLDS}
+#include "gameadventureruntime.h" /* In-game save-slot picker */
 static game_world_object_t cg_gwi_platforms[@IDE{WORLD_OBJECT_COUNT}];
 /* The FIRE2 priority probe must use exactly the same live collision rectangle
    as gameworlditems_after() uses to activate the door, including offsets. */

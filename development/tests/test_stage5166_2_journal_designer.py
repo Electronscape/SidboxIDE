@@ -27,6 +27,6 @@ for token in ['QUEST_MARGIN','QUEST_SPLIT','QUEST_BG','QUEST_BORDER','QUEST_TEXT
 assert '@IDE_IF{HAS_PROJECT_HUD}' in template
 assert '"HAS_PROJECT_HUD"' in gen
 assert 'game_adventure_quest_viewport(0u,' in template
-assert 'Build: 5.166.5.271026' in source('splashscreenwidget.cpp')
+assert 'Build: 5.166.12.271026' in source('splashscreenwidget.cpp')
 subprocess.run(['python3',str(R/'development/tests/test_stage5166_touch_journal.py')],check=True)
 print('PASS Stage 5.166.2 editor, generated style, HUD-safe rendering, modal palette')

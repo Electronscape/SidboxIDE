@@ -152,7 +152,7 @@ QString describedAction(const QJsonObject &object) {
     const QString type = object.value(QStringLiteral("type")).toString();
     if (type == QStringLiteral("goto_world")) return QStringLiteral("World exit / transition");
     if (type == QStringLiteral("save_checkpoint"))
-        return QStringLiteral("Save Game checkpoint (TFCard slot %1)")
+        return QStringLiteral("Save Game checkpoint (choose slot, starts at %1)")
             .arg(object.value(QStringLiteral("checkpointSlot")).toInt(0)+1);
     if (type == QStringLiteral("collectable")) return QStringLiteral("Collectable pickup");
     if (type == QStringLiteral("trigger")) return QStringLiteral("Touch / button trigger");
@@ -723,10 +723,10 @@ FlowGraph loadGraph(const QString &root) {
             }
             if (type == QStringLiteral("save_checkpoint")) {
                 const int slot=qBound(0,obj.value(QStringLiteral("checkpointSlot")).toInt(0),9);
-                const QString to=w+QStringLiteral("/save-slot/")+QString::number(slot);
-                g.addNode(to,w,QStringLiteral("TFCard Save Slot"),
-                    QStringLiteral("Save Slot %1").arg(slot+1),
-                    QStringLiteral("Persistent save: player, world, inventory, objects and conversations"),5);
+                const QString to=w+QStringLiteral("/save-selector/")+QString::number(slot);
+                g.addNode(to,w,QStringLiteral("TFCard Save Picker"),
+                    QStringLiteral("Choose Save Slot (1–10)"),
+                    QStringLiteral("Player chooses one of ten slots. Initial selection: %1. Saves player, world, inventory and story.").arg(slot+1),5);
                 g.link(from,to,!obj.value(QStringLiteral("interactItemName")).toString().isEmpty()
                     ? QStringLiteral("Inventory USE → Save Game")
                     : obj.value(QStringLiteral("triggerPress")).toBool()
@@ -1007,7 +1007,9 @@ FlowGraph loadGraph(const QString &root) {
                     const QString questKey=QStringLiteral("quests/quest/")+id;
                     g.addNode(questKey,questLane,QStringLiteral("Quest"),
                         q.value(QStringLiteral("title")).toString(),
-                        q.value(QStringLiteral("description")).toString(),1);
+                        q.value(QStringLiteral("description")).toString()+
+                            (q.value(QStringLiteral("initiallyHidden")).toBool(false)
+                                ? QStringLiteral("\nInitially hidden until dialogue offers it") : QString()),1);
                     const QJsonArray steps=q.value(QStringLiteral("objectives")).toArray();
                     QString last=questKey;
                     for (const auto &sv:steps) {
@@ -1110,6 +1112,25 @@ FlowGraph loadGraph(const QString &root) {
                             g.link(signal,stepKey,QStringLiteral("Event received"));
                         }
                         last=stepKey;
+                    }
+                }
+                /* A dialogue node may explicitly OFFER a hidden quest. These
+                 * links are independent of objective/completion wires. */
+                for (const SavedWorld &entry:documents) {
+                    const QJsonArray nodes=entry.doc.value(QStringLiteral("adventure"))
+                        .toObject().value(QStringLiteral("nodes")).toArray();
+                    for(int ni=0;ni<nodes.size();++ni) {
+                        const QString id=nodes[ni].toObject().value(QStringLiteral("enableQuestId")).toString();
+                        if(id.isEmpty())continue;
+                        bool exists=false;
+                        for(const auto &candidate:quests)
+                            if(candidate.toObject().value(QStringLiteral("id")).toString()==id)
+                                {exists=true;break;}
+                        if(exists)g.link(dialogueKey(entry.name,ni),
+                                         QStringLiteral("quests/quest/")+id,
+                                         QStringLiteral("Reaching dialogue enables quest"));
+                        else g.diagnostics.append(QStringLiteral("Dialogue %1 in %2 enables missing quest %3")
+                            .arg(ni).arg(entry.name,id));
                     }
                 }
                 for(const auto &qv:quests) {
@@ -1265,83 +1286,125 @@ QPixmap flowCardIcon(const QString &kind, bool problem, const IDETheme &theme) {
     return pix;
 }
 
-// Alternative to Clean Layout: use real directed links to spread successive
-// steps across the screen. Weakly connected chains occupy their own vertical
-// blocks; breadth-first ranks terminate even when dialogue/door logic cycles.
-// Cross-world links remain visible, but never distort either world's layout.
-QHash<QString,QPointF> flowLeftToRightPositions(const FlowGraph &g) {
+// Compact geometry-aware directed layout, shared by root cards and the mini
+// graph inside each expanded logic group. Use component-local columns rather
+// than reserving the widest column in an entire world for every branch.
+// Keep 8-pixel-aligned positions and reserve only a small routing gutter.
+// Rank by the shortest directed path from an entry, never by longest path:
+// merging branches should not stretch the complete graph horizontally.
+QHash<QString,QPointF> flowLeftToRightPositions(
+    const FlowGraph &g,const QHash<QString,QSizeF> &actualSizes = {}) {
     QHash<QString,QPointF> positions;
     const int count=int(g.nodes.size());
-    QVector<QVector<int>> forward(count), undirected(count);
+    QVector<QVector<int>> forward(count),backward(count),undirected(count);
     QVector<int> indegree(count,0);
     for (const FlowEdge &edge:g.edges) {
-        const int a=g.byId.value(edge.from,-1), b=g.byId.value(edge.to,-1);
-        if (a<0 || b<0 || a==b || g.nodes.at(a).world!=g.nodes.at(b).world)continue;
-        forward[a].append(b);
-        undirected[a].append(b);
-        undirected[b].append(a);
+        const int a=g.byId.value(edge.from,-1),b=g.byId.value(edge.to,-1);
+        if(a<0 || b<0 || a==b || g.nodes.at(a).world!=g.nodes.at(b).world)continue;
+        forward[a].append(b);backward[b].append(a);
+        undirected[a].append(b);undirected[b].append(a);
         ++indegree[b];
     }
-    QVector<bool> grouped(count,false);
-    qreal worldTop=20;
-    for (const QString &world:g.worlds) {
-        qreal componentTop=worldTop+52;
-        for (int first=0;first<count;++first) {
-            if (grouped[first] || g.nodes.at(first).world!=world)continue;
-            QVector<int> component{first};
-            grouped[first]=true;
-            for (int q=0;q<component.size();++q) {
-                for (int next:undirected[component.at(q)]) {
-                    if (!grouped[next]) {grouped[next]=true;component.append(next);}
-                }
-            }
+    const auto sizeOf=[&](int i)->QSizeF {
+        const QSizeF measured=actualSizes.value(g.nodes.at(i).id,QSizeF(250,70));
+        // The compact mini cards are 200px wide; using a hard 250px minimum
+        // created dead space between every column inside expanded groups.
+        return QSizeF(qMax(qreal(200),measured.width()),qMax(qreal(70),measured.height()));
+    };
+    const auto align8=[](qreal v)->qreal {return std::ceil(v/8.0)*8.0;};
+    constexpr qreal columnGap=40.0;   // room for arrowheads and link bends
+    constexpr qreal rowGap=16.0;      // collision clearance (not card height)
+    constexpr qreal componentGap=40.0;
+    constexpr qreal worldGap=64.0;
+    QVector<bool> visited(count,false);
+    qreal worldTop=72;
+    for(const QString &world:g.worlds) {
+        QVector<int> worldNodes;
+        QVector<QVector<int>> components;
+        for(int i=0;i<count;++i)
+            if(g.nodes.at(i).world==world)worldNodes.append(i);
+        for(int first:worldNodes) {
+            if(visited[first])continue;
+            QVector<int> component{first};visited[first]=true;
+            for(int q=0;q<component.size();++q)
+                for(int next:undirected[component.at(q)])
+                    if(!visited[next]){visited[next]=true;component.append(next);}
             std::sort(component.begin(),component.end());
-            QSet<int> members;
-            for (int i:component)members.insert(i);
-            QVector<int> rank(count,-1);
-            QVector<int> visitOrder;
-            // All natural entry points start on the left, including any world
-            // node and independent game actions in the same connected chain.
-            for (int i:component) {
-                if (indegree[i]==0 || g.nodes.at(i).kind==QStringLiteral("World")) {
-                    rank[i]=0;
-                    visitOrder.append(i);
-                }
-            }
-            for (int i:component) {
-                if (rank[i]>=0)continue;
-                // The next unreached strongly connected section has no source.
-                // Seed it once rather than repeatedly raising ranks in a loop.
-                if (visitOrder.isEmpty()) {rank[i]=0;visitOrder.append(i);}
-            }
-            for (int q=0;q<visitOrder.size();++q) {
-                const int source=visitOrder.at(q);
-                for (int target:forward[source]) {
-                    if (!members.contains(target) || rank[target]>=0)continue;
-                    rank[target]=rank[source]+1;
-                    visitOrder.append(target);
-                }
-                // If directed links do not reach a section (cycles or edges
-                // pointing back toward entry), start it on the left as well.
-                if (q+1==visitOrder.size()) {
-                    for (int i:component) {
-                        if (rank[i]<0) {rank[i]=0;visitOrder.append(i);break;}
-                    }
-                }
-            }
-            QHash<int,int> rows;
-            int tallest=0;
-            for (int i:visitOrder) {
-                const int column=rank[i];
-                const int row=rows.value(column,0);
-                positions.insert(g.nodes.at(i).id,QPointF(32+column*350,componentTop+row*116));
-                rows.insert(column,row+1);
-                tallest=qMax(tallest,row+1);
-            }
-            componentTop+=tallest*116+66;
+            components.append(component);
         }
-        // Reserve at least a small band for an empty world.
-        worldTop=qMax(worldTop+220,componentTop+24);
+        qreal componentTop=worldTop;
+        for(const QVector<int> &component:components) {
+            QSet<int> members;
+            for(int i:component)members.insert(i);
+            QHash<int,int> ranks;
+            QVector<int> queue;
+            for(int i:component)
+                if(indegree[i]==0 || g.nodes.at(i).kind==QStringLiteral("World")) {
+                    ranks.insert(i,0);queue.append(i);
+                }
+            if(queue.isEmpty() && !component.isEmpty()) {
+                ranks.insert(component.first(),0);queue.append(component.first());
+            }
+            for(int q=0;q<queue.size();++q) {
+                const int from=queue.at(q);
+                for(int next:forward[from]) {
+                    if(!members.contains(next) || ranks.contains(next))continue;
+                    ranks.insert(next,ranks.value(from)+1);
+                    queue.append(next);
+                }
+                // Cycles and backwards-only portions may have no independent
+                // entry. Place all nodes, without inflating ranks infinitely.
+                if(q+1==queue.size())
+                    for(int i:component)if(!ranks.contains(i)) {
+                        ranks.insert(i,0);queue.append(i);break;
+                    }
+            }
+            int maxRank=0;
+            for(int i:component)maxRank=qMax(maxRank,ranks.value(i));
+            QVector<QVector<int>> columns(maxRank+1);
+            QVector<qreal> widths(maxRank+1,0),columnX(maxRank+1,32);
+            for(int i:component) {
+                const int rank=ranks.value(i);
+                columns[rank].append(i);
+                widths[rank]=qMax(widths[rank],sizeOf(i).width());
+            }
+            for(int col=1;col<=maxRank;++col)
+                columnX[col]=align8(columnX[col-1]+widths[col-1]+columnGap);
+            QHash<int,qreal> centerYs;
+            qreal bottom=componentTop;
+            for(int rank=0;rank<=maxRank;++rank) {
+                QVector<int> &nodes=columns[rank];
+                const auto parentCenter=[&](int node)->qreal {
+                    qreal sum=0;int found=0;
+                    for(int parent:backward[node])
+                        if(centerYs.contains(parent) && ranks.value(parent)<rank) {
+                            sum+=centerYs.value(parent);++found;
+                        }
+                    return found?sum/found:-1;
+                };
+                if(rank>0) {
+                    std::stable_sort(nodes.begin(),nodes.end(),[&](int a,int b){
+                        const qreal aY=parentCenter(a),bY=parentCenter(b);
+                        return (aY<0?1e12+a:aY)<(bY<0?1e12+b:bY);
+                    });
+                }
+                qreal nextY=componentTop;
+                for(int i:nodes) {
+                    const qreal parentY=parentCenter(i);
+                    const qreal desired=parentY<0?componentTop:parentY-sizeOf(i).height()/2;
+                    const qreal y=align8(qMax(nextY,desired));
+                    positions.insert(g.nodes.at(i).id,QPointF(columnX[rank],y));
+                    centerYs.insert(i,y+sizeOf(i).height()/2);
+                    nextY=y+sizeOf(i).height()+rowGap;
+                    bottom=qMax(bottom,y+sizeOf(i).height());
+                }
+            }
+            // Independent branches share horizontal space and need only a
+            // small vertical separator, not an extra full-card-sized lane.
+            componentTop=align8(bottom+componentGap);
+        }
+        // Worlds retain separate, non-overlapping vertical bands.
+        worldTop=align8(qMax(worldTop+160,componentTop+worldGap));
     }
     return positions;
 }
@@ -1453,6 +1516,32 @@ qreal triggerCardWidth(const FlowNode &node,bool expanded,qreal normalWidth=250)
     return expanded && node.kind==QStringLiteral("Touch / button trigger")
         ? qMax(qreal(350),normalWidth) : normalWidth;
 }
+// The renderer, nested mini-graph planner and root placement must all agree
+// on the exact size of a nested ARRAY GROUP, including expanded trigger rows.
+QSizeF flowArrayGroupSize(const FlowGroup &group,const FlowGraph &graph,
+                          const FlowLayout &layout) {
+    if(!group.expanded)return QSizeF(270,70);
+    qreal cellWidth=250,height=80;
+    for(const QString &id:group.members) {
+        const int ix=graph.byId.value(id,-1);
+        if(ix>=0)cellWidth=qMax(cellWidth,triggerCardWidth(graph.nodes.at(ix),
+                                    layout.expanded.value(id,false)));
+    }
+    for(int row=0;row<(group.members.size()+1)/2;++row) {
+        qreal rowHeight=70;
+        for(int col=0;col<2;++col) {
+            const int index=row*2+col;
+            if(index>=group.members.size())continue;
+            const QString &id=group.members.at(index);
+            const int ix=graph.byId.value(id,-1);
+            if(ix>=0)rowHeight=qMax(rowHeight,triggerCardHeight(graph.nodes.at(ix),
+                                                layout.expanded.value(id,false)));
+        }
+        height+=rowHeight+18;
+    }
+    return QSizeF(2*cellWidth+54,height);
+}
+
 void drawTriggerEventRows(QGraphicsRectItem *card,const FlowNode &node,
                           const IDETheme &theme,bool expanded) {
     if (node.kind!=QStringLiteral("Touch / button trigger"))return;
@@ -2096,11 +2185,16 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     auto *actualSize=new QPushButton(QObject::tr("100%"),&dialog);
     auto *clean=new QPushButton(QObject::tr("Clean Layout"),&dialog);
     auto *spread=new QPushButton(QObject::tr("Spread Left to Right"),&dialog);
+    auto *undoButton=new QPushButton(QObject::tr("Undo"),&dialog);
+    auto *redoButton=new QPushButton(QObject::tr("Redo"),&dialog);
+    undoButton->setToolTip(QObject::tr("Undo a Logic Flow layout edit (Ctrl+Z)."));
+    redoButton->setToolTip(QObject::tr("Redo an undone layout edit (Ctrl+Y / Ctrl+Shift+Z)."));
+    undoButton->setEnabled(false);redoButton->setEnabled(false);
     auto *groupButton=new QPushButton(QObject::tr("Group (Ctrl+G)"),&dialog);
     auto *ungroupButton=new QPushButton(QObject::tr("Ungroup (Ctrl+Shift+G)"),&dialog);
     auto *snapGrid=new QCheckBox(QObject::tr("Snap 8px"),&dialog);
     spread->setToolTip(QObject::tr("Arrange each connected logic chain from left to right and save the new card positions."));
-    clean->setToolTip(QObject::tr("Reset all manually placed cards to an automatic layout."));
+    clean->setToolTip(QObject::tr("Confirm and rebuild an overlap-free, connection-aware layout using actual card sizes."));
     auto *close=new QPushButton(QObject::tr("Close"),&dialog);
     for (QPushButton *b : {zoomIn,zoomOut})b->setFixedWidth(28);
     tools->addWidget(new QLabel(QObject::tr("World:"),&dialog));
@@ -2112,6 +2206,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     tools->addWidget(reload);
     tools->addWidget(zoomOut); tools->addWidget(zoomIn); tools->addWidget(actualSize);
     tools->addWidget(fit); tools->addWidget(clean); tools->addWidget(spread);
+    tools->addWidget(undoButton);tools->addWidget(redoButton);
     tools->addWidget(groupButton); tools->addWidget(ungroupButton);
     tools->addWidget(snapGrid); tools->addWidget(close);
     rootLayout->addLayout(tools);
@@ -2143,7 +2238,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     statusLayout->addWidget(status);
     auto *quickHelp=new QLabel(QObject::tr(
         "Pan: middle/Alt+drag  |  Zoom: wheel, Ctrl+/-; Ctrl+1 = 100%; Ctrl+F = Fit  |  Select: blank drag / Ctrl+click\n"
-        "Groups: Ctrl+G / Ctrl+Shift+G  |  Expand: +/-  |  Rename: F2  |  Choice: double-click  |  View auto-saved"),statusBox);
+        "Groups: Ctrl+G / Ctrl+Shift+G  |  Undo: Ctrl+Z / Redo: Ctrl+Y  |  Rename: F2  |  View auto-saved"),statusBox);
     quickHelp->setWordWrap(true);
     quickHelp->setStyleSheet(QStringLiteral("color: %1;").arg(theme.mutedText.name()));
     quickHelp->setToolTip(QObject::tr(
@@ -2155,7 +2250,8 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         "Drop a card or array into a manual group; drag an embedded array out to detach. "
         "Double-click a Dialogue Choice to inspect its own flow. "
         "Double-click a group title or press F2 to rename it. "
-        "Clean Layout resets positions; Spread arranges linked cards. "
+        "Clean Layout confirms before arranging connection-aware, non-overlapping cards. "
+        "Ctrl+Z / Ctrl+Y undo and redo arrangement, grouping, renaming and size changes. "
         "Red cards indicate broken references. Wire red is outgoing, green incoming. "
         "Click a wire to inspect its connections. Card positions and view pan/zoom save automatically per project."));
     statusLayout->addWidget(quickHelp);
@@ -2166,15 +2262,10 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
 
     FlowGraph graph;
     QHash<QString,QGraphicsRectItem *> cards;
-    // Group fill panels are independent scene items behind root-level wires.
-    // Otherwise a wire leaving an expanded group disappears under its fill.
-    // The transparent group card still owns the header, member cards and
-    // selection border, so all of those remain ABOVE every root-level wire.
-    QHash<QString,QGraphicsRectItem *> groupBackdrops;
-    std::function<void()> restackBackdrops;
-    view->onCardRaised=[&]() {
-        if (restackBackdrops)restackBackdrops();
-    };
+    // Group frames own their opaque fill. A detached scene-level panel at
+    // negative Z sat behind every other card, revealing cards through groups
+    // when raised. Owning the fill makes the frame and all mini cards stack
+    // atomically under Qt's parent/child Z-order semantics.
     QHash<QString,FlowGroupTitleItem *> groupTitles;
     QHash<QString,QGraphicsRectItem *> worldBands;
     QHash<QString,QGraphicsSimpleTextItem *> worldHeaders;
@@ -2194,6 +2285,19 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     FlowLayout layout=readFlowLayout(layoutFile);
     snapGrid->setChecked(layout.snapToGrid);
     QHash<QString,QPointF> &savedPositions=layout.positions;
+    // Local, bounded undo stack: only design-time graph layout is recorded.
+    // Saved world designs and quest definitions are never part of this history.
+    QVector<FlowLayout> undoHistory,redoHistory;
+    const auto updateHistoryButtons=[&]() {
+        undoButton->setEnabled(!undoHistory.isEmpty());
+        redoButton->setEnabled(!redoHistory.isEmpty());
+    };
+    const auto rememberLayout=[&]() {
+        if(undoHistory.size()>=80)undoHistory.removeFirst();
+        undoHistory.append(layout);
+        redoHistory.clear();
+        updateHistoryButtons();
+    };
     const auto savePositions=[&]() {
         if (!writeFlowLayout(layoutFile,layout))
             status->setText(QObject::tr("Could not save card positions to %1").arg(layoutFile));
@@ -2286,35 +2390,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         if (n.problem)lines<<QString()<<QObject::tr("WARNING: Repair this reference in the Game Designer or Adventure Editor.");
         details->setPlainText(lines.join('\n'));
     };
-    // The separate background panels must still respect Stage 5.82's
-    // click-to-front order. Normalize their z values BELOW the canvas wires
-    // on every raise, so even hundreds of clicks cannot lift a fill over a
-    // connection. Nested array fills sit just above their parent's fill.
-    restackBackdrops=[&]() {
-        QStringList roots;
-        for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
-            auto *card=cards.value(it.key(),nullptr);
-            if (card && !card->parentItem())roots.append(it.key());
-        }
-        std::sort(roots.begin(),roots.end(),[&](const QString &a,const QString &b) {
-            const qreal za=cards.value(a)->zValue();
-            const qreal zb=cards.value(b)->zValue();
-            return za==zb ? a<b : za<zb;
-        });
-        const qreal step=1.7/(roots.size()+1);
-        for (int i=0;i<roots.size();++i) {
-            const QString &id=roots.at(i);
-            const qreal base=-3.9+(i+1)*step;
-            groupBackdrops.value(id)->setZValue(base);
-            for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
-                auto *card=cards.value(it.key(),nullptr);
-                if (!card || !card->parentItem())continue;
-                QGraphicsItem *top=card;
-                while (top->parentItem())top=top->parentItem();
-                if (top==cards.value(id))it.value()->setZValue(base+step*0.25);
-            }
-        }
-    };
     std::function<void()> refreshEdges;
     auto refreshHighlight=[&]() {
         const QString query=search->text().trimmed();
@@ -2359,8 +2434,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             it.value()->setPen(QPen(selectedCards.contains(it.key()) || arrayGroup
                                       ? theme.accent : cardBorder,
                                       selectedCards.contains(it.key())?2.5:1));
-            if (auto *backdrop=groupBackdrops.value(it.key(),nullptr))
-                backdrop->setOpacity(it.value()->opacity());
         }
         for (const EdgeArt &e:edges) {
             const bool connected=selectedCards.isEmpty() || isSelectedEndpoint(e.from) || isSelectedEndpoint(e.to);
@@ -2371,15 +2444,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         if (refreshEdges)refreshEdges();
     };
     refreshEdges=[&]() {
-        restackBackdrops();
-        // Keep all detached group backdrops in step with their draggable
-        // frames. mapRectToScene also follows a nested array when its outer
-        // logic group moves, or when a frame grows after dropping a member.
-        for (auto it=groupBackdrops.cbegin();it!=groupBackdrops.cend();++it) {
-            auto *frame=cards.value(it.key(),nullptr);
-            if (!frame)continue;
-            it.value()->setRect(frame->mapRectToScene(frame->rect()));
-        }
         QSet<QString> directed;
         for (const EdgeArt &edge:edges)
             directed.insert(edge.from+QChar(0x1f)+edge.to);
@@ -2487,6 +2551,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             // Rebuild later, after Qt finishes dispatching the mouse event.
             QMetaObject::invokeMethod(&dialog,[&,id]() {
                 if (!graph.byId.contains(id))return;
+                rememberLayout();
                 layout.expanded.insert(id,!layout.expanded.value(id,false));
                 const QPointF focus=view->mapToScene(view->viewport()->rect().center());
                 redraw();savePositions();
@@ -2497,7 +2562,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     };
     redraw=[&]() {
         QSignalBlocker blocker(scene);
-        cards.clear();groupBackdrops.clear();groupTitles.clear();worldBands.clear();worldHeaders.clear();edges.clear();
+        cards.clear();groupTitles.clear();worldBands.clear();worldHeaders.clear();edges.clear();
         scene->clear();
         const QString selectedWorld=worldSelect->currentData().toString();
         const QStringList worlds=selectedWorld.isEmpty()?graph.worlds:QStringList{selectedWorld};
@@ -2525,7 +2590,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     }
                     const qreal x=30+col*355;
                     auto *card=new FlowCardItem(n.id);
-                    const int rows=(g.members.size()+1)/2;
                     QHash<QString,QPointF> miniPositions;
                     QStringList embeddedIds;
                     if (isGroup && !g.automatic) {
@@ -2536,59 +2600,47 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         embeddedIds.sort();
                     }
                     if (isGroup && g.expanded && !g.automatic) {
-                        // Layout the manual group's INTERNAL graph, not a blind
-                        // list. Directed steps advance right; unrelated branches
-                        // occupy distinct rows. Cycles are visited once only.
-                        QSet<QString> members;
-                        QHash<QString,int> incoming;
-                        QHash<QString,QStringList> onward;
-                        for (const QString &id:g.members) {members.insert(id);incoming.insert(id,0);}
-                        for (const FlowEdge &edge:graph.edges) {
-                            if (!members.contains(edge.from) || !members.contains(edge.to) || edge.from==edge.to)continue;
-                            onward[edge.from].append(edge.to);
-                            incoming[edge.to]=incoming.value(edge.to)+1;
+                        // The nested array groups are graph NODES too. Previously
+                        // they were forcibly stacked below all the mini cards,
+                        // creating long empty lanes and disconnected-looking
+                        // wires even when the array was mid-chain.
+                        FlowGraph internal;
+                        internal.worlds.append(g.world);
+                        QHash<QString,QSizeF> internalSizes;
+                        for(const QString &id:g.members) {
+                            const int ix=graph.byId.value(id,-1);
+                            if(ix<0)continue;
+                            const FlowNode &member=graph.nodes.at(ix);
+                            internal.addNode(id,member.world,member.kind,member.title,
+                                             member.description,member.column,member.problem);
+                            internalSizes.insert(id,QSizeF(
+                                triggerCardWidth(member,layout.expanded.value(id,false),200),
+                                triggerCardHeight(member,layout.expanded.value(id,false))));
                         }
-                        QHash<QString,int> depths;
-                        QStringList queue;
-                        for (const QString &id:g.members)
-                            if (incoming.value(id)==0) {depths.insert(id,0);queue.append(id);}
-                        for (int pos=0;pos<g.members.size();) {
-                            if (queue.isEmpty()) {
-                                // A wholly cyclic component has no source.
-                                for (const QString &id:g.members) {
-                                    if (!depths.contains(id)) {depths.insert(id,0);queue.append(id);break;}
-                                }
-                            }
-                            if (queue.isEmpty())break;
-                            for (int q=0;q<queue.size();++q) {
-                                const QString from=queue.at(q);
-                                for (const QString &to:onward.value(from)) {
-                                    if (depths.contains(to))continue;
-                                    depths.insert(to,qMin(4,depths.value(from)+1));
-                                    queue.append(to);
-                                }
-                            }
-                            pos=depths.size();
-                            queue.clear();
+                        for(const QString &embeddedId:embeddedIds) {
+                            const FlowGroup &inner=groups.value(embeddedId);
+                            internal.addNode(embeddedId,inner.world,QStringLiteral("Group"),
+                                             inner.title,QStringLiteral("Nested array"),5);
+                            internalSizes.insert(embeddedId,flowArrayGroupSize(inner,graph,layout));
                         }
-                        QHash<int,int> countByColumn;
-                        for (const QString &id:g.members) {
-                            const int rank=depths.value(id,0);
-                            const int row=countByColumn.value(rank,0);
-                            countByColumn.insert(rank,row+1);
-                            const QPointF initial(24+rank*224,88+row*88);
-                            miniPositions.insert(id,layout.memberPositions.value(g.id).value(id,initial));
+                        const auto localEndpoint=[&](const QString &id)->QString {
+                            const QString owner=memberGroup.value(id);
+                            if(layout.embeddedArrays.value(owner)==g.id &&
+                               internal.byId.contains(owner))return owner;
+                            return id;
+                        };
+                        for(const FlowEdge &edge:graph.edges) {
+                            const QString from=localEndpoint(edge.from);
+                            const QString to=localEndpoint(edge.to);
+                            if(from!=to && internal.byId.contains(from) && internal.byId.contains(to))
+                                internal.link(from,to,edge.label);
                         }
-                        // Array-group cards occupy their own local frame. Their
-                        // constituent cards remain inside, not flattened.
-                        qreal nextRow=88;
-                        for (const QPointF &existing:miniPositions)
-                            nextRow=qMax(nextRow,existing.y()+88);
-                        for (const QString &embeddedId:embeddedIds) {
-                            const QPointF initial(24,nextRow);
-                            const QPointF position=layout.memberPositions.value(g.id).value(embeddedId,initial);
-                            miniPositions.insert(embeddedId,position);
-                            nextRow=qMax(nextRow,position.y()+88);
+                        const auto internalAuto=flowLeftToRightPositions(internal,internalSizes);
+                        for(const FlowNode &member:internal.nodes) {
+                            const QPointF initial=internalAuto.value(member.id,QPointF(32,72))+
+                                                  QPointF(-8,16);
+                            miniPositions.insert(member.id,
+                                layout.memberPositions.value(g.id).value(member.id,initial));
                         }
                     }
                     if (!isGroup && n.kind==QStringLiteral("Touch / button trigger")) {
@@ -2599,54 +2651,18 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                         card->setGroup(true);
                         qreal width=270,height=70;
                         if (g.expanded && g.automatic) {
-                            qreal widest=250;
-                            height=80;
-                            for (int i=0;i<g.members.size();++i) {
-                                const int idx=graph.byId.value(g.members.at(i),-1);
-                                if (idx>=0)widest=qMax(widest,triggerCardWidth(graph.nodes.at(idx),
-                                    layout.expanded.value(g.members.at(i),false)));
-                            }
-                            width=2*widest+54;
-                            for (int row=0;row<rows;++row) {
-                                qreal rowH=70;
-                                for (int col=0;col<2;++col) {
-                                    const int index=row*2+col;
-                                    if (index>=g.members.size())continue;
-                                    const int idx=graph.byId.value(g.members.at(index),-1);
-                                    if (idx>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(idx),
-                                        layout.expanded.value(g.members.at(index),false)));
-                                }
-                                height+=rowH+18;
-                            }
+                            const QSizeF size=flowArrayGroupSize(g,graph,layout);
+                            width=size.width();height=size.height();
                         }
                         if (g.expanded && !g.automatic) {
                             width=280;height=170;
                             for (auto it=miniPositions.cbegin();it!=miniPositions.cend();++it) {
                                 const bool nested=groups.contains(it.key());
                                 const FlowGroup inner=groups.value(it.key());
-                                const int nestedRows=(inner.members.size()+1)/2;
-                                qreal childW=224,childH=88;
+                                qreal childW=nested?270:224,childH=nested?70:88;
                                 if (nested && inner.expanded) {
-                                    qreal widest=250;
-                                    childH=80;
-                                    for (const QString &memberId:inner.members) {
-                                        const int ix=graph.byId.value(memberId,-1);
-                                        if (ix>=0)widest=qMax(widest,triggerCardWidth(graph.nodes.at(ix),
-                                            layout.expanded.value(memberId,false)));
-                                    }
-                                    childW=2*widest+54;
-                                    for (int row=0;row<nestedRows;++row) {
-                                        qreal rowH=70;
-                                        for (int col=0;col<2;++col) {
-                                            const int ixRow=row*2+col;
-                                            if (ixRow>=inner.members.size())continue;
-                                            const QString memberId=inner.members.at(ixRow);
-                                            const int ix=graph.byId.value(memberId,-1);
-                                            if (ix>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(ix),
-                                                layout.expanded.value(memberId,false)));
-                                        }
-                                        childH+=rowH+18;
-                                    }
+                                    const QSizeF childSize=flowArrayGroupSize(inner,graph,layout);
+                                    childW=childSize.width();childH=childSize.height();
                                 } else if (!nested) {
                                     const int ix=graph.byId.value(it.key(),-1);
                                     if (ix>=0) {
@@ -2663,21 +2679,13 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                     scene->addItem(card);
                     card->setSnapToGrid(layout.snapToGrid);
                     card->setPen(QPen(isGroup && g.automatic ? theme.accent : cardBorder));
-                    // Group fills are separate, non-interactive scene panels.
-                    // Root wires (-2) pass ABOVE these panels (-3.2), but
-                    // BELOW every card (2+), even after click-to-front.
-                    // Do not change normal node cards: they must remain opaque.
-                    card->setBrush(isGroup ? QBrush(Qt::NoBrush) : QBrush(cardBackground));
+                    // Opaque group fill is painted by its movable container.
+                    // Child wires remain visible over the fill; raising a
+                    // group also hides cards and other groups underneath.
+                    card->setBrush(isGroup ? QBrush(g.automatic ? arrayBackground : groupBackground)
+                                           : QBrush(cardBackground));
                     card->setPos(savedPositions.value(n.id,QPointF(x,y)));
                     card->setZValue(2);
-                    if (isGroup) {
-                        auto *panel=scene->addRect(QRectF(),Qt::NoPen,
-                            QBrush(g.automatic ? arrayBackground : groupBackground));
-                        panel->setZValue(-3.2); // normalized on refresh/raise
-                        panel->setAcceptedMouseButtons(Qt::NoButton);
-                        panel->setFlag(QGraphicsItem::ItemIsSelectable,false);
-                        groupBackdrops.insert(n.id,panel);
-                    }
                     card->setToolTip(isGroup?QObject::tr("Click +/- to expand or collapse. Drag this group to move its contents."):
                          n.description+(n.kind==QStringLiteral("Dialogue Choice")
                              ? QObject::tr("\nDouble-click to view the choice's internal flow.") : QString()));
@@ -2750,6 +2758,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 // The current item is destroyed during redraw; defer
                                 // that work until after its focus event returns.
                                 QMetaObject::invokeMethod(&dialog,[&,id,title]() {
+                                    rememberLayout();
                                     for (FlowGroup &manual:layout.manualGroups)
                                         if (manual.id==id)manual.title=title;
                                     if (groups.contains(id))groups[id].title=title;
@@ -2841,7 +2850,6 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                             // selectable, movable container inside this logic group.
                             for (const QString &embeddedId:embeddedIds) {
                                 const FlowGroup inner=groups.value(embeddedId);
-                                const int nestedRows=(inner.members.size()+1)/2;
                                 auto *sub=new FlowCardItem(embeddedId);
                                 sub->setParentItem(card);
                                 sub->setGroup(true);
@@ -2849,41 +2857,16 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                 // Only these nested ARRAY GROUP cards can be
                                 // dragged outside their owner's frame.
                                 sub->setAllowLeaveParent(true);
-                                qreal nestedW=270,nestedH=70,nestedCellWidth=250;
-                                if (inner.expanded) {
-                                    nestedH=80;
-                                    for (const QString &memberId:inner.members) {
-                                        const int ix=graph.byId.value(memberId,-1);
-                                        if (ix>=0)nestedCellWidth=qMax(nestedCellWidth,
-                                            triggerCardWidth(graph.nodes.at(ix),layout.expanded.value(memberId,false)));
-                                    }
-                                    nestedW=2*nestedCellWidth+54;
-                                    for (int row=0;row<nestedRows;++row) {
-                                        qreal rowH=70;
-                                        for (int col=0;col<2;++col) {
-                                            const int k=row*2+col;
-                                            if (k>=inner.members.size())continue;
-                                            const int ix=graph.byId.value(inner.members.at(k),-1);
-                                            if (ix>=0)rowH=qMax(rowH,triggerCardHeight(graph.nodes.at(ix),
-                                                layout.expanded.value(inner.members.at(k),false)));
-                                        }
-                                        nestedH+=rowH+18;
-                                    }
-                                }
+                                const QSizeF nestedSize=flowArrayGroupSize(inner,graph,layout);
+                                const qreal nestedW=nestedSize.width(),nestedH=nestedSize.height();
                                 sub->setRect(0,0,nestedW,nestedH);
                                 sub->setPos(miniPositions.value(embeddedId));
                                 sub->setZValue(3);
-                                sub->setBrush(Qt::NoBrush);
+                                sub->setBrush(nestedBackground);
                                 sub->setPen(QPen(theme.accent));
-                                // Nested groups also have a scene-level fill.
-                                // Thus links to nodes outside the enclosing
-                                // logic group remain visible across BOTH
-                                // backgrounds, without covering mini cards.
-                                auto *panel=scene->addRect(QRectF(),Qt::NoPen,QBrush(nestedBackground));
-                                panel->setZValue(-3.1); // normalized above parent fill on refresh
-                                panel->setAcceptedMouseButtons(Qt::NoButton);
-                                panel->setFlag(QGraphicsItem::ItemIsSelectable,false);
-                                groupBackdrops.insert(embeddedId,panel);
+                                // Nested fill belongs to the nested array
+                                // itself, so it covers its parent's mini cards
+                                // without showing unrelated groups beneath.
                                 sub->setToolTip(QObject::tr("Array group nested in %1; click +/- to expand it, or drag outside the parent to detach.").arg(g.title));
                                 auto *subGrip=new QGraphicsSimpleTextItem(QStringLiteral("⋮⋮"),sub);
                                 subGrip->setPos(sub->rect().width()-34,6);
@@ -2971,6 +2954,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                                     QMetaObject::invokeMethod(&dialog,[&,id]() {
                                         if (!groups.contains(id))return;
                                         const bool expanded=!groups.value(id).expanded;
+                                        rememberLayout();
                                         groups[id].expanded=expanded;
                                         layout.expanded.insert(id,expanded);
                                         redraw();savePositions();
@@ -2983,6 +2967,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                             QMetaObject::invokeMethod(&dialog,[&,id]() {
                                 if (!groups.contains(id))return;
                                 const bool expanded=!groups.value(id).expanded;
+                                rememberLayout();
                                 groups[id].expanded=expanded;
                                 layout.expanded.insert(id,expanded);
                                 redraw();savePositions();
@@ -3133,6 +3118,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                 resizeWorldBands(false);
             };
             card->onDropped=[&](const QString &id,const QPointF &position,const QPointF &releaseScenePos) {
+                rememberLayout(); // snapshot before committing card drag / multi-selection
                 // Root cards may be dropped INTO logic groups. Nested array
                 // groups may also be dragged OUT of their current parent;
                 // ordinary mini cards remain group-local.
@@ -3356,37 +3342,104 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
             scheduleViewSave();
         }
     });
-    QObject::connect(clean,&QPushButton::clicked,&dialog,[&](){
+    // Calculate real root-card dimensions AFTER the graph is rendered. The
+    // automatic layout must not use fixed 70px heights for expanded groups.
+    const auto measuredCardSizes=[&]() {
+        QHash<QString,QSizeF> dimensions;
+        for(auto it=cards.cbegin();it!=cards.cend();++it)
+            if(!it.value()->parentItem())dimensions.insert(it.key(),it.value()->rect().size());
+        // Hidden worlds in a filtered view need safe expanded-size estimates.
+        for(auto it=groups.cbegin();it!=groups.cend();++it) {
+            if(dimensions.contains(it.key()))continue;
+            const FlowGroup &g=it.value();
+            if(!g.expanded){dimensions.insert(g.id,QSizeF(270,70));continue;}
+            if(g.automatic) {
+                dimensions.insert(g.id,flowArrayGroupSize(g,graph,layout));
+            } else {
+                qreal width=280,height=170;
+                for(const QString &member:g.members) {
+                    const QPointF at=layout.memberPositions.value(g.id).value(member,QPointF(24,88));
+                    width=qMax(width,at.x()+380);
+                    height=qMax(height,at.y()+140);
+                }
+                dimensions.insert(g.id,QSizeF(width,height));
+            }
+        }
+        for(const FlowNode &n:graph.nodes)
+            if(!dimensions.contains(n.id))
+                dimensions.insert(n.id,QSizeF(250,triggerCardHeight(n,layout.expanded.value(n.id,false))));
+        return dimensions;
+    };
+    const auto arrange=[&](bool confirm) {
+        if(confirm && QMessageBox::question(&dialog,QObject::tr("Clean Logic Flow layout?"),
+            QObject::tr("Rearrange the graph using the shortest same-world logic routes "
+                        "and each card's actual dimensions?\n\n"
+                        "Card positions, including the mini-graphs inside expanded "
+                        "groups, will be rearranged. Group membership and game "
+                        "data are preserved.\n\n"
+                        "You can undo this with Ctrl+Z."),
+            QMessageBox::Yes|QMessageBox::Cancel,QMessageBox::Cancel)!=QMessageBox::Yes)return;
         viewSaveTimer.stop();
         trackingView=false;
-        savedPositions.clear();
-        redraw();
-        savePositions();
-        // The previous view may have been parked far to the right of a spread
-        // graph. Return to the beginning of the original compact layout.
-        view->resetTransform();
-        view->scale(0.90,0.90);
-        view->centerOn(QPointF(160,150));
-        trackingView=true;
-        captureView();
-    });
-    QObject::connect(spread,&QPushButton::clicked,&dialog,[&](){
-        viewSaveTimer.stop();
-        trackingView=false;
-        savedPositions=flowLeftToRightPositions(groupLayoutGraph(graph,groups,memberGroup,layout.embeddedArrays));
-        redraw();
-        savePositions();
-        // Keep the graph readable after switching from a tiny Fit Graph zoom.
-        // Use the chosen world's root as the starting point of the new layout.
+        rememberLayout();
+        // Measure EVERY world, even when the user is currently viewing one
+        // world. Otherwise an expanded group in a filtered-out world would
+        // be laid out using a guessed width and could overlap its neighbour.
+        const int originalWorldIndex=worldSelect->currentIndex();
+        if(originalWorldIndex!=0) {
+            {QSignalBlocker blocked(worldSelect);worldSelect->setCurrentIndex(0);}
+            redraw();
+        }
+        if(confirm) {
+            // Clean Layout means the expanded mini-graphs too. Keep nesting,
+            // names and expanded state, discard only hand-placed offsets.
+            layout.memberPositions.clear();
+            redraw(); // compute the new, collision-free group frame sizes
+        }
+        const FlowGraph visibleGraph=groupLayoutGraph(graph,groups,memberGroup,layout.embeddedArrays);
+        const QHash<QString,QPointF> arranged=flowLeftToRightPositions(visibleGraph,measuredCardSizes());
+        // Preserve saved coordinates for nodes hidden inside manual/array
+        // groups; only top-level cards should receive global positions.
+        for(auto it=arranged.cbegin();it!=arranged.cend();++it)
+            savedPositions.insert(it.key(),it.value());
+        if(originalWorldIndex!=0) {
+            QSignalBlocker blocked(worldSelect);
+            worldSelect->setCurrentIndex(originalWorldIndex);
+        }
+        redraw();savePositions();
         const QString world=worldSelect->currentData().toString().isEmpty()
-                                ? graph.worlds.value(0) : worldSelect->currentData().toString();
-        const QPointF start=savedPositions.value(world+QStringLiteral("/world"),QPointF(30,75));
-        view->resetTransform();
-        view->scale(0.90,0.90);
+            ? graph.worlds.value(0):worldSelect->currentData().toString();
+        const QPointF start=savedPositions.value(world+QStringLiteral("/world"),QPointF(32,72));
+        view->resetTransform();view->scale(0.90,0.90);
         view->centerOn(start+QPointF(125,35));
-        trackingView=true;
-        captureView();
-    });
+        trackingView=true;captureView();
+    };
+    QObject::connect(clean,&QPushButton::clicked,&dialog,[&](){arrange(true);});
+    QObject::connect(spread,&QPushButton::clicked,&dialog,[&](){arrange(false);});
+    const auto applyHistory=[&](QVector<FlowLayout> &from,QVector<FlowLayout> &to) {
+        if(from.isEmpty())return;
+        viewSaveTimer.stop();
+        const auto currentViewports=layout.viewports;
+        const QString currentWorld=layout.lastWorld;
+        if(to.size()>=80)to.removeFirst();
+        to.append(layout);
+        layout=from.takeLast();
+        // Camera is independently saved per world and not part of edit undo.
+        layout.viewports=currentViewports;
+        layout.lastWorld=currentWorld;
+        buildFlowGroups(graph,layout,groups,memberGroup);
+        {QSignalBlocker blocked(snapGrid);snapGrid->setChecked(layout.snapToGrid);}
+        redraw();savePositions();
+        updateHistoryButtons();
+    };
+    QObject::connect(undoButton,&QPushButton::clicked,&dialog,[&](){applyHistory(undoHistory,redoHistory);});
+    QObject::connect(redoButton,&QPushButton::clicked,&dialog,[&](){applyHistory(redoHistory,undoHistory);});
+    auto *undoShortcut=new QShortcut(QKeySequence::Undo,&dialog);
+    auto *redoShortcut=new QShortcut(QKeySequence::Redo,&dialog);
+    auto *alternateRedo=new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Y),&dialog);
+    QObject::connect(undoShortcut,&QShortcut::activated,&dialog,[&](){undoButton->click();});
+    QObject::connect(redoShortcut,&QShortcut::activated,&dialog,[&](){redoButton->click();});
+    QObject::connect(alternateRedo,&QShortcut::activated,&dialog,[&](){redoButton->click();});
     const auto makeGroup=[&]() {
         QStringList members;
         QString world;
@@ -3435,6 +3488,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
         }
         FlowGroup group;
         group.id=id;group.world=world;group.title=title;group.members=members;
+        rememberLayout();
         layout.manualGroups.append(group);
         layout.expanded.insert(id,false);
         savedPositions.insert(id,bounds.topLeft());
@@ -3459,6 +3513,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
                 QObject::tr("Select a manual group or one of its mini cards to ungroup it. Automatic array groups stay available."));
             return;
         }
+        rememberLayout();
         // Restore moved mini cards to their present scene positions when the
         // frame is dissolved, instead of teleporting them to an old layout.
         auto *frame=cards.value(id,nullptr);
@@ -3496,6 +3551,7 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QObject::connect(groupButton,&QPushButton::clicked,&dialog,makeGroup);
     QObject::connect(ungroupButton,&QPushButton::clicked,&dialog,ungroup);
     QObject::connect(snapGrid,&QCheckBox::toggled,&dialog,[&](bool enabled) {
+        rememberLayout();
         layout.snapToGrid=enabled;
         for (auto it=cards.cbegin();it!=cards.cend();++it)
             static_cast<FlowCardItem *>(it.value())->setSnapToGrid(enabled);
@@ -3543,6 +3599,11 @@ void openGameFlowEditor(QWidget *parent, const QString &projectRoot, const IDETh
     QObject::disconnect(fit,nullptr,&dialog,nullptr);
     QObject::disconnect(clean,nullptr,&dialog,nullptr);
     QObject::disconnect(spread,nullptr,&dialog,nullptr);
+    QObject::disconnect(undoButton,nullptr,&dialog,nullptr);
+    QObject::disconnect(redoButton,nullptr,&dialog,nullptr);
+    QObject::disconnect(undoShortcut,nullptr,&dialog,nullptr);
+    QObject::disconnect(redoShortcut,nullptr,&dialog,nullptr);
+    QObject::disconnect(alternateRedo,nullptr,&dialog,nullptr);
     QObject::disconnect(groupButton,nullptr,&dialog,nullptr);
     QObject::disconnect(ungroupButton,nullptr,&dialog,nullptr);
     QObject::disconnect(snapGrid,nullptr,&dialog,nullptr);

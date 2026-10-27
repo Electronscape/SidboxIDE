@@ -1236,6 +1236,35 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     text->setMaximumHeight(115);
     form->addRow(QObject::tr("Speaker"), speaker);
     form->addRow(QObject::tr("Dialogue text (auto wraps)"), text);
+    /* Quest discovery is a NODE action. It fires on entry, even when there
+       are no answers, and never overrides the existing answer's actions. */
+    auto *enableQuest = new QComboBox(&dialog);
+    enableQuest->addItem(QObject::tr("Do not enable a quest"),QString());
+    if(!currentDesignFilePath.isEmpty()) {
+        const QString questPath=QDir(QFileInfo(currentDesignFilePath).absolutePath())
+            .filePath(QStringLiteral(".codergirl/quests.json"));
+        QFile questFile(questPath);
+        if(questFile.open(QIODevice::ReadOnly)) {
+            const QJsonArray quests=QJsonDocument::fromJson(questFile.readAll()).object()
+                .value(QStringLiteral("quests")).toArray();
+            for(const QJsonValue &v: quests) {
+                const QJsonObject q=v.toObject();
+                const QString id=q.value(QStringLiteral("id")).toString();
+                if(id.isEmpty())continue;
+                enableQuest->addItem(q.value(QStringLiteral("title")).toString()+
+                    (q.value(QStringLiteral("initiallyHidden")).toBool(false)
+                        ? QObject::tr(" [hidden]") : QString()),id);
+            }
+        }
+    }
+    const QString savedQuest=node.value(QStringLiteral("enableQuestId")).toString();
+    if(!savedQuest.isEmpty() && enableQuest->findData(savedQuest)<0)
+        enableQuest->addItem(QObject::tr("Missing quest: %1").arg(savedQuest),savedQuest);
+    enableQuest->setCurrentIndex(qMax(0,enableQuest->findData(savedQuest)));
+    enableQuest->setToolTip(QObject::tr("Offer this quest as soon as the player reaches this dialogue node. "
+        "A hidden quest then appears in the journal, even if it waits for another quest. "
+        "Revisiting the node never restarts progress."));
+    form->addRow(QObject::tr("Enable quest line on reaching this dialogue"),enableQuest);
     detail->addLayout(form);
     auto *thoughtHelp = new QLabel(QObject::tr(
         "Thought bubbles: For an NPC speech with NO Answer, enter text in Choice 1's "
@@ -1800,7 +1829,9 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     main->addWidget(buttons);
     QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
     QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
     if (dialog.exec() != QDialog::Accepted) return;
+    node.insert(QStringLiteral("enableQuestId"),enableQuest->currentData().toString());
     node.insert("speaker",speaker->text().left(36));
     node.insert("text",text->toPlainText().left(512));
     QJsonArray updated;

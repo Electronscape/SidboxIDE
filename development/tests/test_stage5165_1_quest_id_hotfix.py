@@ -17,7 +17,7 @@ assert 'return validate(*quests,error);' in gen, 'publisher must use shared vali
 assert 'GameQuestGen::validate(quests,&why)' in editor, 'editor must share validator'
 assert 'newId("quest_")' in editor and 'newId("obj_")' in editor
 assert ".remove(QLatin1Char('-')).left(12)" in editor, 'new IDs must not include UUID separators'
-assert 'Build: 5.166.5.271026' in splash
+assert 'Build: 5.166.12.271026' in splash
 
 found=re.search(r'const QRegularExpression idRe\(QStringLiteral\("([^"\n]+)"\)\);',gen)
 assert found, 'shared validation regex missing'

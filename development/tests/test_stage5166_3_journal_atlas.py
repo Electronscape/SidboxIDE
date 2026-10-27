@@ -34,6 +34,6 @@ assert 'gamehud_dock_top()?dock:0u' not in w
 assert 'game_adventure_quest_viewport(0u,' in w
 assert 'gamehud_dock_height()' in w
 assert 'gameadventure' not in e.lower() or True
-assert 'Build: 5.166.5.271026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.12.271026' in read('splashscreenwidget.cpp')
 subprocess.run(['python3',str(R/'development/tests/test_stage5166_touch_journal.py')],check=True)
 print('PASS Stage 5.166.3 independent nine-slice atlas, palette picker, real HUD dock, journal renderer')

@@ -31,7 +31,7 @@ for token in ['Quest Objective','Quest Event','Enter world','Shared backpack',
               'Adventure event received','Unlock on completion','Exclude on completion']:
     assert token in flow,token
 assert 'questConfig.lastModified()>worldManager.lastModified()' in read('mainwindow.cpp')
-assert 'Build: 5.166.5.271026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.12.271026' in read('splashscreenwidget.cpp')
 subprocess.run(['python3',str(R/'development/tests/test_stage5165_quest_runtime.py')],check=True)
 subprocess.run(['python3',str(R/'development/tests/test_stage5164_3_multiworld_public_save_api.py')],check=True)
 print('PASS Stage 5.165: quest editor, generator, flow, save compatibility, stale-build hooks')

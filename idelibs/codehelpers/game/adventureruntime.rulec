@@ -2,6 +2,7 @@
 #include "apis.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 /* Firmware defines BTN_FIRE; older host test mocks may not. */
 #ifndef BTN_FIRE
 #define BTN_FIRE 0x01u
@@ -413,7 +414,26 @@ static uint8_t ga_fire1_blocked;
 /* Quest Journal is an independent modal above ordinary Adventure dialogs.
  * None of these UI flags are saved. Tracking itself is saved by gameworlds. */
 static const game_adventure_quest_ui_t *ga_quest_ui;
-static uint8_t ga_quest_open, ga_quest_touch_latched;
+static uint8_t ga_quest_open, ga_quest_touch_latched, ga_quest_desc_scroll;
+static uint8_t ga_save_menu_open, ga_save_menu_slot, ga_save_menu_confirm;
+static uint8_t ga_save_menu_occupied[10];
+static uint8_t (*ga_save_request)(uint8_t);
+static uint8_t (*ga_save_exists)(uint8_t);
+void game_adventure_save_slot_callbacks(uint8_t (*request)(uint8_t),
+                                        uint8_t (*exists)(uint8_t))
+{ ga_save_request=request; ga_save_exists=exists; }
+uint8_t game_adventure_choose_save_slot(uint8_t preferred_slot)
+{
+    if(!ga_save_request || preferred_slot>=10u || ga_save_menu_open ||
+       ga_quest_open || ga_state!=0u)return 0u;
+    ga_save_menu_slot=preferred_slot;
+    ga_save_menu_confirm=0u;
+    for(uint8_t i=0u;i<10u;++i)
+        ga_save_menu_occupied[i]=ga_save_exists?ga_save_exists(i):0u;
+    ga_save_menu_open=1u;
+    return 1u;
+}
+
 static uint16_t ga_quest_selected, ga_quest_scroll;
 static uint16_t ga_quest_top=0u,ga_quest_height=320u;
 static game_adventure_quest_style_t ga_quest_style={6u,42u,2u,15u,15u,14u,10u,11u,8u,1u,2u,0u,0u};
@@ -422,6 +442,14 @@ static uint16_t ga_quest_skin_w,ga_quest_skin_h;
 static uint8_t ga_quest_skin_tile;
 static uint16_t ga_quest_skin_cells[9];
 static uint8_t ga_quest_skin_flips[9];
+static uint16_t ga_quest_icon_cells[5]={65535u,65535u,65535u,65535u,65535u};
+static uint8_t ga_quest_icon_flips[5]={0u,0u,0u,0u,0u};
+static uint8_t ga_quest_icon_2x2[5]={0u,0u,0u,0u,0u};
+static uint16_t ga_quest_icon_parts[5][4]={
+    {65535u,65535u,65535u,65535u}, {65535u,65535u,65535u,65535u},
+    {65535u,65535u,65535u,65535u}, {65535u,65535u,65535u,65535u},
+    {65535u,65535u,65535u,65535u}
+};
 void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path,
                                     uint16_t asset_width,uint16_t asset_height,
                                     uint16_t width,uint16_t height,
@@ -444,9 +472,25 @@ void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path
     ga_quest_skin_w=width;ga_quest_skin_h=height;ga_quest_skin_tile=tile;
 }
 
+void game_adventure_quest_icon_composites(const uint8_t two_by_two[5],
+                                         const uint16_t cells[5][4])
+{
+    for(uint8_t slot=0u;slot<5u;++slot){
+        ga_quest_icon_2x2[slot]=two_by_two?!!two_by_two[slot]:0u;
+        for(uint8_t part=0u;part<4u;++part)
+            ga_quest_icon_parts[slot][part]=cells?cells[slot][part]:65535u;
+    }
+}
 static void (*ga_modal_fullbright)(void);
 void game_adventure_set_modal_fullbright(void (*callback)(void))
 { ga_modal_fullbright=callback; }
+void game_adventure_quest_icons(const uint16_t cells[5],const uint8_t flips[5])
+{
+    for(uint8_t i=0u;i<5u;++i){
+        ga_quest_icon_cells[i]=cells?cells[i]:65535u;
+        ga_quest_icon_flips[i]=flips?(flips[i]&12u):0u;
+    }
+}
 void game_adventure_quest_viewport(uint16_t top,uint16_t height)
 {
     /* If a very tall dock leaves too little usable room, prefer an overlay
@@ -495,7 +539,8 @@ void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source)
     ga_quest_ui = (source && source->count && source->id && source->title &&
                    source->description && source->objective && source->status &&
                    source->tracked && source->track) ? source : 0;
-    ga_quest_open=0u; ga_quest_selected=ga_quest_scroll=0u;
+    ga_quest_open=0u; ga_quest_selected=ga_quest_scroll=0u; ga_quest_desc_scroll=0u;
+    ga_save_menu_open=ga_save_menu_confirm=0u;
     /* A held finger during world travel must first be released. */
     ga_quest_touch_latched=1u;
     /* Reinitialise on every world registration. The launcher or another
@@ -507,23 +552,86 @@ void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source)
 #endif
 }
 
+/* Keep raw Quest Manager IDs unchanged. UI positions are ordinals in the
+ * visible list, so hidden quests never render or steal joystick selection. */
+static uint16_t ga_quest_index(uint16_t ordinal)
+{
+    if(!ga_quest_ui)return 0xffffu;
+    uint16_t seen=0u;
+    const uint16_t total=ga_quest_ui->count()>64u?64u:ga_quest_ui->count();
+    for(uint16_t i=0;i<total;++i) {
+        if(ga_quest_ui->visible && !ga_quest_ui->visible(i))continue;
+        if(seen++==ordinal)return i;
+    }
+    return 0xffffu;
+}
 static uint16_t ga_quest_count(void)
 {
     if(!ga_quest_ui)return 0u;
-    const uint16_t count=ga_quest_ui->count();
-    return count>64u ? 64u : count;
+    uint16_t count=0u;
+    const uint16_t total=ga_quest_ui->count()>64u?64u:ga_quest_ui->count();
+    for(uint16_t i=0;i<total;++i)
+        if(!ga_quest_ui->visible || ga_quest_ui->visible(i))++count;
+    return count;
 }
 
-/* Touch only OPENS the journal. UP/DOWN selects, FIRE1 tracks, FIRE2 closes.
- * Left/right are reserved for other gameplay uses, not quest navigation. */
+static uint8_t ga_answer_rows(const char *text, uint8_t columns, uint8_t max_rows);
+/* Available description rows depend on the real HUD viewport, font outline,
+ * journal atlas inset and the objective anchored just above the footer.
+ * Keep this calculation shared by input scrolling and actual drawing. */
+static uint8_t ga_quest_description_visible_rows(void)
+{
+    const int inset=ga_quest_skin_pixels?(int)ga_quest_skin_tile+8:8;
+    const int panel_y=(int)ga_quest_top+(int)ga_quest_style.margin;
+    const int panel_h=(int)ga_quest_height-2*(int)ga_quest_style.margin;
+    const int title_bottom=(int)ga_quest_style.title_y+
+                           8*(int)ga_quest_style.title_font_y+10;
+    const int header=title_bottom>34?title_bottom:34;
+    const int desc_y=panel_y+header+8;
+    const int objective_title_y=panel_y+panel_h-inset-18-8-38;
+    const int outline=ga_quest_style.outline_enabled?1:0;
+    const int glyph_height=16+2*outline;
+    const int row_step=16+4*outline;
+    /* Leave at least 8px of clear space before CURRENT OBJECTIVE. */
+    const int free_space=objective_title_y-8-desc_y-glyph_height;
+    if(free_space<0)return 0u;
+    const int rows=1+free_space/row_step;
+    return (uint8_t)(rows>64?64:rows);
+}
+
+/* The description scroll limit must wrap at exactly the same width as drawing.
+ * 2x2 icons take 16px and 4px spacing; a native 8px single icon reserves
+ * the same UI slot for consistent text alignment. */
+static uint8_t ga_quest_description_columns(void)
+{
+    const int x=ga_quest_style.margin;
+    const int w=480-2*x;
+    const int split=x+w*(int)ga_quest_style.split_percent/100;
+    const int inset=ga_quest_skin_pixels?(int)ga_quest_skin_tile+8:8;
+    const int right=split+inset,right_limit=x+w-inset;
+    uint8_t has_icon=0u;
+    if(ga_quest_skin_pixels && ga_quest_skin_tile){
+        const uint16_t columns=ga_quest_skin_w/ga_quest_skin_tile;
+        const uint32_t total=(uint32_t)columns*(ga_quest_skin_h/ga_quest_skin_tile);
+        if(ga_quest_icon_2x2[3u] && ga_quest_skin_tile==8u){
+            for(uint8_t part=0u;part<4u;++part)
+                if(ga_quest_icon_parts[3u][part]<total){has_icon=1u;break;}
+        }else if(ga_quest_icon_cells[3u]<total)has_icon=1u;
+    }
+    const int width=right_limit-right-(has_icon?20:0)-8;
+    const int cols=width/8;
+    return (uint8_t)(cols>4?cols:4);
+}
+
+/* Touch only OPENS the journal. UP/DOWN selects quests, LEFT/RIGHT scrolls
+ * longer descriptions, FIRE1 tracks, FIRE2 closes. */
 static uint8_t ga_quest_input(uint8_t fire2_edge,uint8_t fire1_edge,
                               uint8_t up_edge,uint8_t down_edge,
                               uint8_t left_edge,uint8_t right_edge)
 {
-    (void)left_edge;(void)right_edge; /* Reserved, no journal action. */
     const uint16_t count=ga_quest_count();
 #if GA_QUEST_HAS_TOUCH
-    const uint8_t down=(count && API && API->touch && API->touch->ispressed) ?
+    const uint8_t down=(ga_quest_ui && ga_quest_ui->count() && API && API->touch && API->touch->ispressed) ?
         apiTouchDown() : 0u;
 #else
     const uint8_t down=0u;
@@ -531,26 +639,42 @@ static uint8_t ga_quest_input(uint8_t fire2_edge,uint8_t fire1_edge,
     const uint8_t tap=down && !ga_quest_touch_latched;
     ga_quest_touch_latched=down;
     if(ga_quest_open) {
-        if(fire2_edge) {ga_quest_open=0u;return 1u;}
+        if(fire2_edge) {ga_quest_open=0u;ga_quest_desc_scroll=0u;return 1u;}
         if(count) {
+            const uint16_t before=ga_quest_selected;
             if(up_edge && ga_quest_selected) --ga_quest_selected;
             if(down_edge && ga_quest_selected+1u<count) ++ga_quest_selected;
+            if(ga_quest_selected!=before)ga_quest_desc_scroll=0u;
             const uint16_t rows=ga_quest_rows();
             if(ga_quest_scroll>ga_quest_selected)ga_quest_scroll=ga_quest_selected;
             if(ga_quest_selected>=ga_quest_scroll+rows)
                 ga_quest_scroll=(uint16_t)(ga_quest_selected-rows+1u);
-            if(fire1_edge &&
-               ga_quest_ui->status(ga_quest_selected)==1u) {
-                const char *id=ga_quest_ui->id(ga_quest_selected);
-                if(id)ga_quest_ui->track(id);
+            const uint16_t index=ga_quest_index(ga_quest_selected);
+            if(index!=0xffffu) {
+                const char *description=ga_quest_ui->description(index);
+                const uint8_t visible=ga_quest_description_visible_rows();
+                const uint8_t total_lines=ga_answer_rows(description,ga_quest_description_columns(),64u);
+                if(visible && total_lines>visible) {
+                    const uint8_t max_scroll=(uint8_t)(total_lines-visible);
+                    if(ga_quest_desc_scroll>max_scroll)ga_quest_desc_scroll=max_scroll;
+                    if(left_edge && ga_quest_desc_scroll) --ga_quest_desc_scroll;
+                    if(right_edge && ga_quest_desc_scroll<max_scroll) ++ga_quest_desc_scroll;
+                } else ga_quest_desc_scroll=0u;
+                if(fire1_edge && ga_quest_ui->status(index)==1u) {
+                    const char *id=ga_quest_ui->id(index);
+                    if(id)ga_quest_ui->track(id);
+                }
             }
         }
-        /* Touches on an open journal have NO function. */
-        return 1u;
+        return 1u; /* Touches on an open journal have NO function. */
     }
-    if(ga_state==0u && count && tap) {
+    if(ga_state==0u && ga_quest_ui && ga_quest_ui->count() && tap) {
         const int16_t tracked=ga_quest_ui->tracked();
-        ga_quest_selected=(tracked>=0 && (uint16_t)tracked<count)?(uint16_t)tracked:0u;
+        ga_quest_selected=0u; ga_quest_desc_scroll=0u;
+        if(tracked>=0)
+            for(uint16_t ordinal=0;ordinal<count;++ordinal)
+                if(ga_quest_index(ordinal)==(uint16_t)tracked)
+                    {ga_quest_selected=ordinal;break;}
         const uint16_t rows=ga_quest_rows();
         ga_quest_scroll=ga_quest_selected>=rows?
             (uint16_t)(ga_quest_selected-rows+1u):0u;
@@ -562,7 +686,7 @@ static uint8_t ga_quest_input(uint8_t fire2_edge,uint8_t fire1_edge,
 
 uint8_t game_adventure_gameplay_buttons(uint8_t buttons)
 {
-    if (ga_quest_open) return 0u;
+    if (ga_quest_open || ga_save_menu_open) return 0u;
     return (uint8_t)(buttons & (uint8_t)~((ga_state || ga_fire1_blocked) ? BTN_FIRE : 0u));
 }
 
@@ -763,8 +887,11 @@ static uint16_t ga_animation_ticks[256];
 static uint8_t ga_animation_frames[256], ga_animation_mode[256];
 static uint8_t ga_animation_original_index[256];
 static game_adventure_choice_signal_t ga_choice_signal;
+static game_adventure_node_signal_t ga_node_signal;
 void game_adventure_set_choice_signal(game_adventure_choice_signal_t callback)
 { ga_choice_signal=callback; }
+void game_adventure_set_node_signal(game_adventure_node_signal_t callback)
+{ ga_node_signal=callback; }
 static game_adventure_action_t ga_action;
 static void *ga_user;
 
@@ -854,7 +981,7 @@ static void ga_tick_animations(uint16_t frames)
     }
 }
 
-uint8_t game_adventure_open(void) { return ga_state != 0 || ga_quest_open; }
+uint8_t game_adventure_open(void) { return ga_state != 0 || ga_quest_open || ga_save_menu_open; }
 /* Optional world-manager hook: register an Adventure pickup kind before
  * the HUD first queries it. A standalone Adventure build needs no world
  * manager, so this default implementation deliberately does nothing. */
@@ -988,6 +1115,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
         ga_npc_visibility[i] = 1u;
     game_adventure_npc_choice_actions(0, 0);
     ga_choice_signal=0; /* World transitions must not retain the last world's callback. */
+    ga_node_signal=0;
     game_adventure_remote_npc_actions(0, 0, 0);
     game_adventure_spotlight_actions(0, 0, 0);
     game_adventure_close_gifts(0,0);
@@ -1012,7 +1140,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
     ga_state = ga_choice = ga_inventory_offset = 0;
     /* A world switch ends any journal modal. Registration happens in
      * gameadventure_setup(), after this reset. */
-    ga_quest_open=0u;
+    ga_quest_open=0u; ga_save_menu_open=ga_save_menu_confirm=0u;
     ga_quest_ui=0;
     ga_quest_touch_latched=1u;
     ga_trigger_message_mode=0u;
@@ -1218,6 +1346,7 @@ static void ga_next_node(int16_t node)
     if (node < 0 || node >= ga_node_count) { ga_state = 0; return; }
     ga_trigger_message_mode=0u; /* Normal NPC/full conversation may branch. */
     ga_node = (uint16_t)node; ga_state = 1;
+    if(ga_node_signal)ga_node_signal(ga_node);
     ga_choice = 0; ga_typed = 0; ga_ticks = 0;
     for (uint8_t i=0;i<3;++i)
         if (ga_choice_visible(ga_node,i)) { ga_choice=i; break; }
@@ -1513,8 +1642,30 @@ uint8_t game_adventure_input(uint8_t buttons, int32_t player_x, int32_t player_y
     const uint8_t right = (buttons & BTN_RIGHT) && !(ga_prev_buttons & BTN_RIGHT);
     /* Record modal FIRE1 before an item action changes ga_state to idle. */
     if (!(buttons & BTN_FIRE)) ga_fire1_blocked=0u;
-    else if (ga_state != 0u || ga_quest_open) ga_fire1_blocked=1u;
+    else if (ga_state != 0u || ga_quest_open || ga_save_menu_open) ga_fire1_blocked=1u;
     ga_prev_buttons = buttons;
+    if(ga_save_menu_open) {
+        ga_fire1_blocked=1u;
+        if(ga_save_menu_confirm) {
+            if(press) {ga_save_menu_confirm=0u;return 1u;}
+            if(fire && ga_save_request && ga_save_request(ga_save_menu_slot)) {
+                ga_save_menu_open=ga_save_menu_confirm=0u;
+            }
+        } else {
+            if(press) {ga_save_menu_open=0u;return 1u;}
+            if(up && ga_save_menu_slot%5u) --ga_save_menu_slot;
+            if(down && ga_save_menu_slot%5u<4u) ++ga_save_menu_slot;
+            if(left && ga_save_menu_slot>=5u)ga_save_menu_slot-=5u;
+            if(right && ga_save_menu_slot<5u)ga_save_menu_slot+=5u;
+            if(fire) {
+                if(ga_save_menu_occupied[ga_save_menu_slot])
+                    ga_save_menu_confirm=1u;
+                else if(ga_save_request && ga_save_request(ga_save_menu_slot))
+                    ga_save_menu_open=0u;
+            }
+        }
+        return 1u;
+    }
     /* Journal steals neither FIRE2 nor touch while dialogue/inventory runs.
      * When open, it suspends animation, drop physics and world gameplay. */
     if (ga_quest_input(press,fire,up,down,left,right)) {
@@ -2090,6 +2241,74 @@ static void ga_quest_border(int16_t x,int16_t y,int16_t w,int16_t h)
     gfx_rectf(x,y,1,h);gfx_rectf(x+w-1,y,1,h);
 #endif
 }
+static uint8_t ga_quest_draw_icon_slot(uint8_t slot,int x,int y)
+{
+    if(slot>=5u || !ga_quest_skin_pixels || !ga_quest_skin_tile)return 0u;
+    const uint16_t columns=ga_quest_skin_w/ga_quest_skin_tile;
+    if(!columns)return 0u;
+    const uint32_t total=(uint32_t)columns*(ga_quest_skin_h/ga_quest_skin_tile);
+    const uint8_t composite=ga_quest_icon_2x2[slot] && ga_quest_skin_tile==8u;
+    const uint8_t parts=composite?4u:1u;
+    const uint8_t flip=ga_quest_icon_flips[slot];
+    uint8_t drawn=0u;
+    for(uint8_t part=0u;part<parts;++part){
+        /* Global flips rearrange quadrants as well as flipping each tile. */
+        const uint8_t src=composite?(uint8_t)(part ^ ((flip&4u)?1u:0u) ^ ((flip&8u)?2u:0u)):0u;
+        const uint16_t index=composite?ga_quest_icon_parts[slot][src]:ga_quest_icon_cells[slot];
+        if(index==65535u || index>=total)continue;
+        gfxbob_t icon;memset(&icon,0,sizeof(icon));
+        icon.imgdat=ga_quest_skin_pixels + (uint32_t)(index/columns)*ga_quest_skin_tile*ga_quest_skin_w
+                    + (uint32_t)(index%columns)*ga_quest_skin_tile;
+        icon.atlas_stride=ga_quest_skin_w;icon.atlas_height=ga_quest_skin_tile;
+        icon.width=ga_quest_skin_tile;icon.height=ga_quest_skin_tile;
+        icon.scale=100u; /* Native 8x8, never scale to 16x16. */
+        icon.index=0u;icon.flags=flip;
+        icon.drawx=(int16_t)(x+(composite?(part&1u)*8u:0u));
+        icon.drawy=(int16_t)(y+(composite?(part>>1u)*8u:0u));
+        gfx_drawbob(&icon);drawn=1u;
+    }
+    return drawn;
+}
+static uint8_t ga_wrapped_scaled_skip(const char *text, uint16_t visible, int x, int y,
+                                      uint8_t max_columns, uint8_t max_lines,
+                                      uint8_t sx,uint8_t sy,uint8_t skip_lines)
+{
+    if (!text || !max_lines || !max_columns) return 0;
+    char line[GA_COLS + 1]; uint16_t pos = 0; uint8_t lines = 0, drawn = 0;
+    const int row_height = 8*(int)sy+(ga_outline_enabled?4:0);
+    if (max_columns > GA_COLS) max_columns = GA_COLS;
+    while (text[pos] && pos < visible && drawn < max_lines) {
+        uint8_t n = 0;
+        while (text[pos] && pos < visible && text[pos] != '\n' &&
+               n < max_columns) line[n++] = text[pos++];
+        if (n == max_columns && text[pos] && pos < visible &&
+            text[pos] != ' ' && text[pos] != '\n') {
+            uint8_t last_space = n;
+            while (last_space && line[last_space-1] != ' ') --last_space;
+            if (last_space > 0) {
+                pos -= n - last_space + 1;
+                n = last_space - 1;
+            }
+        }
+        while (n && line[n-1] == ' ') --n;
+        line[n] = 0;
+        if (text[pos] == '\n' && pos < visible) ++pos;
+        while (text[pos] == ' ' && pos < visible) ++pos;
+        if (lines >= skip_lines) {
+            ga_dialog_text(x, y + drawn * row_height, line, sx, sy);
+            ++drawn;
+        }
+        ++lines;
+    }
+    return drawn;
+}
+static void ga_quest_header_status(uint8_t status,uint8_t tracked,char *out,size_t outsz)
+{
+    const char *base=status==1u?"ACTIVE":status==2u?"COMPLETED":status==3u?"EXCLUDED":"LOCKED";
+    if(tracked && status!=2u) snprintf(out,outsz,"%s / TRACKED",base);
+    else snprintf(out,outsz,"%s",base);
+}
+
 static void ga_quest_window(void)
 {
     const uint16_t count=ga_quest_count();
@@ -2097,18 +2316,18 @@ static void ga_quest_window(void)
     const int x=margin,y=(int)ga_quest_top+margin;
     const int w=480-2*margin,h=(int)ga_quest_height-2*margin;
     const int split=x+w*(int)ga_quest_style.split_percent/100;
-    /* Keep glyphs eight pixels INSIDE the atlas frame, not on top of its edges. */
     const int inset=ga_quest_skin_pixels?(int)ga_quest_skin_tile+8:8;
     const int list_x=x+((int)ga_quest_style.list_left>inset?(int)ga_quest_style.list_left:inset);
     const int header=ga_quest_heading_height();
-    const int rows_y=y+header+32;
-    /* Native SIDBOX text is 8x16, plus an optional one-pixel outline.
-     * Position the entire footer ABOVE the atlas tile and its 8px inset. */
+    const int rows_y=y+header+34;
     const int footer_y=y+h-inset-18;
     const int footer_separator_y=footer_y-8;
-    const int objective_y=footer_separator_y-55;
+    const int objective_title_y=footer_separator_y-38;
+    const int objective_text_y=footer_separator_y-20;
+    const int desc_y=y+header+8;
     const int right=split+inset;
-    const int right_cols=(x+w-right-inset)/8;
+    const int right_limit=x+w-inset;
+    const int right_cols=(right_limit-right)/8;
     const uint16_t rows=ga_quest_rows();
     const uint8_t saved_colour=ga_text_colour;
     const uint8_t saved_outline=ga_outline_enabled;
@@ -2121,26 +2340,44 @@ static void ga_quest_window(void)
                       ga_quest_skin_cells,ga_quest_skin_flips,
                       ga_quest_skin_pixels,ga_quest_skin_w,ga_quest_skin_h,ga_quest_skin_tile,
                       ga_quest_style.background_colour);
-    } else {gfx_setcolour(ga_quest_style.background_colour);
-            gfx_rectf(x,y,w,h);}
-    /* The nine-slice already contains its OWN border. Do not draw another. */
-    if(!ga_quest_skin_pixels) {
-        gfx_setcolour(ga_quest_style.border_colour);ga_quest_border(x,y,w,h);
-    }
+    } else {gfx_setcolour(ga_quest_style.background_colour); gfx_rectf(x,y,w,h);}    
+    if(!ga_quest_skin_pixels) { gfx_setcolour(ga_quest_style.border_colour); ga_quest_border(x,y,w,h); }
+    /* The selected quest's status belongs to the JOURNAL header, not the
+     * quest detail title row. Right-align it inside the atlas-safe inset.
+     * Reserve its width before drawing the independently scaled heading. */
     {
-        const int tx=x+((int)ga_quest_style.title_x>inset?(int)ga_quest_style.title_x:inset);
-        const int avail=(x+w-inset-tx)/(8*(int)ga_quest_style.title_font_x);
-        if(avail>0){
+        char header_status[32]={0};
+        if(count) {
+            const uint16_t selected_for_header=ga_quest_index(ga_quest_selected<count?ga_quest_selected:0u);
+            if(selected_for_header!=0xffffu) {
+                ga_quest_header_status(ga_quest_ui->status(selected_for_header),
+                    ga_quest_ui->tracked()==(int16_t)selected_for_header,
+                    header_status,sizeof(header_status));
+            }
+        }
+        const int right_limit=x+w-inset;
+        const int status_w=(int)strlen(header_status)*8;
+        const int status_x=right_limit-status_w;
+        const int heading_x=x+((int)ga_quest_style.title_x>inset?(int)ga_quest_style.title_x:inset);
+        const int heading_right=status_w?status_x-8:right_limit; /* 8px gap */
+        const int heading_chars=(heading_right-heading_x)/(8*(int)ga_quest_style.title_font_x);
+        if(heading_chars>0) {
             char heading[14]="QUEST JOURNAL";
-            if(avail<13)heading[avail]=0; /* Do not print beyond right frame padding. */
-            ga_dialog_text(tx,y+(int)ga_quest_style.title_y,heading,
+            if(heading_chars<13)heading[heading_chars]=0;
+            ga_dialog_text(heading_x,y+(int)ga_quest_style.title_y,heading,
                            ga_quest_style.title_font_x,ga_quest_style.title_font_y);
+        }
+        if(status_w) {
+            const int status_y=y+(int)ga_quest_style.title_y+
+                (8*(int)ga_quest_style.title_font_y>16?
+                 (8*(int)ga_quest_style.title_font_y-16)/2:0);
+            ga_text(status_x,status_y,header_status);
         }
     }
     gfx_setcolour(ga_quest_style.border_colour);
     gfx_rectf(x+inset,y+header,w-2*inset,1);
-    if(footer_separator_y>y+header+4)
-        gfx_rectf(split,y+header+4,1,footer_separator_y-y-header-4);
+    gfx_rectf(x+inset,footer_separator_y,w-2*inset,1);
+    gfx_rectf(split,y+header+4,1,footer_separator_y-y-header-4);
     ga_text(list_x,y+header+8,"QUESTS");
     if(!count)ga_text(list_x,y+header+40,"No quests yet.");
     else {
@@ -2148,60 +2385,121 @@ static void ga_quest_window(void)
         if(ga_quest_scroll>ga_quest_selected)ga_quest_scroll=ga_quest_selected;
         if(ga_quest_selected>=ga_quest_scroll+rows)
             ga_quest_scroll=(uint16_t)(ga_quest_selected-rows+1u);
-        const uint8_t title_cols=(uint8_t)((split-list_x-22)/8>1?(split-list_x-22)/8:1);
+        /* Reserve a 16px scroll-arrow gutter against the divider. The
+         * arrows must never paint over quest names or optional 2x2 icons. */
+        const int title_width=split-(list_x+20)-22;
+        const uint8_t title_cols=(uint8_t)(title_width/8>1?title_width/8:1);
+        if(ga_quest_scroll)
+            ga_text(split-16,y+header+8,"\x1e");
+        if((uint32_t)ga_quest_scroll+rows<count)
+            ga_text(split-16,footer_separator_y-24,"\x1f");
         for(uint16_t row=0;row<rows;++row) {
-            const uint16_t index=(uint16_t)(ga_quest_scroll+row);
-            if(index>=count)break;
+            const uint16_t ordinal=(uint16_t)(ga_quest_scroll+row);
+            if(ordinal>=count)break;
+            const uint16_t index=ga_quest_index(ordinal);
+            if(index==0xffffu)break;
             const int line_y=rows_y+(int)row*24;
-            if(index==ga_quest_selected) {
-                gfx_setcolour(ga_quest_style.selection_colour);
-                ga_quest_border(list_x-3,line_y-3,split-list_x+1,23);
-            }
+            if(ordinal==ga_quest_selected) { gfx_setcolour(ga_quest_style.selection_colour); ga_quest_border(list_x-3,line_y-3,split-list_x+1,23); }
             const uint8_t status=ga_quest_ui->status(index);
-            ga_text(list_x,line_y,status==2u?"+":status==1u?">":status==3u?"x":"-");
-            ga_quest_label(list_x+16,line_y,ga_quest_ui->title(index),title_cols);
+            if(status==2u && !ga_quest_draw_icon_slot(1u,list_x,line_y)) ga_text(list_x,line_y,"+");
+            else if(status!=2u && !ga_quest_draw_icon_slot(0u,list_x,line_y)) ga_text(list_x,line_y,status==1u?">":status==3u?"x":"-");
+            ga_quest_label(list_x+20,line_y,ga_quest_ui->title(index),title_cols);
         }
-        const uint16_t selected=ga_quest_selected;
+        const uint16_t selected=ga_quest_index(ga_quest_selected);
+        if(selected==0xffffu){ ga_text_colour=saved_colour; ga_outline_enabled=saved_outline; ga_outline_colour=saved_outline_colour; return; }
         const uint8_t status=ga_quest_ui->status(selected);
-        const int16_t tracked=ga_quest_ui->tracked();
-        ga_quest_label(right,y+header+8,ga_quest_ui->title(selected),(uint8_t)right_cols);
-        ga_text(right,y+header+30,status==1u?"ACTIVE":status==2u?"COMPLETED":
-                          status==3u?"EXCLUDED":"LOCKED");
-        if(tracked==(int16_t)selected && right_cols>=18)ga_text(right+80,y+header+30,"TRACKED");
-        const int description_y=y+header+69;
-        int desc_lines=(objective_y-description_y-6)/(16+(ga_outline_enabled?4:0));
-        if(desc_lines>4)desc_lines=4;
-        if(desc_lines>0){
-            ga_text(right,y+header+52,"DESCRIPTION");
-            const char *description=ga_quest_ui->description(selected);
-            ga_wrapped_scaled(description,ga_quest_text_length(description),right,description_y,
-                              (uint8_t)right_cols,(uint8_t)desc_lines,1u,2u);
+        /* The quest's title is already visible in the left list. Reserve the
+         * entire right pane for its description and current objective. */
+        const char *description=ga_quest_ui->description(selected);
+        const int desc_text_x=right+(ga_quest_draw_icon_slot(3u,right,desc_y-2)?20:0);
+        const uint8_t desc_cols=ga_quest_description_columns();
+        const uint8_t total_desc=ga_answer_rows(description,desc_cols,64u);
+        const uint8_t visible_desc=ga_quest_description_visible_rows();
+        const uint8_t max_scroll=total_desc>visible_desc && visible_desc?
+            (uint8_t)(total_desc-visible_desc):0u;
+        if(ga_quest_desc_scroll>max_scroll)ga_quest_desc_scroll=max_scroll;
+        if(visible_desc) {
+            ga_wrapped_scaled_skip(description,ga_quest_text_length(description),desc_text_x,desc_y,
+                                   desc_cols,visible_desc,1u,2u,ga_quest_desc_scroll);
+            if(ga_quest_desc_scroll)ga_text(right_limit-8,desc_y-2,"\x1e");
+            if(ga_quest_desc_scroll<max_scroll)
+                ga_text(right_limit-8,desc_y+(int)(visible_desc-1u)*(16+(ga_outline_enabled?4:0)),"\x1f");
         }
-        ga_text(right,objective_y,"CURRENT OBJECTIVE");
+
+        ga_text(right,objective_title_y,"CURRENT OBJECTIVE");
         const char *objective=ga_quest_ui->objective(selected);
+        const int obj_text_x=right+(ga_quest_draw_icon_slot(4u,right,objective_text_y-2)?20:0);
         if(objective && *objective)
-            ga_wrapped_scaled(objective,ga_quest_text_length(objective),right,
-                              objective_y+18,(uint8_t)right_cols,2u,1u,2u);
-        else ga_quest_label(right,objective_y+18,
-            status==2u?"Quest completed":"No active objective",(uint8_t)right_cols);
+            ga_quest_label(obj_text_x,objective_text_y,objective,(uint8_t)((right_limit-obj_text_x)/8));
+        else ga_quest_label(obj_text_x,objective_text_y,status==2u?"Quest completed":"No active objective",(uint8_t)((right_limit-obj_text_x)/8));
     }
-    gfx_setcolour(ga_quest_style.border_colour);
-    gfx_rectf(x+inset,footer_separator_y,w-2*inset,1);
-    ga_text(x+inset,footer_y,"UP/DOWN SELECT");
+    ga_text(x+inset,footer_y,"UP/DOWN QUEST  L/R TEXT");
     ga_quest_label(right,footer_y,"FIRE1 TRACK  FIRE2 BACK",(uint8_t)right_cols);
     ga_text_colour=saved_colour;
     ga_outline_enabled=saved_outline;
     ga_outline_colour=saved_outline_colour;
 }
 
+/* Compact modal: five rows in two columns, stays within the playable
+ * viewport even when a dock is present. Only selection, no actual TF write. */
+static void ga_save_slot_window(void)
+{
+    const int screen_y=(int)ga_quest_top;
+    const int screen_h=(int)ga_quest_height;
+    const int x=52,w=376,h=screen_h>=280?260:screen_h-12;
+    const int y=screen_y+(screen_h-h)/2;
+    /* At a very small viewport a 32px border would swallow the menu. */
+    const uint8_t skinned=ga_quest_skin_pixels &&
+        h>=2*((int)ga_quest_skin_tile+8)+156;
+    const int inset=skinned?(int)ga_quest_skin_tile+8:8;
+    const int content_x=x+inset+8;
+    const uint8_t old_color=ga_text_colour;
+    const uint8_t old_outline=ga_outline_enabled;
+    const uint8_t old_outline_color=ga_outline_colour;
+    ga_text_colour=ga_quest_style.text_colour;
+    ga_outline_enabled=ga_quest_style.outline_enabled;
+    ga_outline_colour=ga_quest_style.outline_colour;
+    if(skinned)
+        ga_frame_skin(x,y,w,h,ga_quest_skin_cells,ga_quest_skin_flips,
+                      ga_quest_skin_pixels,ga_quest_skin_w,ga_quest_skin_h,
+                      ga_quest_skin_tile,ga_quest_style.background_colour);
+    else {
+        gfx_setcolour(ga_quest_style.background_colour);gfx_rectf(x,y,w,h);
+        gfx_setcolour(ga_quest_style.border_colour);ga_quest_border(x,y,w,h);
+    }
+    ga_text(content_x,y+inset,"SAVE GAME - CHOOSE SLOT");
+    for(uint8_t n=0u;n<10u;++n){
+        char row[24];
+        const int tx=content_x+(n/5u)*158;
+        const int ty=y+inset+30+(n%5u)*20;
+        const uint8_t exists=ga_save_menu_occupied[n];
+        snprintf(row,sizeof(row),"%c SLOT %02u %s",
+                 n==ga_save_menu_slot?'>':' ',(unsigned)(n+1u),
+                 exists?"SAVED":"EMPTY");
+        if(n==ga_save_menu_slot){
+            gfx_setcolour(ga_quest_style.selection_colour);
+            ga_quest_border(tx-4,ty-2,152,19);
+        }
+        ga_text(tx,ty,row);
+    }
+    if(ga_save_menu_confirm){
+        ga_text(content_x,y+h-inset-34,"OVERWRITE EXISTING SAVE?");
+        ga_text(content_x,y+h-inset-17,"FIRE1 YES   FIRE2 NO");
+    } else ga_text(content_x,y+h-inset-17,"FIRE1 SAVE  FIRE2 CANCEL");
+    ga_text_colour=old_color;
+    ga_outline_enabled=old_outline;
+    ga_outline_colour=old_outline_color;
+}
+
 void game_adventure_draw(int32_t camera_x, int32_t camera_y,
                           int32_t player_x, int32_t player_y)
 {
-    if (!ga_state && !ga_quest_open) return;
+    if (!ga_state && !ga_quest_open && !ga_save_menu_open) return;
     /* Weather/night uses indexed CLUT tint, including the GUI colours.
      * Restore original palette ONLY while a modal UI is visible. Next
      * world frame reapplies the weather palette without altering clocks. */
     if(ga_modal_fullbright)ga_modal_fullbright();
+    if (ga_save_menu_open) {ga_save_slot_window();return;}
     if (ga_quest_open) {ga_quest_window();return;}
     if (ga_state == 2 || ga_state == 4 || ga_state == 5 || ga_state == 6) {
         const uint16_t visible = ga_visible_count();
@@ -2236,9 +2534,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         if ((uint16_t)ga_inventory_selection >= (uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
             ga_inventory_offset=(uint8_t)(ga_inventory_selection-GA_INVENTORY_ROWS+1u);
         ga_inventory_clamp_offset();
-        if(ga_inventory_offset) ga_text(box_x+box_w-inset-16,box_y+inset,"^");
+        if(ga_inventory_offset) ga_text(box_x+box_w-inset-16,box_y+inset,"\x1e");
         if(visible>(uint16_t)ga_inventory_offset+GA_INVENTORY_ROWS)
-            ga_text(selector_x,box_y+box_h-inset-8,"v");
+            ga_text(selector_x,box_y+box_h-inset-8,"\x1f");
         for (uint8_t i=0; i<shown; ++i) {
             const uint16_t display=(uint16_t)(ga_inventory_offset+i);
             const uint16_t id=ga_visible_item_id(display);
@@ -2390,9 +2688,9 @@ void game_adventure_draw(int32_t camera_x, int32_t camera_y,
         ga_wrapped_scaled(c->label,(uint16_t)strlen(c->label),bx+pad+14*(int)ga_dialog_scale_x,cy,
                           safe_answer_columns,draw_rows,ga_dialog_scale_x,ga_dialog_scale_y);
         /* The arrow gutter stays outside the wrapped answer's text area. */
-        if (i==0 && first>0) ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy,"^",ga_dialog_scale_x,ga_dialog_scale_y);
+        if (i==0 && first>0) ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy,"\x1e",ga_dialog_scale_x,ga_dialog_scale_y);
         if (i+1==shown && first+shown<count)
-            ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy+(draw_rows-1)*row,"v",ga_dialog_scale_x,ga_dialog_scale_y);
+            ga_dialog_text(bx+bw-pad-8*(int)ga_dialog_scale_x,cy+(draw_rows-1)*row,"\x1f",ga_dialog_scale_x,ga_dialog_scale_y);
         cy+=(int)draw_rows*row+4;
     }
 

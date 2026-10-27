@@ -19,10 +19,10 @@ for token in ('QUEST_TITLE_X','QUEST_TITLE_Y','QUEST_TITLE_FONT_X','QUEST_TITLE_
 assert 'SidboxPalettePicker::chooseIndex' in editor
 assert 'if(!ga_quest_skin_pixels)' in source
 assert 'if(fire2_edge)' in source and 'if(fire2_edge || left_edge)' not in source
-assert 'if(fire1_edge &&' in source and 'fire1_edge || right_edge' not in source
+assert 'if(fire1_edge && ga_quest_ui->status(index)==1u)' in source and 'fire1_edge || right_edge' not in source
 assert 'ga_outline_colour=saved_outline_colour' in source
 assert 'list_left,title_x,title_y,title_font_x,title_font_y' in header
-assert 'Build: 5.166.5.271026' in (root/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.12.271026' in (root/'splashscreenwidget.cpp').read_text()
 with tempfile.TemporaryDirectory(prefix='quest1664_') as work:
     d=Path(work)
     render_adventure_runtime(root,d)
@@ -87,7 +87,7 @@ static const char* txt(uint16_t n){(void)n;return "Quest Title";}
 static uint8_t status(uint16_t n){(void)n;return 1u;}
 static int16_t tracked(void){return 0;}
 static uint8_t track(const char*s){(void)s;return 1;}
-static const game_adventure_quest_ui_t ui={count,id,txt,txt,txt,status,tracked,track};
+static const game_adventure_quest_ui_t ui={count,id,txt,txt,txt,status,tracked,track,0};
 int main(void){
     /* Normal non-atlas style. Heading uses Title Editor's native 1/2/4/8 scales. */
     game_adventure_start(0,0,0,0,0,0,0,0,0,8,0,1,0,0);

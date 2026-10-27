@@ -8111,8 +8111,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("INACTIVE state frame (-1 = hidden)"), inactiveStateFrame);
     form = triggerCard.form;
     auto *checkpointSlot = spin(1, 10, old.checkpointSlot + 1);
-    checkpointSlot->setToolTip(tr("Save Game checkpoint: select which TFCard save slot (1 to 10) to overwrite."));
-    form->addRow(tr("Checkpoint save slot"), checkpointSlot);
+    checkpointSlot->setToolTip(tr("Initial selection in the in-game ten-slot save menu. The player chooses which slot to save into."));
+    form->addRow(tr("Initial save slot"), checkpointSlot);
     auto *checkpointHelp = new QLabel(tr("Checkpoint activation: no required item means touch or FIRE2; "
         "choose an inventory item below to require USE instead. Wrong-item / success / cancel "
         "options then become available."), &dialog);

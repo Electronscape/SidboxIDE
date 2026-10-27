@@ -1,0 +1,49 @@
+STAGE 5.166.17.271026 — COMPACT CLEAN LAYOUT
+========================================================
+Base: Stage 5.166.16 (IDE only)
+
+INSTALL
+-------
+1. Make a backup of your IDE source and project directory.
+2. Unzip the DROPIN over your CoderGirl IDE source root.
+3. Rebuild the IDE. The splash screen must read:
+   Build: 5.166.17.271026
+4. Open Logic Flow Debugger, click Clean Layout and confirm Yes.
+   This is needed to discard the old saved mini-card offsets. Simply
+   opening a graph retains your existing hand-arranged positions.
+5. If the outcome doesn't suit your graph, press Ctrl+Z to restore the
+   previous layout. Ctrl+Y / Ctrl+Shift+Z performs Redo.
+6. Only Logic Flow's IDE-only .sidbox-flow-layout.json is changed.
+   No game/runtime regeneration or SIDBOX hardware flash is needed.
+
+CHANGES
+-------
+* Geometry-aware Clean Layout now has tighter routing gutters:
+  horizontal 40 px, vertical 16 px, separate chains 40 px. Cards
+  still use their actual sizes, including expanded trigger panels.
+* Every connected component has its OWN column widths. A very wide
+  card in an unrelated branch no longer creates an empty vertical
+  canyon across the rest of the world's graph.
+* Connected children follow their parent cards' vertical centers
+  when possible, while staying outside adjacent card bounds.
+* Positions snap to the existing 8px layout grid.
+* Embedded automatic ARRAY GROUPS inside expanded manual LOGIC GROUPS
+  participate as true nodes in their mini-graph, including all links.
+  This replaces the old rule that forced them below all normal cards.
+* One shared size function computes array frame geometry for the
+  drawing, the mini-graph planner and filtered-world estimates.
+* Clean Layout confirmation and 80-state Undo/Redo remain from 5.166.16.
+* Group background stacking remains unchanged from 5.166.16.
+* Splash version advanced to 5.166.17.271026.
+
+TESTING / LIMITATIONS
+---------------------
+* Python geometry/source tests include wide and tall groups, long
+  branches, nested arrays, separate components and zero card overlaps.
+* Regression tests for the V1 memory-budget guard, save-slot picker,
+  quest discovery, journal preview and glyphs pass.
+* This environment has no Qt6Widgets SDK, so CoderGirl's real GUI
+  has not been compiled here; visual confirmation is still needed.
+* Cross-world relationships stay visible but do not control rank or
+  placement across world bands.
+* No edits to gameplay C, main.c, TFCard save format or quest JSON.

@@ -116,10 +116,11 @@ inline QByteArray generateData(const QJsonArray &quests) {
     for(const auto &qv:quests) {
         const QJsonObject q=qv.toObject();
         const QJsonArray steps=q.value("objectives").toArray();
-        questRows<<QStringLiteral("{%1,%2,%3,%4,%5,%6,%7}")
+        questRows<<QStringLiteral("{%1,%2,%3,%4,%5,%6,%7,%8}")
             .arg(quoteC(q.value("id").toString()),quoteC(q.value("title").toString()),
                  quoteC(q.value("description").toString()),quoteC(q.value("requires").toString()),
-                 quoteC(q.value("excludes").toString()),QString::number(index),QString::number(steps.size()));
+                 quoteC(q.value("excludes").toString()),QString::number(index),QString::number(steps.size()),
+                 q.value("initiallyHidden").toBool(false)?QStringLiteral("1u"):QStringLiteral("0u"));
         for(const auto &sv:steps) {
             const QJsonObject s=sv.toObject();
             stepRows<<QStringLiteral("{%1,%2,%3,%4,%5}")
@@ -131,10 +132,10 @@ inline QByteArray generateData(const QJsonArray &quests) {
     }
     output+=QStringLiteral("#define GW_QUEST_COUNT %1u\n#define GW_OBJECTIVE_COUNT %2u\n")
         .arg(quests.size()).arg(index);
-    output+=QStringLiteral("typedef struct { const char *id,*title,*description,*requires,*excludes; uint16_t first,count; } gw_quest_def_t;\n");
+    output+=QStringLiteral("typedef struct { const char *id,*title,*description,*requires,*excludes; uint16_t first,count; uint8_t initially_hidden; } gw_quest_def_t;\n");
     output+=QStringLiteral("typedef struct { const char *id,*title,*kind,*target,*hint; } gw_objective_def_t;\n");
     output+=QStringLiteral("static const gw_quest_def_t gw_quest_defs[] = {\n%1\n};\n")
-        .arg(questRows.isEmpty()?QStringLiteral("{0,0,0,0,0,0,0}"):questRows.join(QStringLiteral(",\n")));
+        .arg(questRows.isEmpty()?QStringLiteral("{0,0,0,0,0,0,0,0}"):questRows.join(QStringLiteral(",\n")));
     output+=QStringLiteral("static const gw_objective_def_t gw_objective_defs[] = {\n%1\n};\n")
         .arg(stepRows.isEmpty()?QStringLiteral("{0,0,0,0,0}"):stepRows.join(QStringLiteral(",\n")));
     return output.toUtf8();

@@ -137,6 +137,16 @@ static const game_adventure_node_t nodes[] = {
 static const char *const quest_choice_ids[] = {
     @IDE{QUEST_CHOICE_TOKENS}
 };
+/* Each dialogue node may offer a quest without consuming a choice action. */
+static const char *const quest_node_enable_ids[] = {
+    @IDE{QUEST_NODE_ENABLE_IDS}
+};
+static void on_quest_node(uint16_t node)
+{
+    if(node>=@IDE{STORY_NODE_COUNT}u)return;
+    const char *id=quest_node_enable_ids[node];
+    if(id && *id)gameworlds_quest_enable(id);
+}
 static void on_quest_choice(uint16_t node, uint8_t answer)
 {
     const uint32_t index=(uint32_t)node*3u+(uint32_t)answer;
@@ -332,6 +342,9 @@ void gameadventure_setup(void)
         skin, width, height, @IDE{SKIN_TILE_SIZE}u, skin_cells,
         @IDE{FRAMES_PER_CHAR}u, on_event, 0);
     game_adventure_set_choice_signal(on_quest_choice);
+    game_adventure_set_node_signal(on_quest_node);
+    game_adventure_save_slot_callbacks(gameworlds_checkpoint_request,
+                                        gameworlds_slot_exists);
     /* Keep the runtime journal pointed at the project-wide quest manager.
      * Registration follows game_adventure_start() because a world load resets
      * the previous world's renderer state. */
@@ -339,7 +352,8 @@ void gameadventure_setup(void)
         gameworlds_quest_count, gameworlds_quest_id,
         gameworlds_quest_title, gameworlds_quest_description,
         gameworlds_quest_objective, gameworlds_quest_status,
-        gameworlds_quest_tracked, gameworlds_quest_track
+        gameworlds_quest_tracked, gameworlds_quest_track,
+        gameworlds_quest_visible
     };
     game_adventure_set_quest_journal(&quest_journal);
     static const game_adventure_quest_style_t quest_style={
@@ -350,6 +364,14 @@ void gameadventure_setup(void)
         @IDE{QUEST_OUTLINE_ENABLED}u,@IDE{QUEST_OUTLINE_COLOUR}u
     };
     game_adventure_quest_style(&quest_style);
+    {
+        static const uint16_t quest_icons[5]={@IDE{QUEST_ICON_CELLS}};
+        static const uint8_t quest_icon_flips[5]={@IDE{QUEST_ICON_FLIPS}};
+        static const uint8_t quest_icon_modes[5]={@IDE{QUEST_ICON_MODES}};
+        static const uint16_t quest_icon_parts[5][4]={@IDE{QUEST_ICON_PARTS}};
+        game_adventure_quest_icons(quest_icons,quest_icon_flips);
+        game_adventure_quest_icon_composites(quest_icon_modes,quest_icon_parts);
+    }
 @IDE_IF{HAS_QUEST_ATLAS}
     {
         static const uint16_t quest_cells[9]={@IDE{QUEST_CELLS}};

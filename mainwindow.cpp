@@ -6041,7 +6041,7 @@ QWidget *makeAppletMemoryPanel(QWidget *parent)
     panel->setMinimumWidth(225);
     panel->setMaximumWidth(340);
     panel->setToolTip(QObject::tr(
-        "These bars show build-time RAM reservations, not measured peak use. "
+        "V1 Budget shows linked RAM against Project Settings. V2 shows reservations. "
         "The ELF RAM footprint includes the reserved private stack; the "
         "bounded heap is additional. Actual peak usage requires hardware "
         "instrumentation."));
@@ -6067,15 +6067,17 @@ QWidget *makeAppletMemoryPanel(QWidget *parent)
 
     const auto addRow = [panel, layout](const QString &key, const QString &shortLabel,
                                          const QString &description) {
-        auto *row = new QHBoxLayout();
+        auto *rowWidget = new QWidget(panel);
+        rowWidget->setObjectName(QStringLiteral("sidboxMemoryRow_") + key);
+        auto *row = new QHBoxLayout(rowWidget);
         row->setContentsMargins(0, 0, 0, 0);
         row->setSpacing(5);
-        auto *name = new QLabel(shortLabel, panel);
+        auto *name = new QLabel(shortLabel, rowWidget);
         name->setObjectName(QStringLiteral("sidboxMemoryLabel_") + key);
-        name->setFixedWidth(43);
+        name->setFixedWidth(54);
         name->setToolTip(description);
         row->addWidget(name);
-        auto *bar = new QProgressBar(panel);
+        auto *bar = new QProgressBar(rowWidget);
         bar->setObjectName(QStringLiteral("sidboxMemoryBar_") + key);
         bar->setRange(0, 1000);
         bar->setValue(0);
@@ -6083,7 +6085,7 @@ QWidget *makeAppletMemoryPanel(QWidget *parent)
         bar->setFixedHeight(18);
         bar->setTextVisible(true);
         row->addWidget(bar, 1);
-        layout->addLayout(row);
+        layout->addWidget(rowWidget);
     };
     addRow(QStringLiteral("total"), QObject::tr("Total"),
            QObject::tr("Total linked image RAM plus bounded heap reservation."));
@@ -6111,6 +6113,7 @@ void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
                              const QString &buildDir = QString(),
                              bool v1Game = false)
 {
+    Q_UNUSED(v1Game); // V1 project allowance is now the bar ceiling for games and desktop apps.
     if (!root) return;
     auto *status = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryStatus"));
     auto *details = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryDetails"));
@@ -6119,64 +6122,71 @@ void updateAppletMemoryPanel(QWidget *root, bool v2, int appKiB,
         heading->setText(v2 ? QObject::tr("Applet Memory") : QObject::tr("V1 Game / App Memory"));
 
     const quint64 allowance = quint64(qMax(appKiB, 1)) * 1024;
-    quint64 visualAllowance = allowance;
-    const auto setRow = [root, &visualAllowance](const QString &key, const QString &title,
+    const auto setRow = [root, allowance](const QString &key, const QString &title,
                                            quint64 bytes, bool known) {
-        auto *label = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_") + key);
         auto *bar = root->findChild<QProgressBar *>(QStringLiteral("sidboxMemoryBar_") + key);
-        if (!label || !bar) return;
-        // The brief row label is fixed; full context and percentages live
-        // in the tooltips, so the monitor stays compact even with long values.
-        bar->setValue(known ? int(qMin<quint64>(1000, (bytes * 1000) / visualAllowance)) : 0);
+        if (!bar) return;
+        const int percent = known ? int((bytes * 100ULL) / allowance) : 0;
+        bar->setValue(known ? int(qMin<quint64>(1000ULL, (bytes * 1000ULL) / allowance)) : 0);
         bar->setFormat(known ? sidboxMemSize(bytes) : QStringLiteral("—"));
-        bar->setToolTip(known ? QStringLiteral("%1: %2 / %3 (%4% of allowance)")
-                       .arg(title, sidboxMemSize(bytes), sidboxMemSize(visualAllowance))
-                       .arg(qulonglong((bytes * 100) / visualAllowance))
+        bar->setToolTip(known ? QStringLiteral("%1: %2 / %3 (%4% of budget)")
+                       .arg(title, sidboxMemSize(bytes), sidboxMemSize(allowance))
+                       .arg(percent)
                          : QObject::tr("Build to determine this value."));
+        bar->setStyleSheet(known && bytes > allowance
+            ? QStringLiteral("QProgressBar::chunk { background-color: #C34F38; }") : QString());
     };
-    setRow(QStringLiteral("total"), QObject::tr("Total RAM reserved"), 0, false);
+    if (auto *heapRow = root->findChild<QWidget *>(QStringLiteral("sidboxMemoryRow_heap")))
+        heapRow->setVisible(v2);
+    if (auto *stackRow = root->findChild<QWidget *>(QStringLiteral("sidboxMemoryRow_stack")))
+        stackRow->setVisible(true);
+    if (auto *stackLabel = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_stack"))) {
+        stackLabel->setText(v2 ? QObject::tr("Stack") : QObject::tr("Budget"));
+        stackLabel->setToolTip(v2 ? QObject::tr("Private stack reserved, not measured peak usage.")
+            : QObject::tr("Linked applet RAM against the budget in Project Settings. Includes ELF BSS and reserved stack."));
+    }
+    setRow(QStringLiteral("total"), QObject::tr("Total linked RAM"), 0, false);
     setRow(QStringLiteral("image"), QObject::tr("Linked ELF RAM"), 0, false);
-    setRow(QStringLiteral("stack"), QObject::tr("Private stack reserved"), 0, false);
+    setRow(QStringLiteral("stack"), v2 ? QObject::tr("Stack") : QObject::tr("V1 budget"), 0, false);
     setRow(QStringLiteral("heap"), QObject::tr("Heap reserved"), 0, false);
     details->clear();
     details->setToolTip(QString());
-    if (auto *stackLabel = root->findChild<QLabel *>(QStringLiteral("sidboxMemoryLabel_stack")))
-        stackLabel->setToolTip(QObject::tr("Private stack reservation; not measured usage."));
     if (!v2) {
-        status->setText(QObject::tr("V1 · %1").arg(sidboxMemSize(allowance)));
-        status->setToolTip(QObject::tr("V1 / Gaming: configured memory allowance, not measured live RAM usage."));
+        status->setText(QObject::tr("V1 · %1 budget").arg(sidboxMemSize(allowance)));
+        status->setToolTip(QObject::tr("V1 linked-RAM budget from Project Settings; not measured peak heap/stack use."));
         if (!buildSucceeded) {
-            details->setText(QObject::tr("Build to measure linked image."));
+            details->setText(QObject::tr("Build to measure applet RAM against budget."));
             return;
         }
         const auto elf = readSidboxElfRam(elfFile);
         if (elf.valid) {
-            // A V1 game uses the SDRAM from its link start up to the RAM disk.
-            // App-size KB only bounds desktop GUI images, NOT V1 games.
-            if (v1Game && elf.startAddress >= 0xD0000000ULL &&
-                elf.startAddress < 0xD05E0000ULL)
-                visualAllowance = 0xD05E0000ULL - elf.startAddress;
-            // V1 ELF PT_LOAD covers linked image and NOLOAD BSS/stack. This is
-            // an ESTIMATE of reserved RAM, not peak heap/stack or framebuffer RAM.
-            setRow(QStringLiteral("image"), QObject::tr("V1 linked image incl. BSS/stack"),
+            setRow(QStringLiteral("image"), QObject::tr("Linked ELF RAM incl. stack"),
                    elf.spanBytes, true);
-            setRow(QStringLiteral("total"), QObject::tr("V1 linked reservation (minimum)"),
+            setRow(QStringLiteral("total"), QObject::tr("Linked RAM reservation"),
                    elf.spanBytes, true);
-            status->setText(QObject::tr("V1 · %1").arg(sidboxMemSize(visualAllowance)));
-            if (elf.spanBytes > visualAllowance)
-                status->setText(QObject::tr("OVER · %1").arg(sidboxMemSize(visualAllowance)));
+            setRow(QStringLiteral("stack"), QObject::tr("V1 budget usage"),
+                   elf.spanBytes, true);
+            if (auto *budgetBar = root->findChild<QProgressBar *>(QStringLiteral("sidboxMemoryBar_stack"))) {
+                const int percent = int((elf.spanBytes * 100ULL) / allowance);
+                budgetBar->setFormat(QStringLiteral("%1 / %2 (%3%)")
+                    .arg(sidboxMemSize(elf.spanBytes), sidboxMemSize(allowance))
+                    .arg(percent));
+            }
+            if (elf.spanBytes > allowance)
+                status->setText(QObject::tr("OVER %1% · %2 budget")
+                    .arg((elf.spanBytes * 100ULL) / allowance)
+                    .arg(sidboxMemSize(allowance)));
         }
         QStringList notes;
-        notes << (elf.valid ? QObject::tr("ELF RAM: %1").arg(sidboxMemSize(elf.spanBytes))
+        notes << (elf.valid ? QObject::tr("Budget remaining: %1")
+                .arg(sidboxMemSize(elf.spanBytes < allowance ? allowance - elf.spanBytes : 0))
                             : QObject::tr("ELF RAM unavailable"));
         if (QFileInfo(appFile).isFile())
             notes << QObject::tr("APP file: %1").arg(sidboxMemSize(QFileInfo(appFile).size()));
-        notes << QObject::tr("V1 heap/stack peak unknown");
+        notes << QObject::tr("Runtime heap/stack peaks unknown");
         details->setText(notes.join(QStringLiteral("  ·  ")));
-        details->setToolTip(QObject::tr("V1 ELF is a linked memory span, not measured RAM use. "
-            "Game allowance is estimated from the default 0xD05E0000 RAM-disk boundary; "
-            "custom linker layouts can differ. Music buffers, framebuffers, allocator "
-            "allocations and run-time heap can use additional RAM."));
+        details->setToolTip(QObject::tr("Budget is compared with the linked ELF RAM span, including reserved stack and BSS. "
+            "Additional allocations, framebuffers and music buffers may use RAM beyond this static measurement."));
         return;
     }
     status->setText(QObject::tr("V2 · %1").arg(sidboxMemSize(allowance)));
@@ -11027,8 +11037,12 @@ void MainWindow::handleCompilerFinished(int exitCode)
             }
         }
 
-        // Use linked symbols, not the on-disk .app size.  __stack_end__
-        // includes the reserved stack; .app binary file size does not.
+        // Measure the actual linked RAM span, INCLUDING the reserved stack.
+        // The .app file's on-disk size is NOT the V1 RAM requirement.  In
+        // game projects the default linker intentionally exposes all remaining
+        // game SDRAM (after music/resource reserves), so it can link even when
+        // _requested_app_size / Project Settings is too small.  Do not allow
+        // that successful link to silently publish an over-budget V1 applet.
         QString nmExecutable = compilerPath();
         if (nmExecutable.endsWith(QStringLiteral("gcc"))) {
             nmExecutable.chop(3);
@@ -11037,6 +11051,7 @@ void MainWindow::handleCompilerFinished(int exitCode)
             nmExecutable.chop(7);
             nmExecutable += QStringLiteral("nm.exe");
         }
+        qint64 measuredRamBytes = -1;
         if (QFileInfo::exists(nmExecutable)) {
             QProcess nm;
             nm.start(nmExecutable, {QStringLiteral("-n"), m_pendingElfPath});
@@ -11046,48 +11061,178 @@ void MainWindow::handleCompilerFinished(int exitCode)
                 const QRegularExpression entry(
                     QStringLiteral(R"(^([0-9a-fA-F]+)\s+[A-Za-z]\s+(_appstart|__stack_end__)\s*$)"),
                     QRegularExpression::MultilineOption);
-                quint64 start = 0;
-                quint64 end = 0;
-                bool foundStart = false;
-                bool foundEnd = false;
+                quint64 begin = 0, finish = 0;
+                bool haveBegin = false, haveFinish = false;
                 auto matches = entry.globalMatch(symbols);
                 while (matches.hasNext()) {
-                    const QRegularExpressionMatch match = matches.next();
+                    const auto match = matches.next();
                     bool ok = false;
-                    const quint64 address = match.captured(1).toULongLong(&ok, 16);
+                    const quint64 addr = match.captured(1).toULongLong(&ok, 16);
                     if (!ok) continue;
                     if (match.captured(2) == QStringLiteral("_appstart")) {
-                        start = address;
-                        foundStart = true;
+                        begin = addr;
+                        haveBegin = true;
                     } else {
-                        end = address;
-                        foundEnd = true;
+                        finish = addr;
+                        haveFinish = true;
                     }
                 }
-                if (foundStart && foundEnd && end >= start) {
-                    // V2: the ELF includes reserved .stack, but the heap is an
-                    // additional uninitialised allocation appended by the packer.
-                    const qint64 used = qint64(end - start) +
-                        (m_currentBuildIsV2 ? qint64(m_v2HeapKb) * 1024 : 0);
-                    if (!m_linkerScriptPath.isEmpty()) {
-                        appendOutputLine(
-                            tr("Applet RAM used: %1 (including stack; custom linker controls the limit)")
-                                .arg(formattedFileSize(used)),
-                            OutputKind::Header);
+                if (haveBegin && haveFinish && finish >= begin)
+                    measuredRamBytes = qint64(finish - begin);
+            }
+        }
+        // Fall back to the ELF link map for V1.  The SDK compiler can emit a
+        // valid linker map even on machines where the separate nm program is
+        // missing.  In particular, never skip the budget check for that case.
+        if (measuredRamBytes < 0 && !m_currentBuildIsV2) {
+            QString mapPath = m_pendingElfPath;
+            if (mapPath.endsWith(QStringLiteral(".elf"), Qt::CaseInsensitive)) {
+                mapPath.chop(4);
+                mapPath += QStringLiteral(".map");
+            }
+            QFile mapFile(mapPath);
+            if (mapFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QString mapText = QString::fromLocal8Bit(mapFile.readAll());
+                const QRegularExpression entry(
+                    QStringLiteral(R"(^\s*0x([0-9a-fA-F]+)\s+(_appstart|__stack_end__)\s*=)"),
+                    QRegularExpression::MultilineOption);
+                quint64 begin = 0, finish = 0;
+                bool haveBegin = false, haveFinish = false;
+                auto matches = entry.globalMatch(mapText);
+                while (matches.hasNext()) {
+                    const auto match = matches.next();
+                    bool ok = false;
+                    const quint64 addr = match.captured(1).toULongLong(&ok, 16);
+                    if (!ok) continue;
+                    if (match.captured(2) == QStringLiteral("_appstart")) {
+                        begin = addr;
+                        haveBegin = true;
                     } else {
-                        const qint64 allowance = qint64(m_appSizeKb) * 1024;
-                        appendOutputLine(
-                            tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve%5)")
-                                .arg(formattedFileSize(used))
-                                .arg(formattedFileSize(allowance))
-                                .arg(allowance > 0 ? qRound(100.0 * used / allowance) : 0)
-                                .arg(formattedFileSize(qMax(qint64(0), allowance - used)))
-                                .arg(m_currentBuildIsV2 ? tr(" and bounded heap") : QString()),
-                            allowance > 0 && used * 100 >= allowance * 90
-                                ? OutputKind::Warning : OutputKind::Success);
+                        finish = addr;
+                        haveFinish = true;
                     }
+                }
+                if (haveBegin && haveFinish && finish >= begin)
+                    measuredRamBytes = qint64(finish - begin);
+            }
+        }
+        if (measuredRamBytes >= 0) {
+            const qint64 used = measuredRamBytes +
+                (m_currentBuildIsV2 ? qint64(m_v2HeapKb) * 1024 : 0);
+            if (!m_linkerScriptPath.isEmpty()) {
+                appendOutputLine(
+                    tr("Applet RAM used: %1 (including stack; custom linker controls the limit)")
+                        .arg(formattedFileSize(used)), OutputKind::Header);
+            } else {
+                const qint64 allowance = qint64(m_appSizeKb) * 1024;
+                appendOutputLine(
+                    tr("Applet RAM: %1 / %2 used (%3%); %4 free (includes stack reserve%5)")
+                        .arg(formattedFileSize(used))
+                        .arg(formattedFileSize(allowance))
+                        .arg(allowance > 0 ? qRound(100.0 * used / allowance) : 0)
+                        .arg(formattedFileSize(qMax(qint64(0), allowance - used)))
+                        .arg(m_currentBuildIsV2 ? tr(" and bounded heap") : QString()),
+                    allowance > 0 && used * 100 >= allowance * 90
+                        ? OutputKind::Warning : OutputKind::Success);
+
+                if (!m_currentBuildIsV2 && m_projectType == GameProjectType &&
+                    used > allowance) {
+                    // V1 game SDRAM: 6 MiB total, 128 KiB RAM disk at top,
+                    // and the project's MOD reserve before the applet.
+                    // The default game's linker enforces that *physical*
+                    // region, not the user's smaller planning allowance.
+                    const qint64 physicalCeilingKb = qMax<qint64>(0,
+                        6144 - 128 - qint64(m_modSizeKb));
+                    const qint64 minimumKb = (used + 1023) / 1024;
+                    // Keep at least 10% of the recommended budget free and
+                    // round to friendly 16 KiB increments.
+                    const qint64 headroomKb = (used * 10 + (9 * 1024 - 1)) / (9 * 1024);
+                    const qint64 recommendedKb = qMin(physicalCeilingKb,
+                        ((headroomKb + 15) / 16) * 16);
+                    appendOutputLine(
+                        tr("V1 GAME BUDGET EXCEEDED: %1 KB minimum; currently %2 KB. "
+                           "The ELF linked because the game linker allows remaining SDRAM, "
+                           "NOT because the chosen project budget was sufficient.")
+                            .arg(minimumKb).arg(m_appSizeKb), OutputKind::Error);
+                    if (recommendedKb < minimumKb || recommendedKb > 1024 * 1024) {
+                        QMessageBox::critical(this, tr("V1 game applet budget exceeded"),
+                            tr("The V1 applet needs %1 KB, but only %2 KB is available "
+                               "within the default game SDRAM layout after its MOD/RAM-disk reserves. "
+                               "Reduce usage or adjust the memory layout safely. "
+                               "No new .app will be generated.")
+                                .arg(minimumKb).arg(physicalCeilingKb));
+                        m_buildStep = BuildStep::None;
+                        finishCompileProgress();
+                        statusBar()->showMessage(tr("Compile stopped: applet RAM limit"));
+                        return;
+                    }
+                    QMessageBox dialog(this);
+                    dialog.setIcon(QMessageBox::Warning);
+                    dialog.setWindowTitle(tr("V1 game applet exceeds RAM budget"));
+                    dialog.setText(tr("This game needs %1 KB of applet RAM (including stack), "
+                                      "but Project Settings allows only %2 KB.")
+                                       .arg(minimumKb).arg(m_appSizeKb));
+                    dialog.setInformativeText(
+                        tr("Measured use: %1\nRecommended budget: %2 KB "
+                           "(at least 10% headroom)\n"
+                           "Default game SDRAM maximum after MOD/RAM-disk reserves: %3 KB\n\n"
+                           "The linker succeeded because the V1 game link region is larger "
+                           "than your selected budget. Increase the project budget and "
+                           "continue this build? Your old .app will not be replaced if you decline.")
+                            .arg(formattedFileSize(used))
+                            .arg(recommendedKb).arg(physicalCeilingKb));
+                    QPushButton *increase = dialog.addButton(
+                        tr("Increase to %1 KB and continue").arg(recommendedKb),
+                        QMessageBox::AcceptRole);
+                    dialog.addButton(tr("Keep %1 KB and stop build").arg(m_appSizeKb),
+                                     QMessageBox::RejectRole);
+                    dialog.exec();
+                    if (dialog.clickedButton() != increase) {
+                        appendOutputLine(tr("V1 build stopped: RAM budget increase declined. "
+                                            "Existing .app left untouched."), OutputKind::Warning);
+                        m_buildStep = BuildStep::None;
+                        finishCompileProgress();
+                        statusBar()->showMessage(tr("Compile stopped: RAM budget exceeded"));
+                        return;
+                    }
+                    const int previousKb = m_appSizeKb;
+                    m_appSizeKb = int(recommendedKb);
+                    QString scriptError;
+                    if (!updateProjectLinkerScript(&scriptError) ||
+                        !saveProjectFile(m_projectFilePath)) {
+                        m_appSizeKb = previousKb;
+                        updateProjectLinkerScript(nullptr);
+                        saveProjectFile(m_projectFilePath);
+                        appendOutputLine(tr("Could not save increased V1 applet allowance: %1. "
+                                            "No new .app generated.").arg(scriptError),
+                                         OutputKind::Error);
+                        m_buildStep = BuildStep::None;
+                        finishCompileProgress();
+                        statusBar()->showMessage(tr("Compile failed: budget update"));
+                        return;
+                    }
+                    appendOutputLine(tr("V1 applet budget increased to %1 KB in Project Settings. "
+                                        "Continuing linked build; game SDRAM origin unchanged.")
+                                         .arg(recommendedKb), OutputKind::Success);
+                    updateAppletMemoryPanel(this, false, m_appSizeKb,
+                        m_v2StackKb, m_v2HeapKb);
                 }
             }
+        } else if (!m_currentBuildIsV2 && m_projectType == GameProjectType &&
+                   m_linkerScriptPath.isEmpty()) {
+            // Fail closed: a missing nm tool is NOT permission to bypass
+            // the user-selected RAM budget, even though the linker succeeded.
+            appendOutputLine(tr("Cannot measure V1 applet RAM: neither ELF symbols "
+                                "nor linker map supplied _appstart / __stack_end__. "
+                                "No new .app will be generated."), OutputKind::Error);
+            QMessageBox::warning(this, tr("Cannot verify V1 applet RAM budget"),
+                tr("The game linked, but CoderGirl could not verify its RAM use "
+                   "against your configured budget. Check the toolchain and link map; "
+                   "the existing .app has not been replaced."));
+            m_buildStep = BuildStep::None;
+            finishCompileProgress();
+            statusBar()->showMessage(tr("Compile stopped: cannot verify RAM use"));
+            return;
         }
 
         appendOutputLine(tr("Generating .asm output..."), OutputKind::Header);

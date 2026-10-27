@@ -221,7 +221,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         const QString questAtlas=appearance.value(QStringLiteral("atlas")).toString();
         QString questPath;
         int questW=0,questH=0,questTile=std::clamp(appearance.value(QStringLiteral("tileSize")).toInt(8),4,32);
-        QStringList questCells,questFlips;
+        QStringList questCells,questFlips,questIcons,questIconFlips,questIconModes,questIconParts;
         if(!questAtlas.isEmpty()) {
             const QString clean=QDir::cleanPath(questAtlas);
             const QString absolute=QDir(projectRoot).filePath(clean);
@@ -252,7 +252,51 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 questCells<<QString::number(index);
                 questFlips<<QString::number(i<flips.size()?(flips[i].toInt()&12):0);
             }
+            const QJsonArray icons=appearance.value(QStringLiteral("iconCells")).toArray();
+            const QJsonArray iconFlips=appearance.value(QStringLiteral("iconFlips")).toArray();
+            const QJsonArray icon2x2=appearance.value(QStringLiteral("icon2x2")).toArray();
+            const QJsonArray iconParts=appearance.value(QStringLiteral("iconParts")).toArray();
+            for(int i=0;i<5;++i){
+                /* Retired Quest Title icon is never emitted or validated.
+                 * Keep its array index reserved for older journal JSON files. */
+                const int index=i==2?65535:(i<icons.size()?icons[i].toInt(65535):65535);
+                if(index!=65535 && (index<0 || index>=total)){
+                    if(error)*error=QStringLiteral("Journal icon tile %1 is outside the selected atlas").arg(i+1);
+                    return false;
+                }
+                questIcons<<QString::number(index);
+                questIconFlips<<QString::number(i<iconFlips.size()?(iconFlips[i].toInt()&12):0);
+                const bool composite=i!=2 && i<icon2x2.size() && icon2x2[i].toBool();
+                if(composite && questTile!=8){
+                    if(error)*error=QStringLiteral("Journal 2x2 icons require 8px atlas tiles (icon %1)").arg(i+1);
+                    return false;
+                }
+                questIconModes<<(composite?QStringLiteral("1"):QStringLiteral("0"));
+                const QJsonArray parts=i<iconParts.size()?iconParts[i].toArray():QJsonArray();
+                QStringList row;
+                for(int part=0;part<4;++part){
+                    const int tile=i==2?65535:(part<parts.size()?parts[part].toInt(65535):65535);
+                    if(tile!=65535 && (tile<0 || tile>=total)){
+                        if(error)*error=QStringLiteral("Journal icon %1 quadrant %2 is outside the selected atlas")
+                            .arg(i+1).arg(part+1);
+                        return false;
+                    }
+                    if(composite && tile==65535){
+                        if(error)*error=QStringLiteral("Journal 2x2 icon %1 needs all four tiles selected").arg(i+1);
+                        return false;
+                    }
+                    row<<QString::number(tile);
+                }
+                questIconParts<<QStringLiteral("{")+row.join(QLatin1Char(','))+QStringLiteral("}");
+            }
             questPath=clean;
+        }
+        if(questIcons.isEmpty()){
+            for(int i=0;i<5;++i){
+                questIcons<<QStringLiteral("65535");questIconFlips<<QStringLiteral("0");
+                questIconModes<<QStringLiteral("0");
+                questIconParts<<QStringLiteral("{65535,65535,65535,65535}");
+            }
         }
         fields.insert(QStringLiteral("HAS_QUEST_ATLAS"),questPath.isEmpty()?QStringLiteral("0"):QStringLiteral("1"));
         fields.insert(QStringLiteral("QUEST_ATLAS_PATH"),quoted(questPath));
@@ -261,6 +305,10 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         fields.insert(QStringLiteral("QUEST_ATLAS_TILE"),QString::number(questTile));
         fields.insert(QStringLiteral("QUEST_CELLS"),questCells.join(QLatin1Char(',')));
         fields.insert(QStringLiteral("QUEST_FLIPS"),questFlips.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("QUEST_ICON_CELLS"),questIcons.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("QUEST_ICON_FLIPS"),questIconFlips.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("QUEST_ICON_MODES"),questIconModes.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("QUEST_ICON_PARTS"),questIconParts.join(QLatin1Char(',')));
     }
     fields.insert(QStringLiteral("HAS_DROP_TILEMAP"),
         QFileInfo::exists(QDir(projectRoot).filePath(QStringLiteral("gamehelpers/gametilemap.h")))
@@ -415,11 +463,12 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
             .arg(where,spriteId);
         return false;
     };
-    QStringList questChoiceTokens;
+    QStringList questChoiceTokens,questNodeEnableIds;
     int nodeIndex = 0;
     for (const QJsonValue &v : nodes) {
         const QJsonObject o = v.toObject();
         const QJsonArray choices = o.value("choices").toArray();
+        questNodeEnableIds << quoted(o.value(QStringLiteral("enableQuestId")).toString());
         nodeOut << "    {" << quoted(o.value("speaker").toString().left(36)) << ","
                 << quoted(o.value("text").toString().left(512)) << ", {\n";
         for (int i=0; i<3; ++i) {
@@ -648,6 +697,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     }
     fields.insert(QStringLiteral("NODE_ROWS"), nodeRows.trimmed());
     fields.insert(QStringLiteral("STORY_NODE_COUNT"),QString::number(nodes.size()));
+    fields.insert(QStringLiteral("QUEST_NODE_ENABLE_IDS"),
+                  questNodeEnableIds.isEmpty()?QStringLiteral("0")
+                    :questNodeEnableIds.join(QStringLiteral(",\n    ")));
     fields.insert(QStringLiteral("QUEST_CHOICE_TOKENS"),
                   questChoiceTokens.isEmpty()?QStringLiteral("0")
                     :questChoiceTokens.join(QStringLiteral(",\n    ")));
@@ -892,7 +944,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("MAX_INVENTORY_SLOTS"),
         QStringLiteral("ITEM_USE_ROWS"),QStringLiteral("EXCHANGE_ROWS"),
         QStringLiteral("WRONG_REPEAT_ROWS"),QStringLiteral("WRONG_REPEAT_COUNT"),
-        QStringLiteral("NODE_ROWS"),QStringLiteral("QUEST_CHOICE_TOKENS"),
+        QStringLiteral("NODE_ROWS"),QStringLiteral("QUEST_NODE_ENABLE_IDS"),QStringLiteral("QUEST_CHOICE_TOKENS"),
         QStringLiteral("STORY_NODE_COUNT"),
         QStringLiteral("CHOICE_FLAGS"),QStringLiteral("NPC_ROWS"),
         QStringLiteral("NPC_CHOICE_ACTION_ROWS"),QStringLiteral("NPC_CHOICE_ACTION_COUNT"),
@@ -922,6 +974,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("QUEST_ATLAS_PATH"),QStringLiteral("QUEST_ATLAS_WIDTH"),
         QStringLiteral("QUEST_ATLAS_HEIGHT"),QStringLiteral("QUEST_ATLAS_TILE"),
         QStringLiteral("QUEST_CELLS"),QStringLiteral("QUEST_FLIPS"),
+        QStringLiteral("QUEST_ICON_CELLS"),QStringLiteral("QUEST_ICON_FLIPS"),
+        QStringLiteral("QUEST_ICON_MODES"),QStringLiteral("QUEST_ICON_PARTS"),
         QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
         QStringLiteral("DROP_HITBOX_W"),QStringLiteral("DROP_HITBOX_H")};
     const QStringList requiredH = {QStringLiteral("ITEM_COUNT"),QStringLiteral("NODE_COUNT"),

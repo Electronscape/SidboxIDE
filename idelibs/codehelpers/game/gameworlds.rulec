@@ -121,7 +121,7 @@ static const gameworlds_record_t worlds[] = {
 #define GAMEWORLDS_MAX_INVENTORY 64u
 /* Project-wide quest declarations generated from .codergirl/quests.json. */
 @IDE{QUEST_DATA}
-static uint8_t gw_quest_status[64]; /* 0 locked, 1 active, 2 complete, 3 excluded */
+static uint8_t gw_quest_status[64]; /* 0 hidden/locked, 1 active, 2 complete, 3 excluded, 4 offered but waiting prerequisite */
 static uint16_t gw_quest_step[64];
 static uint8_t gw_quest_tracked=255u, gw_quest_ready;
 static void gw_quest_refresh(void);
@@ -1193,7 +1193,10 @@ static void gw_quest_unlock(void)
         if (exclude>=0 && gw_quest_status[exclude]==2u) {
             gw_quest_status[i]=3u;continue;
         }
-        if (gw_quest_status[i]!=0u) continue;
+        if (gw_quest_status[i]!=0u && gw_quest_status[i]!=4u)continue;
+        /* Initially hidden quests must be explicitly offered by a dialogue.
+         * Status 4 retains the offer while a prerequisite is unfinished. */
+        if(gw_quest_status[i]==0u && gw_quest_defs[i].initially_hidden)continue;
         const int prerequisite=gw_quest_find(gw_quest_defs[i].requires);
         if (prerequisite<0 || gw_quest_status[prerequisite]==2u)
             gw_quest_status[i]=1u;
@@ -1232,6 +1235,27 @@ static void gw_quest_refresh(void)
     if (gw_quest_tracked==255u)
         for(uint16_t i=0;i<GW_QUEST_COUNT;++i)
             if(gw_quest_status[i]==1u) {gw_quest_tracked=(uint8_t)i;break;}
+}
+/* Triggered when the player REACHES an authored dialogue node. Repeated
+ * visits must not reset a completed or already accepted quest. */
+uint8_t gameworlds_quest_enable(const char *quest_id)
+{
+    const int index=gw_quest_find(quest_id);
+    if(index<0)return 0u;
+    gw_quest_refresh();
+    if(gw_quest_status[index]!=0u)return 0u;
+    gw_quest_status[index]=4u; /* Offered; prerequisite may remain incomplete. */
+    gw_quest_refresh();
+    return 1u;
+}
+uint8_t gameworlds_quest_visible(uint16_t i)
+{
+    /* Reading journal visibility never needs to rescan inventory each frame.
+     * Quest enable/advance and save/load already update the live status. */
+    if(i>=GW_QUEST_COUNT)return 0u;
+    if(!gw_quest_defs[i].initially_hidden)return 1u;
+    return gw_quest_status[i]==1u || gw_quest_status[i]==2u ||
+           gw_quest_status[i]==4u;
 }
 uint16_t gameworlds_quest_count(void) {return GW_QUEST_COUNT;}
 const char *gameworlds_quest_id(uint16_t i)
@@ -1685,7 +1709,7 @@ static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
             questData.count!=GW_QUEST_COUNT ||
             (questData.tracked!=255u && questData.tracked>=GW_QUEST_COUNT))return 0;
         for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
-            if(questData.status[i]>3u || questData.step[i]>gw_quest_defs[i].count ||
+            if(questData.status[i]>4u || questData.step[i]>gw_quest_defs[i].count ||
                (questData.status[i]==2u && questData.step[i]!=gw_quest_defs[i].count))return 0;
         }
     } else if (version!=1u) return 0;

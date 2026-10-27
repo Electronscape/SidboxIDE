@@ -1,0 +1,61 @@
+SIDBOX CoderGirl IDE Stage 5.166.16 - Logic Flow cleanup, group Z-order and Undo/Redo
+Date: 27 October 2026
+
+INSTALL
+1. Start from CoderGirl Stage 5.166.15.
+2. Extract the Stage 5.166.16 DROPIN ZIP into your IDE source directory,
+   preserving relative paths and allowing gamefloweditor.cpp and
+   splashscreenwidget.cpp to be replaced.
+3. Rebuild the IDE with Qt6. Splash should say Build: 5.166.16.271026.
+4. Open Game Flow Debugger. This change is IDE-only; the generated game and
+   main.c do NOT need rebuilding or Update ALL Worlds.
+
+CLEAN LAYOUT
+- Clicking Clean Layout first opens a Yes / Cancel confirmation (Cancel is default).
+- Yes repositions the visible and hidden worlds using the shortest route from
+  graph entry points, the actual sizes of ALL displayed cards, and separate
+  same-world connected components. Different worlds are placed in separate
+  regions; cross-world links do not dictate positioning.
+- Branches are ordered by connection to their parents to reduce wire crossings.
+- Expanded manual groups get their mini-graphs relaid out too. Existing group
+  membership, nesting, names, expansion state and game data are preserved,
+  but hand-arranged positions (including internal mini-card positions) change.
+- Cancel makes NO layout changes. Ctrl+Z immediately restores the prior layout.
+- Spread Left to Right uses the same geometry-aware outer placement, but leaves
+  saved manual mini-card positions inside expanded groups alone.
+
+GROUP BACKGROUNDS / STACKING
+- Group and nested-array frames now draw their OWN solid IDE-themed background,
+  rather than a separately positioned scene panel permanently behind all cards.
+- A selected/raised group will cover other groups and cards under it.
+- Mini cards and internal wires render above their containing frame; external
+  wires terminate at the visible container perimeter and remain behind cards.
+
+UNDO / REDO
+- Two new buttons: Undo and Redo.
+- Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo (subject to normal Qt platform map).
+- In-session history up to 80 layout edit snapshots: card/multi-card drags,
+  grouping/ungrouping, nested array moves, group renames, card/group expansion,
+  Snap 8px toggles, Clean Layout and Spread Left to Right.
+- Undo/Redo restores only the design-time flow diagram's layout. The per-world
+  camera (pan/zoom) remains independently saved. Closing the editor ends
+  the undo history; saved diagram positions persist in .sidbox-flow-layout.json.
+- Clicking on a card to raise its visual Z order is not itself an undoable edit;
+  Z order remains a visual-only scene property.
+
+SAFETY
+- gamefloweditor.cpp and splashscreenwidget.cpp are the ONLY production
+  source files changed. No .sbgm worlds, generated Adventure/game runtime,
+  game main.c, quest data, game settings or TFCard saves are modified.
+- The existing flow layout JSON format/version (5) remains compatible.
+- Qt6 IDE compile and on-screen behaviour MUST still be verified on Fedora.
+  This environment has no Qt6 development libraries.
+
+TESTED HERE
+- New Stage 5.166.16 source contracts and geometry model, including wide
+  expanded groups, tall cards, cycles and unrelated/cross-world links: PASS.
+  The geometry model exercises invariants independently; it is NOT compiled Qt.
+- Ten focused source/native regressions for quests, journal, TFCard save
+  selector, V1 budget guard, flow audit and newest RPG runtime: PASS.
+- Changed C++ source braces/parentheses balance sanity check: PASS.
+- Full Qt6 GUI build and physical SIDBOX test are not possible here.

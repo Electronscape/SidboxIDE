@@ -86,6 +86,8 @@ int16_t gameworlds_quest_tracked(void); /* -1 = none */
 uint8_t gameworlds_quest_track(const char *quest_id);
 uint8_t gameworlds_quest_event(const char *event_id);
 uint8_t gameworlds_quest_event_number(uint16_t event_id); /* Active world + numeric Adventure event */
+uint8_t gameworlds_quest_visible(uint16_t i); /* Hide undiscovered quest lines */
+uint8_t gameworlds_quest_enable(const char *quest_id); /* Offer initially hidden quest at dialogue node */
 uint8_t gameworlds_quest_dialogue_choice(const char *stable_choice_id); /* Auto IDs, active world */
 /* Safe inside callbacks: only queues a change. Does NOT unload anything. */
 uint8_t gameworlds_request(const char *name);

@@ -1,0 +1,32 @@
+SIDBOX / CoderGirl Stage 5.166.12 (27 October 2026)
+Native scroll glyphs in the Quest Journal, Inventory and Dialogue
+
+INSTALLATION
+1. Back up your working IDE source if desired.
+2. Extract CoderGirl-Stage5.166.12-271026-DROPIN.zip over Stage 5.166.11.
+3. Rebuild the CoderGirl IDE; splash should show Build: 5.166.12.271026.
+4. Run Update ALL Worlds / Update Game Project to refresh the Adventure runtime helper.
+5. Recompile and transfer the generated game to SIDBOX.
+6. Leave your manually maintained main.c unchanged.
+
+NEW BEHAVIOUR
+- The Quest Journal list displays native 0x1E up when there are earlier quests,
+  and native 0x1F down when more quests are below the visible list.
+  The right-hand glyph gutter reserves space so quest names/icons do not collide.
+- The Quest Journal description scroll arrows use the same native glyphs.
+- Inventory scrolling and dialogue-answer paging use 0x1E/0x1F instead of
+  ASCII '^'/'v' placeholders. All existing paging input remains unchanged.
+- Journal Appearance preview uses the native down glyph for its example list
+  and for long description overflow.
+
+UNCHANGED
+- Quest discovery, progress, tracking, persistence and save format
+- Dialogue choices, inventory items, atlas icons, 2x2 BOBs, HUD docking
+- User-maintained main.c and firmware API
+
+TESTS
+- New native journal scroll-edge regression (empty/short, start, middle, end)
+- Native quest-description, header, icons, inventory/touch and footer tests
+- Quest discovery and save/load regression tests
+- Generated runtime C syntax check against bundled SIDBOX SDK headers
+- No physical STM32H743 or full Qt6 GUI build performed in this environment.

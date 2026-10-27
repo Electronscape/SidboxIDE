@@ -44,5 +44,5 @@ else:
     raise AssertionError('Regression test failed to detect the 5.166.4 array overrun')
 
 assert_palette_bounds(source)
-assert 'Build: 5.166.5.271026' in (root / 'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.12.271026' in (root / 'splashscreenwidget.cpp').read_text()
 print('PASS Stage 5.166.5 JournalDesigner palette storage/control bounds')

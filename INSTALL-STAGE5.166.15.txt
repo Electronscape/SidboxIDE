@@ -1,0 +1,37 @@
+SIDBOX CoderGirl Stage 5.166.15 - V1 RAM budget meter and runtime checkpoint save-slot selector
+Date: 27 October 2026
+
+INSTALL
+1. Extract Stage 5.166.15 drop-in over Stage 5.166.14.
+2. Rebuild the Qt6 CoderGirl IDE; splash: Build: 5.166.15.271026.
+3. Open the V1 game project. In the Applet Memory panel, V1 now shows
+   Total, ELF, and Budget. Heap is hidden for V1. Budget replaces the
+   old Stack row and shows ELF reservation / Project Settings allowance.
+4. Use Update ALL Worlds / Update Game Project to regenerate the updated
+   Adventure runtime and World Items helpers. Recompile/transfer the game.
+5. Activate a Save Game Checkpoint in the game. The ten-slot chooser opens.
+   D-pad UP/DOWN moves within a column; LEFT/RIGHT changes column.
+   FIRE1 chooses the selected slot; FIRE2 cancels.
+   An occupied slot shows SAVED and requests another FIRE1 before overwriting.
+
+IMPORTANT
+- The checkpoint's existing slot property is now the initial highlighted
+  slot. The player may save to any of the ten existing TFCard save slots.
+- Checkpoints still need an Adventure runtime registered by the generated
+  game setup. The selector delegates to gameworlds_checkpoint_request() so
+  saving remains deferred to the frame-safe save handler.
+- The selector caches slot occupancy at opening, not every frame.
+- V1 Budget is linked/static RAM including BSS and stack reserve, not a
+  measurement of actual runtime stack/heap peak. ELF / Total remain visible.
+- The 5.166.14 over-budget warning and suggested budget increase are intact.
+- V2 memory display is unchanged.
+- No changes to hand-maintained main.c, quest progress, TFCard save format,
+  title screen load slots or file names.
+
+TESTED
+- Native C ten-slot selector test: selection, cancel, overwrite
+  confirmation and cached occupancy.
+- Rendered Adventure C syntax against SDK api headers.
+- Focused journal, quest, V1 budget and checkpoint regressions: 15 passed
+  before the broader run exceeded its execution window.
+- Full Qt6 GUI build and real STM32H743 testing unavailable in this environment.

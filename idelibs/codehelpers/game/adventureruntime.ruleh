@@ -68,6 +68,7 @@ typedef struct {
     uint8_t (*status)(uint16_t);
     int16_t (*tracked)(void);
     uint8_t (*track)(const char *);
+    uint8_t (*visible)(uint16_t); /* Optional: skip unrevealed quests */
 } game_adventure_quest_ui_t;
 void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source);
 /* Project-wide visual layout; colours are 8-bit SIDBOX palette indices. */
@@ -78,6 +79,11 @@ typedef struct {
     uint8_t outline_enabled,outline_colour;
 } game_adventure_quest_style_t;
 void game_adventure_quest_style(const game_adventure_quest_style_t *style);
+/* Each icon may be a native single tile, or a 2x2 mosaic of four 8px tiles.
+ * cells[5] remains for backward compatibility with saved appearance v1. */
+void game_adventure_quest_icons(const uint16_t cells[5],const uint8_t flips[5]);
+void game_adventure_quest_icon_composites(const uint8_t two_by_two[5],
+                                         const uint16_t cells[5][4]);
 /* Journal artwork is independent of dialogue nine-slice skin.
  * Invalid/missing atlas falls back to a solid palette-colour journal. */
 void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path,
@@ -88,9 +94,18 @@ void game_adventure_quest_skin_file(const uint8_t *asset_pixels,const char *path
 void game_adventure_quest_viewport(uint16_t top,uint16_t height);
 /* Reset scene CLUT tint before UI only; the next world frame restores weather. */
 void game_adventure_set_modal_fullbright(void (*callback)(void));
+/* In-game save checkpoint slot picker. Uses the existing deferred TFCard save
+ * request API, never writes from the contact callback. Ten slots, 0..9. */
+void game_adventure_save_slot_callbacks(uint8_t (*request)(uint8_t slot),
+                                        uint8_t (*exists)(uint8_t slot));
+uint8_t game_adventure_choose_save_slot(uint8_t preferred_slot);
+
 
 typedef void (*game_adventure_choice_signal_t)(uint16_t node, uint8_t answer);
 void game_adventure_set_choice_signal(game_adventure_choice_signal_t callback);
+/* Fires exactly on reaching a visible dialogue node, including the first one. */
+typedef void (*game_adventure_node_signal_t)(uint16_t node);
+void game_adventure_set_node_signal(game_adventure_node_signal_t callback);
 typedef struct {
     const char *label;
     const char *reply; /* Player's response above their head */
