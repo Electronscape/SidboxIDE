@@ -1,0 +1,56 @@
+CoderGirl IDE Stage 5.166.40.271026 | Experimental Visual Nodes editor, phase 1
+============================================================================
+
+Install full archive, or extract the hotfix OVER Stage 5.166.39 IDE sources.
+Rebuild the IDE. This is GUI-only: do NOT change main.c or the runtime rules.
+
+OPENING / CREATING YOUR GRAPH
+  1. Open world1.sbgm in Game Designer.
+  2. Click "Visual Nodes...". The new maximised window creates world1.vsgm
+     alongside world1.sbgm if it does not exist.
+  3. Alternatively right-click world1.sbgm in the project tree and select
+     "Open Visual Nodes (.vsgm)...". You can later double-click world1.vsgm
+     to open the editor directly. Project Explorer also discovers .vsgm files.
+
+FIRST VERSION'S SUPPORTED EDITING
+  * All existing non-decoration sprite Game Objects appear as draggable cards.
+  * Trigger cards have a GOLDEN output socket. Drag from its socket to a
+    target Game Object card, then choose Enable, Disable or Toggle.
+  * Right-click an existing coloured connection to edit/remove that action.
+  * Double-click an entry in the left-hand Game Object list to focus its card.
+  * Pan/zoom/fit, place cards, and save graph positions. A Close/Esc with
+    unsaved changes prompts to save/discard/cancel.
+  * Only changes to Trigger linked actions are written back into .sbgm.
+    All other Game Object properties remain editable in the traditional UI.
+  * Existing ordered actions outside this slice (e.g. NPC and remote links)
+    remain in the .sbgm and are preserved, but are not yet drawable/editable
+    as visual wires. The right-hand card inspector lists them.
+  * Linking other kinds of gameplay nodes (dialogue, conditions, quest, etc.)
+    is NOT implemented yet. This is the first functional expansion path.
+
+DATA OWNERSHIP AND PROTECTION
+  * world1.sbgm remains authoritative for game behaviour. world1.vsgm stores
+    graph positions and a read-friendly snapshot of the action links.
+  * On graph open, action links are imported from .sbgm, not trusted from
+    potentially stale .vsgm snapshots.
+  * Saving a changed Trigger writes an updated world1.sbgm using QSaveFile;
+    the previous world is copied to world1.sbgm.vsgm-backup first.
+  * An external change to the world or graph while the editor is open is
+    detected before writing. No forced overwrite.
+  * The Game Designer tab is saved before launching the graph and reloaded
+    after graph edits so its in-memory game objects don't overwrite changes.
+  * The original Logic Flow stays entirely unchanged AND read-only.
+  * Runtime rules, .map files, maingame.c.txt, generated C and main.c untouched.
+  * Regenerate Game Project only AFTER you change Trigger links and wish to
+    test them in V1. Merely moving cards requires no game regeneration.
+
+TESTING
+  * Source integration and actual game .sbgm schema consistency: PASS.
+  * Stage 5.166.36 title input latch, 5.166.38 pickup/new-game reset,
+    5.166.31 lambda and 5.166.37 rules refactor: PASS.
+  * Qt6 GUI: UNVERIFIED. Qt6 development package is not installed here,
+    and a full CMake Qt build could not run. Verify on your own machine.
+
+NOTE
+  This is opt-in and deliberately scoped, to protect the stable SIDBOX
+  gameplay system. Keep a copy of your .sbgm before experimenting.

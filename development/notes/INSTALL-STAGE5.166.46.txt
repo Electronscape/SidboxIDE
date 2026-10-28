@@ -1,0 +1,36 @@
+SIDBOX CoderGirl IDE — Stage 5.166.46.271026
+============================================
+
+Fix: Game Object Properties/Trigger "On success: dialogue" was incorrectly
+red/disabled unless a required inventory item was selected. Stage 5.166.43
+already made ordinary Trigger activations (touch and FIRE2) show dialogue, so
+the traditional property editor should allow this too.
+
+Changed:
+  gamedesigner.cpp: SidboxGameDesigner::configureGameObject()
+      - Success dialogue picker enabled for every Trigger, whether touch,
+        Require FIRE2 or inventory USE.
+      - Dialogue behaviour picker enabled once a dialogue is selected.
+      - Save Checkpoint without required item stays disabled, because the
+        existing generated checkpoint path does not dispatch its dialogue.
+      - Item-specific success reward, stat, wrong-item and sound options are
+        still restricted to inventory USE; no invalid controls unlocked.
+      - Updated dialogue tooltip for all supported activation paths.
+  splashscreenwidget.cpp: build 5.166.46.271026
+  development/tests/test_stage5166_46_trigger_success_dialogue_ui.py
+  development/tests/test_stage5166_45_node_catalog.py: version test now
+      accepts later releases instead of pinning to 5.166.45.
+
+Installation:
+  1. Apply the hotfix over Stage 5.166.45, or use the complete source archive.
+  2. Rebuild the IDE.
+  3. Open the Trigger Game Object Properties, tick Require FIRE2 (no required
+     inventory item), select On success: dialogue, save and reopen.
+  4. Check Visual Nodes still shows the same dialogue and linked actions.
+
+No regeneration of game worlds or game runtime is needed. No .sbgm/.vsgm
+format changes and no modifications to your hand-owned main.c.
+
+Validation: targeted source/schema checks and native runtime regressions.
+A full Qt6 GUI compilation is unavailable in this container; please confirm
+in the desktop IDE.

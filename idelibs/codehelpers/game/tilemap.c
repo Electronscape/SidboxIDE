@@ -5,6 +5,7 @@
 #include "tilemap.h"
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 /* One-player V1 platformer: CONTACT does not mean DEATH.
    Contact notifications leave physics running; only game code can mark a
@@ -914,6 +915,62 @@ uint8_t game_tilemap_actor_blocked(const game_tilemap_t *map,
         return 0;
     return (uint8_t)(touches_solid(map, x, y, width, height) ||
                      touches_slope_body(map, x, y, width, height));
+}
+
+/* STAGE 5.166.37: Shared Adventure item-drop collision.  Previously
+ * generated identically into every world's gameadventure.c (code bloat).
+ * Preserve the original pixel-by-pixel collision and one-way rules exactly.
+ * This code deliberately does not store a world/map pointer across frames. */
+/* V1 uses GCC; keep infrequent item-drop queries compact even when the
+ * main game is compiled with -Ofast. Clang builds use their default options. */
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Os")))
+#endif
+int32_t game_tilemap_drop_sweep(const game_tilemap_t *map,
+                                int32_t start_x,int32_t target_x,int32_t y)
+{
+    if (!map || !map->collision || !map->tile_size) return target_x;
+    const int32_t max_x=(int32_t)map->width*map->tile_size-16;
+    if (max_x<0) return INT32_MIN;
+    if (start_x<0) start_x=0;
+    if (start_x>max_x) start_x=max_x;
+    if (target_x<0) target_x=0;
+    if (target_x>max_x) target_x=max_x;
+    if (game_tilemap_actor_blocked(map,start_x,y,16u,16u)) return INT32_MIN;
+    const int32_t step=target_x>=start_x ? 1 : -1;
+    int32_t clear_x=start_x;
+    while (clear_x!=target_x) {
+        const int32_t next_x=clear_x+step;
+        if (game_tilemap_actor_blocked(map,next_x,y,16u,16u)) break;
+        clear_x=next_x;
+    }
+    return clear_x;
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Os")))
+#endif
+int32_t game_tilemap_drop_floor(const game_tilemap_t *map,
+                                int32_t x,int32_t old_y,int32_t next_y)
+{
+    if (!map || !map->collision || !map->tile_size) return old_y;
+    const int32_t tile=map->tile_size;
+    const int32_t map_bottom=(int32_t)map->height*tile;
+    for (int32_t y=old_y; y<=next_y; ++y) {
+        if (game_tilemap_actor_blocked(map,x,y,16u,16u))
+            return y==old_y ? y : y-1;
+        const int32_t feet=y+16;
+        if (feet>=0 && feet%tile==0) {
+            const int32_t ty=feet/tile;
+            const int32_t left=x<0 ? 0 : x/tile;
+            const int32_t right=(x+15)<0 ? -1 : (x+15)/tile;
+            for (int32_t tx=left; tx<=right; ++tx)
+                if (game_tile_at(map,tx,ty)==GAME_TILE_ONEWAY) return y;
+        }
+        /* Map boundary is a floor when an item has no solid surface. */
+        if (feet>=map_bottom) return y;
+    }
+    return INT32_MAX;
 }
 
 /* Find the first landing surface beneath the ENTIRE width of the player.

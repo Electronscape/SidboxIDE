@@ -544,17 +544,51 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     }
     const QJsonArray dialogueNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
     for (const Resource *r:platforms) {
-        if ((r->objectType!=QStringLiteral("trigger") &&
-             r->objectType!=QStringLiteral("save_checkpoint")) || r->interactItemName.isEmpty()) continue;
+        if (r->objectType!=QStringLiteral("trigger") &&
+            r->objectType!=QStringLiteral("save_checkpoint")) continue;
+        if (r->objectType==QStringLiteral("trigger") && r->toggleStateTargetId.isEmpty() &&
+            (!r->toggleTrueActions.isEmpty() || !r->toggleFalseActions.isEmpty())) {
+            if (error)*error=tr("Trigger '%1': TRUE/FALSE actions need a Read Toggle State source.").arg(r->name);
+            return false;
+        }
+        if (r->objectType==QStringLiteral("trigger") && !r->toggleStateTargetId.isEmpty()) {
+            // Runtime checks only live local Game Objects. Remote/NPC active
+            // flags have a separate representation, so do not silently guess.
+            if (!objectSlot.contains(r->toggleStateTargetId)) {
+                if (error) *error=tr("Trigger '%1': toggle-state condition must read a Game Object in the same world.").arg(r->name);
+                return false;
+            }
+            for (const bool yes:{true,false}) {
+                const QVector<Resource::LinkedAction> &links=yes?r->toggleTrueActions:r->toggleFalseActions;
+                if (links.size()>64) {
+                    if (error)*error=tr("Trigger '%1': too many TRUE/FALSE actions (max 64 per branch).").arg(r->name);
+                    return false;
+                }
+                for (const Resource::LinkedAction &link:links) {
+                    if (link.objectId.isEmpty() || !QStringList{QStringLiteral("enable"),QStringLiteral("disable"),
+                        QStringLiteral("toggle")}.contains(link.action)) {
+                        if (error)*error=tr("Trigger '%1': invalid TRUE/FALSE action.").arg(r->name);
+                        return false;
+                    }
+                }
+            }
+            if (r->toggleTrueDialogueNode < -1 || r->toggleTrueDialogueNode >= dialogueNodes.size() ||
+                r->toggleFalseDialogueNode < -1 || r->toggleFalseDialogueNode >= dialogueNodes.size()) {
+                if (error) *error=tr("Trigger '%1': TRUE/FALSE dialogue no longer exists.").arg(r->name);
+                return false;
+            }
+        }
         if(r->interactDialogueNode>=dialogueNodes.size() || r->interactDialogueNode < -1) {
             if(error) *error=tr("Trigger '%1': success dialogue node no longer exists. Select one in Game Object Properties.").arg(r->name);
             return false;
         }
-        if(r->interactWrongDialogueNode>=dialogueNodes.size() || r->interactWrongDialogueNode < -1) {
+        if (!r->interactItemName.isEmpty() &&
+            (r->interactWrongDialogueNode>=dialogueNodes.size() || r->interactWrongDialogueNode < -1)) {
             if(error) *error=tr("Trigger '%1': wrong-item dialogue node no longer exists. Select one in Game Object Properties.").arg(r->name);
             return false;
         }
-        if(!r->interactRewardItem.isEmpty() && !availableInteractionItems.contains(r->interactRewardItem)) {
+        if (!r->interactItemName.isEmpty() &&
+            !r->interactRewardItem.isEmpty() && !availableInteractionItems.contains(r->interactRewardItem)) {
             if(error) *error=tr("Trigger '%1': reward item '%2' is not defined in this world's Adventure Inventory.").arg(r->name,r->interactRewardItem);
             return false;
         }
@@ -1188,6 +1222,49 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 target.targetObjectId = link.objectId;
                 target.targetAction = link.action;
                 if (!targetAction(target, &action)) return false;
+            }
+            // Stage 5.166.43: ordinary touch/FIRE2 Triggers can now show
+            // Adventure dialogue as an action, not only inventory USE Triggers.
+            // Item-gated Triggers must continue to play their dialogue ONLY
+            // from cg_complete_item_interaction(), never twice on success.
+            if (!r.toggleStateTargetId.isEmpty() &&
+                (r.toggleTrueDialogueNode>=0 || r.toggleFalseDialogueNode>=0 ||
+                 !r.toggleTrueActions.isEmpty() || !r.toggleFalseActions.isEmpty())) {
+                // This is deliberately AFTER normal Trigger target actions;
+                // e.g. Toggle Lifty, then branch on Lifty's NEW state.
+                const QString slot=objectSlot.value(r.toggleStateTargetId);
+                if (!slot.isEmpty()) {
+                    action+=QStringLiteral("        if (%1.active) {\n").arg(slot);
+                    for (const Resource::LinkedAction &link:r.toggleTrueActions) {
+                        Resource target=r;
+                        target.targetObjectId=link.objectId;
+                        target.targetAction=link.action;
+                        if (!targetAction(target,&action))return false;
+                    }
+                    if (r.toggleTrueDialogueNode>=0)
+                        action+=QStringLiteral("            game_adventure_trigger_message(%1u);\n")
+                            .arg(r.toggleTrueDialogueNode);
+                    action+=QStringLiteral("        } else {\n");
+                    for (const Resource::LinkedAction &link:r.toggleFalseActions) {
+                        Resource target=r;
+                        target.targetObjectId=link.objectId;
+                        target.targetAction=link.action;
+                        if (!targetAction(target,&action))return false;
+                    }
+                    if (r.toggleFalseDialogueNode>=0)
+                        action+=QStringLiteral("            game_adventure_trigger_message(%1u);\n")
+                            .arg(r.toggleFalseDialogueNode);
+                    action+=QStringLiteral("        }\n");
+                }
+            }
+            if (r.interactItemName.isEmpty() && r.interactDialogueNode >= 0) {
+                const QString dialogueFunction=r.interactDialogueMode==QStringLiteral("single")
+                    ? QStringLiteral("game_adventure_trigger_message")
+                    : r.interactDialogueMode==QStringLiteral("sequence")
+                        ? QStringLiteral("game_adventure_trigger_sequence")
+                        : QStringLiteral("game_adventure_trigger_dialogue");
+                action+=QStringLiteral("        %1(%2u);\n")
+                    .arg(dialogueFunction).arg(r.interactDialogueNode);
             }
         }
         const bool stop = r.objectType == QStringLiteral("trigger") && r.triggerMusicAction == QStringLiteral("stop");

@@ -394,6 +394,22 @@ bool SidboxGameDesigner::loadDesign()
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
                          QStringLiteral("toggle")}.contains(r.targetAction))
             r.targetAction = QStringLiteral("none");
+        r.toggleStateTargetId = object.value(QStringLiteral("toggleStateTargetId")).toString();
+        r.toggleTrueDialogueNode = object.value(QStringLiteral("toggleTrueDialogueNode")).toInt(-1);
+        r.toggleFalseDialogueNode = object.value(QStringLiteral("toggleFalseDialogueNode")).toInt(-1);
+        for (const bool yes:{true,false}) {
+            const QJsonArray entries=object.value(yes?QStringLiteral("toggleTrueActions"):
+                QStringLiteral("toggleFalseActions")).toArray();
+            QVector<Resource::LinkedAction> &actions=yes?r.toggleTrueActions:r.toggleFalseActions;
+            for (const QJsonValue &entry:entries) {
+                const QJsonObject link=entry.toObject();
+                const QString target=link.value(QStringLiteral("objectId")).toString();
+                const QString action=link.value(QStringLiteral("action")).toString();
+                if (!target.isEmpty() && (action==QStringLiteral("enable") ||
+                    action==QStringLiteral("disable") || action==QStringLiteral("toggle")))
+                    actions.append({target,action});
+            }
+        }
         r.gotoWorldName = object.value(QStringLiteral("gotoWorldName")).toString();
         r.gotoPress = object.value(QStringLiteral("gotoPress")).toBool(false);
         r.gotoStartId = object.value(QStringLiteral("gotoStartId")).toString(QStringLiteral("default"));
@@ -911,6 +927,20 @@ bool SidboxGameDesigner::saveDesign()
                     links.append(QJsonObject{{QStringLiteral("objectId"),link.objectId},
                                               {QStringLiteral("action"),link.action}});
                 object.insert(QStringLiteral("triggerExtraActions"),links);
+            }
+            if (r.objectType==QStringLiteral("trigger")) {
+                object.insert(QStringLiteral("toggleStateTargetId"), r.toggleStateTargetId);
+                object.insert(QStringLiteral("toggleTrueDialogueNode"),r.toggleTrueDialogueNode);
+                object.insert(QStringLiteral("toggleFalseDialogueNode"),r.toggleFalseDialogueNode);
+                for (const bool yes:{true,false}) {
+                    QJsonArray links;
+                    const QVector<Resource::LinkedAction> &actions=yes?r.toggleTrueActions:r.toggleFalseActions;
+                    for (const Resource::LinkedAction &link:actions)
+                        links.append(QJsonObject{{QStringLiteral("objectId"),link.objectId},
+                                                 {QStringLiteral("action"),link.action}});
+                    object.insert(yes?QStringLiteral("toggleTrueActions"):
+                                      QStringLiteral("toggleFalseActions"),links);
+                }
             }
             object.insert(QStringLiteral("gotoWorldName"), r.gotoWorldName);
             object.insert(QStringLiteral("gotoPress"), r.gotoPress);

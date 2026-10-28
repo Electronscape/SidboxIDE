@@ -1,0 +1,37 @@
+SIDBOX CoderGirl IDE | Stage 5.166.42.271026
+Visual Nodes: reliable action removal + narrower object list
+
+Base: Stage 5.166.41.271026
+
+Changes in gamevisualnodes.cpp:
+- Wider (invisible) wire hit target and +/-10 screen-pixel right-click tolerance.
+- Parallel Trigger actions to the same object are fanned out, rather than
+  drawing one exactly on top of another.
+- Right-click a wire with several nearby actions displays individually named
+  actions, so Enable and Disable links cannot be confused.
+- Context actions have explicit operation tags: Remove NEVER falls through
+  to Set Enable on an unrecognised action.
+- Right-hand Trigger Connections list permits selecting any action and using
+  the Edit Action or Remove button, without hitting a wire at all.
+- Game Object list on left reduced from 245 to 175 starting pixels, with
+  maximum 220 pixels and wrapped explanatory note.
+- The existing .sbgm authority/backup/conflict checking, .vsgm layout, camera
+  restore and read-only Logic Flow editor remain unchanged.
+
+Install:
+1. Apply this hotfix on top of Stage 5.166.41 source (or use full archive).
+2. Rebuild the Qt6 IDE, check splash Build: 5.166.42.271026.
+3. Open world1.vsgm (maximised). Select Trigger connected twice to "lifty".
+4. In TRIGGER CONNECTIONS on the right, select and remove only one action.
+5. Save Graph + World; verify in Game Object Properties that the other
+   action remains unchanged. Reopen the graph and check it matches .sbgm.
+6. Test right-clicking a wire and using Remove Connection, and test zoom/pan.
+
+No V1 game rebuild or .map change needed to test the IDE behaviour.
+When you want the revised connections in the executable, regenerate the game.
+
+Testing:
+- Stage 5.166.40, 5.166.41, 5.166.42 source/schema checks.
+- Existing native regression tests (where available).
+- Full Qt6 GUI compilation and pointer interaction remain unverified here
+  because Qt6 development libraries are unavailable. Confirm on Linux IDE.

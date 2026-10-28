@@ -62,6 +62,7 @@ public:
     bool isModified() const;
     bool isValid() const;
     bool saveDesign();
+    bool reloadAfterVisualNodes() { return !m_dirty && loadDesign(); }
     bool tilemapBuildFilesMissing() const;
     bool exportTilemapForCompile();
     // Safe generated-only preflight (legacy/manual use; does not overwrite helpers).
@@ -186,6 +187,13 @@ private:
         // is the FIRST action; these follow it in the user's chosen order.
         struct LinkedAction { QString objectId; QString action; };
         QVector<LinkedAction> triggerExtraActions;
+        // Visual Nodes condition: read the active state of a local Game Object
+        // AFTER this Trigger's normal enable/disable/toggle actions execute.
+        // Each TRUE/FALSE output may show a separate existing Adventure dialogue.
+        QString toggleStateTargetId;
+        int toggleTrueDialogueNode = -1;
+        int toggleFalseDialogueNode = -1;
+        QVector<LinkedAction> toggleTrueActions, toggleFalseActions;
         QString gotoWorldName; // target world basename, not a path or tab index
         bool gotoPress = false; // false = walk into door; true = FIRE2 contact
         QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID

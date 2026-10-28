@@ -1,0 +1,17 @@
+SIDBOX CoderGirl IDE Stage 5.166.37 (27 Oct 2026)
+
+Apply this patch OVER Stage 5.166.36 IDE source. Rebuild the IDE.
+Expected splash: Build: 5.166.37.271026
+
+Then in the IDE open the game and run Update ALL Worlds / Update Game Project.
+VERIFY that gamehelpers/gametilemap.c AND gametilemap.h are refreshed from the
+updated SDK helper, AND each world's gameadventure.c is regenerated.
+These files must be from the same stage to resolve game_tilemap_drop_*.
+
+Do not overwrite your hand-owned main.c. No save/map file format changes.
+Existing V1 runtime, death/title and World Map fast path remain unchanged.
+
+A read-only project size audit is included:
+  python3 development/tools/audit_v1_project_size.py /path/to/game
+
+Details and limitations: development/notes/STAGE-5.166.37-RULES-SIZE-AUDIT.md

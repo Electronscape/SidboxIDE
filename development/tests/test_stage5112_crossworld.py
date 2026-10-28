@@ -34,7 +34,8 @@ def function(name):
     return impl[begin:end]
 set_active=function('gameworlditems_set_active')
 remote=function('gameworlditems_remote_action')
-reset=function('gameworlditems_remote_reset')
+# Old unit fixture has no reward variables; strip optional template-only block.
+reset=re.sub(r'(?ms)^@IDE_IF\{HAS_REWARDS\}\n.*?^@IDE_END\n','',function('gameworlditems_remote_reset'))
 apply=function('gameworlditems_apply_remote')
 source='''#include <stdint.h>
 #include <string.h>

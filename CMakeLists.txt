@@ -51,6 +51,8 @@ qt_add_executable(SidboxIDE
     gamehudeditor.h
     gamefloweditor.cpp
     gamefloweditor.h
+    gamevisualnodes.cpp
+    gamevisualnodes.h
     gamequesteditor.cpp
     gamequesteditor.h
     gamequestjournaleditor.cpp

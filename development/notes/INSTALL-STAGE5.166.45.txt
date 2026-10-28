@@ -1,0 +1,29 @@
+Stage 5.166.45.271026 - Visual Nodes On-Demand Canvas (IDE-only)
+
+Install the hotfix on top of Stage 5.166.44 or use the complete archive.
+Replace the matching files by their relative paths, rebuild the Qt IDE.
+No runtime regeneration, map deployment, or changes to game-owned main.c.
+
+Test:
+1. Open an .sbgm with unconnected Game Objects. Open .vsgm: no unrelated cards.
+2. Right-click empty canvas, double-click Triggers > a Trigger. It appears.
+3. Drag from the Trigger output to empty canvas. The compatible-node tree opens.
+4. Select Lifts > your lift: new card placed and linked as Enable.
+5. Right-click wire to choose Disable, or use right-side Edit Action.
+6. Save. Check real Trigger Game Object Properties in the existing editor.
+7. Delete/change action in conventional editor. Reopen .vsgm. Graph matches .sbgm.
+8. Add an Adventure NPC, verify it is offered in NPCs if available.
+9. Choose Show Dialogue when dropping from a Trigger: edit the purple card.
+10. Reopen an old Stage 5.166.44 .vsgm; card positions and camera retained.
+
+Authoritative files: .sbgm holds ALL runtime actions/dialogue references.
+.vsgm holds only presentation (positions, manually placed card IDs, camera,
+dialogue-card presence). It does not keep a second copy of action links.
+
+Unconnected objects NOT deliberately added by the user stay off the canvas.
+Explicitly placed unconnected cards remain while a flow is being authored.
+Deleting the last link hides imported, automatically displayed cards.
+
+The full Qt6 GUI build and mouse interaction have NOT been tested here,
+because Qt6 development libraries are unavailable in this environment.
+Run your local IDE compiler and save/round-trip tests before relying on it.

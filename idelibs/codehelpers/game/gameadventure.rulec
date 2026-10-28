@@ -14,64 +14,24 @@
 #include <limits.h>
 @IDE_IF{HAS_DROP_TILEMAP}
 #include "gametilemap.h"
-/* The entire item footprint must stay clear between the foot and drop.
-   One-way platforms are not horizontal walls; tilemap_actor_blocked already
-   uses the same solid/slope rules as moving players. */
+/* The identical tile collision algorithms live in the shared tilemap helper.
+ * World callbacks retain their signatures and resolve the ACTIVE world each
+ * time, so transitions, same-world reloads and SD maps keep their behaviour. */
 static int32_t gameadventure_drop_sweep(int32_t start_x,int32_t target_x,int32_t y)
 {
-    const game_tilemap_t *map=(const game_tilemap_t *)gameworlds_map();
-    if (!map || !map->collision || !map->tile_size) return target_x;
-    const int32_t max_x=(int32_t)map->width*map->tile_size-16;
-    if (max_x<0) return INT32_MIN;
-    if (start_x<0) start_x=0;
-    if (start_x>max_x) start_x=max_x;
-    if (target_x<0) target_x=0;
-    if (target_x>max_x) target_x=max_x;
-    if (game_tilemap_actor_blocked(map,start_x,y,16u,16u)) return INT32_MIN;
-    const int32_t step=target_x>=start_x ? 1 : -1;
-    int32_t clear_x=start_x;
-    while (clear_x!=target_x) {
-        const int32_t next_x=clear_x+step;
-        if (game_tilemap_actor_blocked(map,next_x,y,16u,16u)) break;
-        clear_x=next_x;
-    }
-    return clear_x;
+    return game_tilemap_drop_sweep((const game_tilemap_t *)gameworlds_map(),
+                                   start_x,target_x,y);
 }
-/* Query the SAME map/walls/slopes as the built-in tile player. One-way
-   platforms are added only when approached downward across their top. */
 static int32_t gameadventure_drop_floor(int32_t x,int32_t old_y,int32_t next_y)
 {
-    const game_tilemap_t *map=(const game_tilemap_t *)gameworlds_map();
-    if (!map || !map->collision || !map->tile_size) return old_y;
-    const int32_t tile=map->tile_size;
-    const int32_t map_bottom=(int32_t)map->height*tile;
-    for (int32_t y=old_y; y<=next_y; ++y) {
-        if (game_tilemap_actor_blocked(map,x,y,16u,16u))
-            return y==old_y ? y : y-1;
-        const int32_t feet=y+16;
-        if (feet>=0 && feet%tile==0) {
-            const int32_t ty=feet/tile;
-            const int32_t left=x<0 ? 0 : x/tile;
-            const int32_t right=(x+15)<0 ? -1 : (x+15)/tile;
-            for (int32_t tx=left; tx<=right; ++tx)
-                if (game_tile_at(map,tx,ty)==GAME_TILE_ONEWAY) return y;
-        }
-        /* The map boundary catches dropped items when no solid floor exists. */
-        if (feet>=map_bottom) return y;
-    }
-    return INT32_MAX;
+    return game_tilemap_drop_floor((const game_tilemap_t *)gameworlds_map(),
+                                   x,old_y,next_y);
 }
 @IDE_END
 @IDE_IF{HAS_SHARED_PLAYER}
 #include "gameplayer.h"
-/* Bound world physics exposes sprite origin, NOT collision rectangle. */
-static uint8_t gameadventure_live_sprite_origin(int32_t *x,int32_t *y)
-{ return gameworlds_player_sprite_origin(x,y); }
-/* Keep pickup collision in world hitbox coordinates, independently of the
-   foot anchor used for spawning and the player's map collision code. */
-static uint8_t gameadventure_live_pickup_rect(int32_t *x,int32_t *y,
-                                              uint16_t *w,uint16_t *h)
-{ return gameworlds_player_pickup_rect(x,y,w,h); }
+/* The world manager's live player queries have exactly the Adventure
+ * callback signatures: avoid per-world forwarding functions. */
 @IDE_END
 @IDE_IF{HAS_WORLD_OBJECTS}
 #include "gameworlditems.h"
@@ -234,6 +194,9 @@ static uint8_t cg_saved_story_choices[GAME_ADVENTURE_USED_CHOICE_BYTES];
 static uint8_t cg_saved_story_npcs[GAME_ADVENTURE_COMPLETED_NPC_BYTES];
 static uint8_t cg_saved_npc_visibility[GAME_ADVENTURE_NPC_VISIBILITY_BYTES];
 static uint8_t cg_saved_close_gifts[GAME_ADVENTURE_CLOSE_GIFT_BYTES];
+static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
+static uint8_t cg_saved_exchanges[GAME_ADVENTURE_EXCHANGE_SLOTS];
+static uint8_t cg_saved_wrong_repeats[GAME_ADVENTURE_EXCHANGE_SLOTS];
 static uint8_t cg_saved_story_valid;
 /* Remote NPC actions must NOT initialise unrelated story progress on a first visit.
  * Pending overrides are resolved against the saved state, or NPC defaults. */
@@ -259,14 +222,17 @@ void gameadventure_npc_remote_reset(void)
 {
     memset(cg_pending_npc_mask, 0, sizeof(cg_pending_npc_mask));
     memset(cg_pending_npc_state, 0, sizeof(cg_pending_npc_state));
-    /* gameworlds_shutdown() ends this session; a later Start must use
-       the world's defaults, not the preceding playthrough's story. */
+    /* Clear the payload as well as its validity marker. New Game is a
+     * genuinely blank session; a title Load Game imports its saved story. */
+    memset(cg_saved_story_choices, 0, sizeof(cg_saved_story_choices));
+    memset(cg_saved_story_npcs, 0, sizeof(cg_saved_story_npcs));
+    memset(cg_saved_npc_visibility, 0, sizeof(cg_saved_npc_visibility));
+    memset(cg_saved_close_gifts, 0, sizeof(cg_saved_close_gifts));
+    memset(cg_saved_world_drops, 0, sizeof(cg_saved_world_drops));
+    memset(cg_saved_exchanges, 0, sizeof(cg_saved_exchanges));
+    memset(cg_saved_wrong_repeats, 0, sizeof(cg_saved_wrong_repeats));
     cg_saved_story_valid = 0u;
 }
-static game_adventure_drop_t cg_saved_world_drops[GAME_ADVENTURE_MAX_DROPS];
-static uint8_t cg_saved_exchanges[GAME_ADVENTURE_EXCHANGE_SLOTS];
-static uint8_t cg_saved_wrong_repeats[GAME_ADVENTURE_EXCHANGE_SLOTS];
-
 /* Static per-world Adventure progress, excluding pointers and live renderer. */
 void gameadventure_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
 {
@@ -434,10 +400,10 @@ void gameadventure_setup(void)
     game_adventure_set_modal_fullbright(gameworlds_ui_full_brightness);
 
 @IDE_IF{HAS_SHARED_PLAYER}
-    game_adventure_set_drop_anchor(gameadventure_live_sprite_origin,
+    game_adventure_set_drop_anchor(gameworlds_player_sprite_origin,
         @IDE{DROP_FOOT_X}, @IDE{DROP_FOOT_Y},
         @IDE{DROP_HITBOX_W}u, @IDE{DROP_HITBOX_H}u);
-    game_adventure_set_pickup_rect(gameadventure_live_pickup_rect);
+    game_adventure_set_pickup_rect(gameworlds_player_pickup_rect);
 @IDE_END
 @IDE_IF{HAS_DROP_TILEMAP}
     game_adventure_set_drop_floor(gameadventure_drop_floor);

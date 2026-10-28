@@ -1,0 +1,34 @@
+Stage 5.166.56 - Visual Nodes Boolean placement and wiring
+============================================================
+Install the hotfix on top of Stage 5.166.55, or use the complete IDE
+source archive; rebuild the Qt IDE.
+
+Visual test (existing stopLift / Lifty case):
+1. Open your world's .vsgm. Confirm stopLift -> Lifty's Toggle action.
+2. Lifty now has a teal output socket on its right edge.
+3. Drag this socket onto empty canvas -> Logic -> Boolean (TRUE/FALSE).
+4. A teal wire must run from Lifty to the Boolean. The Boolean must NOT
+   show an independent state-source combo box.
+5. Drag TRUE/FALSE to existing Dialogue Actions or Game Objects. Check
+   that right-clicking wires still edits/removes connections normally.
+6. Save Graph + World. Close and reopen. Existing conditions should show
+   their teal wire sourced from their recorded Game Object, without
+   needing to create a second condition or migrate the .sbgm.
+7. Check Game Object Properties and verify that the same Trigger state
+   source and TRUE/FALSE action/dialogue definitions remain present.
+8. If the same Game Object has actions from multiple Triggers, adding a
+   Boolean from it should ask which Trigger event evaluates the branch.
+
+Technical note:
+The Boolean's condition remains a Trigger-owned field in .sbgm. It reads
+its source object's active state after the chosen Trigger's regular actions.
+This patch changes only gamevisualnodes.cpp and the splash version; it
+has no game-runtime or save/load changes.
+
+Regression tests:
+python development/tests/test_stage5166_56_boolean_object_output.py
+python development/tests/test_stage5166_54_toggle_branch_actions.py
+python development/tests/test_stage5166_55_visual_boolean_dialogues.py
+
+Qt6 build of the complete IDE was unavailable. The native C tests are not
+an acceptance test of GUI mouse handling; test the interface on desktop.

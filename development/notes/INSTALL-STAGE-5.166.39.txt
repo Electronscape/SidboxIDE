@@ -1,0 +1,16 @@
+SIDBOX CoderGirl IDE Stage 5.166.39.271026
+
+Game Object Properties checkbox geometry and dependency-colour consistency.
+
+Install: replace gamedesigner.cpp, ideglobaltheme.h, and splashscreenwidget.cpp
+in Stage 5.166.38. Rebuild the IDE. No project/world regeneration.
+
+- Colour-coded checkboxes now have identical inner padding for enabled/disabled.
+- Every checkbox in the Game Object Properties form spans both label+field
+  columns, so long Stompable Enemy labels cannot squash the checkbox frame.
+- Trigger / Switch / Save Checkpoint uses the same full-row geometry.
+- No data, game runtime, save/load, title, map, or generated C changes.
+
+Check both checked and unchecked checkboxes in Stompable Enemy and
+Trigger / Switch, in the current IDE theme. Native Qt GUI build and visual
+inspection still need confirmation on the user's Qt6 machine.

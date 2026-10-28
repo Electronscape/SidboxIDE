@@ -635,15 +635,47 @@ void gameworlditems_remote_action(uint16_t index, uint8_t state)
     cg_remote_active[index] = next;
     cg_remote_valid[index] = 1u;
 }
+/* A NEW GAME must forget *all* world-local progression, including the
+ * persistent-pickup bitset. Simply invalidating cg_world_snapshot_valid left
+ * collected items hidden when this world was entered again from the title.
+ * Load Game imports the saved arrays AFTER this reset, so saves still work. */
 void gameworlditems_remote_reset(void)
 {
     memset(cg_remote_valid,0,sizeof(cg_remote_valid));
+    memset(cg_remote_active,0,sizeof(cg_remote_active));
+    memset(cg_saved_objects,0,sizeof(cg_saved_objects));
+#if GAMEWORLDITEMS_PICKUP_COUNT > 0
+    memset(cg_saved_pickups,0,sizeof(cg_saved_pickups));
+    memset(cg_pickup_permanently_collected,0,sizeof(cg_pickup_permanently_collected));
+#endif
+@IDE_IF{HAS_REWARDS}
+    memset(cg_saved_reward_falling,0,sizeof(cg_saved_reward_falling));
+    memset(cg_saved_reward_x100,0,sizeof(cg_saved_reward_x100));
+    memset(cg_saved_reward_y100,0,sizeof(cg_saved_reward_y100));
+    memset(cg_saved_reward_vx100,0,sizeof(cg_saved_reward_vx100));
+    memset(cg_saved_reward_vy100,0,sizeof(cg_saved_reward_vy100));
+@IDE_END
     cg_world_snapshot_valid=0u;
 }
 @IDE_ELSE
 void gameworlditems_set_active(uint16_t index,uint8_t state) { (void)index; (void)state; }
 void gameworlditems_remote_action(uint16_t index,uint8_t state) { (void)index; (void)state; }
-void gameworlditems_remote_reset(void) {}
+/* Worlds with pickups but no managed platforms need the same reset. */
+void gameworlditems_remote_reset(void)
+{
+#if GAMEWORLDITEMS_PICKUP_COUNT > 0
+    memset(cg_saved_pickups,0,sizeof(cg_saved_pickups));
+    memset(cg_pickup_permanently_collected,0,sizeof(cg_pickup_permanently_collected));
+#endif
+@IDE_IF{HAS_REWARDS}
+    memset(cg_saved_reward_falling,0,sizeof(cg_saved_reward_falling));
+    memset(cg_saved_reward_x100,0,sizeof(cg_saved_reward_x100));
+    memset(cg_saved_reward_y100,0,sizeof(cg_saved_reward_y100));
+    memset(cg_saved_reward_vx100,0,sizeof(cg_saved_reward_vx100));
+    memset(cg_saved_reward_vy100,0,sizeof(cg_saved_reward_vy100));
+@IDE_END
+    cg_world_snapshot_valid=0u;
+}
 void gameworlditems_apply_remote(void) {}
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}

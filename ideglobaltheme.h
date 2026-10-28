@@ -425,15 +425,22 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
             border:1px solid @advGreenBorder; background-color:@chosen;
             color:@chosenText;
         }
+        /* Guard colours must never change checkbox geometry. The 16x16
+           indicator needs space on ALL sides, including in the narrower
+           Game Object Properties cards and when the guard is disabled. */
+        QCheckBox[adventureGuard="true"],
+        QRadioButton[adventureGuard="true"] {
+            padding:5px 8px; margin:0px; spacing:8px;
+            min-height:18px;
+        }
         QCheckBox[adventureGuard="true"]:enabled,
         QRadioButton[adventureGuard="true"]:enabled {
             border:1px solid @advGreenBorder; background-color:@advGreenBg;
-            padding:3px 4px;
         }
         QCheckBox[adventureGuard="true"]:disabled,
         QRadioButton[adventureGuard="true"]:disabled {
             border:1px solid @advRedBorder; background-color:@advRedBg;
-            color:@disabledText; padding:3px 4px;
+            color:@disabledText;
         }
         QGroupBox[adventureGuard="true"]:enabled {
             border:1px solid @advGreenBorder;

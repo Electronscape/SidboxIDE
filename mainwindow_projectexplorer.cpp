@@ -299,7 +299,7 @@ void MainWindow::addExistingProjectFile()
         this,
         tr("Add File"),
         baseDirectory,
-        tr("Project files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md *.sbui *.sbgm *.sbpi *.uis *.ppb *.pal *.act *.map *.png *.bmp *.jpg *.jpeg *.gif *.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
+        tr("Project files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md *.sbui *.sbgm *.vsgm *.sbpi *.uis *.ppb *.pal *.act *.map *.png *.bmp *.jpg *.jpeg *.gif *.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
            "Audio files (*.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
            "Source files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md);;All files (*)"));
 

@@ -1,0 +1,24 @@
+SIDBOX CoderGirl IDE Stage 5.166.44.271026
+Visual Nodes Phase 2A compilation hotfix
+
+Install:
+  1. Extract IDE-Stage-5.166.44-HOTFIX.tar.gz over Stage 5.166.43
+     source tree, preserving directory structure.
+  2. Rebuild the IDE. Splash screen should say Build: 5.166.44.271026.
+  3. Reopen your existing .vsgm and test selecting/creating a dialogue.
+
+Exact fix:
+  gamevisualnodes.cpp, GameVisualNodes / createDialogueCard(), in the
+  QComboBox::currentIndexChanged handler near the old line 681.
+  QVariant::toInt(bool *) DOES NOT accept a default int argument.
+  QJsonValue::toInt(int defaultValue) does.
+  The new code checks QVariant::isValid() before QVariant::toInt().
+
+  Existing -1 (None) and -2 (Create new dialogue) data values remain unchanged.
+  No changes to .sbgm, .vsgm, generated runtime rules, title, saves, or maps.
+  No game world regeneration or main.c changes needed.
+
+Testing:
+  The new Stage 5.166.44 C++17 API-signature regression passed, along
+  with Stage 5.166.40-43 source/schema checks. This environment has no
+  Qt6Widgets headers/libraries, so full Qt6 GUI compilation is NOT verified.

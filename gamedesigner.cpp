@@ -15,6 +15,7 @@
 #include "gameadventureeditor.h"
 #include "gamehudeditor.h"
 #include "gamefloweditor.h"
+#include "gamevisualnodes.h"
 #include "gamequesteditor.h"
 #include "gametitlescreeneditor.h"
 #include "gamepixarteditor.h"
@@ -3602,6 +3603,19 @@ void SidboxGameDesigner::buildUi()
     topActions->addWidget(flowButton);
     connect(flowButton, &QPushButton::clicked, this, [this] {
         openGameFlowEditor(this, QFileInfo(m_filePath).absolutePath(), m_theme);
+    });
+    auto *visualNodesButton = new QPushButton(tr("Visual Nodes..."), this);
+    visualNodesButton->setMaximumWidth(112);
+    visualNodesButton->setToolTip(tr("Create/open this world's .vsgm node graph in a maximised window. Drag Trigger actions onto Game Objects; the original Logic Flow remains read-only."));
+    topActions->addWidget(visualNodesButton);
+    connect(visualNodesButton, &QPushButton::clicked, this, [this] {
+        // Save pending traditional-editor edits before the external graph writes .sbgm.
+        if (m_dirty && !saveDesign()) return;
+        const QString graph = QFileInfo(m_filePath).absolutePath() + QLatin1Char('/') +
+                              QFileInfo(m_filePath).completeBaseName() + QStringLiteral(".vsgm");
+        const bool changed = openGameVisualNodes(this, graph, m_theme);
+        if (changed) loadDesign(); // Refresh the in-memory world after graph edits.
+        if (assetFilesChanged) assetFilesChanged(); // New .vsgm is discoverable.
     });
     auto *titleScreenButton = new QPushButton(tr("Title Screen..."), this);
     titleScreenButton->setToolTip(tr("Design an optional project-wide title/menu screen with menu actions such as Start Game, Load Game and Goto World."));
@@ -7527,6 +7541,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard collisionCard = makeCard(tr("Physics / Collision"));
     const PropertyCard collectCard = makeCard(tr("Collectable"));
     const PropertyCard linkedCard = makeCard(tr("Linked Object"));
+    const PropertyCard incomingBooleanCard = makeCard(tr("Triggers Reading This Object"));
     const PropertyCard triggerCard = makeCard(tr("Switch, Trigger & Save Checkpoint"));
     const PropertyCard liftCard = makeCard(tr("Moving Platform"));
     const PropertyCard conveyorCard = makeCard(tr("Conveyor"));
@@ -7754,9 +7769,9 @@ void SidboxGameDesigner::configureGameObject(int index)
             [&](bool) { pickupOptionsTouched = true; });
     pickupShowInventory->setToolTip(tr("Store this pickup in the shared backpack instead of applying a direct player-stat effect. CoderGirl creates the Adventure Inventory definition and offers to add it to Create / Edit Player → Inventory."));
     pickupShowHud->setToolTip(tr("Count collected objects of this type for the shared HUD. One pickup = one count; Pickup Value is still available for your own game rules."));
-    collectCard.form->addRow(QString(), pickupShowInventory);
-    collectCard.form->addRow(QString(), pickupShowHud);
-    collectCard.form->addRow(QString(), pickupPersistent);
+    collectCard.form->addRow(pickupShowInventory);
+    collectCard.form->addRow(pickupShowHud);
+    collectCard.form->addRow(pickupPersistent);
     auto *pickupStat = new GameComboBox(&dialog);
     pickupStat->addItem(tr("None (callback only)"), QStringLiteral("none"));
     pickupStat->addItem(tr("Player Health"), QStringLiteral("health"));
@@ -7802,7 +7817,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     form = generalCard.form;
     auto *initiallyActive = new QCheckBox(tr("Active when the level starts"), &dialog);
     initiallyActive->setChecked(old.objectInitiallyActive);
-    form->addRow(QString(), initiallyActive);
+    form->addRow(initiallyActive);
     // Collectables can explicitly start hidden. This reuses the established
     // initial-active flag, so no second conflicting visibility state is stored.
     auto *hiddenCollectable = new QCheckBox(tr("Hidden until activated / spawned"), &dialog);
@@ -7817,7 +7832,7 @@ void SidboxGameDesigner::configureGameObject(int index)
                                   "It can later be activated by a linked trigger or "
                                   "spawned by a Breakable or Stompable Enemy. Reward items are hidden "
                                   "automatically even when this option is off."));
-    collectCard.form->addRow(QString(), hiddenCollectable);
+    collectCard.form->addRow(hiddenCollectable);
     connect(hiddenCollectable, &QCheckBox::toggled, initiallyActive,
             [initiallyActive](bool hidden) { initiallyActive->setChecked(!hidden); });
     connect(initiallyActive, &QCheckBox::toggled, hiddenCollectable,
@@ -7827,7 +7842,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     behindTiles->setToolTip(tr("Draw this object's sprite or scenery particles BEFORE the tilemap. "
                               "Unchecked draws them after the regular tile pass. "
                               "Tiles explicitly marked for front overdraw remain in front."));
-    form->addRow(QString(), behindTiles);
+    form->addRow(behindTiles);
     form = particleCard.form;
     auto *particleInfo = new QLabel(tr(
         "Uses this placed sprite as a particle image. Spawn area starts at the object's X/Y. "
@@ -8201,7 +8216,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     triggerPress->setChecked(old.triggerPress);
     triggerPress->setToolTip(tr("Ordinary trigger: require FIRE2 while overlapping the switch; "
         "otherwise the trigger activates on touch."));
-    form->addRow(QString(), triggerPress);
+    form->addRow(triggerPress);
     auto *triggerDrop = new QCheckBox(tr("Activate when matching dropped item touches switch"), &dialog);
     triggerDrop->setChecked(old.triggerDrop);
     triggerDrop->setToolTip(tr("A DROPPED inventory item activates this Trigger as soon as its 16x16 icon overlaps the sensor, even during a fall into a well. "
@@ -8210,13 +8225,13 @@ void SidboxGameDesigner::configureGameObject(int index)
         "'Consume used / dropped item on success' also consumes the physical dropped item; "
         "otherwise it stays on the ground for pickup. FIRE2/USE remains available independently. "
         "Wrong dropped items do nothing and remain recoverable."));
-    form->addRow(QString(), triggerDrop);
+    form->addRow(triggerDrop);
     auto *triggerDropHint = new QLabel(&dialog);
     triggerDropHint->setWordWrap(true);
     form->addRow(QString(), triggerDropHint);
     auto *triggerOneShot = new QCheckBox(tr("Remove switch after activation (one-shot)"), &dialog);
     triggerOneShot->setChecked(old.triggerOneShot);
-    form->addRow(QString(), triggerOneShot);
+    form->addRow(triggerOneShot);
     auto *interactItem = new GameComboBox(&dialog);
     interactItem->addItem(tr("No required item (touch / FIRE2 activation)"), QString());
     for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
@@ -8238,12 +8253,221 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Interaction reach (px)"), interactRadius);
     auto *interactConsume = new QCheckBox(tr("Consume used / dropped item on success"), &dialog);
     interactConsume->setChecked(old.interactConsume);
-    form->addRow(QString(), interactConsume);
+    form->addRow(interactConsume);
     // Stage 5.95: use the same searchable folder tree as the Adventure
     // Editor. Keep the numeric node IDs exactly as before for export/saves.
     // These arrays live through dialog.exec(), as required by the picker.
     const QJsonArray interactionNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
     const QJsonArray interactionFolders=m_adventure.value(QStringLiteral("dialogueFolders")).toArray();
+
+    // Stage 5.166.58: the same Trigger-owned Boolean flow is editable here and
+    // in Visual Nodes. This view also shows Triggers which read the selected
+    // object's state. No duplicate on_enable/on_disable object callbacks.
+    struct BooleanEditor {
+        QString ownerId;
+        QComboBox *source = nullptr;
+        QComboBox *trueDialogue = nullptr;
+        QComboBox *falseDialogue = nullptr;
+        QTableWidget *trueActions = nullptr;
+        QTableWidget *falseActions = nullptr;
+    };
+    QVector<BooleanEditor> booleanEditors;
+    bool hasIncomingBoolean = false;
+    auto *booleanRows = new QWidget(&dialog);
+    auto *booleanLayout = new QVBoxLayout(booleanRows);
+    booleanLayout->setContentsMargins(0, 0, 0, 0);
+    booleanLayout->setSpacing(8);
+    triggerCard.form->addRow(booleanRows);
+    auto *incomingBooleanRows = new QWidget(&dialog);
+    auto *incomingBooleanLayout = new QVBoxLayout(incomingBooleanRows);
+    incomingBooleanLayout->setContentsMargins(0,0,0,0);
+    incomingBooleanLayout->setSpacing(8);
+    incomingBooleanCard.form->addRow(incomingBooleanRows);
+
+    const auto addBooleanActionRow = [this](QTableWidget *table,
+                                            const Resource::LinkedAction &link) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *target = new GameComboBox(table);
+        target->addItem(tr("Choose Game Object..."), QString());
+        QSet<QString> npcIds;
+        for (const QJsonValue &entry : m_adventure.value(QStringLiteral("npcs")).toArray())
+            npcIds.insert(entry.toObject().value(QStringLiteral("spriteId")).toString());
+        for (const Resource &candidate : m_resources) {
+            if (candidate.kind != QStringLiteral("sprite") ||
+                (candidate.objectType == QStringLiteral("decoration") && !npcIds.contains(candidate.id)) ||
+                candidate.objectType == QStringLiteral("collectable")) continue;
+            target->addItem(tr("%1 [%2]").arg(candidate.name, candidate.objectType),
+                            candidate.id);
+        }
+        // Keep unknown IDs so opening a design cannot silently erase links.
+        if (!link.objectId.isEmpty() && target->findData(link.objectId) < 0)
+            target->addItem(tr("Missing: %1").arg(link.objectId), link.objectId);
+        target->setCurrentIndex(qMax(0, target->findData(link.objectId)));
+        auto *action = new GameComboBox(table);
+        action->addItem(tr("Enable"), QStringLiteral("enable"));
+        action->addItem(tr("Disable"), QStringLiteral("disable"));
+        action->addItem(tr("Toggle"), QStringLiteral("toggle"));
+        if (action->findData(link.action) < 0)
+            action->addItem(tr("Unsupported: %1").arg(link.action), link.action);
+        action->setCurrentIndex(qMax(0, action->findData(link.action)));
+        table->setCellWidget(row, 0, target);
+        table->setCellWidget(row, 1, action);
+        table->setRowHeight(row, 32);
+        table->selectRow(row);
+    };
+    const auto booleanActionsFromTable = [](const QTableWidget *table) {
+        QVector<Resource::LinkedAction> actions;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            auto *target = qobject_cast<QComboBox *>(table->cellWidget(row, 0));
+            auto *action = qobject_cast<QComboBox *>(table->cellWidget(row, 1));
+            if (target && action && !target->currentData().toString().isEmpty())
+                actions.append({target->currentData().toString(),
+                                action->currentData().toString()});
+        }
+        return actions;
+    };
+    const auto buildBooleanRows = [&]() {
+        // Delete immediately, not deleteLater: stale combo boxes must not be
+        // included in the Save/Previous/Next draft comparison.
+        for (QVBoxLayout *layout : {booleanLayout, incomingBooleanLayout}) {
+            while (QLayoutItem *item = layout->takeAt(0)) {
+                delete item->widget();
+                delete item;
+            }
+        }
+        booleanEditors.clear();
+        hasIncomingBoolean = false;
+        for (const Resource &candidate : m_resources) {
+            if (candidate.kind != QStringLiteral("sprite") ||
+                (candidate.id != old.id &&
+                 (candidate.objectType != QStringLiteral("trigger") ||
+                  candidate.toggleStateTargetId != old.id))) continue;
+            const bool incoming = candidate.id != old.id;
+            hasIncomingBoolean |= incoming;
+            auto *group = new QGroupBox(incoming
+                ? tr("Trigger %1 reads this object's state").arg(candidate.name)
+                : tr("Boolean: %1").arg(candidate.name),
+                incoming ? incomingBooleanRows : booleanRows);
+            auto *form = new QFormLayout(group);
+            form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+            auto *hint = new QLabel(tr("Evaluated when this Trigger activates, AFTER its normal actions. "
+                "TRUE means the selected object is enabled; FALSE means disabled."), group);
+            hint->setWordWrap(true);
+            form->addRow(hint);
+            BooleanEditor editor;
+            editor.ownerId = candidate.id;
+            editor.source = new GameComboBox(group);
+            editor.source->addItem(tr("None (no Boolean condition)"), QString());
+            for (const Resource &target : m_resources)
+                if (target.kind == QStringLiteral("sprite") &&
+                    target.objectType != QStringLiteral("decoration") &&
+                    target.objectType != QStringLiteral("collectable"))
+                    editor.source->addItem(tr("%1 [%2]").arg(target.name,target.objectType),target.id);
+            if (!candidate.toggleStateTargetId.isEmpty() &&
+                editor.source->findData(candidate.toggleStateTargetId) < 0)
+                editor.source->addItem(tr("Missing: %1").arg(candidate.toggleStateTargetId),
+                                       candidate.toggleStateTargetId);
+            editor.source->setCurrentIndex(qMax(0,editor.source->findData(candidate.toggleStateTargetId)));
+            form->addRow(tr("Read enabled state of"), editor.source);
+            auto makeDialogue = [&](int id) -> QComboBox * {
+                auto *combo = createGameDialogueTreeCombo(&dialog, &interactionNodes,
+                                                            &interactionFolders);
+                combo->addItem(tr("None (no message)"), -1);
+                for (int i = 0; i < interactionNodes.size(); ++i) {
+                    const QJsonObject node = interactionNodes.at(i).toObject();
+                    combo->addItem(tr("%1: %2 — %3").arg(i)
+                        .arg(node.value(QStringLiteral("speaker")).toString().left(22),
+                             node.value(QStringLiteral("text")).toString().left(38)), i);
+                }
+                if (id >= 0 && combo->findData(id) < 0)
+                    combo->addItem(tr("Missing dialogue #%1").arg(id), id);
+                combo->setCurrentIndex(qMax(0, combo->findData(id)));
+                return combo;
+            };
+            editor.trueDialogue = makeDialogue(candidate.toggleTrueDialogueNode);
+            editor.falseDialogue = makeDialogue(candidate.toggleFalseDialogueNode);
+            form->addRow(tr("TRUE / Enabled: dialogue"), editor.trueDialogue);
+            form->addRow(tr("FALSE / Disabled: dialogue"), editor.falseDialogue);
+            for (bool yes : {true, false}) {
+                auto *table = new QTableWidget(0, 2, group);
+                table->setHorizontalHeaderLabels({tr("Game Object"),tr("Action")});
+                table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+                table->verticalHeader()->hide();
+                table->setSelectionBehavior(QAbstractItemView::SelectRows);
+                table->setSelectionMode(QAbstractItemView::SingleSelection);
+                table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                table->setMinimumHeight(112);
+                table->setMaximumHeight(150);
+                for (const Resource::LinkedAction &action :
+                     (yes ? candidate.toggleTrueActions : candidate.toggleFalseActions))
+                    addBooleanActionRow(table, action);
+                if (yes) editor.trueActions = table; else editor.falseActions = table;
+                form->addRow(yes ? tr("TRUE actions (in order)") :
+                                   tr("FALSE actions (in order)"), table);
+                auto *controls = new QWidget(group);
+                auto *buttons = new QHBoxLayout(controls);
+                buttons->setContentsMargins(0,0,0,0);
+                auto *add = new QPushButton(tr("+ Add"), controls);
+                auto *remove = new QPushButton(tr("Remove"), controls);
+                auto *up = new QPushButton(tr("Up"), controls);
+                auto *down = new QPushButton(tr("Down"), controls);
+                buttons->addWidget(add);
+                buttons->addWidget(remove);
+                buttons->addWidget(up);
+                buttons->addWidget(down);
+                form->addRow(controls);
+                connect(add, &QPushButton::clicked, group, [=]() {
+                    if (table->rowCount() >= 64) {
+                        QMessageBox::information(group,tr("Boolean actions"),
+                            tr("Maximum 64 actions on each branch.")); return;
+                    }
+                    addBooleanActionRow(table, {QString(),QStringLiteral("enable")});
+                });
+                connect(remove, &QPushButton::clicked, group, [table]() {
+                    const int row = table->currentRow();
+                    if (row >= 0) table->removeRow(row);
+                });
+                const auto move = [=](int offset) {
+                    const int row=table->currentRow();
+                    const int other=row+offset;
+                    if (row<0 || other<0 || other>=table->rowCount()) return;
+                    auto *a=qobject_cast<QComboBox *>(table->cellWidget(row,0));
+                    auto *b=qobject_cast<QComboBox *>(table->cellWidget(row,1));
+                    auto *c=qobject_cast<QComboBox *>(table->cellWidget(other,0));
+                    auto *d=qobject_cast<QComboBox *>(table->cellWidget(other,1));
+                    if (!a || !b || !c || !d) return;
+                    const QVariant target=a->currentData(), action=b->currentData();
+                    const auto selectValue = [](QComboBox *box,const QVariant &value) {
+                        int index = box->findData(value);
+                        if (index < 0) {
+                            box->addItem(QObject::tr("Missing: %1").arg(value.toString()), value);
+                            index = box->findData(value);
+                        }
+                        box->setCurrentIndex(index);
+                    };
+                    selectValue(a,c->currentData());
+                    selectValue(b,d->currentData());
+                    selectValue(c,target);
+                    selectValue(d,action);
+                    table->selectRow(other);
+                };
+                connect(up, &QPushButton::clicked, group, [move]() { move(-1); });
+                connect(down, &QPushButton::clicked, group, [move]() { move(1); });
+            }
+            const auto refresh = [source=editor.source, group]() {
+                const bool selected = !source->currentData().toString().isEmpty();
+                group->setToolTip(selected ? QString() : QObject::tr(
+                    "Choose a state-source object to enable this Boolean in the runtime."));
+            };
+            connect(editor.source,qOverload<int>(&QComboBox::currentIndexChanged),
+                    group,[refresh](int){ refresh(); });
+            refresh();
+            booleanEditors.append(editor);
+            (incoming ? incomingBooleanLayout : booleanLayout)->addWidget(group);
+        }
+    };
+    buildBooleanRows();
     auto *interactDialogue = createGameDialogueTreeCombo(
         &dialog, &interactionNodes, &interactionFolders);
     interactDialogue->addItem(tr("None (no dialogue)"), -1);
@@ -8257,7 +8481,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         interactDialogue->addItem(tr("Missing dialogue node %1").arg(old.interactDialogueNode),old.interactDialogueNode);
     interactDialogue->setCurrentIndex(qMax(0,interactDialogue->findData(old.interactDialogueNode)));
     interactDialogue->setToolTip(tr("Choose an existing Adventure dialogue using its searchable folder tree. "
-        "The selected dialogue runs after a successful USE, including its choices and quest actions."));
+        "For a Trigger, it runs when the switch activates (touch, FIRE2 or successful inventory USE). "
+        "Save Checkpoints support success dialogue when a required inventory item is used."));
     form->addRow(tr("On success: dialogue"),interactDialogue);
     auto *interactDialogueMode = new GameComboBox(&dialog);
     interactDialogueMode->addItem(tr("Single message (one node, no actions)"),
@@ -8277,10 +8502,15 @@ void SidboxGameDesigner::configureGameObject(int index)
     interactDialogueHint->setWordWrap(true);
     form->addRow(QString(),interactDialogueHint);
     const auto refreshDialogueHint = [=]() {
-        interactDialogueMode->setEnabled((type->currentData().toString()==QStringLiteral("trigger") ||
-             type->currentData().toString()==QStringLiteral("save_checkpoint")) &&
-            !interactItem->currentData().toString().isEmpty() &&
-            interactDialogue->currentData().toInt()>=0);
+        // Stage 5.166.46: plain touch/FIRE2 Triggers support success
+        // dialogue without an inventory item (Visual Nodes Phase 2A).
+        // Checkpoints still use the item-interaction success path only.
+        const QString behaviour = type->currentData().toString();
+        const bool canShowSuccessDialogue = behaviour == QStringLiteral("trigger") ||
+            (behaviour == QStringLiteral("save_checkpoint") &&
+             !interactItem->currentData().toString().isEmpty());
+        interactDialogueMode->setEnabled(canShowSuccessDialogue &&
+            interactDialogue->currentData().toInt() >= 0);
         const int id=interactDialogue->currentData().toInt();
         if(id<0 || id>=interactionNodes.size()) {
             interactDialogueHint->setText(tr("No dialogue on success."));return;
@@ -8528,7 +8758,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     collectOnce->setChecked(old.respawnFrames == 0);
     collectOnce->setToolTip(tr("When collected, it stays gone until the level or game restarts. "
         "Untick to set a respawn delay in 50 FPS game frames."));
-    form->addRow(QString(),collectOnce);
+    form->addRow(collectOnce);
     form->addRow(tr("Respawn frames"), quickValue(respawn));
     connect(collectOnce,&QCheckBox::toggled,&dialog,[&](bool oneTime){
         if(!oneTime && respawn->value()==0)respawn->setValue(250);
@@ -8560,7 +8790,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     springTouch->setToolTip(tr("Off: spring launches only when the player lands on its top. "
                                  "On: entering the spring hitbox from above, below or either side "
                                  "launches the player. Fires once per contact; leave it to rearm."));
-    form->addRow(QString(), springTouch);
+    form->addRow(springTouch);
     auto *springSlide = new QCheckBox(tr("Slidy kickback (inertia + friction)"), &dialog);
     springSlide->setChecked(old.springSlide);
     springSlide->setToolTip(tr("Off: classic sideways kick stays at full speed until landing. "
@@ -8570,13 +8800,13 @@ void SidboxGameDesigner::configureGameObject(int index)
                                "In user-owned main.c, also bind "
                                "world_player.spring_force_vx100 to player_physics.force_vx100. "
                                "Without this binding, legacy 6%/14% spring drag remains."));
-    form->addRow(QString(), springSlide);
+    form->addRow(springSlide);
     auto *springJumpBoost = new QCheckBox(tr("Combine jump + spring launch (extra boost)"), &dialog);
     springJumpBoost->setChecked(old.springJumpBoost);
     springJumpBoost->setToolTip(tr("Off: spring launch strength alone. On: a newly pressed Jump "
                                "on contact adds the player's jump speed. "
                                "Requires the optional physics jump bindings."));
-    form->addRow(QString(), springJumpBoost);
+    form->addRow(springJumpBoost);
 
     // Each placed Breakable has an independent hit counter at runtime.
     form = breakCard.form;
@@ -8587,12 +8817,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     breakTouch->setChecked(old.breakTouch);
     breakTouch->setToolTip(tr("Off: count landings on the top only. On: touching from any side counts; "
                                "leave the object before another touch can count."));
-    form->addRow(QString(), breakTouch);
+    form->addRow(breakTouch);
     auto *breakFromBelow = new QCheckBox(tr("Break by jumping into underside (head-butt)"), &dialog);
     breakFromBelow->setChecked(old.breakFromBelow);
     breakFromBelow->setToolTip(tr("Only an intentional upward jump against the bottom counts as a hit. "
                                   "The block still supports standing on its top, but won't break from above."));
-    form->addRow(QString(), breakFromBelow);
+    form->addRow(breakFromBelow);
     auto *breakReward = new GameComboBox(&dialog);
     breakReward->addItem(tr("None — no reward"), QString());
     for (const Resource &candidate : m_resources) {
@@ -8610,7 +8840,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     breakRewardImpulse->setChecked(old.breakRewardImpulse);
     breakRewardImpulse->setToolTip(tr("Off: prize drops vertically as before. On: launch it in the "
                                     "chosen X/Y direction, then let gravity pull it onto the ground."));
-    form->addRow(QString(), breakRewardImpulse);
+    form->addRow(breakRewardImpulse);
     auto *breakRewardVx = spin(-20, 20, old.breakRewardVx);
     auto *breakRewardVy = spin(-20, 20, old.breakRewardVy);
     breakRewardVx->setToolTip(tr("Initial horizontal momentum in px/frame. Negative = left, positive = right."));
@@ -8621,7 +8851,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     breakBounce->setChecked(old.breakBounce);
     breakBounce->setToolTip(tr("When landing from above, launch the player on each hit, "
                                 "including the final break. Has no effect in touch mode."));
-    form->addRow(QString(), breakBounce);
+    form->addRow(breakBounce);
     auto *breakStrength = spin(1, 100, old.breakStrength);
     form->addRow(tr("Bounce upward"), quickValue(breakStrength));
     auto *breakLaunchX = spin(-40, 40, old.breakLaunchX);
@@ -8654,6 +8884,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(breakReward, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateBreakControls](int) { updateBreakControls(); });
     updateBreakControls();
+    // Game Object checkbox rows span both QFormLayout columns. In the
+    // Stompable Enemy card, wide field labels used to shrink coloured
+    // dependency boxes and crowd their 16x16 indicators/text. Keeping
+    // each checkbox on a spanning row matches Trigger / Save Checkpoint.
     // A stompable enemy uses the well-tested breakable multi-hit + bounce path.
     // This separate card deliberately exposes only enemy-relevant properties.
     form = enemyCard.form;
@@ -8681,7 +8915,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     // Disable the slider AND the numeric spin box together, not just the box.
     QWidget *enemyRewardXField = quickValue(enemyRewardVx);
     QWidget *enemyRewardYField = quickValue(enemyRewardVy);
-    form->addRow(QString(), enemyRewardImpulse);
+    form->addRow(enemyRewardImpulse);
     form->addRow(tr("Reward speed X (px/frame)"), enemyRewardXField);
     form->addRow(tr("Reward speed Y (px/frame)"), enemyRewardYField);
     const auto updateEnemyRewardControls = [enemyReward, enemyRewardImpulse,
@@ -8735,14 +8969,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     enemyStompW->setToolTip(tr("Width of the vulnerable zone. Zero automatically uses body width."));
     enemyStompH->setToolTip(tr("Green vulnerable box height, for downward stomps OR deliberate upward head-butts."));
     form->addRow(tr("Hits before enemy dies"), quickValue(enemyHits));
-    form->addRow(QString(), enemyBounce);
+    form->addRow(enemyBounce);
     form->addRow(tr("Top-hit rebound (upward)"), quickValue(enemyBounceY));
-    form->addRow(QString(), enemyStompSideKick);
+    form->addRow(enemyStompSideKick);
     form->addRow(tr("Optional sideways kick X"), quickValue(enemyBounceX));
     form->addRow(tr("Green weak spot can be hit"), enemyAttackDirection);
     form->addRow(new QLabel(tr("From BELOW: the hit stops the player's ascent; with rebound ON, "
                                 "Kim recoils DOWN to separate from the enemy."), &dialog));
-    form->addRow(QString(), enemyHurt);
+    form->addRow(enemyHurt);
     enemyDamage->hide(); // Shared Hazard/Murder damage card owns the single damage setting.
     form->addRow(new QLabel(tr("DEATH ANIMATION — plays once, then disappears"), &dialog));
     // Keep numeric entry for exact edits, but make visual selection the easy path.
@@ -8787,10 +9021,10 @@ void SidboxGameDesigner::configureGameObject(int index)
                                   "Lower = resists steeper slopes; higher = climbs steeper terrain. "
                                   "A wall taller than this makes the enemy turn around."));
     enemyRoamSpeed->setToolTip(tr("Pixels moved per 50 Hz game frame. Start with 1."));
-    form->addRow(QString(), enemyRoam);
+    form->addRow(enemyRoam);
     form->addRow(tr("Patrol speed (px/frame)"), quickValue(enemyRoamSpeed));
     form->addRow(tr("Slope climb / descent (px)"), quickValue(enemyStepHeight));
-    form->addRow(QString(), enemyRoamLeft);
+    form->addRow(enemyRoamLeft);
     auto updateEnemyRoam = [=]() {
         const bool enabled = type->currentData().toString() == QStringLiteral("enemy") &&
             enemyRoam->isChecked();
@@ -8904,11 +9138,11 @@ void SidboxGameDesigner::configureGameObject(int index)
     deathNote->setToolTip(tr("Optional Defeat Screen description for a fatal Murder Object / Enemy Health hit, "
                              "or when a Hazard Zone callback kills the player. Blank uses the default description."));
     deathNoteCard.form->addRow(tr("Death note"),deathNote);
-    form->addRow(QString(), hazardKick);
+    form->addRow(hazardKick);
     form->addRow(tr("Knockback X"), quickValue(hazardKickX));
     form->addRow(tr("Knockback Y"), quickValue(hazardKickY));
-    form->addRow(QString(), hazardHurtAnim);
-    form->addRow(QString(), hazardFlash);
+    form->addRow(hazardHurtAnim);
+    form->addRow(hazardFlash);
     form->addRow(tr("Flash CLUT colour"), hazardColour);
     form->addRow(tr("Number of flashes"), quickValue(hazardFlashes));
     form->addRow(tr("Frames between flashes"), quickValue(hazardFlashFrames));
@@ -8954,7 +9188,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Spline start delay"), quickValue(splineDelay));
     auto *animated = new QCheckBox(tr("Animate sprite frames"), &dialog);
     animated->setChecked(old.objectAnimated);
-    form->addRow(QString(), animated);
+    form->addRow(animated);
     auto *objectFlipX = new QCheckBox(tr("Flip X"), &dialog);
     auto *objectFlipY = new QCheckBox(tr("Flip Y"), &dialog);
     objectFlipX->setChecked(old.objectFlipX);
@@ -9007,12 +9241,12 @@ void SidboxGameDesigner::configureGameObject(int index)
         "between fade steps; maximum 32,656 frames (~10 min 53 s)."));
     fadePingpong->setToolTip(tr("Checked: low to high to low, repeating without duplicate end frames. "
                                "Unchecked: low to high, then jump back to low and repeat."));
-    form->addRow(QString(), fadeAnimate);
+    form->addRow(fadeAnimate);
     form->addRow(tr("Lowest fade"), quickValue(fadeLow));
     form->addRow(tr("Highest fade"), quickValue(fadeHigh));
     form->addRow(tr("Fade step"), quickValue(fadeStep));
     form->addRow(tr("Frames per fade step"), quickValue(fadeDelay));
-    form->addRow(QString(), fadePingpong);
+    form->addRow(fadePingpong);
     const auto refreshFadeControls = [=]() {
         const bool enabled = fadeAnimate->isChecked();
         for (QWidget *w : {static_cast<QWidget *>(fadeLow), static_cast<QWidget *>(fadeHigh),
@@ -9212,7 +9446,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     propertiesLayout->setContentsMargins(2, 2, 4, 2);
     propertiesLayout->setSpacing(7);
     for (const PropertyCard &card : {generalCard, visualCard, animationCard, collisionCard,
-         collectCard, linkedCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
+         collectCard, linkedCard, incomingBooleanCard, triggerCard, liftCard, conveyorCard, springCard, breakCard,
          enemyCard, particleCard, gotoCard, hazardCard, deathNoteCard,
          audioCollectCard, audioLiftCard, audioSpringCard, audioConveyorCard,
          audioBreakCard, audioHazardCard, audioOptionsCard}) {
@@ -9614,7 +9848,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             [=](int) { updatePreview(); });
     refreshTimer();
 
-    auto enableFields = [=]() {
+    auto enableFields = [=, &hasIncomingBoolean]() {
         const QString behaviour = type->currentData().toString();
         const bool isObject = behaviour != QStringLiteral("decoration");
         // Hazard Zones use the Advanced Platformer tilemap event API.
@@ -9680,8 +9914,12 @@ void SidboxGameDesigner::configureGameObject(int index)
         sfxInteractWrong->setEnabled(soundsForInteraction);
         sfxInteractSuccess->setEnabled(soundsForInteraction);
         sfxInteractCancel->setEnabled(soundsForInteraction);
-        interactDialogue->setEnabled(soundsForInteraction);
-        interactDialogueMode->setEnabled(soundsForInteraction && interactDialogue->currentData().toInt()>=0);
+        // Ordinary Triggers can show dialogue on touch/FIRE2, independently
+        // of the inventory USE-only success sound/reward/stat settings.
+        const bool canShowSuccessDialogue = isTrigger || soundsForInteraction;
+        interactDialogue->setEnabled(canShowSuccessDialogue);
+        interactDialogueMode->setEnabled(canShowSuccessDialogue &&
+            interactDialogue->currentData().toInt()>=0);
         interactWrongDialogue->setEnabled(soundsForInteraction);
         interactWrongDialogueMode->setEnabled(soundsForInteraction && interactWrongDialogue->currentData().toInt()>=0);
         interactReward->setEnabled(soundsForInteraction);
@@ -9730,6 +9968,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
         linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
+        incomingBooleanCard.panel->setVisible(hasIncomingBoolean && isObject);
         triggerCard.panel->setVisible(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
         conveyorCard.panel->setVisible(isConveyor);
@@ -9966,6 +10205,18 @@ void SidboxGameDesigner::configureGameObject(int index)
                         QMessageBox::No)!=QMessageBox::Yes) return false;
                 break;
             }
+        }
+    }
+    for (const BooleanEditor &editor : booleanEditors) {
+        const bool hasBranches = editor.trueDialogue->currentData().toInt() >= 0 ||
+            editor.falseDialogue->currentData().toInt() >= 0 ||
+            !booleanActionsFromTable(editor.trueActions).isEmpty() ||
+            !booleanActionsFromTable(editor.falseActions).isEmpty();
+        if (hasBranches && editor.source->currentData().toString().isEmpty()) {
+            QMessageBox::warning(&dialog, tr("Boolean state source"),
+                tr("Choose a Game Object whose enabled state this Boolean reads, "
+                   "or remove its TRUE/FALSE connections first."));
+            return false;
         }
     }
     // Validate the draft BEFORE adding to the undo history or mutating the
@@ -10236,6 +10487,20 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.objectAnimated = !r.spriteStamp.active() && animated->isChecked();
     r.animFirst = first->value(); r.animCount = count->value();
     r.animTicks = ticks->value(); r.animMode = mode->currentData().toString();
+    // Save edits from either end of the graph into the Trigger-owned fields.
+    // The selected Game Object can itself be the state source, so update the
+    // owning Trigger by stable resource ID, never by this dialog's index.
+    for (const BooleanEditor &editor : booleanEditors) {
+        for (Resource &owner : m_resources) {
+            if (owner.id != editor.ownerId) continue;
+            owner.toggleStateTargetId = editor.source->currentData().toString();
+            owner.toggleTrueDialogueNode = editor.trueDialogue->currentData().toInt();
+            owner.toggleFalseDialogueNode = editor.falseDialogue->currentData().toInt();
+            owner.toggleTrueActions = booleanActionsFromTable(editor.trueActions);
+            owner.toggleFalseActions = booleanActionsFromTable(editor.falseActions);
+            break;
+        }
+    }
     rebuildScene(); // Show updated mirroring on the live world canvas immediately.
     refreshResources();
     // Keep the edited object under Game Objects, never jump to its Sprites alias.
@@ -10279,6 +10544,19 @@ void SidboxGameDesigner::configureGameObject(int index)
                 values << edit->text();
             } else if (auto *slider = qobject_cast<QSlider *>(widget)) {
                 values << slider->value();
+            }
+        }
+        for (const BooleanEditor &editor : booleanEditors) {
+            values << editor.ownerId << editor.source->currentData()
+                   << editor.trueDialogue->currentData() << editor.falseDialogue->currentData();
+            for (QTableWidget *table : {editor.trueActions, editor.falseActions}) {
+                values << table->rowCount();
+                for (int row=0; row<table->rowCount(); ++row) {
+                    auto *target=qobject_cast<QComboBox *>(table->cellWidget(row,0));
+                    auto *action=qobject_cast<QComboBox *>(table->cellWidget(row,1));
+                    values << (target ? target->currentData() : QVariant())
+                           << (action ? action->currentData() : QVariant());
+                }
             }
         }
         values << linkedActionRows->rowCount();
@@ -10491,6 +10769,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (palette.size() == 256)
                 atlas.setColorTable(colourPreviewBank(palette, true, m_previewPaletteAlpha && m_previewPaletteAlpha->isChecked()));
         }
+        buildBooleanRows();
         refreshDeathStartButton();
         previewFrame = 0;
         previewPlaying = true;

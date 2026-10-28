@@ -1,0 +1,38 @@
+SIDBOX CoderGirl IDE | Stage 5.166.41.271026
+Visual Nodes camera/zoom hotfix
+
+Base: Stage 5.166.40.271026
+
+Changes
+- Stage 1 Visual Nodes graph camera initialisation waits until the maximised
+  window and splitter are laid out. No more fit-to-tiny-pre-show viewport.
+- New/old graphs without camera metadata open with a readable view, focused
+  on the first Trigger when the full graph is too large to display legibly.
+- Fit All remains available.
+- Persist graph camera zoom and viewport centre under optional 'view' in .vsgm.
+  Graph layout, game-logic wiring and .sbgm format remain unchanged.
+- Closing automatically remembers camera movement; Discard still discards
+  uncommitted node links/positions (only the camera preference is saved).
+- Fix inability to wheel-zoom back in after Fit All creates a tiny scale.
+- Preserve .vsgm concurrent-modification verification, avoiding overwrites.
+
+Install
+1. Apply this hotfix on top of the complete Stage 5.166.40 IDE source.
+2. Rebuild the IDE; check splash version 5.166.41.271026.
+3. Open world1.vsgm and verify the nodes appear at a usable zoom.
+4. Zoom/pan, close, and reopen. Verify view is restored.
+5. Connect a Trigger to a Game Object, Save Graph + World, and verify the
+   resulting action in the traditional Game Object Properties dialog.
+6. Press Fit All and mouse-wheel to ensure zoom can return to readable scale.
+
+No game regeneration, .map changes or changes to user-owned main.c required.
+This release touches only gamevisualnodes.cpp, splash screen, source tests.
+
+Verification
+PASS Stage 5.166.40 Visual Nodes source/schema regression.
+PASS Stage 5.166.41 Visual Nodes viewport source/schema regression.
+PASS Stage 5.166.36 title-input native test.
+PASS Stage 5.166.37 shared-rules test.
+PASS Stage 5.166.38 clean New Game/save restoration test.
+NOTE: Full Qt6 GUI build/render test NOT run here: Qt6 development libs
+are not installed in the build environment. Test on your desktop IDE.

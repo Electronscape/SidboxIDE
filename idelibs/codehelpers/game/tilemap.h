@@ -222,6 +222,14 @@ void game_tilemap_blit_view_cleared(const game_tilemap_t *map,
 uint8_t game_tilemap_actor_blocked(const game_tilemap_t *map,
                                    int32_t x, int32_t y,
                                    uint16_t width, uint16_t height);
+/* Shared item-drop placement queries. Called through per-world Adventure
+ * callbacks; one executable copy serves every tilemap-backed world.
+ * Coordinates are world-space sprite top-left pixels, with a 16x16 item.
+ * INT32_MIN/INT32_MAX retain their existing blocked/no-floor meanings. */
+int32_t game_tilemap_drop_sweep(const game_tilemap_t *map,
+                                int32_t start_x,int32_t target_x,int32_t y);
+int32_t game_tilemap_drop_floor(const game_tilemap_t *map,
+                                int32_t x,int32_t old_y,int32_t next_y);
 
 /* Advanced tile-aware player movement (world coordinates). */
 typedef struct {

@@ -1,3 +1,157 @@
+# Stage 5.166.58.281026 — Editable Boolean branches in Game Object Properties
+
+The formerly read-only Boolean State / Visual Nodes summary is now editable.
+Trigger-owned Boolean source, TRUE/FALSE dialogues and ordered Enable/Disable/
+Toggle actions can be edited in **Switch, Trigger & Save Checkpoint**. A state
+source object (e.g. Lifty) can edit incoming Trigger branches under **Triggers
+Reading This Object**. Both modify the same authoritative Trigger fields in
+`.sbgm`, preserving the existing Visual Nodes round-trip and runtime semantics.
+
+See `development/notes/INSTALL-STAGE5.166.58.txt`. The Qt6 desktop build and
+mouse interaction are unverified here; native/schema regressions were run.
+
+---
+
+# Stage 5.166.57.281026 — Boolean State Game Object visibility
+
+The new Boolean State / Visual Nodes card in Game Object Properties reads real
+Trigger-owned conditional branches in `.sbgm` from both the Trigger and
+its referenced Game Object. This is GUI-only, read-only; it does **not** create
+new On Enable/On Disable runtime callbacks. See
+`development/notes/INSTALL-STAGE5.166.57.txt`.
+
+## Stage 5.166.53.281026 — Visual Nodes: Read Toggle State TRUE/FALSE dialogue branches
+
+SIDBOX CoderGirl IDE — Stage 5.166.53.281026
+VISUAL NODES — READ TOGGLE STATE / TRUE-FALSE DIALOGUE BRANCH
+
+INSTALL
+Apply hotfix over Stage 5.166.52, then rebuild the Qt IDE.
+Regenerate ALL worlds / Update Game Project, then rebuild the V1 game before
+hardware testing. This stage includes generated-runtime changes.
+Your hand-owned main.c does not need modification.
+Existing .map files and save slot formats are unchanged.
+
+HOW TO TEST
+1. Open a world .vsgm and select an existing Trigger (FIRE2 or touch).
+2. Click '+ Read Toggle State' (or right-click Trigger > Add Read Toggle State).
+3. Right-click the new teal card > Choose Game Object state source.
+   Pick a same-world Game Object, e.g. Lifty.
+4. Connect your Trigger to Lifty with a Toggle action, as before.
+5. Drag the condition's green TRUE or red FALSE port into empty canvas.
+   Choose an existing dialogue using the same folder tree as the Dialogue
+   Editor, or choose Create New Dialogue. Both produce purple branch cards.
+6. Save Graph + World, regenerate ALL worlds, rebuild V1.
+7. Activate the Trigger twice: the selected object's new active state is
+   tested AFTER all normal Trigger actions, so TRUE and FALSE choose
+   different single-message dialogues on alternating toggles.
+8. Save and reopen .vsgm, then edit the Trigger in Game Object Properties;
+   save that editor, reopen .vsgm. The TRUE/FALSE settings must persist.
+9. Right-click a branch wire to remove that connection. Deleting a condition
+   node unlinks its TRUE/FALSE dialogues, not the underlying Adventure nodes.
+
+DATA MODEL / SCOPE
+.sbgm remains authoritative. Only three optional fields per Trigger were
+added: toggleStateTargetId, toggleTrueDialogueNode, toggleFalseDialogueNode.
+.vsgm stores card positions/camera but no gameplay connection copies.
+The condition reads the active bit of a local Game Object, NOT transient
+trigger_fired. Remote/NPC targets are deliberately not offered.
+TRUE and FALSE dialogue is displayed in single-message/no-actions mode for
+this first pass, so it doesn't execute accidental quest/dialogue actions.
+Unconditional Show Dialogue remains independently configurable.
+
+VERIFICATION
+Selected Visual Nodes regression checks and native GCC branch-behaviour
+check passed. Full Qt6 IDE compilation and SIDBOX hardware behaviour have
+NOT been verified in this environment. Test with the backed-up game first.
+
+---
+
+## Stage 5.166.52.281026 — Visual Nodes: persisted canvas panning
+
+Visual Nodes now remembers the exact pan/scrollbar offsets along with zoom and
+scene centre in the optional `.vsgm` camera section. Same-sized maximised
+viewports restore exact pan; resized windows use the scene-centre fallback.
+Camera is still saved on close, even when the node graph was not edited.
+See `development/notes/INSTALL-STAGE5.166.52.txt`. IDE-only update.
+
+---
+
+## Stage 5.166.51.281026 — Visual Nodes: 8px snapping and Visible Nodes dialogue entries
+
+Game Object and Show Dialogue cards now snap to 8px grid positions when moved. Purple Show Dialogue cards appear in the Visible Nodes sidebar, including their Trigger name and active dialogue number, and support double-click focus and existing deletion paths. Old saved positions remain unmodified on open. IDE-only; runtime and game file formats unchanged. See `development/notes/INSTALL-STAGE5.166.51.txt`.
+
+# Latest: Stage 5.166.50.281026 — Smooth Visual Nodes dialogue wires
+
+Purple Show Dialogue wires no longer use rectangular routes over the top of
+cards when the dialogue sits left of its Trigger. Both left and right
+placements now use cubic Bezier curves, with the connection entering the
+nearest useful side of the dialogue card. See
+`development/notes/INSTALL-STAGE5.166.50.txt`. IDE-only; no runtime changes.
+Qt6 desktop visual testing is still required.
+
+---
+
+# Latest: Stage 5.166.49.281026 — Visual Nodes Delete and wire cleanup
+
+See `development/notes/INSTALL-STAGE5.166.49.txt`. Selected cards can now be
+removed with Delete, the right-hand button or a card context menu; real Trigger
+actions and dialogue links are disconnected without deleting underlying Game
+Objects/NPCs/Adventure dialogue nodes. Purple dialogue wires share the regular
+right-click disconnect affordance, and use corrected routing. All changes to
+real connections remain pending until Save Graph + World. Full Qt6 build and
+mouse/keyboard interaction remain to be verified.
+
+---
+
+# Latest: Stage 5.166.48.281026 — Visual Nodes trees and orphan cleanup
+
+See `development/notes/INSTALL-STAGE5.166.48.txt`. The on-demand node picker
+now groups Game Objects by type and opens collapsed. Added right-click and
+right-panel controls to remove unconnected/orphaned graph cards without
+removing Game Objects or dialogues from `.sbgm`. No runtime changes.
+Full Qt6 GUI build and mouse testing remain to be verified.
+
+---
+
+# Latest: Stage 5.166.47.271026 — Visual Nodes dialogue tree and layout
+
+See `development/notes/INSTALL-STAGE5.166.47.txt`. Show Dialogue cards
+now save live canvas positions. Trigger output selection and purple-card
+browsing use the actual Adventure Dialogue Editor folder tree, with Create New
+last. Qt6 mouse-release global position API updated. GUI-only; full Qt6
+compilation and mouse testing remain to be verified.
+
+---
+
+# Latest: Stage 5.166.44.271026 — Visual Nodes Qt compilation hotfix
+
+See `development/notes/INSTALL-STAGE5.166.44.txt`. Fixes QVariant::toInt(bool *)
+being called with the integer `-1` in the inline Show Dialogue combo box.
+No runtime changes. Full Qt6 GUI compilation still unavailable in this environment.
+
+---
+
+# Latest: Stage 5.166.40.271026 — Visual Nodes (.vsgm) Phase 1
+
+See `development/notes/INSTALL-STAGE5.166.40.txt`. This is an opt-in, maximised
+visual Trigger → Game Object link editor. It does not change the existing Logic
+Flow or runtime. Full Qt6 compilation is unverified in this environment.
+
+---
+
+# Latest: CoderGirl Stage 5.166.36.271026 — Defeat FIRE1 / Title Input Latch
+
+**Start here:** `development/notes/INSTALL-STAGE5.166.36.txt`.
+The generated title runtime now ignores FIRE1/FIRE2 inherited from the death
+screen until those buttons are released once. Previously FIRE1 could dismiss a
+no-save death screen AND instantly activate the first Start Game item, making
+Forest appear to load directly. Regenerate ALL Worlds / Game Project to update
+`gamehelpers/gametitle.c`. No `main.c` changes. Native C test of the actual
+title function and selected regressions passed; hardware/Qt GUI unverified.
+
+---
+
 # Latest: CoderGirl Stage 5.166.31.271026 — Qt Lambda Compile Hotfix
 
 **Start here:** `development/notes/INSTALL-STAGE5.166.31.txt`.
@@ -232,3 +386,37 @@ renders the selected tiles, reads HUD docking from `gamehud.sbhud`, and drops
 the redundant manual HUD preview selector and shared dialogue-skin checkbox.
 The generated quest viewport avoids applying the top-dock offset twice.
 See INSTALL-STAGE5.166.3.txt for installation, resource deployment and tests.
+
+## Stage 5.166.38 (27 October 2026): Fresh New Game resets collected world items
+
+Fixed a persistent-pickup reset omission: title New Game cleared world snapshots
+but did not clear `cg_pickup_permanently_collected[]` in individual world
+modules. Every world's remote-reset function now clears permanent pickup
+flags and saved world/pickup/reward RAM, including worlds with pickups but no
+managed platforms. Story reset also clears its saved payload. Load Game
+continues to import selected saved progression after this reset. No changes
+to `.map` files, saved-file version or hand-owned `main.c`. See
+`development/notes/INSTALL-STAGE-5.166.38.txt`.
+
+
+## Stage 5.166.39 (27 October 2026): Game Object checkbox alignment
+
+- Game Object Properties checkbox rows now span the form columns to protect
+  their borders and text from the width of adjacent labels.
+- Dependency-guard checkboxes have equal enabled/disabled padding and
+  minimum content height in the global IDE theme.
+- This is a GUI-only styling/layout release. No game regeneration required.
+
+See `development/notes/INSTALL-STAGE-5.166.39.txt`.
+
+## Stage 5.166.42.271026 — Visual Nodes connection usability
+
+- Makes wire right-click targeting more forgiving, with 20-scene-unit path shapes
+  and a 21×21-viewport-pixel context-menu query.
+- Separates multiple connection curves between the same Trigger and object.
+- Adds a Trigger Connections list, Edit Action and Remove buttons to the right
+  details panel; explicit action dispatch prevents Remove falling back to Enable.
+- Narrows the Game Objects sidebar to a 175-pixel initial width (220 max).
+- Does **not** modify saved .sbgm/.vsgm schemas, game runtime, .map or main.c.
+- Tested source/schema and existing native suites 5.166.31–.38 and Visual Nodes
+  .40–.42. Full Qt GUI compilation and interaction require verification.

@@ -7,6 +7,7 @@
 #include "codeeditor.h"
 #include "guidesigner.h"
 #include "gamedesigner.h"
+#include "gamevisualnodes.h"
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
 #include "optionsdialog.h"
@@ -1425,6 +1426,7 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
         || lower == QStringLiteral("md") || lower == QStringLiteral("res")
         || lower == QStringLiteral("sbui") || lower == QStringLiteral("sbgm")
+        || lower == QStringLiteral("vsgm")
         || lower == QStringLiteral("sbpi")
         || lower == QStringLiteral("uis")
         || lower == QStringLiteral("ppb") || lower == QStringLiteral("pal")
@@ -6674,12 +6676,15 @@ void MainWindow::setupInterface()
          * Rename / Remove currently apply to files only.
          * Folder rename/delete can be added separately later.
          */
+        QAction *visualNodesAction = nullptr;
         QAction *renameAction = nullptr;
         QAction *removeAction = nullptr;
         QAction *historyAction = nullptr;
         QString historyTarget;
         if (item && !item->data(0, Qt::UserRole + 1).toBool()) {
             historyTarget = item->data(0, Qt::UserRole).toString();
+            if (QFileInfo(historyTarget).suffix().compare(QStringLiteral("sbgm"),Qt::CaseInsensitive)==0)
+                visualNodesAction = menu.addAction(tr("Open Visual Nodes (.vsgm)..."));
             menu.addSeparator();
             if (isHistoryTextFile(historyTarget))
                 historyAction = menu.addAction(tr("File History..."));
@@ -6692,6 +6697,13 @@ void MainWindow::setupInterface()
         QAction *chosen = menu.exec(m_projectFiles->viewport()->mapToGlobal(pos));
         if (chosen && chosen == renameAction)
             renameSelectedProjectFile();
+        else if (chosen && chosen == visualNodesAction) {
+            const QFileInfo world(historyTarget);
+            const QString graph=world.absolutePath()+QLatin1Char('/')+
+                                world.completeBaseName()+QStringLiteral(".vsgm");
+            openFile(graph);
+            refreshProjectFiles();
+        }
         else if (chosen && chosen == removeAction)
             removeSelectedProjectFile();
         else if (chosen && chosen == historyAction) {
@@ -11927,6 +11939,26 @@ bool MainWindow::openFile(const QString &filePath)
     if (QFileInfo(filePath).suffix().compare(QStringLiteral("sbgm"), Qt::CaseInsensitive) == 0) {
         return openGameDesigner(filePath);
     }
+    if (QFileInfo(filePath).suffix().compare(QStringLiteral("vsgm"), Qt::CaseInsensitive) == 0) {
+        const QString sbgmPath = QFileInfo(filePath).absolutePath() + QLatin1Char('/') +
+            QFileInfo(filePath).completeBaseName() + QStringLiteral(".sbgm");
+        // A live, unsaved Game Designer tab must never be overwritten by .vsgm.
+        for (int i=0; i<m_editorTabs->count(); ++i) {
+            auto *game=dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
+            if (!game || QFileInfo(game->filePath()).absoluteFilePath()!=QFileInfo(sbgmPath).absoluteFilePath())continue;
+            if (game->isModified() && !game->saveDesign()) return false;
+        }
+        const bool changed = openGameVisualNodes(this,filePath,m_theme);
+        if (changed) {
+            for (int i=0; i<m_editorTabs->count(); ++i) {
+                auto *game=dynamic_cast<SidboxGameDesigner *>(m_editorTabs->widget(i));
+                if (game && QFileInfo(game->filePath()).absoluteFilePath()==QFileInfo(sbgmPath).absoluteFilePath())
+                    game->reloadAfterVisualNodes();
+            }
+        }
+        refreshProjectFiles();
+        return true;
+    }
 
     // PPBs are self-describing indexed images (dimensions, 256-colour CLUT,
     // pixel indices). Preview even without a Game Designer / .sbgm.
@@ -13073,7 +13105,7 @@ void MainWindow::refreshProjectFiles()
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_c.png"));
         } else if (suffix == QStringLiteral("sbui")) {
             fileIcon = gameEditorIcon(QStringLiteral("tree_guidesigner.png"));
-        } else if (suffix == QStringLiteral("sbgm")) {
+        } else if (suffix == QStringLiteral("sbgm") || suffix == QStringLiteral("vsgm")) {
             fileIcon = gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
         } else if (suffix == QStringLiteral("sbpi")) {
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_res.png"));
@@ -15191,7 +15223,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
         QStringLiteral("*.cc"), QStringLiteral("*.cpp"), QStringLiteral("*.hpp"),
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
-        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.sbpi"), QStringLiteral("*.uis"),
+        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.vsgm"), QStringLiteral("*.sbpi"), QStringLiteral("*.uis"),
         QStringLiteral("*.ppb"), QStringLiteral("*.pal"), QStringLiteral("*.act"),
         QStringLiteral("*.map"),
         QStringLiteral("*.png"), QStringLiteral("*.bmp"), QStringLiteral("*.jpg"),

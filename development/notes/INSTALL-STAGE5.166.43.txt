@@ -1,0 +1,58 @@
+CODERGIRL / SIDBOX  Stage 5.166.43.271026
+VISUAL NODES, PHASE 2A: INLINE SHOW DIALOGUE
+
+INSTALLATION
+  Apply hotfix over Stage 5.166.42 or use complete IDE archive.
+  Build IDE (Qt6); the World Items generator now emits dialogue calls for
+  ordinary non-inventory Triggers. Your hand-owned main.c needs no changes.
+  To exercise changed dialogue in a V1 game, run Update ALL Worlds /
+  Update Game Project, then rebuild V1.
+
+HOW TO USE
+  1. Open world1.vsgm in project tree (maximised Visual Nodes window).
+  2. Select a Trigger card. Click '+ Show Dialogue' in top toolbar.
+  3. In the purple card, choose an existing dialogue or '+ Create new dialogue'.
+  4. Edit Speaker and Message directly inside the card; choose playback:
+       - Single message: one node, no choice actions.
+       - Message sequence: navigate Next via dialogue choices, no actions.
+       - Full conversation: dialogue choices and actions can execute.
+  5. Changing selection links the Trigger to that dialogue; an actual purple
+     wire appears. Dragging the golden Trigger output to an empty purple card
+     opens the dialogue picker.
+  6. 'Disconnect Dialogue' unlinks it from the Trigger, but does NOT delete
+     or renumber the Adventure dialogue node.
+  7. Save Graph + World, then inspect Trigger / Adventure in normal editors.
+
+IMPORTANT DATA RULES
+  - .sbgm remains authoritative. It stores trigger.interactDialogueNode,
+    trigger.interactDialogueMode and adventure.nodes speaker/text/choices.
+  - .vsgm still version 1: stores node positions, dialogueCards list,
+    read-only connection snapshot and viewport settings. No gameplay text.
+  - Editing EXISTING speaker/text changes that dialogue globally anywhere
+    the SAME Adventure node index is referenced within this world. The card
+    warns about this; use '+ Create new dialogue' for independent text.
+  - Existing advanced dialogue branches/choices/action keys are preserved.
+    Configure those via Adventure Editor. No arbitrary conditions or
+    generic Blueprint nodes are generated in this stage.
+  - The traditional Game Object editor, Adventure Editor and Logic Flow are
+    untouched and remain usable. Save checks .sbgm/.vsgm conflict hashes,
+    backs up .sbgm to .sbgm.vsgm-backup before writing it.
+  - No .map or save format changes, and no change to your game main.c.
+  - Non-item touch/FIRE2 Trigger dialogues now run on normal activation;
+    item-required dialogues still run through USE success only.
+
+TESTING
+  Source/schema tests: Stage 5.166.40-.43 PASS, plus Stage 5.166.35,.36,.37,.38.
+  The production Qt6 development libraries are not present in this environment.
+  Full Qt GUI build, card interaction and game hardware tests are NOT verified.
+
+SUGGESTED MANUAL SMOKE TEST
+  1. Back up your .sbgm. Connect Trigger -> existing dialogue 1; save.
+     Check same dialogue ID and mode in Game Object Properties.
+  2. Reopen .vsgm. Edit text and speaker. Save; check Adventure Editor.
+  3. Create new dialogue; ensure old indices and choices remain intact.
+  4. Disconnect via card; save; confirm original Adventure dialogue remains.
+  5. Connect multiple existing object actions; change dialogue, save, and
+     confirm object action list remains unchanged.
+  6. Confirm deleting an action in old Game Object Properties is reflected
+     in .vsgm after close/reopen.
