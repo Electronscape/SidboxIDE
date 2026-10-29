@@ -10,7 +10,7 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
                                 gfxbob_t *sprite, int32_t x, int32_t y,
                                 uint16_t width, uint16_t height)
 {
-    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_PARTICLE_EMITTER ||
+    if (!object || type < GAME_OBJECT_LIFT || type > GAME_OBJECT_DECORATION ||
         !width || !height) return 0;
     object->sprite = sprite;
     object->animation = 0;
@@ -299,6 +299,7 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
                 o->type == GAME_OBJECT_DEATH_ZONE ||
                 o->type == GAME_OBJECT_HAZARD ||
                 o->type == GAME_OBJECT_ENEMY || o->type == GAME_OBJECT_PARTICLE_EMITTER ||
+                o->type == GAME_OBJECT_DECORATION ||
                 (o->type == GAME_OBJECT_SPRING && o->touch_activation) ||
                 (o->type == GAME_OBJECT_BREAKABLE && o->break_touch_mode) ||
                 feet != o->previous_y ||
@@ -495,7 +496,8 @@ void game_world_objects_after(game_world_object_t *objects, uint16_t count,
         }
         // Switches are intangible: they never behave like a platform.
         if (o->type == GAME_OBJECT_TRIGGER || o->type == GAME_OBJECT_DEATH_ZONE ||
-            o->type == GAME_OBJECT_HAZARD || o->type == GAME_OBJECT_PARTICLE_EMITTER) continue;
+            o->type == GAME_OBJECT_HAZARD || o->type == GAME_OBJECT_PARTICLE_EMITTER ||
+            o->type == GAME_OBJECT_DECORATION) continue;
         // Door collision is resolved below, before the old one-way platform
         // rules. Only this new type uses blocking on all four sides.
         if (o->type == GAME_OBJECT_DOOR) {

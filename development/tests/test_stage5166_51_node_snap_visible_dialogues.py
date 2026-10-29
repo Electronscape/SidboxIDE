@@ -16,7 +16,7 @@ assert 'void enableGridSnap()' in card
 # Position saved before enabling snapping, preserving existing .vsgm positions.
 for key,place in [('id','position'),('key','pos')]:
     assert re.search(rf'card->setPos\({place}\);\s*card->enableGridSnap\(\);\s*m_positions.insert\({key},{place}\);',s)
-assert s.count('card->enableGridSnap();')==4  # object, dialogue, toggle, branch cards
+assert s.count('card->enableGridSnap();')>=4  # includes newer independent graph/dialogue card types
 newcard=s[s.index('void createDialogueCard('):s.index('void refreshDialogueCard(')]
 assert 'rowItem->setData(Qt::UserRole,key)' in newcard
 assert 'rowItem->setForeground(QBrush(QColor(199,149,248)))' in newcard

@@ -25,7 +25,7 @@ assert 'path.cubicTo(a+QPointF(bend,offset),b+QPointF(-bend,offset),b)' in s
 assert 'm_linksList=new QListWidget(right)' in s
 assert 'm_editLinkButton=new QPushButton(tr("Edit Action"),right)' in s
 assert 'm_removeLinkButton=new QPushButton(tr("Remove"),right)' in s
-assert 'left->setMaximumWidth(220)' in s and 'split->setSizes({175,1100,255})' in s
+assert 'left->setMaximumWidth(270)' in s and 'split->setSizes({225,1050,255})' in s
 assert 'node.links.removeAt(index)' in s
 assert 'action->setData(choice.first)' in s
 assert 'remove->setData(QStringLiteral("remove"))' in s

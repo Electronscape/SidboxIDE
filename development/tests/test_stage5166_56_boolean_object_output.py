@@ -23,7 +23,7 @@ assert 'objectSource' in tree
 assert 'if (!objectSource) for (const QString &id:m_order)' in tree
 assert 'if (objectSource) {' in tree
 assert 'QStringList{tr("Logic")}' in tree
-assert 'addBooleanFromObject(from,at);' in tree
+assert 'addBooleanFromObject(from,at,selectedId.mid(' in tree
 # Real Trigger owner is determined from its actual .sbgm action list;
 # multiple owners require explicit choice rather than a guessed Trigger.
 author=s[s.index('void addBooleanFromObject('):s.index('void createToggleCard(')]
@@ -38,8 +38,8 @@ layout=s[s.index('QJsonObject graphJson('):s.index('bool saveLayout(')]
 assert 'toggleStateTargetId' not in layout
 # Existing stored state ID is now rendered as SOURCE OBJECT -> Boolean.
 redraw=s[s.index('void redrawLinks()'):s.index('void showDetails(')]
-assert 'm_cards.contains(node.toggleStateTargetId)' in redraw
-assert 'NodeCard *source=m_cards.value(node.toggleStateTargetId)' in redraw
+assert 'm_cards.contains(sourceId)' in redraw
+assert 'NodeCard *source=m_cards.value(sourceId)' in redraw
 assert 'wire->setData(0,QStringLiteral("state-link"))' in redraw
 assert 'const QPointF a=source->scenePos()+QPointF(224,58);' in redraw
 # Boolean remains source-selector-free and retains TRUE/FALSE action sockets.

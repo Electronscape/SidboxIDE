@@ -1,0 +1,49 @@
+SIDBOX / CoderGirl IDE - Stage 5.166.74 (28 Oct 2026)
+Visual Nodes: small SQUARE inputs / round outputs
+========================================================
+
+BASE
+  Full IDE source, built from working Stage 5.166.73. Back up IDE source and
+  your .sbgm / .vsgm worlds before installing.
+
+INSTALL
+  1. Extract this complete source archive over Stage 5.166.73.
+  2. Rebuild CoderGirl and check splash Build: 5.166.74.281026.
+  3. Open an existing world's Visual Nodes designer.
+  4. Inputs are now smaller, filled squares on the LEFT; round outputs
+     remain on the RIGHT. Try a compact [-] card and Fit All.
+  5. Check existing saved wires terminate at the new square input ports.
+  6. Try Trigger -> Game Object, Game Object state -> AND, and
+     AND TRUE -> NPC Opening or After helped; re-open after saving.
+
+INPUTS / OUTPUTS
+  Game Objects / Triggers / PLAYER command cards:
+    one 14x14 left square receiving compatible action/state requests;
+    existing round state/event outputs remain unchanged.
+  Logic (Boolean, AND, OR, NOT): one left square receiving state/RESULT
+    wires. AND/OR allow multiple inbound links through that same port.
+  Show Dialogue / branch dialogue: one left square for an incoming event.
+  NPC cards: three distinct squares on the left:
+    upper blue = NPC visibility Enable / Disable / Toggle;
+    middle purple = Opening conversation;
+    lower purple = After helped conversation.
+    Dragging directly onto the blue visibility square uses the normal
+    NPC action target, while the two purple squares retain their existing
+    dialogue routing behaviour.
+  Compact NPC cards are slightly taller to keep all three ports visible.
+
+DATA SAFETY
+  This release changes only Visual Nodes presentation/connection routing
+  and the splash build number. It does not modify any game generator,
+  runtime C, .sbgm gameplay schema or .vsgm storage schema. Existing
+  connections read the same authoritative world data as before.
+
+VERIFICATION
+  Source contract tests Stage 5.166.70-74 PASS.
+  Prior Stage 5.166.65, 5.166.67-69 logic and native C tests PASS.
+  Qt6 Widgets development headers are unavailable in this environment.
+  Desktop Qt compile + mouse/zoom behaviour must still be verified on
+  the user's machine; SIDBOX hardware does not need testing for this
+  presentation-only stage (unless modifying actual game logic).
+
+  No changes to user's hand-maintained main.c are necessary.

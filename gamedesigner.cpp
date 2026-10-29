@@ -3613,9 +3613,21 @@ void SidboxGameDesigner::buildUi()
         if (m_dirty && !saveDesign()) return;
         const QString graph = QFileInfo(m_filePath).absolutePath() + QLatin1Char('/') +
                               QFileInfo(m_filePath).completeBaseName() + QStringLiteral(".vsgm");
-        const bool changed = openGameVisualNodes(this, graph, m_theme);
-        if (changed) loadDesign(); // Refresh the in-memory world after graph edits.
-        if (assetFilesChanged) assetFilesChanged(); // New .vsgm is discoverable.
+        // Visual Nodes can hand off to the exact Adventure Dialogue Node and
+        // return automatically, preserving the saved .vsgm layout/viewport.
+        // Only one editor owns .sbgm at a time; reload after each hand-off.
+        for (;;) {
+            int openDialogue=-1;
+            const bool changed=openGameVisualNodes(this,graph,m_theme,&openDialogue);
+            if (changed) loadDesign();
+            if (assetFilesChanged) assetFilesChanged();
+            if (openDialogue<0)break;
+            openAdventureEditor(QString(),openDialogue,true);
+            // An accepted Adventure edit lives in the designer until saved.
+            // Persist it before recreating Visual Nodes, or the next graph
+            // save could overwrite that edit with the old on-disk dialogue.
+            if (m_dirty && !saveDesign())break;
+        }
     });
     auto *titleScreenButton = new QPushButton(tr("Title Screen..."), this);
     titleScreenButton->setToolTip(tr("Design an optional project-wide title/menu screen with menu actions such as Start Game, Load Game and Goto World."));
@@ -4521,8 +4533,9 @@ void SidboxGameDesigner::buildUi()
             if (group == QStringLiteral("sprite") || group == QStringLiteral("gameobject")) {
                 const Resource &r = m_resources.at(index);
                 QString title = text;
-                if (r.kind == QStringLiteral("sprite") && r.objectType != QStringLiteral("decoration"))
-                    title += QStringLiteral("  [%1]").arg(r.objectType);
+                if (r.kind == QStringLiteral("sprite"))
+                    title += QStringLiteral("  [%1]").arg(
+                        r.objectType == QStringLiteral("decoration_object") ? QStringLiteral("decoration") : r.objectType);
                 if (group == QStringLiteral("sprite")) {
                     for (const QJsonValue &value : m_adventure.value(QStringLiteral("npcs")).toArray()) {
                         if (value.toObject().value(QStringLiteral("spriteId")).toString() == r.id) {
@@ -4842,8 +4855,8 @@ void SidboxGameDesigner::refreshResources()
                     }
                 }
                 QString title = r.name;
-                if (r.objectType != QStringLiteral("decoration"))
-                    title += QStringLiteral("  [%1]").arg(r.objectType);
+                title += QStringLiteral("  [%1]").arg(
+                    r.objectType == QStringLiteral("decoration_object") ? QStringLiteral("decoration") : r.objectType);
                 if (isNpc) title += QStringLiteral("  [NPC]");
                 child->setText(0, title);
                 if (r.objectType != QStringLiteral("decoration"))
@@ -4885,9 +4898,13 @@ void SidboxGameDesigner::refreshResources()
     objectsRoot->setData(0, Qt::UserRole + 1, QStringLiteral("gameobject"));
     for (int i = 0; i < m_resources.size(); ++i) {
         const Resource &r = m_resources.at(i);
-        if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
+        if (r.kind != QStringLiteral("sprite") ||
+            (r.objectType == QStringLiteral("decoration") &&
+             r.name.trimmed().compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0)) continue;
+        const QString shownType = r.objectType == QStringLiteral("decoration_object")
+            ? QStringLiteral("decoration") : r.objectType;
         auto *item = new QTreeWidgetItem(objectsRoot,
-            QStringList{tr("%1  [%2]").arg(r.name, r.objectType)});
+            QStringList{tr("%1  [%2]").arg(r.name, shownType)});
         item->setData(0, Qt::UserRole, i);
         item->setIcon(0, treeIcon(QStringLiteral("gameobject")));
         item->setData(0, Qt::UserRole + 1, QStringLiteral("gameobject"));
@@ -7541,7 +7558,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     const PropertyCard collisionCard = makeCard(tr("Physics / Collision"));
     const PropertyCard collectCard = makeCard(tr("Collectable"));
     const PropertyCard linkedCard = makeCard(tr("Linked Object"));
-    const PropertyCard incomingBooleanCard = makeCard(tr("Triggers Reading This Object"));
+    const PropertyCard incomingBooleanCard = makeCard(tr("Trigger / Logic Connections"));
     const PropertyCard triggerCard = makeCard(tr("Switch, Trigger & Save Checkpoint"));
     const PropertyCard liftCard = makeCard(tr("Moving Platform"));
     const PropertyCard conveyorCard = makeCard(tr("Conveyor"));
@@ -7604,6 +7621,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     QFormLayout *form = collectCard.form;
     auto *type = new GameComboBox(&dialog);
     type->addItem(tr("Ordinary sprite / Decoration"), QStringLiteral("decoration"));
+    type->addItem(tr("Decoration (enable / disable / toggle)"), QStringLiteral("decoration_object"));
     type->addItem(tr("Collectable"), QStringLiteral("collectable"));
     type->addItem(tr("Moving platform / Lift"), QStringLiteral("lift"));
     type->addItem(tr("Conveyor"), QStringLiteral("conveyor"));
@@ -8065,6 +8083,22 @@ void SidboxGameDesigner::configureGameObject(int index)
         auto *object = new GameComboBox(linkedActionRows);
         object->addItem(tr("Select target..."), QString());
         object->addItem(tr("Player Spotlight (world lighting)"), QStringLiteral("@player_spotlight"));
+        for(const QPair<QString,QString> &command:QVector<QPair<QString,QString>>{
+             {QStringLiteral("@player_weather:0"),tr("PLAYER / Weather / Clear")},
+             {QStringLiteral("@player_weather:1"),tr("PLAYER / Weather / Rain")},
+             {QStringLiteral("@player_weather:2"),tr("PLAYER / Weather / Snow")},
+             {QStringLiteral("@player_weather:3"),tr("PLAYER / Weather / Storm")},
+             {QStringLiteral("@player_time:0"),tr("PLAYER / Time / Daylight")},
+             {QStringLiteral("@player_time:1"),tr("PLAYER / Time / Night")},
+             {QStringLiteral("@player_time:2"),tr("PLAYER / Time / Cycle")}})
+            object->addItem(command.second,command.first);
+        const QDir playerWorlds(QFileInfo(m_filePath).absolutePath());
+        for(const QFileInfo &file:playerWorlds.entryInfoList(
+                QStringList{QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+            const QString name=sidboxTilemapWorldBaseName(file.absoluteFilePath());
+            object->addItem(tr("PLAYER / World / Go to %1").arg(name),
+                            QStringLiteral("@player_world:")+name);
+        }
         for (const Resource &candidate : m_resources) {
             if (candidate.kind!=QStringLiteral("sprite") ||
                 candidate.objectType==QStringLiteral("decoration") ||
@@ -8131,6 +8165,17 @@ void SidboxGameDesigner::configureGameObject(int index)
         action->addItem(tr("Disable"),QStringLiteral("disable"));
         action->addItem(tr("Toggle"),QStringLiteral("toggle"));
         action->setCurrentIndex(qMax(0,action->findData(link.action)));
+        connect(object,qOverload<int>(&QComboBox::currentIndexChanged),linkedActionRows,
+                [object,action](int) {
+            const QString id=object->currentData().toString();
+            const bool command=id.startsWith(QStringLiteral("@player_time:")) ||
+                               id.startsWith(QStringLiteral("@player_world:"));
+            if(command)action->setCurrentIndex(action->findData(QStringLiteral("enable")));
+            action->setEnabled(!command);
+        });
+        const QString chosen=object->currentData().toString();
+        action->setEnabled(!(chosen.startsWith(QStringLiteral("@player_time:")) ||
+                             chosen.startsWith(QStringLiteral("@player_world:"))));
         linkedActionRows->setCellWidget(row,0,object);
         linkedActionRows->setCellWidget(row,1,action);
         auto *rowControls=new QWidget(linkedActionRows);
@@ -8265,7 +8310,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     // object's state. No duplicate on_enable/on_disable object callbacks.
     struct BooleanEditor {
         QString ownerId;
-        QComboBox *source = nullptr;
+        QComboBox *operatorMode = nullptr;
+        QTreeWidget *inputs = nullptr;
         QComboBox *trueDialogue = nullptr;
         QComboBox *falseDialogue = nullptr;
         QTableWidget *trueActions = nullptr;
@@ -8290,6 +8336,25 @@ void SidboxGameDesigner::configureGameObject(int index)
         table->insertRow(row);
         auto *target = new GameComboBox(table);
         target->addItem(tr("Choose Game Object..."), QString());
+        // Virtual PLAYER commands share the .sbgm objectId/action shape with
+        // Visual Nodes. They are NOT ordinary game objects or RESULT inputs.
+        target->addItem(tr("PLAYER / Spotlight"),QStringLiteral("@player_spotlight"));
+        for(const QPair<QString,QString> &command:QVector<QPair<QString,QString>>{
+              {QStringLiteral("@player_weather:0"),tr("PLAYER / Weather / Clear")},
+              {QStringLiteral("@player_weather:1"),tr("PLAYER / Weather / Rain")},
+              {QStringLiteral("@player_weather:2"),tr("PLAYER / Weather / Snow")},
+              {QStringLiteral("@player_weather:3"),tr("PLAYER / Weather / Storm")},
+              {QStringLiteral("@player_time:0"),tr("PLAYER / Time / Daylight")},
+              {QStringLiteral("@player_time:1"),tr("PLAYER / Time / Night")},
+              {QStringLiteral("@player_time:2"),tr("PLAYER / Time / Cycle")}})
+            target->addItem(command.second,command.first);
+        const QDir playerWorlds(QFileInfo(m_filePath).absolutePath());
+        for(const QFileInfo &file:playerWorlds.entryInfoList(
+                QStringList{QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+            const QString name=sidboxTilemapWorldBaseName(file.absoluteFilePath());
+            target->addItem(tr("PLAYER / World / Go to %1").arg(name),
+                            QStringLiteral("@player_world:")+name);
+        }
         QSet<QString> npcIds;
         for (const QJsonValue &entry : m_adventure.value(QStringLiteral("npcs")).toArray())
             npcIds.insert(entry.toObject().value(QStringLiteral("spriteId")).toString());
@@ -8297,7 +8362,9 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (candidate.kind != QStringLiteral("sprite") ||
                 (candidate.objectType == QStringLiteral("decoration") && !npcIds.contains(candidate.id)) ||
                 candidate.objectType == QStringLiteral("collectable")) continue;
-            target->addItem(tr("%1 [%2]").arg(candidate.name, candidate.objectType),
+            target->addItem(npcIds.contains(candidate.id)
+                                ? tr("NPC: %1").arg(candidate.name)
+                                : tr("%1 [%2]").arg(candidate.name,candidate.objectType),
                             candidate.id);
         }
         // Keep unknown IDs so opening a design cannot silently erase links.
@@ -8311,6 +8378,17 @@ void SidboxGameDesigner::configureGameObject(int index)
         if (action->findData(link.action) < 0)
             action->addItem(tr("Unsupported: %1").arg(link.action), link.action);
         action->setCurrentIndex(qMax(0, action->findData(link.action)));
+        connect(target,qOverload<int>(&QComboBox::currentIndexChanged),table,
+                [target,action](int) {
+            const QString id=target->currentData().toString();
+            const bool command=id.startsWith(QStringLiteral("@player_time:")) ||
+                               id.startsWith(QStringLiteral("@player_world:"));
+            if(command)action->setCurrentIndex(action->findData(QStringLiteral("enable")));
+            action->setEnabled(!command);
+        });
+        const QString chosen=target->currentData().toString();
+        action->setEnabled(!(chosen.startsWith(QStringLiteral("@player_time:")) ||
+                             chosen.startsWith(QStringLiteral("@player_world:"))));
         table->setCellWidget(row, 0, target);
         table->setCellWidget(row, 1, action);
         table->setRowHeight(row, 32);
@@ -8327,6 +8405,15 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         return actions;
     };
+    const auto stateInputsFromTree = [](const QTreeWidget *tree) {
+        QStringList ids;
+        if (!tree)return ids;
+        for (int i=0;i<tree->topLevelItemCount();++i) {
+            QTreeWidgetItem *item=tree->topLevelItem(i);
+            if (item->checkState(0)==Qt::Checked)ids.append(item->data(0,Qt::UserRole).toString());
+        }
+        return ids;
+    };
     const auto buildBooleanRows = [&]() {
         // Delete immediately, not deleteLater: stale combo boxes must not be
         // included in the Save/Previous/Next draft comparison.
@@ -8340,36 +8427,89 @@ void SidboxGameDesigner::configureGameObject(int index)
         hasIncomingBoolean = false;
         for (const Resource &candidate : m_resources) {
             if (candidate.kind != QStringLiteral("sprite") ||
+                candidate.objectType != QStringLiteral("trigger") ||
                 (candidate.id != old.id &&
-                 (candidate.objectType != QStringLiteral("trigger") ||
-                  candidate.toggleStateTargetId != old.id))) continue;
+                 candidate.toggleStateTargetId != old.id &&
+                 !candidate.toggleStateInputIds.contains(old.id))) continue;
             const bool incoming = candidate.id != old.id;
             hasIncomingBoolean |= incoming;
+            // Each condition is a collapsible subsection, not an additional
+            // wall of fields inside the Game Object Properties tab.
+            auto *outer=new QWidget(incoming ? incomingBooleanRows : booleanRows);
+            auto *outerLayout=new QVBoxLayout(outer);
+            outerLayout->setContentsMargins(0,0,0,0);outerLayout->setSpacing(3);
+            auto *collapse=new QToolButton(outer);
+            collapse->setText(incoming ?
+                tr("Trigger %1: Boolean / AND / OR").arg(candidate.name) :
+                tr("Legacy Trigger state condition (optional)"));
+            collapse->setCheckable(true);collapse->setChecked(false);
+            collapse->setArrowType(Qt::RightArrow);
+            collapse->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            outerLayout->addWidget(collapse);
             auto *group = new QGroupBox(incoming
                 ? tr("Trigger %1 reads this object's state").arg(candidate.name)
-                : tr("Boolean: %1").arg(candidate.name),
-                incoming ? incomingBooleanRows : booleanRows);
+                : tr("Trigger state condition"),outer);
+            group->setVisible(false);
+            outerLayout->addWidget(group);
+            connect(collapse,&QToolButton::toggled,group,[group,collapse](bool expanded) {
+                group->setVisible(expanded);
+                collapse->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow);
+            });
             auto *form = new QFormLayout(group);
             form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-            auto *hint = new QLabel(tr("Evaluated when this Trigger activates, AFTER its normal actions. "
-                "TRUE means the selected object is enabled; FALSE means disabled."), group);
+            auto *hint = new QLabel(tr("Legacy Trigger condition, evaluated after normal actions. "
+                "Independent Logic Nodes (including logic1) are a SEPARATE section below; "
+                "their connected state inputs do not require any tick boxes here."), group);
             hint->setWordWrap(true);
             form->addRow(hint);
             BooleanEditor editor;
             editor.ownerId = candidate.id;
-            editor.source = new GameComboBox(group);
-            editor.source->addItem(tr("None (no Boolean condition)"), QString());
-            for (const Resource &target : m_resources)
-                if (target.kind == QStringLiteral("sprite") &&
-                    target.objectType != QStringLiteral("decoration") &&
-                    target.objectType != QStringLiteral("collectable"))
-                    editor.source->addItem(tr("%1 [%2]").arg(target.name,target.objectType),target.id);
-            if (!candidate.toggleStateTargetId.isEmpty() &&
-                editor.source->findData(candidate.toggleStateTargetId) < 0)
-                editor.source->addItem(tr("Missing: %1").arg(candidate.toggleStateTargetId),
-                                       candidate.toggleStateTargetId);
-            editor.source->setCurrentIndex(qMax(0,editor.source->findData(candidate.toggleStateTargetId)));
-            form->addRow(tr("Read enabled state of"), editor.source);
+            editor.operatorMode=new GameComboBox(group);
+            editor.operatorMode->addItem(tr("Boolean (one object)"),QStringLiteral("boolean"));
+            editor.operatorMode->addItem(tr("AND (2–16 objects enabled)"),QStringLiteral("and"));
+            editor.operatorMode->addItem(tr("OR (either of 2 objects enabled)"),QStringLiteral("or"));
+            editor.operatorMode->setCurrentIndex(qMax(0,editor.operatorMode->findData(candidate.toggleStateOperator)));
+            form->addRow(tr("Logic operator"),editor.operatorMode);
+            editor.inputs=new QTreeWidget(group);
+            editor.inputs->setHeaderHidden(true);
+            editor.inputs->setRootIsDecorated(false);
+            editor.inputs->setUniformRowHeights(true);
+            editor.inputs->setMinimumHeight(100);
+            editor.inputs->setMaximumHeight(195);
+            QStringList selectedInputs;
+            if (!candidate.toggleStateTargetId.isEmpty())selectedInputs.append(candidate.toggleStateTargetId);
+            selectedInputs.append(candidate.toggleStateInputIds);
+            for (const Resource &target : m_resources) {
+                if (target.kind != QStringLiteral("sprite") ||
+                    target.objectType==QStringLiteral("decoration") ||
+                    target.objectType==QStringLiteral("collectable"))continue;
+                auto *item=new QTreeWidgetItem(editor.inputs,
+                    QStringList{tr("%1 [%2]").arg(target.name,target.objectType)});
+                item->setData(0,Qt::UserRole,target.id);
+                item->setFlags(item->flags()|Qt::ItemIsUserCheckable);
+                item->setCheckState(0,selectedInputs.contains(target.id)?Qt::Checked:Qt::Unchecked);
+                if (incoming && target.id==old.id) {
+                    item->setText(0,tr("This object: %1 [%2]").arg(target.name,target.objectType));
+                    item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+                }
+            }
+            for (const QString &id:selectedInputs) {
+                bool found=false;
+                for (int i=0;i<editor.inputs->topLevelItemCount();++i)
+                    if (editor.inputs->topLevelItem(i)->data(0,Qt::UserRole).toString()==id)found=true;
+                if (!found) {
+                    auto *missing=new QTreeWidgetItem(editor.inputs,QStringList{tr("Missing: %1").arg(id)});
+                    missing->setData(0,Qt::UserRole,id);
+                    missing->setFlags(missing->flags()|Qt::ItemIsUserCheckable);
+                    missing->setCheckState(0,Qt::Checked);
+                }
+            }
+            form->addRow(tr("Read enabled states of"),editor.inputs);
+            auto *inputHint=new QLabel(incoming ?
+                tr("This object is the state source for this view. Select additional objects to make an AND/OR condition. Evaluation runs when the named Trigger fires.") :
+                tr("Choose the Game Objects to test. Boolean needs 1, AND needs 2–16, OR needs exactly 2."),group);
+            inputHint->setWordWrap(true);
+            form->addRow(inputHint);
             auto makeDialogue = [&](int id) -> QComboBox * {
                 auto *combo = createGameDialogueTreeCombo(&dialog, &interactionNodes,
                                                             &interactionFolders);
@@ -8455,19 +8595,185 @@ void SidboxGameDesigner::configureGameObject(int index)
                 connect(up, &QPushButton::clicked, group, [move]() { move(-1); });
                 connect(down, &QPushButton::clicked, group, [move]() { move(1); });
             }
-            const auto refresh = [source=editor.source, group]() {
-                const bool selected = !source->currentData().toString().isEmpty();
-                group->setToolTip(selected ? QString() : QObject::tr(
-                    "Choose a state-source object to enable this Boolean in the runtime."));
-            };
-            connect(editor.source,qOverload<int>(&QComboBox::currentIndexChanged),
-                    group,[refresh](int){ refresh(); });
-            refresh();
             booleanEditors.append(editor);
-            (incoming ? incomingBooleanLayout : booleanLayout)->addWidget(group);
+            (incoming ? incomingBooleanLayout : booleanLayout)->addWidget(outer);
         }
     };
     buildBooleanRows();
+    // Stage 5.166.60: independent DAG nodes are real Trigger-owned records.
+    // Both Visual Nodes and Game Object Properties edit the SAME .sbgm JSON.
+    // Present one collapsed card for each node which belongs to this Trigger
+    // or reads the currently edited Game Object. No parallel object callbacks.
+    struct GraphEditor {
+        QString ownerId,nodeId;
+        QComboBox *operation=nullptr;
+        QTreeWidget *inputs=nullptr;
+        QTreeWidget *resultTargets=nullptr;
+        QComboBox *trueDialogue=nullptr,*falseDialogue=nullptr;
+        QTableWidget *trueActions=nullptr,*falseActions=nullptr;
+    };
+    QVector<GraphEditor> graphEditors;
+    bool hasIncomingGraph=false;
+    auto *graphOwnRows=new QWidget(&dialog);
+    auto *graphOwnLayout=new QVBoxLayout(graphOwnRows);
+    graphOwnLayout->setContentsMargins(0,0,0,0);graphOwnLayout->setSpacing(5);
+    triggerCard.form->addRow(graphOwnRows);
+    auto *graphIncomingRows=new QWidget(&dialog);
+    auto *graphIncomingLayout=new QVBoxLayout(graphIncomingRows);
+    graphIncomingLayout->setContentsMargins(0,0,0,0);graphIncomingLayout->setSpacing(5);
+    incomingBooleanCard.form->addRow(graphIncomingRows);
+    for(const Resource &candidate:m_resources) {
+        if(candidate.kind!=QStringLiteral("sprite") ||
+           candidate.objectType!=QStringLiteral("trigger") || candidate.logicNodes.isEmpty())continue;
+        const bool own=candidate.id==old.id;
+        for(const QJsonValue &entry:candidate.logicNodes) {
+            const QJsonObject node=entry.toObject();
+            const QString nodeId=node.value(QStringLiteral("id")).toString();
+            const QJsonArray activeInputs=node.value(QStringLiteral("inputs")).toArray();
+            bool readsCurrent=false;
+            for(const QJsonValue &v:activeInputs)
+                if(v.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                   v.toObject().value(QStringLiteral("id")).toString()==old.id)
+                    readsCurrent=true;
+            bool targetedByBranch=false;
+            for(const QJsonValue &v:node.value(QStringLiteral("resultTargets")).toArray())
+                if(v.toString()==old.id)targetedByBranch=true;
+            for(const QString &branch:{QStringLiteral("trueActions"),QStringLiteral("falseActions")})
+                for(const QJsonValue &action:node.value(branch).toArray())
+                    if(action.toObject().value(QStringLiteral("objectId")).toString()==old.id)
+                        targetedByBranch=true;
+            if(!own && !readsCurrent && !targetedByBranch)continue;
+            hasIncomingGraph |= !own;
+            auto *wrapper=new QWidget(own?graphOwnRows:graphIncomingRows);
+            auto *vertical=new QVBoxLayout(wrapper);
+            vertical->setContentsMargins(0,0,0,0);vertical->setSpacing(3);
+            auto *toggle=new QToolButton(wrapper);
+            toggle->setText(tr("Logic %1 [%2] • Trigger %3")
+                .arg(nodeId,node.value(QStringLiteral("op")).toString().toUpper(),candidate.name));
+            toggle->setCheckable(true);toggle->setArrowType(Qt::RightArrow);
+            toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            vertical->addWidget(toggle);
+            auto *section=new QGroupBox(tr("Independent logic node %1").arg(nodeId),wrapper);
+            section->setVisible(false);vertical->addWidget(section);
+            connect(toggle,&QToolButton::toggled,section,[section,toggle](bool open) {
+                section->setVisible(open);
+                toggle->setArrowType(open?Qt::DownArrow:Qt::RightArrow);
+            });
+            auto *form=new QFormLayout(section);
+            form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+            auto *hint=new QLabel(tr("Runs after Trigger actions. RESULT can directly set Game Object enabled states "
+                "(TRUE = enabled, FALSE = disabled), or feed another logic node. "
+                "TRUE/FALSE may run dialogue and ordered actions."),section);
+            hint->setWordWrap(true);form->addRow(hint);
+            GraphEditor editor;
+            editor.ownerId=candidate.id;editor.nodeId=nodeId;
+            editor.operation=new GameComboBox(section);
+            for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
+                                   QStringLiteral("and"),QStringLiteral("or")})
+                editor.operation->addItem(op.toUpper(),op);
+            editor.operation->setCurrentIndex(qMax(0,editor.operation->findData(node.value(QStringLiteral("op")).toString())));
+            form->addRow(tr("Operator"),editor.operation);
+            editor.inputs=new QTreeWidget(section);
+            editor.inputs->setHeaderHidden(true);editor.inputs->setMinimumHeight(100);
+            editor.inputs->setMaximumHeight(210);
+            const auto addInput=[&](const QString &kind,const QString &id,const QString &label) {
+                auto *item=new QTreeWidgetItem(editor.inputs,QStringList{label});
+                item->setData(0,Qt::UserRole,id);
+                item->setData(0,Qt::UserRole+1,kind);
+                item->setFlags(item->flags()|Qt::ItemIsUserCheckable);
+                bool checked=false;
+                for(const QJsonValue &v:activeInputs) {
+                    const QJsonObject o=v.toObject();
+                    if(o.value(QStringLiteral("kind")).toString()==kind &&
+                       o.value(QStringLiteral("id")).toString()==id)checked=true;
+                }
+                item->setCheckState(0,checked?Qt::Checked:Qt::Unchecked);
+            };
+            for(const Resource &object:m_resources)
+                if(object.kind==QStringLiteral("sprite") &&
+                   object.objectType!=QStringLiteral("decoration") &&
+                   object.objectType!=QStringLiteral("collectable") &&
+                   object.objectType!=QStringLiteral("trigger"))
+                    addInput(QStringLiteral("object"),object.id,
+                        object.id==old.id?tr("This object: %1").arg(object.name):
+                            tr("%1 [%2]").arg(object.name,object.objectType));
+            for(const QJsonValue &other:candidate.logicNodes) {
+                const QJsonObject o=other.toObject();
+                const QString id=o.value(QStringLiteral("id")).toString();
+                if(id!=nodeId)addInput(QStringLiteral("node"),id,
+                    tr("Logic %1 (%2)").arg(id,o.value(QStringLiteral("op")).toString().toUpper()));
+            }
+            form->addRow(tr("State / logic inputs"),editor.inputs);
+            editor.resultTargets=new QTreeWidget(section);
+            editor.resultTargets->setHeaderHidden(true);
+            editor.resultTargets->setMinimumHeight(95);
+            editor.resultTargets->setMaximumHeight(195);
+            const QJsonArray bound=node.value(QStringLiteral("resultTargets")).toArray();
+            for(const Resource &object:m_resources) {
+                if(object.kind!=QStringLiteral("sprite") ||
+                   object.objectType==QStringLiteral("trigger") ||
+                   object.objectType==QStringLiteral("decoration") ||
+                   object.id.isEmpty())continue;
+                auto *row=new QTreeWidgetItem(editor.resultTargets,
+                    QStringList{tr("%1 [%2]").arg(object.name,object.objectType)});
+                row->setData(0,Qt::UserRole,object.id);
+                row->setFlags(row->flags()|Qt::ItemIsUserCheckable);
+                bool selected=false;
+                for(const QJsonValue &v:bound)if(v.toString()==object.id)selected=true;
+                row->setCheckState(0,selected?Qt::Checked:Qt::Unchecked);
+            }
+            form->addRow(tr("RESULT → enabled state"),editor.resultTargets);
+            auto dialogueCombo=[&](int selected) {
+                auto *combo=createGameDialogueTreeCombo(&dialog,&interactionNodes,&interactionFolders);
+                combo->addItem(tr("None"),-1);
+                for(int i=0;i<interactionNodes.size();++i) {
+                    const QJsonObject d=interactionNodes.at(i).toObject();
+                    combo->addItem(tr("%1: %2 | %3").arg(i)
+                        .arg(d.value(QStringLiteral("speaker")).toString().left(18),
+                             d.value(QStringLiteral("text")).toString().left(36)),i);
+                }
+                combo->setCurrentIndex(qMax(0,combo->findData(selected)));
+                return combo;
+            };
+            editor.trueDialogue=dialogueCombo(node.value(QStringLiteral("trueDialogueNode")).toInt(-1));
+            editor.falseDialogue=dialogueCombo(node.value(QStringLiteral("falseDialogueNode")).toInt(-1));
+            form->addRow(tr("TRUE dialogue"),editor.trueDialogue);
+            form->addRow(tr("FALSE dialogue"),editor.falseDialogue);
+            for(const bool yes:{true,false}) {
+                auto *table=new QTableWidget(0,2,section);
+                table->setHorizontalHeaderLabels({tr("Game Object"),tr("Action")});
+                table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+                table->verticalHeader()->hide();
+                table->setSelectionBehavior(QAbstractItemView::SelectRows);
+                table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                table->setMinimumHeight(100);table->setMaximumHeight(155);
+                const QJsonArray actions=node.value(yes?QStringLiteral("trueActions"):
+                                                      QStringLiteral("falseActions")).toArray();
+                for(const QJsonValue &v:actions) {
+                    const QJsonObject o=v.toObject();
+                    addBooleanActionRow(table,{o.value(QStringLiteral("objectId")).toString(),
+                                               o.value(QStringLiteral("action")).toString()});
+                }
+                if(yes)editor.trueActions=table;else editor.falseActions=table;
+                form->addRow(yes?tr("TRUE actions"):tr("FALSE actions"),table);
+                auto *buttons=new QWidget(section);auto *buttonsLayout=new QHBoxLayout(buttons);
+                buttonsLayout->setContentsMargins(0,0,0,0);
+                auto *add=new QPushButton(tr("+ Add Action"),buttons);
+                auto *remove=new QPushButton(tr("Remove"),buttons);
+                buttonsLayout->addWidget(add);buttonsLayout->addWidget(remove);
+                form->addRow(buttons);
+                connect(add,&QPushButton::clicked,section,[=] {
+                    if(table->rowCount()<64)addBooleanActionRow(table,{QString(),QStringLiteral("enable")});
+                });
+                connect(remove,&QPushButton::clicked,section,[table] {
+                    if(table->currentRow()>=0)table->removeRow(table->currentRow());
+                });
+            }
+            graphEditors.append(editor);
+            (own?graphOwnLayout:graphIncomingLayout)->addWidget(wrapper);
+        }
+    }
+
     auto *interactDialogue = createGameDialogueTreeCombo(
         &dialog, &interactionNodes, &interactionFolders);
     interactDialogue->addItem(tr("None (no dialogue)"), -1);
@@ -9968,7 +10274,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
         linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
-        incomingBooleanCard.panel->setVisible(hasIncomingBoolean && isObject);
+        incomingBooleanCard.panel->setVisible((hasIncomingBoolean || hasIncomingGraph) && isObject);
         triggerCard.panel->setVisible(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
         conveyorCard.panel->setVisible(isConveyor);
@@ -10212,10 +10518,16 @@ void SidboxGameDesigner::configureGameObject(int index)
             editor.falseDialogue->currentData().toInt() >= 0 ||
             !booleanActionsFromTable(editor.trueActions).isEmpty() ||
             !booleanActionsFromTable(editor.falseActions).isEmpty();
-        if (hasBranches && editor.source->currentData().toString().isEmpty()) {
-            QMessageBox::warning(&dialog, tr("Boolean state source"),
-                tr("Choose a Game Object whose enabled state this Boolean reads, "
-                   "or remove its TRUE/FALSE connections first."));
+        const QStringList inputs=stateInputsFromTree(editor.inputs);
+        const QString op=editor.operatorMode->currentData().toString();
+        if ((hasBranches || !inputs.isEmpty()) &&
+            ((op==QStringLiteral("boolean") && inputs.size()!=1) ||
+             (op==QStringLiteral("and") && (inputs.size()<2 || inputs.size()>16)) ||
+             (op==QStringLiteral("or") && inputs.size()!=2))) {
+            QMessageBox::warning(&dialog, tr("State condition inputs"),
+                tr("This %1 needs %2 selected Game Objects. Choose the inputs or remove the branches.")
+                .arg(op,op==QStringLiteral("or")?tr("exactly 2"):
+                    op==QStringLiteral("and")?tr("2–16"):tr("exactly 1")));
             return false;
         }
     }
@@ -10493,11 +10805,65 @@ void SidboxGameDesigner::configureGameObject(int index)
     for (const BooleanEditor &editor : booleanEditors) {
         for (Resource &owner : m_resources) {
             if (owner.id != editor.ownerId) continue;
-            owner.toggleStateTargetId = editor.source->currentData().toString();
+            const QStringList inputs=stateInputsFromTree(editor.inputs);
+            owner.toggleStateTargetId=inputs.value(0);
+            owner.toggleStateOperator=editor.operatorMode->currentData().toString();
+            owner.toggleStateInputIds=inputs.mid(1);
             owner.toggleTrueDialogueNode = editor.trueDialogue->currentData().toInt();
             owner.toggleFalseDialogueNode = editor.falseDialogue->currentData().toInt();
             owner.toggleTrueActions = booleanActionsFromTable(editor.trueActions);
             owner.toggleFalseActions = booleanActionsFromTable(editor.falseActions);
+            break;
+        }
+    }
+    // Apply independent graph edits by stable Trigger ID and node ID.
+    // Even when editing Lifty, the modified record stays on its source Trigger.
+    for(const GraphEditor &editor:graphEditors) {
+        for(Resource &owner:m_resources) {
+            if(owner.id!=editor.ownerId)continue;
+            for(int index=0;index<owner.logicNodes.size();++index) {
+                QJsonObject node=owner.logicNodes.at(index).toObject();
+                if(node.value(QStringLiteral("id")).toString()!=editor.nodeId)continue;
+                node.insert(QStringLiteral("op"),editor.operation->currentData().toString());
+                QJsonArray inputs;
+                for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
+                    QTreeWidgetItem *item=editor.inputs->topLevelItem(i);
+                    if(item->checkState(0)!=Qt::Checked)continue;
+                    inputs.append(QJsonObject{
+                        {QStringLiteral("kind"),item->data(0,Qt::UserRole+1).toString()},
+                        {QStringLiteral("id"),item->data(0,Qt::UserRole).toString()}});
+                }
+                node.insert(QStringLiteral("inputs"),inputs);
+                QJsonArray bound;
+                for(int i=0;i<editor.resultTargets->topLevelItemCount();++i) {
+                    QTreeWidgetItem *row=editor.resultTargets->topLevelItem(i);
+                    if(row->checkState(0)==Qt::Checked)bound.append(row->data(0,Qt::UserRole).toString());
+                }
+                node.insert(QStringLiteral("resultTargets"),bound);
+                node.insert(QStringLiteral("trueDialogueNode"),editor.trueDialogue->currentData().toInt());
+                node.insert(QStringLiteral("falseDialogueNode"),editor.falseDialogue->currentData().toInt());
+                for(const bool yes:{true,false}) {
+                    QJsonArray actions;
+                    for(const Resource::LinkedAction &link:booleanActionsFromTable(
+                        yes?editor.trueActions:editor.falseActions))
+                        actions.append(QJsonObject{{QStringLiteral("objectId"),link.objectId},
+                                                   {QStringLiteral("action"),link.action}});
+                    // A bound enabled-state target cannot simultaneously be
+                    // controlled by branch actions from the same logic node.
+                    QJsonArray clean;
+                    for(const QJsonValue &v:actions) {
+                        bool conflict=false;
+                        for(const QJsonValue &target:bound)
+                            if(v.toObject().value(QStringLiteral("objectId")).toString()==target.toString())
+                                conflict=true;
+                        if(!conflict)clean.append(v);
+                    }
+                    node.insert(yes?QStringLiteral("trueActions"):
+                                   QStringLiteral("falseActions"),clean);
+                }
+                owner.logicNodes.replace(index,node);
+                break;
+            }
             break;
         }
     }
@@ -10547,8 +10913,8 @@ void SidboxGameDesigner::configureGameObject(int index)
             }
         }
         for (const BooleanEditor &editor : booleanEditors) {
-            values << editor.ownerId << editor.source->currentData()
-                   << editor.trueDialogue->currentData() << editor.falseDialogue->currentData();
+            values << editor.ownerId << editor.operatorMode->currentData()
+                   << stateInputsFromTree(editor.inputs) << editor.trueDialogue->currentData() << editor.falseDialogue->currentData();
             for (QTableWidget *table : {editor.trueActions, editor.falseActions}) {
                 values << table->rowCount();
                 for (int row=0; row<table->rowCount(); ++row) {
@@ -10556,6 +10922,28 @@ void SidboxGameDesigner::configureGameObject(int index)
                     auto *action=qobject_cast<QComboBox *>(table->cellWidget(row,1));
                     values << (target ? target->currentData() : QVariant())
                            << (action ? action->currentData() : QVariant());
+                }
+            }
+        }
+        for(const GraphEditor &editor:graphEditors) {
+            values << editor.ownerId << editor.nodeId << editor.operation->currentData()
+                   << editor.trueDialogue->currentData() << editor.falseDialogue->currentData();
+            for(int row=0;row<editor.inputs->topLevelItemCount();++row) {
+                QTreeWidgetItem *item=editor.inputs->topLevelItem(row);
+                values << item->data(0,Qt::UserRole) << item->data(0,Qt::UserRole+1)
+                       << (item->checkState(0)==Qt::Checked);
+            }
+            for(int row=0;row<editor.resultTargets->topLevelItemCount();++row) {
+                QTreeWidgetItem *item=editor.resultTargets->topLevelItem(row);
+                values << item->data(0,Qt::UserRole) << (item->checkState(0)==Qt::Checked);
+            }
+            for(QTableWidget *table:{editor.trueActions,editor.falseActions}) {
+                values << table->rowCount();
+                for(int row=0;row<table->rowCount();++row) {
+                    auto *target=qobject_cast<QComboBox *>(table->cellWidget(row,0));
+                    auto *action=qobject_cast<QComboBox *>(table->cellWidget(row,1));
+                    values << (target?target->currentData():QVariant())
+                           << (action?action->currentData():QVariant());
                 }
             }
         }
@@ -11749,7 +12137,8 @@ bool SidboxGameDesigner::hasAdventure() const
         || m_adventure.contains(QStringLiteral("dialogWidth"))
         || m_adventure.contains(QStringLiteral("dialogHeight"));
 }
-void SidboxGameDesigner::openAdventureEditor(const QString &focusNpcSpriteId)
+void SidboxGameDesigner::openAdventureEditor(const QString &focusNpcSpriteId, int focusDialogueIndex,
+                                              bool editFocusedDialogueDirectly)
 {
     QVector<GameAdventureAsset> sprites, atlases;
     for (const Resource &r : m_resources) {
@@ -11788,7 +12177,8 @@ void SidboxGameDesigner::openAdventureEditor(const QString &focusNpcSpriteId)
     }
     if (!editGameAdventure(this, &edited, sprites, atlases, worldObjects, collectables,
                            activePalette(QStringLiteral("foreground")), m_filePath,
-                           focusNpcSpriteId)) return;
+                           focusNpcSpriteId, focusDialogueIndex,
+                           editFocusedDialogueDirectly)) return;
     m_adventure = edited;
     // Refresh tree labels immediately when NPCs are added/deleted.
     refreshResources();

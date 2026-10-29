@@ -13105,8 +13105,13 @@ void MainWindow::refreshProjectFiles()
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_c.png"));
         } else if (suffix == QStringLiteral("sbui")) {
             fileIcon = gameEditorIcon(QStringLiteral("tree_guidesigner.png"));
-        } else if (suffix == QStringLiteral("sbgm") || suffix == QStringLiteral("vsgm")) {
+        } else if (suffix == QStringLiteral("sbgm")) {
             fileIcon = gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
+        } else if (suffix == QStringLiteral("vsgm")) {
+            // User-provided tree_vsgm.png is loaded from icons/ at runtime.
+            // Until it is installed, keep a valid existing built-in icon.
+            fileIcon = gameEditorIcon(QStringLiteral("tree_vsgm.png"));
+            if(fileIcon.isNull())fileIcon = gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
         } else if (suffix == QStringLiteral("sbpi")) {
             fileIcon = gameEditorIcon(QStringLiteral("tree_file_res.png"));
         } else if (suffix == QStringLiteral("md")) {

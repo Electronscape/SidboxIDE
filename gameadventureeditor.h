@@ -23,6 +23,13 @@ QComboBox *createGameDialogueTreeCombo(QWidget *parent,
                                        const QJsonArray *nodes,
                                        const QJsonArray *folders);
 
+// Open the original Adventure GIVE exchange dialog for one dialogue answer.
+// Returns true only for OK. The caller owns persistence to adventure.nodes.
+bool editGameAdventureGiveExchange(QWidget *parent, QJsonObject *exchange,
+                                   const QJsonArray &items, const QJsonArray &nodes,
+                                   const QVector<GameAdventureAsset> &objects,
+                                   const QJsonArray &folders);
+
 /* Returns true only after pressing OK. In/out payload belongs to .sbgm. */
 bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &sprites,
@@ -31,5 +38,6 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &collectables,
                        const QVector<QRgb> &foregroundPalette,
                        const QString &currentDesignFilePath,
-                       const QString &focusNpcSpriteId = QString());
+                       const QString &focusNpcSpriteId = QString(), int focusDialogueIndex = -1,
+                       bool editFocusedDialogueDirectly = false);
 #endif

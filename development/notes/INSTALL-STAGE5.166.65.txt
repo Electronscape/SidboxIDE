@@ -1,0 +1,58 @@
+Stage 5.166.65.281026: Independent logic node -> NPC actions
+===============================================================
+
+Symptom:
+    Game World Object Generation:
+    Trigger 'logictest_key[0]' logic node 'logic2' has an invalid action target.
+
+Root cause:
+    Independent logic TRUE/FALSE action validation accepted only local
+    objectSlot IDs. Ordinary Triggers and the C emitter already supported
+    Adventure NPC targets. Visual Nodes stores local NPC sprite IDs,
+    whereas Game Object Properties may store canonical @npc:<world>:<id>.
+
+What changed:
+    gamedesigner_export.cpp: one action-target contract is used by ordinary
+    Trigger links and independent TRUE/FALSE action links. Resolves local
+    and remote Game Objects, local/remote NPCs, and player spotlight.
+    Accepts both local NPC sprite IDs and canonical NPC references.
+    Existing action emitter calls gameworlds_npc_action(world, slot, 0/1/2)
+    for Hide/Show/Toggle; the actual runtime rules remain unchanged.
+    gamevisualnodes.cpp: only ordinary Game Objects may supply live .active
+    state to logic inputs or receive direct RESULT bindings. NPCs may
+    receive TRUE/FALSE actions, not state-value bindings.
+    gamedesigner.cpp: NPC actions are labelled as NPCs in the properties
+    editor instead of being misidentified as Decoration resources.
+    splashscreenwidget.cpp: updated build version.
+
+User's graph:
+    Trigger 0 -> Decoration 0 ---\
+                                  AND logic1 -> Boolean logic2
+    Trigger 1 -> Decoration 1 ---/                  FALSE -> Disable Guardian[0]
+
+    No graph reconstruction required. The logic chain is independent of
+    NPC action target resolution. Branch FALSE is a Disable action; RESULT
+    itself is a boolean value, not a hide/show command.
+
+Test steps:
+  1. Apply hotfix to Stage 5.166.64 and rebuild IDE.
+  2. Open existing world and Visual Nodes. Confirm logic1 -> logic2 and
+     logic2 FALSE -> Guardian[0] still appear. Right-click the wire and
+     ensure the action is Disable.
+  3. Save if you changed the action; Update ALL Worlds / Update Game Project.
+  4. Build V1: world generation should no longer report an invalid target.
+  5. On SIDBOX, start with Guardian visible. Trigger the FALSE condition:
+     Guardian should hide. Re-enable Guardian through an appropriate
+     Trigger/branch and repeat the FALSE test.
+  6. Reopen Game Object Properties, and ensure the action remains linked.
+
+Preserved:
+    no runtime rules, custom main.c, map format, save format, new-game reset,
+    world-manager, or existing .sbgm/.vsgm schema changes.
+
+Validation performed:
+    Native C compiled from actual gameworlds_npc_action and
+    game_adventure_npc_action implementations, including local and remote
+    paths, action codes 0/1/2 and invalid targets; legacy graph and
+    Decoration regressions, and critical title/save/reset tests.
+    Complete Qt6 GUI build not available in this container.

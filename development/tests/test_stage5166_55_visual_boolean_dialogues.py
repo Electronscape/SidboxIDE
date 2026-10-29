@@ -13,7 +13,7 @@ assert 'Build: 5.166.' in version
 assert 'QStringList{tr("Logic")}' in graph
 assert 'QStringList{tr("Boolean (TRUE / FALSE)")}' in graph
 assert 'QStringLiteral("@logic:boolean")' in graph
-assert 'addBooleanFromObject(from,at);' in graph
+assert 'createGraphLogic(from,at,selectedId.mid(' in graph
 # Stage 5.166.56: state source comes from a Game Object's output,
 # not an editable dropdown inside the Boolean card.
 start=graph.index('void createToggleCard(')
@@ -28,9 +28,9 @@ assert 'QStringLiteral("@stateout:false:")' in boolean
 assert 'void addBooleanFromObject(' in graph
 assert 'n.toggleStateTargetId=source;' in graph
 assert 'const NodeCard *source' not in graph  # source is the existing movable NodeCard
-assert 'NodeCard *source=m_cards.value(node.toggleStateTargetId);' in graph
+assert 'NodeCard *source=m_cards.value(sourceId);' in graph
 # Branch outputs support same object action choices as Trigger outputs.
-assert 'appendBranchConnection(from.mid(prefix.size()),yes,selectedId,QStringLiteral("enable"));' in graph
+assert 'appendBranchConnection(from.mid(prefix.size()),yes,selectedId,' in graph
 assert 'supportedAction(action)' in graph
 assert 'QPair<QString,QString> &choice' in graph
 # Branch dialogue editor has the same key interactive controls as normal dialogue.

@@ -53,6 +53,7 @@ qt_add_executable(SidboxIDE
     gamefloweditor.h
     gamevisualnodes.cpp
     gamevisualnodes.h
+    gamevisualgraphlogic.h
     gamequesteditor.cpp
     gamequesteditor.h
     gamequestjournaleditor.cpp
@@ -274,3 +275,13 @@ target_link_options(SidboxIDE PRIVATE
 )
 
 install(SCRIPT ${deploy_script})
+
+# Optional custom Visual Nodes project-file icon. If the user supplies
+# icons/tree_vsgm.png, embed it so the Files in Project icon works in a
+# deployed executable without requiring an external icons/ directory.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons/tree_vsgm.png")
+    qt_add_resources(SidboxIDE "vsgm_file_icon"
+        PREFIX "/icons"
+        BASE icons
+        FILES icons/tree_vsgm.png)
+endif()

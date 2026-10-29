@@ -54,6 +54,10 @@ QIcon editorTabIconForFile(const QString &filePath,
     if (suffix == QStringLiteral("sbgm")) {
         return gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
     }
+    if (suffix == QStringLiteral("vsgm")) {
+        const QIcon icon=gameEditorIcon(QStringLiteral("tree_vsgm.png"));
+        return !icon.isNull()?icon:gameEditorIcon(QStringLiteral("toolbar_gamedesigner.png"));
+    }
 
     if (suffix == QStringLiteral("md")) {
         return gameEditorIcon(QStringLiteral("tree_file_md.png"));

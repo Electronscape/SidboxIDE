@@ -1,0 +1,10 @@
+Stage 5.166.84 UI hotfix: GIVE output sockets aligned with their actual dropdown rows.
+
+Extract the full source over 5.166.83. Rebuild the Qt IDE and check splash
+Build: 5.166.84.281026. Open World1 > Visual Nodes > Future Kim GIVE exchange.
+The response output circles should align with the centre of each corresponding
+combo box. Inspect both expanded and compact cards.
+
+No generated game runtime changes. No .sbgm changes. No main.c changes.
+
+Verification: targeted Python source checks passed; no Qt6 build here.

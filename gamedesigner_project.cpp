@@ -291,7 +291,8 @@ bool SidboxGameDesigner::loadDesign()
                 QStringLiteral("trigger"), QStringLiteral("door"),
                 QStringLiteral("deathzone"), QStringLiteral("breakable"), QStringLiteral("hazard"),
                 QStringLiteral("enemy"), QStringLiteral("goto_world"),
-                QStringLiteral("particle_emitter"), QStringLiteral("save_checkpoint")}.contains(type)
+                QStringLiteral("particle_emitter"), QStringLiteral("save_checkpoint"),
+                QStringLiteral("decoration_object")}.contains(type)
             && r.kind == QStringLiteral("sprite")) r.objectType = type;
         r.pickupKind = qBound(1, object.value(QStringLiteral("pickupKind")).toInt(1), 255);
         r.objectValue = qBound(0, object.value(QStringLiteral("value")).toInt(10), 65535);
@@ -394,7 +395,16 @@ bool SidboxGameDesigner::loadDesign()
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
                          QStringLiteral("toggle")}.contains(r.targetAction))
             r.targetAction = QStringLiteral("none");
+        r.logicNodes = object.value(QStringLiteral("logicNodes")).toArray();
         r.toggleStateTargetId = object.value(QStringLiteral("toggleStateTargetId")).toString();
+        r.toggleStateOperator = object.value(QStringLiteral("toggleStateOperator")).toString(QStringLiteral("boolean"));
+        if (r.toggleStateOperator != QStringLiteral("and") &&
+            r.toggleStateOperator != QStringLiteral("or")) r.toggleStateOperator = QStringLiteral("boolean");
+        for (const QJsonValue &input : object.value(QStringLiteral("toggleStateInputIds")).toArray()) {
+            const QString id = input.toString();
+            if (!id.isEmpty() && id != r.toggleStateTargetId &&
+                !r.toggleStateInputIds.contains(id)) r.toggleStateInputIds.append(id);
+        }
         r.toggleTrueDialogueNode = object.value(QStringLiteral("toggleTrueDialogueNode")).toInt(-1);
         r.toggleFalseDialogueNode = object.value(QStringLiteral("toggleFalseDialogueNode")).toInt(-1);
         for (const bool yes:{true,false}) {
@@ -929,7 +939,12 @@ bool SidboxGameDesigner::saveDesign()
                 object.insert(QStringLiteral("triggerExtraActions"),links);
             }
             if (r.objectType==QStringLiteral("trigger")) {
+                object.insert(QStringLiteral("logicNodes"), r.logicNodes);
                 object.insert(QStringLiteral("toggleStateTargetId"), r.toggleStateTargetId);
+                object.insert(QStringLiteral("toggleStateOperator"), r.toggleStateOperator);
+                QJsonArray stateInputs;
+                for (const QString &input : r.toggleStateInputIds) stateInputs.append(input);
+                object.insert(QStringLiteral("toggleStateInputIds"), stateInputs);
                 object.insert(QStringLiteral("toggleTrueDialogueNode"),r.toggleTrueDialogueNode);
                 object.insert(QStringLiteral("toggleFalseDialogueNode"),r.toggleFalseDialogueNode);
                 for (const bool yes:{true,false}) {

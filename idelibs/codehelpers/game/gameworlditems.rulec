@@ -896,9 +896,19 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
 uint8_t gameworlds_request(const char *name);
 uint8_t gameworlds_request_at(const char *name, const char *start_id);
 uint8_t gameworlds_request_at_from(const char *name, const char *start_id, int32_t exit_x, int32_t exit_y);
+/* Startup/re-entry pass: only state bindings and idempotent actions.
+ * Never replay a dialogue, toggle, or travel just because a save was loaded. */
+void gameworlditems_sync_logic(void)
+{
+@IDE{GRAPH_INITIAL_SYNC}}
 static void cg_run_trigger_actions(void)
 {
-@IDE{TRIGGER_ACTIONS}}
+    // Live state snapshots are captured before the ordinary Trigger actions.
+@IDE{GRAPH_SNAPSHOTS}@IDE{TRIGGER_ACTIONS}
+    // Independent graph inputs are sampled after ALL ordinary Trigger actions.
+@IDE{GRAPH_EVALUATIONS}
+    // Branch actions are dispatched from that stable state snapshot.
+@IDE{GRAPH_DISPATCH}}
 /* FIRE2 near an interactive Trigger opens the Adventure item's USE list.
  * The closest eligible object wins; detection uses distance to the hitbox
  * EDGES so solid doors can be interacted with without entering their body. */
@@ -1148,6 +1158,7 @@ void gameworlditems_draw(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_draw_overlay(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_save_state(void) {}
 void gameworlditems_restore_state(void) {}
+void gameworlditems_sync_logic(void) {}
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
 { (void)emit; (void)ctx; }
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)

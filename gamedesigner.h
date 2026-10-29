@@ -190,10 +190,13 @@ private:
         // Visual Nodes condition: read the active state of a local Game Object
         // AFTER this Trigger's normal enable/disable/toggle actions execute.
         // Each TRUE/FALSE output may show a separate existing Adventure dialogue.
-        QString toggleStateTargetId;
+        QString toggleStateTargetId; // Legacy first input, kept for old .sbgm files.
+        QString toggleStateOperator = QStringLiteral("boolean"); // boolean, and, or.
+        QStringList toggleStateInputIds; // Additional unique object IDs in evaluation order.
         int toggleTrueDialogueNode = -1;
         int toggleFalseDialogueNode = -1;
         QVector<LinkedAction> toggleTrueActions, toggleFalseActions;
+        QJsonArray logicNodes; // Independent typed DAG nodes; .sbgm owns the graph.
         QString gotoWorldName; // target world basename, not a path or tab index
         bool gotoPress = false; // false = walk into door; true = FIRE2 contact
         QString gotoStartId = QStringLiteral("default"); // stable destination spawn ID
@@ -252,7 +255,8 @@ private:
     void rebuildSplineOverlay();
     void updateSplineCurve();
     bool exportSplinePaths(bool showMessage);
-    void openAdventureEditor(const QString &focusNpcSpriteId = QString());
+    void openAdventureEditor(const QString &focusNpcSpriteId = QString(), int focusDialogueIndex = -1,
+                             bool editFocusedDialogueDirectly = false);
     void editPlayerStartLocation(const QString &id);
     bool exportAdventure(QString *error);
     bool hasAdventure() const;

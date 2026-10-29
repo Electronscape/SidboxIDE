@@ -1,3 +1,95 @@
+# Stage 5.166.84.1 — Qt compile hotfix (28 Oct 2026)
+
+Fixes the Qt6 `QObject::findChildren` static assertion in GIVE socket redraw.
+Searches for `QComboBox*` and retains `giveRouteBranch` matching.
+No gameplay/runtime changes. See `README-STAGE5.166.84.1.txt`.
+
+---
+
+# Stage 5.166.84 — GIVE output dropdown alignment (28 Oct 2026)
+
+Fixes the visibly staggered output circles on expanded NPC GIVE Exchange
+cards by positioning each socket from the **final Qt dropdown geometry**
+after proxy embedding. All five sockets are re-anchored before routing wires,
+including after the first visible layout. Data and game runtime remain
+unchanged. See `README-STAGE5.166.84.txt` for installation and testing.
+
+---
+
+# Stage 5.166.83 — GIVE socket pull-out and visual alignment (28 Oct 2026)
+
+Turquoise GIVE anchors can now be dragged from a dialogue answer onto the
+canvas to reposition their existing exchange card. No new exchange is created,
+and the actual Adventure engine data is unchanged. Dialogue answer outputs
+cluster near each answer, all circular outputs centre on card borders, collapsed
+cards retain sockets in a tidy vertical row, and hollow ports have opaque canvas
+backgrounds that hide overlapping wires and borders. See
+`README-STAGE5.166.83.txt` for installation and tests.
+
+---
+
+# Stage 5.166.72 — NPC Conversations in Visual Nodes (28 Oct 2026)
+
+The Visual Nodes graph now recognises authored `adventure.npcs` associations
+as first-class editable NPC cards. Opening/after-helped conversation dropdowns
+(with Dialogue Editor folder browser), talk radius and initially-visible controls
+use the same `.sbgm` properties as the Adventure Editor. The node picker can
+connect existing NPC opening/after-helped dialogues to Trigger actions and
+independent TRUE/FALSE logic via ordinary Show Dialogue calls. Refresh from
+World rereads the NPC state; an NPC card can be hidden persistently in `.vsgm`
+without deleting its required opening dialogue. See
+`development/notes/INSTALL-STAGE5.166.72.txt` for test steps and limitations.
+
+---
+
+# Stage 5.166.69.281026 — Weather PLAYER actions: ON/OFF/Toggle
+
+PLAYER Weather targets now support Enable, Disable and Toggle, including both
+branches wired to the same Snow/Rain/Storm card. Stage 5.166.67/68 saved
+Enable/Enable weather pairs are migrated in the Visual Nodes editor and also
+handled directly by the exporter for backward compatibility. The Game Object
+Properties action selector is enabled for weather. Mode-specific Disable avoids
+clearing another graph's unrelated weather. Existing Spotlight, startup sync,
+Time of Day and world-transition paths remain intact. No change to main.c.
+
+**Install and hardware test:** `development/notes/INSTALL-STAGE5.166.69.txt`.
+Native C and targeted regression tests pass; the Qt IDE rebuild and physical
+SIDBOX weather test are not verified here.
+
+---
+
+# Stage 5.166.68.281026 — Initial visual logic at world start and checkpoint reload
+
+Independent graph outputs now resolve immediately on world activation, after
+saved object states and cross-world actions have been restored and after scene
+effects are configured. Initial synchronisation applies RESULT state bindings
+and idempotent enable/disable actions (including PLAYER Spotlight, weather,
+day/night). It deliberately excludes dialogue, Toggle and Goto World actions,
+which are gameplay events, not save-load callbacks. Every ordinary Trigger
+execution path is unchanged. No new save format or `main.c` integration.
+
+**Install and hardware test:** `development/notes/INSTALL-STAGE5.166.68.txt`.
+Source/native smoke tests pass; GUI compilation and physical SIDBOX testing
+must be verified on the user's machine.
+
+---
+
+# Stage 5.166.67.281026 — PLAYER visual logic commands
+
+Real PLAYER targets now live under the Visual Nodes PLAYER tree for Spotlight,
+Weather & Effects, Time of Day, and World Transitions. Normal Trigger and
+independent logic TRUE/FALSE action branches compile to the existing world
+manager's spotlight and deferred world request APIs, plus new live weather/
+daylight setters. Existing RESULT and independent AND/OR object bindings are
+unchanged. The sibling-world discovery matches the Goto World editor.
+
+**Install, regression and SIDBOX test checklist:**
+`development/notes/INSTALL-STAGE5.166.67.txt`. Full Qt6 GUI build and real
+SIDBOX hardware still require verification. Your hand-maintained `main.c`
+is not modified; regenerate All Worlds for the generated runtime changes.
+
+---
+
 # Stage 5.166.58.281026 — Editable Boolean branches in Game Object Properties
 
 The formerly read-only Boolean State / Visual Nodes summary is now editable.
@@ -420,3 +512,7 @@ See `development/notes/INSTALL-STAGE-5.166.39.txt`.
 - Does **not** modify saved .sbgm/.vsgm schemas, game runtime, .map or main.c.
 - Tested source/schema and existing native suites 5.166.31–.38 and Visual Nodes
   .40–.42. Full Qt GUI compilation and interaction require verification.
+
+Stage 5.166.71 (28 October 2026): existing Game Object connections can now be
+refreshed into the Visual Nodes graph, including Enemy defeat/key pickup links
+and explicit cross-world/NPC action targets. See development/notes/INSTALL-STAGE5.166.71.txt.

@@ -25,14 +25,14 @@ assert 'state-true-action' in graph and 'state-false-action' in graph
 assert 'removeBranchConnection(ref.first,ref.second>-2000' in graph
 assert 'const int index=(yes?-1000:-2000)-ref.second;' in graph
 assert 'node.toggleTrueActions.clear();node.toggleFalseActions.clear();' in graph
-assert 'm_cards.contains(node.toggleStateTargetId)' in graph  # incoming source-object wire when condition exists
+assert 'm_cards.contains(sourceId)' in graph  # supports each incoming source-object wire
 assert 'if (!targetAction(target,&action))return false;' in generator
 start=generator.index('            if (!targetAction(r, &action)) return false;',generator.index('const Resource &r = *platforms.at(i);',generator.index('if (nt) for')))
 body=generator[start:generator.index('            if (r.interactItemName.isEmpty()',start)]
 assert body.index('for (const Resource::LinkedAction &link : r.triggerExtraActions)') < body.index('if (!r.toggleStateTargetId.isEmpty()')
 assert body.index('for (const Resource::LinkedAction &link:r.toggleTrueActions)') < body.index('if (r.toggleTrueDialogueNode>=0)')
 assert body.index('for (const Resource::LinkedAction &link:r.toggleFalseActions)') < body.index('if (r.toggleFalseDialogueNode>=0)')
-assert body.index('if (%1.active)') < body.index('} else {')
+assert body.index('if (%1)') < body.index('} else {')
 
 # Compile the same TRUE / FALSE control flow against two target objects with
 # both action and dialogue side effects, checking the active state AFTER Toggle.

@@ -1,0 +1,7 @@
+Stage 5.166.84.1 — Qt6 GIVE socket compile hotfix (28 Oct 2026)
+
+Apply this full-source archive over Stage 5.166.84, rebuild the IDE, verify
+Build: 5.166.84.1.281026. In gamevisualnodes.cpp, the dynamic list of
+GIVE combo boxes uses findChildren<QComboBox*>() rather than the non-Q_OBJECT
+subclass ConversationTreeCombo. Each control is still matched using the
+giveRouteBranch property. No generator or runtime change.

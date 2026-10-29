@@ -21,7 +21,7 @@ assert source.index('tree->sortItems(0,Qt::AscendingOrder);',source.index('void 
 assert 'Delete Selected' in source and 'Remove Orphans' in source
 assert 'Delete Node (disconnect links)' in source and 'Remove All Orphaned Nodes...' in source
 assert 'connectedCardIds() const' in source
-assert 'if (!m_cards.contains(id) || connectedCardIds().contains(id))return 0;' in source
+assert 'if (!m_cards.contains(id) || (!force && connectedCardIds().contains(id)))return 0;' in source
 assert 'm_dialogueCards.remove(trigger);' in source
 assert 'm_dialogueControls.remove(trigger);' in source
 assert 'm_placedCards.remove(id);' in source

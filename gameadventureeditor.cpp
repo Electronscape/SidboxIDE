@@ -854,8 +854,10 @@ private:
  * incremental AND option remembers hand-ins across world visits. */
 QJsonObject editExchange(QWidget *parent, QJsonObject saved,
                          const QJsonArray &items, const QJsonArray &nodes,
-                         const QVector<GameAdventureAsset> &objects, const QJsonArray &folders)
+                         const QVector<GameAdventureAsset> &objects, const QJsonArray &folders,
+                         bool *accepted = nullptr)
 {
+    if (accepted) *accepted = false;
     QDialog dlg(parent);
     dlg.setWindowTitle(QObject::tr("NPC Item Exchange / Quest Requirements"));
     dlg.setMinimumSize(710,560);
@@ -1135,6 +1137,7 @@ QJsonObject editExchange(QWidget *parent, QJsonObject saved,
     });
     QObject::connect(buttons,&QDialogButtonBox::rejected,&dlg,&QDialog::reject);
     if(dlg.exec()!=QDialog::Accepted) return saved;
+    if (accepted) *accepted = true;
     QJsonArray chosen;QSet<int> unique;
     for(QComboBox *slot:itemSlots){
         const int index=slot->currentData().toInt();
@@ -1173,11 +1176,11 @@ QString dialogueTitle(const QJsonObject &node, int index)
     return QStringLiteral("%1: %2 — %3").arg(index)
         .arg(node.value("speaker").toString().left(24), node.value("text").toString().left(35));
 }
-void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &items,
+bool editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &items,
               const QVector<GameAdventureAsset> &objects, QTableWidget *npcTable,
               const QJsonArray &folders, const QString &currentDesignFilePath)
 {
-    if (row < 0 || row >= nodes.size()) return;
+    if (row < 0 || row >= nodes.size()) return false;
     QJsonObject node = nodes[row].toObject();
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Dialogue Node %1").arg(row));
     dialog.setMinimumSize(820, 680); dialog.resize(1010, 815);
@@ -1830,7 +1833,7 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
     QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
     QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
-    if (dialog.exec() != QDialog::Accepted) return;
+    if (dialog.exec() != QDialog::Accepted) return false;
     node.insert(QStringLiteral("enableQuestId"),enableQuest->currentData().toString());
     node.insert("speaker",speaker->text().left(36));
     node.insert("text",text->toPlainText().left(512));
@@ -1898,8 +1901,25 @@ void editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
         auto *saved=qobject_cast<QComboBox*>(npcTable->cellWidget(npcRow,3));
         if (saved) saved->setCurrentIndex(std::max(0,saved->findData(nextVisit->currentData().toInt())));
     }
+    return true;
 }
 } // namespace
+
+// Visual Nodes opens the very same exchange editor used by Adventure Editor.
+// This public entry point only applies the edited JSON after explicit OK;
+// Cancel leaves the original answer's exchange untouched.
+bool editGameAdventureGiveExchange(QWidget *parent, QJsonObject *exchange,
+                                   const QJsonArray &items, const QJsonArray &nodes,
+                                   const QVector<GameAdventureAsset> &objects,
+                                   const QJsonArray &folders)
+{
+    if (!exchange) return false;
+    bool accepted = false;
+    const QJsonObject result = editExchange(parent, *exchange, items, nodes,
+                                            objects, folders, &accepted);
+    if (accepted) *exchange = result;
+    return accepted;
+}
 
 QComboBox *createGameDialogueTreeCombo(QWidget *parent,
                                        const QJsonArray *nodes,
@@ -1951,7 +1971,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
                        const QVector<GameAdventureAsset> &collectables,
                        const QVector<QRgb> &foregroundPalette,
                        const QString &currentDesignFilePath,
-                       const QString &focusNpcSpriteId)
+                       const QString &focusNpcSpriteId, int focusDialogueIndex,
+                       bool editFocusedDialogueDirectly)
 {
     if (!payload) return false;
     const QJsonObject old = *payload;
@@ -3103,6 +3124,10 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         nodeTree->setCurrentItem(desired);
     };
     redrawNodes();
+    // Deep-link from Visual Nodes to the original numbered dialogue.
+    if(focusDialogueIndex>=0 && focusDialogueIndex<nodes.size()) {
+        redrawNodes(focusDialogueIndex);
+    }
     auto *folderButtons=new QHBoxLayout;
     auto *folderAdd=new QPushButton(QObject::tr("+ Folder / Subfolder"),dialoguePage);
     auto *folderRename=new QPushButton(QObject::tr("Rename Folder..."),dialoguePage);
@@ -3264,13 +3289,14 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         nodes.append(node);
         redrawNodes(nodes.size()-1);refreshNpcNodes();
     });
-    auto doNodeEdit=[&] {
+    auto doNodeEdit=[&]() -> bool {
         const int row=selectedNode();
         if(row<0){
-            QMessageBox::information(&dialog,QObject::tr("Edit Dialogue"),QObject::tr("Select a dialogue node first."));return;
+            QMessageBox::information(&dialog,QObject::tr("Edit Dialogue"),QObject::tr("Select a dialogue node first."));return false;
         }
-        editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders,currentDesignFilePath);
-        redrawNodes(row);refreshNpcNodes();sizeNpcColumns();
+        const bool accepted=editNode(&dialog,nodes,row,tableItems(items),worldObjects,npcs,dialogueFolders,currentDesignFilePath);
+        if(accepted){redrawNodes(row);refreshNpcNodes();sizeNpcColumns();}
+        return accepted;
     };
     QObject::connect(nodeEdit,&QPushButton::clicked,&dialog,doNodeEdit);
     QObject::connect(nodeTree,&QTreeWidget::itemDoubleClicked,&dialog,[&](QTreeWidgetItem *entry,int){
@@ -3318,6 +3344,8 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
         redrawNodes();refreshNpcNodes();sizeNpcColumns();
     });
     tabs->addTab(dialoguePage,QObject::tr("Dialogues & Choices"));
+    if(focusDialogueIndex>=0 && focusDialogueIndex<nodes.size())
+        tabs->setCurrentWidget(dialoguePage);
 
     auto *skinPage=new QWidget(tabs);auto *skinLayout=new QVBoxLayout(skinPage);
     auto *skinForm=new QFormLayout;
@@ -3992,6 +4020,15 @@ bool editGameAdventure(QWidget *parent, QJsonObject *payload,
     if (!dialog.restoreGeometry(adventureWindowSettings.value(
             QStringLiteral("GameAdventureEditor/geometry")).toByteArray()))
         dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);
+    // Direct deep-link from Visual Nodes: open this numeric dialogue's full
+    // settings immediately. On Save/Cancel close the Adventure shell and hand
+    // control back to the graph; there is no second editor to dismiss.
+    if(editFocusedDialogueDirectly && focusDialogueIndex>=0 && focusDialogueIndex<nodes.size()) {
+        QTimer::singleShot(0,&dialog,[&dialog,&doNodeEdit] {
+            if(doNodeEdit())dialog.accept();
+            else dialog.reject();
+        });
+    }
     const int adventureResult = dialog.exec();
     adventureWindowSettings.setValue(QStringLiteral("GameAdventureEditor/geometry"), dialog.saveGeometry());
     if (adventureResult != QDialog::Accepted) return false;

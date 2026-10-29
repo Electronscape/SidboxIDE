@@ -164,6 +164,14 @@ void gameworlds_ui_full_brightness(void);
 uint8_t gameworlds_weather_frame(uint16_t view_width, uint16_t view_height);
 /* 0 = off, 1 = on, 2 = toggle. Applies to currently loaded world. */
 void gameworlds_spotlight_action(uint8_t action);
+/* PLAYER graph commands: weather 0 clear, 1 rain, 2 snow, 3 storm;
+ * daylight 0 day, 1 night, 2 cycle. Operate on active world only. */
+void gameworlds_weather_action(uint8_t mode);
+/* Weather target controls: action 0 disable, 1 enable, 2 toggle.
+ * Disable only clears the selected weather if it is the active mode.
+ * Weather 0 (Clear) always clears. */
+void gameworlds_weather_target_action(uint8_t mode, uint8_t action);
+void gameworlds_daylight_action(uint8_t mode);
 /* Trigger action targeting a live or unloaded world by compiled object slot.
    Unloaded targets are staged and applied at their next entry. */
 uint8_t gameworlds_object_action(const char *world_name, uint16_t object_slot, uint8_t action);

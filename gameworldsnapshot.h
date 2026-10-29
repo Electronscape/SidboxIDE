@@ -118,7 +118,7 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_before", "gameworlditems_after",
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
-            "gameworlditems_save_state", "gameworlditems_restore_state",
+            "gameworlditems_save_state", "gameworlditems_restore_state", "gameworlditems_sync_logic",
             "gameworlditems_disk_export", "gameworlditems_disk_import",
             "gameadventure_disk_export", "gameadventure_disk_import",
             "gameworlditems_remote_action", "gameworlditems_remote_reset",
@@ -212,6 +212,7 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "uint8_t " + id + "_gameworlditems_init(void);\n"
                      "void " + id + "_gameworlditems_save_state(void);\n"
                      "void " + id + "_gameworlditems_restore_state(void);\n"
+                     "void " + id + "_gameworlditems_sync_logic(void);\n"
                      // Stage 5.164.3: registry save callbacks MUST be declared
                      // in each world's PUBLIC API, not only its private header.
                      "void " + id + "_gameworlditems_disk_export(void (*)(const void *, uint32_t, void *), void *);\n"
@@ -673,6 +674,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
                                 "%1_gameadventure_disk_export, %1_gameadventure_disk_import").arg(id);
         entry += QStringLiteral(", %1, %2, %3, %4")
             .arg(timeDayPtrs.at(i),timeNightPtrs.at(i),timeDayCounts.at(i),timeNightCounts.at(i));
+        entry += QStringLiteral(", %1_gameworlditems_sync_logic").arg(id);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to

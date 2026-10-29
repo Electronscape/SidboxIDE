@@ -1,0 +1,54 @@
+SIDBOX / CoderGirl IDE - Stage 5.166.73 (28 Oct 2026)
+NPC Conversation Input Sockets
+========================================================
+
+BASE
+  Full IDE source replacement built from Stage 5.166.72. Back up your
+  IDE source and your .sbgm / .vsgm world files before installation.
+
+INSTALL
+  1. Extract over Stage 5.166.72 and rebuild the Qt IDE with your
+     normal CMake workflow.
+  2. Confirm splash screen Build: 5.166.73.281026.
+  3. Open Forest (or another world with Adventure NPCs), then Visual Nodes.
+  4. On BigSteve[0] or BigSteve[1], the purple input circle opposite
+     Start conversation is the Opening dialogue input. The lower circle,
+     opposite After helped, is the optional After helped input.
+  5. Drag a logic TRUE or FALSE wire directly onto the intended purple
+     NPC input. Trigger outputs also work. If you drop onto the body of
+     an NPC card, choose which conversation input from the popup.
+  6. Save Graph + World. Reopen the graph to check the direct wire persists.
+  7. If you changed a gameplay dialogue link, regenerate ALL Worlds
+     and rebuild the game. Your own main.c requires no edits.
+
+BEHAVIOUR
+  These are two incoming DIALOGUE COMMAND ports, not NPC Boolean-state
+  outputs. A connected branch invokes the selected existing Adventure
+  dialogue through the runtime's existing Show Dialogue mechanism.
+  'After helped' does not implicitly check the NPC's helped state.
+  If After helped is set to 'Use normal opening dialogue', configure a
+  specific After helped dialogue before connecting to the lower port.
+
+  If you change an NPC's selected opening / after-helped dialogue after
+  wiring it, connections deliberately made to that socket follow the new
+  dialogue ID. Other Show Dialogue nodes referencing the old dialogue ID
+  are not changed. Disconnect a wire with right-click -> Remove Connection.
+  Delete NPC Card disconnects its direct incoming dialogue wires after
+  confirmation but never deletes the NPC or Adventure dialogue resource.
+
+  Collapsed NPC cards retain two separate visible input circles. NPC
+  state outputs / helped-condition checks are NOT implemented yet.
+
+DATA SAFETY
+  The dialogue IDs stay exclusively in world .sbgm game/Adventure data.
+  The only new .vsgm field is npcDialogueRoutes, a visual routing hint
+  saying which NPC socket a dialogue wire should terminate at; it is
+  NOT another gameplay rule, and it is verified against .sbgm on load.
+  Existing NPC Conversations picker-based Show Dialogue actions remain
+  supported and are not automatically rewritten.
+
+VERIFICATION
+  Focused Stage .73 source checks plus earlier Stage .70/.71/.72 UI
+  contracts and Stage .60/.62/.64/.67/.68 native/source regressions pass.
+  No Qt6 development headers in the test environment, so actual Qt
+  desktop drag/drop and SIDBOX hardware still need user testing.

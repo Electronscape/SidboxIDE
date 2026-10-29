@@ -1,0 +1,67 @@
+SIDBOX/CoderGirl IDE Stage 5.166.70.281026
+VISUAL NODE EDITOR: DESTRUCTIVE CARD REMOVAL, COMPACT CARDS, INLINE TRIGGER CONTROLS AND DYNAMIC CANVAS
+
+BASE / INSTALL
+1. Back up your IDE directory and the project .sbgm/.vsgm files.
+2. Extract this COMPLETE IDE SOURCE archive over Stage 5.166.69.
+3. Rebuild CoderGirl IDE using your normal Qt6 toolchain.
+4. Confirm splash screen: Build: 5.166.70.281026.
+5. Open an existing world and its Visual Nodes graph. No new .sbgm version is needed.
+6. Existing generated games do not automatically incorporate edited Trigger properties.
+   After changing the graph and saving, regenerate ALL Worlds and rebuild the game.
+7. Hand-maintained main.c does not need editing.
+
+CHANGES (gamevisualnodes.cpp, splashscreenwidget.cpp)
+- Delete and right-click Delete Node ask for confirmation, disconnect incoming/outgoing
+  trigger and independent-graph references, then forcibly remove the selected card.
+  This fixes the old orphan-removal guard that refused connected-card deletion.
+- Delete shortcut applies to a selected canvas/list card but does not steal Delete
+  while a dialogue textbox, line edit or dropdown has keyboard focus.
+- Deletion removes the visual card and gameplay LINKS, never the underlying Game
+  Object, NPC resource, or Adventure dialogue entry. Save Graph + World commits links.
+- VISIBLE NODES left panel maximum width: 220px -> 270px (+50px); initial splitter
+  allocation: 175px -> 225px.
+- Every card type has a header [+]/[-] to collapse to a compact named card and
+  expand to show its details. Output sockets stay usable in compact mode and wire
+  geometry follows the compact position. Per-card collapse state is in .vsgm only.
+- Trigger cards: Require FIRE2, Remove after switch, USE inventory [dropdown].
+  These edit existing .sbgm gameObject triggerPress, triggerOneShot and
+  interactItemName fields, shared with ordinary Game Object Properties.
+  FIRE2 is disabled when an inventory item is selected (same game rule).
+- Independent Boolean/NOT/AND/OR graph cards and legacy Boolean cards now offer
+  an inline operator dropdown while expanded. Their existing context menu remains.
+- Fit All uses actual displayed card geometry rather than wire bounds or the
+  old arbitrary scene rect. Scrollable scene bounds automatically grow as cards
+  move or are added. Existing pan and zoom restore behaviour remains.
+
+IMPORTANT EXPECTED BEHAVIOUR
+- Deleting a logic input disconnects it, not the downstream node. A remaining
+  AND/OR/NOT node with insufficient inputs is incomplete and must be rewired or
+  removed before Save Graph + World will pass validation. This avoids guessing
+  what an incomplete expression should mean.
+- All underlying game objects survive node deletion. The graph only removes
+  links and layout cards.
+- Node collapse is a visual setting and has NO gameplay/runtime impact.
+- The normal multi-world save/load, PLAYER actions and weather fixes from
+  5.166.67/68/69 remain in the source unchanged.
+
+SUGGESTED DESKTOP SMOKE TEST
+A. Open your two-trigger/AND/Snow graph. Click any card header [+]/[-] twice.
+   Check the compact sockets remain connected and Save/Reopen retains layout.
+B. Toggle both Trigger checkboxes, select an existing Adventure inventory item,
+   save and reopen. Confirm Game Object Properties displays the SAME settings.
+C. Add a throwaway Logic node connected to two decorations and Snow. Select
+   the node; press Delete. Confirm removal once, and inspect all three wires.
+   Reconnect/remove any now-incomplete downstream Logic before saving.
+D. Verify Delete inside a purple dialogue text editor edits the text, not card.
+E. Pan far away and add/move a card, then click Fit All. Every visible card must
+   fit into the current view, with margin.
+F. Regenerate ALL Worlds and rebuild only after saving changed Trigger settings.
+
+VERIFICATION
+- Existing Visual Nodes contract tests and Stage 5.166.60/64/65/67/68/69
+  graph/runtime regression checks pass in the supplied test suite.
+- Stage 5.166.70 Visual Nodes source-contract tests pass.
+- The Qt6 GUI cannot be built in this environment because Qt6 6.5 development
+  packages are unavailable. Interactive keyboard/mouse layout and physical
+  SIDBOX behaviour still need testing on your system.

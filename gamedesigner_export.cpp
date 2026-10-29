@@ -12,6 +12,7 @@
 #include "gamecrossworldlinks.h"
 #include "gameplayerprofile.h"
 #include "gametitleruntime.h"
+#include "gamevisualgraphlogic.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -404,11 +405,19 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         return false;
     };
     auto npcTarget = [&](const QString &id, QString *world, int *slot) -> bool {
-        if (!id.startsWith(QStringLiteral("@npc:"))) return false;
-        const int separator=id.indexOf(QLatin1Char(':'),5);
-        if (separator<0) return false;
-        const QString wantedWorld=id.mid(5,separator-5);
-        const QString wantedSprite=id.mid(separator+1);
+        // The detailed editor stores @npc:<world>:<spriteId>, while Visual
+        // Nodes (whose cards are built from local sprite resources) historically
+        // stores just <spriteId>. Both identify the SAME Adventure NPC. Accept
+        // both forms here, in the one target resolver used by ordinary Trigger
+        // actions and independent logic TRUE/FALSE actions.
+        QString wantedWorld=worldBase;
+        QString wantedSprite=id;
+        if (id.startsWith(QStringLiteral("@npc:"))) {
+            const int separator=id.indexOf(QLatin1Char(':'),5);
+            if (separator<0) return false;
+            wantedWorld=id.mid(5,separator-5);
+            wantedSprite=id.mid(separator+1);
+        }
         if (wantedWorld.isEmpty() || wantedSprite.isEmpty() || !validWorlds.contains(wantedWorld)) return false;
         QJsonArray npcs;
         if (wantedWorld==worldBase) {
@@ -438,6 +447,33 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         objectSlot.insert(pickups.at(i)->id, QStringLiteral("cg_gwi_pickups[%1]").arg(i));
     for (int i = 0; i < nw; ++i)
         objectSlot.insert(platforms.at(i)->id, QStringLiteral("cg_gwi_platforms[%1]").arg(i));
+    // One target-type contract for *every* Trigger and logic-branch action.
+    // A boolean RESULT can only bind a local object .active (validated by
+    // SidboxVisualLogic::order); a TRUE/FALSE command can additionally operate
+    // on NPC visibility, remote objects and the spotlight.
+    const auto actionTargetExists = [&](const QString &id) -> bool {
+        if (id.isEmpty()) return false;
+        if (id==QStringLiteral("@player_spotlight") || objectSlot.contains(id)) return true;
+        if(id.startsWith(QStringLiteral("@player_weather:"))) {
+            const QString mode=id.mid(16);
+            return QStringList{QStringLiteral("0"),QStringLiteral("1"),QStringLiteral("2"),QStringLiteral("3")}.contains(mode);
+        }
+        if(id.startsWith(QStringLiteral("@player_time:"))) {
+            const QString mode=id.mid(13);
+            return QStringList{QStringLiteral("0"),QStringLiteral("1"),QStringLiteral("2")}.contains(mode);
+        }
+        if(id.startsWith(QStringLiteral("@player_world:"))) {
+            const QString name=id.mid(14);
+            if(name.isEmpty() || name.size()>63)return false;
+            for(const QChar c:name)if(!c.isLetterOrNumber() && c!=QLatin1Char('_') &&
+                                      c!=QLatin1Char('-') && c!=QLatin1Char(' '))return false;
+            return validWorlds.contains(name);
+        }
+        QString targetWorld;
+        int targetSlot=-1;
+        return remoteTarget(id,&targetWorld,&targetSlot) ||
+               npcTarget(id,&targetWorld,&targetSlot);
+    };
     // A reward is a real Collectable resource, referenced by stable ID.
     // Keep one owner per dormant pickup to avoid duplicate spawning.
     QHash<QString, int> breakRewardOwner;
@@ -494,11 +530,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (const Resource *r : platforms) {
         if (r->objectType != QStringLiteral("trigger") || r->targetAction == QStringLiteral("none") ||
             r->targetObjectId.isEmpty()) continue;
-        QString otherWorld; int otherSlot=-1;
-        if (r->targetObjectId != QStringLiteral("@player_spotlight") &&
-            !objectSlot.contains(r->targetObjectId) &&
-            !remoteTarget(r->targetObjectId,&otherWorld,&otherSlot) &&
-            !npcTarget(r->targetObjectId,&otherWorld,&otherSlot)) {
+        if (!actionTargetExists(r->targetObjectId) ||
+            ((r->targetObjectId.startsWith(QStringLiteral("@player_time:")) ||
+              r->targetObjectId.startsWith(QStringLiteral("@player_world:"))) &&
+             r->targetAction!=QStringLiteral("enable"))) {
             if (error) *error = tr("Trigger '%1' links to a missing game object. Reassign its target.").arg(r->name);
             return false;
         }
@@ -508,15 +543,13 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (const Resource *r : platforms) {
         if (r->objectType != QStringLiteral("trigger")) continue;
         for (const Resource::LinkedAction &link : r->triggerExtraActions) {
-            QString otherWorld; int otherSlot=-1;
-            if (link.objectId == r->id ||
-                (link.objectId != QStringLiteral("@player_spotlight") &&
-                 !objectSlot.contains(link.objectId) &&
-                 !remoteTarget(link.objectId,&otherWorld,&otherSlot) &&
-                 !npcTarget(link.objectId,&otherWorld,&otherSlot)) ||
+            if (link.objectId == r->id || !actionTargetExists(link.objectId) ||
                 (link.action != QStringLiteral("enable") &&
                  link.action != QStringLiteral("disable") &&
-                 link.action != QStringLiteral("toggle"))) {
+                 link.action != QStringLiteral("toggle")) ||
+                ((link.objectId.startsWith(QStringLiteral("@player_time:")) ||
+                  link.objectId.startsWith(QStringLiteral("@player_world:"))) &&
+                 link.action != QStringLiteral("enable"))) {
                 if (error) *error = tr("Trigger '%1' has an invalid linked action target '%2'. "
                     "Choose an existing Game Object in its Linked Actions list.")
                     .arg(r->name,link.objectId);
@@ -546,12 +579,71 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for (const Resource *r:platforms) {
         if (r->objectType!=QStringLiteral("trigger") &&
             r->objectType!=QStringLiteral("save_checkpoint")) continue;
+        if (r->objectType==QStringLiteral("trigger") && !r->logicNodes.isEmpty()) {
+            QVector<SidboxVisualLogic::Node> nodes;
+            QVector<int> sorted;
+            QString issue;
+            QSet<QString> localIds;
+            for(auto it=objectSlot.constBegin();it!=objectSlot.constEnd();++it)localIds.insert(it.key());
+            if (!SidboxVisualLogic::read(r->logicNodes,&nodes,&issue) ||
+                !SidboxVisualLogic::order(nodes,localIds,&sorted,&issue)) {
+                if(error)*error=tr("Trigger '%1' logic graph: %2").arg(r->name,issue);
+                return false;
+            }
+            for(const SidboxVisualLogic::Node &node:nodes) {
+                if(node.trueDialogue<-1 || node.trueDialogue>=dialogueNodes.size() ||
+                   node.falseDialogue<-1 || node.falseDialogue>=dialogueNodes.size()) {
+                    if(error)*error=tr("Trigger '%1' logic node '%2' references a missing dialogue.")
+                        .arg(r->name,node.id);
+                    return false;
+                }
+                for(const QJsonArray &links:{node.trueActions,node.falseActions})
+                    for(const QJsonValue &link:links) {
+                        const QJsonObject a=link.toObject();
+                        const QString id=a.value(QStringLiteral("objectId")).toString();
+                        const QString command=a.value(QStringLiteral("action")).toString();
+                        // Shared type contract: not a separate graph-only
+                        // subset of targets. The emitter below uses the SAME
+                        // NPC/remote/local resolvers for the actual C action.
+                        if(!QStringList{QStringLiteral("enable"),QStringLiteral("disable"),
+                             QStringLiteral("toggle")}.contains(command) || !actionTargetExists(id) ||
+                           ((id.startsWith(QStringLiteral("@player_time:")) ||
+                             id.startsWith(QStringLiteral("@player_world:"))) &&
+                              command!=QStringLiteral("enable"))) {
+                            if(error)*error=tr("Trigger '%1' logic node '%2' has an invalid %3 action target '%4'. "
+                                "Use a Game Object or Adventure NPC available in this world.")
+                                .arg(r->name,node.id,command,id);
+                            return false;
+                        }
+                    }
+            }
+        }
         if (r->objectType==QStringLiteral("trigger") && r->toggleStateTargetId.isEmpty() &&
             (!r->toggleTrueActions.isEmpty() || !r->toggleFalseActions.isEmpty())) {
             if (error)*error=tr("Trigger '%1': TRUE/FALSE actions need a Read Toggle State source.").arg(r->name);
             return false;
         }
         if (r->objectType==QStringLiteral("trigger") && !r->toggleStateTargetId.isEmpty()) {
+            const QString op = r->toggleStateOperator;
+            QStringList inputs{r->toggleStateTargetId};
+            if (op == QStringLiteral("and") || op == QStringLiteral("or"))
+                inputs.append(r->toggleStateInputIds);
+            QStringList uniqueInputs=inputs;
+            uniqueInputs.removeDuplicates();
+            if ((op == QStringLiteral("and") && inputs.size() < 2) ||
+                (op == QStringLiteral("or") && inputs.size() != 2) ||
+                inputs.size() > 16 || uniqueInputs.size() != inputs.size()) {
+                if (error) *error=tr("Trigger '%1': %2 needs %3 unique state inputs (maximum 16).")
+                    .arg(r->name,op,op==QStringLiteral("or")?tr("exactly 2"):tr("at least 2"));
+                return false;
+            }
+            for (const QString &input : inputs) {
+                if (!objectSlot.contains(input)) {
+                    if (error) *error=tr("Trigger '%1': logic input '%2' must be a local Game Object.")
+                        .arg(r->name,input);
+                    return false;
+                }
+            }
             // Runtime checks only live local Game Objects. Remote/NPC active
             // flags have a separate representation, so do not silently guess.
             if (!objectSlot.contains(r->toggleStateTargetId)) {
@@ -566,7 +658,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 }
                 for (const Resource::LinkedAction &link:links) {
                     if (link.objectId.isEmpty() || !QStringList{QStringLiteral("enable"),QStringLiteral("disable"),
-                        QStringLiteral("toggle")}.contains(link.action)) {
+                        QStringLiteral("toggle")}.contains(link.action) || !actionTargetExists(link.objectId) ||
+                        ((link.objectId.startsWith(QStringLiteral("@player_time:")) ||
+                          link.objectId.startsWith(QStringLiteral("@player_world:"))) &&
+                         link.action != QStringLiteral("enable"))) {
                         if (error)*error=tr("Trigger '%1': invalid TRUE/FALSE action.").arg(r->name);
                         return false;
                     }
@@ -765,6 +860,29 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 .arg(otherWorld).arg(otherSlot).arg(action);
             return true;
         }
+        if (r.targetObjectId.startsWith(QStringLiteral("@player_weather:"))) {
+            const int action = r.targetAction==QStringLiteral("enable") ? 1 :
+                r.targetAction==QStringLiteral("disable") ? 0 :
+                r.targetAction==QStringLiteral("toggle") ? 2 : -1;
+            if(action<0)return false;
+            *out+=QStringLiteral("        gameworlds_weather_target_action(%1u, %2u);\n")
+                .arg(r.targetObjectId.mid(16)).arg(action);
+            return true;
+        }
+        if (r.targetObjectId.startsWith(QStringLiteral("@player_time:"))) {
+            if(r.targetAction!=QStringLiteral("enable"))return false;
+            *out+=QStringLiteral("        gameworlds_daylight_action(%1u);\n")
+                .arg(r.targetObjectId.mid(13));
+            return true;
+        }
+        if (r.targetObjectId.startsWith(QStringLiteral("@player_world:"))) {
+            if(r.targetAction!=QStringLiteral("enable"))return false;
+            const QString world=r.targetObjectId.mid(14);
+            // All accepted world-name characters are C-literal safe.
+            *out+=QStringLiteral("        (void)gameworlds_request_at(\"%1\", \"default\");\n")
+                .arg(world);
+            return true;
+        }
         if (r.targetObjectId == QStringLiteral("@player_spotlight")) {
             const QString action = r.targetAction == QStringLiteral("enable") ? QStringLiteral("1")
                 : r.targetAction == QStringLiteral("disable") ? QStringLiteral("0")
@@ -918,6 +1036,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             type == QStringLiteral("hazard") ? QStringLiteral("GAME_OBJECT_HAZARD") :
             type == QStringLiteral("enemy") ? QStringLiteral("GAME_OBJECT_ENEMY") :
             type == QStringLiteral("particle_emitter") ? QStringLiteral("GAME_OBJECT_PARTICLE_EMITTER") :
+            type == QStringLiteral("decoration_object") ? QStringLiteral("GAME_OBJECT_DECORATION") :
             QStringLiteral("GAME_OBJECT_SPRING");
         f.insert(QStringLiteral("OBJECT_KIND"), kind);
         boolValue("TRIGGER_PRESS", type == QStringLiteral("goto_world") ? r.gotoPress : r.triggerPress);
@@ -1199,6 +1318,12 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 .arg(i).arg(event).arg(symbol).arg(r.audioRadius);
         }
     }
+    // Stage 5.166.62: independent graphs watch all local Trigger actions which
+    // change one of their Game Object inputs, not just the Trigger that first
+    // created their card. Keep all evaluations AFTER ordinary Trigger actions.
+    // Capture EVERY node result before dispatching ANY graph branch action.
+    QString graphSnapshotsBody, graphEvaluationBody, graphDispatchBody;
+    QString graphInitialSyncBody;
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
         if (r.objectType != QStringLiteral("trigger") &&
@@ -1232,9 +1357,20 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                  !r.toggleTrueActions.isEmpty() || !r.toggleFalseActions.isEmpty())) {
                 // This is deliberately AFTER normal Trigger target actions;
                 // e.g. Toggle Lifty, then branch on Lifty's NEW state.
-                const QString slot=objectSlot.value(r.toggleStateTargetId);
-                if (!slot.isEmpty()) {
-                    action+=QStringLiteral("        if (%1.active) {\n").arg(slot);
+                QStringList inputs{r.toggleStateTargetId};
+                if (r.toggleStateOperator==QStringLiteral("and") ||
+                    r.toggleStateOperator==QStringLiteral("or"))
+                    inputs.append(r.toggleStateInputIds);
+                QStringList comparisons;
+                for (const QString &input : inputs) {
+                    const QString inputSlot=objectSlot.value(input);
+                    if (!inputSlot.isEmpty()) comparisons.append(QStringLiteral("%1.active").arg(inputSlot));
+                }
+                const QString expression=comparisons.join(
+                    r.toggleStateOperator==QStringLiteral("or")?QStringLiteral(" || "):
+                    QStringLiteral(" && "));
+                if (!expression.isEmpty()) {
+                    action+=QStringLiteral("        if (%1) {\n").arg(expression);
                     for (const Resource::LinkedAction &link:r.toggleTrueActions) {
                         Resource target=r;
                         target.targetObjectId=link.objectId;
@@ -1276,6 +1412,162 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             {QStringLiteral("MUSIC_PLAY"), flag(play)},
             {QStringLiteral("MUSIC_SYMBOL"), musicSymbol(r)}};
         if (!renderWorldSection(QStringLiteral("TRIGGER_ACTION"), f, &triggerBody)) return false;
+    }
+    // Stage 5.166.63: run independent graphs when their input states actually
+    // change during ordinary Trigger actions, regardless of which Trigger owns
+    // them. Do not infer dependencies from the configured target-action list.
+    // Every graph result is still captured before any branch actions run.
+    if (nt) for (int ownerIndex=0; ownerIndex<nw; ++ownerIndex) {
+        const Resource &owner=*platforms.at(ownerIndex);
+        if(owner.objectType!=QStringLiteral("trigger") || owner.logicNodes.isEmpty())continue;
+        QVector<SidboxVisualLogic::Node> nodes;
+        QVector<int> sorted;
+        QString issue;
+        QSet<QString> localIds;
+        for(auto it=objectSlot.constBegin();it!=objectSlot.constEnd();++it)localIds.insert(it.key());
+        if(!SidboxVisualLogic::read(owner.logicNodes,&nodes,&issue) ||
+           !SidboxVisualLogic::order(nodes,localIds,&sorted,&issue)) {
+            if(error)*error=tr("Trigger '%1' invalid logic graph: %2").arg(owner.name,issue);
+            return false;
+        }
+        QSet<QString> graphInputs;
+        for(const SidboxVisualLogic::Node &node:nodes)
+            for(const SidboxVisualLogic::Input &input:node.inputs)
+                if(input.kind==QStringLiteral("object"))graphInputs.insert(input.id);
+        QStringList activationEvents{
+            QStringLiteral("cg_gwi_platforms[%1].trigger_fired").arg(ownerIndex)};
+        QStringList graphInputIds=graphInputs.values();
+        graphInputIds.sort(); // Deterministic generated C.
+        for(int inputIndex=0;inputIndex<graphInputIds.size();++inputIndex) {
+            const QString source=objectSlot.value(graphInputIds.at(inputIndex));
+            const QString before=QStringLiteral("cg_logic_before_%1_%2")
+                .arg(ownerIndex).arg(inputIndex);
+            graphSnapshotsBody+=QStringLiteral(
+                "    const unsigned char %1 = (%2.active != 0u);\n")
+                .arg(before,source);
+            activationEvents.append(QStringLiteral("(%1 != (%2.active != 0u))")
+                .arg(before,source));
+        }
+        const QString run=QStringLiteral("cg_logic_run_%1").arg(ownerIndex);
+        graphEvaluationBody+=QStringLiteral("    const unsigned char %1 = (%2) ? 1u : 0u;\n")
+            .arg(run,activationEvents.join(QStringLiteral(" || ")));
+        QHash<QString,QString> expressionNames;
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            const QString name=QStringLiteral("cg_logic_%1_%2").arg(ownerIndex).arg(index);
+            graphEvaluationBody+=QStringLiteral("    unsigned char %1 = 0u;\n").arg(name);
+            expressionNames.insert(node.id,name);
+        }
+        graphEvaluationBody+=QStringLiteral("    if (%1) {\n").arg(run);
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            graphEvaluationBody+=QStringLiteral("        %1 = ((%2) ? 1u : 0u);\n")
+                .arg(expressionNames.value(node.id),
+                     SidboxVisualLogic::expression(node,objectSlot,expressionNames));
+        }
+        graphEvaluationBody+=QStringLiteral("    }\n");
+        graphDispatchBody+=QStringLiteral("    if (%1) {\n").arg(run);
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            // RESULT is a direct state binding. It is not an Enable action
+            // duplicated on TRUE and FALSE: FALSE must assign zero.
+            for(const QString &targetId:node.resultTargets)
+                graphDispatchBody+=QStringLiteral("        %1.active = %2 ? 1u : 0u;\n")
+                    .arg(objectSlot.value(targetId),expressionNames.value(node.id));
+            graphDispatchBody+=QStringLiteral("        if (%1) {\n").arg(expressionNames.value(node.id));
+            for(const bool yes:{true,false}) {
+                if(!yes)graphDispatchBody+=QStringLiteral("        } else {\n");
+                for(const QJsonValue &v:yes?node.trueActions:node.falseActions) {
+                    const QJsonObject entry=v.toObject();
+                    Resource target=owner;
+                    target.targetObjectId=entry.value(QStringLiteral("objectId")).toString();
+                    target.targetAction=entry.value(QStringLiteral("action")).toString();
+                    if (!yes && target.targetAction==QStringLiteral("enable") &&
+                        target.targetObjectId.startsWith(QStringLiteral("@player_weather:"))) {
+                        // Stage 5.166.67 compatibility: a TRUE and FALSE wire to
+                        // the same weather node used to be saved as Enable/Enable.
+                        for(const QJsonValue &trueValue:node.trueActions) {
+                            const QJsonObject trueLink=trueValue.toObject();
+                            if(trueLink.value(QStringLiteral("objectId")).toString()==target.targetObjectId &&
+                               trueLink.value(QStringLiteral("action")).toString()==QStringLiteral("enable")) {
+                                target.targetAction=QStringLiteral("disable");
+                                break;
+                            }
+                        }
+                    }
+                    if(!targetAction(target,&graphDispatchBody))return false;
+                }
+                const int dialogue=yes?node.trueDialogue:node.falseDialogue;
+                if(dialogue>=0)
+                    graphDispatchBody+=QStringLiteral("            game_adventure_trigger_message(%1u);\n")
+                        .arg(dialogue);
+            }
+            graphDispatchBody+=QStringLiteral("        }\n");
+        }
+        graphDispatchBody+=QStringLiteral("    }\n");
+
+        // Initial world entry and checkpoint restore are NOT Trigger events.
+        // Apply RESULT state bindings and deterministic enable/disable or
+        // weather/lighting commands. Do not play dialogues, toggle any target,
+        // or request world travel. Runtime Trigger behaviour above is unchanged.
+        QHash<QString,QString> initialNames;
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            const QString name=QStringLiteral("cg_initial_logic_%1_%2")
+                .arg(ownerIndex).arg(index);
+            initialNames.insert(node.id,name);
+        }
+        graphInitialSyncBody+=QStringLiteral("    /* Independent logic graph owned by Trigger %1 */\n").arg(ownerIndex);
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            graphInitialSyncBody+=QStringLiteral("    const unsigned char %1 = ((%2) ? 1u : 0u);\n")
+                .arg(initialNames.value(node.id),
+                     SidboxVisualLogic::expression(node,objectSlot,initialNames));
+        }
+        // RESULT must be applied before evaluating the next Trigger's graph.
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            for(const QString &targetId:node.resultTargets)
+                graphInitialSyncBody+=QStringLiteral("    %1.active = %2;\n")
+                    .arg(objectSlot.value(targetId),initialNames.value(node.id));
+        }
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            QString onTrue,onFalse;
+            for(const bool yes:{true,false}) {
+                QString *dest=yes?&onTrue:&onFalse;
+                for(const QJsonValue &v:yes?node.trueActions:node.falseActions) {
+                    const QJsonObject entry=v.toObject();
+                    const QString targetId=entry.value(QStringLiteral("objectId")).toString();
+                    const QString action=entry.value(QStringLiteral("action")).toString();
+                    // Enable/disable are idempotent. Weather/time use enable
+                    // as a command, also safe on world entry. Exclude world
+                    // travel unconditionally and never replay a Toggle.
+                    if(action==QStringLiteral("toggle") ||
+                       targetId.startsWith(QStringLiteral("@player_world:")))continue;
+                    if(action!=QStringLiteral("enable") &&
+                       action!=QStringLiteral("disable"))continue;
+                    Resource target=owner;
+                    target.targetObjectId=targetId;
+                    target.targetAction=action;
+                    if (!yes && target.targetAction==QStringLiteral("enable") &&
+                        targetId.startsWith(QStringLiteral("@player_weather:"))) {
+                        for(const QJsonValue &trueValue:node.trueActions) {
+                            const QJsonObject trueLink=trueValue.toObject();
+                            if(trueLink.value(QStringLiteral("objectId")).toString()==targetId &&
+                               trueLink.value(QStringLiteral("action")).toString()==QStringLiteral("enable")) {
+                                target.targetAction=QStringLiteral("disable");
+                                break;
+                            }
+                        }
+                    }
+                    if(!targetAction(target,dest))return false;
+                }
+            }
+            if(onTrue.isEmpty() && onFalse.isEmpty())continue;
+            graphInitialSyncBody+=QStringLiteral("    if (%1) {\n%2    } else {\n%3    }\n")
+                .arg(initialNames.value(node.id),onTrue,onFalse);
+        }
     }
     if (!usedSfx.isEmpty()) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
@@ -1335,6 +1627,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("WORLD_EVENT_ACTIONS"), eventActions);
     sourceFields.insert(QStringLiteral("CHECK_ACTIONS"), checkBody);
     sourceFields.insert(QStringLiteral("TRIGGER_ACTIONS"), triggerBody);
+    sourceFields.insert(QStringLiteral("GRAPH_SNAPSHOTS"), graphSnapshotsBody);
+    sourceFields.insert(QStringLiteral("GRAPH_EVALUATIONS"), graphEvaluationBody);
+    sourceFields.insert(QStringLiteral("GRAPH_DISPATCH"), graphDispatchBody);
+    sourceFields.insert(QStringLiteral("GRAPH_INITIAL_SYNC"), graphInitialSyncBody);
     sourceFields.insert(QStringLiteral("INTERACT_ROWS"), interactionRows);
     sourceFields.insert(QStringLiteral("INTERACT_SOUND_ACTIONS"), interactionSoundActions);
     sourceFields.insert(QStringLiteral("INTERACT_PREFLIGHT_ACTIONS"),interactionPreflightActions);

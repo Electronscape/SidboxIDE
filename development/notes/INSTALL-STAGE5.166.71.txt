@@ -1,0 +1,76 @@
+SIDBOX/CoderGirl IDE Stage 5.166.71.281026
+SYNCHRONISE EXISTING GAME OBJECT CONNECTIONS INTO VISUAL NODES
+
+INSTALL
+1. Back up the current IDE source and all project .sbgm/.vsgm files.
+2. Extract the full source archive over your Stage 5.166.70 IDE tree.
+3. Rebuild with your existing Qt 6.5+ SDK/toolchain.
+4. Verify the splash screen: Build: 5.166.71.281026.
+5. Open the Visual Nodes editor for an EXISTING world. All supported existing
+   links are read from that world's saved .sbgm; no migration or graph rebuild
+   is required. Keep your existing .vsgm files to preserve card positions.
+6. When Game Object Properties or another editor has been used to change the
+   saved world, use "Refresh from World" or reopen Visual Nodes to read it.
+7. Regenerate ALL Worlds and rebuild the game only if gameplay links were
+   actually changed. Your hand-maintained main.c is not modified.
+
+WHAT IS SYNCHRONISED
+- Original Trigger Linked Actions and extra actions; Trigger Show Dialogue.
+- Existing Trigger legacy Boolean conditions and independent Boolean graphs,
+  including direct RESULT bindings and TRUE/FALSE actions (unchanged).
+- Enemy defeat -> object target action (from targetObjectId/targetAction).
+- Key-style Collectable (pickupKind=3) -> object target action.
+  Other collectables do not fire these actions in the runtime and therefore
+  are not falsely rendered as action-source nodes.
+- Existing explicit @npc:<world>:<spriteId> and @world/<world>/<spriteId>
+  target references: displayed by their saved destination-world object names
+  when available. The stored, stable encoded IDs are never replaced.
+- Missing/deleted targets show a clearly labelled MISSING card and connection,
+  rather than disappearing from the graph.
+
+KEY SAFETY BEHAVIOUR
+- .sbgm remains the sole source of truth for ALL game actions and their targets.
+  .vsgm continues to store only visual card placement, folds and camera state.
+- Pre-existing enemy/key actions are clickable/editable from the Connections
+  panel or wire context menu; deleting their card only removes the link,
+  not the actual game resource.
+- When saving a changed enemy/key action, the editor writes ONLY
+  targetObjectId/targetAction. It does NOT inject Trigger-only dialogue,
+  logic, inventory, or trigger flags into that object.
+- Existing trigger links/logic, player actions, weather toggles, save/load
+  logic synchronisation, node collapse and destructive node delete are retained.
+- Refresh from World asks whether to save or discard UNSAVED graph changes;
+  Cancel leaves the graph untouched. Saved .vsgm layout is reused on refresh.
+- The new Enemy/key source wires are primarily for inspecting/editing an
+  EXISTING link. Add new enemy/key defeat/pickup links in Game Object Properties;
+  the graph will then import and display them on Refresh.
+
+CURRENT SCOPE
+- This is one-world Visual Nodes synchronisation for supported Game Object
+  connections. Adventure NPC dialogue trees, quests, reward/stat effects, sound
+  effects, and inventory event internals are NOT automatically flattened into
+  programmable nodes by this stage. Their existing editors and game behaviour
+  remain untouched.
+
+SUGGESTED TEST
+A. Open your current two-switch AND/Spotlight/Weather graph. Confirm every
+   previous node and link is still present in its saved position.
+B. In Game Object Properties make a saved Enemy defeat action pointing to a
+   valid local object. Open or Refresh Visual Nodes and confirm the enemy and
+   its destination appear connected. Edit/Remove its link; Save Graph + World;
+   check the Game Object Properties reflects the change.
+C. Repeat with a key Collectable (pickupKind=3). A normal Collectable should
+   not be treated as a link firing source.
+D. Open a Trigger linked to an NPC in a sibling world or to another world's
+   Game Object. Confirm an appropriate named target card appears.
+E. Disconnect a test target, save, reopen, and verify the saved link changed.
+F. Change a node's position and collapse state, save graph, then refresh. The
+   saved visual layout should be preserved. Try Refresh with unsaved edits and
+   verify all three Yes/No/Cancel paths.
+
+VERIFICATION
+- Stage 5.166.71 synchronisation source checks pass.
+- Stage 5.166.60/61/62/63/64/65/67/68/69/70 independent logic, PLAYER,
+  weather, save/load initialisation and visual node regression checks pass.
+- Qt6 development headers are not installed in this environment, so desktop
+  editor interaction and real SIDBOX hardware still need acceptance testing.

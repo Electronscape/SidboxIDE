@@ -17,7 +17,7 @@ for key in ('toggleStateTargetId','toggleTrueDialogueNode','toggleFalseDialogueN
     assert 'object.insert(QStringLiteral("'+key+'")' in project
     assert 'object.value(QStringLiteral("'+key+'"))' in project
     assert 'object.insert(QStringLiteral("'+key+'")' in ui
-assert 'objectSlot.value(r.toggleStateTargetId)' in export
+assert 'objectSlot.value(input)' in export and 'const QString expression=comparisons.join(' in export
 assert 'game_adventure_trigger_message(%1u)' in export
 # Branch body is emitted after the ordinary Trigger links: toggles update
 # active before TRUE/FALSE executes, not one event late.

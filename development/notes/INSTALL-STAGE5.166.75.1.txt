@@ -1,0 +1,40 @@
+SIDBOX / CoderGirl IDE Stage 5.166.75.1 (28 October 2026)
+Conversation Flow compiler hotfix
+========================================================
+
+CAUSE
+  Stage 5.166.75 used QString::toInt(-1) in four places in
+  gamevisualnodes.cpp. QString::toInt(bool *ok, int base) requires a
+  pointer as its first argument, unlike QJsonValue::toInt(defaultValue).
+  The four errors appear on lines 3780, 3859, 4199 and 4486 of the
+  original Stage 5.166.75 gamevisualnodes.cpp.
+
+FIX
+  The four conversions now call QString::toInt(&indexOk), test their
+  conversion status and avoid using a malformed conversation-card ID.
+  All existing QJsonValue::toInt(-1) calls remain unchanged and valid.
+
+FILES MODIFIED
+  gamevisualnodes.cpp (four call sites)
+  splashscreenwidget.cpp (Build: 5.166.75.1.281026)
+  development/tests/test_stage5166_75_1_qstring_conversion.py (new)
+  relevant older static regression tests (expected splash version only)
+
+INSTALL
+  1. Back up IDE source and your project.
+  2. Extract this full source over Stage 5.166.75.
+  3. Rebuild CoderGirl using your usual Qt 6.5+ environment.
+  4. Check the splash screen says Build: 5.166.75.1.281026.
+  5. Forest > Visual Nodes > right-click BigSteve[0] >
+     Show Opening Conversation Flow... or use + Conversation Flow.
+
+BEHAVIOR
+  Read-only conversation preview, branching, alternate missing-item
+  paths, layout persistence and all previous game logic remain the same.
+  There are NO changes to runtime generation, .sbgm format, .vsgm
+  format, or your user-owned main.c. No game regeneration required.
+
+VERIFIED HERE
+  16 source-contract and native C regression tests pass. This environment
+  lacks Qt development headers, so the Qt IDE compilation itself must
+  be confirmed in your development environment.

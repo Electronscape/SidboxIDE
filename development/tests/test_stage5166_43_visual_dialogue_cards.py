@@ -16,7 +16,7 @@ for key in ('class NodeCard final', 'class NodeCanvas final', 'QGraphicsProxyWid
             'root.insert(QStringLiteral("dialogueCards"),dialogueCards)',
             'QCryptographicHash::hash(current,QCryptographicHash::Sha256)!=m_originalHash',
             'QFile::copy(m_worldPath,backup)',
-            'if (!m_touched.isEmpty() || m_dialoguesChanged)',
+            'if (!m_touched.isEmpty() || m_dialoguesChanged || m_npcsChanged)',
             'm_dialogues.size()>=256'):
     assert key in s, f'missing phase2 property: {key}'
 assert not re.search(r'auto\s*\*\s*\w+\s*=\s*\[',s)

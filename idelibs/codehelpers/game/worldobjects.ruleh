@@ -21,6 +21,7 @@
 #define GAME_OBJECT_HAZARD     8u /* damaging, non-solid, movable spikes etc. */
 #define GAME_OBJECT_ENEMY      9u /* stompable animated enemy, side contact can hurt */
 #define GAME_OBJECT_PARTICLE_EMITTER 10u /* decorative, no collisions; particles drawn separately */
+#define GAME_OBJECT_DECORATION 11u /* visible sprite; active controls drawing, never collision */
 
 typedef struct {
     gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */

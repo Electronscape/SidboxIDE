@@ -118,6 +118,7 @@ typedef struct {
     uint8_t (*story_disk_import)(uint8_t (*)(void *, uint32_t, void *), void *);
     const gw_time_action_t *day_actions, *night_actions;
     uint16_t day_action_count, night_action_count;
+    void (*logic_sync)(void); /* After object restore and lighting setup, before frame one. */
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -685,6 +686,58 @@ static void transition_restore_palette(void)
 #ifdef gfx_usebpalette
     if (back) gfx_usebpalette((uint32_t *)back);
 #endif
+}
+/* PLAYER graph actions change only the active world's scene effects.
+ * They never mutate palette assets, and rain/lightning uses existing timers.
+ * The weather setting is intentionally restored from world config on re-entry. */
+void gameworlds_weather_action(uint8_t mode)
+{
+    if (!active_world || mode > 3u) return;
+    weather_mode = mode;
+    if(mode && !weather_density)weather_density = 24u;
+    if(mode==3u && !weather_overlay_enabled && !weather_palette_strength)
+        weather_overlay_enabled = 1u;
+    weather_frame_tick = 0u;
+    weather_flash_phase = 0u;
+    weather_flash_delay = weather_interval;
+    weather_palette_frame();
+}
+void gameworlds_weather_target_action(uint8_t mode, uint8_t action)
+{
+    if (!active_world || mode > 3u || action > 2u) return;
+    if (mode == 0u) {
+        // Clear Weather is a command rather than another precipitation mode.
+        if (action != 0u) gameworlds_weather_action(0u);
+        return;
+    }
+    if (action == 0u) { // Disable: don't erase somebody else's rain/snow/storm.
+        if (weather_mode == mode) gameworlds_weather_action(0u);
+    } else if (action == 1u) { // Enable.
+        if (weather_mode != mode) gameworlds_weather_action(mode);
+    } else { // Toggle, exactly once per invoked action.
+        gameworlds_weather_action(weather_mode == mode ? 0u : mode);
+    }
+}
+void gameworlds_daylight_action(uint8_t mode)
+{
+    if (!active_world || mode > 2u) return;
+    // The world owns tint colour/strength. A world with no night tint
+    // gets a moderate black tint rather than a silent no-op.
+    day_night_mode = mode == 0u ? 0u : (mode == 1u ? 1u : 2u);
+    if(mode && !day_night_strength)day_night_strength = 60u;
+    if(mode == 2u) {
+        const size_t index=(size_t)(active_world - worlds);
+        const uint32_t cycle=(uint32_t)day_night_day_frames + day_night_night_frames +
+            (uint32_t)day_night_fade_frames * 2u;
+        if(index < WORLD_COUNT && day_night_saved_valid[index] && cycle)
+            day_night_tick=day_night_saved_tick[index]%cycle;
+        else day_night_tick=0u;
+    }
+    // DAY also executes authored day-phase actions when leaving fixed night.
+    if(mode==0u) {
+        if(gw_time_phase!=0u) {gw_time_phase=0u;gw_time_dispatch(0u);}
+    } else gw_time_refresh();
+    weather_palette_frame();
 }
 void gameworlds_spotlight_action(uint8_t action)
 {
@@ -1588,6 +1641,9 @@ static uint8_t activate(const gameworlds_record_t *world)
     spotlight_anim_backward = 0u;
     spotlight_feather_current = (uint8_t)spotlight_feather;
     spotlight_ring_build();
+    /* All saved objects, remote actions, weather and spotlight defaults now exist.
+     * Initialise derived logic states before displaying this world. */
+    if (world->logic_sync) world->logic_sync();
     /* Immediately replace any title-screen CLUT before the first spotlight
      * frame, without modifying original palette arrays. */
     if (spotlight_enabled) transition_restore_palette();
