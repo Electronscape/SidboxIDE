@@ -1444,6 +1444,7 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
         {QStringLiteral("STATE_COUNT"), QString::number(m_states.size())},
         {QStringLiteral("DIRECTION_COUNT"), QString::number(dirs.size())},
         {QStringLiteral("HAS_HURT"), m_states.contains(QStringLiteral("Hurt"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_MELEE"), m_states.contains(QStringLiteral("Melee"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("CLIP_ARRAYS"), arrays},
         {QStringLiteral("CLIP_COUNT"), QString::number(clips.isEmpty() ? 0 : m_states.size() * dirs.size())},
         {QStringLiteral("CLIP_ROWS"), clips},

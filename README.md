@@ -1,3 +1,61 @@
+# Build numbering convention (from 30 October 2026)
+
+Splash: `Build: 5.SUBVERSION.REVISION.DDMMYY`, exactly four parts.
+Current release: **5.128.1.301026**.
+
+**5.128.1** hotfix: Quest ON COMPLETED -> Show Dialogue connections now
+select/commit an actual Adventure dialogue rather than leaving an unlinked
+purple placeholder; also fixes quest linked-card/orphan detection.
+See `README-STAGE5.128.1-QUEST-COMPLETION-DIALOGUE-FIX.txt`.
+
+---
+
+# Build numbering convention (from 30 October 2026)
+
+Splash: `Build: 5.SUBVERSION.REVISION.DDMMYY`, **exactly four dot-separated values**.
+Current splash: `Build: 5.128.0.301026` (this source is otherwise identical to historical Stage 5.166.128).
+New feature: increment SUBVERSION and reset REVISION to zero; hotfix: increment REVISION only.
+DDMMYY is the release date. Historical Stage 5.166.x.y notes below are retained unchanged for traceability.
+This update changes the splash label and documentation only, not the generated game runtime.
+
+---
+
+Stage 5.166.128: Quest Lines ON COMPLETED now supports direct editable Adventure Show Dialogue cards, dispatched once through the Stage119 FIFO. Works with existing completion actions, no dummy logic gate or main.c changes. See README-STAGE5.166.128-QUEST-COMPLETION-DIALOGUE.txt.
+Stage 5.166.127.2: Removed invalid direct melee timer resets from generated main; player_anim_step() still owns all timing. See README-STAGE5.166.127.2-MAIN-ANIM-RESET-FIX.txt.
+Stage 5.166.127.1: Player melee animation now uses the existing player_anim_step() call; see README-STAGE5.166.127.1-PLAYER-ANIM-API-CORRECTION.txt.
+
+# Stage 5.166.127: Player Toolkit Melee Animation (30 Oct 2026)
+
+Source candidate based on Stage 5.166.126. Toolkit custom state **Melee** (case-insensitive) can now play automatically for every accepted FIRE1 swing when current Player Physics Profile has combat enabled. Play once for the clip's frame timings, then return to Idle/Walk/Jump/Fall; Hurt interrupts. Existing attack damage/hit logic unchanged. Source-only change to animation export and generated sample main integration; hand-owned main.c must opt in via a one-line call replacement. No .sbpi or save schema changes.
+
+See `README-STAGE5.166.127-PLAYER-MELEE-ANIMATION.txt` for exact user-owned main.c replacement. Native C and source regression tests pass; full Qt6 build and hardware pending.
+
+---
+
+# Stage 5.166.126: Visual Nodes STATE vs EVENT guidance (30 Oct 2026)
+
+Editor-only clarity update: STATE/ALIVE and EVENT/ON HIT/ON DEFEAT labels,
+source-coloured logic inputs, persistent-state vs momentary-pulse tooltips,
+contextual AND/NOT guidance and a compact canvas legend. All existing graph
+contracts and runtime behavior are preserved. Details: see
+`README-STAGE5.166.126-STATE-EVENT-GUIDANCE.txt`.
+
+---
+
+# Stage 5.166.125: Optional Enemy Hit Feedback (30 Oct 2026)
+
+Added independent Player Hit Effects / Enemy Hit Effects groups under
+Damage / Knockback / Hurt Effects. Enemy damage can now trigger an optional
+solid-CLUT flash and/or a temporary PPB hit-frame animation, on melee, stomps
+and underside hits. Existing multi-hit counts, death animations, drops and
+quest events are preserved. Effects are OFF by default for old projects.
+
+Full details and hardware test instructions:
+`README-STAGE5.166.125-ENEMY-HIT-EFFECTS.txt`. Native runtime and focused
+source tests pass; a full Qt6 compile is unavailable here (Qt6 SDK missing).
+
+---
+
 # Stage 5.166.123: Flow Debugger virtual action references (30 Oct 2026)
 
 Stage 5.166.122 plus a read-only Flow Debugger resolver correction.

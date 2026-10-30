@@ -45,7 +45,7 @@ class QuestEventNodes(unittest.TestCase):
     def test_all_action_validation_guards_are_enable_only(self):
         for anchor in ['r->targetObjectId', 'link.objectId', 'id']:
             self.assertIn(anchor+'.startsWith(QStringLiteral("@quest_event:"))', EXPORT)
-        self.assertIn('Build: 5.166.122.301026', SPLASH)
+        self.assertIn('Build: 5.128.1.301026', SPLASH)
 
 if __name__ == '__main__':
     unittest.main()

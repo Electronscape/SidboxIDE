@@ -21,6 +21,22 @@ extern gfxbob_t gameplayer_sprite;
    Changes preserve current velocities just like the existing mode setter.
    Returns 0 if that profile was removed or does not exist. */
 uint8_t gameplayer_apply_physics(game_tile_player_t *player, uint8_t profile_id);
+/* Stage 124: optional per-physics-profile directional melee.
+ * No combat by default. FIRE1 attacks, UP jumps only in enabled profiles.
+ * Use gameplayer_movement_buttons() in a user-owned main.c to keep attack
+ * and jump mutually exclusive (see release notes). */
+uint8_t gameplayer_combat_enabled(void);
+uint8_t gameplayer_movement_buttons(uint8_t buttons);
+void gameplayer_attack_set_facing(uint8_t right);
+uint8_t gameplayer_attack_step(uint8_t buttons);
+uint8_t gameplayer_attack_damage(void);
+uint8_t gameplayer_attack_reach(void);
+uint8_t gameplayer_attack_facing_right(void);
+uint8_t gameplayer_attack_started(void);
+uint8_t gameplayer_attack_hits(void);
+uint32_t gameplayer_attack_total(void);
+uint32_t gameplayer_attack_hit_total(void);
+void gameplayer_attack_register_hits(uint8_t hits);
 int gameplayer_init(void); /* Call AFTER initMalloc, only once for the whole game. */
 void gameplayer_shutdown(void); /* Call AFTER gameworlds_shutdown. */
 const gameplayer_inventory_entry_t *gameplayer_initial_inventory(uint16_t *count);

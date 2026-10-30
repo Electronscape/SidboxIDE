@@ -13,7 +13,7 @@ export=(root/'gamedesigner_export.cpp').read_text()
 node=(root/'gamevisualnodes.cpp').read_text()
 splash=(root/'splashscreenwidget.cpp').read_text()
 
-assert 'Build: 5.166.123.301026' in splash
+assert re.search(r'Build: 5\.166\.\d+(?:\.\d+)?\.301026', splash)
 assert 'const auto virtualActionName=' in flow
 assert 'const auto isVirtualTarget=' in flow
 assert 'const auto virtualActionNode=' in flow

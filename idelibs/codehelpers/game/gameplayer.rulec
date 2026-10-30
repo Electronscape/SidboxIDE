@@ -14,10 +14,52 @@ typedef struct {
     uint8_t id, mode;
     int16_t walk_speed, jump_speed, gravity, max_fall_speed;
     uint8_t drag;
+    uint8_t combat_enabled, attack_damage, attack_reach, attack_cooldown;
 } gameplayer_physics_profile_t;
 static const gameplayer_physics_profile_t gameplayer_physics_profiles[] = {
-@IDE{PHYSICS_PROFILE_ROWS}    {0,0,0,0,0,0,0}
+@IDE{PHYSICS_PROFILE_ROWS}    {0,0,0,0,0,0,0,0,0,0,0}
 };
+/* Transient attack state. Never included in world saves. */
+static uint8_t gp_combat, gp_damage, gp_reach, gp_cooldown_frames;
+static uint8_t gp_cooldown_left, gp_fire_was_down, gp_attack_armed, gp_facing_right = 1u;
+static uint8_t gp_last_started, gp_last_hits;
+static uint32_t gp_total_attacks, gp_total_hits;
+uint8_t gameplayer_combat_enabled(void) { return gp_combat; }
+uint8_t gameplayer_attack_damage(void) { return gp_damage; }
+uint8_t gameplayer_attack_reach(void) { return gp_reach; }
+uint8_t gameplayer_attack_facing_right(void) { return gp_facing_right; }
+uint8_t gameplayer_attack_started(void) { return gp_last_started; }
+uint8_t gameplayer_attack_hits(void) { return gp_last_hits; }
+uint32_t gameplayer_attack_total(void) { return gp_total_attacks; }
+uint32_t gameplayer_attack_hit_total(void) { return gp_total_hits; }
+void gameplayer_attack_register_hits(uint8_t hits) {
+    gp_last_hits = hits;
+    gp_total_hits += hits;
+}
+void gameplayer_attack_set_facing(uint8_t right) { gp_facing_right = right ? 1u : 0u; }
+/* Called once per gameplay frame, AFTER the movement step. A held button
+ * never auto-repeats. Cooldowns pause while dialogues/menus pause gameplay. */
+uint8_t gameplayer_attack_step(uint8_t buttons) {
+    const uint8_t pressed = (buttons & BTN_FIRE) != 0u;
+    if (buttons & BTN_LEFT) gp_facing_right = 0u;
+    else if (buttons & BTN_RIGHT) gp_facing_right = 1u;
+    gp_last_started = gp_last_hits = 0u;
+    if (gp_cooldown_left) --gp_cooldown_left;
+    if (!pressed) gp_attack_armed = 1u;
+    if (gp_combat && gp_attack_armed && pressed && !gp_fire_was_down && !gp_cooldown_left) {
+        gp_last_started = 1u;
+        gp_cooldown_left = gp_cooldown_frames;
+        ++gp_total_attacks;
+    }
+    gp_fire_was_down = pressed;
+    return gp_last_started;
+}
+/* Feed this into tile player physics (after Adventure button masking).
+ * In combat mode UP jumps and FIRE1 attacks. Default controls unchanged. */
+uint8_t gameplayer_movement_buttons(uint8_t buttons) {
+    if (gp_combat) return buttons & (uint8_t)~BTN_FIRE;
+    return buttons;
+}
 uint8_t gameplayer_apply_physics(game_tile_player_t *player, uint8_t profile_id) {
     if (!player) return 0;
     for (uint16_t i = 0; i < @IDE{PHYSICS_PROFILE_COUNT}u; ++i) {
@@ -29,6 +71,12 @@ uint8_t gameplayer_apply_physics(game_tile_player_t *player, uint8_t profile_id)
         player->gravity = physics->gravity;
         player->max_fall_speed = physics->max_fall_speed;
         game_tile_player_set_force_drag(player, physics->drag);
+        gp_combat = physics->combat_enabled;
+        gp_damage = physics->attack_damage;
+        gp_reach = physics->attack_reach;
+        gp_cooldown_frames = physics->attack_cooldown;
+        gp_cooldown_left = gp_fire_was_down = gp_attack_armed = 0u;
+        gp_last_started = gp_last_hits = 0u;
         return 1;
     }
     return 0;
@@ -86,6 +134,9 @@ uint8_t gameplayer_stat_set(const char *name, int32_t value) {
     return 0;
 }
 void gameplayer_shutdown(void) {
+    gp_combat = gp_cooldown_left = gp_fire_was_down = gp_attack_armed = 0u;
+    gp_last_started = gp_last_hits = 0u;
+    gp_total_attacks = gp_total_hits = 0u;
     memset(&gameplayer_sprite,0,sizeof(gameplayer_sprite));
     free(gameplayer_pixels); gameplayer_pixels=0;
 }

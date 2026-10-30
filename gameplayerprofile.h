@@ -48,6 +48,11 @@ inline QJsonArray defaultPhysicsProfiles() {
         obj.insert(QStringLiteral("gravity"), values[id].gravity);
         obj.insert(QStringLiteral("maxFallSpeed"), values[id].fall);
         obj.insert(QStringLiteral("forceDrag"), values[id].drag);
+        // Optional melee attack; disabled on every existing/new profile.
+        obj.insert(QStringLiteral("combatEnabled"), false);
+        obj.insert(QStringLiteral("attackDamage"), 1);
+        obj.insert(QStringLiteral("attackReach"), 24);
+        obj.insert(QStringLiteral("attackCooldown"), 15);
         result.append(obj);
     }
     return result;
@@ -342,6 +347,15 @@ inline bool generate(const QDir &project, const QDir &rules, QString *error=null
         const int gravity = entry.value(QStringLiteral("gravity")).toInt(-1);
         const int fall = entry.value(QStringLiteral("maxFallSpeed")).toInt(-1);
         const int drag = entry.value(QStringLiteral("forceDrag")).toInt(-1);
+        const int combat = entry.value(QStringLiteral("combatEnabled")).toBool() ? 1 : 0;
+        const int attackDamage = entry.value(QStringLiteral("attackDamage")).toInt(1);
+        const int attackReach = entry.value(QStringLiteral("attackReach")).toInt(24);
+        const int attackCooldown = entry.value(QStringLiteral("attackCooldown")).toInt(15);
+        if (attackDamage < 1 || attackDamage > 20 || attackReach < 1 || attackReach > 128
+            || attackCooldown < 1 || attackCooldown > 250) {
+            if (error) *error = QStringLiteral("Invalid combat settings in physics profile: %1").arg(name);
+            return false;
+        }
         if (id < 0 || id > 255 || physicsIds.contains(id) || mode < 0 || mode > 6
             || name.isEmpty() || name.contains(QLatin1Char('\n')) || name.size() > 64
             || physicsNames.contains(name.toCaseFolded()) || walk < 0 || walk > 16
@@ -355,7 +369,10 @@ inline bool generate(const QDir &project, const QDir &rules, QString *error=null
         physicsRows += "    {" + QByteArray::number(id) + "u, " + QByteArray::number(mode)
             + "u, " + QByteArray::number(walk) + ", " + QByteArray::number(jump)
             + ", " + QByteArray::number(gravity) + ", " + QByteArray::number(fall)
-            + ", " + QByteArray::number(drag) + "u},\n";
+            + ", " + QByteArray::number(drag) + "u, " + QByteArray::number(combat)
+            + "u, " + QByteArray::number(attackDamage) + "u, "
+            + QByteArray::number(attackReach) + "u, "
+            + QByteArray::number(attackCooldown) + "u},\n";
     }
     if (!physicsIds.contains(presetId)) {
         if (error) *error = QStringLiteral("The starting movement physics profile was removed.");

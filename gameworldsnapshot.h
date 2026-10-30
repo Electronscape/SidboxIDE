@@ -117,7 +117,7 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_init", "gameworlditems_update",
             "gameworlditems_update_gameplay", "gameworlditems_update_particles", "gameworlditems_draw",
             "gameworlditems_draw_behind", "gameworlditems_draw_overlay", "gameworlditems_check",
-            "gameworlditems_before", "gameworlditems_after",
+            "gameworlditems_before", "gameworlditems_after", "gameworlditems_player_attack",
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
             "gameworlditems_save_state", "gameworlditems_restore_state", "gameworlditems_sync_logic",
@@ -256,6 +256,8 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
         if (exported.contains("gameworlditems_before")) {
             api += "void " + id + "_gameworlditems_before(game_world_player_t*);\n";
             api += "void " + id + "_gameworlditems_after(game_world_player_t*);\n";
+            if (exported.contains("gameworlditems_player_attack"))
+                api += "uint8_t " + id + "_gameworlditems_player_attack(int32_t,int32_t,uint16_t,uint16_t,uint8_t);\n";
         }
         if (exported.contains("gameworlditems_check"))
             api += "uint16_t " + id + "_gameworlditems_check(int32_t,int32_t,uint16_t,uint16_t,game_pickup_callback_t,void*);\n";
@@ -354,7 +356,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QSet<int> availableProfiles;
     for (const QJsonValue &value : GamePlayerProfile::physicsProfiles(sharedPlayer))
         availableProfiles.insert(value.toObject().value(QStringLiteral("id")).toInt(-1));
-    QStringList beforeFns, afterFns, checkFns, spawnFields, namedStartFields;
+    QStringList beforeFns, afterFns, attackFns, checkFns, spawnFields, namedStartFields;
     QStringList spawnDeclarations, defaultTransitionIn, defaultTransitionOut, defaultTransitionFrames, defaultCircleOrigin;
     QStringList defaultSpotlightEnabled, defaultSpotlightRadius, defaultSpotlightFeather;
     QStringList defaultSpotlightCenter, defaultSpotlightOffsetX, defaultSpotlightOffsetY;
@@ -438,6 +440,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         anyPickups |= hasPickup;
         beforeFns << (hasWorldPhysics ? name + QStringLiteral("_gameworlditems_before") : QStringLiteral("0"));
         afterFns << (hasWorldPhysics ? name + QStringLiteral("_gameworlditems_after") : QStringLiteral("0"));
+        attackFns << (exposed.contains("gameworlditems_player_attack")
+            ? name + QStringLiteral("_gameworlditems_player_attack") : QStringLiteral("0"));
         checkFns << (hasPickup ? name + QStringLiteral("_gameworlditems_check") : QStringLiteral("0"));
         anyAdventure |= meta.value(QStringLiteral("hasAdventure")).toBool();
         declarations << QStringLiteral("#include \"../worlds/%1/world_api.h\"").arg(name);
@@ -766,6 +770,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
                  weatherBitmapSymbols.at(i), weatherBitmapSizes.at(i));
         entry += QStringLiteral(", %1_gameworlditems_checkpoint_saved").arg(id);
         entry += QStringLiteral(", %1_gameworlditems_quest_completed").arg(id);
+        // Trailing nullable callback: older worlds lacking the attack API are safe.
+        entry += QStringLiteral(", ") + attackFns.at(i);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to

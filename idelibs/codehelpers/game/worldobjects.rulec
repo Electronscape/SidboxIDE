@@ -46,6 +46,15 @@ uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
     object->enemy_step_height = @IDE{ENEMY_STEP_HEIGHT_DEFAULT};
     object->enemy_roam_direction = 1;
     object->enemy_base_flip_x = sprite ? !!(sprite->flags & BLIT_FLAG_FLIP_X) : 0;
+    object->enemy_hit_flash = 0; /* Existing games must not gain effects. */
+    object->enemy_hit_flash_colour = 15;
+    object->enemy_hit_flash_count = 2;
+    object->enemy_hit_flash_frames = 3;
+    object->enemy_hit_frame = -1;
+    object->enemy_hit_count = 1;
+    object->enemy_hit_delay = 3;
+    object->enemy_hit_ticks_remaining = 0;
+    object->enemy_hit_elapsed = 0;
     object->enemy_hurts_on_touch = 1;
     object->enemy_stomp_side_kick = 0;
     object->enemy_attack_direction = 0; /* Legacy top-only stomps. */
@@ -119,6 +128,12 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
         object->break_bounce_triggered = 0;
         object->hazard_hit_triggered = 0;
         object->hazard_bounce_triggered = 0;
+        if (object->type == GAME_OBJECT_ENEMY && object->enemy_hit_ticks_remaining) {
+            const uint16_t rest = object->enemy_hit_ticks_remaining;
+            object->enemy_hit_ticks_remaining = frames >= rest ? 0u : (uint16_t)(rest - frames);
+            object->enemy_hit_elapsed = (uint16_t)(object->enemy_hit_elapsed +
+                (frames >= rest ? rest : frames));
+        }
         if (!object->active) {
             if (object->type == GAME_OBJECT_ENEMY && object->enemy_dying) {
                 const uint8_t count_frames = object->enemy_defeat_count
@@ -397,25 +412,60 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
    stops repeated launches until the player has actually left the spring. */
 /* Apply a qualifying vulnerable hit once per contact, irrespective of attack side.
    The red body's damage logic remains separate in hazards(). */
+static void enemy_take_damage(game_world_object_t *o, uint8_t damage)
+{
+    if (!o || !o->active || o->type != GAME_OBJECT_ENEMY || !damage) return;
+    const uint16_t hits = (uint16_t)o->break_hits_done + damage;
+    o->break_hits_done = hits > 255u ? 255u : (uint8_t)hits;
+    o->break_hit_triggered = 1u;
+    if (o->break_hits_done < (o->break_hits_required ? o->break_hits_required : 1u)) {
+        /* Restart visual reaction on every accepted nonlethal hit. */
+        const uint32_t flash = o->enemy_hit_flash && o->enemy_hit_flash_count
+            ? (uint32_t)o->enemy_hit_flash_count * o->enemy_hit_flash_frames * 2u : 0u;
+        const uint32_t animation = o->enemy_hit_frame >= 0
+            ? (uint32_t)o->enemy_hit_count * o->enemy_hit_delay : 0u;
+        o->enemy_hit_ticks_remaining = (uint16_t)(flash > animation ? flash : animation);
+        o->enemy_hit_elapsed = 0u;
+    }
+    if (o->break_hits_done >= (o->break_hits_required ? o->break_hits_required : 1u)) {
+        o->enemy_hit_ticks_remaining = 0u; /* Death animation takes precedence. */
+        o->break_triggered = 1u;
+        o->active = 0u;
+        if (o->sprite && o->enemy_defeat_frame >= 0 && o->enemy_defeat_frames) {
+            const uint8_t frames = o->enemy_defeat_count ? o->enemy_defeat_count : 1u;
+            const uint8_t delay = o->enemy_defeat_delay ? o->enemy_defeat_delay :
+                (o->enemy_defeat_frames ? o->enemy_defeat_frames : 1u);
+            o->sprite->index = (uint8_t)o->enemy_defeat_frame;
+            o->enemy_dying = (uint16_t)((uint32_t)frames * delay);
+        }
+    }
+}
+/* One hit per ENEMY per attack, full body rectangle, no stomp recoil.
+ * Use world coordinates and reject destroyed/dying enemies. */
+uint8_t game_world_objects_attack(game_world_object_t *objects, uint16_t count,
+                                  int32_t x, int32_t y, uint16_t w, uint16_t h,
+                                  uint8_t damage)
+{
+    uint8_t hit_count = 0u;
+    if (!objects || !damage || !w || !h) return 0u;
+    for (uint16_t i = 0; i < count; ++i) {
+        game_world_object_t *o = &objects[i];
+        if (o->type != GAME_OBJECT_ENEMY || !o->active || !o->width || !o->height)
+            continue;
+        if (x >= o->x + o->width || o->x >= x + w ||
+            y >= o->y + o->height || o->y >= y + h) continue;
+        enemy_take_damage(o, damage);
+        if (hit_count < 255u) ++hit_count;
+    }
+    return hit_count;
+}
 static uint8_t enemy_vulnerable_hit(game_world_object_t *o,
                                     game_world_player_t *p, uint8_t from_below)
 {
     if (o->break_touching) return 0;
     o->break_touching = 1;
     o->hazard_touching = 1; /* This accepted attack is never a damage hit. */
-    if (o->break_hits_done < 255) ++o->break_hits_done;
-    o->break_hit_triggered = 1;
-    if (o->break_hits_done >= (o->break_hits_required ? o->break_hits_required : 1)) {
-        o->break_triggered = 1;
-        o->active = 0;
-        if (o->sprite && o->enemy_defeat_frame >= 0 && o->enemy_defeat_frames) {
-            const uint8_t frames = o->enemy_defeat_count ? o->enemy_defeat_count : 1;
-            const uint8_t delay = o->enemy_defeat_delay ? o->enemy_defeat_delay :
-                (o->enemy_defeat_frames ? o->enemy_defeat_frames : 1);
-            o->sprite->index = (uint8_t)o->enemy_defeat_frame;
-            o->enemy_dying = (uint16_t)((uint32_t)frames * delay);
-        }
-    }
+    enemy_take_damage(o, 1u);
     if (o->break_bounce) {
         o->break_bounce_triggered = 1;
         /* A head-butt recoils DOWN instead of launching the player back into
@@ -974,6 +1024,30 @@ uint8_t game_world_player_hurt_flash(const game_world_player_t *p,
     return (uint8_t)((p->hurt_elapsed / p->hurt_flash_frames) % 2u == 0u);
 }
 
+/* Hit visuals are draw-only. The base animated BOB and patrol physics are
+ * untouched, so the sprite resumes its normal animation after the reaction.
+ * Defeat animation always has priority on the lethal hit. */
+void game_world_enemy_hit_visual(const game_world_object_t *object, gfxbob_t *visible)
+{
+    if (!object || !visible || object->type != GAME_OBJECT_ENEMY ||
+        !object->active || !object->enemy_hit_ticks_remaining) return;
+    if (object->enemy_hit_frame >= 0 && object->enemy_hit_count && object->enemy_hit_delay) {
+        const uint32_t total = (uint32_t)object->enemy_hit_count * object->enemy_hit_delay;
+        if (object->enemy_hit_elapsed < total) {
+            const uint32_t frame = object->enemy_hit_elapsed / object->enemy_hit_delay;
+            visible->index = (uint8_t)(object->enemy_hit_frame + frame);
+        }
+    }
+    if (object->enemy_hit_flash && object->enemy_hit_flash_frames &&
+        object->enemy_hit_flash_count &&
+        object->enemy_hit_elapsed < (uint32_t)object->enemy_hit_flash_count *
+            object->enemy_hit_flash_frames * 2u &&
+        ((object->enemy_hit_elapsed / object->enemy_hit_flash_frames) & 1u) == 0u) {
+        visible->flags |= BLIT_FLAG_SOLIDCOLOUR;
+        visible->flagval[BLIT_FLAG_TYPE_TINT_VALUE] = object->enemy_hit_flash_colour;
+    }
+}
+
 void game_world_objects_draw_layer(const game_world_object_t *objects,
                                    uint16_t count, int32_t cx, int32_t cy,
                                    uint8_t behind)
@@ -985,6 +1059,7 @@ void game_world_objects_draw_layer(const game_world_object_t *objects,
             (!object->active && !object->enemy_dying) || !object->sprite ||
             !!object->draw_behind_tiles != !!behind) continue;
         gfxbob_t visible = *object->sprite;
+        game_world_enemy_hit_visual(object, &visible);
         visible.drawx = clamp16((int64_t)object->x - cx);
         visible.drawy = clamp16((int64_t)object->y - cy);
         gfx_drawbob(&visible);

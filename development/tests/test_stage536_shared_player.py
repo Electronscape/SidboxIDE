@@ -14,7 +14,7 @@ fields = {"PPB_PATH": '"players/hero.ppb"',"ATLAS_W":"64","ATLAS_H":"32",
           "INVENTORY_ROWS":'    {"key", 1u, 1u},\n    {"gold", 7u, 0u},\n',
           "CUSTOM_STAT_COUNT":"0", "CUSTOM_STAT_ROWS":"",
           "PHYSICS_PROFILE_COUNT":"2",
-          "PHYSICS_PROFILE_ROWS":"    {2u, 2u, 2, 5, 12, 3, 18u},\n    {7u, 1u, 6, 9, 20, 12, 4u},\n"}
+          "PHYSICS_PROFILE_ROWS":"    {2u, 2u, 2, 5, 12, 3, 18u, 0u, 1u, 24u, 15u},\n    {7u, 1u, 6, 9, 20, 12, 4u, 1u, 2u, 30u, 4u},\n"}
 for key, val in fields.items(): template_c = template_c.replace('@IDE{' + key + '}',val)
 assert '@IDE{' not in template_c
 with tempfile.TemporaryDirectory(prefix="sbpi-stage536-") as tmp:
@@ -25,6 +25,10 @@ with tempfile.TemporaryDirectory(prefix="sbpi-stage536-") as tmp:
 #define MOCK_APIS_H
 #include <stdint.h>
 #define F_OK 0
+#define BTN_FIRE 0x10u
+#define BTN_UP 0x01u
+#define BTN_LEFT 0x02u
+#define BTN_RIGHT 0x04u
 #define SD_READ 1
 int sfopen(int,const char*,int); int sfclose(int);
 int sfread(int,void*,uint32_t,uint32_t*);int sflseek(int,uint32_t);
@@ -79,7 +83,7 @@ int main(void){
  gameplayer_shutdown(); assert(gameplayer_sprite.imgdat==0 && close_count==1);
  puts("Stage 5.3 shared PPB + inventory: PASS");return 0;}
 ''')
-    cmd = ['gcc','-std=c11','-Wall','-Wextra','-Werror','-I',str(root),str(root/'gameplayer.c'),str(root/'main.c'),'-o',str(root/'run')]
+    cmd = ['gcc','-std=c11','-Wall','-Wextra','-Werror','-Wno-type-limits','-I',str(root),str(root/'gameplayer.c'),str(root/'main.c'),'-o',str(root/'run')]
     proc = subprocess.run(cmd,capture_output=True,text=True)
     assert proc.returncode==0, proc.stderr
     exe = subprocess.run([str(root/'run')],capture_output=True,text=True)

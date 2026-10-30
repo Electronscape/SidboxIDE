@@ -45,6 +45,9 @@ uint16_t gameworlditems_check(int32_t player_x, int32_t player_y,
 void gameworlditems_set_active(uint16_t index, uint8_t state); /* 0 off, 1 on, 2 toggle */
 void gameworlditems_before(game_world_player_t *player);
 void gameworlditems_after(game_world_player_t *player);
+/* One melee attack over a world-space rectangle. Returns enemies hit. */
+uint8_t gameworlditems_player_attack(int32_t x, int32_t y,
+                                     uint16_t w, uint16_t h, uint8_t damage);
 /* Read-only check used by Adventure before treating FIRE2 as inventory. */
 uint8_t gameworlditems_fire2_action(int32_t player_x, int32_t player_y,
     uint16_t player_w, uint16_t player_h);

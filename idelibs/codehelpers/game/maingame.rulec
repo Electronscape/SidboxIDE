@@ -123,7 +123,9 @@
  *    The header uses the player_anim C symbol prefix automatically.
  *    Saving animation edits can update the header again on request.
  * 3. Set GAMERGIRL_PLAYER_ANIMATIONS to 1 below and rebuild the V1 game.
- *    The starter selects Idle, Walk, Jump, Fall and X-flips for left.
+ *    The starter selects Idle, Walk, Jump, Fall, Hurt and optional Melee.
+ *    A custom state named Melee (any letter case) automatically plays once
+ *    per accepted FIRE1 swing while the active physics profile enables combat.
  *    Animation is selected AFTER moving-platform/spring collision resolution.
  *    BOB frame indexing is 0..255 and requires the same atlas cell size.
  *    Use an indexed PPB atlas with palette index 0 transparent on SIDBOX.
@@ -131,7 +133,11 @@
  * This starter animation is OPTIONAL: with the switch set to 0 it works
  * without the exported header. If you rename/delete the four basic states,
  * adjust the matching PLAYER_ANIM_STATE_* names below to match the export.
- * Push/Run/Hurt/Slide and custom states can be chosen from YOUR game logic.
+ * Push/Run/Slide and other custom states can be chosen from YOUR game logic.
+ * Melee requires an up-to-date player_anim.h exported by the Animation Toolkit.
+ * Existing hand-owned main.c keeps calling player_anim_step() unchanged.
+ * Include gamehelpers/gameplayer.h before gameanimations/player_anim.h when
+ * using shared-player melee profiles (as in the existing SIDBOX template).
  * No .sbanim is loaded by the runtime: it is editor metadata ONLY.
  * IMPORTANT: Existing USER-OWNED main.c is NEVER replaced by Update Project.
  * To use this code in a user-owned main.c, copy the animation sections from
@@ -789,18 +795,41 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_PLAYER_ANIMATION}
         const uint8_t player_buttons = getjoyport();
 @IDE_IF{HAS_ADVENTURE}
-        /* Adventure uses UP for menus; only FIRE1 jumps. */
+        /* Combat OFF: FIRE1 jumps. Combat ON: UP jumps, FIRE1 attacks.
+         * Adventure modal controls remain masked separately. */
+@IDE_IF{HAS_SHARED_PLAYER}
+        game_tile_player_run(&player_physics,
+            gameplayer_movement_buttons(game_adventure_gameplay_buttons(
+                player_buttons & (gameplayer_combat_enabled() ? 0xFFu : (uint8_t)~BTN_UP))), 1);
+@IDE_ELSE
         game_tile_player_run(&player_physics,
             game_adventure_gameplay_buttons(player_buttons & (uint8_t)~BTN_UP), 1);
+@IDE_END
+@IDE_ELSE
+@IDE_IF{HAS_SHARED_PLAYER}
+        game_tile_player_run(&player_physics,
+            gameplayer_movement_buttons(player_buttons), 1);
 @IDE_ELSE
         game_tile_player_run(&player_physics, player_buttons, 1);
 @IDE_END
+@IDE_END
 @IDE_ELSE
 @IDE_IF{HAS_ADVENTURE}
+@IDE_IF{HAS_SHARED_PLAYER}
+        game_tile_player_run(&player_physics,
+            gameplayer_movement_buttons(game_adventure_gameplay_buttons(
+                getjoyport() & (gameplayer_combat_enabled() ? 0xFFu : (uint8_t)~BTN_UP))), 1);
+@IDE_ELSE
         game_tile_player_run(&player_physics,
             game_adventure_gameplay_buttons(getjoyport() & (uint8_t)~BTN_UP), 1);
+@IDE_END
+@IDE_ELSE
+@IDE_IF{HAS_SHARED_PLAYER}
+        game_tile_player_run(&player_physics,
+            gameplayer_movement_buttons(getjoyport()), 1);
 @IDE_ELSE
         game_tile_player_run(&player_physics, getjoyport(), 1);
+@IDE_END
 @IDE_END
 @IDE_END
         /* Moving platforms, conveyors and springs resolve AFTER tile physics.
@@ -873,11 +902,15 @@ int main(int argc, char *argv[])
          * exporter defines HAS_HURT_STATE when a Hurt state actually exists.
          * Without a Hurt state, normal animation selection is preserved.
          * For an existing hand-owned main.c, copy this block there too. */
-        if (world_player.hurt_anim_active && world_player.hurt_ticks_remaining)
+        if (world_player.hurt_anim_active && world_player.hurt_ticks_remaining) {
             player_anim_state = PLAYER_ANIM_STATE_HURT;
+        }
 #endif
 @IDE_END
-        player_anim_step(&player_anim, &GAMERGIRL_PLAYER_BOB, player_anim_state, player_anim_facing, 1);
+        /* Melee is selected internally by player_anim_step() when the active
+         * physics profile permits it. Keep the original main.c call. */
+        player_anim_step(&player_anim, &GAMERGIRL_PLAYER_BOB,
+            player_anim_state, player_anim_facing, 1u);
 #endif
 @IDE_END
 

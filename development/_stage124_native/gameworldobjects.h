@@ -1,0 +1,202 @@
+/* CoderGirl V1 - Dynamic World Objects: lifts, conveyors, springs, switches, doors.
+   See gamehelpers/gameworldobjects.txt for the frame order and examples.
+   Reuses existing spline/animation helpers; collision is world-relative.
+*/
+#ifndef CODERGIRL_V1_GAMEWORLDOBJECTS_H
+#define CODERGIRL_V1_GAMEWORLDOBJECTS_H
+
+#include "apis.h"
+#include <stdint.h>
+#include "gameanimation.h"
+#include "gamespline.h"
+
+#define GAME_WORLD_OBJECT_FIRST_TYPE 1u
+#define GAME_OBJECT_LIFT      GAME_WORLD_OBJECT_FIRST_TYPE
+#define GAME_OBJECT_CONVEYOR  2u
+#define GAME_OBJECT_SPRING    3u
+#define GAME_OBJECT_TRIGGER   4u
+#define GAME_OBJECT_DOOR      5u
+#define GAME_OBJECT_DEATH_ZONE 6u
+#define GAME_OBJECT_BREAKABLE  7u
+#define GAME_OBJECT_HAZARD     8u /* damaging, non-solid, movable spikes etc. */
+#define GAME_OBJECT_ENEMY      9u /* stompable animated enemy, side contact can hurt */
+#define GAME_OBJECT_PARTICLE_EMITTER 10u /* decorative, no collisions; particles drawn separately */
+#define GAME_OBJECT_DECORATION 11u /* visible sprite; active controls drawing, never collision */
+
+typedef struct {
+    gfxbob_t *sprite;           /* Optional image; NULL = invisible collider. */
+    game_animation_t *animation;/* Optional frame animation. */
+    game_spline_t *spline;      /* Optional spline driving WORLD movement. */
+    uint16_t spline_start_delay; /* 50 Hz frames left before the path starts; default 0. */
+    int32_t x, y;               /* Current WORLD top-left of collision box. */
+    int32_t previous_x, previous_y; /* Previous position for carrying rider. */
+    uint16_t width, height;
+    int16_t conveyor_speed;     /* Pixels / frame, signed; for CONVEYOR. */
+    int16_t spring_strength;    /* Positive UPWARD launch speed in px/frame. */
+    int16_t spring_launch_x;    /* Horizontal launch px/frame: -left, +right, 0=vertical. */
+    uint8_t allow_jump_boost;  /* 0 = launch only; 1 = add jump on NEW press. */
+    uint8_t touch_activation;  /* 0 = top landing; 1 = any-side contact. */
+    uint8_t spring_slide;      /* 0 = constant X push; 1 = friction/inertia X kickback. */
+    uint8_t spring_touching;   /* Internal: contact latch, rearmed when separated. */
+    uint8_t break_hits_required;  /* 1..20 for enemies, 1..4 breakables. */
+    uint8_t break_hits_done;
+    uint8_t break_touch_mode;    /* 0=stomp, 1=touch from any side. */
+    uint8_t break_bounce;        /* Stomp: launch again after each contact. */
+    uint8_t break_from_below;   /* Only an intentional upward head-butt counts. */
+    int16_t break_strength;      /* Upward bounce, pixels/frame. */
+    int16_t break_launch_x;      /* Optional left/right bounce, pixels/frame. */
+    uint8_t break_touching;      /* Edge latch; leave before hitting again. */
+    uint8_t enemy_roam; /* 0 = stationary/spline; 1 = tilemap ground patrol. */
+    uint8_t enemy_roam_speed, enemy_step_height;
+    int8_t enemy_roam_direction; /* -1=left, +1=right. */
+    uint8_t enemy_base_flip_x; /* original BOB flip independent of facing */
+    uint8_t enemy_hurts_on_touch;
+    uint8_t enemy_stomp_side_kick; /* 0=only vertical rebound; 1=add break_launch_x on weak-spot hit. */
+    uint8_t enemy_attack_direction; /* 0=from above, 1=from below, 2=both. */
+    int16_t enemy_defeat_frame; /* -1 hides immediately, 0..255 displays sprite frame. */
+    uint8_t enemy_defeat_frames; /* Legacy single-pose duration in 50-Hz ticks. */
+    uint8_t enemy_defeat_count; /* Sequential death frames from the starting atlas index. */
+    uint8_t enemy_defeat_delay; /* Ticks per atlas frame; one-shot animation. */
+    uint16_t enemy_dying; /* Draw-only ticks remaining; collision disabled immediately. */
+    int16_t enemy_stomp_offset_x, enemy_stomp_offset_y; /* Top-left offset from BODY. */
+    uint16_t enemy_stomp_width; /* 0 = same width as body. */
+    uint8_t enemy_stomp_height; /* Falling-feet tolerance within vulnerable zone. */
+    uint8_t break_triggered;     /* One-frame break event on final hit. */
+    uint8_t break_hit_triggered; /* One-frame event for each accepted hit, final included. */
+    uint8_t break_bounce_triggered; /* One-frame event for each actual bounce. */
+    uint8_t type, active;
+    uint8_t draw_behind_tiles; /* 1 = draw before tilemap */
+    uint16_t hazard_damage;
+    int32_t damage_delta; /* signed stat change; negative loses, positive gains */
+    uint8_t damage_target; /* 0 health, 1 lives, 2 score, 3 coins, 4 custom */
+    const char *damage_stat_name;
+    const char *death_note; /* Optional fatal-Health description; static generated string. */
+    int16_t hazard_kick_x, hazard_kick_y; /* Signed px/frame; Y up is negative. */
+    uint8_t hazard_kick;
+    uint8_t hazard_hurt_animation, hazard_flash;
+    uint8_t hazard_flash_colour, hazard_flash_count, hazard_flash_frames;
+    uint8_t hazard_touching, hazard_hit_triggered, hazard_bounce_triggered;
+    uint8_t arrival_triggered; /* One-frame spline knot arrival, not standing still. */
+    uint8_t spring_triggered;      /* Set on landing/launch; cleared in update. */
+    uint8_t trigger_press;         /* 1 = FIRE2, 0 = enter trigger hitbox. */
+    uint8_t trigger_one_shot;      /* One-use triggers remove themselves. */
+    uint8_t trigger_requires_item; /* Stage 5.91: handled by Adventure USE, not touch/FIRE2. */
+    uint8_t trigger_touching;      /* Contact edge latch. */
+    uint8_t trigger_pressed;       /* FIRE2 edge latch. */
+    uint8_t trigger_fired;         /* Set for current trigger() check. */
+} game_world_object_t;
+
+/* Point this at the live physics fields of game_tile_player_t OR
+   game_platformer_t. Both store their coordinates/velocity in x100/y100/vy100.
+   Initialise once; do not pass sprite->drawx after camera projection! */
+typedef struct {
+    int32_t *x100, *y100, *vy100;
+    uint8_t *on_ground;
+    uint16_t width, height;
+    uint16_t offset_x, offset_y; /* Physical bounds relative to sprite x100/y100. */
+    int32_t before_feet; /* Feet BEFORE platform movement and player physics. */
+    int32_t before_vy100; /* Velocity before jump input/physics (spring priority). */
+    int32_t before_x;    /* Player X before movement; used for swept landing. */
+    uint8_t ready;      /* Internal. */
+    /* OPTIONAL: point these at the LIVE player's jump state if springs should
+       know whether Jump was newly pressed this frame. Without these, spring
+       launch still works normally (no combined jump boost). */
+    uint8_t *jump_held;
+    uint8_t *coyote;           /* Tilemap only; NULL for basic platformer. */
+    const int16_t *jump_speed;
+    uint8_t before_jump_held; /* Internal: input state before physics. */
+    /* Stomp-mode breakables require an actual player-initiated jump, not
+       simply stepping off a ledge or walking onto an object's top.
+       Carried until landing; an optional breakable bounce can keep it armed. */
+    uint8_t break_stomp_armed;
+    /* Player damage events: bind once, read after gameworlditems_after().
+       Game owns actual health/lives. Event fires ONCE per accepted impact. */
+    uint16_t hurt_damage_this_frame;
+    int32_t hurt_stat_delta;
+    uint8_t hurt_stat_target;
+    const char *hurt_stat_name;
+    const char *hurt_death_note; /* Source of the latest accepted hit, not saved to disk. */
+    uint8_t hurt_triggered;
+    uint8_t hurt_anim_active;
+    uint8_t hurt_flash_active;
+    uint8_t hurt_flash_colour;
+    uint8_t hurt_flash_frames;
+    uint16_t hurt_ticks_remaining;
+    uint16_t hurt_elapsed;
+    int32_t spring_x100; /* Internal horizontal spring speed (1/100 px/frame).
+                           Normal mode clears on landing; slide mode eases off. */
+    int32_t spring_remainder_x100; /* Internal subpixel accumulator for slide. */
+    uint8_t spring_sliding; /* Internal: active inertia mode from last spring. */
+    /* OPTIONAL: bind to game_tile_player_t.force_vx100 for SPRING SLIDY mode.
+       When set, a sideways spring kick joins the tilemap player's existing
+       external-force velocity and uses its current physics preset drag.
+       When NULL, legacy standalone/platformer spring damping is retained.
+       Set this once alongside x100/y100/vy100 (no game engine coupling). */
+    int32_t *spring_force_vx100;
+    /* Optional collision test for platform carrying. Returns 1 if the
+       player's hitbox would collide at WORLD (x,y). Generated tilemap games
+       connect this automatically; standalone projects can leave it NULL. */
+    uint8_t (*position_blocked)(int32_t x, int32_t y, uint16_t width,
+                                uint16_t height, void *context);
+    void *collision_context;
+} game_world_player_t;
+
+/* Initialise AFTER gameassets_init() if sprite is supplied.
+   width/height specify collision box independent of image dimensions. */
+uint8_t game_world_object_start(game_world_object_t *object, uint8_t type,
+                                gfxbob_t *sprite, int32_t x, int32_t y,
+                                uint16_t width, uint16_t height);
+/* If a spline is attached, (x,y) specifies its NEW FIRST control point. */
+void game_world_object_set_position(game_world_object_t *object, int32_t x, int32_t y);
+void game_world_objects_update(game_world_object_t *objects, uint16_t count,
+                                uint16_t frames);
+/* Call immediately after update() in tilemap games. The callback must use the
+   same collision map as the player; NULL leaves patrols stationary. */
+void game_world_objects_roam(game_world_object_t *objects, uint16_t count,
+    uint16_t frames, uint8_t (*blocked)(int32_t x, int32_t y,
+        uint16_t width, uint16_t height, void *context), void *context);
+
+/* Called BEFORE the existing tile/platformer physics. Carry known riders and
+   remember their original feet for collision testing. One game-frame at a time. */
+void game_world_objects_before(const game_world_object_t *objects, uint16_t count,
+                                game_world_player_t *player);
+/* Called AFTER physics. Handle landing, conveyors and spring launch.
+   No modification to the tilemap's own collision code. */
+/* Stage 124: reusable damage for optional melee attacks, same defeat flags
+ * and animation/drop/ON DEFEAT processing as ordinary stomps. */
+uint8_t game_world_objects_attack(game_world_object_t *objects, uint16_t count,
+                                  int32_t x, int32_t y, uint16_t w, uint16_t h,
+                                  uint8_t damage);
+void game_world_objects_after(game_world_object_t *objects, uint16_t count,
+                               game_world_player_t *player);
+/* Evaluate switches AFTER the normal player physics, one call per frame.
+   'pressed' is nonzero when FIRE2 is held. Returns number of fired switches.
+   Each object sets trigger_fired for the wrapper to apply its linked action. */
+/* Death Zone is callback-driven; return the note for the first intersecting zone.
+ * This does not itself damage the player or change the callback policy. */
+const char *game_world_objects_death_zone_note(const game_world_object_t *objects,
+    uint16_t count, int32_t x, int32_t y, uint16_t w, uint16_t h);
+/* Return 1 if an active Death Zone overlaps; caller fires the event. */
+uint8_t game_world_objects_death_zone(const game_world_object_t *objects,
+                                      uint16_t count, int32_t x, int32_t y,
+                                      uint16_t w, uint16_t h);
+uint16_t game_world_objects_trigger(game_world_object_t *objects, uint16_t count,
+                                    int32_t x, int32_t y, uint16_t w, uint16_t h,
+                                    uint8_t pressed);
+/* Read-only FIRE2 trigger overlap. Does not modify trigger edge-latches or
+   activate objects, so normal game_world_objects_trigger() still owns firing. */
+uint8_t game_world_objects_fire2_action(const game_world_object_t *objects,
+    uint16_t count, int32_t x, int32_t y, uint16_t w, uint16_t h);
+/* Hazard contact is resolved separately AFTER ordinary platform collisions.
+   Uses swept player vs moving object rectangles and an invulnerability timer. */
+void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
+                                game_world_player_t *player);
+/* Non-zero only on the ON portion of a flashing hurt window. */
+uint8_t game_world_player_hurt_flash(const game_world_player_t *player,
+                                    uint8_t *palette_index);
+void game_world_objects_draw_layer(const game_world_object_t *objects, uint16_t count,
+                                   int32_t camera_x, int32_t camera_y, uint8_t behind);
+void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,
+                              int32_t camera_x, int32_t camera_y);
+
+#endif

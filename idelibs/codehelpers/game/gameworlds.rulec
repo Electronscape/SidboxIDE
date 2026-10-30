@@ -128,6 +128,7 @@ typedef struct {
     uint8_t weather_particle_source_size;
     void (*checkpoint_saved)(void); /* Called only after a successful disk save. */
     void (*quest_completed)(const char *quest_id); /* Current-world ON COMPLETED event. */
+    uint8_t (*player_attack)(int32_t, int32_t, uint16_t, uint16_t, uint8_t);
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -1348,6 +1349,7 @@ uint8_t gameworlds_bind_player_physics(game_tile_player_t *player)
     if (!player || !active_world ||
         !gameplayer_apply_physics(player, active_world->physics_profile)) return 0;
     bound_player_physics = player;
+    gameplayer_attack_set_facing(active_world->start_facing);
     return 1;
 }
 uint8_t gameworlds_player_sprite_origin(int32_t *x, int32_t *y)
@@ -2390,6 +2392,7 @@ uint8_t gameworlds_start(const char *name)
      * is applied when the game calls gameworlds_bind_player_physics(). */
     if (success && bound_player_physics)
         gameplayer_apply_physics(bound_player_physics, target->physics_profile);
+        gameplayer_attack_set_facing(target->start_facing);
 @IDE_END
     applying = 0;
     if (success && !gw_initial_world) gw_initial_world=target->name;
@@ -2804,6 +2807,25 @@ void gameworlds_before(game_world_player_t *p)
 void gameworlds_after(game_world_player_t *p)
 {
     if(p)gw_bound_world_player=p;
+@IDE_IF{HAS_SHARED_PLAYER}
+    /* Player melee precedes normal object event dispatch, so ON DEFEAT,
+     * loot and quest links fire in the SAME frame without extra integration
+     * in user-owned main.c. Call only while the gameplay loop runs. */
+    if(p && p->x100 && p->y100 && p->width && p->height &&
+       bound_player_physics && active_world &&
+       gameplayer_attack_step(getjoyport())) {
+        const int32_t x = *p->x100/100 + p->offset_x;
+        const int32_t y = *p->y100/100 + p->offset_y;
+        const int32_t reach = gameplayer_attack_reach();
+        const int32_t attack_x = gameplayer_attack_facing_right()
+            ? x + p->width : x - reach;
+        uint8_t hits = 0u;
+        if(active_world->player_attack)
+            hits = active_world->player_attack(attack_x, y,
+                (uint16_t)reach, p->height, gameplayer_attack_damage());
+        gameplayer_attack_register_hits(hits);
+    }
+@IDE_END
     if (active_world && active_world->after) active_world->after(p);
     if(p && p->hurt_triggered && p->hurt_stat_target==0u &&
        p->hurt_stat_delta<0)gw_last_health_hit_note=p->hurt_death_note;

@@ -754,6 +754,9 @@ void gameworlditems_restore_state(void)
         o->active = d->active;
         o->break_hits_done = d->hits;
         o->enemy_dying = d->dying;
+        /* Hit feedback is transient; loading a world resumes its real animation. */
+        o->enemy_hit_ticks_remaining = 0u;
+        o->enemy_hit_elapsed = 0u;
         o->enemy_roam_direction = (int8_t)d->roam_direction;
         o->x = d->x; o->y = d->y;
         o->previous_x = d->previous_x; o->previous_y = d->previous_y;
@@ -1122,6 +1125,14 @@ void gameworlditems_before(game_world_player_t *player)
     game_world_objects_before(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 }
 
+/* The world manager calls this once on an accepted player melee swing.
+ * Enemy hit flags feed existing ON HIT / ON DEFEAT / reward logic below. */
+uint8_t gameworlditems_player_attack(int32_t x, int32_t y,
+                                     uint16_t w, uint16_t h, uint8_t damage)
+{
+    return game_world_objects_attack(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT},
+                                     x, y, w, h, damage);
+}
 /* Every event-driven or state-driven graph shares the same dispatcher.
  * Declare it even when there are no enemy-owned graphs. */
 static void cg_run_trigger_actions(void);
@@ -1557,7 +1568,9 @@ static void cg_draw_world_layer(int32_t camera_x, int32_t camera_y, uint8_t behi
         if (o->type == GAME_OBJECT_PARTICLE_EMITTER ||
             (!o->active && !o->enemy_dying) || !o->sprite ||
             !!o->draw_behind_tiles != !!behind) continue;
-        cg_draw_stamp(o->sprite,&cg_platform_stamps[i],o->x,o->y,camera_x,camera_y);
+        gfxbob_t visible = *o->sprite;
+        game_world_enemy_hit_visual(o, &visible);
+        cg_draw_stamp(&visible,&cg_platform_stamps[i],o->x,o->y,camera_x,camera_y);
     }
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
@@ -1757,6 +1770,13 @@ static game_animation_t @IDE{ANIM_VAR} = {0};
     cg_gwi_platforms[@IDE{INDEX}].enemy_roam_speed = @IDE{ENEMY_ROAM_SPEED};
     cg_gwi_platforms[@IDE{INDEX}].enemy_step_height = @IDE{ENEMY_STEP_HEIGHT};
     cg_gwi_platforms[@IDE{INDEX}].enemy_roam_direction = @IDE{ENEMY_ROAM_DIRECTION};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_flash = @IDE{ENEMY_HIT_FLASH};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_flash_colour = @IDE{ENEMY_HIT_FLASH_COLOUR};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_flash_count = @IDE{ENEMY_HIT_FLASH_COUNT};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_flash_frames = @IDE{ENEMY_HIT_FLASH_FRAMES};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_frame = @IDE{ENEMY_HIT_FRAME};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_count = @IDE{ENEMY_HIT_COUNT};
+    cg_gwi_platforms[@IDE{INDEX}].enemy_hit_delay = @IDE{ENEMY_HIT_DELAY};
     cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_frame = @IDE{ENEMY_DEFEAT_FRAME};
     cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_frames = @IDE{ENEMY_DEFEAT_DELAY};
     cg_gwi_platforms[@IDE{INDEX}].enemy_defeat_count = @IDE{ENEMY_DEFEAT_COUNT};

@@ -7,3 +7,15 @@ Persistence: Check graph saving, world saving, runtime save/load, and cross-worl
 Other IDE systems: Review editors, resources, project management, generated code, and configuration consistency.
 
 Regression testing: Preserve everything already working on the real SIDBOX hardware.
+
+
+
+
+
+
+
+What I'd tackle next
+I think we should build on this in three stages:
+1. Combat feedback: Optional enemy hit flash, impact effect and knockback. We need to SEE when an enemy takes damage, not just watch it mysteriously expire after four invisible punches. 😂
+2. Player attack animation: Allow an attack PPB animation in the Player Profile, with configurable hit timing. No animation should be required if the developer doesn't want one.
+3. Visual Nodes integration: Add ON ATTACK, ON HIT and potentially ON MISS events, so attacks can trigger sounds, effects, dialogue, logic and quest events.

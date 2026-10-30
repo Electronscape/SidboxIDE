@@ -239,6 +239,23 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 return false;
             }
         }
+        if (r.objectType == QStringLiteral("enemy") && r.enemyHitFrame >= 0) {
+            if (r.spriteStamp.active()) {
+                if (error) *error = tr("Enemy '%1': hit-frame animation needs a frame-based sprite, not a tile stamp. Disable the hit animation (flash still works) or remove the stamp.").arg(r.name);
+                return false;
+            }
+            const QImage image = cachedImage(resolvedPath(r.path));
+            const int cw = r.cellWidth > 0 ? r.cellWidth : image.width();
+            const int ch = r.cellHeight > 0 ? r.cellHeight : image.height();
+            const int frames = !image.isNull() && cw > 0 && ch > 0
+                ? (image.width() / cw) * (image.height() / ch) : 0;
+            if (r.enemyHitFrame + r.enemyHitCount > qMin(256, frames)) {
+                if (error) *error = tr("Enemy '%1': hit animation starts at %2 and uses %3 frames, "
+                                      "but the atlas has only %4 usable frames.")
+                    .arg(r.name).arg(r.enemyHitFrame).arg(r.enemyHitCount).arg(qMin(256, frames));
+                return false;
+            }
+        }
         if (r.objectType == QStringLiteral("enemy") && r.enemyDefeatFrame >= 0) {
             const QImage image = cachedImage(resolvedPath(r.path));
             const int cw = r.cellWidth > 0 ? r.cellWidth : image.width();
@@ -273,6 +290,12 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if(check.open(QIODevice::ReadOnly)) {
             const QJsonObject saved=QJsonDocument::fromJson(check.readAll()).object();
             const QJsonObject complete=saved.value(QStringLiteral("questCompletionActions")).toObject();
+            const QJsonObject dialogue=saved.value(QStringLiteral("questCompletionDialogues")).toObject();
+            for(auto it=dialogue.constBegin();it!=dialogue.constEnd();++it)
+                if(it.value().toObject().value(QStringLiteral("dialogueNode")).toInt(-1)>=0) {
+                    if(error)*error=tr("Quest completion dialogue in an empty world requires at least one managed Game Object. Add a Trigger or other object first.");
+                    return false;
+                }
             for(auto it=complete.constBegin();it!=complete.constEnd();++it)
                 if(!it.value().toArray().isEmpty()) {
                     if(error)*error=tr("Quest completion actions in an empty world require at least one managed Game Object. Add a Trigger or other object first.");
@@ -371,12 +394,16 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
     }
     QSet<QString> questCompletedIds;
-    QJsonObject questCompletionActions;
+    QJsonObject questCompletionActions,questCompletionDialogues;
+    int questDialogueCount=0;
     {
         QFile worldFile(m_filePath);
         if(worldFile.open(QIODevice::ReadOnly)) {
             const QJsonObject world=QJsonDocument::fromJson(worldFile.readAll()).object();
             questCompletionActions=world.value(QStringLiteral("questCompletionActions")).toObject();
+            questCompletionDialogues=world.value(QStringLiteral("questCompletionDialogues")).toObject();
+            questDialogueCount=world.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("nodes")).toArray().size();
         }
         QFile questDefs(projectDir.filePath(QStringLiteral(".codergirl/quests.json")));
         if(questDefs.open(QIODevice::ReadOnly))
@@ -1339,6 +1366,13 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         value("ENEMY_ROAM_SPEED", r.enemyRoamSpeed);
         value("ENEMY_STEP_HEIGHT", r.enemyStepHeight);
         value("ENEMY_ROAM_DIRECTION", r.enemyRoamLeft ? -1 : 1);
+        boolValue("ENEMY_HIT_FLASH", r.enemyHitFlash);
+        value("ENEMY_HIT_FLASH_COLOUR", r.enemyHitFlashColour);
+        value("ENEMY_HIT_FLASH_COUNT", r.enemyHitFlashCount);
+        value("ENEMY_HIT_FLASH_FRAMES", r.enemyHitFlashFrames);
+        value("ENEMY_HIT_FRAME", r.enemyHitFrame);
+        value("ENEMY_HIT_COUNT", r.enemyHitCount);
+        value("ENEMY_HIT_DELAY", r.enemyHitDelay);
         value("ENEMY_DEFEAT_FRAME", r.enemyDefeatFrame);
         value("ENEMY_DEFEAT_DELAY", r.enemyDefeatDelay);
         value("ENEMY_DEFEAT_COUNT", r.enemyDefeatCount);
@@ -2135,19 +2169,27 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if(!renderWorldSection(QStringLiteral("PICKUP_TARGET_ACTION"),f,&checkBody))return false;
         }
     }
-    // ON COMPLETED is a real, one-shot quest transition. Its actions are
-    // authored in .sbgm, routed through the same bounded command queue and
-    // dispatched only to whichever world is active when completion occurs.
+    // ON COMPLETED is a one-shot quest transition. Ordinary targets and its
+    // optional Adventure dialogue are both enqueued by the same callback.
+    // Saving/restoring an already completed quest never replays this event.
     QString questCompleteActions;
-    for(auto it=questCompletionActions.constBegin();it!=questCompletionActions.constEnd();++it) {
-        if(!questCompletedIds.contains(it.key())) {
-            if(error)*error=tr("Quest completion link references removed quest '%1'.").arg(it.key());
+    QSet<QString> questCompleteKeys;
+    for(auto it=questCompletionActions.constBegin();it!=questCompletionActions.constEnd();++it)
+        questCompleteKeys.insert(it.key());
+    for(auto it=questCompletionDialogues.constBegin();it!=questCompletionDialogues.constEnd();++it)
+        questCompleteKeys.insert(it.key());
+    QStringList sortedQuestCompleteKeys;
+    for(const QString &id:questCompleteKeys)sortedQuestCompleteKeys.append(id);
+    sortedQuestCompleteKeys.sort();
+    for(const QString &questId:sortedQuestCompleteKeys) {
+        if(!questCompletedIds.contains(questId)) {
+            if(error)*error=tr("Quest completion link references removed quest '%1'.").arg(questId);
             return false;
         }
         QString commands;
-        const QJsonArray links=it.value().toArray();
+        const QJsonArray links=questCompletionActions.value(questId).toArray();
         if(links.size()>64) {
-            if(error)*error=tr("Quest '%1' has more than 64 completion actions.").arg(it.key());
+            if(error)*error=tr("Quest '%1' has more than 64 completion actions.").arg(questId);
             return false;
         }
         for(const QJsonValue &value:links) {
@@ -2162,7 +2204,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                  targetId.startsWith(QStringLiteral("@player_world:"))) &&
                 operation!=QStringLiteral("enable"))) {
                 if(error)*error=tr("Quest '%1' has invalid ON COMPLETED target '%2'.")
-                    .arg(it.key(),targetId);
+                    .arg(questId,targetId);
                 return false;
             }
             Resource action;
@@ -2170,9 +2212,31 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             action.targetAction=operation;
             if(!queueTargetAction(action,&commands))return false;
         }
+        if(questCompletionDialogues.contains(questId)) {
+            const QJsonObject dialogue=questCompletionDialogues.value(questId).toObject();
+            const int number=dialogue.value(QStringLiteral("dialogueNode")).toInt(-1);
+            if(number<0 || number>=questDialogueCount) {
+                if(error)*error=tr("Quest '%1' has invalid ON COMPLETED dialogue #%2. Select a valid Adventure dialogue.")
+                    .arg(questId).arg(number);
+                return false;
+            }
+            const QString mode=dialogue.value(QStringLiteral("mode"))
+                .toString(QStringLiteral("conversation"));
+            if(mode!=QStringLiteral("single") && mode!=QStringLiteral("sequence") &&
+               mode!=QStringLiteral("conversation")) {
+                if(error)*error=tr("Quest '%1' has an unsupported ON COMPLETED dialogue mode.").arg(questId);
+                return false;
+            }
+            const QString method=mode==QStringLiteral("single")?QStringLiteral("message"):
+                mode==QStringLiteral("sequence")?QStringLiteral("sequence"):
+                QStringLiteral("dialogue");
+            // Converted into a FIFO command below with every other dialogue.
+            commands+=QStringLiteral("        game_adventure_trigger_%1(%2u);\n")
+                .arg(method).arg(number);
+        }
         if(!commands.isEmpty())
             questCompleteActions+=QStringLiteral("    if(strcmp(quest_id,%1)==0) {\n%2        return;\n    }\n")
-                .arg(GameQuestGen::quoteC(it.key()),commands);
+                .arg(GameQuestGen::quoteC(questId),commands);
     }
     // Stage 119: dialogue actions share the SAME FIFO order as enable/disable/
     // toggle commands. The Adventure runtime then serialises visible modal
@@ -2203,7 +2267,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     };
     for(QString *body:{&triggerBody,&graphDispatchBody,&eventActions,
                         &eventSaveActions,&eventEnterActions,&checkBody,
-                        &interactionDialogueActions})
+                        &interactionDialogueActions,&questCompleteActions})
         if(!queueGeneratedDialogues(body))return false;
     sourceFields.insert(QStringLiteral("WORLD_EVENT_ACTIONS"), eventActions);
     sourceFields.insert(QStringLiteral("EVENT_SAVE_ACTIONS"),eventSaveActions);

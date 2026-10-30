@@ -25,9 +25,10 @@ enum {
 #define @IDE{PREFIX_UPPER}_DIRECTION_COUNT @IDE{DIRECTION_COUNT}u
 
 #define @IDE{PREFIX_UPPER}_HAS_HURT_STATE @IDE{HAS_HURT}
+#define @IDE{PREFIX_UPPER}_HAS_MELEE_STATE @IDE{HAS_MELEE}
 
 typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } @IDE{PREFIX}_clip_t;
-typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; } @IDE{PREFIX}_playeranim_t;
+typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; uint32_t melee_ticks_left; } @IDE{PREFIX}_playeranim_t;
 
 @IDE{CLIP_ARRAYS}
 static const @IDE{PREFIX}_clip_t @IDE{PREFIX}_clips[@IDE{CLIP_COUNT}] = {
@@ -39,6 +40,39 @@ static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob
     const @IDE{PREFIX}_clip_t *clip;
     if (!a || !bob || !bob->imgdat) return;
     if (state >= @IDE{STATE_COUNT}u || direction >= @IDE{DIRECTION_COUNT}u) return;
+    /* Stage 127.1: the ordinary five-argument animation step owns the melee
+     * override. No different function is needed in the game's main.c.
+     * A game with the shared-player header gets the combat pulse directly.
+     * Standalone animation projects (no shared player) retain old behaviour.
+     */
+#if @IDE{PREFIX_UPPER}_HAS_MELEE_STATE && defined(CODERGIRL_SHARED_PLAYER_H)
+    if (frame_step == 0u || !a->started || !gameplayer_combat_enabled()) {
+        a->melee_ticks_left = 0u;
+    }
+#if @IDE{PREFIX_UPPER}_HAS_HURT_STATE
+    if (state == @IDE{PREFIX_UPPER}_STATE_HURT)
+        a->melee_ticks_left = 0u; /* taking damage interrupts the swing */
+    else
+#endif
+    if (frame_step && gameplayer_combat_enabled()) {
+        const @IDE{PREFIX}_clip_t *melee = &@IDE{PREFIX}_clips[
+            (uint16_t)@IDE{PREFIX_UPPER}_STATE_MELEE * @IDE{PREFIX_UPPER}_DIRECTION_COUNT + direction];
+        if (gameplayer_attack_started() && melee->frames && melee->count) {
+            uint32_t duration = 0u;
+            for (uint16_t i = 0u; i < melee->count; ++i)
+                duration += melee->frame_ticks ? melee->frame_ticks[i] : melee->ticks;
+            a->melee_ticks_left = duration;
+            a->started = 0u; /* first frame on each accepted attack */
+        }
+        if (a->melee_ticks_left && melee->frames && melee->count) {
+            state = @IDE{PREFIX_UPPER}_STATE_MELEE;
+            a->melee_ticks_left = frame_step >= a->melee_ticks_left
+                ? 0u : a->melee_ticks_left - frame_step;
+        } else if (!melee->frames || !melee->count) {
+            a->melee_ticks_left = 0u;
+        }
+    }
+#endif
     clip = &@IDE{PREFIX}_clips[(uint16_t)state * @IDE{DIRECTION_COUNT}u + direction];
     if (!clip->count) {
         state = @IDE{IDLE_ID}u; /* missing animation: use Idle */

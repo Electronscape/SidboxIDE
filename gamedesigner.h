@@ -156,6 +156,14 @@ private:
         int enemyRoamSpeed = 1; // Whole pixels per 50-Hz frame; 1..8.
         int enemyStepHeight = 4; // Slope/step climb and descent allowance, pixels.
         bool enemyRoamLeft = false; // Initial patrol direction; checked from X flip independently.
+        // Independent enemy-on-damage feedback; all disabled for existing projects.
+        bool enemyHitFlash = false;
+        int enemyHitFlashColour = 15; // Foreground CLUT index.
+        int enemyHitFlashCount = 2; // Number of flashes.
+        int enemyHitFlashFrames = 3; // Ticks per on/off half-cycle.
+        int enemyHitFrame = -1; // -1 = no temporary atlas hit animation.
+        int enemyHitCount = 1; // Consecutive frames, 1..255.
+        int enemyHitDelay = 3; // 50-Hz ticks per frame.
         int enemyDefeatFrame = -1; // -1=vanish immediately; otherwise show this atlas frame.
         int enemyDefeatFrames = 20; // Legacy one-frame duration (older projects).
         int enemyDefeatCount = 1; // Sequential atlas frames, 1..256-start.

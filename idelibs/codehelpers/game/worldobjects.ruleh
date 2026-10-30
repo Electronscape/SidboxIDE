@@ -50,6 +50,12 @@ typedef struct {
     uint8_t enemy_roam_speed, enemy_step_height;
     int8_t enemy_roam_direction; /* -1=left, +1=right. */
     uint8_t enemy_base_flip_x; /* original BOB flip independent of facing */
+    /* Feedback when THIS enemy takes damage (never changes player hurt). */
+    uint8_t enemy_hit_flash;
+    uint8_t enemy_hit_flash_colour, enemy_hit_flash_count, enemy_hit_flash_frames;
+    int16_t enemy_hit_frame; /* -1 disables temporary hit-pose animation. */
+    uint8_t enemy_hit_count, enemy_hit_delay;
+    uint16_t enemy_hit_ticks_remaining, enemy_hit_elapsed; /* Transient only. */
     uint8_t enemy_hurts_on_touch;
     uint8_t enemy_stomp_side_kick; /* 0=only vertical rebound; 1=add break_launch_x on weak-spot hit. */
     uint8_t enemy_attack_direction; /* 0=from above, 1=from below, 2=both. */
@@ -162,6 +168,11 @@ void game_world_objects_before(const game_world_object_t *objects, uint16_t coun
                                 game_world_player_t *player);
 /* Called AFTER physics. Handle landing, conveyors and spring launch.
    No modification to the tilemap's own collision code. */
+/* Stage 124: reusable damage for optional melee attacks, same defeat flags
+ * and animation/drop/ON DEFEAT processing as ordinary stomps. */
+uint8_t game_world_objects_attack(game_world_object_t *objects, uint16_t count,
+                                  int32_t x, int32_t y, uint16_t w, uint16_t h,
+                                  uint8_t damage);
 void game_world_objects_after(game_world_object_t *objects, uint16_t count,
                                game_world_player_t *player);
 /* Evaluate switches AFTER the normal player physics, one call per frame.
@@ -189,6 +200,8 @@ void game_world_objects_hazards(game_world_object_t *objects, uint16_t count,
 /* Non-zero only on the ON portion of a flashing hurt window. */
 uint8_t game_world_player_hurt_flash(const game_world_player_t *player,
                                     uint8_t *palette_index);
+/* Apply the active hit-pose/flash to a DRAW-ONLY copy; never mutate sprite. */
+void game_world_enemy_hit_visual(const game_world_object_t *object, gfxbob_t *visible);
 void game_world_objects_draw_layer(const game_world_object_t *objects, uint16_t count,
                                    int32_t camera_x, int32_t camera_y, uint8_t behind);
 void game_world_objects_draw(const game_world_object_t *objects, uint16_t count,

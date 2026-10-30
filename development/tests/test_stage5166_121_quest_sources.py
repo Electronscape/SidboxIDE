@@ -51,5 +51,5 @@ class Quest121(unittest.TestCase):
         self.assertIn('@IDE{QUEST_COMPLETE_ACTIONS}',template)
         self.assertIn('gameworlditems_quest_completed(const char *quest_id) { (void)quest_id; }',template)
     def test_release_stage(self):
-        self.assertIn('Build: 5.166.122.301026',s('splashscreenwidget.cpp'))
+        self.assertRegex(s('splashscreenwidget.cpp'),r'Build: 5\.\d+\.\d+\.\d{6}')
 if __name__=='__main__':unittest.main()

@@ -1301,6 +1301,15 @@ public:
                     completion.id=QStringLiteral("@quest_complete:")+questId;
                     completion.name=tr("Quest completed: %1").arg(quest.value(QStringLiteral("title")).toString());
                     completion.type=QStringLiteral("quest_completed");
+                    const QJsonObject completionDialogue=m_world.value(QStringLiteral("questCompletionDialogues"))
+                        .toObject().value(questId).toObject();
+                    completion.dialogueNode=completionDialogue.value(QStringLiteral("dialogueNode")).toInt(-1);
+                    completion.dialogueMode=completionDialogue.value(QStringLiteral("mode"))
+                        .toString(QStringLiteral("conversation"));
+                    if(completion.dialogueMode!=QStringLiteral("single") &&
+                       completion.dialogueMode!=QStringLiteral("sequence"))
+                        completion.dialogueMode=QStringLiteral("conversation");
+                    if(completion.dialogueNode>=0)m_dialogueCards.insert(completion.id);
                     for(const QJsonValue &value:m_world.value(QStringLiteral("questCompletionActions"))
                             .toObject().value(questId).toArray()) {
                         const QJsonObject action=value.toObject();
@@ -2118,7 +2127,7 @@ private:
         auto *conversationFlow=new QPushButton(tr("+ Conversation Flow"),this);
         conversationFlow->setToolTip(tr("Edit an NPC's existing conversation: speaker, text, answers and next dialogue. For advanced actions, open the exact dialogue in Adventure Editor."));
         auto *addDialogue=new QPushButton(tr("+ Show Dialogue"),this);
-        addDialogue->setToolTip(tr("Select a Trigger, then add its inline Show Dialogue card."));
+        addDialogue->setToolTip(tr("Select a Trigger or Quest Line completion card, then add its Show Dialogue action."));
         auto *save=new QPushButton(tr("Save Graph + World"),this);
         auto *closeButton=new QPushButton(tr("Close"),this);
         for (auto *b:{zoomOut,zoomIn,fit,tidy,m_historyUndoButton,m_historyRedoButton,refresh,addCondition,addDialogue,conversationFlow,save,closeButton}) toolbar->addWidget(b);
@@ -2132,6 +2141,14 @@ private:
         auto *leftLayout=new QVBoxLayout(left);
         leftLayout->setContentsMargins(6,6,6,6);
         leftLayout->addWidget(new QLabel(tr("VISIBLE NODES"),left));
+        auto *socketLegend=new QLabel(tr("TEAL = STATE (held)\nGOLD = EVENT (pulse)"),left);
+        socketLegend->setWordWrap(true);
+        socketLegend->setStyleSheet(QStringLiteral("color:%1;").arg(m_theme.mutedText.name()));
+        socketLegend->setToolTip(tr("STATE (teal): a condition that stays TRUE/FALSE, e.g. enemy alive.\n"
+            "EVENT (gold): a brief occurrence, e.g. ON HIT or ON DEFEAT.\n"
+            "ON HIT includes the killing blow. For nonlethal hits use AND(ON HIT, STATE: ALIVE).\n"
+            "NOT(EVENT) does not mean the opposite persistent state."));
+        leftLayout->addWidget(socketLegend);
         m_treeSearch=new QLineEdit(left);
         m_treeSearch->setPlaceholderText(tr("Find a node...") );
         m_treeSearch->setClearButtonEnabled(true);
@@ -2599,7 +2616,11 @@ private:
                 visible.insert(id);
                 visible.insert(link.target);
             }
-            if (n.type==QStringLiteral("trigger") && n.dialogueNode>=0) visible.insert(id);
+            // Quest completion dialogues are real .sbgm links, just like
+            // Trigger dialogues. They must remain visible without .vsgm hints.
+            if ((n.type==QStringLiteral("trigger") ||
+                 n.type==QStringLiteral("quest_completed")) && n.dialogueNode>=0)
+                visible.insert(id);
             if (!n.logicNodes.isEmpty()) {
                 visible.insert(id);
                 for(const QJsonValue &v:n.logicNodes) {
@@ -2639,7 +2660,8 @@ private:
     QSet<QString> connectedCardIds() const {
         QSet<QString> ids=linkedObjectIds();
         for (const QString &id:m_order)
-            if (m_objects.value(id).type==QStringLiteral("trigger") &&
+            if ((m_objects.value(id).type==QStringLiteral("trigger") ||
+                 m_objects.value(id).type==QStringLiteral("quest_completed")) &&
                 m_objects.value(id).dialogueNode>=0)
                 ids.insert(dialogueCardId(id));
         for (const QString &id:m_order) {
@@ -2898,7 +2920,7 @@ private:
         card->setData(0,QStringLiteral("card"));card->setData(1,id);
         card->setPen(QPen((questEvent || questCompleted)?QColor(100,205,164):eventSource?QColor(238,190,86):npc?QColor(207,153,236):player?QColor(198,149,226):QColor(103,153,184),1.5));
         card->setBrush(m_theme.panelBackground);
-        if(questCompleted)card->setToolTip(tr("QUEST ON COMPLETED: emitted exactly once when every objective finishes. Saved progress never replays this pulse."));
+        if(questCompleted)card->setToolTip(tr("QUEST ON COMPLETED: emitted once when every objective finishes. Connect the gold event to Game Objects, Quest Events or an Adventure Show Dialogue card. Loading a save never replays the pulse."));
         if(questEvent)card->setToolTip(tr("QUEST EVENT: %1\nSignal ID: %2\nRuns only when an action fires. Quest progress uses the shared quest journal.")
             .arg(node.name,id.mid(QStringLiteral("@quest_event:").size())));
         m_scene->addItem(card);
@@ -2916,9 +2938,16 @@ private:
             node.type==QStringLiteral("world_reference")?tr("WORLD OBJECT TARGET"):
             node.type==QStringLiteral("missing_reference")?tr("BROKEN CONNECTION"):
             (node.type==QStringLiteral("collectable") && node.pickupKind==3)?tr("KEY COLLECTABLE"):
-            node.type==QStringLiteral("enemy")?tr("ENEMY STATE / DEFEAT"):node.type.toUpper(),card);
+            node.type==QStringLiteral("enemy")?tr("ENEMY STATE / EVENTS"):node.type.toUpper(),card);
         kind->setBrush(m_theme.text);kind->setPos(9,35);
-        if(trigger)kind->setToolTip(tr("Gold activates this Trigger. Teal outputs read its virtual, saved ON/OFF switch (initially OFF, toggles on each successful activation)."));
+        if(trigger)kind->setToolTip(tr("EVENT / ON ACTIVATE (gold): a momentary pulse when activated.\n"
+            "STATE: ON/OFF (teal): remembered condition, remains true until the next toggle.\n"
+            "Use EVENTS to run an action once; use STATES to test current switch position."));
+        if(node.type==QStringLiteral("enemy"))kind->setToolTip(tr(
+            "STATE: ALIVE (teal) is a held condition: TRUE while active, FALSE when defeated or disabled.\n"
+            "EVENT: ON HIT (gold) is a pulse on every hit, INCLUDING the killing blow.\n"
+            "EVENT: ON DEFEAT (gold) is a pulse on the killing blow.\n"
+            "For hit-only-while-alive: AND(ON HIT, STATE: ALIVE)."));
         if (!npc && !questCompleted) {
             // An incoming action is not the same thing as an outgoing state:
             // a small square on the left denotes a command/state assignment.
@@ -2941,13 +2970,22 @@ private:
             if (trigger) {
                 port->setPen(QPen(QColor(255,224,136),2));
                 port->setBrush(QColor(219,148,31));
+                port->setToolTip(tr("GOLD EVENT: ON ACTIVATE. A momentary pulse on each activation, not the Trigger's stored ON/OFF state."));
             } else {
                 port->setPen(QPen(QColor(177,242,226),2));
                 port->setBrush(QColor(54,148,141));
                 port->setToolTip(node.type==QStringLiteral("enemy")
-                    ? tr("STATE OUTPUT: read this enemy as a Boolean input. Create AND/NOT/OR logic directly from here without a Trigger. TRUE means active, FALSE means defeated/disabled. For actions when defeated use the gold socket below.")
-                    : eventSource ? tr("This object's existing pickup action is shown as a coloured wire. The teal socket still reads enabled state.") :
-                    tr("Read this Game Object's enabled/disabled state with Logic > Boolean"));
+                    ? tr("TEAL STATE: ALIVE / ACTIVE (persistent)\nTRUE = enemy remains alive and enabled. FALSE = defeated or disabled.\n"
+                         "This is NOT an ON HIT or ON DEFEAT event.\n"
+                         "AND(ON HIT, STATE: ALIVE) ignores the killing blow."
+                         " Use a gold EVENT for single-hit actions.")
+                    : tr("TEAL STATE: ACTIVE (persistent)\nTRUE while the object is enabled, FALSE while disabled.\n"
+                         "This is a held condition, not a one-shot action event."));
+                // Always put the readable state name beside its teal socket.
+                auto *stateLabel=new QGraphicsSimpleTextItem(node.type==QStringLiteral("enemy")
+                    ?tr("STATE: ALIVE"):tr("STATE: ACTIVE"),card);
+                stateLabel->setBrush(QColor(150,241,230));stateLabel->setPos(9,49);
+                stateLabel->setToolTip(port->toolTip());
             }
         }
         if (trigger) {
@@ -2955,25 +2993,28 @@ private:
             // occupies y=79..191 at z=3; labels in that rectangle would be
             // painted underneath it (and disappear on an expanded card).
             // Put the virtual switch in its own section BELOW the controls.
-            auto *actionLabel=new QGraphicsSimpleTextItem(tr("ON ACTIVATE"),card);
+            auto *actionLabel=new QGraphicsSimpleTextItem(tr("EVENT: ON ACTIVATE"),card);
             actionLabel->setBrush(QColor(255,220,137));
-            actionLabel->setPos(178,49);
+            actionLabel->setPos(148,49);
+            actionLabel->setToolTip(tr("GOLD EVENT: momentary ON ACTIVATE pulse. Runs linked actions each time the Trigger activates.\n"
+                "The teal STATE ON/OFF outputs below are remembered conditions, not event pulses."));
             auto *separator=new QGraphicsLineItem(9,200,259,200,card);
             separator->setPen(QPen(QColor(91,142,153),1));
-            auto *sectionLabel=new QGraphicsSimpleTextItem(tr("Virtual switch"),card);
+            auto *sectionLabel=new QGraphicsSimpleTextItem(tr("Virtual switch (held STATE)"),card);
             sectionLabel->setBrush(m_theme.text);
             sectionLabel->setPos(9,208);
-            sectionLabel->setToolTip(tr("Remembered ON/OFF state; changes on each successful Trigger activation."));
+            sectionLabel->setToolTip(tr("TEAL STATE outputs are persistent: ON remains TRUE until the next activation toggles it OFF, and vice versa. Use the GOLD EVENT above for a one-time pulse."));
             // Use one shared centre line for each label and its socket.
             // The header is above the rows, and the card has a bottom margin.
             // Both the labels and the wire endpoints are tied to the actual
             // socket geometry, never to independently guessed text baselines.
             for(const bool off:{false,true}) {
                 const qreal centreY=off?273.0:243.0;
-                auto *label=new QGraphicsSimpleTextItem(off?tr("STATE OFF"):tr("STATE ON"),card);
+                auto *label=new QGraphicsSimpleTextItem(off?tr("STATE: OFF"):tr("STATE: ON"),card);
                 label->setBrush(QColor(150,241,230));
                 const QRectF textBounds=label->boundingRect();
                 label->setPos(width-25.0-textBounds.right(),centreY-textBounds.center().y());
+                label->setToolTip(tr("TEAL STATE: a remembered ON/OFF condition. This is not another ON ACTIVATE event."));
                 auto *port=new QGraphicsEllipseItem(QRectF(width-9.5,centreY-9.5,19,19),card);
                 port->setData(0,QStringLiteral("output"));
                 port->setData(1,QStringLiteral("@triggerstate:")+
@@ -2985,7 +3026,8 @@ private:
             }
         }
         if (node.type==QStringLiteral("enemy")) {
-            auto *label=new QGraphicsSimpleTextItem(tr("ON DEFEAT"),card);
+            auto *label=new QGraphicsSimpleTextItem(tr("EVENT: ON DEFEAT"),card);
+            label->setToolTip(tr("GOLD EVENT: one-time defeat pulse, not the enemy's persistent STATE."));
             label->setBrush(QColor(238,190,86));label->setPos(9,75);
             auto *defeat=new QGraphicsEllipseItem(QRectF(214,81,19,19),card);
             defeat->setData(0,QStringLiteral("enemy-action-output"));
@@ -2993,7 +3035,9 @@ private:
             defeat->setPen(QPen(QColor(255,225,147),2));
             defeat->setBrush(QColor(205,140,37));
             defeat->setZValue(5);
-            defeat->setToolTip(tr("ON DEFEAT ACTION: drag to a Game Object or PLAYER command to Enable, Disable or Toggle when the final stomp defeats this enemy. Multiple ordered actions are supported."));
+            defeat->setToolTip(tr("GOLD EVENT: ON DEFEAT. Fires when the enemy is killed (stomp or melee), not when it simply takes damage.\n"
+                "Use this for death dialogue, quest signals and other one-time defeat actions.\n"
+                "ON HIT also pulses on the killing blow."));
         }
         // Gold executable EVENT outputs are distinct from the teal state
         // socket; a source can expose several independent named events.
@@ -3001,15 +3045,20 @@ private:
         for(int eventIndex=0;eventIndex<kinds.size();++eventIndex) {
             const QString key=kinds.at(eventIndex);
             const qreal y=(node.type==QStringLiteral("enemy")?108.0:79.0)+eventIndex*29.0;
-            auto *label=new QGraphicsSimpleTextItem(eventLabel(key),card);
+            auto *label=new QGraphicsSimpleTextItem(tr("EVENT: %1").arg(eventLabel(key)),card);
             label->setBrush(QColor(238,190,86));label->setPos(9,y-6);
+            label->setToolTip(tr("GOLD EVENT: %1 is a momentary pulse, not a saved STATE.").arg(eventLabel(key)));
             auto *port=new QGraphicsEllipseItem(QRectF(214,y,19,19),card);
             port->setData(0,QStringLiteral("event-output"));
             port->setData(1,id);port->setData(2,key);
             port->setPen(QPen(QColor(255,225,147),2));
             port->setBrush(QColor(205,140,37));port->setZValue(5);
-            port->setToolTip(key==QStringLiteral("complete")
-                ? tr("ON COMPLETED: one-shot quest completion. Drag to an action target or Quest Event to signal the next part. Progress is persisted, so restores do not fire it again.")
+            port->setToolTip(node.type==QStringLiteral("enemy") && key==QStringLiteral("hit")
+                ? tr("GOLD EVENT: ON HIT. Pulses on EVERY successful hit, including the final killing blow.\n"
+                     "For a hit-only-while-alive action, combine ON HIT with the teal STATE: ALIVE in an AND gate.\n"
+                     "For death actions, use ON DEFEAT instead.")
+                : key==QStringLiteral("complete")
+                ? tr("ON COMPLETED: one-shot quest completion. Drag to an action target, Quest Event, or Show Dialogue. Progress is persisted, so restores do not replay it.")
                 : key==QStringLiteral("arrival")
                 ? tr("GOLD ON ARRIVAL: drag to empty canvas → Logic (Boolean/AND/OR/NOT), or to a Game Object and right-click the action wire → Toggle to alternate its state each arrival. The teal socket above reads the lift's active state instead.")
                 : ((node.type==QStringLiteral("breakable") &&
@@ -3903,12 +3952,14 @@ private:
         const QSet<QString> requested=m_dialogueCards;
         m_dialogueCards.clear();
         for (const QString &id:m_order)
-            if (m_objects.value(id).type==QStringLiteral("trigger") &&
+            if ((m_objects.value(id).type==QStringLiteral("trigger") ||
+                 m_objects.value(id).type==QStringLiteral("quest_completed")) &&
                 (m_objects.value(id).dialogueNode>=0 ||
                  m_placedCards.contains(dialogueCardId(id)) || requested.contains(id))) {
                 if (!m_cards.contains(id))
                     makeObjectCard(id,m_positions.value(id,QPointF(70,85+triggerCount++*125)));
-                if (!npcRoutePoint(id,m_objects.value(id).dialogueNode))createDialogueCard(id);
+                if (m_objects.value(id).type==QStringLiteral("quest_completed") ||
+                    !npcRoutePoint(id,m_objects.value(id).dialogueNode))createDialogueCard(id);
             }
         for (const QString &id:m_order) {
             const NodeObject n=m_objects.value(id);
@@ -4434,8 +4485,8 @@ private:
         // Named Breakable events can show an Adventure dialogue. Selecting one
         // creates the existing one-frame BOOLEAN -> TRUE dialogue chain, so
         // event playback uses the same validated runtime path as graph dialogue.
-        if (linking && !objectSource && !enemyOutput && !questCompletionSource &&
-            (!eventOutputPort || eventLogicSource)) {
+        if (linking && !objectSource && !enemyOutput &&
+            (!eventOutputPort || eventLogicSource || questCompletionSource)) {
             auto *root=new QTreeWidgetItem(tree,QStringList{tr("Dialogue Actions")});
             root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
             populateDialogueChoices(tree,root);
@@ -4509,6 +4560,10 @@ private:
             return;
         }
         if (selectedId==QStringLiteral("@create-dialogue")) {
+            if(questCompletionSource) {
+                connectQuestCompletionDialogue(eventOwner(from),at,-2);
+                return;
+            }
             if(eventOutputPort || enemyOutput) {
                 if(m_dialogues.size()>=256) {
                     QMessageBox::warning(this,tr("Visual Nodes"),tr("Adventure dialogues are limited to 256 nodes."));
@@ -4549,6 +4604,10 @@ private:
             bool ok=false;
             const int index=selectedId.mid(QStringLiteral("@dialogue-node:").size()).toInt(&ok);
             if (ok && index>=0 && index<m_dialogues.size()) {
+                if(questCompletionSource) {
+                    connectQuestCompletionDialogue(eventOwner(from),at,index);
+                    return;
+                }
                 if(eventOutputPort || enemyOutput) {
                     const QString owner=enemyOutput?enemyDefeatOwner(from):eventOwner(from);
                     const int before=m_objects.value(owner).logicNodes.size();
@@ -4877,6 +4936,8 @@ private:
         m_placedCards.insert(key);
         makeGraphCard(owner,name);
         redrawLinks();showDetails(key);
+        if(op==QStringLiteral("not") && input.value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
+            m_status->setText(graphSocketGuidance(node));
         if(op==QStringLiteral("and") || op==QStringLiteral("or"))
             m_status->setText(tr("Connect at least one more input to %1 before saving.").arg(op.toUpper()));
     }
@@ -4954,7 +5015,12 @@ private:
         for(const QString &id:deps.keys())if(!visit(id)) {
             QMessageBox::warning(this,tr("Logic Cycle"),tr("This wire would create a circular logic dependency."));return;
         }
-        graphUpdate(key,node);redrawLinks();showDetails(key);
+        graphUpdate(key,node);
+        syncGraphCardSockets(key);
+        redrawLinks();showDetails(key);
+        const QString guidance=graphSocketGuidance(node);
+        if(guidance.startsWith(tr("CAUTION:")) || guidance.startsWith(tr("EVENT + STATE:")))
+            m_status->setText(guidance);
     }
     void setGraphDialogue(const QString &key,bool yes,int selected,const QPointF &at=QPointF()) {
         QJsonObject node;
@@ -5033,6 +5099,34 @@ private:
             m_positions.value(target):viewportInsertionPoint(QSizeF(240,125)));
         redrawLinks();showDetails(key);
     }
+    QString graphSocketGuidance(const QJsonObject &node) const {
+        const QString op=node.value(QStringLiteral("op")).toString();
+        const QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
+        bool eventInput=false,stateInput=false;
+        for(const QJsonValue &value:inputs) {
+            const QString kind=value.toObject().value(QStringLiteral("kind")).toString();
+            if(kind==QStringLiteral("event"))eventInput=true;
+            if(kind==QStringLiteral("object"))stateInput=true;
+        }
+        if(op==QStringLiteral("not") && eventInput)
+            return tr("CAUTION: NOT(EVENT) is NOT the opposite of a persistent STATE. "
+                      "The pulse is TRUE only while the event occurs; NOT reverses that instantaneous value. "
+                      "To test whether an enemy is still alive, use its teal STATE: ALIVE socket. "
+                      "To run on death, use the gold ON DEFEAT event.");
+        if(op==QStringLiteral("and") && eventInput && stateInput)
+            return tr("EVENT + STATE: this AND gate is TRUE only when the event fires while "
+                      "the connected persistent state is TRUE. For enemy hits, AND(ON HIT, STATE: ALIVE) "
+                      "ignores the killing blow; use ON DEFEAT for death actions.");
+        if(op==QStringLiteral("boolean") && eventInput)
+            return tr("EVENT INPUT: TRUE occurs when this pulse fires; it is not a persistent enabled state. "
+                      "An ON HIT pulse also occurs on the killing blow.");
+        if(!eventInput && stateInput)
+            return tr("STATE INPUT: this gate reads a persistent enabled/disabled condition. "
+                      "Its TRUE branch can execute again when the graph is reevaluated by another change. "
+                      "Use an EVENT input when you need an action tied to a specific occurrence.");
+        return tr("STATE sockets are held conditions. EVENT sockets are momentary pulses. "
+                  "NOT(EVENT) is not the same thing as testing the opposite STATE.");
+    }
     void syncGraphCardSockets(const QString &key) {
         NodeCard *card=m_cards.value(key,nullptr);
         QJsonObject node;
@@ -5074,11 +5168,21 @@ private:
                 id.startsWith(QStringLiteral("@triggerstate:"));
             const QString stateOwner=virtualInput?id.mid(QStringLiteral("@triggerstate:").size()):QString();
             const QString name=virtualInput && m_objects.contains(stateOwner)
-                ?m_objects.value(stateOwner).name+(entry.value(QStringLiteral("invert")).toBool(false)
-                    ?tr(" (OFF)"):tr(" (ON)")):
-                kind==QStringLiteral("node")?id:
-                kind==QStringLiteral("event")?eventLabel(eventKey(id)):
-                m_objects.contains(id)?m_objects.value(id).name:id;
+                ?tr("STATE %1 (%2)").arg(m_objects.value(stateOwner).name)
+                    .arg(entry.value(QStringLiteral("invert")).toBool(false)?tr("OFF"):tr("ON")):
+                kind==QStringLiteral("node")?tr("LOGIC %1").arg(id):
+                kind==QStringLiteral("event")?tr("EVENT %1").arg(eventLabel(eventKey(id))):
+                m_objects.contains(id)?tr("STATE %1").arg(m_objects.value(id).name):id;
+            const QString inputTip=kind==QStringLiteral("event")
+                ?tr("GOLD EVENT: %1 is a momentary pulse. ON HIT includes the killing blow. "
+                    "NOT(EVENT) is NOT a check for enemy survival. Right-click this wire to disconnect.")
+                    .arg(eventLabel(eventKey(id)))
+                :kind==QStringLiteral("object")
+                ?tr("TEAL STATE: %1 is a persistent condition read when logic evaluates. "
+                    "Use AND with an EVENT to act only when the event occurs while this state is TRUE. "
+                    "Right-click this wire to disconnect.").arg(name)
+                :tr("LOGIC RESULT: reads the connected gate's output. Its semantics depend on that gate. "
+                    "Right-click this wire to disconnect.");
             if(!socket) {
                 socket=new QGraphicsRectItem(card);
                 socket->setData(0,QStringLiteral("input"));socket->setData(1,key);
@@ -5088,15 +5192,21 @@ private:
             }
             socket->setPos(QPointF());
             socket->setRect(QRectF(-7,45+24*i,14,14));
-            socket->setToolTip(connected?tr("INPUT %1: %2. Right-click its wire to disconnect.")
-                .arg(i+1).arg(name):tr("INPUT %1: drag a Game Object STATE or logic RESULT here.").arg(i+1));
+            const QColor socketColour=kind==QStringLiteral("event")?QColor(205,140,37):QColor(75,173,177);
+            socket->setPen(QPen(kind==QStringLiteral("event")?QColor(255,225,147):QColor(160,237,232),1.5));
+            socket->setBrush(connected?socketColour:QColor(25,41,53));
+            socket->setToolTip(connected?tr("INPUT %1: %2\n%3").arg(i+1).arg(name).arg(inputTip):
+                tr("INPUT %1: connect a teal STATE, gold EVENT, or another logic RESULT.").arg(i+1));
             if(!label) {
                 label=new QGraphicsSimpleTextItem(card);
                 label->setData(2,i);label->setData(4,QStringLiteral("graph-input-label"));
             }
             label->setText(connected?tr("INPUT %1: %2").arg(i+1).arg(name).left(31):
                 tr("INPUT %1: (connect)").arg(i+1));
-            label->setBrush(connected?m_theme.text:m_theme.mutedText);
+            label->setBrush(connected && kind==QStringLiteral("event")?QColor(238,190,86):
+                connected?m_theme.text:m_theme.mutedText);
+            label->setToolTip(connected?inputTip:
+                tr("Connect a teal STATE, gold EVENT, or another logic RESULT."));
             label->setPos(10,43+24*i);
         }
         for(QGraphicsItem *child:card->childItems()) {
@@ -5116,6 +5226,10 @@ private:
             } else if(role==QStringLiteral("graph-operator"))child->setPos(9,falseY+17);
         }
         card->setFullHeight(falseY+59);
+        const QString guidance=graphSocketGuidance(node);
+        card->setToolTip(guidance);
+        card->setPen(QPen(guidance.startsWith(tr("CAUTION:"))?
+            QColor(216,147,67):QColor(98,206,202),1.5));
         if(folded)card->setCollapsed(true);
     }
     void makeGraphCard(const QString &owner,const QString &id) {
@@ -5144,7 +5258,9 @@ private:
         valuePort->setData(0,QStringLiteral("output"));valuePort->setData(1,QStringLiteral("@graphvalue:")+key);
         valuePort->setData(4,QStringLiteral("graph-result-port"));
         valuePort->setBrush(QColor(76,169,176));valuePort->setPen(QPen(Qt::white,1));
-        valuePort->setToolTip(tr("RESULT: connect to another Logic node or a Game Object (TRUE = enabled, FALSE = disabled)."));
+        valuePort->setToolTip(tr("TEAL LOGIC RESULT: evaluated TRUE/FALSE value. It can feed other logic or directly set a Game Object's state.\n"
+            "When an EVENT input is involved, this result is evaluated on that pulse. "
+            "On state-only logic, reevaluation can happen after later state changes."));
         for(const bool yes:{true,false}) {
             const int y=yes?109:138;
             auto *label=new QGraphicsSimpleTextItem(yes?tr("TRUE / YES"):tr("FALSE / NO"),card);
@@ -5156,7 +5272,11 @@ private:
             port->setData(1,(yes?QStringLiteral("@graphbranch:true:"):
                                   QStringLiteral("@graphbranch:false:"))+key);
             port->setPen(QPen(Qt::white,1));port->setBrush(yes?QColor(76,171,118):QColor(193,86,86));
-            port->setToolTip(yes?tr("TRUE action: defaults to Enable"):tr("FALSE action: defaults to Disable"));
+            port->setToolTip(yes?tr("TRUE action: runs when this gate evaluates TRUE. "
+                "A held STATE alone may cause repeat dispatch on subsequent reevaluation; "
+                "combine with an EVENT to require a specific occurrence."):
+                tr("FALSE action: runs when this gate evaluates FALSE. "
+                "A pulse-dependent gate only dispatches when its event occurs."));
         }
         auto *operatorPanel=new QWidget;
         operatorPanel->setFixedSize(254,33);
@@ -5196,7 +5316,10 @@ private:
             current.insert(QStringLiteral("op"),op);
             graphUpdate(key,current);
             title->setText(op.toUpper()+QStringLiteral(" | ")+id);
+            syncGraphCardSockets(key);
             redrawLinks();showDetails(key);
+            if(op==QStringLiteral("not") && graphSocketGuidance(current).startsWith(tr("CAUTION:")))
+                m_status->setText(graphSocketGuidance(current));
         });
         card->moved=[this,key,card] {updateLiveWires(key,card);};
         addFoldButton(card,key);
@@ -5946,6 +6069,44 @@ private:
         }
         setBranchDialogue(id,yes,index,at);
     }
+    void connectQuestCompletionDialogue(const QString &owner,const QPointF &at,int selected) {
+        if(!m_objects.contains(owner) ||
+           m_objects.value(owner).type!=QStringLiteral("quest_completed"))return;
+        if(selected==-2) {
+            if(m_dialogues.size()>=256) {
+                QMessageBox::warning(this,tr("Visual Nodes"),
+                    tr("Adventure dialogues are limited to 256 nodes."));return;
+            }
+            m_dialogues.append(QJsonObject{{QStringLiteral("speaker"),QStringLiteral("NPC")},
+                {QStringLiteral("text"),QStringLiteral("Hello!")},
+                {QStringLiteral("choices"),QJsonArray()}});
+            selected=m_dialogues.size()-1;
+            m_dialoguesChanged=true;
+        }
+        if(selected<0 || selected>=m_dialogues.size())return;
+        NodeObject node=m_objects.value(owner);
+        node.dialogueNode=selected;
+        m_objects.insert(owner,node);
+        m_touched.insert(owner);
+        m_placedCards.insert(owner);
+        m_placedCards.insert(dialogueCardId(owner));
+        m_dirty=true;
+        if(!m_cards.contains(owner))makeObjectCard(owner,
+            m_positions.value(owner,at-QPointF(340,0)));
+        if(!m_dialogueCards.contains(owner)) {
+            if(!m_positions.contains(dialogueCardId(owner)))
+                m_positions.insert(dialogueCardId(owner),at);
+            createDialogueCard(owner);
+        }
+        refreshDialogueCard(owner);
+        redrawLinks();
+        showDetails(dialogueCardId(owner));
+        m_status->setText(tr("Quest ON COMPLETED is connected to Adventure dialogue #%1. Save Graph + World to apply.")
+            .arg(selected));
+    }
+    // The same editable Show Dialogue card is available to Quest Line
+    // completions. Only one authored dialogue per completion, with ordinary
+    // Adventure chaining for subsequent messages and choices.
     // Phase 2: one editable Show Dialogue card per Trigger. The card's
     // gameplay values live in .sbgm; .vsgm stores only presence and location.
     QString dialogueCardId(const QString &id) const {
@@ -5953,9 +6114,25 @@ private:
     }
     void addDialogueCard() {
         const QString id=m_selectedCardId;
-        if (!m_objects.contains(id) || m_objects.value(id).type!=QStringLiteral("trigger")) {
+        if (!m_objects.contains(id) ||
+            (m_objects.value(id).type!=QStringLiteral("trigger") &&
+             m_objects.value(id).type!=QStringLiteral("quest_completed"))) {
             QMessageBox::information(this,tr("Show Dialogue"),
-                tr("Select a Trigger card first, then click + Show Dialogue."));
+                tr("Select a Trigger or Quest Line completion card first, then click + Show Dialogue."));
+            return;
+        }
+        // A quest's ON COMPLETED card is an ACTION, not an empty visual
+        // placeholder. Offer the Adventure dialogue picker immediately;
+        // otherwise a dashed, unlinked purple card can masquerade as a wire.
+        if (m_objects.value(id).type==QStringLiteral("quest_completed") &&
+            m_objects.value(id).dialogueNode<0) {
+            const int selected=browseDialogueTree(-1);
+            if(selected==-1)return;
+            const QPointF at=m_cards.contains(dialogueCardId(id))?
+                m_cards.value(dialogueCardId(id))->pos():
+                m_cards.contains(id)?m_cards.value(id)->pos()+QPointF(360,0):
+                viewportInsertionPoint(QSizeF(345,380));
+            connectQuestCompletionDialogue(id,at,selected);
             return;
         }
         if (!m_dialogueCards.contains(id)) {
@@ -5965,8 +6142,10 @@ private:
             redrawLinks();
         }
         const QString cardId=dialogueCardId(id);
-        m_view->centerOn(m_cards.value(cardId));
-        showDetails(cardId);
+        if (m_cards.contains(cardId)) {
+            m_view->centerOn(m_cards.value(cardId));
+            showDetails(cardId);
+        }
     }
     void createDialogueCard(const QString &id) {
         if (m_dialogueCards.contains(id) || !m_objects.contains(id))return;
@@ -6021,7 +6200,7 @@ private:
         info->setWordWrap(true);
         info->setStyleSheet(QStringLiteral("QLabel { background: transparent; font-size: 10px; color: %1; }").arg(m_theme.mutedText.name()));
         auto *disconnect=new QPushButton(tr("Disconnect Dialogue"),panel);
-        disconnect->setToolTip(tr("Unlink the dialogue from this Trigger; the Adventure dialogue remains intact."));
+        disconnect->setToolTip(tr("Unlink this event's dialogue action; the Adventure dialogue remains intact."));
         layout->addWidget(new QLabel(tr("Adventure dialogue"),panel));
         layout->addWidget(picker);
         layout->addWidget(browse);
@@ -6130,6 +6309,12 @@ private:
                 .arg(d.value(QStringLiteral("speaker")).toString().left(14),
                      d.value(QStringLiteral("text")).toString().simplified().left(25)),j);
         }
+        if(n.dialogueNode>=m_dialogues.size()) {
+            // Keep a stale reference conspicuous rather than silently
+            // displaying "None". Export refuses missing dialogue IDs.
+            c.picker->addItem(tr("MISSING dialogue #%1 (select replacement)")
+                .arg(n.dialogueNode),n.dialogueNode);
+        }
         c.picker->addItem(tr("+ Create new dialogue"),-2);
         c.picker->setCurrentIndex(qMax(0,c.picker->findData(n.dialogueNode)));
         c.mode->setCurrentIndex(qMax(0,c.mode->findData(n.dialogueMode)));
@@ -6139,7 +6324,10 @@ private:
         c.message->setPlainText(d.value(QStringLiteral("text")).toString());
         c.mode->setEnabled(valid);c.speaker->setEnabled(valid);c.message->setEnabled(valid);
         c.info->setText(valid?tr("Editing this dialogue updates every place that references dialogue %1. Advanced choices remain untouched.").arg(n.dialogueNode)
-                             :tr("Select an existing dialogue or create one, then edit it here."));
+            :n.dialogueNode>=m_dialogues.size()?
+                tr("MISSING dialogue #%1. Choose an existing dialogue or create a new one before saving.")
+                    .arg(n.dialogueNode)
+            :tr("Select an existing dialogue or create one, then edit it here."));
         // Keep the Visible Nodes sidebar in sync with dialogue selection.
         // This is presentation only: dialogue IDs still belong to .sbgm.
         const QString key=dialogueCardId(id);
@@ -6483,6 +6671,27 @@ private:
                     wire->setToolTip(tr("%1: %2 → %3 (%4)")
                         .arg(eventLabel(key),node.name,m_objects.value(link.target).name,link.action));
                     wire->setZValue(0);m_lines.append(wire);
+                }
+            }
+            if (node.type==QStringLiteral("quest_completed") && node.dialogueNode>=0 &&
+                m_dialogueCards.contains(id)) {
+                NodeCard *dialogue=m_cards.value(dialogueCardId(id),nullptr);
+                if(dialogue) {
+                    QPointF sourcePoint=from->wirePoint(QPointF(224,89));
+                    for(QGraphicsItem *child:from->childItems())
+                        if(child->data(0).toString()==QStringLiteral("event-output") &&
+                           child->data(2).toString()==QStringLiteral("complete")) {
+                            sourcePoint=child->sceneBoundingRect().center();break;
+                        }
+                    const QPainterPath path=smoothNodeCurve(sourcePoint,
+                        dialogue->wirePoint(QPointF(0,57)));
+                    auto *wire=new NodeWire(path,QPen(QColor(199,149,248),3));
+                    wire->setData(0,QStringLiteral("dialogue-link"));
+                    wire->setData(1,id);wire->setData(4,id);
+                    wire->setData(5,dialogueCardId(id));
+                    wire->setToolTip(tr("Quest ON COMPLETED → Show Dialogue #%1 (once; right-click to disconnect)")
+                        .arg(node.dialogueNode));
+                    wire->setZValue(0);m_scene->addItem(wire);m_lines.append(wire);
                 }
             }
             if (node.type!=QStringLiteral("trigger"))continue;
@@ -6867,6 +7076,7 @@ private:
     void refreshCardInspector(const QString &id) {
         if(!m_inspectorTree)return;
         m_inspectorTree->clear();
+        m_inspectorType->setToolTip(QString());
         const auto row=[this](const QString &name,const QString &value) {
             auto *item=new QTreeWidgetItem(m_inspectorTree,QStringList{name,value});
             item->setToolTip(1,value);
@@ -6874,6 +7084,7 @@ private:
         if(id.isEmpty() || !m_cards.contains(id)) {
             m_inspectorTitle->setText(tr("SELECT A NODE OR WIRE"));
             m_inspectorType->setText(tr("Choose a card to inspect its properties and connections."));
+            m_inspectorType->setToolTip(QString());
             return;
         }
         if(id.startsWith(QStringLiteral("@conversation:"))) {
@@ -6945,8 +7156,14 @@ private:
             QString owner;QJsonObject node;
             if(lookupGraph(id,&owner,nullptr,&node)) {
                 m_inspectorTitle->setText(node.value(QStringLiteral("id")).toString());
-                m_inspectorType->setText(tr("Independent logic"));
+                const QString guidance=graphSocketGuidance(node);
+                m_inspectorType->setText(guidance.startsWith(tr("CAUTION:"))?
+                    tr("CAUTION: NOT on EVENT pulse"):
+                    guidance.startsWith(tr("EVENT + STATE:"))?
+                    tr("EVENT pulse + persistent STATE"):tr("Independent logic"));
+                m_inspectorType->setToolTip(guidance);
                 row(tr("Operator"),node.value(QStringLiteral("op")).toString().toUpper());
+                row(tr("Input guidance"),guidance);
                 row(tr("Inputs"),QString::number(node.value(QStringLiteral("inputs")).toArray().size()));
                 row(tr("Game Object"),m_objects.value(owner).name);
                 row(tr("Data source"),QStringLiteral(".sbgm / logic"));
@@ -7008,10 +7225,10 @@ private:
                 row(tr("Talk radius"),tr("%1 px").arg(node.npcRadius));
                 row(tr("Initially visible"),node.npcInitiallyVisible?tr("Yes"):tr("No"));
             }
-            if(isActionSource(node)) {
-                row(tr("Linked actions"),QString::number(node.links.size()));
-                if(node.dialogueNode>=0)row(tr("Show Dialogue"),npcDialogueTitle(node.dialogueNode));
-            }
+            if(isActionSource(node))row(tr("Linked actions"),QString::number(node.links.size()));
+            if((isActionSource(node) || node.type==QStringLiteral("quest_completed")) &&
+               node.dialogueNode>=0)
+                row(tr("Show Dialogue"),npcDialogueTitle(node.dialogueNode));
             row(tr("Data source"),QStringLiteral(".sbgm"));
             return;
         }
@@ -7109,11 +7326,14 @@ private:
             if(lookupGraph(id,&owner,nullptr,&node)) {
                 m_linksList->clear();m_linksList->setEnabled(false);
                 m_details->setPlainText(tr("Independent logic node %1 (%2)\n\n"
-                    "Evaluated when Trigger %3 activates.\nInputs: %4\n\n"
-                    "RESULT can feed other logic nodes OR directly set a Game Object's enabled state (TRUE = on, FALSE = off). TRUE/FALSE can also run actions and dialogues. Right-click a wire to edit/remove it.")
+                    "Owner: %3\nInputs: %4\n\n"
+                    "RESULT reads the gate's evaluated value. TRUE/FALSE can run actions and dialogues. "
+                    "Event-owned gates run on the relevant pulse; state-only gates can run again when the state changes or other watched events occur. "
+                    "Right-click a wire to edit/remove it.\n\n%5")
                     .arg(node.value(QStringLiteral("id")).toString(),node.value(QStringLiteral("op")).toString(),
                          m_objects.value(owner).name)
-                    .arg(node.value(QStringLiteral("inputs")).toArray().size()));
+                    .arg(node.value(QStringLiteral("inputs")).toArray().size())
+                    .arg(graphSocketGuidance(node)));
             }
             return;
         }
@@ -7192,10 +7412,12 @@ private:
                 text+=tr("\nDialogue: %1 (%2)\n\nUse the golden socket to connect this Trigger to another object or its Show Dialogue card. Select a connection below to edit or remove it.")
                     .arg(node.dialogueNode).arg(node.dialogueMode);
             else if(node.type==QStringLiteral("enemy"))
-                text+=tr("\nGOLD ON DEFEAT socket: drag to a Game Object or PLAYER action. The linked actions run IN ORDER when this enemy is defeated.\n"
-                         "TEAL STATE socket: feed the enemy's enabled state into Boolean / AND / OR / NOT.\n"
-                         "LEFT square: receive Enable / Disable / Toggle commands from Triggers or logic branches.\n"
-                         "Right-click an action wire to change Enable / Disable / Toggle or disconnect it.");
+                text+=tr("\nTEAL STATE: ALIVE is TRUE while the enemy is active and FALSE when defeated or disabled.\n"
+                         "GOLD EVENT: ON HIT pulses on EVERY successful hit, including the killing blow.\n"
+                         "GOLD EVENT: ON DEFEAT pulses when the final hit defeats this enemy.\n"
+                         "For nonlethal hit dialogue: AND(ON HIT, STATE: ALIVE). For death dialogue: ON DEFEAT -> BOOLEAN TRUE.\n"
+                         "NOT(ON DEFEAT) is not the same as STATE: ALIVE.\n"
+                         "LEFT square: receive Enable / Disable / Toggle commands. Right-click an action wire to edit it.");
             else text+=tr("\nThis pre-existing key-pickup action runs when collected. Edit the link below or use Game Object Properties.");
         } else if(node.type==QStringLiteral("npc")) {
             text+=tr("NPC CONVERSATIONS (Adventure Editor)\n\n"
@@ -7319,14 +7541,33 @@ private:
             return;
         }
         if(isEventOutput(from)) {
-            // Quest completion has an ordinary action pulse only. A dialogue
-            // or independent logic gate would have no generated owner.
-            if(m_objects.value(eventOwner(from)).type==QStringLiteral("quest_completed") &&
-               (to.startsWith(QStringLiteral("@graph:")) ||
-                to.startsWith(QStringLiteral("@graph-dialogue:")) ||
-                to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
-                to.startsWith(QStringLiteral("@dialogue:")) ||
-                to.startsWith(QStringLiteral("@conversation:"))))return;
+            // Quest completion is a real one-shot action source, but unlike
+            // a placed enemy it has no Game Object owner for a Boolean gate.
+            // Route a dragged dialogue card directly to its own completion
+            // action; never create an orphan graph gate.
+            if(m_objects.value(eventOwner(from)).type==QStringLiteral("quest_completed")) {
+                if(to.startsWith(QStringLiteral("@graph:")))return;
+                if(to.startsWith(QStringLiteral("@graph-dialogue:")) ||
+                   to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
+                   to.startsWith(QStringLiteral("@dialogue:")) ||
+                   to.startsWith(QStringLiteral("@conversation:"))) {
+                    // Previously, dropping onto an unlinked Show Dialogue card
+                    // silently returned -1. Ask for the actual Adventure ID;
+                    // cancelling leaves the original graph untouched.
+                    int selected=selectedDialogueOnCard(to);
+                    if(selected<0)selected=browseDialogueTree(-1);
+                    if(selected==-1)return;
+                    const QString owner=eventOwner(from);
+                    const bool ownCard=(to==dialogueCardId(owner));
+                    const QPointF at=m_cards.contains(to)?
+                        m_cards.value(to)->pos()+(ownCard?QPointF():QPointF(355,0)):
+                        viewportInsertionPoint(QSizeF(345,380));
+                    connectQuestCompletionDialogue(owner,at,selected);
+                    m_status->setText(tr("Quest ON COMPLETED → Adventure dialogue #%1. Save Graph + World to apply.")
+                        .arg(m_objects.value(owner).dialogueNode));
+                    return;
+                }
+            }
             if(m_objects.contains(eventOwner(from)) &&
                eventKinds(m_objects.value(eventOwner(from)).type).contains(eventKey(from)) &&
                (to.startsWith(QStringLiteral("@graph-dialogue:")) ||
@@ -7597,9 +7838,10 @@ private:
     void disconnectDialogue(const QString &triggerId) {
         if (!m_objects.contains(triggerId))return;
         NodeObject node=m_objects.value(triggerId);
-        if (node.type!=QStringLiteral("trigger") || node.dialogueNode<0)return;
+        if ((node.type!=QStringLiteral("trigger") &&
+             node.type!=QStringLiteral("quest_completed")) || node.dialogueNode<0)return;
         node.dialogueNode=-1;
-        m_npcDialogueRoutes.remove(triggerId);
+        if(node.type==QStringLiteral("trigger"))m_npcDialogueRoutes.remove(triggerId);
         m_objects.insert(triggerId,node);
         m_touched.insert(triggerId);
         m_dirty=true;
@@ -7787,6 +8029,9 @@ private:
                 if (source==id) {
                     if (!node.links.isEmpty()) { node.links.clear();changed=true; }
                     if (node.type!=QStringLiteral("trigger")) {
+                        if(node.type==QStringLiteral("quest_completed") && node.dialogueNode>=0) {
+                            node.dialogueNode=-1;changed=true;
+                        }
                         if(!node.logicNodes.isEmpty()) {node.logicNodes=QJsonArray();changed=true;}
                         if(changed) {m_objects.insert(source,node);m_touched.insert(source);m_dirty=true;}
                         continue;
@@ -8148,7 +8393,7 @@ private:
                 continue;
             }
             const NodeObject node=m_objects.value(ref.first);
-            if (!isActionSource(node))continue;
+            if (!isActionSource(node) && node.type!=QStringLiteral("quest_completed"))continue;
             // -1 identifies a purple Show Dialogue wire. It has no
             // Enable/Disable/Toggle action, only Disconnect.
             if (ref.second<=-1000) {
@@ -8614,6 +8859,21 @@ private:
                 else questCompletionActions.insert(questId,actions);
             }
             next.insert(QStringLiteral("questCompletionActions"),questCompletionActions);
+            QJsonObject questCompletionDialogues=next.value(QStringLiteral("questCompletionDialogues")).toObject();
+            for(const QString &id:m_order) {
+                const NodeObject node=m_objects.value(id);
+                if(node.type!=QStringLiteral("quest_completed"))continue;
+                const QString questId=id.mid(QStringLiteral("@quest_complete:").size());
+                if(node.dialogueNode>=0) {
+                    if(node.dialogueNode>=m_dialogues.size())
+                        return fail(tr("Quest '%1' references missing dialogue #%2.")
+                            .arg(node.name).arg(node.dialogueNode));
+                    questCompletionDialogues.insert(questId,QJsonObject{
+                        {QStringLiteral("dialogueNode"),node.dialogueNode},
+                        {QStringLiteral("mode"),node.dialogueMode}});
+                } else questCompletionDialogues.remove(questId);
+            }
+            next.insert(QStringLiteral("questCompletionDialogues"),questCompletionDialogues);
             if (m_dialoguesChanged || m_npcsChanged) {
                 QJsonObject adventure=next.value(QStringLiteral("adventure")).toObject();
                 if(m_dialoguesChanged)adventure.insert(QStringLiteral("nodes"),m_dialogues);

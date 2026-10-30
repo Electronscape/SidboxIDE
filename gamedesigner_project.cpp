@@ -347,6 +347,13 @@ bool SidboxGameDesigner::loadDesign()
         r.enemyRoamSpeed = qBound(1, object.value(QStringLiteral("enemyRoamSpeed")).toInt(1), 8);
         r.enemyStepHeight = qBound(1, object.value(QStringLiteral("enemyStepHeight")).toInt(4), 12);
         r.enemyRoamLeft = object.value(QStringLiteral("enemyRoamLeft")).toBool(false);
+        r.enemyHitFlash = object.value(QStringLiteral("enemyHitFlash")).toBool(false);
+        r.enemyHitFlashColour = qBound(0, object.value(QStringLiteral("enemyHitFlashColour")).toInt(15), 255);
+        r.enemyHitFlashCount = qBound(1, object.value(QStringLiteral("enemyHitFlashCount")).toInt(2), 32);
+        r.enemyHitFlashFrames = qBound(1, object.value(QStringLiteral("enemyHitFlashFrames")).toInt(3), 255);
+        r.enemyHitFrame = qBound(-1, object.value(QStringLiteral("enemyHitFrame")).toInt(-1), 255);
+        r.enemyHitCount = qBound(1, object.value(QStringLiteral("enemyHitCount")).toInt(1), 255);
+        r.enemyHitDelay = qBound(1, object.value(QStringLiteral("enemyHitDelay")).toInt(3), 255);
         r.enemyDefeatFrame = qBound(-1, object.value(QStringLiteral("enemyDefeatFrame")).toInt(-1), 255);
         r.enemyDefeatFrames = qBound(1, object.value(QStringLiteral("enemyDefeatFrames")).toInt(20), 255);
         r.enemyDefeatCount = qBound(1, object.value(QStringLiteral("enemyDefeatCount")).toInt(1), 255);
@@ -923,6 +930,13 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("enemyRoamSpeed"), r.enemyRoamSpeed);
             object.insert(QStringLiteral("enemyStepHeight"), r.enemyStepHeight);
             object.insert(QStringLiteral("enemyRoamLeft"), r.enemyRoamLeft);
+            object.insert(QStringLiteral("enemyHitFlash"), r.enemyHitFlash);
+            object.insert(QStringLiteral("enemyHitFlashColour"), r.enemyHitFlashColour);
+            object.insert(QStringLiteral("enemyHitFlashCount"), r.enemyHitFlashCount);
+            object.insert(QStringLiteral("enemyHitFlashFrames"), r.enemyHitFlashFrames);
+            object.insert(QStringLiteral("enemyHitFrame"), r.enemyHitFrame);
+            object.insert(QStringLiteral("enemyHitCount"), r.enemyHitCount);
+            object.insert(QStringLiteral("enemyHitDelay"), r.enemyHitDelay);
             object.insert(QStringLiteral("enemyDefeatFrame"), r.enemyDefeatFrame);
             object.insert(QStringLiteral("enemyDefeatFrames"), r.enemyDefeatDelay); // backward-readable
             object.insert(QStringLiteral("enemyDefeatCount"), r.enemyDefeatCount);

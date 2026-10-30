@@ -1422,11 +1422,30 @@ void SidboxGameDesigner::openPlayerEditor()
     physicsForm->addRow(tr("Gravity"), physicsGravity);
     physicsForm->addRow(tr("Maximum falling speed"), physicsFall);
     physicsForm->addRow(tr("External momentum drag"), physicsDrag);
+    // Combat is a capability of the currently selected physics profile.
+    // Do not silently enable it on old .sbpi projects.
+    auto *combatEnabled = new QCheckBox(tr("Enable melee combat for this profile"), movement);
+    auto *attackDamage = new QSpinBox(movement);
+    auto *attackReach = new QSpinBox(movement);
+    auto *attackCooldown = new QSpinBox(movement);
+    attackDamage->setRange(1, 20);
+    attackReach->setRange(1, 128); attackReach->setSuffix(tr(" px"));
+    attackCooldown->setRange(1, 250); attackCooldown->setSuffix(tr(" frames at 50 Hz"));
+    physicsForm->addRow(tr("Optional combat mode"), combatEnabled);
+    physicsForm->addRow(tr("Damage per enemy (hit units)"), attackDamage);
+    physicsForm->addRow(tr("Melee reach"), attackReach);
+    physicsForm->addRow(tr("Attack cooldown"), attackCooldown);
+    auto updateCombatControls = [=] {
+        for (QSpinBox *w : {attackDamage, attackReach, attackCooldown})
+            w->setEnabled(combatEnabled->isEnabled() && combatEnabled->isChecked());
+    };
     auto *physicsNotice = new QLabel(tr("These profiles belong to the shared player. "
         "Choose a default starting profile and optionally override it for each world. "
         "The world manager applies the selected profile on entry; "
         "gameplayer_apply_physics(player, profileID) can still change physics in custom zones. "
-        "ICE sliding and JETPACK thrust follow the selected behaviour mode."), movement);
+        "ICE sliding and JETPACK thrust follow the selected behaviour mode. "
+        "Optional melee combat: FIRE1 attacks, UP jumps while enabled. "
+        "Old profiles remain jump-only until combat is checked."), movement);
     physicsNotice->setWordWrap(true);
     physicsPage->addWidget(physicsNotice);
     QJsonArray physicsDefs = GamePlayerProfile::physicsProfiles(profile);
@@ -1493,14 +1512,19 @@ void SidboxGameDesigner::openPlayerEditor()
         for (QWidget *control : {static_cast<QWidget*>(physicsName), static_cast<QWidget*>(physicsMode),
                                   static_cast<QWidget*>(physicsWalk), static_cast<QWidget*>(physicsJump),
                                   static_cast<QWidget*>(physicsGravity), static_cast<QWidget*>(physicsFall),
-                                  static_cast<QWidget*>(physicsDrag)})
+                                  static_cast<QWidget*>(physicsDrag), static_cast<QWidget*>(combatEnabled),
+                                  static_cast<QWidget*>(attackDamage), static_cast<QWidget*>(attackReach),
+                                  static_cast<QWidget*>(attackCooldown)})
             control->setEnabled(valid);
+        updateCombatControls();
         removePhysics->setEnabled(valid && physicsDefs.size() > 1);
         if (!valid) return;
         const QJsonObject item = physicsDefs.at(row).toObject();
         physicsIdLabel->setText(QString::number(item.value(QStringLiteral("id")).toInt()));
         const QSignalBlocker bn(physicsName), bm(physicsMode), bw(physicsWalk),
-            bj(physicsJump), bg(physicsGravity), bf(physicsFall), bd(physicsDrag);
+            bj(physicsJump), bg(physicsGravity), bf(physicsFall), bd(physicsDrag),
+            bc(combatEnabled), bdamage(attackDamage), breach(attackReach),
+            bcool(attackCooldown);
         physicsName->setText(item.value(QStringLiteral("name")).toString());
         physicsMode->setCurrentIndex(physicsMode->findData(item.value(QStringLiteral("mode")).toInt()));
         physicsWalk->setValue(item.value(QStringLiteral("walkSpeed")).toInt());
@@ -1508,6 +1532,11 @@ void SidboxGameDesigner::openPlayerEditor()
         physicsGravity->setValue(item.value(QStringLiteral("gravity")).toInt());
         physicsFall->setValue(item.value(QStringLiteral("maxFallSpeed")).toInt(1));
         physicsDrag->setValue(item.value(QStringLiteral("forceDrag")).toInt());
+        combatEnabled->setChecked(item.value(QStringLiteral("combatEnabled")).toBool());
+        attackDamage->setValue(item.value(QStringLiteral("attackDamage")).toInt(1));
+        attackReach->setValue(item.value(QStringLiteral("attackReach")).toInt(24));
+        attackCooldown->setValue(item.value(QStringLiteral("attackCooldown")).toInt(15));
+        updateCombatControls();
     };
     const auto storePhysics = [&] {
         const int row = physicsList->currentRow();
@@ -1520,6 +1549,10 @@ void SidboxGameDesigner::openPlayerEditor()
         item.insert(QStringLiteral("gravity"), physicsGravity->value());
         item.insert(QStringLiteral("maxFallSpeed"), physicsFall->value());
         item.insert(QStringLiteral("forceDrag"), physicsDrag->value());
+        item.insert(QStringLiteral("combatEnabled"), combatEnabled->isChecked());
+        item.insert(QStringLiteral("attackDamage"), attackDamage->value());
+        item.insert(QStringLiteral("attackReach"), attackReach->value());
+        item.insert(QStringLiteral("attackCooldown"), attackCooldown->value());
         physicsDefs.replace(row, item);
         physicsList->item(row)->setText(physicsName->text());
         refreshPhysicsChoices();
@@ -1531,9 +1564,13 @@ void SidboxGameDesigner::openPlayerEditor()
     connect(physicsName, &QLineEdit::textChanged, &dialog, [&](const QString &) { storePhysics(); });
     connect(physicsMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
         [&](int) { storePhysics(); });
-    for (QSpinBox *spin : {physicsWalk,physicsJump,physicsGravity,physicsFall,physicsDrag})
+    for (QSpinBox *spin : {physicsWalk,physicsJump,physicsGravity,physicsFall,physicsDrag,
+                           attackDamage,attackReach,attackCooldown})
         connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), &dialog,
             [&](int) { storePhysics(); });
+    connect(combatEnabled, &QCheckBox::toggled, &dialog, [&](bool) {
+        updateCombatControls(); storePhysics();
+    });
     connect(addPhysics, &QPushButton::clicked, &dialog, [&] {
         if (physicsDefs.size() >= 64) {
             QMessageBox::warning(&dialog, tr("Movement Physics"), tr("Maximum 64 physics profiles."));
@@ -9915,9 +9952,9 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateEnemyRoam](int) { updateEnemyRoam(); });
     updateEnemyRoam();
-    form->addRow(new QLabel(tr("Damage, knockback, hurt animation and flashing are in the\n"
-                                "Damage / Knockback / Hurt Effects card directly below.\n"
-                                "The drop requires a hidden Collectable; linked actions fire on final stomp."), &dialog));
+    form->addRow(new QLabel(tr("Player damage and enemy hit feedback have separate controls in\n"
+                                "Damage / Knockback / Hurt Effects below. The drop requires a hidden\n"
+                                "Collectable; linked actions fire on the final hit."), &dialog));
     const auto updateEnemyBounceControls = [enemyBounce,enemyBounceY,enemyBounceX,enemyStompSideKick]() {
         enemyBounceY->setEnabled(enemyBounce->isChecked());
         enemyStompSideKick->setEnabled(enemyBounce->isChecked());
@@ -10017,6 +10054,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     deathNote->setToolTip(tr("Optional Defeat Screen description for a fatal Murder Object / Enemy Health hit, "
                              "or when a Hazard Zone callback kills the player. Blank uses the default description."));
     deathNoteCard.form->addRow(tr("Death note"),deathNote);
+    form->addRow(new QLabel(tr("PLAYER HIT EFFECTS — when THIS object hurts the player"), &dialog));
     form->addRow(hazardKick);
     form->addRow(tr("Knockback X"), quickValue(hazardKickX));
     form->addRow(tr("Knockback Y"), quickValue(hazardKickY));
@@ -10025,6 +10063,58 @@ void SidboxGameDesigner::configureGameObject(int index)
     form->addRow(tr("Flash CLUT colour"), hazardColour);
     form->addRow(tr("Number of flashes"), quickValue(hazardFlashes));
     form->addRow(tr("Frames between flashes"), quickValue(hazardFlashFrames));
+
+    // Independent ENEMY HIT feedback: taking damage from stomps, head-butts
+    // or the optional player melee attack. Neither death nor player hurt is changed.
+    form->addRow(new QLabel(tr("ENEMY HIT EFFECTS — when THIS enemy takes damage"), &dialog));
+    auto *enemyHitFlash = new QCheckBox(tr("Flash enemy using solid-colour BOB"), &dialog);
+    enemyHitFlash->setChecked(old.enemyHitFlash);
+    auto *enemyHitColour = new QPushButton(&dialog);
+    int chosenEnemyHitColour = qBound(0, old.enemyHitFlashColour, 255);
+    const auto updateEnemyHitSwatch = [&]() {
+        enemyHitColour->setText(tr("Index %1  —  Pick palette colour...").arg(chosenEnemyHitColour));
+        if (flashBank.size() == 256) {
+            QPixmap swatch(22, 22);
+            swatch.fill(QColor::fromRgba(flashBank.at(chosenEnemyHitColour)));
+            enemyHitColour->setIcon(QIcon(swatch));
+            enemyHitColour->setIconSize(QSize(22, 22));
+        } else enemyHitColour->setIcon(QIcon());
+    };
+    updateEnemyHitSwatch();
+    enemyHitColour->setToolTip(tr("Foreground CLUT index, like the existing Player Hit flash."));
+    connect(enemyHitColour, &QPushButton::clicked, &dialog, [&]() {
+        if (flashBank.size() != 256) {
+            QMessageBox::information(&dialog, tr("Enemy flash CLUT colour"),
+                tr("Select a foreground 256-colour palette or indexed PPB first."));
+            return;
+        }
+        const int selected = SidboxPalettePicker::chooseIndex(&dialog, flashBank,
+            chosenEnemyHitColour, tr("Pick enemy flash foreground CLUT colour"),
+            tr("Choose the solid colour used when the enemy takes a nonlethal hit."));
+        if (selected >= 0) { chosenEnemyHitColour = selected; updateEnemyHitSwatch(); }
+    });
+    auto *enemyHitFlashes = spin(1, 32, old.enemyHitFlashCount);
+    auto *enemyHitFlashFrames = spin(1, 255, old.enemyHitFlashFrames);
+    auto *enemyHitStart = spin(-1, 255, old.enemyHitFrame);
+    enemyHitStart->setSpecialValueText(tr("None — no hit animation"));
+    auto *enemyHitCount = spin(1, 255, old.enemyHitCount);
+    auto *enemyHitDelay = spin(1, 255, old.enemyHitDelay);
+    auto *enemyHitPicker = new QPushButton(tr("Choose from atlas..."), &dialog);
+    enemyHitPicker->setToolTip(tr("Optional frame-based hit animation. Tile stamps support flashing only."));
+    auto *enemyHitStartRow = new QWidget(&dialog);
+    auto *enemyHitStartLayout = new QHBoxLayout(enemyHitStartRow);
+    enemyHitStartLayout->setContentsMargins(0, 0, 0, 0);
+    enemyHitStartLayout->setSpacing(7);
+    enemyHitStart->setMinimumWidth(88);
+    enemyHitStartLayout->addWidget(enemyHitStart);
+    enemyHitStartLayout->addWidget(enemyHitPicker, 1);
+    form->addRow(enemyHitFlash);
+    form->addRow(tr("Enemy flash CLUT colour"), enemyHitColour);
+    form->addRow(tr("Enemy number of flashes"), quickValue(enemyHitFlashes));
+    form->addRow(tr("Enemy frames between flashes"), quickValue(enemyHitFlashFrames));
+    form->addRow(tr("Hit animation starting atlas frame"), enemyHitStartRow);
+    form->addRow(tr("Number of hit animation frames"), quickValue(enemyHitCount));
+    form->addRow(tr("Hit animation delay per frame"), quickValue(enemyHitDelay));
     auto updateHazardControls = [=]() {
         const bool hazard = type->currentData().toString() == QStringLiteral("hazard") ||
                             type->currentData().toString() == QStringLiteral("enemy");
@@ -10037,9 +10127,21 @@ void SidboxGameDesigner::configureGameObject(int index)
         hazardColour->setEnabled(hazard && hazardFlash->isChecked());
         hazardFlashes->setEnabled(hazard && hazardFlash->isChecked());
         hazardFlashFrames->setEnabled(hazard && hazardFlash->isChecked());
+        const bool enemy = type->currentData().toString() == QStringLiteral("enemy");
+        enemyHitFlash->setEnabled(enemy);
+        enemyHitColour->setEnabled(enemy && enemyHitFlash->isChecked());
+        enemyHitFlashes->setEnabled(enemy && enemyHitFlash->isChecked());
+        enemyHitFlashFrames->setEnabled(enemy && enemyHitFlash->isChecked());
+        enemyHitStart->setEnabled(enemy);
+        enemyHitPicker->setEnabled(enemy);
+        enemyHitCount->setEnabled(enemy && enemyHitStart->value() >= 0);
+        enemyHitDelay->setEnabled(enemy && enemyHitStart->value() >= 0);
     };
     connect(hazardKick, &QCheckBox::toggled, &dialog, updateHazardControls);
     connect(hazardFlash, &QCheckBox::toggled, &dialog, updateHazardControls);
+    connect(enemyHitFlash, &QCheckBox::toggled, &dialog, updateHazardControls);
+    connect(enemyHitStart, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+            [updateHazardControls](int) { updateHazardControls(); });
     connect(type, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [updateHazardControls](int) { updateHazardControls(); });
     updateHazardControls();
@@ -10499,6 +10601,32 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(enemyDefeatFrame, qOverload<int>(&QSpinBox::valueChanged), &dialog,
             [refreshDeathStartButton](int) { refreshDeathStartButton(); });
     refreshDeathStartButton();
+    const auto refreshEnemyHitStartButton = [&, enemyHitPicker, enemyHitStart]() {
+        const int cw = old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width();
+        const int ch = old.cellHeight > 0 ? qMin(old.cellHeight, atlas.height()) : atlas.height();
+        const int cols = cw > 0 ? atlas.width() / cw : 0;
+        const int rows = ch > 0 ? atlas.height() / ch : 0;
+        const int index = enemyHitStart->value();
+        const bool canPreview = cols > 0 && rows > 0 && index >= 0 && index < cols * rows;
+        enemyHitPicker->setText(canPreview ? tr("Choose... (frame %1)").arg(index)
+                                         : tr("Choose from atlas..."));
+        if (!canPreview) { enemyHitPicker->setIcon(QIcon()); return; }
+        const QImage frame = atlas.copy((index % cols) * cw, (index / cols) * ch, cw, ch);
+        enemyHitPicker->setIcon(QIcon(QPixmap::fromImage(frame.scaled(36, 36,
+            Qt::KeepAspectRatio, Qt::FastTransformation))));
+        enemyHitPicker->setIconSize(QSize(36, 36));
+    };
+    connect(enemyHitPicker, &QPushButton::clicked, &dialog,
+            [this, &dialog, &atlas, &old, enemyHitStart, enemyHitCount]() {
+        const int cw = old.cellWidth > 0 ? qMin(old.cellWidth, atlas.width()) : atlas.width();
+        const int ch = old.cellHeight > 0 ? qMin(old.cellHeight, atlas.height()) : atlas.height();
+        const int selected = chooseDeathAtlasStart(&dialog, atlas, cw, ch,
+            enemyHitStart->value(), enemyHitCount->value(), m_theme.accent);
+        if (selected >= -1) enemyHitStart->setValue(selected);
+    });
+    connect(enemyHitStart, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+            [refreshEnemyHitStartButton](int) { refreshEnemyHitStartButton(); });
+    refreshEnemyHitStartButton();
     int previewFrame = 0;
     qint64 fadePreviewFrames = 0;
     int fadePreviewPercent = old.objectAlphaFadePercent;
@@ -11764,6 +11892,13 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.enemyRoamSpeed = enemyRoamSpeed->value();
     r.enemyStepHeight = enemyStepHeight->value();
     r.enemyRoamLeft = enemyRoamLeft->isChecked();
+    r.enemyHitFlash = enemyHitFlash->isChecked();
+    r.enemyHitFlashColour = chosenEnemyHitColour;
+    r.enemyHitFlashCount = enemyHitFlashes->value();
+    r.enemyHitFlashFrames = enemyHitFlashFrames->value();
+    r.enemyHitFrame = enemyHitStart->value();
+    r.enemyHitCount = enemyHitCount->value();
+    r.enemyHitDelay = enemyHitDelay->value();
     r.enemyDefeatFrame = enemyDefeatFrame->value();
     r.enemyDefeatFrames = enemyDefeatDelay->value(); // legacy read-back
     r.enemyDefeatCount = enemyDefeatCount->value();
@@ -12191,6 +12326,13 @@ void SidboxGameDesigner::configureGameObject(int index)
             enemyReward->setItemIcon(enemyReward->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
         }
         enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
+        enemyHitFlash->setChecked(old.enemyHitFlash);
+        chosenEnemyHitColour = qBound(0, old.enemyHitFlashColour, 255);
+        enemyHitFlashes->setValue(old.enemyHitFlashCount);
+        enemyHitFlashFrames->setValue(old.enemyHitFlashFrames);
+        enemyHitStart->setValue(old.enemyHitFrame);
+        enemyHitCount->setValue(old.enemyHitCount);
+        enemyHitDelay->setValue(old.enemyHitDelay);
         enemyDefeatFrame->setValue(old.enemyDefeatFrame);
         enemyDefeatCount->setValue(old.enemyDefeatCount);
         enemyDefeatDelay->setValue(old.enemyDefeatDelay);
@@ -12216,6 +12358,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         chosenHazardColour=qBound(0,old.hazardFlashColour,255);
         updateFlashSwatch();
+        updateEnemyHitSwatch();
         hazardFlashes->setValue(old.hazardFlashCount);
         hazardFlashFrames->setValue(old.hazardFlashFrames);
         if (!old.objectSplineId.isEmpty() && spline->findData(old.objectSplineId) < 0) {
@@ -12265,6 +12408,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         buildBooleanRows();
         refreshDeathStartButton();
+        refreshEnemyHitStartButton();
         previewFrame = 0;
         previewPlaying = true;
         enableFields();
