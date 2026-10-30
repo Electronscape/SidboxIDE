@@ -138,6 +138,12 @@ bool SidboxGameDesigner::loadDesign()
     m_weatherMode = qBound(0, weather.value(QStringLiteral("mode")).toInt(0), 3);
     m_weatherDensity = qBound(1, weather.value(QStringLiteral("density")).toInt(48), 64);
     m_weatherWind = qBound(-8, weather.value(QStringLiteral("wind")).toInt(0), 8);
+    m_weatherParticleSize = qBound(2, weather.value(QStringLiteral("particleSize")).toInt(5), 32);
+    m_weatherParticleTile = qBound(0, weather.value(QStringLiteral("particleTileId")).toInt(0), 65535);
+    m_weatherParticleAtlasId = weather.value(QStringLiteral("particleAtlasId")).toString();
+    m_weatherParticleTileSize = weather.value(QStringLiteral("particleTileSize")).toInt(8);
+    if (m_weatherParticleTileSize != 8 && m_weatherParticleTileSize != 16 && m_weatherParticleTileSize != 32)
+        m_weatherParticleTileSize = 8;
     m_weatherPaletteIndex = qBound(1, weather.value(QStringLiteral("paletteIndex")).toInt(15), 254);
     m_weatherLightningInterval = qBound(100, weather.value(QStringLiteral("lightningInterval")).toInt(350), 2000);
     m_weatherLightningStrength = qBound(10, weather.value(QStringLiteral("lightningStrength")).toInt(75), 100);
@@ -301,6 +307,14 @@ bool SidboxGameDesigner::loadDesign()
         r.pickupShowHud = object.value(QStringLiteral("pickupShowHud")).toBool(false);
         r.pickupStatTarget = object.value(QStringLiteral("pickupStatTarget")).toString();
         r.pickupPersistent = object.value(QStringLiteral("pickupPersistent")).toBool(false);
+        r.pickupAllowEnemyLoot = object.value(QStringLiteral("pickupAllowEnemyLoot")).toBool(false);
+        r.enemyLootMin = qBound(0, object.value(QStringLiteral("enemyLootMin")).toInt(1), 8);
+        r.enemyLootMax = qBound(r.enemyLootMin, object.value(QStringLiteral("enemyLootMax")).toInt(1), 8);
+        for (const QJsonValue &v : object.value(QStringLiteral("enemyLootIds")).toArray()) {
+            const QString id = v.toString();
+            if (!id.isEmpty() && !r.enemyLootIds.contains(id) && r.enemyLootIds.size() < 8)
+                r.enemyLootIds.append(id);
+        }
         r.hitWidth = qBound(1, object.value(QStringLiteral("hitWidth")).toInt(16), 1024);
         r.hitHeight = qBound(1, object.value(QStringLiteral("hitHeight")).toInt(16), 1024);
         r.conveyorSpeed = qBound(-100, object.value(QStringLiteral("conveyorSpeed")).toInt(2), 100);
@@ -392,9 +406,18 @@ bool SidboxGameDesigner::loadDesign()
                 action==QStringLiteral("disable") || action==QStringLiteral("toggle")))
                 r.triggerExtraActions.append({id, action});
         }
+        for (const QJsonValue &entry : object.value(QStringLiteral("enemyDefeatExtraActions")).toArray()) {
+            const QJsonObject link=entry.toObject();
+            const QString id=link.value(QStringLiteral("objectId")).toString();
+            const QString action=link.value(QStringLiteral("action")).toString();
+            if (!id.isEmpty() && (action==QStringLiteral("enable") ||
+                action==QStringLiteral("disable") || action==QStringLiteral("toggle")))
+                r.enemyDefeatExtraActions.append({id,action});
+        }
         if (!QStringList{QStringLiteral("enable"), QStringLiteral("disable"),
                          QStringLiteral("toggle")}.contains(r.targetAction))
             r.targetAction = QStringLiteral("none");
+        r.eventActions = object.value(QStringLiteral("eventActions")).toObject();
         r.logicNodes = object.value(QStringLiteral("logicNodes")).toArray();
         r.toggleStateTargetId = object.value(QStringLiteral("toggleStateTargetId")).toString();
         r.toggleStateOperator = object.value(QStringLiteral("toggleStateOperator")).toString(QStringLiteral("boolean"));
@@ -787,6 +810,10 @@ bool SidboxGameDesigner::saveDesign()
     weather.insert(QStringLiteral("mode"), m_weatherMode);
     weather.insert(QStringLiteral("density"), m_weatherDensity);
     weather.insert(QStringLiteral("wind"), m_weatherWind);
+    weather.insert(QStringLiteral("particleSize"), m_weatherParticleSize);
+    weather.insert(QStringLiteral("particleTileId"), m_weatherParticleTile);
+    weather.insert(QStringLiteral("particleAtlasId"), m_weatherParticleAtlasId);
+    weather.insert(QStringLiteral("particleTileSize"), m_weatherParticleTileSize);
     weather.insert(QStringLiteral("paletteIndex"), m_weatherPaletteIndex);
     weather.insert(QStringLiteral("lightningInterval"), m_weatherLightningInterval);
     weather.insert(QStringLiteral("lightningStrength"), m_weatherLightningStrength);
@@ -864,6 +891,12 @@ bool SidboxGameDesigner::saveDesign()
             object.insert(QStringLiteral("pickupShowHud"), r.pickupShowHud);
             object.insert(QStringLiteral("pickupStatTarget"), r.pickupStatTarget);
             object.insert(QStringLiteral("pickupPersistent"), r.pickupPersistent);
+            object.insert(QStringLiteral("pickupAllowEnemyLoot"), r.pickupAllowEnemyLoot);
+            object.insert(QStringLiteral("enemyLootMin"), r.enemyLootMin);
+            object.insert(QStringLiteral("enemyLootMax"), r.enemyLootMax);
+            QJsonArray enemyLootIds;
+            for (const QString &id : r.enemyLootIds) enemyLootIds.append(id);
+            object.insert(QStringLiteral("enemyLootIds"), enemyLootIds);
             object.insert(QStringLiteral("hitWidth"), r.hitWidth);
             object.insert(QStringLiteral("hitHeight"), r.hitHeight);
             object.insert(QStringLiteral("conveyorSpeed"), r.conveyorSpeed);
@@ -938,8 +971,22 @@ bool SidboxGameDesigner::saveDesign()
                                               {QStringLiteral("action"),link.action}});
                 object.insert(QStringLiteral("triggerExtraActions"),links);
             }
-            if (r.objectType==QStringLiteral("trigger")) {
+            if (r.objectType==QStringLiteral("enemy")) {
+                QJsonArray links;
+                for (const Resource::LinkedAction &link : r.enemyDefeatExtraActions)
+                    links.append(QJsonObject{{QStringLiteral("objectId"),link.objectId},
+                                             {QStringLiteral("action"),link.action}});
+                object.insert(QStringLiteral("enemyDefeatExtraActions"),links);
+            }
+            object.insert(QStringLiteral("eventActions"),r.eventActions);
+            // Independent logic can be hosted by Triggers OR Stompable Enemies.
+            // Preserve it on an ordinary world save, not just Visual Nodes Save.
+            if (r.objectType==QStringLiteral("trigger") ||
+                r.objectType==QStringLiteral("enemy") ||
+                r.objectType==QStringLiteral("lift") ||
+                (r.objectType!=QStringLiteral("collectable") && !r.logicNodes.isEmpty()))
                 object.insert(QStringLiteral("logicNodes"), r.logicNodes);
+            if (r.objectType==QStringLiteral("trigger")) {
                 object.insert(QStringLiteral("toggleStateTargetId"), r.toggleStateTargetId);
                 object.insert(QStringLiteral("toggleStateOperator"), r.toggleStateOperator);
                 QJsonArray stateInputs;

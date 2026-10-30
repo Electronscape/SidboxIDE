@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Stage 5.164.4: real-save origin, legacy title-startup and title CLUT styling."""
-EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
+EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
 
 from pathlib import Path
 import subprocess, sys, tempfile
@@ -28,7 +28,7 @@ assert 'existingH.contains("game_tile_player_current(void)")' in ui
 # hand-maintained main.c ignores the marker and starts a default world.
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,
        'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,
-       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
+       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False,'HAS_MAP':False}
 source=render(world,flags)
 functions='''static void fake_save(void (*)(const void*,uint32_t,void*),void*);
 static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);
@@ -41,7 +41,7 @@ record=lambda name: '''{.name="%s",.start_x=10,.start_y=20,.start_facing=1,
 .objects_init=fake_objects_init,
 .object_disk_export=fake_save,.story_disk_export=fake_save,
 .object_disk_import=fake_import,.story_disk_import=fake_import}'''%name
-source=source.replace('@IDE{WORLD_DECLARATIONS}',functions).replace('@IDE{WORLD_RECORDS}',record('world1')+','+record('forest')).replace('@IDE{SAVE_KEY}','123').replace('@IDE{QUEST_DATA}',EMPTY_QUEST_DATA)
+source=source.replace('@IDE{WORLD_DECLARATIONS}',functions).replace('@IDE{WORLD_RECORDS}',record('world1')+','+record('forest')).replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}',EMPTY_QUEST_DATA)
 header=render((folder/'gameworlds.ruleh').read_text(),flags)
 assert '@IDE' not in source
 with tempfile.TemporaryDirectory(prefix='cg5164_4_') as directory:

@@ -10,14 +10,14 @@ from test_stage5163_rules_flow_audit import render
 src=ROOT/'idelibs/codehelpers/game'
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,
        'HAS_SHARED_PLAYER':True,'HAS_WORLD_PHYSICS':False,
-       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
+       'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False,'HAS_MAP':False}
 text=render((src/'gameworlds.rulec').read_text(),flags)
 record='''{.name="world1",.start_x=10,.start_y=20,.start_facing=1,.map=(void*)0x1234,
 .object_disk_export=fake_save,.story_disk_export=fake_save,
 .object_disk_import=fake_import,.story_disk_import=fake_import}'''
 text=text.replace('@IDE{WORLD_DECLARATIONS}', '''static void fake_save(void (*)(const void*,uint32_t,void*),void*);
 static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);
-''').replace('@IDE{WORLD_RECORDS}',record).replace('@IDE{SAVE_KEY}','123').replace('@IDE{QUEST_DATA}',EMPTY_QUEST_DATA)
+''').replace('@IDE{WORLD_RECORDS}',record).replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}',EMPTY_QUEST_DATA)
 header=render((src/'gameworlds.ruleh').read_text(),flags)
 with tempfile.TemporaryDirectory(prefix='cg5164_4_player_') as td:
     p=Path(td)

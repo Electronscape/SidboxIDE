@@ -11,7 +11,7 @@ version=(root/'splashscreenwidget.cpp').read_text()
 
 # The saved quest data format stays exactly 1; runtime/save schema stays 2.
 assert '"version",1' in editor
-assert 'GW_SAVE_VERSION 2u' in (root/'idelibs/codehelpers/game/gameworlds.rulec').read_text()
+assert 'GW_SAVE_VERSION 3u' in (root/'idelibs/codehelpers/game/gameworlds.rulec').read_text()
 assert 'Build: 5.166.12.271026' in version
 
 # Source of truth is the real saved .sbgm Adventure nodes/answers.

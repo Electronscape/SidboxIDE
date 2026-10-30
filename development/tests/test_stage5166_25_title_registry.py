@@ -87,6 +87,7 @@ for title in (False, True):
         ('WORLD_DECLARATIONS', DECLARATIONS),
         ('WORLD_RECORDS', RECORDS),
         ('SAVE_KEY', '123'),
+        ('SAVE_IDENTITY', '0x0123456789abcdef'),
         ('QUEST_DATA', QUEST_DATA),
     ):
         generated = generated.replace('@IDE{' + key + '}', value)

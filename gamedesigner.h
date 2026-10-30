@@ -137,6 +137,10 @@ private:
         bool breakTouch = false; // false = stomp from above; true = touch/leave/touch again
         bool breakBounce = false; // launch after each qualifying stomp
         bool breakFromBelow = false; // player jumps into underside (not stomp/touch)
+        // Repeatable enemy-only loot, distinct from the unique quest reward.
+        QStringList enemyLootIds; // at most eight eligible Collectable resource IDs
+        int enemyLootMin = 1, enemyLootMax = 1; // uniform 0..8 range; empty pool means none
+        bool pickupAllowEnemyLoot = false; // explicit opt-in for custom inventory kinds
         QString breakDropCollectableId; // stable ID of collectable spawned on final break
         bool breakRewardImpulse = false; // Opt-in launch; default matches Stage 3.96 gravity-only drop.
         int breakRewardVx = 0; // signed horizontal launch speed, pixels/frame
@@ -187,6 +191,8 @@ private:
         // is the FIRST action; these follow it in the user's chosen order.
         struct LinkedAction { QString objectId; QString action; };
         QVector<LinkedAction> triggerExtraActions;
+        QVector<LinkedAction> enemyDefeatExtraActions; // Additional ON DEFEAT actions in order.
+        QJsonObject eventActions; // Named Visual Node events: hit/destroy/pickup/player_hit/enter/save/arrival.
         // Visual Nodes condition: read the active state of a local Game Object
         // AFTER this Trigger's normal enable/disable/toggle actions execute.
         // Each TRUE/FALSE output may show a separate existing Adventure dialogue.
@@ -357,6 +363,10 @@ private:
     int m_weatherMode = 0;
     int m_weatherDensity = 48;       // Visual streaks/flakes 1..64.
     int m_weatherWind = 0;          // Pixels/frame -8..8.
+    int m_weatherParticleSize = 5; // Snow diameter 2..32 pixels.
+    int m_weatherParticleTile = 0; // 1-based selected cell, 0 = filled circles.
+    QString m_weatherParticleAtlasId; // Registered Game Resource ID; empty = circle/legacy map cell.
+    int m_weatherParticleTileSize = 8; // Source resource cell width/height (8/16/32).
     int m_weatherPaletteIndex = 15; // User-chosen foreground palette colour (not alpha 0).
     int m_weatherLightningInterval = 350; // Frames between storms (50 Hz).
     int m_weatherLightningStrength = 75;  // Pattern coverage percentage, only for overlay.
@@ -447,6 +457,9 @@ private:
     };
     QCheckBox *m_showWeatherPreview = nullptr;
     QGraphicsPathItem *m_weatherPreviewDrops = nullptr;
+    QGraphicsPixmapItem *m_weatherPreviewSnowTiles = nullptr; // Scene-owned, camera-clipped atlas-flake layer.
+    QImage m_weatherPreviewSnowGlyph; // Cached nearest-neighbour tile at the chosen 2..32 px size.
+    QString m_weatherPreviewSnowGlyphKey; // Resource, file mtime, tile, size and foreground palette.
     QGraphicsRectItem *m_weatherPreviewFlash = nullptr;
     QGraphicsRectItem *m_weatherPreviewPaletteFlash = nullptr;
     QGraphicsRectItem *m_weatherPreviewDayNightTint = nullptr;

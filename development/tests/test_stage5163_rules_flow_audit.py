@@ -68,10 +68,11 @@ for adventure, pickups, shared, physics, title in product((False, True), repeat=
         'HAS_WORLD_PHYSICS': physics,
         'HAS_PLAYER_VISIBILITY': adventure and shared,
         'HAS_TITLE': title,
+        'HAS_MAP': False,
     }
     for label, template in (('source', source), ('header', header)):
         rendered = render(template, flags)
-        rendered = rendered.replace('@IDE{WORLD_DECLARATIONS}', '').replace('@IDE{WORLD_RECORDS}', '').replace('@IDE{SAVE_KEY}', '123').replace('@IDE{QUEST_DATA}', '')
+        rendered = rendered.replace('@IDE{WORLD_DECLARATIONS}', '').replace('@IDE{WORLD_RECORDS}', '').replace('@IDE{SAVE_KEY}', '123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}', '')
         assert '@IDE' not in rendered, (flags, label, 'unresolved rule directive')
         body = strip_c_comments_strings(rendered)
         assert body.count('{') == body.count('}'), (flags, label, 'unbalanced braces')
@@ -91,5 +92,5 @@ assert 'description,3,invalid);' in flow
 assert 'else if (g.nodes.at(g.byId.value(to)).problem)' in flow
 assert 'g.missing(w,from,QStringLiteral("valid spline (needs 2+ points)"),spline);' in flow
 assert 'g.link(to,from,QStringLiteral("Moves along path"));' in flow
-assert __import__('re').search(r'Build: 5\.166\.(?:2[8-9]|[3-9]\d)\.(?:271026|281026)', (root / 'splashscreenwidget.cpp').read_text())
+assert 'Build: 5.166.111.1.291026' in (root / 'splashscreenwidget.cpp').read_text()
 print('PASS Stage 5.163: 32 world flag configurations x C/H, balanced directives/braces, invalid spline diagnostics')

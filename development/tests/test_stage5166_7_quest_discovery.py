@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'development/tests'))
 from test_stage5163_rules_flow_audit import render
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,
-       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
+       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False,'HAS_MAP':False}
 folder=ROOT/'idelibs/codehelpers/game'
 data='''#define GW_QUEST_COUNT 2u
 #define GW_OBJECTIVE_COUNT 2u
@@ -29,7 +29,7 @@ source=(source.replace('@IDE{WORLD_DECLARATIONS}',
        'static void fake_save(void (*)(const void*,uint32_t,void*),void*);\n'
        'static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);\n')
     .replace('@IDE{WORLD_RECORDS}',record)
-    .replace('@IDE{SAVE_KEY}','123')
+    .replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef')
     .replace('@IDE{QUEST_DATA}',data))
 header=render((folder/'gameworlds.ruleh').read_text(),flags)
 assert '@IDE' not in source and '@IDE' not in header
@@ -38,7 +38,7 @@ assert 'game_adventure_set_node_signal(on_quest_node)' in (folder/'gameadventure
 assert 'dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);' in (ROOT/'gameadventureeditor.cpp').read_text()
 assert 'class QuestDialogueTreeCombo' in (ROOT/'gamequesteditor.cpp').read_text()
 assert 'dialogueKey(entry.name,ni)' in (ROOT/'gamefloweditor.cpp').read_text()
-assert 'Build: 5.166.12.271026' in (ROOT/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.111.1.291026' in (ROOT/'splashscreenwidget.cpp').read_text()
 with tempfile.TemporaryDirectory(prefix='quest_discovery_') as tmp:
     path=Path(tmp)
     (path/'gameworlds.c').write_text(source)

@@ -1,3 +1,57 @@
+# Stage 5.166.111.1: ON ARRIVAL Logic Picker Visibility (29 Oct 2026)
+
+On the golden ON ARRIVAL port, the Logic chooser now appears first and expanded, with a direct Toggle action hint. This is an IDE menu-only fix; the generator, saves, and existing Toggle logic are unchanged. If you see a chooser with only Game Objects/NPC Conversations/PLAYER, verify the splash build, as that matches Stage 5.166.110. See `README-STAGE5.166.111.1-ARRIVAL-PICKER.txt`.
+
+---
+
+# Stage 5.166.106.1: Dependency Audit Qt String-Literal Compile Hotfix (29 Oct 2026)
+
+Fixed `gamedesigner.cpp`, inside `GameDesigner::editGameObject()`, where the
+"Trigger has missing linked targets" warning text contained unescaped newlines
+within C++ string literals. Both are now `\n` escape sequences. This corrects
+the reported "missing terminating quote" and `QStringLiteral` macro errors.
+No audit, game project, exporter or runtime logic changed. Splash build string
+updated to `Build: 5.166.106.1.291026`.
+
+Qt6 compilation is not available in this environment. Source regressions and
+lexical checks passed. See `README-STAGE5.166.106.1.txt`.
+
+---
+
+# Stage 5.166.105: Repeatable Stompable Enemy Loot (29 Oct 2026)
+
+Added an independent 0–8 ordinary loot drop pool per Stompable Enemy, separate from unique quest rewards. The IDE offers a multi-select list of up to eight eligible Collectables, minimum/maximum drop counts and an opt-in for custom repeatable inventory kinds. The generator retains original exclusive quest-item ownership validation; keys, persistent and unique reward Collectables cannot enter loot pools. The generated world controller includes a fixed 64-slot maximum pool of independent pickup copies, gravity, tile collision, standard pickup callback integration, and per-world/TFCard state persistence. No user `main.c` edits. Regenerate all worlds and rebuild to test. See `README-STAGE5.166.105.txt`.
+
+---
+
+# Stage 5.166.103: Game Object Type Sidebar Mapping Fix (29 Oct 2026)
+
+The left-hand **OBJECT TYPE** selector in Game Object Properties previously
+showed 14 labels for 15 model behaviours, shifting everything after the
+ordinary Decoration. Replaced brittle parallel labels/icons with a keyed
+presentation map for all 15 stable behaviour IDs. **Stompable enemy** now
+selects `enemy`, and **Goto World** selects `goto_world`. Gameplay code and
+resource serialization are unchanged. Inspect any game objects saved while
+using the old incorrect labels; they cannot be auto-corrected safely.
+
+# Stage 5.166.102.3: Snow Particle Size 32 px (29 Oct 2026)
+
+The Snow particle size slider and spinbox now range from **2 to 32 px**. Saved project loading, generated world records and the runtime limit accept 32 px. Preview sprites, atlas BOBs and fallback circles already scale using the configured size. Default remains 5 px. No changes to world save format or user `main.c`. After rebuilding the IDE, use **Regenerate ALL Worlds** and rebuild the game. See `README-STAGE5.166.102.3.txt`.
+
+---
+
+# Stage 5.166.102.1: Weather Atlas Picker Qt6 Compile Hotfix (29 Oct 2026)
+
+Fixes the `gamedesigner.cpp` snow atlas picker callback: capturing a stack-allocated `QDialog` by value attempts to invoke the deleted Qt copy constructor, and also produces `const QWidget*` to `QWidget*` conversion errors in QMessageBox and `chooseGameAtlasCell`. The callback now explicitly captures the existing dialog by reference, with explicit control and helper captures. **No generated runtime, weather logic or game project changes.** See `README-STAGE5.166.102.1.txt`.
+
+---
+
+# Stage 5.166.102: Weather Resource Tiles and Thunder Bursts (29 Oct 2026)
+
+Snow uses the Game Resources atlas list and existing graphical tile picker. Snow/rain no longer wrap visibly near the screen bottom, and lightning storms can include occasional additional softer strikes without changing the primary average interval. See `README-STAGE5.166.102.txt`.
+
+---
+
 # Stage 5.166.84.1 — Qt compile hotfix (28 Oct 2026)
 
 Fixes the Qt6 `QObject::findChildren` static assertion in GIVE socket redraw.

@@ -113,6 +113,7 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
     for (uint16_t i = 0; i < count; ++i) {
         game_world_object_t *object = &objects[i];
         object->spring_triggered = 0;
+        object->arrival_triggered = 0;
         object->break_triggered = 0;
         object->break_hit_triggered = 0;
         object->break_bounce_triggered = 0;
@@ -153,7 +154,27 @@ void game_world_objects_update(game_world_object_t *objects, uint16_t count,
                 object->spline_start_delay -= waiting;
                 move_frames -= waiting;
             }
-            if (move_frames) run_spline(object->spline, move_frames);
+            if (move_frames) {
+                game_spline_t *path=object->spline;
+                const uint16_t old_elapsed=path->elapsed_frames;
+                const uint16_t old_knot=path->next_pause_index;
+                const uint8_t was_active=path->active;
+                run_spline(path,move_frames);
+                if (was_active && path->duration_frames) {
+                    const uint32_t segments=path->point_count>1u ? (path->loop ? path->point_count : path->point_count-1u) : 0u;
+                    if (path->has_pauses) {
+                        object->arrival_triggered=(uint8_t)(path->next_pause_index!=old_knot ||
+                            (path->loop && path->elapsed_frames<old_elapsed) ||
+                            (!path->active && old_elapsed<path->duration_frames));
+                    } else if(segments) {
+                        const uint32_t old_segment=(uint32_t)old_elapsed*segments/path->duration_frames;
+                        const uint32_t new_segment=(uint32_t)path->elapsed_frames*segments/path->duration_frames;
+                        object->arrival_triggered=(uint8_t)(new_segment>old_segment ||
+                            (path->loop && path->elapsed_frames<old_elapsed) ||
+                            (!path->active && was_active));
+                    }
+                }
+            }
             object->x = object->sprite->drawx;
             object->y = object->sprite->drawy;
         }
@@ -194,8 +215,32 @@ void game_world_objects_roam(game_world_object_t *objects, uint16_t count,
                     }
                     if (climb > step) { dir = -dir; break; }
                 }
-                /* Follow downhill terrain without floating above it. A ledge
-                   reverses direction instead of walking off. */
+                /* Look for support at the FORWARD foot, not anywhere under
+                   the body: the latter allows the enemy to hang over a cliff
+                   until its trailing foot leaves the ledge.
+
+                   A downhill slope can put the forward foot well below the
+                   rear foot. Allow enough vertical reach to find its surface,
+                   but reject abrupt drops by comparing the adjacent pixel's
+                   support (a genuine downhill slope descends gradually).
+                   The normal full-width floor query below still decides how
+                   far to lower the body, preserving existing slope walking. */
+                const int32_t front_x = dir > 0 ? nx + o->width - 1 : nx;
+                const int max_probe = step + (o->width < 32u ? o->width : 32u);
+                int front_down;
+                for (front_down = 0; front_down <= max_probe; ++front_down) {
+                    if (blocked(front_x, ny + front_down + 1, 1u,
+                                o->height, context)) break;
+                }
+                if (front_down > max_probe ||
+                    (front_down > step &&
+                     blocked(front_x - dir, ny + front_down - step + 1,
+                             1u, o->height, context))) {
+                    dir = -dir;
+                    break;
+                }
+                /* Preserve the original full-body downhill calculation: it
+                   prevents the back of a wide enemy sinking into a slope. */
                 int down;
                 for (down = 0; down <= step; ++down) {
                     if (blocked(nx, ny + down + 1, o->width, o->height, context))

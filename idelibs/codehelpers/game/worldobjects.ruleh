@@ -76,6 +76,7 @@ typedef struct {
     uint8_t hazard_hurt_animation, hazard_flash;
     uint8_t hazard_flash_colour, hazard_flash_count, hazard_flash_frames;
     uint8_t hazard_touching, hazard_hit_triggered, hazard_bounce_triggered;
+    uint8_t arrival_triggered; /* One-frame spline knot arrival, not standing still. */
     uint8_t spring_triggered;      /* Set on landing/launch; cleared in update. */
     uint8_t trigger_press;         /* 1 = FIRE2, 0 = enter trigger hitbox. */
     uint8_t trigger_one_shot;      /* One-use triggers remove themselves. */

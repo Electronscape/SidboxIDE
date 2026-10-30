@@ -20,8 +20,8 @@ assert 'generated.replace("@IDE{QUEST_DATA}",GameQuestGen::generateData(projectQ
 assert '@IDE{QUEST_DATA}' in world
 for token in ['gameworlds_quest_track(', 'gameworlds_quest_event(',
               'gameworlds_quest_event_number(', 'gw_quest_reset()',
-              'gw_quest_refresh()', 'GW_SAVE_VERSION 2u',
-              'temp.version!=1u', 'questData.schema!=gw_quest_schema()',
+              'gw_quest_refresh()', 'GW_SAVE_VERSION 3u',
+              'temp.version!=GW_SAVE_VERSION', 'questData.schema!=gw_quest_schema()',
               'gw_save_take(&questData', 'GW_WRITE(questData)']:
     assert token in world,token
 for token in ['gameworlds_quest_current_step(', 'gameworlds_quest_tracked(',
@@ -31,7 +31,7 @@ for token in ['Quest Objective','Quest Event','Enter world','Shared backpack',
               'Adventure event received','Unlock on completion','Exclude on completion']:
     assert token in flow,token
 assert 'questConfig.lastModified()>worldManager.lastModified()' in read('mainwindow.cpp')
-assert 'Build: 5.166.12.271026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.111.1.291026' in read('splashscreenwidget.cpp')
 subprocess.run(['python3',str(R/'development/tests/test_stage5165_quest_runtime.py')],check=True)
 subprocess.run(['python3',str(R/'development/tests/test_stage5164_3_multiworld_public_save_api.py')],check=True)
 print('PASS Stage 5.165: quest editor, generator, flow, save compatibility, stale-build hooks')

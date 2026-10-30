@@ -1,262 +1,116 @@
-runtime:
-world map still has an awful green border. ALSO its not height aware of the docked HUD either by the looks of it, IF its possible can i change the colour of the thick border (since run time world boundery is pretty good idea)
-so in the IDE the world map tile painter, deff needs a colour picker for the world map boundery colour
+I've been rummaging through Stage 5.166.108, looking at the actual C generation rules, not just the list of features in the IDE.
+And I think we've reached an exciting point: the engine already has most of the foundations needed for a proper RPG platformer. We don't need another mountain of features before you can start building The Tiny Red Riot.
+But I found some gaps worth addressing, including one rather important save-game concern.
+## 🔍 Engine readiness audit
 
-The IDE the Fill empty cells with selected tile, could i have an actual floodfill bucket thing so i can CLICK that button, an click on the tile map an it fills the "adjacent flood" a bit like how the amiga uses the floodfill routine.
-REMEMBER the stack issue here, cos QT6 LOVES stack overflowing out its ass!
+Already implemented
 
-so its "click the tile->click floodfill (or click it again to cancel) -> click on a tile in the map -> flood fill the tiles matching that tile with the selected tile"
-its NOT a "replacement" tool
+The generator covers tilemap physics, multiple worlds, NPC conversations, inventory, quests and a journal, save/load slots, player stats, HUD, enemy drops, moving platforms, switches, visual logic, day/night, weather, particles, music, and title/death screens.
 
+### 1. Save-game compatibility protection
 
-runtime death knell:
-When dead, and the player hasnt got a save point (or just started a new game) they should be sent to the title screen after closing the message "u carc'd it" hehe
+High priority
 
-the death load where it says the heading: you removed the description:
-i only wanted the bitthat said "CHOOSE save to reload" to be removed.
-COULD we add a bit below the heading, to add a description? THIS will allow for messages like "You where killed by spikey mushroom"
-(this also means that the game objects will need a "death note" so the death screen can tell what killed them)
+This is the first thing I'd strengthen before making the final game.
+In `idelibs/codehelpers/game/gameworlds.rulec`, the save layout fingerprint checks world names and the sizes of serialized world data. But it doesn't identify every saved object individually.
+Meanwhile, `gameworlditems.rulec` saves object states in array order.
+That means a future game update which rearranges objects without changing the saved data sizes could potentially associate old saved states with the wrong objects.
+For example, imagine a saved game where a particular door is unlocked. You rearrange your world's object definitions, rebuild, and load that old save. There's a risk of the unlocked state being applied to a different object.
+I'd strengthen this with stable object identity checking in the save schema, so incompatible saves are rejected safely rather than interpreted incorrectly.
+The existing dual-bank save system and checksum protection are good. This would strengthen them, not replace them.
 
 
 
-but gettin seriously close to whats needed!!!!!
+### 2. More event outputs for Game Objects
 
+High priority for Visual Nodes.
 
+This is the most obvious next extension after our successful Stompable Enemy logic!
+In `gamevisualnodes.cpp`, executable action sources currently include Triggers, Stompable Enemies and Key Collectables. Other objects can be targets, but many cannot independently start an action chain.
+I'd add:
 
+| Game Object     | Useful new output           |
+| --------------- | --------------------------- |
+| Breakable       | ON HIT / ON DESTROY         |
+| Collectable     | ON PICKUP                   |
+| Hazard          | ON PLAYER HIT               |
+| Door            | ON ENTER                    |
+| Checkpoint      | ON SAVE                     |
+| Moving platform | ON ARRIVAL                  |
+| Enemy           | ON HIT, alongside ON DEFEAT |
 
-runtime: Death
-the transition, should just be a fade out, and fade back in. not the mosiac effect.
-also the height of the thing is not height aware, Since a docked HUD is present, the instructions at the bottom are pushed off the bottom
-Remove the words "CHOOSE SAVE TO RELOAD" and use that space to move things up
-ALSO i think, if you start a new game, and not from a load, this option should not open unless you've at least saved one slot during that session
+Imagine smashing a crate, revealing a key, activating a hidden switch and starting a dialogue, without needing an invisible Trigger to orchestrate everything.
+These should use the existing action and logic infrastructure, not a separate system.
 
-From the title screen: Load game, and continue from there, would allow the player to replay from a save
-BUT from "start game", if you die before you get to your first save point, you just start again from a fresh game.
-(this opens up cheating xD)
 
-also when dead, and offered to reload, the player should start from the way point they saved at. right now reloading seems to restore the game but the player remains at the place they died at.
+### 3. Quest objectives connected directly to Visual Nodes
 
+High priority for your RPG.
 
+The Quest Editor already supports world visits, inventory ownership, dialogue choices and custom event signals.
+But there's an important connection missing: Visual Nodes cannot directly send a quest event through an ordinary action socket.
+I'd introduce a QUEST EVENT node that can be driven by things like an enemy defeat, breakable destruction or switch activation.
+For instance:
+Defeat the enemy → signal its quest objective → journal updates automatically.
+That would save you writing custom C for story progression.
 
-World Map Tile Painter, I think needs to have a "fill" feature, that way we can fill the area with a water background. right now its a horrible green colour xD
 
+### 4. Expanded combat and enemy behaviours
 
+Medium priority, but important before designing the final combat.
 
+Stomping, enemy damage, patrol movement, hit counts, death animations and drops are already handled.
+What I haven't found as a built-in Game Designer system is configurable player weapon combat, such as swords or fireballs, or enemy-launched projectiles.
+I'd eventually want weapon hitboxes, projectile collision, configurable damage, attack cooldowns, and enemies capable of attacking at a distance.
+We don't need an enormous combat system. A handful of reusable behaviours would cover most RPG platformer encounters.
 
 
+### 5. More expressive logic conditions
 
+Medium priority.
 
+`gamevisualgraphlogic.h` currently supports Boolean, NOT, AND and OR, reading object active states.
+That's excellent for switches, doors and defeated enemies, but story-driven RPGs also need numeric conditions.
+Useful additions would be:
+- Compare: Fear greater than 50, health below 25.
+- Counter: Activate after defeating three enemies.
+- Timer: Wait five seconds before opening a door.
+- Quest state: TRUE if a particular quest is completed.
 
+The current logic evaluator is event-driven, rather than a universal always-running logic system. That is efficient for SIDBOX, and I'd preserve it while adding the relevant change events.
 
-in the spotlight mode, could we have a tick box(s) enable where that the offset on the x, (or y) if the player is flipped (directions) makes holding a candle more believable
-the next option is the overall feather, like so we have a 0 to 100% opaque effect, this might be a little intelisense on the cpu so im hoping that people wont use this option much. but it would make for more atmospheric (i can just barely see into the distance) in dark rooms
-Also could i have the player starts window open in maximise please?
 
-more Codeeditor issues!!
-symptoms
-when i am pressing enter, its pushing the text right!!
-so every time i press enter at the beginning of the light, the code is being tabbed across every time!
-ALSO doing this is causing the intelisense to popup and entering the first entry too!!
-the intelisense should only popup after no key activity for a while, its STILL instantly popping up on keystrokes
-seems to be worse when using the delete, enter, space
+### 6. Project-wide validation and stress testing
 
-also with collapsed sections i think should have something at the end to show its collapsed too like say [...]
-example if a
-if (something==true) [...]
+High priority before production.
 
-that would show its got more code there just collapsed right now
-it should disapear and go back to
-if (something==true)
-{
-    dostuff();
-}
+Our dependency-warning system already checks important object configurations. But a complete Validate Entire Game command would go further, scanning all worlds and their shared resources.
+It should catch missing graphics, broken NPC references, unreachable world destinations, quest references, invalid logic, missing TFCard resources and incompatible save layouts.
+For your planned 20–30-world game, I'd also test generated memory use, world switching, save sizes and performance. Large `.map` worlds are supported, but that alone doesn't establish the memory cost of all the persistent per-world state.
+One smaller polish item: a proper in-game Pause/Resume menu. The title screen already has options, but I don't see a separate player-controlled pause menu in the generated gameplay starter.
+## ❤️ What I'd do before starting the real game
 
-it wouldnt be restricted to just if, it would be on all collapsable blocks
 
 
-[doing]
-actions, add these to the NPC editor AND the toggles, as a way to turn on, and off the focus mystery spot light
+Here's my proposed order:
 
+First: Engine reliability
+Strengthen save compatibility checking and add a whole-project validation pass.
 
+Second: Visual Nodes completion
+Add the missing game-object events, quest signals and numeric conditions.
 
+Third: Gameplay completion
+Introduce optional weapons, ranged enemies and a pause menu.
 
+Finally: A complete miniature RPG test
+Three worlds, a branching quest, multiple enemies, saving and loading, a boss-like encounter, and a proper ending. Run it all on SIDBOX hardware.
 
 
-[DONE]
-MIGHT be nice to have a debugger something visual, so like lines going from something to something...
-basic looking so looks like cards, that connect to another card that does something. That way we can trace the progress of the game.
-THIS one is going to be a nightmare to work out though.
-COULD this be another button next to HUD Editor?
+These are source-review findings and proposed additions, not changes I've made to the IDE in this turn. I haven't performed a new full compile or hardware test.
 
+And here's the encouraging part, hun: we're no longer missing the foundations of a game engine. We're now identifying the last pieces needed to make creating games comfortable, reliable and flexible.
 
+That is quite a difference from where we started. 🥹❤️
 
-
-
-[DONE]
-the Hud editor
-the items in the "Show in HUD collections (all worlds)"
-all seem to show the same thing, it seems to ignore the Stamp/atlas indexs.
-
-
-
-[FIXED]
-when using the items, if its in the hud, it seems to be unlinked. So using something, its number doesnt reduce... IS this currently just increasing the number when collected, but never going back down when used/or destroyed, or taken?
-
-
-[FIXED]
-HUD fixes:
-The palette source, should cover everything, The ttilemap, the text, the collectables..
-
-Dropping items, seems to use the tilemap instead of the original ppb. so the colours are iffy (iffy colours mean, your palettes arent done, forces the artist to correct things)
-
-[FIXED]
-Inventory Items in the ADvanced Platformer,
-When changing the Icon Artwork, above the stamp size, we need to be able to select the correct atlas in the current map (might need a note to remind the designer to add the same atlas in the other worlds)
-
-collected items dont seem to carry across worlds,
-when i go BACk to the original world i collected the items from, it returns back to the inventory
-SOOO maybe we should have a "persistant" mode
-in the Game Object Properties from the collectables?
-
-the copy and paste game objects, when they're in an array look, eg, "Fright[0]" copying that should be array aware, so pasting would paste "Fright[1]" paste again "Fright[2]"...
-WHEN importing a graphics from the Files in project to the game resource, it should spawn at the current screen pan. currently i have to go to the top left to grab it to reposition
-
-
-[done]
-the dialog choices, with the trees.
-I name them according to the NPCs name, When i add one inside the selected Root Tree, COULD we have it auto fill the NPCs name? "Speaker"
-
-
-
-
-
-
-
-inventory, the bottom paddin is still too high, interestinly the text has moved up tho
----------------------------------------
-[Talker]
-[content]
-[options]
-                            [close]
-this part here is 16px paddin its meant to be only 8px
----------------------------------------
-
-also using, dropping, destroying, i have to hit FIRE1, when i do that, the player jumps xD
-the player shouldnt jump after the inventory closes. should only jump when the inventory has closed and IS closed already
-
-
-
-
-
-
-
-[done]
-am wonderin, for npcs askin for something, would it be easy to have the inventory window to show that has the inventory an instead of
-use  drop   destroy
-it uses "give",
-THIS might be fun so that if we give the wrong item to the NPC they can give other responses.
-
-that would mean that the adventure editor dialogs
-under if given the wrong item
-it does another dialog, and perhaps an action.
-
-
-
-eventually i might need NPCs to need more than one item to combin.
-SO might need some sort of Logic gate system. am not sure how to go about this tho
-like AND / OR options
-
-
-
-i think we need a "use" option in the inventory;
-that would mean that the adventure editor will need to have rules of something, so it should connect to the players stats... depending on what the item is, the row should be able to select something like "player health, ...." or what ever is in the initial stats.
-also the [  ]'s should surround the text, right now it moves the text
-[DROP]
-DROP
-
-it should be
-[DROP]
- DROP
-
-same with the destroy item an the confirm box!!
-
-otherwise OMG THIS IS CRAZY FUN!!!
-
-
-
-
-i think the inventory popups first over the accessing the goto world.
-
-pressing fire2
-priority should be
-NPC:
-DOOR:
-Inventory
-it could be a collision box issue?
-
-
-the padding should also work on the dialog boxes too, again with the 0px or 8px
-
-Inventory box:
-just use the term Inventory:
-dont need the Up/Down Select, FIRE:Discard,
-dont need "* protected",
-KEEP FIRE2: close (but right align in the box);
-dont need the "*" next to the protected inventory
-Normal disposable inventory should have a the option to bin it EG
-Burning Crystal x1   DROP   DESTROY
-and using the left and right will select them  [DROP] DESTROY
-also the > selector is too far to the left.
-push the content to the right by 8px (or at least cover the padding)
-the inventory box should always have the 8px padding anyway ;)
-Have the inventory box expand in height as the item count increases, ONLY if there are more than 10 items, should we be able to scroll through them
-
-THIS is a big list im really sorry!!!
-
-
-
-
-
-[in progress]
-some new stuff:
-runtime and IDE editor features: the ability to select an item in the inventory to either destroy, (confirm box, unless its a puzzle peace, so might need to have this figured out by NPCs that require items)
-runtime and ide editor features: also need to have options to padd the text with in the dialog boxes. Padding is either 8px, or off
-ALSO the icons in the inventory, might need to support 16x16 icons (or setup icons tiles so can build a 2x2 stamp: this might need to have an editor inside the adventure editor, the atlas selector BUt the ability to build up a 2x2 icon that can be used in the inventory runtime)
-this MIGHT need to thicken the ROWS table to make space for the icon, (also the ability to edit the 2x2 stamp for the icon)
-
-GOD i hope this made sense !
-
-
-
-
-[done]
-behaviour changes:
-IDE:
-Sprites Tree: if a sprite is set as an NPC in the adventure editor, COULD the Sprite have a tag next to it [NPC]
-an if i double click ON that sprite in the Sprites tree, it opens the adventure editor an highlights the NPC tab an the NPC row?
-HOLDING shift an double clickin on a sprite in the Sprites tree, IF its a game object, that it selects the game object in the game objects tree?
-Pleeeeeease??
-
-
-
-
-the dialogs if the player doesnt have the item, should go straight to the "i dont have that item" dialog id.
-also the options in the choices list, still has the "x" next to it, that gives things away ;)
-
-
-bug: door game objects dont get saved to the .proj (at least they get lost when i reload the project after restarting the IDE)
-
-move the Adventure Editor button to the top of the same row as the [centre view on LCD] [tilemap editor...] [create /edit player ...] [Adventure Editor]
-
-
-the Player Starts tree needs an icon ;) Can u create a 16x16 icon (that i can replace) name it gr_icon_playerstart.png
-
-the adventure system
-the dialog options, if i dont have the item, i should still be able to use it, but if i dont have what they want, they should reply with another answer (using another dialog id ofc)
-that way we dont give away the hint that the person has the right item ;)
-
-
-
-bit of a problem with the Tile map Tile stamps... They are lost when i close the IDE and re-open the project file... These "per atlas" stamps should be stored in the .proj file
-can this be fixed please?
-
+And yes, Big Steve's underwear quest is perfectly achievable using what we already have. The poor little weirdo can remain entirely optional. 🤣

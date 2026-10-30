@@ -1,0 +1,39 @@
+SIDBOX / CoderGirl Stage 5.166.101, 29 October 2026
+Weather camera motion, snow particle size, optional atlas snowflakes
+
+INSTALL
+1. Back up IDE source and game project.
+2. Extract this entire archive over your current 5.166.100 IDE source.
+3. Rebuild the IDE; splash screen must say Build: 5.166.101.291026.
+4. Open each affected world in Game Designer -> Player Start / Weather settings.
+   Choose Snow size (2..16 pixels; default 5) and optional atlas tile ID.
+   Atlas ID 0 = filled circular flakes; ID 1 = first tile in the world's
+   existing tilemap atlas (the same 1-based numbering as the tile painter).
+   Invalid/missing atlas cells draw circles instead.
+5. Save the world and regenerate ALL Worlds/game helpers, then rebuild the game.
+   The new world registry appends particle size and atlas tile ID to each world
+   record. The generated gameworlds.c is updated automatically.
+6. Keep your hand-maintained main.c unchanged. It already calls
+   gameworlds_spotlight_camera(camera_x,camera_y) before the weather frame.
+
+BEHAVIOUR
+- Precipitation uses a world-anchored scatter across 2x2 LCD-sized chunks.
+  Moving the camera causes flakes and raindrops to follow world positions.
+- Snow circle diameter is configurable 2..16px; the default is 5px.
+- Snow can instead draw an existing atlas tile, scaled to the chosen size.
+  Tile art uses the existing game_tilemap_t.atlas; no PPB duplication or extra
+  particle allocations.
+- Rain and thunderstorms retain the original rain streak geometry and
+  lightning timing, while gaining the camera-motion correction.
+- IDE weather preview uses the same world-anchored particle position maths.
+  The preview displays filled-circle snow; atlas art appears on hardware.
+- Existing weather logic Enable/Disable/Toggle and Spotlight remain unchanged.
+
+VERIFICATION
+- New generated gameworlds.c parsed cleanly using Clang C11 with the user's
+  real generated world headers and SIDBOX API headers (host syntax only).
+- Deterministic snow camera-motion tests passed for horizontal and vertical
+  camera changes and negative wind.
+- Full Qt desktop build and actual STM32H743 game rendering are NOT validated
+  in this environment. Check 50Hz frame pacing on hardware with 64 flakes and
+  optional atlas art before using the maximum density in a final game.

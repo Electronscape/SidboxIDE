@@ -6,6 +6,9 @@
 #include <QColor>
 class QWidget;
 class QComboBox;
+class QImage;
+// Shared indexed atlas tile picker: zero-based return, -1 on Cancel.
+int chooseGameAtlasCell(QWidget *parent, const QImage &atlas, int tileSize, int previous);
 class QJsonArray;
 struct GameAdventureAsset {
     QString id, name, path, symbol;

@@ -1,7 +1,24 @@
-GamerGirl Stage 4.31 — changed files
--------------------------------------
-Back up your Stage 4.30 IDE before replacing files.
-Copy the replacement source files to corresponding relative paths in the IDE source tree.
-Rebuild the IDE, then open your game design and run Update Game Project.
-See Stage4.31-Adventure-Usability-README.md for the custom main.c integration and tests.
-The protected main.c will not be modified by the IDE.
+STAGE 5.166.116.1 (30 October 2026) - Qt compile hotfix
+
+Reported Fedora build error:
+  gamevisualnodes.cpp:7140: no matching function for
+  VisualNodesDialog::lookupGraph(const QString&, QString*)
+
+Cause:
+  The Stage 116 event-to-existing-logic connection branch called lookupGraph
+  with two arguments. The declared member function requires at least three:
+    lookupGraph(const QString &key, QString *owner, int *index,
+                QJsonObject *found = nullptr)
+
+Fix:
+  Pass nullptr for the unused index parameter:
+    lookupGraph(to, &graphOwner, nullptr)
+
+No runtime or project changes. No graph semantics or save format changes.
+Stage 116 breakable dialogue/event features are retained unchanged.
+
+Validation:
+  - Verified updated call matches the declared function signature.
+  - Stage 116 breakable dialogue picker regression test.
+  - Additional focused compile-time stub test of the three-argument call.
+  - Qt full IDE build unavailable here; Fedora compilation required.

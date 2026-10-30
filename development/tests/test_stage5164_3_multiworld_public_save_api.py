@@ -5,7 +5,7 @@ This exercises the published C API signatures in the actual generated-world
 registry template with host GCC. If a callback is missing, the same eight
 'undeclared here' errors as the reported ARM compilation are reproduced.
 """
-EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
+EMPTY_QUEST_DATA = "#define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0,0,0,0,0,0,0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0,0,0,0,0}};\n"
 
 from pathlib import Path
 import re
@@ -46,7 +46,7 @@ flags = {
     'HAS_SHARED_PLAYER': False,
     'HAS_WORLD_PHYSICS': False,
     'HAS_PLAYER_VISIBILITY': False,
- 'HAS_TITLE':False}
+ 'HAS_TITLE':False,'HAS_MAP':False}
 text = render(source.read_text(), flags)
 rows = []
 for world in ('world1', 'forest'):
@@ -60,7 +60,7 @@ for world in ('world1', 'forest'):
     ) + '}')
 text = text.replace('@IDE{WORLD_DECLARATIONS}',
     '#include "../worlds/world1/world_api.h"\n#include "../worlds/forest/world_api.h"')
-text = text.replace('@IDE{WORLD_RECORDS}', ',\n'.join(rows)).replace('@IDE{SAVE_KEY}', '123').replace('@IDE{QUEST_DATA}', EMPTY_QUEST_DATA)
+text = text.replace('@IDE{WORLD_RECORDS}', ',\n'.join(rows)).replace('@IDE{SAVE_KEY}', '123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}', EMPTY_QUEST_DATA)
 assert '@IDE' not in text
 
 with tempfile.TemporaryDirectory(prefix='cg_stage5164_3_') as temp:
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='cg_stage5164_3_') as temp:
         '-I', str(ROOT / 'idelibs/api'),
         '-I', str(ROOT / 'idelibs/codehelpers/game'),
         str(project / 'gamehelpers/gameworlds.c')]
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    subprocess.run(command, check=True)
     # The test must detect the original regression. Remove precisely one export
     # and assert that the manager now fails to compile.
     first = project / 'worlds/world1/world_api.h'

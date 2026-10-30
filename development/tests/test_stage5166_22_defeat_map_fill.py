@@ -61,7 +61,7 @@ int main(void){
  subprocess.run(['gcc','-std=gnu11','-Wall','-Wextra','-Werror','-I',str(p),str(p/'test_ui.c'),'-o',str(p/'ui')],check=True)
  subprocess.run([str(p/'ui')],check=True)
  (p/'apis.h').unlink()
- flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
+ flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False,'HAS_MAP':False}
  extra='''static int init(void){return 1;}static void shutdown(void){}static uint8_t objects_init(void){return 1;}
 static void fake_save(void (*)(const void*,uint32_t,void*),void*);
 static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);'''
@@ -70,7 +70,7 @@ static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);'''
 .object_disk_export=fake_save,.story_disk_export=fake_save,
 .object_disk_import=fake_import,.story_disk_import=fake_import}'''
  world=render((src/'gameworlds.rulec').read_text(),flags).replace('@IDE{WORLD_DECLARATIONS}',extra)
- world=world.replace('@IDE{WORLD_RECORDS}',record).replace('@IDE{SAVE_KEY}','123').replace('@IDE{QUEST_DATA}',
+ world=world.replace('@IDE{WORLD_RECORDS}',record).replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}',
      ' #define GW_QUEST_COUNT 0u\n#define GW_OBJECTIVE_COUNT 0u\ntypedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;\ntypedef struct {const char *id,*title,*kind,*target,*hint;} gw_objective_def_t;\nstatic const gw_quest_def_t gw_quest_defs[]={{0}};\nstatic const gw_objective_def_t gw_objective_defs[]={{0}};')
  assert '@IDE{' not in world
  (p/'gameworlds.c').write_text(world)

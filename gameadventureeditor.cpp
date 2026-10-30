@@ -1905,6 +1905,11 @@ bool editNode(QWidget *parent, QJsonArray &nodes, int row, const QJsonArray &ite
 }
 } // namespace
 
+int chooseGameAtlasCell(QWidget *parent, const QImage &atlas, int tileSize, int previous)
+{
+    return chooseAdventureAtlasCell(parent, atlas, tileSize, previous);
+}
+
 // Visual Nodes opens the very same exchange editor used by Adventure Editor.
 // This public entry point only applies the edited JSON after explicit OK;
 // Cancel leaves the original answer's exchange untouched.

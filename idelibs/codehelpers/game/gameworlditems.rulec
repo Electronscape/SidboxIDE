@@ -80,6 +80,7 @@ static const cg_interaction_rule_t cg_interaction_rules[] = {
 @IDE{INTERACT_ROWS}    {UINT16_MAX, 0u, 0u, 0u, 0}
 };
 static uint16_t cg_interaction_target = UINT16_MAX;
+static uint16_t cg_checkpoint_event_source = UINT16_MAX;
 static const uint16_t cg_active_state_frames[] = {
 @IDE{STATE_ACTIVE_FRAMES}    UINT16_MAX
 };
@@ -100,6 +101,13 @@ static uint16_t cg_loop_gain[@IDE{WORLD_OBJECT_COUNT}];
 static uint16_t cg_loop_target[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
 @IDE{WORLD_DECLARATIONS}
+@IDE_IF{HAS_NAMED_EVENTS}
+/* One-frame event owners; tracked separately from Trigger activation. */
+static uint8_t cg_named_event_sources[@IDE{WORLD_OBJECT_COUNT}];
+@IDE_END
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+static uint8_t cg_named_pickup_sources[@IDE{PICKUP_COUNT}];
+@IDE_END
 @IDE_IF{HAS_PARTICLE_EMITTERS}
 /* Stage 5.143: decorative scenery particle pool. All values are WORLD-space
    hundredths of a pixel. No per-frame heap allocation or player collision. */
@@ -314,6 +322,144 @@ typedef struct {
 } cg_stamp_t;
 @IDE{STAMP_DECLARATIONS}
 @IDE_END
+@IDE_IF{HAS_LOOT}
+/* Stage 5.166.105: repeatable enemy loot. This pool is independent from
+ * the unique quest reward slot. Only original placed Collectable objects own
+ * saved/persistent quest state; spawned loot uses cloned BOB descriptors and
+ * the same inventory callback without touching the source Collectable. */
+#define CG_LOOT_CAPACITY @IDE{LOOT_SLOT_COUNT}u
+typedef struct {
+    int32_t x100,y100,vx100,vy100;
+    uint16_t template_index;
+    uint8_t active, falling, can_collect;
+} cg_loot_state_t;
+typedef struct {
+    uint16_t enemy_index;
+    uint8_t min_count,max_count,candidate_count;
+    uint16_t candidates[8];
+} cg_loot_rule_t;
+static const cg_loot_rule_t cg_loot_rules[@IDE{LOOT_RULE_COUNT}] = {
+@IDE{LOOT_RULE_ROWS}};
+static cg_loot_state_t cg_loot_slots[CG_LOOT_CAPACITY];
+static cg_loot_state_t cg_loot_saved[CG_LOOT_CAPACITY];
+static game_collectable_t cg_loot_pickups[CG_LOOT_CAPACITY];
+static gfxbob_t cg_loot_bobs[CG_LOOT_CAPACITY];
+static uint32_t cg_loot_rng = 0xC0FFEE17u;
+static uint32_t cg_loot_saved_rng = 0xC0FFEE17u;
+static uint32_t cg_loot_random(void)
+{
+    uint32_t x = cg_loot_rng;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    cg_loot_rng = x;
+    return x;
+}
+/* Each slot gets its OWN gfxbob_t. Never reposition the template's sprite. */
+static void cg_loot_rebuild(uint16_t slot)
+{
+    cg_loot_state_t *state = &cg_loot_slots[slot];
+    game_collectable_t *item = &cg_loot_pickups[slot];
+    memset(item,0,sizeof(*item));
+    if (!state->active || state->template_index >= @IDE{PICKUP_COUNT}) return;
+    const game_collectable_t *source = &cg_gwi_pickups[state->template_index];
+    if (!source->sprite) {state->active=0;return;}
+    cg_loot_bobs[slot] = *source->sprite;
+    *item = *source;
+    item->sprite = &cg_loot_bobs[slot];
+    item->spline = 0;
+    item->animation = 0; /* static frame, no shared mutable animation state */
+    item->spline_start_delay = 0;
+    item->persistent = 0; /* ordinary loot; never overwrite unique pickup bits */
+    item->respawn_frames = 0;
+    item->respawn_left = 0;
+    item->active = 1;
+    item->can_collect = state->can_collect;
+    item->x = state->x100/100;
+    item->y = state->y100/100;
+    /* Position on the clone, not on the template sprite. */
+    cg_loot_bobs[slot].drawx = (int16_t)item->x;
+    cg_loot_bobs[slot].drawy = (int16_t)item->y;
+}
+static void cg_loot_spawn(void)
+{
+    for (uint16_t r=0;r<@IDE{LOOT_RULE_COUNT};++r) {
+        const cg_loot_rule_t *rule=&cg_loot_rules[r];
+        if (!cg_gwi_platforms[rule->enemy_index].break_triggered) continue;
+        const uint32_t count_random=cg_loot_random();
+        const uint8_t count=(uint8_t)(rule->min_count +
+            count_random % (uint32_t)(rule->max_count-rule->min_count+1u));
+        const game_world_object_t *enemy=&cg_gwi_platforms[rule->enemy_index];
+        for(uint8_t n=0;n<count;++n) {
+            uint16_t slot=CG_LOOT_CAPACITY;
+            for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i)
+                if (!cg_loot_slots[i].active) {slot=i;break;}
+            if (slot>=CG_LOOT_CAPACITY) break; /* fixed RAM budget */
+            const uint32_t v=cg_loot_random();
+            const uint16_t choice=rule->candidates[v % rule->candidate_count];
+            const game_collectable_t *source=&cg_gwi_pickups[choice];
+            cg_loot_state_t *state=&cg_loot_slots[slot];
+            state->template_index=choice;
+            state->x100=(enemy->x+(enemy->width-(int32_t)source->width)/2 +
+                (int32_t)((v>>11)%19u)-9)*100;
+            state->y100=enemy->y*100;
+            state->vx100=(int32_t)((v>>19)%601u)-300;
+            state->vy100=-300-(int32_t)((v>>3)%251u);
+            state->active=1;
+            state->can_collect=0;
+            state->falling=1;
+            cg_loot_rebuild(slot);
+        }
+    }
+}
+/* Per-frame, world-space gravity/solid tile collision; no heap or assets. */
+static void cg_loot_update(uint16_t frames)
+{
+    for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i) {
+        cg_loot_state_t *state=&cg_loot_slots[i];
+        game_collectable_t *item=&cg_loot_pickups[i];
+        if (!state->active || !item->active || !state->falling) continue;
+        for(uint16_t frame=0;frame<frames;++frame) {
+            const int32_t proposed_x=state->x100+state->vx100;
+            int32_t x=state->x100/100;
+            const int32_t dest_x=proposed_x/100;
+            int32_t dir=dest_x>x?1:-1;
+            while(x!=dest_x) {
+                if(game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL},x+dir,item->y,
+                        item->width,item->height)) {state->vx100=0;break;}
+                x+=dir;
+            }
+            state->x100=(state->vx100 ? proposed_x : x*100);
+            item->x=state->x100/100;
+            state->vx100=(state->vx100*97)/100;
+            if (state->vx100>-5 && state->vx100<5) state->vx100=0;
+            if (state->vy100<900) state->vy100+=65;
+            const int32_t proposed_y=state->y100+state->vy100;
+            int32_t y=state->y100/100;
+            const int32_t dest_y=proposed_y/100;
+            dir=dest_y>y?1:-1;
+            uint8_t landed=0;
+            while(y!=dest_y) {
+                if(game_tilemap_actor_blocked(&@IDE{WORLD_SYMBOL},item->x,y+dir,
+                        item->width,item->height)) {
+                    if(dir>0) landed=1;
+                    state->vy100=0;
+                    break;
+                }
+                y+=dir;
+            }
+            state->y100=(state->vy100 ? proposed_y : y*100);
+            item->y=state->y100/100;
+            if(landed) {
+                state->falling=0;
+                state->can_collect=1;
+                item->can_collect=1;
+                break;
+            }
+        }
+        cg_loot_bobs[i].drawx=(int16_t)item->x;
+        cg_loot_bobs[i].drawy=(int16_t)item->y;
+    }
+}
+@IDE_END
 /* Stage 5.21: per-world RAM snapshot. Each generated world module keeps its
  * own copy, even while another world's graphics and collision data are loaded.
  * Store values ONLY, never gfxbob/animation/spline pointers. */
@@ -434,6 +580,14 @@ void gameworlditems_save_state(void)
         cg_saved_reward_vy100[i] = cg_reward_vy100[i];
     }
 @IDE_END
+@IDE_IF{HAS_LOOT}
+    for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i) {
+        cg_loot_slots[i].active=cg_loot_pickups[i].active;
+        cg_loot_slots[i].can_collect=cg_loot_pickups[i].can_collect;
+    }
+    memcpy(cg_loot_saved,cg_loot_slots,sizeof(cg_loot_saved));
+    cg_loot_saved_rng=cg_loot_rng;
+@IDE_END
     cg_world_snapshot_valid = 1;
 }
 
@@ -445,6 +599,10 @@ void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), vo
     if (!emit) return;
 #define CG_SAVE_BYTES(v) emit(&(v), (uint32_t)sizeof(v), ctx)
     CG_SAVE_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_LOOT}
+    CG_SAVE_BYTES(cg_loot_saved);
+    CG_SAVE_BYTES(cg_loot_saved_rng);
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     CG_SAVE_BYTES(cg_saved_objects);
     CG_SAVE_BYTES(cg_remote_valid);
@@ -468,6 +626,10 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
     if (!take) return 0;
 #define CG_LOAD_BYTES(v) if (!take(&(v), (uint32_t)sizeof(v), ctx)) return 0
     CG_LOAD_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_LOOT}
+    CG_LOAD_BYTES(cg_loot_saved);
+    CG_LOAD_BYTES(cg_loot_saved_rng);
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     CG_LOAD_BYTES(cg_saved_objects);
     CG_LOAD_BYTES(cg_remote_valid);
@@ -491,6 +653,11 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
 void gameworlditems_restore_state(void)
 {
     if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
+@IDE_IF{HAS_LOOT}
+    memcpy(cg_loot_slots,cg_loot_saved,sizeof(cg_loot_slots));
+    cg_loot_rng=cg_loot_saved_rng ? cg_loot_saved_rng : 0xC0FFEE17u;
+    for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i) cg_loot_rebuild(i);
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     for (uint16_t i = 0; i < @IDE{WORLD_OBJECT_COUNT}; ++i) {
         game_world_object_t *o = &cg_gwi_platforms[i];
@@ -573,9 +740,15 @@ void gameworlditems_restore_state(void)
 
 uint8_t gameworlditems_init(void)
 {
+@IDE_IF{HAS_LOOT}
+    memset(cg_loot_slots,0,sizeof(cg_loot_slots));
+    memset(cg_loot_pickups,0,sizeof(cg_loot_pickups));
+    cg_loot_rng=0xC0FFEE17u;
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     cg_fire2_player=0;
     cg_interaction_target=UINT16_MAX;
+    cg_checkpoint_event_source=UINT16_MAX;
 @IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
     cg_hazard_zone_contact = 0;
@@ -655,6 +828,10 @@ void gameworlditems_remote_reset(void)
     memset(cg_saved_reward_vx100,0,sizeof(cg_saved_reward_vx100));
     memset(cg_saved_reward_vy100,0,sizeof(cg_saved_reward_vy100));
 @IDE_END
+@IDE_IF{HAS_LOOT}
+    memset(cg_loot_saved,0,sizeof(cg_loot_saved));
+    cg_loot_saved_rng=0xC0FFEE17u;
+@IDE_END
     cg_world_snapshot_valid=0u;
 }
 @IDE_ELSE
@@ -673,6 +850,10 @@ void gameworlditems_remote_reset(void)
     memset(cg_saved_reward_y100,0,sizeof(cg_saved_reward_y100));
     memset(cg_saved_reward_vx100,0,sizeof(cg_saved_reward_vx100));
     memset(cg_saved_reward_vy100,0,sizeof(cg_saved_reward_vy100));
+@IDE_END
+@IDE_IF{HAS_LOOT}
+    memset(cg_loot_saved,0,sizeof(cg_loot_saved));
+    cg_loot_saved_rng=0xC0FFEE17u;
 @IDE_END
     cg_world_snapshot_valid=0u;
 }
@@ -760,6 +941,9 @@ void gameworlditems_update_gameplay(uint16_t frames)
         }
     }
 @IDE_END
+@IDE_IF{HAS_LOOT}
+    cg_loot_update(frames);
+@IDE_END
 @IDE{UPDATE_BODY}
 }
 
@@ -820,14 +1004,27 @@ void gameworlditems_before(game_world_player_t *player)
     game_world_objects_before(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 }
 
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+static void cg_run_trigger_actions(void);
+static uint8_t cg_enemy_logic_event_handled = 0u;
+@IDE_END
 void gameworlditems_after(game_world_player_t *player)
 {
 @IDE_IF{HAS_TILEMAP_WORLDS}
     if (game_death_is_dead()) return;
 @IDE_END
+@IDE_IF{HAS_NAMED_EVENTS}
+    memset(cg_named_event_sources,0,sizeof(cg_named_event_sources));
+@IDE_END
     game_world_objects_after(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+    cg_enemy_logic_event_handled=0u;
+@IDE_END
     game_world_objects_hazards(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 @IDE{REWARD_SPAWN_ACTIONS}
+@IDE_IF{HAS_LOOT}
+    cg_loot_spawn();
+@IDE_END
 @IDE_IF{HAS_TILEMAP_WORLDS}
     /* Hazard Zone: ENTERED once, INSIDE each frame, EXITED on leaving. */
     uint8_t in_hazard_zone = (uint8_t)(player && player->x100 && player->y100 &&
@@ -859,6 +1056,34 @@ void gameworlditems_after(game_world_player_t *player)
     }
 @IDE_END
 @IDE{WORLD_EVENT_ACTIONS}
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+    // An enemy may die without ANY Trigger activation. The final stomp
+    // already set break_triggered and active=0 in game_world_objects_after().
+    // Evaluate AFTER its ordered ON DEFEAT actions, using the same DAG code.
+    uint8_t cg_defeat_logic_event=0u;
+    for(uint16_t cg_i=0;cg_i<@IDE{WORLD_OBJECT_COUNT};++cg_i)
+        if(cg_gwi_platforms[cg_i].type==GAME_OBJECT_ENEMY &&
+           cg_gwi_platforms[cg_i].break_triggered) {cg_defeat_logic_event=1u;break;}
+    if(cg_defeat_logic_event) {
+        cg_run_trigger_actions();
+        // A Trigger can also fire later this frame. Don't dispatch the same
+        // enemy defeat graph branches twice when it does.
+        cg_enemy_logic_event_handled=1u;
+    }
+@IDE_END
+@IDE_IF{HAS_NAMED_EVENT_LOGIC}
+    uint8_t cg_named_logic_fired=0u;
+    for(uint16_t cg_i=0;cg_i<@IDE{WORLD_OBJECT_COUNT};++cg_i)
+        if(cg_named_event_sources[cg_i]) {cg_named_logic_fired=1u;break;}
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+    if(cg_enemy_logic_event_handled)cg_named_logic_fired=0u;
+@IDE_END
+    if(cg_named_logic_fired)cg_run_trigger_actions();
+@IDE_END
+@IDE_IF{HAS_NAMED_EVENTS}
+    /* Don't replay a named event if a Trigger fires later this frame. */
+    memset(cg_named_event_sources,0,sizeof(cg_named_event_sources));
+@IDE_END
 @IDE_IF{HAS_TRIGGERS}
     if (player && player->x100 && player->y100 && player->width && player->height)
         gameworlditems_trigger(*player->x100 / 100 + player->offset_x, *player->y100 / 100 + player->offset_y,
@@ -882,12 +1107,27 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
     for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i)
         persistent_was_active[i]=cg_gwi_pickups[i].active;
     uint16_t count = game_collectables_check(cg_gwi_pickups, @IDE{PICKUP_COUNT}, x, y, w, h, callback, user);
+@IDE_IF{HAS_LOOT}
+    count += game_collectables_check(cg_loot_pickups,CG_LOOT_CAPACITY,x,y,w,h,callback,user);
+    for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i)
+        cg_loot_slots[i].active=cg_loot_pickups[i].active;
+@IDE_END
     for(uint16_t i=0;i<@IDE{PICKUP_COUNT};++i){
         /* Ignore hidden rewards that have not actually been picked up. */
         if(persistent_was_active[i] && !cg_gwi_pickups[i].active && cg_gwi_pickups[i].persistent)
             cg_pickup_permanently_collected[i]=1;
     }
-@IDE{CHECK_ACTIONS}    return count;
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+    memset(cg_named_pickup_sources,0,sizeof(cg_named_pickup_sources));
+@IDE_END
+@IDE{CHECK_ACTIONS}
+@IDE_IF{HAS_NAMED_PICKUP_LOGIC}
+    uint8_t cg_named_pickup_logic=0u;
+    for(uint16_t cg_i=0;cg_i<@IDE{PICKUP_COUNT};++cg_i)
+        if(cg_named_pickup_sources[cg_i]) {cg_named_pickup_logic=1u;break;}
+    if(cg_named_pickup_logic)cg_run_trigger_actions();
+@IDE_END
+    return count;
 }
 
 @IDE_END
@@ -904,11 +1144,27 @@ void gameworlditems_sync_logic(void)
 static void cg_run_trigger_actions(void)
 {
     // Live state snapshots are captured before the ordinary Trigger actions.
-@IDE{GRAPH_SNAPSHOTS}@IDE{TRIGGER_ACTIONS}
+@IDE{GRAPH_SNAPSHOTS}@IDE{TRIGGER_ACTIONS}@IDE{EVENT_ENTER_ACTIONS}
     // Independent graph inputs are sampled after ALL ordinary Trigger actions.
 @IDE{GRAPH_EVALUATIONS}
     // Branch actions are dispatched from that stable state snapshot.
 @IDE{GRAPH_DISPATCH}}
+/* ON SAVE fires only for a successful confirmed TFCard write, never when
+ * the checkpoint is merely touched or the picker is cancelled. */
+void gameworlditems_checkpoint_saved(void)
+{
+@IDE{EVENT_SAVE_ACTIONS}
+@IDE_IF{HAS_NAMED_EVENT_LOGIC}
+    uint8_t cg_named_save_logic=0u;
+    for(uint16_t cg_i=0;cg_i<@IDE{WORLD_OBJECT_COUNT};++cg_i)
+        if(cg_named_event_sources[cg_i]) {cg_named_save_logic=1u;break;}
+    if(cg_named_save_logic)cg_run_trigger_actions();
+@IDE_END
+@IDE_IF{HAS_NAMED_EVENTS}
+    memset(cg_named_event_sources,0,sizeof(cg_named_event_sources));
+@IDE_END
+    cg_checkpoint_event_source=UINT16_MAX;
+}
 /* FIRE2 near an interactive Trigger opens the Adventure item's USE list.
  * The closest eligible object wins; detection uses distance to the hitbox
  * EDGES so solid doors can be interacted with without entering their body. */
@@ -1073,6 +1329,14 @@ static void cg_draw_world_layer(int32_t camera_x, int32_t camera_y, uint8_t behi
         cg_draw_stamp(o->sprite,&cg_pickup_stamps[i],o->x,o->y,camera_x,camera_y);
     }
 @IDE_END
+@IDE_IF{HAS_LOOT}
+    for(uint16_t i=0;i<CG_LOOT_CAPACITY;++i) {
+        const game_collectable_t *o=&cg_loot_pickups[i];
+        if (!o->active || !o->sprite || !!o->draw_behind_tiles != !!behind) continue;
+        cg_draw_stamp(o->sprite,&cg_pickup_stamps[cg_loot_slots[i].template_index],
+                      o->x,o->y,camera_x,camera_y);
+    }
+@IDE_END
 }
 @IDE_END
 @IDE_IF{HAS_INACTIVE_STATE_FRAMES}
@@ -1107,6 +1371,9 @@ void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y)
 @IDE_IF{HAS_PICKUPS}
     game_collectables_draw_layer(cg_gwi_pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 1);
 @IDE_END
+@IDE_IF{HAS_LOOT}
+    game_collectables_draw_layer(cg_loot_pickups, CG_LOOT_CAPACITY, camera_x, camera_y, 1);
+@IDE_END
 @IDE_END
 @IDE{DRAW_BEHIND_BODY}
 @IDE_IF{HAS_PARTICLE_EMITTERS}
@@ -1127,6 +1394,9 @@ void gameworlditems_draw(int32_t camera_x, int32_t camera_y)
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
     game_collectables_draw_layer(cg_gwi_pickups, @IDE{PICKUP_COUNT}, camera_x, camera_y, 0);
+@IDE_END
+@IDE_IF{HAS_LOOT}
+    game_collectables_draw_layer(cg_loot_pickups, CG_LOOT_CAPACITY, camera_x, camera_y, 0);
 @IDE_END
 @IDE_END
 @IDE_IF{HAS_AUDIO}
@@ -1159,6 +1429,7 @@ void gameworlditems_draw_overlay(int32_t cx, int32_t cy) { (void)cx; (void)cy; }
 void gameworlditems_save_state(void) {}
 void gameworlditems_restore_state(void) {}
 void gameworlditems_sync_logic(void) {}
+void gameworlditems_checkpoint_saved(void) {}
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
 { (void)emit; (void)ctx; }
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)

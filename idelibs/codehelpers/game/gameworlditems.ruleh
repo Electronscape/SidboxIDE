@@ -16,6 +16,7 @@ void gameworlditems_save_state(void);
 void gameworlditems_restore_state(void);
 /* Resolve stateful logic after the world manager finishes restoring objects. */
 void gameworlditems_sync_logic(void);
+void gameworlditems_checkpoint_saved(void);
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */
@@ -66,6 +67,7 @@ void gameworlditems_save_state(void);
 void gameworlditems_restore_state(void);
 /* Resolve stateful logic after the world manager finishes restoring objects. */
 void gameworlditems_sync_logic(void);
+void gameworlditems_checkpoint_saved(void);
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */

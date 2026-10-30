@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <QDateTime>
 #include <QColor>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -22,6 +23,7 @@
 #include <QStringList>
 #include <QUuid>
 #include "gametilemap.h"
+#include "ppbcodec.h"
 #include "gamehelpertemplates.h"
 #include "gametitleruntime.h"
 #include "gameplayerprofile.h"
@@ -119,6 +121,7 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
             "gameworlditems_save_state", "gameworlditems_restore_state", "gameworlditems_sync_logic",
+            "gameworlditems_checkpoint_saved",
             "gameworlditems_disk_export", "gameworlditems_disk_import",
             "gameadventure_disk_export", "gameadventure_disk_import",
             "gameworlditems_remote_action", "gameworlditems_remote_reset",
@@ -213,6 +216,7 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "void " + id + "_gameworlditems_save_state(void);\n"
                      "void " + id + "_gameworlditems_restore_state(void);\n"
                      "void " + id + "_gameworlditems_sync_logic(void);\n"
+                     "void " + id + "_gameworlditems_checkpoint_saved(void);\n"
                      // Stage 5.164.3: registry save callbacks MUST be declared
                      // in each world's PUBLIC API, not only its private header.
                      "void " + id + "_gameworlditems_disk_export(void (*)(const void *, uint32_t, void *), void *);\n"
@@ -340,6 +344,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList names = worlds.entryList(QDir::Dirs | QDir::NoDotAndDotDot,
                                          QDir::Name | QDir::IgnoreCase);
     QStringList published, declarations, records;
+    QHash<QString, QString> publishedSaveLayouts;
     QJsonObject sharedPlayer;
     const bool hasSharedPlayer = QFileInfo::exists(GamePlayerProfile::profilePath(project));
     if (hasSharedPlayer && !GamePlayerProfile::read(project, &sharedPlayer, error)) return false;
@@ -355,7 +360,10 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     QStringList defaultSpotlightStable, defaultSpotlightAnimMode, defaultSpotlightAnimMin;
     QStringList defaultSpotlightAnimMax, defaultSpotlightRandomMin, defaultSpotlightRandomMax;
     QStringList defaultSpotlightPulseDelay;
+    bool anyMap = false;
     QStringList defaultWeatherMode, defaultWeatherDensity, defaultWeatherWind;
+    QStringList defaultWeatherSize, defaultWeatherTile;
+    QStringList weatherBitmapSymbols, weatherBitmapSizes, weatherBitmapDeclarations;
     QStringList defaultWeatherColour, defaultWeatherInterval, defaultWeatherStrength, defaultWeatherPaletteStrength;
     QStringList defaultWeatherCurve;
     QStringList defaultWeatherOverlay;
@@ -388,10 +396,24 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             if (error) *error = QStringLiteral("Invalid or conflicting published world '%1'.").arg(name);
             return false;
         }
+        // This comes from the exact .sbgm that was compiled into the
+        // published world. A later unsaved/unexported edit MUST NOT silently
+        // change the fingerprint of the existing generated object arrays.
+        const QString layoutDigest = meta.value(QStringLiteral("saveLayoutDigest")).toString();
+        static const QRegularExpression layoutDigestRe(QStringLiteral("^[0-9a-f]{64}$"));
+        if (!layoutDigestRe.match(layoutDigest).hasMatch()) {
+            if (error) *error = QStringLiteral(
+                "World '%1' was exported before save identity protection. "
+                "Open and re-export that world, then regenerate the project. "
+                "No existing save files will be modified.").arg(name);
+            return false;
+        }
+        publishedSaveLayouts.insert(name, layoutDigest);
         published << name;
         const QString stem = name + QStringLiteral("_");
         const bool hasMap = QFileInfo::exists(QDir(directory).filePath(
             QStringLiteral("gamelevels/") + name + QStringLiteral(".c")));
+        anyMap |= hasMap;
         QFile publicApi(QDir(directory).filePath(QStringLiteral("world_api.h")));
         const QByteArray exposed = publicApi.open(QIODevice::ReadOnly)
             ? publicApi.readAll() : QByteArray();
@@ -445,6 +467,67 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         defaultWeatherMode << QString::number(qBound(0, weather.value(QStringLiteral("mode")).toInt(0), 3));
         defaultWeatherDensity << QString::number(qBound(1, weather.value(QStringLiteral("density")).toInt(48), 64));
         defaultWeatherWind << QString::number(qBound(-8, weather.value(QStringLiteral("wind")).toInt(0), 8));
+        defaultWeatherSize << QString::number(qBound(2, weather.value(QStringLiteral("particleSize")).toInt(5), 32));
+        defaultWeatherTile << QString::number(qBound(0, weather.value(QStringLiteral("particleTileId")).toInt(0), 65535));
+        // Embed ONLY the selected tile (not an entire PPB) from a named Game
+        // Resource. This also works in worlds without a .map tile atlas.
+        // Legacy records without a selected resource still use the map atlas.
+        QString bitmapSymbol = QStringLiteral("0"), bitmapSize = QStringLiteral("0");
+        const QString chosenResource = weather.value(QStringLiteral("particleAtlasId")).toString();
+        const int chosenCell = weather.value(QStringLiteral("particleTileId")).toInt();
+        const int cellSize = weather.value(QStringLiteral("particleTileSize")).toInt(8);
+        if (!chosenResource.isEmpty() && chosenCell > 0 &&
+            weather.value(QStringLiteral("mode")).toInt() == 2) {
+            if (cellSize != 8 && cellSize != 16 && cellSize != 32) {
+                if (error) *error = QStringLiteral("World '%1': invalid snow atlas tile size.").arg(name);
+                return false;
+            }
+            QString imagePath;
+            for (const QJsonValue &value : design.value(QStringLiteral("resources")).toArray()) {
+                const QJsonObject resource = value.toObject();
+                if (resource.value(QStringLiteral("id")).toString() == chosenResource) {
+                    const QString kind = resource.value(QStringLiteral("kind")).toString();
+                    if (kind == QStringLiteral("tileatlas") || kind == QStringLiteral("sprite"))
+                        imagePath = resource.value(QStringLiteral("path")).toString();
+                    break;
+                }
+            }
+            if (imagePath.isEmpty()) {
+                if (error) *error = QStringLiteral("World '%1': selected snow atlas is missing from Game Resources.").arg(name);
+                return false;
+            }
+            SidboxPpb::Picture picture;
+            QString readError;
+            if (!SidboxPpb::read(QDir(QFileInfo(meta.value(QStringLiteral("designFile")).toString())
+                            .absolutePath()).filePath(imagePath), &picture, &readError)) {
+                if (error) *error = QStringLiteral("World '%1': snow atlas %2 could not be read: %3")
+                    .arg(name, imagePath, readError);
+                return false;
+            }
+            const QImage &sheet = picture.indexed;
+            if (sheet.width() % cellSize || sheet.height() % cellSize ||
+                chosenCell > (sheet.width() / cellSize) * (sheet.height() / cellSize)) {
+                if (error) *error = QStringLiteral("World '%1': selected snow atlas tile is outside the %2 px atlas.")
+                    .arg(name).arg(cellSize);
+                return false;
+            }
+            const int columns = sheet.width() / cellSize;
+            const int index = chosenCell - 1;
+            QStringList pixels;
+            pixels.reserve(cellSize * cellSize);
+            for (int row = 0; row < cellSize; ++row) {
+                const uchar *source = sheet.constScanLine((index / columns) * cellSize + row) +
+                    (index % columns) * cellSize;
+                for (int col = 0; col < cellSize; ++col)
+                    pixels << QString::number(source[col]);
+            }
+            bitmapSymbol = QStringLiteral("cg_weather_snow_%1").arg(name);
+            bitmapSize = QString::number(cellSize);
+            weatherBitmapDeclarations << QStringLiteral("static const uint8_t %1[%2] = {%3};")
+                .arg(bitmapSymbol).arg(cellSize * cellSize).arg(pixels.join(QLatin1Char(',')));
+        }
+        weatherBitmapSymbols << bitmapSymbol;
+        weatherBitmapSizes << bitmapSize;
         defaultWeatherColour << QString::number(qBound(1, weather.value(QStringLiteral("paletteIndex")).toInt(15), 254));
         defaultWeatherInterval << QString::number(qBound(100, weather.value(QStringLiteral("lightningInterval")).toInt(350), 2000));
         defaultWeatherStrength << QString::number(qBound(10, weather.value(QStringLiteral("lightningStrength")).toInt(75), 100));
@@ -675,6 +758,10 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         entry += QStringLiteral(", %1, %2, %3, %4")
             .arg(timeDayPtrs.at(i),timeNightPtrs.at(i),timeDayCounts.at(i),timeNightCounts.at(i));
         entry += QStringLiteral(", %1_gameworlditems_sync_logic").arg(id);
+        entry += QStringLiteral(", %1, %2, %3, %4")
+            .arg(defaultWeatherSize.at(i), defaultWeatherTile.at(i),
+                 weatherBitmapSymbols.at(i), weatherBitmapSizes.at(i));
+        entry += QStringLiteral(", %1_gameworlditems_checkpoint_saved").arg(id);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to
@@ -703,7 +790,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
     }
     QByteArray generated = source.readAll();
     generated.replace("@IDE{WORLD_DECLARATIONS}",
-        (declarations + spawnDeclarations + timeEventData).join(QLatin1Char('\n')).toUtf8());
+        (declarations + spawnDeclarations + timeEventData + weatherBitmapDeclarations)
+            .join(QLatin1Char('\n')).toUtf8());
     generated.replace("@IDE{WORLD_RECORDS}", ordered.join(QStringLiteral(",\n")).toUtf8());
     /* Stable per-project TFCard namespace. Do not use randomised qHash(). */
     uint32_t saveKey=2166136261u;
@@ -716,12 +804,53 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         saveKey *= 16777619u;
     }
     generated.replace("@IDE{SAVE_KEY}", QByteArray::number(saveKey));
+    // Stage 5.166.109: bind a save to the exact ordered identity of every
+    // published world's serialized objects and story, plus quest indices.
+    // A SHA-256-derived 64-bit key is embedded in the new v3 save header.
+    // Cosmetic changes to unrelated resources do not affect this identity.
+    QJsonArray saveWorlds;
+    for (const QString &name : published) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("world"), name);
+        entry.insert(QStringLiteral("digest"), publishedSaveLayouts.value(name));
+        saveWorlds.append(entry);
+    }
+    QJsonArray projectQuests;
+    if (!GameQuestGen::read(project,&projectQuests,error)) return false;
+    QJsonArray saveQuests;
+    for (const QJsonValue &v : projectQuests) {
+        const QJsonObject quest=v.toObject();
+        QJsonObject entry;
+        entry.insert(QStringLiteral("id"),quest.value(QStringLiteral("id")));
+        QJsonArray steps;
+        for (const QJsonValue &sv : quest.value(QStringLiteral("objectives")).toArray()) {
+            const QJsonObject step=sv.toObject();
+            QJsonArray identity;
+            identity.append(step.value(QStringLiteral("id")));
+            identity.append(step.value(QStringLiteral("kind")));
+            identity.append(step.value(QStringLiteral("target")));
+            steps.append(identity);
+        }
+        entry.insert(QStringLiteral("steps"),steps);
+        saveQuests.append(entry);
+    }
+    QJsonObject saveLayout;
+    saveLayout.insert(QStringLiteral("schema"),QStringLiteral("CG-SAVE-V3-LAYOUT-1"));
+    saveLayout.insert(QStringLiteral("worlds"),saveWorlds);
+    saveLayout.insert(QStringLiteral("quests"),saveQuests);
+    const QByteArray identityBytes = QCryptographicHash::hash(
+        QJsonDocument(saveLayout).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256);
+    // Hex preserves the hash byte order without relying on host endianness.
+    const QByteArray identityLiteral = "0x" + identityBytes.left(8).toHex();
+    if (!generated.contains("@IDE{SAVE_IDENTITY}")) {
+        if (error) *error=QStringLiteral("SDK gameworlds.rulec is missing the save-identity marker.");
+        return false;
+    }
+    generated.replace("@IDE{SAVE_IDENTITY}",identityLiteral);
     if (!generated.contains("@IDE{QUEST_DATA}")) {
         if(error)*error=QStringLiteral("SDK gameworlds.rulec is missing the Stage 5.165 quest data marker.");
         return false;
     }
-    QJsonArray projectQuests;
-    if (!GameQuestGen::read(project,&projectQuests,error)) return false;
     generated.replace("@IDE{QUEST_DATA}",GameQuestGen::generateData(projectQuests));
     // Stage 5.163: the world manager must use the SAME nested condition
     // renderer as every other rule-owned helper. The previous substring-based
@@ -734,7 +863,8 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
         {QStringLiteral("HAS_WORLD_PHYSICS"), anyWorldPhysics ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_PICKUPS"), anyPickups ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_PLAYER_VISIBILITY"), (anyAdventure && hasSharedPlayer) ? QStringLiteral("1") : QStringLiteral("0")},
-        {QStringLiteral("HAS_SHARED_PLAYER"), hasSharedPlayer ? QStringLiteral("1") : QStringLiteral("0")}
+        {QStringLiteral("HAS_SHARED_PLAYER"), hasSharedPlayer ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_MAP"), anyMap ? QStringLiteral("1") : QStringLiteral("0")}
     };
     QByteArray renderedSource;
     if (!GameHelperTemplates::renderConditionals(generated, conditionFlags,
@@ -802,6 +932,75 @@ inline bool publish(const QString &designPath, const QString &worldName,
                     bool hasAdventure, bool embedPixels, const QString &rulesDirectory, QString *error)
 {
     const QDir project(QFileInfo(designPath).absolutePath());
+    // Fingerprint the saved design that the world exporter just compiled.
+    // Collectables and all other world objects occupy DIFFERENT serialized
+    // arrays, each in the original resource order. Use stable UUIDs, not
+    // names, positions or the live object's current state.
+    QFile savedDesign(designPath);
+    QJsonParseError parseError;
+    if (!savedDesign.open(QIODevice::ReadOnly)) {
+        if (error) *error=QStringLiteral("Cannot read saved world for save identity: %1").arg(designPath);
+        return false;
+    }
+    const QJsonDocument document=QJsonDocument::fromJson(savedDesign.readAll(),&parseError);
+    if (parseError.error!=QJsonParseError::NoError || !document.isObject()) {
+        if (error) *error=QStringLiteral("Cannot parse saved world for save identity: %1").arg(designPath);
+        return false;
+    }
+    const QJsonObject savedWorld=document.object();
+    QJsonArray pickups, objects;
+    QSet<QString> seenIds;
+    for (const QJsonValue &v : savedWorld.value(QStringLiteral("resources")).toArray()) {
+        const QJsonObject r=v.toObject();
+        if (r.value(QStringLiteral("kind")).toString()!=QStringLiteral("sprite")) continue;
+        const QString type=r.value(QStringLiteral("gameObject")).toObject()
+            .value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
+        if (type==QStringLiteral("decoration")) continue;
+        const QString id=r.value(QStringLiteral("id")).toString();
+        if (id.isEmpty() || seenIds.contains(id)) {
+            if (error) *error=QStringLiteral(
+                "World '%1' has a missing or duplicate Game Object UUID. "
+                "Save the world and repair the resource before exporting.").arg(worldName);
+            return false;
+        }
+        seenIds.insert(id);
+        QJsonArray identity;
+        identity.append(id);
+        identity.append(type);
+        if (type==QStringLiteral("collectable")) pickups.append(identity);
+        else objects.append(identity);
+    }
+    // Adventure saves store NPCs, used dialogue-choice bits and item/exchange
+    // progress by index. Dialogue nodes currently lack stable UUIDs, so keep
+    // their ordered definitions in the fingerprint (conservative by design).
+    const QJsonObject adventure=savedWorld.value(QStringLiteral("adventure")).toObject();
+    QJsonArray npcIdentity;
+    for (const QJsonValue &v : adventure.value(QStringLiteral("npcs")).toArray()) {
+        const QJsonObject npc=v.toObject();
+        QJsonArray identity;
+        identity.append(npc.value(QStringLiteral("spriteId")));
+        identity.append(npc.value(QStringLiteral("node")));
+        identity.append(npc.value(QStringLiteral("doneNode")));
+        npcIdentity.append(identity);
+    }
+    QJsonArray itemIdentity;
+    for (const QJsonValue &v : adventure.value(QStringLiteral("items")).toArray()) {
+        const QJsonObject item=v.toObject();
+        QJsonArray identity;
+        identity.append(item.value(QStringLiteral("name")));
+        identity.append(item.value(QStringLiteral("pickupKind")));
+        itemIdentity.append(identity);
+    }
+    QJsonObject layout;
+    layout.insert(QStringLiteral("schema"),QStringLiteral("CG-WORLD-STATE-V1"));
+    layout.insert(QStringLiteral("pickups"),pickups);
+    layout.insert(QStringLiteral("objects"),objects);
+    layout.insert(QStringLiteral("npcs"),npcIdentity);
+    layout.insert(QStringLiteral("nodes"),adventure.value(QStringLiteral("nodes")).toArray());
+    layout.insert(QStringLiteral("items"),itemIdentity);
+    layout.insert(QStringLiteral("pickupTypes"),adventure.value(QStringLiteral("pickupTypes")).toArray());
+    const QString saveLayoutDigest=QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(layout).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
     const QString worldParent = project.filePath(QStringLiteral(".codergirl/worlds"));
     if (!QDir().mkpath(worldParent)) {
         if (error) *error = QStringLiteral("Cannot create world snapshot directory: %1").arg(worldParent);
@@ -861,6 +1060,7 @@ inline bool publish(const QString &designPath, const QString &worldName,
     manifest.insert(QStringLiteral("format"), QStringLiteral("CODERGIRL-V1-WORLD-BUNDLE"));
     manifest.insert(QStringLiteral("version"), 2);
     manifest.insert(QStringLiteral("worldName"), worldName);
+    manifest.insert(QStringLiteral("saveLayoutDigest"), saveLayoutDigest);
     manifest.insert(QStringLiteral("designFile"), QFileInfo(designPath).absoluteFilePath());
     manifest.insert(QStringLiteral("generatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     manifest.insert(QStringLiteral("externalMap"), externalMap);

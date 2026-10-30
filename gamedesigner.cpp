@@ -24,9 +24,11 @@
 #include "gamemainownership.h"
 #include "gameeditorcontrolstyle.h"
 #include "gameeditoricons.h"
+#include <functional>
 
 #include <QCheckBox>
 #include <QColorDialog>
+#include <QCollator>
 #include <QComboBox>
 #include <QPaintEvent>
 #include <QDir>
@@ -68,6 +70,8 @@
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
 #include <QHBoxLayout>
+#include <QHash>
+#include <QPair>
 #include <QImage>
 #include <QImageReader>
 #include <QJsonArray>
@@ -107,6 +111,9 @@
 #include <QSizePolicy>
 #include <QListView>
 #include <QListWidget>
+#include <QSignalBlocker>
+#include <QListWidget>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QStringList>
 #include <QSignalBlocker>
@@ -2016,6 +2023,106 @@ void SidboxGameDesigner::editPlayerStart()
     weatherWind->setSuffix(tr(" px / frame"));
     weatherWind->setValue(m_weatherWind);
     form->addRow(tr("Weather wind X"), weatherWind);
+    auto *weatherSizeRow = new QWidget(&dialog);
+    auto *weatherSizeLayout = new QHBoxLayout(weatherSizeRow);
+    weatherSizeLayout->setContentsMargins(0, 0, 0, 0);
+    auto *weatherSizeSlider = new QSlider(Qt::Horizontal, weatherSizeRow);
+    weatherSizeSlider->setRange(2, 32);
+    weatherSizeSlider->setValue(m_weatherParticleSize);
+    auto *weatherSize = new QSpinBox(weatherSizeRow);
+    weatherSize->setRange(2, 32);
+    weatherSize->setSuffix(tr(" px"));
+    weatherSize->setValue(m_weatherParticleSize);
+    connect(weatherSizeSlider, &QSlider::valueChanged, weatherSize, &QSpinBox::setValue);
+    connect(weatherSize, QOverload<int>::of(&QSpinBox::valueChanged), weatherSizeSlider, &QSlider::setValue);
+    weatherSizeRow->setToolTip(tr("Snowflake diameter (2-32 px). Rain keeps its fast streaks. Atlas snowflakes scale to this size."));
+    weatherSizeLayout->addWidget(weatherSizeSlider, 1);
+    weatherSizeLayout->addWidget(weatherSize);
+    form->addRow(tr("Snow particle size"), weatherSizeRow);
+    // Use the Game Resources atlas registry and the exact same atlas-cell grid
+    // picker already used by the Adventure dialogue and inventory editors.
+    auto *weatherAtlas = new QComboBox(&dialog);
+    weatherAtlas->addItem(tr("None (filled circles)"), QString());
+    for (const auto &resource : m_resources) {
+        if ((resource.kind == QStringLiteral("tileatlas") || resource.kind == QStringLiteral("sprite"))
+            && !resource.path.isEmpty() && resource.path.endsWith(QStringLiteral(".ppb"), Qt::CaseInsensitive))
+            weatherAtlas->addItem(resource.name, resource.id);
+    }
+    if (!m_weatherParticleAtlasId.isEmpty() && weatherAtlas->findData(m_weatherParticleAtlasId) < 0)
+        weatherAtlas->addItem(tr("Missing resource (choose another)"), m_weatherParticleAtlasId);
+    weatherAtlas->setCurrentIndex(qMax(0, weatherAtlas->findData(m_weatherParticleAtlasId)));
+    weatherAtlas->setToolTip(tr("Choose an atlas registered in Game Resources. Only the chosen cell is embedded "
+        "into the generated world controller, not the full atlas."));
+    form->addRow(tr("Snow atlas resource"), weatherAtlas);
+    auto *weatherTileRow = new QWidget(&dialog);
+    auto *weatherTileLayout = new QHBoxLayout(weatherTileRow);
+    weatherTileLayout->setContentsMargins(0, 0, 0, 0);
+    auto *weatherCellSize = new QComboBox(weatherTileRow);
+    for (int size : {8, 16, 32}) weatherCellSize->addItem(tr("%1 × %1 px").arg(size), size);
+    weatherCellSize->setCurrentIndex(qMax(0, weatherCellSize->findData(m_weatherParticleTileSize)));
+    auto *weatherPickTile = new QPushButton(weatherTileRow);
+    int chosenWeatherTile = m_weatherParticleTile;
+    auto refreshWeatherTile = [=, &chosenWeatherTile]() {
+        const bool hasAtlas = !weatherAtlas->currentData().toString().isEmpty();
+        weatherPickTile->setEnabled(hasAtlas);
+        weatherCellSize->setEnabled(hasAtlas);
+        weatherPickTile->setText(hasAtlas ? tr("Pick tile… (%1)").arg(qMax(1, chosenWeatherTile))
+                                          : tr("Filled circles"));
+        weatherPickTile->setIcon(QIcon());
+        if (!hasAtlas) return;
+        for (const auto &resource : m_resources) {
+            if (resource.id != weatherAtlas->currentData().toString()) continue;
+            SidboxPpb::Picture image;
+            if (!SidboxPpb::read(resolvedPath(resource.path), &image)) break;
+            const int tile = weatherCellSize->currentData().toInt();
+            if (tile <= 0 || image.indexed.width() % tile || image.indexed.height() % tile) break;
+            const int cols = image.indexed.width() / tile;
+            const int index = qMax(1, chosenWeatherTile) - 1;
+            if (cols && index < cols * (image.indexed.height() / tile)) {
+                QImage cell = image.indexed.copy((index % cols) * tile, (index / cols) * tile, tile, tile);
+                const QVector<QRgb> colours = activePalette(QStringLiteral("foreground"));
+                if (colours.size() == 256) cell.setColorTable(colourPreviewBank(colours, true, true));
+                weatherPickTile->setIcon(QIcon(QPixmap::fromImage(cell.scaled(32, 32,
+                    Qt::IgnoreAspectRatio, Qt::FastTransformation))));
+                weatherPickTile->setIconSize(QSize(32, 32));
+            }
+            break;
+        }
+    };
+    weatherTileLayout->addWidget(weatherCellSize);
+    weatherTileLayout->addWidget(weatherPickTile, 1);
+    form->addRow(tr("Snow graphic tile"), weatherTileRow);
+    connect(weatherAtlas, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+        [=, &chosenWeatherTile](int) { chosenWeatherTile = 1; refreshWeatherTile(); });
+    connect(weatherCellSize, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog,
+        [=, &chosenWeatherTile](int) { chosenWeatherTile = 1; refreshWeatherTile(); });
+    // QDialog is non-copyable, and the atlas picker requires a mutable QWidget*.
+    // Explicitly retain the existing dialog by reference instead of letting
+    // default-by-value capture attempt to copy it (Qt6 compile failure).
+    connect(weatherPickTile, &QPushButton::clicked, &dialog,
+        [this, &dialog, &chosenWeatherTile, weatherAtlas, weatherCellSize, refreshWeatherTile]() {
+        for (const auto &resource : m_resources) {
+            if (resource.id != weatherAtlas->currentData().toString()) continue;
+            SidboxPpb::Picture picture; QString reason;
+            if (!SidboxPpb::read(resolvedPath(resource.path), &picture, &reason)) {
+                QMessageBox::warning(&dialog, tr("Snow atlas"), tr("Cannot read atlas: %1").arg(reason));
+                return;
+            }
+            const int tile = weatherCellSize->currentData().toInt();
+            if (picture.indexed.width() % tile || picture.indexed.height() % tile) {
+                QMessageBox::warning(&dialog, tr("Snow atlas"),
+                    tr("The atlas dimensions must be divisible by %1 px.").arg(tile));
+                return;
+            }
+            QImage sheet = picture.indexed;
+            const QVector<QRgb> colours = activePalette(QStringLiteral("foreground"));
+            if (colours.size() == 256) sheet.setColorTable(colourPreviewBank(colours, true, true));
+            const int selected = chooseGameAtlasCell(&dialog, sheet, tile, qMax(0, chosenWeatherTile - 1));
+            if (selected >= 0) { chosenWeatherTile = selected + 1; refreshWeatherTile(); }
+            return;
+        }
+    });
+    refreshWeatherTile();
     auto *weatherColour = new QSpinBox(&dialog);
     weatherColour->setRange(1, 254);
     weatherColour->setValue(m_weatherPaletteIndex);
@@ -2118,6 +2225,10 @@ void SidboxGameDesigner::editPlayerStart()
         for (QWidget *w : {static_cast<QWidget *>(weatherDensity), static_cast<QWidget *>(weatherWind),
                            static_cast<QWidget *>(weatherColour), static_cast<QWidget *>(weatherPickColour)})
             w->setEnabled(mode != 0);
+        weatherSizeRow->setEnabled(mode == 2);
+        weatherAtlas->setEnabled(mode == 2);
+        weatherTileRow->setEnabled(mode == 2);
+        refreshWeatherTile();
         weatherInterval->parentWidget()->setEnabled(mode == 3);
         weatherOverlay->setEnabled(mode == 3);
         weatherStrength->setEnabled(mode == 3 && weatherOverlay->isChecked());
@@ -2526,6 +2637,10 @@ void SidboxGameDesigner::editPlayerStart()
     m_weatherMode = weatherMode->currentData().toInt();
     m_weatherDensity = weatherDensity->value();
     m_weatherWind = weatherWind->value();
+    m_weatherParticleSize = weatherSize->value();
+    m_weatherParticleAtlasId = weatherAtlas->currentData().toString();
+    m_weatherParticleTileSize = weatherCellSize->currentData().toInt();
+    m_weatherParticleTile = m_weatherParticleAtlasId.isEmpty() ? 0 : qMax(1, chosenWeatherTile);
     m_weatherPaletteIndex = weatherColour->value();
     m_weatherLightningInterval = weatherInterval->value();
     m_weatherLightningStrength = weatherStrength->value();
@@ -5376,8 +5491,8 @@ void SidboxGameDesigner::updateParticlePreview()
     }
 }
 
-// Lightweight screen-space weather preview. The generated C renderer uses
-// the same deterministic spawn scatter and travel speeds; this is editor-only.
+// Lightweight camera-relative weather preview. The generated C renderer uses
+// the same world-chunk scatter and travel speeds; this is editor-only.
 void SidboxGameDesigner::updateWeatherPreview()
 {
     if (!m_scene || !m_cameraX || !m_cameraY) return;
@@ -5385,6 +5500,11 @@ void SidboxGameDesigner::updateWeatherPreview()
         m_weatherPreviewDrops = m_scene->addPath(QPainterPath(), QPen(QColor(180, 225, 255), 1.2));
         m_weatherPreviewDrops->setZValue(10505);
         m_weatherPreviewDrops->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    if (!m_weatherPreviewSnowTiles) {
+        m_weatherPreviewSnowTiles = m_scene->addPixmap(QPixmap());
+        m_weatherPreviewSnowTiles->setZValue(10505);
+        m_weatherPreviewSnowTiles->setAcceptedMouseButtons(Qt::NoButton);
     }
     if (!m_weatherPreviewFlash) {
         m_weatherPreviewFlash = m_scene->addRect(QRectF(0, 0, 480, 320), Qt::NoPen,
@@ -5410,6 +5530,7 @@ void SidboxGameDesigner::updateWeatherPreview()
     const bool enabled = m_showWeatherPreview && m_showWeatherPreview->isChecked();
     const bool show = enabled && m_weatherMode > 0;
     m_weatherPreviewDrops->setVisible(show);
+    m_weatherPreviewSnowTiles->setVisible(false); // The atlas layer is enabled only after a valid tile resolves.
     m_weatherPreviewFlash->setVisible(show && m_weatherMode == 3 && m_weatherLightningOverlay);
     m_weatherPreviewPaletteFlash->setVisible(show && m_weatherMode == 3 && m_weatherPaletteFlashStrength > 0);
     m_weatherPreviewDayNightTint->setVisible(enabled && m_dayNightMode != 0 && m_dayNightStrength > 0);
@@ -5442,6 +5563,72 @@ void SidboxGameDesigner::updateWeatherPreview()
     if (!show) return;
     QPainterPath drops;
     const int rain = m_weatherMode == 1 || m_weatherMode == 3;
+    // Snow draws from the same Game Resources atlas cell as the generated
+    // controller. Cache the decoded PPB and its scaled image: the 50 Hz
+    // preview must never read/decode a PPB on every animation frame.
+    bool atlasSnow = false;
+    if (!rain && m_weatherMode == 2 && !m_weatherParticleAtlasId.isEmpty() &&
+        m_weatherParticleTile > 0 &&
+        (m_weatherParticleTileSize == 8 || m_weatherParticleTileSize == 16 ||
+         m_weatherParticleTileSize == 32)) {
+        for (const Resource &resource : m_resources) {
+            if (resource.id != m_weatherParticleAtlasId ||
+                (resource.kind != QStringLiteral("tileatlas") && resource.kind != QStringLiteral("sprite")) ||
+                !resource.path.endsWith(QStringLiteral(".ppb"), Qt::CaseInsensitive)) continue;
+            const QString filename = resolvedPath(resource.path);
+            const QFileInfo file(filename);
+            const QVector<QRgb> foreground = activePalette(QStringLiteral("foreground"));
+            // The palette can change while a PPB stays unchanged. Include its
+            // actual colours in the cache key so the preview updates on edits.
+            quint32 paletteStamp = 2166136261u;
+            for (QRgb colour : foreground)
+                paletteStamp = (paletteStamp ^ quint32(colour)) * 16777619u;
+            const QString cacheKey = filename + QLatin1Char('|') +
+                QString::number(file.lastModified().toMSecsSinceEpoch()) + QLatin1Char('|') +
+                QString::number(file.size()) + QLatin1Char('|') +
+                QString::number(m_weatherParticleTile) + QLatin1Char('|') +
+                QString::number(m_weatherParticleTileSize) + QLatin1Char('|') +
+                QString::number(m_weatherParticleSize) + QLatin1Char('|') +
+                QString::number(paletteStamp);
+            if (m_weatherPreviewSnowGlyphKey != cacheKey) {
+                m_weatherPreviewSnowGlyphKey = cacheKey;
+                m_weatherPreviewSnowGlyph = QImage();
+                SidboxPpb::Picture picture;
+                if (file.isFile() && SidboxPpb::read(filename, &picture)) {
+                    const QImage &sheet = picture.indexed;
+                    const int cell = m_weatherParticleTileSize;
+                    if (sheet.width() % cell == 0 && sheet.height() % cell == 0) {
+                        const int columns = sheet.width() / cell;
+                        const int rows = sheet.height() / cell;
+                        const int index = m_weatherParticleTile - 1;
+                        if (columns > 0 && index >= 0 && index < columns * rows) {
+                            QImage glyph = sheet.copy((index % columns) * cell,
+                                (index / columns) * cell, cell, cell);
+                            const QVector<QRgb> colours = foreground.size() == 256
+                                ? foreground : glyph.colorTable();
+                            if (colours.size() == 256)
+                                glyph.setColorTable(colourPreviewBank(colours, true, true));
+                            m_weatherPreviewSnowGlyph = glyph.scaled(m_weatherParticleSize,
+                                m_weatherParticleSize, Qt::IgnoreAspectRatio,
+                                Qt::FastTransformation).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                        }
+                    }
+                }
+            }
+            atlasSnow = !m_weatherPreviewSnowGlyph.isNull();
+            break;
+        }
+    }
+    // One scene pixmap rather than hundreds of movable scene items. Compose
+    // at screen resolution, while keeping flake positions camera-relative.
+    QImage snowOverlay;
+    QPainter snowPainter;
+    if (atlasSnow) {
+        snowOverlay = QImage(width, height, QImage::Format_ARGB32_Premultiplied);
+        snowOverlay.fill(Qt::transparent);
+        snowPainter.begin(&snowOverlay);
+        snowPainter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    }
     // Keep the world preview's scatter identical to the SIDBOX rain renderer.
     const auto scatterHash = [](quint32 v) -> quint32 {
         v ^= v >> 16;
@@ -5453,52 +5640,98 @@ void SidboxGameDesigner::updateWeatherPreview()
     const quint32 scatterSeed = scatterHash(0x7beab187u ^
         (quint32(m_playerStartX) * 0x9e3779b9u) ^
         (quint32(m_playerStartY) * 0x85ebca6bu));
-    for (int i = 0; i < m_weatherDensity; ++i) {
-        const quint32 seed = scatterHash(scatterSeed ^
-            (quint32(i + 1) * 0x9e3779b9u));
-        const int layer = int((seed >> 23) % 3u);
-        const int speed = rain
-            ? (layer == 0 ? 4 : layer == 1 ? 7 : 11) +
-                int((seed >> 16) % (layer == 0 ? 3u : layer == 1 ? 4u : 5u))
-            : 1 + int((seed >> 16) % 3u);
-        const int len = rain
-            ? (layer == 0 ? 3 : layer == 1 ? 5 : 7) +
-                int((seed >> 12) % (layer == 2 ? 4u : 3u)) : 1;
-        const quint64 travel = quint64(seed % quint32(height)) + quint64(ticks) * speed;
-        const int y = int(travel % quint64(height));
-        const quint32 wrap = quint32(travel / quint64(height));
-        int x = int(scatterHash(seed ^ (wrap * 0x85ebca6bu)) % quint32(width));
-        x = (x + int(ticks % width) * m_weatherWind) % width;
-        if (x < 0) x += width;
-        if (rain) {
-            drops.moveTo(cameraX + x, cameraY + y);
-            drops.lineTo(cameraX + x, cameraY + y + qMin(len, height - y));
-        } else {
-            drops.addEllipse(cameraX + x, cameraY + y, qMin(2, width - x), 1);
+    // The preview uses the same four world-anchored chunks as the game.
+    // Camera movement now shifts precipitation with the terrain instead of
+    // leaving a static LCD overlay while the player moves through it.
+    const qint64 windOffset = qint64(m_weatherWind) * ticks;
+    const qint64 shiftedX = qint64(cameraX) - windOffset;
+    const auto floorChunk = [](qint64 position, qint64 size) -> qint64 {
+        return position >= 0 ? position / size : -((-(position + 1)) / size) - 1;
+    };
+    const qint64 firstCol = floorChunk(shiftedX, width);
+    for (int col = 0; col < 2; ++col) {
+        const qint64 cellX = firstCol + col;
+        for (int i = 0; i < m_weatherDensity; ++i) {
+            const quint32 motion = scatterHash(scatterSeed ^
+                (quint32(i + 1) * 0x9e3779b9u) ^
+                (quint32(cellX) * 0x85ebca6bu));
+            const int layer = int((motion >> 23) % 3u);
+            const int speed = rain
+                ? (layer == 0 ? 4 : layer == 1 ? 7 : 11) +
+                    int((motion >> 16) % (layer == 0 ? 3u : layer == 1 ? 4u : 5u))
+                : 1 + int((motion >> 16) % 3u);
+            const int len = rain
+                ? (layer == 0 ? 3 : layer == 1 ? 5 : 7) +
+                    int((motion >> 12) % (layer == 2 ? 4u : 3u)) : 1;
+            const qint64 travel = ticks * speed;
+            const qint64 firstRow = floorChunk(cameraY - travel, height);
+            for (int row = 0; row < 2; ++row) {
+                const qint64 cellY = firstRow + row;
+                const quint32 seed = scatterHash(motion ^
+                    (quint32(cellY) * 0xc2b2ae35u));
+                const qint64 drawX = cellX * width +
+                    (scatterHash(seed ^ 0x6d2b79f5u) % quint32(width)) + windOffset - cameraX;
+                const qint64 drawY = cellY * height + (seed % quint32(height)) + travel - cameraY;
+                if (drawX < -m_weatherParticleSize || drawX >= width ||
+                    drawY < -m_weatherParticleSize - len || drawY >= height) continue;
+                const qreal px = cameraX + drawX, py = cameraY + drawY;
+                if (rain) {
+                    drops.moveTo(px,py);
+                    drops.lineTo(px,py + len);
+                } else if (atlasSnow) {
+                    snowPainter.drawImage(QPoint(int(drawX), int(drawY)), m_weatherPreviewSnowGlyph);
+                } else {
+                    drops.addEllipse(px,py,m_weatherParticleSize,m_weatherParticleSize);
+                }
+            }
         }
     }
+    if (atlasSnow) {
+        snowPainter.end();
+        m_weatherPreviewSnowTiles->setPixmap(QPixmap::fromImage(snowOverlay));
+        m_weatherPreviewSnowTiles->setPos(cameraX, cameraY);
+        m_weatherPreviewSnowTiles->setVisible(true);
+    }
+    m_weatherPreviewDrops->setVisible(!atlasSnow);
     m_weatherPreviewDrops->setPath(drops);
     const QVector<QRgb> palette = activePalette(QStringLiteral("foreground"));
     const QColor colour = palette.size() == 256
         ? QColor::fromRgb(palette.at(m_weatherPaletteIndex)) : QColor(192, 230, 255);
-    m_weatherPreviewDrops->setPen(QPen(colour, rain ? 1.1 : 1.4));
+    m_weatherPreviewDrops->setPen(QPen(colour, rain ? 1.1 : 0.9));
+    m_weatherPreviewDrops->setBrush(rain ? QBrush(Qt::NoBrush) : QBrush(colour));
     m_weatherPreviewFlash->setRect(cameraX, cameraY, width, height);
     m_weatherPreviewFlash->setBrush(QBrush(colour));
-    // Match SIDBOX's variable-length rounded lightning pulse. Both the
-    // screen overlay and palette flash use identical timing and peak.
-    const int interval = qMax(175, m_weatherLightningInterval);
+    // Weather preview approximates the *pattern* of runtime storms without
+    // consuming runtime PRNG state. Main strikes retain the selected average;
+    // some include one or two weaker after-flashes separated by dark gaps.
+    const int interval = qMax(100, m_weatherLightningInterval);
     const int duration = 6 + (m_weatherLightningCurve * 74) / 100;
-    const int phase = int(ticks % (interval + duration));
-    const int position = phase - interval;
-    int envelope = 0;
-    if (position >= 0 && position < duration - 1) {
+    auto envelopeAt = [duration](qint64 position) -> int {
+        if (position < 0 || position >= duration - 1) return 0;
         const int rise = qMax(2, ((duration - 1) * 35 + 50) / 100);
         const int progress = position <= rise
-            ? position * 100 / rise
-            : (duration - 1 - position) * 100 / (duration - 1 - rise);
-        envelope = progress * progress * (300 - 2 * progress) / 10000;
+            ? int(position * 100 / rise)
+            : int((duration - 1 - position) * 100 / (duration - 1 - rise));
+        return progress * progress * (300 - 2 * progress) / 10000;
+    };
+    int pulse = 0;
+    const qint64 bucket = ticks / interval;
+    for (qint64 slot = qMax(qint64(0), bucket - 2); slot <= bucket; ++slot) {
+        const quint32 rand = scatterHash(quint32(slot) ^ scatterSeed ^ 0x90abe17du);
+        const qint64 strike = slot * interval + interval / 4 +
+            (rand % quint32(qMax(1, interval / 2)));
+        const int peak = 65 + int((rand >> 13) % 36u);
+        pulse = qMax(pulse, envelopeAt(ticks - strike) * peak / 100);
+        const quint32 chance = scatterHash(rand ^ 0x63b4d2c7u) % 100u;
+        const int extras = chance < 10u ? 2 : chance < 44u ? 1 : 0;
+        for (int extra = 0; extra < extras; ++extra) {
+            const quint32 r = scatterHash(rand ^ (quint32(extra + 1) * 0x9e3779b9u));
+            const qint64 secondary = strike + (extra + 1) *
+                (duration + 12 + int((r >> 16) % 29u));
+            pulse = qMax(pulse, envelopeAt(ticks - secondary) *
+                (25 + int(r % 66u)) / 100);
+        }
     }
-    const int pulse = envelope * 85 / 100;
     m_weatherPreviewFlash->setOpacity(pulse * m_weatherLightningStrength / 10000.0);
     m_weatherPreviewFlash->setVisible(m_weatherMode == 3 && m_weatherLightningOverlay && pulse != 0);
     m_weatherPreviewPaletteFlash->setRect(cameraX, cameraY, width, height);
@@ -5526,6 +5759,9 @@ void SidboxGameDesigner::rebuildScene()
     m_particleResizeIndex = -1;
     m_particlePreviewEmitters.clear(); // Scene owns and deletes every preview sprite.
     m_weatherPreviewDrops = nullptr;
+    m_weatherPreviewSnowTiles = nullptr;
+    m_weatherPreviewSnowGlyph = QImage();
+    m_weatherPreviewSnowGlyphKey.clear();
     m_weatherPreviewFlash = nullptr;
     m_weatherPreviewPaletteFlash = nullptr;
     m_weatherPreviewDayNightTint = nullptr;
@@ -6090,8 +6326,9 @@ void SidboxGameDesigner::pasteCopiedSprite()
             if (r.spriteStamp.active() && !QFileInfo(sourceFile(r.spriteStamp.sourcePath)).isFile())
                 missingFiles.append(sourceFile(r.spriteStamp.sourcePath));
             const auto checkId = [&](const QString &id) {
-                if (id.isEmpty() || id == QStringLiteral("@player_spotlight") ||
-                    id.startsWith(QStringLiteral("@world/"))) return;
+                if (id.isEmpty() || id.startsWith(QStringLiteral("@player_")) ||
+                    id.startsWith(QStringLiteral("@world/")) ||
+                    id.startsWith(QStringLiteral("@npc:"))) return;
                 const Resource *dep = sourceById(id);
                 if (dep) checkDependencies(*dep);
                 else missingFiles.append(tr("Missing linked resource ID: %1").arg(id));
@@ -6101,6 +6338,11 @@ void SidboxGameDesigner::pasteCopiedSprite()
             checkId(r.targetObjectId);
             for (const Resource::LinkedAction &link : r.triggerExtraActions)
                 checkId(link.objectId);
+            for (const Resource::LinkedAction &link : r.enemyDefeatExtraActions)
+                checkId(link.objectId);
+            for(auto it=r.eventActions.constBegin();it!=r.eventActions.constEnd();++it)
+                for(const QJsonValue &action:it.value().toArray())
+                    checkId(action.toObject().value(QStringLiteral("objectId")).toString());
             checkId(r.breakDropCollectableId);
             if (!r.objectSplineId.isEmpty()) {
                 bool foundSpline = false;
@@ -6359,9 +6601,48 @@ void SidboxGameDesigner::pasteCopiedSprite()
                 for (Resource::LinkedAction &link : r.triggerExtraActions)
                     if (!link.objectId.startsWith(QStringLiteral("@world/")))
                         link.objectId = importById(link.objectId);
+                for (Resource::LinkedAction &link : r.enemyDefeatExtraActions)
+                    if (!link.objectId.startsWith(QStringLiteral("@world/")) &&
+                        !link.objectId.startsWith(QStringLiteral("@player_")) &&
+                        !link.objectId.startsWith(QStringLiteral("@npc:")))
+                        link.objectId = importById(link.objectId);
+                QJsonObject importedEvents;
+                for(auto it=r.eventActions.constBegin();it!=r.eventActions.constEnd();++it) {
+                    QJsonArray actions;
+                    for(const QJsonValue &entry:it.value().toArray()) {
+                        QJsonObject action=entry.toObject();
+                        const QString id=action.value(QStringLiteral("objectId")).toString();
+                        if(!id.isEmpty() && !id.startsWith(QLatin1Char('@')))
+                            action.insert(QStringLiteral("objectId"),importById(id));
+                        actions.append(action);
+                    }
+                    importedEvents.insert(it.key(),actions);
+                }
+                r.eventActions=importedEvents;
                 r.breakDropCollectableId = importById(r.breakDropCollectableId);
+                for (QString &lootId : r.enemyLootIds) lootId = importById(lootId);
             };
             remapFields(dep);
+            if(!dep.logicNodes.isEmpty()) {
+                for(int k=0;k<dep.logicNodes.size();++k) {
+                    QJsonObject logic=dep.logicNodes.at(k).toObject();
+                    QJsonArray inputs=logic.value(QStringLiteral("inputs")).toArray();
+                    for(int j=0;j<inputs.size();++j) {
+                        QJsonObject input=inputs.at(j).toObject();
+                        if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                           input.value(QStringLiteral("id")).toString()==id) {
+                            input.insert(QStringLiteral("id"),dep.id);
+                            inputs.replace(j,input);
+                        }
+                        if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
+                           input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+id) {
+                            input.insert(QStringLiteral("id"),QStringLiteral("@event:arrival:")+dep.id);
+                            inputs.replace(j,input);
+                        }
+                    }
+                    logic.insert(QStringLiteral("inputs"),inputs);dep.logicNodes.replace(k,logic);
+                }
+            }
             m_resources.append(dep);
             return dep.id;
         };
@@ -6375,11 +6656,52 @@ void SidboxGameDesigner::pasteCopiedSprite()
             for (Resource::LinkedAction &link : r.triggerExtraActions)
                 if (!link.objectId.startsWith(QStringLiteral("@world/")))
                         link.objectId = importById(link.objectId);
+            for (Resource::LinkedAction &link : r.enemyDefeatExtraActions)
+                if (!link.objectId.startsWith(QStringLiteral("@world/")) &&
+                    !link.objectId.startsWith(QStringLiteral("@player_")) &&
+                    !link.objectId.startsWith(QStringLiteral("@npc:")))
+                    link.objectId = importById(link.objectId);
+            QJsonObject importedEvents;
+            for(auto it=r.eventActions.constBegin();it!=r.eventActions.constEnd();++it) {
+                QJsonArray actions;
+                for(const QJsonValue &entry:it.value().toArray()) {
+                    QJsonObject action=entry.toObject();
+                    const QString id=action.value(QStringLiteral("objectId")).toString();
+                    if(!id.isEmpty() && !id.startsWith(QLatin1Char('@')))
+                        action.insert(QStringLiteral("objectId"),importById(id));
+                    actions.append(action);
+                }
+                importedEvents.insert(it.key(),actions);
+            }
+            r.eventActions=importedEvents;
             r.breakDropCollectableId = importById(r.breakDropCollectableId);
+            for (QString &lootId : r.enemyLootIds) lootId = importById(lootId);
         };
         attachAnimation(copy, s_copiedWorldObject.id);
         rebase(copy);
         remapRootFields(copy);
+        if(!copy.logicNodes.isEmpty()) {
+            for(int k=0;k<copy.logicNodes.size();++k) {
+                QJsonObject logic=copy.logicNodes.at(k).toObject();
+                QJsonArray inputs=logic.value(QStringLiteral("inputs")).toArray();
+                for(int j=0;j<inputs.size();++j) {
+                    QJsonObject input=inputs.at(j).toObject();
+                    if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                       input.value(QStringLiteral("id")).toString()==s_copiedWorldObject.id) {
+                        input.insert(QStringLiteral("id"),copy.id);
+                        inputs.replace(j,input);
+                    }
+                    if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
+                       input.value(QStringLiteral("id")).toString()==
+                           QStringLiteral("@event:arrival:")+s_copiedWorldObject.id) {
+                        input.insert(QStringLiteral("id"),QStringLiteral("@event:arrival:")+copy.id);
+                        inputs.replace(j,input);
+                    }
+                }
+                logic.insert(QStringLiteral("inputs"),inputs);
+                copy.logicNodes.replace(k,logic);
+            }
+        }
 
         // Spline definitions are local to a world. Import a referenced one
         // once; keep existing identical paths rather than multiplying copies.
@@ -7093,6 +7415,11 @@ void SidboxGameDesigner::configureGameObject(int index)
         QListWidget#GGObjectTypes::item:hover { border-color:%6; }
         QLabel#GGPreviewImage { background:%1; border:1px solid %4; }
         QLabel#GGHelper { color:%9; }
+        /* A warning is only attached to controls whose dependency is broken;
+           disabled but intentionally remembered settings keep their theme. */
+        QCheckBox[auditConflict="true"] { color:#D49A42; font-weight:bold; }
+        QComboBox[auditConflict="true"], QSpinBox[auditConflict="true"],
+        QListWidget[auditConflict="true"] { border:2px solid #D49A42; }
         /* Generic controls and checkboxes inherit the central IDE theme. */
     )GGSTYLE")
         .arg(colour(m_theme.windowBackground)).arg(colour(m_theme.text))
@@ -7169,6 +7496,18 @@ void SidboxGameDesigner::configureGameObject(int index)
     objectHeading->addWidget(nextObject);
     objectHeading->addStretch(1);
     layout.addLayout(objectHeading);
+    // Stage 5.166.106: live, opt-in dependency inspection. The icon belongs
+    // to the *current draft*, not to the previously saved resource. No fix is
+    // made without the user's explicit choice.
+    auto *dependencyWarning = new QToolButton(&dialog);
+    dependencyWarning->setObjectName(QStringLiteral("GGDependencyWarning"));
+    dependencyWarning->setIcon(dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    dependencyWarning->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    dependencyWarning->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    dependencyWarning->setMinimumHeight(31);
+    dependencyWarning->setToolTip(tr("Click to see what is wrong and choose whether to fix it."));
+    dependencyWarning->hide();
+    layout.addWidget(dependencyWarning);
 
     // The same animated WORLD scene is shown here at a useful zoom. This
     // matters when the Properties dialog is maximised and hides the editor.
@@ -7790,6 +8129,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     collectCard.form->addRow(pickupShowInventory);
     collectCard.form->addRow(pickupShowHud);
     collectCard.form->addRow(pickupPersistent);
+    auto *pickupAllowEnemyLoot = new QCheckBox(tr("Allow as repeatable enemy loot (custom kind)"), &dialog);
+    pickupAllowEnemyLoot->setChecked(old.pickupAllowEnemyLoot);
+    pickupAllowEnemyLoot->setToolTip(tr("Explicitly allow this custom Collectable in enemy random loot pools. "
+        "Keys, persistent items and unique quest rewards are never eligible, even with this enabled. "
+        "Coins, health and gems are already eligible without opting in."));
+    collectCard.form->addRow(pickupAllowEnemyLoot);
     auto *pickupStat = new GameComboBox(&dialog);
     pickupStat->addItem(tr("None (callback only)"), QStringLiteral("none"));
     pickupStat->addItem(tr("Player Health"), QStringLiteral("health"));
@@ -7952,6 +8297,10 @@ void SidboxGameDesigner::configureGameObject(int index)
             candidate.id == old.id) continue;
         targetObject->addItem(tr("%1 [%2]").arg(candidate.name, candidate.objectType), candidate.id);
     }
+    if (!old.targetObjectId.isEmpty() && targetObject->findData(old.targetObjectId) < 0) {
+        targetObject->addItem(tr("[Missing: linked object] %1").arg(old.targetObjectId), old.targetObjectId);
+        targetObject->setItemIcon(targetObject->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    }
     targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
     targetObject->setToolTip(tr("Choose a placed game-object instance. Its permanent ID is saved, "
                                     "so renaming and reordering don't break the link."));
@@ -7986,8 +8335,8 @@ void SidboxGameDesigner::configureGameObject(int index)
     connect(targetAction,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
             [refreshTargetVisibilityHint](int){refreshTargetVisibilityHint();});
     refreshTargetVisibilityHint();
-    // A Trigger owns an ordered list; keys and enemies retain the familiar
-    // single linked-object controls. Legacy targetObjectId/action = first row.
+    // Triggers and Stompable Enemies own ordered action lists. Keys retain
+    // their single target. Legacy targetObjectId/action remains the first row.
     auto *linkedActionRows = new QTableWidget(0, 3, &dialog);
     linkedActionRows->setHorizontalHeaderLabels({tr("Game Object / NPC"), tr("Action"), tr("This row")});
     linkedActionRows->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
@@ -8230,17 +8579,71 @@ void SidboxGameDesigner::configureGameObject(int index)
         linkedActionRows->setRowCount(0);
         if (!old.targetObjectId.isEmpty() && old.targetAction!=QStringLiteral("none"))
             insertLink(linkedActionRows->rowCount(),{old.targetObjectId,old.targetAction});
-        for (const Resource::LinkedAction &link : old.triggerExtraActions)
+        const auto &extra=old.objectType==QStringLiteral("enemy")
+            ?old.enemyDefeatExtraActions:old.triggerExtraActions;
+        for (const Resource::LinkedAction &link : extra)
             insertLink(linkedActionRows->rowCount(),link);
     };
     reloadLinks();
     connect(addLinkedAction,&QPushButton::clicked,&dialog,[=]() {
         if (linkedActionRows->rowCount()>=64) {
-            QMessageBox::information(linkedActionRows,tr("Linked actions"),tr("Maximum 64 actions per Trigger."));
+            QMessageBox::information(linkedActionRows,tr("Linked actions"),tr("Maximum 64 actions per Trigger or Stompable Enemy."));
             return;
         }
         insertLink(linkedActionRows->rowCount(),{QString(),QStringLiteral("enable")});
     });
+    // Named event links are owned by the same .sbgm object as Visual Nodes.
+    // Show them in Properties without rewriting them on an unrelated edit.
+    // All modifications to these wires are made in the Visual Nodes editor.
+    auto *namedEventLinks = new QTreeWidget(&dialog);
+    namedEventLinks->setHeaderLabels({tr("Event output"), tr("Target / Action")});
+    namedEventLinks->setRootIsDecorated(true);
+    namedEventLinks->setMinimumHeight(116);
+    namedEventLinks->setMaximumHeight(205);
+    namedEventLinks->header()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
+    namedEventLinks->header()->setSectionResizeMode(1,QHeaderView::Stretch);
+    linkedCard.form->addRow(tr("Visual Node event actions"),namedEventLinks);
+    auto *namedEventHelp=new QLabel(tr("These event actions are saved with this Game Object. "
+        "Edit their connections, order and commands in Visual Nodes; "
+        "ordinary Properties changes leave them intact."),&dialog);
+    namedEventHelp->setWordWrap(true);
+    linkedCard.form->addRow(QString(),namedEventHelp);
+    const auto propertyEventKinds=[](const QString &behaviour)->QStringList {
+        if(behaviour==QStringLiteral("breakable"))return {QStringLiteral("hit"),QStringLiteral("destroy")};
+        if(behaviour==QStringLiteral("collectable"))return {QStringLiteral("pickup")};
+        if(behaviour==QStringLiteral("hazard"))return {QStringLiteral("player_hit")};
+        if(behaviour==QStringLiteral("goto_world"))return {QStringLiteral("enter")};
+        if(behaviour==QStringLiteral("save_checkpoint"))return {QStringLiteral("save")};
+        if(behaviour==QStringLiteral("lift"))return {QStringLiteral("arrival")};
+        if(behaviour==QStringLiteral("enemy"))return {QStringLiteral("hit")};
+        return {};
+    };
+    const auto reloadNamedEventLinks=[&]() {
+        namedEventLinks->clear();
+        const QStringList kinds=propertyEventKinds(type->currentData().toString());
+        for(const QString &key:kinds) {
+            const QString name=key==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
+                key==QStringLiteral("destroy")?tr("ON DESTROY"):
+                key==QStringLiteral("pickup")?tr("ON PICKUP"):
+                key==QStringLiteral("enter")?tr("ON ENTER"):
+                key==QStringLiteral("save")?tr("ON SAVE"):
+                key==QStringLiteral("arrival")?tr("ON ARRIVAL"):tr("ON HIT");
+            const QJsonArray actions=old.eventActions.value(key).toArray();
+            auto *parent=new QTreeWidgetItem(namedEventLinks,{name,
+                tr("%1 linked action(s)").arg(actions.size())});
+            for(const QJsonValue &entry:actions) {
+                const QJsonObject action=entry.toObject();
+                const QString id=action.value(QStringLiteral("objectId")).toString();
+                QString label=id;
+                for(const Resource &r:m_resources)if(r.id==id){label=r.name;break;}
+                new QTreeWidgetItem(parent,{action.value(QStringLiteral("action")).toString().toUpper(),label});
+            }
+            parent->setExpanded(true);
+        }
+    };
+    reloadNamedEventLinks();
+    connect(type,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
+        [reloadNamedEventLinks](int){reloadNamedEventLinks();});
     form = generalCard.form; // State artwork belongs on the target (e.g. Door), not only on the Trigger.
     auto *activeStateFrame = spin(-1, 255, old.activeStateFrame);
     auto *inactiveStateFrame = spin(-1, 255, old.inactiveStateFrame);
@@ -8467,7 +8870,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             editor.operatorMode=new GameComboBox(group);
             editor.operatorMode->addItem(tr("Boolean (one object)"),QStringLiteral("boolean"));
             editor.operatorMode->addItem(tr("AND (2–16 objects enabled)"),QStringLiteral("and"));
-            editor.operatorMode->addItem(tr("OR (either of 2 objects enabled)"),QStringLiteral("or"));
+            editor.operatorMode->addItem(tr("OR (2–8 objects, any enabled)"),QStringLiteral("or"));
             editor.operatorMode->setCurrentIndex(qMax(0,editor.operatorMode->findData(candidate.toggleStateOperator)));
             form->addRow(tr("Logic operator"),editor.operatorMode);
             editor.inputs=new QTreeWidget(group);
@@ -8507,7 +8910,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             form->addRow(tr("Read enabled states of"),editor.inputs);
             auto *inputHint=new QLabel(incoming ?
                 tr("This object is the state source for this view. Select additional objects to make an AND/OR condition. Evaluation runs when the named Trigger fires.") :
-                tr("Choose the Game Objects to test. Boolean needs 1, AND needs 2–16, OR needs exactly 2."),group);
+                tr("Choose the Game Objects to test. Boolean needs 1, AND needs 2–16, OR needs 2–8."),group);
             inputHint->setWordWrap(true);
             form->addRow(inputHint);
             auto makeDialogue = [&](int id) -> QComboBox * {
@@ -8600,7 +9003,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
     };
     buildBooleanRows();
-    // Stage 5.166.60: independent DAG nodes are real Trigger-owned records.
+    // Stage 5.166.108: independent DAG nodes belong to Triggers or Stompable Enemies.
     // Both Visual Nodes and Game Object Properties edit the SAME .sbgm JSON.
     // Present one collapsed card for each node which belongs to this Trigger
     // or reads the currently edited Game Object. No parallel object callbacks.
@@ -8624,7 +9027,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     incomingBooleanCard.form->addRow(graphIncomingRows);
     for(const Resource &candidate:m_resources) {
         if(candidate.kind!=QStringLiteral("sprite") ||
-           candidate.objectType!=QStringLiteral("trigger") || candidate.logicNodes.isEmpty())continue;
+           candidate.logicNodes.isEmpty())continue;
         const bool own=candidate.id==old.id;
         for(const QJsonValue &entry:candidate.logicNodes) {
             const QJsonObject node=entry.toObject();
@@ -8643,12 +9046,15 @@ void SidboxGameDesigner::configureGameObject(int index)
                     if(action.toObject().value(QStringLiteral("objectId")).toString()==old.id)
                         targetedByBranch=true;
             if(!own && !readsCurrent && !targetedByBranch)continue;
-            hasIncomingGraph |= !own;
-            auto *wrapper=new QWidget(own?graphOwnRows:graphIncomingRows);
+            // Stompable-owned graphs belong under the enemy's visible incoming
+            // logic panel, not the Trigger-only card hidden for enemies.
+            const bool ownTrigger=own && candidate.objectType==QStringLiteral("trigger");
+            hasIncomingGraph |= !ownTrigger;
+            auto *wrapper=new QWidget(ownTrigger?graphOwnRows:graphIncomingRows);
             auto *vertical=new QVBoxLayout(wrapper);
             vertical->setContentsMargins(0,0,0,0);vertical->setSpacing(3);
             auto *toggle=new QToolButton(wrapper);
-            toggle->setText(tr("Logic %1 [%2] • Trigger %3")
+            toggle->setText(tr("Logic %1 [%2] • %3")
                 .arg(nodeId,node.value(QStringLiteral("op")).toString().toUpper(),candidate.name));
             toggle->setCheckable(true);toggle->setArrowType(Qt::RightArrow);
             toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -8661,7 +9067,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             });
             auto *form=new QFormLayout(section);
             form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-            auto *hint=new QLabel(tr("Runs after Trigger actions. RESULT can directly set Game Object enabled states "
+            auto *hint=new QLabel(tr("Runs when its Game Object inputs change during an action/event. RESULT can set Game Object enabled states "
                 "(TRUE = enabled, FALSE = disabled), or feed another logic node. "
                 "TRUE/FALSE may run dialogue and ordered actions."),section);
             hint->setWordWrap(true);form->addRow(hint);
@@ -8697,6 +9103,10 @@ void SidboxGameDesigner::configureGameObject(int index)
                     addInput(QStringLiteral("object"),object.id,
                         object.id==old.id?tr("This object: %1").arg(object.name):
                             tr("%1 [%2]").arg(object.name,object.objectType));
+            if(candidate.objectType==QStringLiteral("lift"))
+                addInput(QStringLiteral("event"),
+                    QStringLiteral("@event:arrival:")+candidate.id,
+                    tr("ON ARRIVAL pulse: %1").arg(candidate.name));
             for(const QJsonValue &other:candidate.logicNodes) {
                 const QJsonObject o=other.toObject();
                 const QString id=o.value(QStringLiteral("id")).toString();
@@ -8770,7 +9180,7 @@ void SidboxGameDesigner::configureGameObject(int index)
                 });
             }
             graphEditors.append(editor);
-            (own?graphOwnLayout:graphIncomingLayout)->addWidget(wrapper);
+            (ownTrigger?graphOwnLayout:graphIncomingLayout)->addWidget(wrapper);
         }
     }
 
@@ -9012,6 +9422,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         if (worldName != thisWorld && gotoWorld->findData(worldName) < 0)
             gotoWorld->addItem(world.completeBaseName(), worldName);
     }
+    if (!old.gotoWorldName.isEmpty() && gotoWorld->findData(old.gotoWorldName) < 0) {
+        gotoWorld->addItem(tr("[Missing: missing world] %1").arg(old.gotoWorldName), old.gotoWorldName);
+        gotoWorld->setItemIcon(gotoWorld->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    }
     gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
     form->addRow(tr("Destination world"), gotoWorld);
     auto *gotoStart = new GameComboBox(&dialog);
@@ -9136,6 +9550,10 @@ void SidboxGameDesigner::configureGameObject(int index)
             candidate.objectType != QStringLiteral("collectable")) continue;
         breakReward->addItem(candidate.name, candidate.id);
     }
+    if (!old.breakDropCollectableId.isEmpty() && breakReward->findData(old.breakDropCollectableId) < 0) {
+        breakReward->addItem(tr("[Missing: missing Collectable] %1").arg(old.breakDropCollectableId), old.breakDropCollectableId);
+        breakReward->setItemIcon(breakReward->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    }
     breakReward->setCurrentIndex(qMax(0, breakReward->findData(old.breakDropCollectableId)));
     breakReward->setToolTip(tr("On the final hit, activate this existing collectable "
                                 "at the block's position and drop it onto the tilemap. "
@@ -9204,6 +9622,10 @@ void SidboxGameDesigner::configureGameObject(int index)
             candidate.objectType != QStringLiteral("collectable")) continue;
         enemyReward->addItem(candidate.name, candidate.id);
     }
+    if (!old.breakDropCollectableId.isEmpty() && enemyReward->findData(old.breakDropCollectableId) < 0) {
+        enemyReward->addItem(tr("[Missing: missing Collectable] %1").arg(old.breakDropCollectableId), old.breakDropCollectableId);
+        enemyReward->setItemIcon(enemyReward->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    }
     enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
     enemyReward->setToolTip(tr("On defeat, spawn this hidden Collectable. Place it in the world and check Hidden until activated."));
     // Stage 4.41a: keep reward-launch controls prominent and full-width.
@@ -9211,6 +9633,112 @@ void SidboxGameDesigner::configureGameObject(int index)
     // Game Object Properties column, making the X/Y controls hard to find.
     form->addRow(new QLabel(tr("DEFEAT REWARD — spawned when enemy dies"), &dialog));
     form->addRow(tr("Item dropped when defeated"), enemyReward);
+    // Stage 5.166.105: REPEATABLE LOOT is independent of the above one-owner
+    // quest reward. Pool members are existing Collectable *templates* only;
+    // copies spawn into dedicated runtime slots rather than reusing a hidden
+    // placed instance. Max eight distinct candidate types per enemy.
+    auto *enemyLootHelp = new QLabel(tr("ORDINARY LOOT — repeatable coins / health / gems / opted-in custom items. "
+        "Select up to 8 types. Each drop picks randomly from the selected types; "
+        "the same type can appear more than once. Unique quest drops above stay exclusive."), &dialog);
+    enemyLootHelp->setWordWrap(true);
+    form->addRow(enemyLootHelp);
+    auto *enemyLootPool = new QListWidget(&dialog);
+    enemyLootPool->setSelectionMode(QAbstractItemView::MultiSelection);
+    enemyLootPool->setMinimumHeight(110);
+    enemyLootPool->setMaximumHeight(180);
+    enemyLootPool->setToolTip(tr("Ctrl-click or click to select multiple ordinary Collectables. "
+        "Never includes key items, persistent items or exclusive quest reward targets."));
+    // Use the exact same eligibility contract as gamedesigner_export.cpp.
+    // Unlike the old pool picker, show unavailable types WITH their reason so
+    // a player can understand what needs changing in the Collectable editor.
+    const auto lootIneligibility = [this](const Resource &candidate) -> QString {
+        if (candidate.kind != QStringLiteral("sprite") ||
+            candidate.objectType != QStringLiteral("collectable"))
+            return tr("Not a Collectable game object.");
+        if (candidate.pickupKind == 3)
+            return tr("Key/quest items cannot be repeatable enemy loot.");
+        if (candidate.pickupPersistent)
+            return tr("Persistent collectables cannot be repeatable enemy loot.");
+        for (const Resource &other : m_resources)
+            if ((other.objectType == QStringLiteral("enemy") ||
+                 other.objectType == QStringLiteral("breakable")) &&
+                other.breakDropCollectableId == candidate.id)
+                return tr("Exclusive quest reward already owned by '%1'.").arg(other.name);
+        if (!(candidate.pickupKind == 1 || candidate.pickupKind == 2 || candidate.pickupKind == 4 ||
+              candidate.pickupAllowEnemyLoot))
+            return tr("Custom pickup kind: tick 'Allow as repeatable enemy loot' "
+                      "in this Collectable's properties first.");
+        return QString();
+    };
+    const auto refillEnemyLoot = [this, &dialog, enemyLootPool, lootIneligibility](const QStringList &selected) {
+        const QSignalBlocker block(enemyLootPool);
+        enemyLootPool->clear();
+        // Show eligible loot A-Z first, then unavailable loot A-Z, while
+        // preserving selected/invalid references for the dependency audit.
+        struct LootEntry {
+            QString name;
+            QString id;
+            QString reason;
+            bool missing = false;
+        };
+        QList<LootEntry> entries;
+        QSet<QString> found;
+        for (const Resource &candidate : m_resources) {
+            if (candidate.kind != QStringLiteral("sprite") ||
+                candidate.objectType != QStringLiteral("collectable")) continue;
+            found.insert(candidate.id);
+            entries.append({candidate.name, candidate.id, lootIneligibility(candidate), false});
+        }
+        for (const QString &id : selected) {
+            if (found.contains(id)) continue;
+            entries.append({tr("Missing collectable: %1").arg(id), id,
+                            tr("This collectable no longer exists."), true});
+        }
+        QCollator byName;
+        byName.setCaseSensitivity(Qt::CaseInsensitive);
+        byName.setNumericMode(true);
+        std::stable_sort(entries.begin(), entries.end(), [&byName](const LootEntry &a, const LootEntry &b) {
+            if (a.reason.isEmpty() != b.reason.isEmpty())
+                return a.reason.isEmpty();
+            return byName.compare(a.name, b.name) < 0;
+        });
+        for (const LootEntry &candidate : entries) {
+            auto *entry = new QListWidgetItem(candidate.name, enemyLootPool);
+            entry->setData(Qt::UserRole, candidate.id);
+            entry->setData(Qt::UserRole + 1, candidate.reason);
+            if (candidate.missing) {
+                entry->setIcon(dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+                entry->setToolTip(tr("Remove this invalid pool reference before exporting."));
+            } else if (!candidate.reason.isEmpty()) {
+                entry->setText(tr("%1  [unavailable]").arg(candidate.name));
+                entry->setIcon(dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+                entry->setToolTip(candidate.reason);
+                if (!selected.contains(candidate.id))
+                    entry->setFlags(entry->flags() & ~Qt::ItemIsSelectable);
+            } else {
+                entry->setToolTip(tr("Eligible repeatable loot. Select for this enemy's pool."));
+            }
+            entry->setSelected(selected.contains(candidate.id));
+        }
+    };
+    refillEnemyLoot(old.enemyLootIds);
+    connect(enemyLootPool, &QListWidget::itemSelectionChanged, &dialog, [enemyLootPool]() {
+        const QList<QListWidgetItem *> selected = enemyLootPool->selectedItems();
+        if (selected.size() <= 8) return;
+        const QSignalBlocker guard(enemyLootPool);
+        for (int i = 8; i < selected.size(); ++i) selected[i]->setSelected(false);
+    });
+    form->addRow(tr("Random loot pool"), enemyLootPool);
+    auto *enemyLootMin = spin(0, 8, old.enemyLootMin);
+    auto *enemyLootMax = spin(0, 8, old.enemyLootMax);
+    enemyLootMin->setToolTip(tr("Minimum number of separate collectables spawned on defeat. 0 allows no drop."));
+    enemyLootMax->setToolTip(tr("Maximum number of separate collectables spawned on defeat, up to 8."));
+    form->addRow(tr("Minimum ordinary drops"), quickValue(enemyLootMin));
+    form->addRow(tr("Maximum ordinary drops"), quickValue(enemyLootMax));
+    connect(enemyLootMin,qOverload<int>(&QSpinBox::valueChanged),enemyLootMax,
+            [enemyLootMax](int v){if (enemyLootMax->value()<v) enemyLootMax->setValue(v);});
+    connect(enemyLootMax,qOverload<int>(&QSpinBox::valueChanged),enemyLootMin,
+            [enemyLootMin](int v){if (enemyLootMin->value()>v) enemyLootMin->setValue(v);});
     // Existing collectable-drop velocities (the same fields used by Breakables).
     auto *enemyRewardImpulse = new QCheckBox(tr("Launch dropped item on defeat"), &dialog);
     enemyRewardImpulse->setChecked(old.breakRewardImpulse);
@@ -9484,6 +10012,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     const QIcon splineResourceIcon = gameResourceIcon(QStringLiteral("gr_icon_spline.png"));
     for (const SplinePath &path : m_splinePaths)
         spline->addItem(splineResourceIcon, path.name, path.id);
+    if (!old.objectSplineId.isEmpty() && spline->findData(old.objectSplineId) < 0) {
+        spline->addItem(tr("[Missing: missing movement spline] %1").arg(old.objectSplineId), old.objectSplineId);
+        spline->setItemIcon(spline->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    }
     spline->setCurrentIndex(qMax(0, spline->findData(old.objectSplineId)));
     form->addRow(tr("Movement spline"), spline);
     auto *splineDelay = spin(0, 65535, old.objectSplineStartDelay);
@@ -9714,23 +10246,39 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *typeList = new QListWidget(selectorPanel);
     typeList->setObjectName(QStringLiteral("GGObjectTypes"));
     typeList->setSpacing(0);
-    const QStringList icons = {QStringLiteral("◆"), QStringLiteral("✦"),
-        QStringLiteral("▤"), QStringLiteral("⇆"), QStringLiteral("⇡"),
-        QStringLiteral("⚑"), QStringLiteral("▣"), QStringLiteral("⚠"),
-        QStringLiteral("▦"), QStringLiteral("✹"), QStringLiteral("♟"),
-        QStringLiteral("⇥"), QStringLiteral("▣"), QStringLiteral("❀")};
-    const QStringList titles = {tr("Decoration"), tr("Collectable"), tr("Moving platform"),
-        tr("Conveyor"), tr("Spring"), tr("Trigger / Switch"), tr("Door / Blocker"),
-        tr("Hazard zone"), tr("Breakable"), tr("Murder object"), tr("Stompable enemy"),
-        tr("Goto World"), tr("Save Game Checkpoint"), tr("Particle Spawner")};
-    // Both lists must match the canonical `type` combo. Use its label as a
-    // release-build fallback if an object type is added without a short title.
-    Q_ASSERT(icons.size() == type->count() && titles.size() == type->count());
+    // Use the stable behaviour IDs from the canonical type combo, never
+    // parallel index-based label/icon lists. The old list omitted
+    // `decoration_object`, shifting EVERY row after Decoration by one:
+    // Stompable Enemy's label was actually selecting Goto World, for example.
+    // An unknown future type falls back to the canonical combo's own caption.
+    const QHash<QString, QPair<QString, QString>> typePresentation = {
+        {QStringLiteral("decoration"),       {QStringLiteral("◆"), tr("Decoration")}},
+        {QStringLiteral("decoration_object"),{QStringLiteral("◈"), tr("Switchable Decoration")}},
+        {QStringLiteral("collectable"),      {QStringLiteral("✦"), tr("Collectable")}},
+        {QStringLiteral("lift"),             {QStringLiteral("▤"), tr("Moving platform")}},
+        {QStringLiteral("conveyor"),         {QStringLiteral("⇆"), tr("Conveyor")}},
+        {QStringLiteral("spring"),           {QStringLiteral("⇡"), tr("Spring")}},
+        {QStringLiteral("trigger"),          {QStringLiteral("⚑"), tr("Trigger / Switch")}},
+        {QStringLiteral("door"),             {QStringLiteral("▣"), tr("Door / Blocker")}},
+        {QStringLiteral("deathzone"),        {QStringLiteral("⚠"), tr("Hazard zone")}},
+        {QStringLiteral("breakable"),        {QStringLiteral("▦"), tr("Breakable")}},
+        {QStringLiteral("hazard"),           {QStringLiteral("✹"), tr("Murder object")}},
+        {QStringLiteral("enemy"),            {QStringLiteral("♟"), tr("Stompable enemy")}},
+        {QStringLiteral("goto_world"),       {QStringLiteral("⇥"), tr("Goto World")}},
+        {QStringLiteral("save_checkpoint"),  {QStringLiteral("▣"), tr("Save Game Checkpoint")}},
+        {QStringLiteral("particle_emitter"), {QStringLiteral("❀"), tr("Particle Spawner")}}
+    };
+    Q_ASSERT(typePresentation.size() == type->count());
     for (int n = 0; n < type->count(); ++n) {
-        const QString icon = icons.value(n, QStringLiteral("◆"));
-        const QString title = titles.value(n, type->itemText(n));
+        const QString objectTypeId = type->itemData(n).toString();
+        const auto presentation = typePresentation.constFind(objectTypeId);
+        Q_ASSERT(presentation != typePresentation.cend());
+        const QString icon = presentation == typePresentation.cend()
+            ? QStringLiteral("◆") : presentation.value().first;
+        const QString title = presentation == typePresentation.cend()
+            ? type->itemText(n) : presentation.value().second;
         auto *item = new QListWidgetItem(icon + QStringLiteral("   ") + title);
-        item->setData(Qt::UserRole, type->itemData(n));
+        item->setData(Qt::UserRole, objectTypeId);
         item->setToolTip(type->itemText(n));
         item->setSizeHint(QSize(180, 43));
         typeList->addItem(item);
@@ -10173,14 +10721,18 @@ void SidboxGameDesigner::configureGameObject(int index)
         initiallyActive->setEnabled(isObject);
         initiallyActive->setVisible(isObject && behaviour != QStringLiteral("collectable"));
         hiddenCollectable->setEnabled(behaviour == QStringLiteral("collectable"));
-        targetObject->setEnabled(isKey || behaviour == QStringLiteral("enemy"));
-        const bool oldStyleLinks = isKey || behaviour == QStringLiteral("enemy");
+        targetObject->setEnabled(isKey);
+        const bool oldStyleLinks = isKey;
+        const bool multiLinks = isTrigger || behaviour == QStringLiteral("enemy");
         targetObject->setVisible(oldStyleLinks);
         targetAction->setVisible(oldStyleLinks);
         targetVisibilityHint->setVisible(oldStyleLinks);
-        linkedActionRows->setVisible(isTrigger);
-        actionRowControls->setVisible(isTrigger);
-        linkedActionsHint->setVisible(isTrigger);
+        linkedActionRows->setVisible(multiLinks);
+        actionRowControls->setVisible(multiLinks);
+        linkedActionsHint->setVisible(multiLinks);
+        linkedActionsHint->setText(isTrigger
+            ? tr("Each action runs when this Trigger activates, in order. Drag action connections in Visual Nodes or edit them here. Disabling an object without an INACTIVE frame hides it.")
+            : tr("Each action runs ONCE when this enemy is defeated, in order. Drag from the gold ON DEFEAT socket in Visual Nodes or edit actions here. This is separate from the teal state-reading socket."));
         targetAction->setEnabled(oldStyleLinks);
         // Hide associated QFormLayout labels alongside the controls.
         for (QWidget *field : {static_cast<QWidget *>(targetObject),
@@ -10189,7 +10741,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             if (QWidget *label=linkedCard.form->labelForField(field))
                 label->setVisible(oldStyleLinks);
         if (QWidget *label=linkedCard.form->labelForField(linkedActionRows))
-            label->setVisible(isTrigger);
+            label->setVisible(multiLinks);
         // updateItemInteraction() owns triggerPress enabled state so an
         // inventory requirement cannot be accidentally overridden here.
         checkpointSlot->setVisible(behaviour == QStringLiteral("save_checkpoint"));
@@ -10273,7 +10825,12 @@ void SidboxGameDesigner::configureGameObject(int index)
         animationCard.panel->setVisible(isObject && animated->isChecked());
         collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
-        linkedCard.panel->setVisible(isTrigger || isKey || isEnemy);
+        const bool hasNamedEvents=!propertyEventKinds(behaviour).isEmpty();
+        linkedCard.panel->setVisible(isTrigger || isKey || isEnemy || hasNamedEvents);
+        namedEventLinks->setVisible(hasNamedEvents);
+        namedEventHelp->setVisible(hasNamedEvents);
+        if(QWidget *label=linkedCard.form->labelForField(namedEventLinks))
+            label->setVisible(hasNamedEvents);
         incomingBooleanCard.panel->setVisible((hasIncomingBoolean || hasIncomingGraph) && isObject);
         triggerCard.panel->setVisible(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
@@ -10424,8 +10981,446 @@ void SidboxGameDesigner::configureGameObject(int index)
         combo->setMinimumWidth(0);
         combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
+    // Stage 5.166.106: audit dependencies from the unsaved draft, including
+    // references from other objects. Advisory issues do not change gameplay;
+    // hard issues are the same rules that the exporter refuses to build.
+    struct DependencyIssue {
+        QString title;
+        QString why;
+        QWidget *field = nullptr;
+        bool blocksSave = false;
+        std::function<void()> fix;
+    };
+    const auto gatherDependencyIssues = [&]() -> QVector<DependencyIssue> {
+        QVector<DependencyIssue> issues;
+        const QString behaviour = type->currentData().toString();
+        const auto report = [&](const QString &title, const QString &why, QWidget *field,
+                                bool hard, std::function<void()> fix = {}) {
+            issues.append({title, why, field, hard, fix});
+        };
+        const auto lookup = [this](const QString &id) -> const Resource * {
+            for (const Resource &r : m_resources)
+                if (r.id == id) return &r;
+            return nullptr;
+        };
+        const auto owners = [this, &old](const QString &id) -> QStringList {
+            QStringList names;
+            for (const Resource &r : m_resources)
+                if (r.id != old.id &&
+                    (r.objectType == QStringLiteral("enemy") ||
+                     r.objectType == QStringLiteral("breakable")) &&
+                    r.breakDropCollectableId == id) names.append(r.name);
+            return names;
+        };
+        if (behaviour == QStringLiteral("collectable")) {
+            const int kind = pickup->currentData().toInt();
+            if (pickupAllowEnemyLoot->isChecked() && kind == 3)
+                report(tr("Key item cannot be ordinary loot"),
+                    tr("Keys are unique quest items. 'Allow as repeatable enemy loot' "
+                       "does not override the key restriction. Untick it, or deliberately "
+                       "change the pickup kind to an ordinary/custom non-key kind."),
+                    pickupAllowEnemyLoot, false, [=]() { pickupAllowEnemyLoot->setChecked(false); });
+            if (pickupAllowEnemyLoot->isChecked() && pickupPersistent->isChecked())
+                report(tr("Persistent item cannot be ordinary loot"),
+                    tr("Persistent collectables must stay collected across worlds. "
+                       "Repeatable enemy loot must be non-persistent."),
+                    pickupPersistent, false, [=]() { pickupAllowEnemyLoot->setChecked(false); });
+            const QStringList rewardOwners = owners(old.id);
+            if (!rewardOwners.isEmpty() && !spline->currentData().toString().isEmpty())
+                report(tr("Quest reward cannot follow a movement spline"),
+                    tr("This Collectable is the exclusive reward of %1. Falling rewards "
+                       "must not have their own movement spline. Remove the spline, "
+                       "or remove the reward assignment from its owner(s).")
+                        .arg(rewardOwners.join(QStringLiteral(", "))),
+                    spline, true, [=]() { spline->setCurrentIndex(0); });
+            if (pickupAllowEnemyLoot->isChecked() && !rewardOwners.isEmpty())
+                report(tr("Quest reward is not repeatable loot"),
+                    tr("'%1' exclusively spawns this Collectable as a quest reward. "
+                       "That ownership cannot be shared with a random loot pool. "
+                       "Clear the reward on its owning object to make this eligible.")
+                        .arg(rewardOwners.join(QStringLiteral(", "))),
+                    pickupAllowEnemyLoot, false, [=]() { pickupAllowEnemyLoot->setChecked(false); });
+            // Changing a template must not silently invalidate existing pools.
+            QStringList poolUsers;
+            for (const Resource &r : m_resources)
+                if (r.objectType == QStringLiteral("enemy") && r.enemyLootIds.contains(old.id))
+                    poolUsers.append(r.name);
+            const bool eligible = kind != 3 && !pickupPersistent->isChecked() &&
+                rewardOwners.isEmpty() &&
+                (kind == 1 || kind == 2 || kind == 4 || pickupAllowEnemyLoot->isChecked());
+            if (!poolUsers.isEmpty() && !eligible)
+                report(tr("Other enemies need this loot template"),
+                    tr("Enemy pool(s): %1. The draft makes this Collectable ineligible, "
+                       "so exporting those enemies would fail. Keep it non-key, non-persistent "
+                       "and opted in if custom, or remove it from those enemies' pools.")
+                        .arg(poolUsers.join(QStringLiteral(", "))),
+                    pickup, true, [=]() {
+                        if (pickupPersistent->isChecked()) pickupPersistent->setChecked(false);
+                        if (kind == 3 && old.pickupKind != 3)
+                            pickup->setCurrentIndex(qMax(0, pickup->findData(old.pickupKind)));
+                        const int now = pickup->currentData().toInt();
+                        if (now != 1 && now != 2 && now != 3 && now != 4)
+                            pickupAllowEnemyLoot->setChecked(true);
+                    });
+            if (pickupShowInventory->isChecked() &&
+                pickupStat->currentData().toString() != QStringLiteral("none"))
+                report(tr("Direct stat effect is bypassed"),
+                    tr("'Show in Inventory' stores the pickup in the backpack instead. "
+                       "The selected direct stat gain will not run. Turn off Inventory "
+                       "to apply the stat, or choose None for this unused stat setting."),
+                    pickupStat, false, [=]() {
+                        pickupStat->setCurrentIndex(qMax(0, pickupStat->findData(QStringLiteral("none"))));
+                    });
+        }
+        // Existing enemies can also rely on this template by its stable ID.
+        if (old.objectType == QStringLiteral("collectable") &&
+            behaviour != QStringLiteral("collectable")) {
+            QStringList users;
+            for (const Resource &r : m_resources) {
+                if (r.id == old.id) continue;
+                if ((r.objectType == QStringLiteral("enemy") ||
+                     r.objectType == QStringLiteral("breakable")) &&
+                    r.breakDropCollectableId == old.id) users.append(tr("%1 (unique reward)").arg(r.name));
+                if (r.objectType == QStringLiteral("enemy") &&
+                    r.enemyLootIds.contains(old.id)) users.append(tr("%1 (ordinary pool)").arg(r.name));
+            }
+            if (!users.isEmpty())
+                report(tr("Changing type breaks other Game Objects"),
+                    tr("This Collectable is referenced by %1. Reassign those references "
+                       "before changing its type, or keep it as a Collectable.")
+                        .arg(users.join(QStringLiteral(", "))),
+                    type, true, [=]() {
+                        type->setCurrentIndex(qMax(0, type->findData(QStringLiteral("collectable"))));
+                    });
+        }
+        const QString rewardId = behaviour == QStringLiteral("enemy")
+            ? enemyReward->currentData().toString()
+            : behaviour == QStringLiteral("breakable")
+                ? breakReward->currentData().toString() : QString();
+        if (behaviour == QStringLiteral("enemy") || behaviour == QStringLiteral("breakable")) {
+            QComboBox *reward = behaviour == QStringLiteral("enemy")
+                ? static_cast<QComboBox *>(enemyReward) : static_cast<QComboBox *>(breakReward);
+            if (!rewardId.isEmpty()) {
+                const Resource *r = lookup(rewardId);
+                if (!r || r->objectType != QStringLiteral("collectable"))
+                    report(tr("Reward collectable is missing"),
+                        tr("This reward no longer identifies a Collectable. Choose another "
+                           "Collectable or remove the reward."), reward, true,
+                        [=]() { reward->setCurrentIndex(0); });
+                else {
+                    const QStringList rewardOwners = owners(rewardId);
+                    QStringList poolOwners;
+                    for (const Resource &enemy : m_resources)
+                        if (enemy.objectType == QStringLiteral("enemy") &&
+                            enemy.id != old.id && enemy.enemyLootIds.contains(rewardId))
+                            poolOwners.append(enemy.name);
+                    if (!poolOwners.isEmpty())
+                        report(tr("Reward is already used as ordinary enemy loot"),
+                            tr("'%1' is in random loot pool(s) of %2. Assigning it as an "
+                               "exclusive reward would invalidate those pools. Remove the "
+                               "item from those enemies' pools or clear this reward.")
+                                .arg(r->name, poolOwners.join(QStringLiteral(", "))),
+                            reward, true, [=]() { reward->setCurrentIndex(0); });
+                    if (!rewardOwners.isEmpty())
+                        report(tr("Quest reward already assigned"),
+                            tr("'%1' is already the exclusive reward of %2. One physical "
+                               "Collectable cannot be spawned by two enemies/breakables. "
+                               "Choose another Collectable or clear this reward.")
+                                .arg(r->name, rewardOwners.join(QStringLiteral(", "))),
+                            reward, true, [=]() { reward->setCurrentIndex(0); });
+                    if (!m_tilemapEnabled)
+                        report(tr("Reward requires a tilemap"),
+                            tr("Falling quest rewards require Advanced Platformer tilemap "
+                               "physics. Enable the tilemap in the world settings, or clear "
+                               "this reward."), reward, true,
+                            [=]() { reward->setCurrentIndex(0); });
+                    if (!r->objectSplineId.isEmpty())
+                        report(tr("Reward has a movement spline"),
+                            tr("'%1' already follows a movement spline. A spawned quest "
+                               "reward must be a free Collectable without a spline. Remove "
+                               "the spline from that Collectable or choose another reward.")
+                                .arg(r->name), reward, true, [=]() { reward->setCurrentIndex(0); });
+                }
+            }
+            if (behaviour == QStringLiteral("breakable") &&
+                breakTouch->isChecked() && breakFromBelow->isChecked())
+                report(tr("Two incompatible break directions"),
+                    tr("Break on touch and break from underside are alternative collision "
+                       "modes. Choose one; underside mode currently wins."),
+                    breakTouch, false, [=]() { breakTouch->setChecked(false); });
+        }
+        if (behaviour == QStringLiteral("enemy")) {
+            QStringList selected;
+            for (QListWidgetItem *entry : enemyLootPool->selectedItems())
+                selected.append(entry->data(Qt::UserRole).toString());
+            if (selected.size() > 8)
+                report(tr("Random loot pool exceeds eight types"),
+                    tr("Each enemy can select at most eight distinct collectable types. "
+                       "Deselect the extras to meet the runtime and export limit."),
+                    enemyLootPool, true);
+            if (!selected.isEmpty() && !m_tilemapEnabled)
+                report(tr("Random loot requires a tilemap"),
+                    tr("Ordinary loot copies fall using the Advanced Platformer "
+                       "tilemap. Enable it in the world settings, or clear the pool."),
+                    enemyLootPool, true, [=]() { enemyLootPool->clearSelection(); });
+            if (!selected.isEmpty() && enemyLootMax->value() == 0)
+                report(tr("The selected loot pool never drops"),
+                    tr("Maximum ordinary drops is zero. Even with a selected pool, "
+                       "this enemy cannot spawn ordinary loot."),
+                    enemyLootMax, false, [=]() { enemyLootMax->setValue(1); });
+            if (!rewardId.isEmpty() && selected.contains(rewardId)) {
+                // Unique reward wins. Keep the random pool separate.
+                report(tr("Unique quest reward is also in random loot"),
+                    tr("A unique quest reward cannot also be a repeatable random "
+                       "loot template. Remove that item from this enemy's ordinary pool."),
+                    enemyLootPool, true, [=]() {
+                        for (QListWidgetItem *entry : enemyLootPool->selectedItems())
+                            if (entry->data(Qt::UserRole).toString() == rewardId)
+                                entry->setSelected(false);
+                    });
+            }
+            QStringList invalid;
+            for (QListWidgetItem *entry : enemyLootPool->selectedItems()) {
+                const QString id = entry->data(Qt::UserRole).toString();
+                const Resource *r = lookup(id);
+                const QString why = r ? lootIneligibility(*r) : tr("Missing collectable");
+                if (!why.isEmpty()) invalid.append(QStringLiteral("%1: %2")
+                    .arg(r ? r->name : id, why));
+            }
+            if (!invalid.isEmpty())
+                report(tr("Ineligible random loot selected"),
+                    invalid.join(QLatin1Char('\n')) + tr("\nChange these collectables' "
+                        "settings or remove them from this enemy's pool."),
+                    enemyLootPool, true, [=]() {
+                        for (QListWidgetItem *entry : enemyLootPool->selectedItems()) {
+                            const Resource *r = lookup(entry->data(Qt::UserRole).toString());
+                            if (!r || !lootIneligibility(*r).isEmpty()) entry->setSelected(false);
+                        }
+                    });
+            if (enemyRoam->isChecked() && !m_tilemapEnabled)
+                report(tr("Enemy patrol needs tile collisions"),
+                    tr("Walk on tilemap is unavailable without an Advanced Platformer "
+                       "tilemap. Enable the tilemap or disable enemy patrol."),
+                    enemyRoam, true, [=]() { enemyRoam->setChecked(false); });
+        }
+        if (behaviour == QStringLiteral("collectable") && pickup->currentData().toInt() == 3 &&
+            !targetObject->currentData().toString().isEmpty() &&
+            targetObject->currentText().startsWith(QStringLiteral("[Missing:")) &&
+            targetAction->currentData().toString() != QStringLiteral("none"))
+            report(tr("Linked target is missing"),
+                tr("The saved linked Game Object no longer exists. Choose a valid "
+                   "target or remove the linked action."),
+                targetObject, true, [=]() { targetObject->setCurrentIndex(0); });
+        if (behaviour == QStringLiteral("trigger") || behaviour == QStringLiteral("enemy")) {
+            QStringList missing;
+            for (int row = 0; row < linkedActionRows->rowCount(); ++row) {
+                auto *target = qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row, 0));
+                if (target && target->currentText().startsWith(QStringLiteral("Missing:")))
+                    missing.append(tr("Action %1: %2").arg(row+1).arg(target->currentData().toString()));
+            }
+            if (!missing.isEmpty())
+                report(behaviour == QStringLiteral("trigger")
+                    ? tr("Trigger has missing linked targets")
+                    : tr("Stompable Enemy has missing defeat targets"),
+                    tr("The following actions refer to deleted or unavailable Game Objects. "
+                       "Choose a valid target or delete the action row:\n%1")
+                        .arg(missing.join(QStringLiteral("\n"))),
+                    linkedActionRows, true);
+        }
+        if (behaviour == QStringLiteral("trigger") ||
+            behaviour == QStringLiteral("save_checkpoint")) {
+            if (triggerDrop->isChecked() && interactItem->currentData().toString().isEmpty())
+                report(tr("Dropped item switch needs a required item"),
+                    tr("A falling item can activate a switch only after a Required "
+                       "inventory item is selected. Otherwise the drop checkbox is "
+                       "stored but has no runtime effect."),
+                    triggerDrop, false, [=]() { triggerDrop->setChecked(false); });
+            if (interactStatDelta->value() &&
+                interactStat->currentData().toString() == QStringLiteral("none") &&
+                !interactItem->currentData().toString().isEmpty())
+                report(tr("Stat change has no target"),
+                    tr("A nonzero stat change is configured, but On success: player "
+                       "stat is None. Select a stat to apply it."),
+                    interactStat, false, [=]() { interactStatDelta->setValue(0); });
+            if (behaviour == QStringLiteral("trigger") &&
+                musicAction->currentData().toString() == QStringLiteral("play") &&
+                musicTrack->currentData().toString().isEmpty())
+                report(tr("Music action has no tune"),
+                    tr("'Play selected tune' is enabled but there is no music "
+                       "resource selected. Choose a tune or switch the action to None."),
+                    musicTrack, false, [=]() {
+                        musicAction->setCurrentIndex(qMax(0, musicAction->findData(QStringLiteral("none"))));
+                    });
+        }
+        if (behaviour == QStringLiteral("goto_world") &&
+            !gotoWorld->currentData().toString().isEmpty() &&
+            gotoWorld->currentText().startsWith(QStringLiteral("[Missing:")))
+            report(tr("Destination world no longer exists"),
+                tr("The saved destination is missing from this project. "
+                   "Choose a valid destination world before saving."),
+                gotoWorld, true);
+        if (behaviour == QStringLiteral("goto_world") &&
+            gotoWorld->currentData().toString().isEmpty())
+            report(tr("Goto World needs a destination"),
+                tr("Select another world in this project for this door. "
+                   "A Goto World object cannot be saved without a destination."),
+                gotoWorld, true);
+        if (behaviour == QStringLiteral("deathzone") && !m_tilemapEnabled)
+            report(tr("Death zone requires a tilemap"),
+                tr("Death zones use Advanced Platformer tilemap collision events. "
+                   "Enable the tilemap before saving this type."), type, true);
+        if (behaviour == QStringLiteral("particle_emitter") &&
+            behindTiles->isChecked() && particlePlayerMix->isChecked())
+            report(tr("Particle layer mix is overridden"),
+                tr("Draw behind tiles forces every particle behind the tilemap. "
+                   "The option to mix particles in front of the player is ignored."),
+                particlePlayerMix, false, [=]() { particlePlayerMix->setChecked(false); });
+        if (behaviour == QStringLiteral("lift") &&
+            spline->currentData().toString().isEmpty())
+            report(tr("Moving platform has no movement path"),
+                tr("This platform has no movement spline, so it remains in one place. "
+                   "Choose a spline in the Visual settings to make it move."),
+                spline, false);
+        if (behaviour == QStringLiteral("conveyor") && conveyor->value() == 0)
+            report(tr("Conveyor is stationary"),
+                tr("Conveyor speed is zero. It cannot carry the player until "
+                   "you set a positive or negative speed."),
+                conveyor, false, [=]() { conveyor->setValue(2); });
+        if (behaviour == QStringLiteral("hazard") && damageDelta->value() == 0)
+            report(tr("Hazard has no stat change"),
+                tr("This hazard changes its selected player stat by zero. "
+                   "Set a negative number to damage, or a positive number to "
+                   "give/heal the chosen stat."),
+                damageDelta, false);
+        if (behaviour == QStringLiteral("spring") &&
+            springSlide->isChecked() && springLaunchX->value() == 0)
+            report(tr("Spring sideways inertia has no sideways launch"),
+                tr("Slidy kickback affects horizontal motion only. Launch sideways is "
+                   "zero, so it will not add any sideways inertia."),
+                springSlide, false, [=]() { springSlide->setChecked(false); });
+        if (behaviour != QStringLiteral("decoration") &&
+            spline->currentText().startsWith(QStringLiteral("[Missing:")))
+            report(tr("Movement spline is missing"),
+                tr("The saved spline ID no longer exists. Choose an existing "
+                   "spline or clear the missing reference."),
+                spline, true, [=]() { spline->setCurrentIndex(0); });
+        if (behaviour != QStringLiteral("decoration") &&
+            spline->currentData().toString().isEmpty() && splineDelay->value() > 0)
+            report(tr("Spline delay has no movement spline"),
+                tr("The start delay is only used by a Game Object with a movement "
+                   "spline. Select a spline or reset the unused delay."),
+                splineDelay, false, [=]() { splineDelay->setValue(0); });
+        if (behaviour != QStringLiteral("decoration") &&
+            draftSpriteStamp.active() && animated->isChecked())
+            report(tr("Sprite Stamp overrides animation frames"),
+                tr("A Sprite Stamp is a composed static image. The runtime disables "
+                   "regular frame animation while the stamp is active."),
+                animated, false, [=]() { animated->setChecked(false); });
+        return issues;
+    };
+    QHash<QWidget *, QString> auditOriginalTips;
+    bool auditLoading = false;
+    const auto refreshDependencyAudit = [&]() {
+        if (auditLoading) return;
+        for (auto it = auditOriginalTips.cbegin(); it != auditOriginalTips.cend(); ++it) {
+            it.key()->setToolTip(it.value());
+            it.key()->setProperty("auditConflict", false);
+            it.key()->style()->unpolish(it.key());
+            it.key()->style()->polish(it.key());
+        }
+        auditOriginalTips.clear();
+        const QVector<DependencyIssue> issues = gatherDependencyIssues();
+        int blocking = 0;
+        QStringList summaries;
+        for (const DependencyIssue &issue : issues) {
+            if (issue.blocksSave) ++blocking;
+            summaries.append(QStringLiteral("• %1: %2").arg(issue.title, issue.why));
+            if (issue.field) {
+                if (!auditOriginalTips.contains(issue.field))
+                    auditOriginalTips.insert(issue.field, issue.field->toolTip());
+                issue.field->setToolTip(auditOriginalTips.value(issue.field) +
+                    QStringLiteral("\n\n⚠ ") + issue.title + QStringLiteral("\n") + issue.why);
+                issue.field->setProperty("auditConflict", true);
+                issue.field->style()->unpolish(issue.field);
+                issue.field->style()->polish(issue.field);
+            }
+        }
+        dependencyWarning->setVisible(!issues.isEmpty());
+        dependencyWarning->setText(blocking
+            ? tr("⚠ %1 dependency warning(s), %2 block saving  •  Review choices...")
+                  .arg(issues.size()).arg(blocking)
+            : tr("⚠ %1 dependency note(s)  •  Review choices...").arg(issues.size()));
+        dependencyWarning->setToolTip(summaries.join(QStringLiteral("\n\n")));
+    };
+    // One review dialog per selected issue. 'Apply' modifies ONLY the shown
+    // option, never other objects, quest ownership or Adventure definitions.
+    const auto reviewDependencyIssue = [&](bool saving) -> bool {
+        const QVector<DependencyIssue> issues = gatherDependencyIssues();
+        if (issues.isEmpty()) return true;
+        QStringList labels;
+        for (const DependencyIssue &issue : issues)
+            labels.append((issue.blocksSave ? tr("BLOCKS SAVE: ") : QString()) + issue.title);
+        bool chosen = false;
+        const QString selection = QInputDialog::getItem(&dialog,
+            tr("Game Object dependency audit"),
+            tr("Choose a setting to inspect (%1 issue(s)):").arg(issues.size()),
+            labels, 0, false, &chosen);
+        if (!chosen) return false;
+        const int index = labels.indexOf(selection);
+        if (index < 0) return false;
+        const DependencyIssue &issue = issues.at(index);
+        QMessageBox choice(&dialog);
+        choice.setWindowTitle(tr("Dependency: %1").arg(issue.title));
+        choice.setIcon(issue.blocksSave ? QMessageBox::Warning : QMessageBox::Information);
+        choice.setText(issue.why);
+        choice.setInformativeText(issue.blocksSave
+            ? tr("This must be corrected before saving or exporting. No changes have been made.")
+            : tr("This option will be ignored or is unnecessary. You may keep it unchanged."));
+        QPushButton *fix = nullptr;
+        if (issue.fix) fix = choice.addButton(tr("Apply suggested fix"), QMessageBox::AcceptRole);
+        choice.addButton(tr("Keep editing"), QMessageBox::RejectRole);
+        if (saving && !issue.blocksSave)
+            choice.addButton(tr("Keep setting and save"), QMessageBox::DestructiveRole);
+        choice.exec();
+        if (fix && choice.clickedButton() == fix) {
+            issue.fix();
+            refreshDependencyAudit();
+            return false; // Review the updated draft before saving.
+        }
+        if (saving && !issue.blocksSave &&
+            choice.buttonRole(choice.clickedButton()) == QMessageBox::DestructiveRole)
+            return true;
+        return false;
+    };
+    connect(dependencyWarning, &QToolButton::clicked, &dialog, [&]() {
+        reviewDependencyIssue(false);
+    });
+    // Live as the user ticks/selects settings, not just when Save is pressed.
+    for (QCheckBox *w : dialog.findChildren<QCheckBox *>())
+        connect(w, &QCheckBox::toggled, &dialog, [=](bool) { refreshDependencyAudit(); });
+    for (QComboBox *w : dialog.findChildren<QComboBox *>())
+        connect(w, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
+                [=](int) { refreshDependencyAudit(); });
+    for (QSpinBox *w : dialog.findChildren<QSpinBox *>())
+        connect(w, qOverload<int>(&QSpinBox::valueChanged), &dialog,
+                [=](int) { refreshDependencyAudit(); });
+    connect(enemyLootPool, &QListWidget::itemSelectionChanged, &dialog,
+            refreshDependencyAudit);
+    refreshDependencyAudit();
+
     const auto commitObject = [&]() -> bool {
     const QString newType = type->currentData().toString();
+    // Never silently drop invalid references while saving another field.
+    // Advisory notes may be kept after an explicit decision.
+    const QVector<DependencyIssue> commitIssues = gatherDependencyIssues();
+    if (!commitIssues.isEmpty()) {
+        if (std::any_of(commitIssues.cbegin(), commitIssues.cend(),
+                        [](const DependencyIssue &issue) { return issue.blocksSave; })) {
+            reviewDependencyIssue(true);
+            return false;
+        }
+        if (!reviewDependencyIssue(true)) return false;
+    }
     if (newType == QStringLiteral("enemy") && enemyRoam->isChecked() && !m_tilemapEnabled) {
         QMessageBox::warning(this, tr("Enemy Patrol"),
             tr("Walk on tilemap requires an Advanced Platformer tilemap. "
@@ -10523,10 +11518,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         if ((hasBranches || !inputs.isEmpty()) &&
             ((op==QStringLiteral("boolean") && inputs.size()!=1) ||
              (op==QStringLiteral("and") && (inputs.size()<2 || inputs.size()>16)) ||
-             (op==QStringLiteral("or") && inputs.size()!=2))) {
+             (op==QStringLiteral("or") && (inputs.size()<2 || inputs.size()>8)))) {
             QMessageBox::warning(&dialog, tr("State condition inputs"),
                 tr("This %1 needs %2 selected Game Objects. Choose the inputs or remove the branches.")
-                .arg(op,op==QStringLiteral("or")?tr("exactly 2"):
+                .arg(op,op==QStringLiteral("or")?tr("2–8"):
                     op==QStringLiteral("and")?tr("2–16"):tr("exactly 1")));
             return false;
         }
@@ -10659,6 +11654,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.cellHeight = stamped.cellHeight;
     r.frame = stamped.frame;
     r.objectType = newType;
+    if(newType!=old.objectType) {
+        QJsonObject relevant;
+        for(const QString &key:propertyEventKinds(newType))
+            if(old.eventActions.contains(key))relevant.insert(key,old.eventActions.value(key));
+        r.eventActions=relevant;
+    }
     r.pickupKind = pickup->currentData().toInt();
     r.objectValue = value->value();
     r.pickupTrackingConfigured = newType == QStringLiteral("collectable") &&
@@ -10669,6 +11670,15 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.pickupShowHud = pickupShowHud->isChecked();
     r.pickupStatTarget = pickupStat->currentData().toString();
     r.pickupPersistent = pickupPersistent->isChecked();
+    r.pickupAllowEnemyLoot = pickupAllowEnemyLoot->isChecked();
+    r.enemyLootIds.clear();
+    if (newType == QStringLiteral("enemy")) {
+        for (QListWidgetItem *entry : enemyLootPool->selectedItems())
+            if (r.enemyLootIds.size() < 8)
+                r.enemyLootIds.append(entry->data(Qt::UserRole).toString());
+    }
+    r.enemyLootMin = enemyLootMin->value();
+    r.enemyLootMax = enemyLootMax->value();
     r.hitWidth = hitW->value(); r.hitHeight = hitH->value();
     r.particlePreset = particlePreset->currentData().toString();
     r.particleAreaW = particleW->value(); r.particleAreaH = particleH->value();
@@ -10742,12 +11752,14 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.hazardFlashColour = chosenHazardColour;
     r.hazardFlashCount = hazardFlashes->value();
     r.hazardFlashFrames = hazardFlashFrames->value();
-    if (newType==QStringLiteral("trigger")) {
+    if (newType==QStringLiteral("trigger") || newType==QStringLiteral("enemy")) {
         const QVector<Resource::LinkedAction> actions=currentLinks();
         r.targetObjectId=actions.isEmpty() ? QString() : actions.first().objectId;
         r.targetAction=actions.isEmpty() ? QStringLiteral("none") : actions.first().action;
-        r.triggerExtraActions.clear();
-        for (int i=1;i<actions.size();++i) r.triggerExtraActions.append(actions.at(i));
+        QVector<Resource::LinkedAction> &extra=newType==QStringLiteral("enemy")
+            ?r.enemyDefeatExtraActions:r.triggerExtraActions;
+        extra.clear();
+        for (int i=1;i<actions.size();++i) extra.append(actions.at(i));
     } else {
         r.targetObjectId=targetObject->currentData().toString();
         r.targetAction=targetAction->currentData().toString();
@@ -10954,6 +11966,11 @@ void SidboxGameDesigner::configureGameObject(int index)
             values << (target ? target->currentData() : QVariant());
             values << (action ? action->currentData() : QVariant());
         }
+        QStringList selectedLoot;
+        for (QListWidgetItem *entry : enemyLootPool->selectedItems())
+            selectedLoot.append(entry->data(Qt::UserRole).toString());
+        selectedLoot.sort();
+        values << QVariant(selectedLoot);
         values << QJsonDocument(customPickupTypes).toJson(QJsonDocument::Compact)
                << QJsonDocument(draftSpriteStamp.toJson()).toJson(QJsonDocument::Compact)
                << chosenHazardColour << pickupOptionsTouched << pickupStatTouched;
@@ -10963,6 +11980,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     // Reload *every* setting into the same live dialog. A close/reopen would
     // lose maximised/scroll state and visibly flash on each arrow press.
     const auto showObject = [&](int selectedIndex) {
+        auditLoading = true;
         index = selectedIndex;
         old = m_resources.at(index);
         fadePreviewFrames = 0;
@@ -10982,6 +12000,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         pickupShowInventory->setChecked(old.pickupShowInventory);
         pickupShowHud->setChecked(old.pickupShowHud);
         pickupPersistent->setChecked(old.pickupPersistent);
+        pickupAllowEnemyLoot->setChecked(old.pickupAllowEnemyLoot);
+        refillEnemyLoot(old.enemyLootIds);
+        enemyLootMin->setValue(old.enemyLootMin);
+        enemyLootMax->setValue(old.enemyLootMax);
         const QString shownStat = old.pickupStatTarget.isEmpty()
             ? (old.pickupKind == 2 ? QStringLiteral("health") : QStringLiteral("none"))
             : old.pickupStatTarget;
@@ -11023,9 +12045,18 @@ void SidboxGameDesigner::configureGameObject(int index)
                 candidate.id != old.id)
                 targetObject->addItem(tr("%1 [%2]").arg(candidate.name, candidate.objectType), candidate.id);
         }
+        if (!old.targetObjectId.isEmpty() && targetObject->findData(old.targetObjectId) < 0) {
+            targetObject->addItem(tr("[Missing: linked object] %1").arg(old.targetObjectId), old.targetObjectId);
+            targetObject->setItemIcon(targetObject->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
         targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
         reloadLinks();
+        reloadNamedEventLinks();
+        if (!old.gotoWorldName.isEmpty() && gotoWorld->findData(old.gotoWorldName) < 0) {
+            gotoWorld->addItem(tr("[Missing: missing world] %1").arg(old.gotoWorldName), old.gotoWorldName);
+            gotoWorld->setItemIcon(gotoWorld->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         gotoWorld->setCurrentIndex(qMax(0, gotoWorld->findData(old.gotoWorldName)));
         populateGotoStarts(old.gotoStartId);
         gotoActivation->setCurrentIndex(old.gotoPress ? 1 : 0);
@@ -11070,6 +12101,10 @@ void SidboxGameDesigner::configureGameObject(int index)
                 candidate.objectType == QStringLiteral("collectable"))
                 breakReward->addItem(candidate.name, candidate.id);
         }
+        if (!old.breakDropCollectableId.isEmpty() && breakReward->findData(old.breakDropCollectableId) < 0) {
+            breakReward->addItem(tr("[Missing: missing Collectable] %1").arg(old.breakDropCollectableId), old.breakDropCollectableId);
+            breakReward->setItemIcon(breakReward->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         breakReward->setCurrentIndex(qMax(0, breakReward->findData(old.breakDropCollectableId)));
         breakRewardImpulse->setChecked(old.breakRewardImpulse);
         breakRewardVx->setValue(old.breakRewardVx);
@@ -11088,6 +12123,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         enemyRewardVx->setValue(old.breakRewardVx);
         enemyRewardVy->setValue(old.breakRewardVy);
         enemyHurt->setChecked(old.enemyHurtsOnTouch);
+        if (!old.breakDropCollectableId.isEmpty() && enemyReward->findData(old.breakDropCollectableId) < 0) {
+            enemyReward->addItem(tr("[Missing: missing Collectable] %1").arg(old.breakDropCollectableId), old.breakDropCollectableId);
+            enemyReward->setItemIcon(enemyReward->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         enemyReward->setCurrentIndex(qMax(0, enemyReward->findData(old.breakDropCollectableId)));
         enemyDefeatFrame->setValue(old.enemyDefeatFrame);
         enemyDefeatCount->setValue(old.enemyDefeatCount);
@@ -11116,6 +12155,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         updateFlashSwatch();
         hazardFlashes->setValue(old.hazardFlashCount);
         hazardFlashFrames->setValue(old.hazardFlashFrames);
+        if (!old.objectSplineId.isEmpty() && spline->findData(old.objectSplineId) < 0) {
+            spline->addItem(tr("[Missing: missing movement spline] %1").arg(old.objectSplineId), old.objectSplineId);
+            spline->setItemIcon(spline->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         spline->setCurrentIndex(qMax(0, spline->findData(old.objectSplineId)));
         splineDelay->setValue(old.objectSplineStartDelay);
         animated->setChecked(old.objectAnimated);
@@ -11178,6 +12221,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         pickupOptionsTouched = false;
         pickupStatTouched = false;
         loadedDraft = draftSnapshot();
+        auditLoading = false;
+        refreshDependencyAudit();
         updateParticleDraft();
         dialog.setUpdatesEnabled(true);
         dialog.update();

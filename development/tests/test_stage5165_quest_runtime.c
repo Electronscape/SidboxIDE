@@ -45,10 +45,11 @@ int main(void)
     assert(fwrite(data,1,head.length,f)==head.length);
     fclose(f);free(data);
     active_world=NULL;gw_quest_reset();
-    assert(gameworlds_load_slot(8));
-    assert(gameworlds_quest_status(0)==1); /* v1 contains no quests */
+    assert(!gameworlds_slot_exists(8));
+    assert(!gameworlds_load_slot(8)); /* v1 lacks trusted object identity. */
+    assert(gameworlds_quest_status(0)==1); /* reset remains untouched */
     assert(gameworlds_quest_status(1)==0);
     assert(gameworlds_quest_status(2)==1);
-    puts("PASS Stage 5.165: quests, tracking, Adventure events, TFCard v2 and v1 migration");
+    puts("PASS Stage 5.166.109: quests, tracking, Adventure events, v3 saves and safe v1 rejection");
     return 0;
 }

@@ -57,8 +57,9 @@ native=native[:native.index('int main(void)')].replace('#include "gameworlds.c"'
 for has_title,has_physics in ((True,False),(False,False),(True,True)):
     flags={n:False for n in ['HAS_WORLD_PHYSICS','HAS_PICKUPS','HAS_SHARED_PLAYER','HAS_PLAYER_VISIBILITY','HAS_ADVENTURE_RUNTIME']}
     flags['HAS_TITLE']=has_title
+    flags['HAS_MAP']=False
     flags['HAS_WORLD_PHYSICS']=has_physics
-    c=render(source,flags).replace('@IDE{WORLD_DECLARATIONS}',decls).replace('@IDE{WORLD_RECORDS}',records).replace('@IDE{SAVE_KEY}','123').replace('@IDE{QUEST_DATA}',quest)
+    c=render(source,flags).replace('@IDE{WORLD_DECLARATIONS}',decls).replace('@IDE{WORLD_RECORDS}',records).replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef').replace('@IDE{QUEST_DATA}',quest)
     h=render(header,flags)
     assert '@IDE{' not in c and '@IDE{' not in h
     with tempfile.TemporaryDirectory(prefix='stage16635_') as d:

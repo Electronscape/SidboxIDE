@@ -2,7 +2,7 @@
 #define SIDBOX_GAME_VISUAL_GRAPH_LOGIC_H
 
 // Stage 5.166.60: real, independent, typed Boolean logic nodes.
-// This data belongs to the .sbgm Trigger, never to the .vsgm layout.
+// This data belongs to .sbgm object logic, never to the .vsgm layout.
 // A node is evaluated once per activation, after the owner's ordinary actions.
 // Node-to-node edges form a DAG; cycles and dangling inputs are rejected.
 #include <QJsonArray>
@@ -18,7 +18,7 @@
 namespace SidboxVisualLogic {
 
 struct Input {
-    QString kind;            // "object" or "node"
+    QString kind;            // "object", "node", or one-frame "event"
     QString id;              // stable resource ID or logic node ID
     bool invert = false;     // a FALSE output means NOT the upstream result
 };
@@ -56,18 +56,27 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
         }
         const QJsonArray rawInputs=o.value(QStringLiteral("inputs")).toArray();
         if(rawInputs.size()>16 || (n.op==QStringLiteral("boolean") || n.op==QStringLiteral("not")
-              ? rawInputs.size()!=1 : n.op==QStringLiteral("or") ? rawInputs.size()!=2 : rawInputs.size()<2)) {
+              ? rawInputs.size()!=1 : n.op==QStringLiteral("or") ? (rawInputs.size()<2 || rawInputs.size()>8) : rawInputs.size()<2)) {
             if(error)*error=QStringLiteral("Logic node %1 has an invalid number of inputs.").arg(n.id);
             return false;
         }
         QSet<QString> unique;
-        for(const QJsonValue &v:rawInputs) {
-            const QJsonObject input=v.toObject();
+        for(int inputIndex=0;inputIndex<rawInputs.size();++inputIndex) {
+            const QJsonObject input=rawInputs.at(inputIndex).toObject();
             Input in{input.value(QStringLiteral("kind")).toString(),
                      input.value(QStringLiteral("id")).toString(),
                      input.value(QStringLiteral("invert")).toBool(false)};
-            if ((in.kind!=QStringLiteral("object") && in.kind!=QStringLiteral("node")) || in.id.isEmpty()) {
-                if(error)*error=QStringLiteral("Logic node %1 has a missing or invalid input.").arg(n.id);
+            const bool eventIdValid=in.id.startsWith(QStringLiteral("@event:arrival:")) ||
+                                    in.id.startsWith(QStringLiteral("@event:hit:")) ||
+                                    in.id.startsWith(QStringLiteral("@event:destroy:"));
+            if ((in.kind!=QStringLiteral("object") && in.kind!=QStringLiteral("node") &&
+                 in.kind!=QStringLiteral("event")) || in.id.isEmpty() ||
+                (in.kind==QStringLiteral("event") &&
+                 (!eventIdValid || in.id.section(QLatin1Char(':'),2).isEmpty()))) {
+                // State exactly which saved input is wrong. Older, mixed-version
+                // installations accepted arrival events but not breakable events.
+                if(error)*error=QStringLiteral("Logic node %1 INPUT %2 is invalid: kind='%3', id='%4'.")
+                    .arg(n.id).arg(inputIndex+1).arg(in.kind).arg(in.id);
                 return false;
             }
             const QString identity=in.kind+QLatin1Char(':')+in.id+(in.invert?QStringLiteral(":not"):QString());
@@ -120,7 +129,7 @@ inline bool order(const QVector<Node> &nodes,const QSet<QString> &objects,
         }
         states[i]=1;
         for(const QString &target:nodes[i].resultTargets)
-            if(!objects.contains(target)) {
+            if(target.startsWith(QStringLiteral("@event:")) || !objects.contains(target)) {
                 if(error)*error=QStringLiteral("Logic node %1 drives missing Game Object %2.")
                     .arg(nodes[i].id,target);
                 return false;
@@ -130,6 +139,18 @@ inline bool order(const QVector<Node> &nodes,const QSet<QString> &objects,
                 if(error)*error=QStringLiteral("Logic node %1 reads missing Game Object %2.")
                     .arg(nodes[i].id,input.id);
                 return false;
+            }
+            if(input.kind==QStringLiteral("event")) {
+                // Event sockets are pulses belonging to real Game Objects, not
+                // separately saved resources. Accept the source object's UUID
+                // even when the caller supplies only ordinary object IDs.
+                // The exporter additionally checks the event kind and owner.
+                const QString sourceId=input.id.section(QLatin1Char(':'),2);
+                if(!objects.contains(sourceId) && !objects.contains(input.id)) {
+                    if(error)*error=QStringLiteral("Logic node %1 reads a missing event %2 (source Game Object %3 is missing).")
+                        .arg(nodes[i].id).arg(input.id).arg(sourceId);
+                    return false;
+                }
             }
             if(input.kind==QStringLiteral("node")) {
                 if(!byId.contains(input.id)) {
@@ -152,7 +173,8 @@ inline QString expression(const Node &node,const QHash<QString,QString> &objects
     QStringList parts;
     for(const Input &input:node.inputs) {
         QString x=input.kind==QStringLiteral("object")
-            ? objects.value(input.id)+QStringLiteral(".active") : values.value(input.id);
+            ? objects.value(input.id)+QStringLiteral(".active")
+            : input.kind==QStringLiteral("event") ? objects.value(input.id) : values.value(input.id);
         if(input.invert)x=QStringLiteral("!(%1)").arg(x);
         parts.append(QStringLiteral("(%1)").arg(x));
     }

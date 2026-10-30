@@ -98,7 +98,8 @@ struct NodeObject {
     int toggleTrueDialogueNode=-1;
     int toggleFalseDialogueNode=-1;
     QVector<NodeLink> toggleTrueActions, toggleFalseActions;
-    QJsonArray logicNodes; // Real independent nodes, owned by this Trigger in .sbgm.
+    QJsonArray logicNodes; // Independent nodes owned by a Game Object in .sbgm.
+    QHash<QString,QVector<NodeLink>> eventLinks; // Dedicated named event outputs on this placed object.
     int pickupKind=1; // Only key collectables (3) fire linked object actions.
     bool triggerPress=false;
     bool triggerOneShot=false;
@@ -110,6 +111,37 @@ struct NodeObject {
 
 // These are the three object kinds whose targetObjectId is executed by the
 // generated runtime. Other sprites can carry stale/inert target fields.
+QStringList eventKinds(const QString &type) {
+    if(type==QStringLiteral("breakable"))return {QStringLiteral("hit"),QStringLiteral("destroy")};
+    if(type==QStringLiteral("collectable"))return {QStringLiteral("pickup")};
+    if(type==QStringLiteral("hazard"))return {QStringLiteral("player_hit")};
+    if(type==QStringLiteral("goto_world"))return {QStringLiteral("enter")};
+    if(type==QStringLiteral("save_checkpoint"))return {QStringLiteral("save")};
+    if(type==QStringLiteral("lift"))return {QStringLiteral("arrival")};
+    if(type==QStringLiteral("enemy"))return {QStringLiteral("hit")};
+    return {};
+}
+bool isEventOutput(const QString &id) {return id.startsWith(QStringLiteral("@event:"));}
+QString eventKey(const QString &id) {return id.section(QLatin1Char(':'),1,1);}
+QString eventOwner(const QString &id) {return id.section(QLatin1Char(':'),2);}
+QString eventOutput(const QString &key,const QString &owner) {
+    return QStringLiteral("@event:")+key+QLatin1Char(':')+owner;
+}
+QString eventLabel(const QString &key) {
+    if(key==QStringLiteral("hit"))return QStringLiteral("ON HIT");
+    if(key==QStringLiteral("destroy"))return QStringLiteral("ON DESTROY");
+    if(key==QStringLiteral("pickup"))return QStringLiteral("ON PICKUP");
+    if(key==QStringLiteral("player_hit"))return QStringLiteral("ON PLAYER HIT");
+    if(key==QStringLiteral("enter"))return QStringLiteral("ON ENTER");
+    if(key==QStringLiteral("save"))return QStringLiteral("ON SAVE");
+    return QStringLiteral("ON ARRIVAL");
+}
+bool isEnemyDefeatOutput(const QString &id) {
+    return id.startsWith(QStringLiteral("@enemydefeat:"));
+}
+QString enemyDefeatOwner(const QString &id) {
+    return id.mid(QStringLiteral("@enemydefeat:").size());
+}
 bool isActionSource(const NodeObject &node) {
     return node.type==QStringLiteral("trigger") ||
            node.type==QStringLiteral("enemy") ||
@@ -316,6 +348,18 @@ public:
     void enableGridSnap() { m_gridSnap=true; }
     bool collapsed() const {return m_collapsed;}
     QPointF wirePoint(const QPointF &original) const {
+        if (data(1).toString().startsWith(QStringLiteral("@graph:")) &&
+            original.x()>=rect().width()*.5) {
+            const QString role=original.y()<98.0?QStringLiteral("@graphvalue:"):
+                original.y()<132.0?QStringLiteral("@graphbranch:true:"):
+                                    QStringLiteral("@graphbranch:false:");
+            for(QGraphicsItem *child:childItems()) {
+                auto *port=dynamic_cast<QGraphicsEllipseItem*>(child);
+                if(port && port->data(0).toString()==QStringLiteral("output") &&
+                   port->data(1).toString().startsWith(role))
+                    return port->sceneBoundingRect().center();
+            }
+        }
         if (original.x()<rect().width()*.5) {
             // Every incoming wire ends at the visible square, including
             // controls whose final Qt row differs from the old fixed Y value.
@@ -340,6 +384,8 @@ public:
                 if(!port)continue;
                 const QString kind=port->data(0).toString();
                 if(kind!=QStringLiteral("output") &&
+                   kind!=QStringLiteral("enemy-action-output") &&
+                   kind!=QStringLiteral("event-output") &&
                    kind!=QStringLiteral("conversation-output") &&
                    kind!=QStringLiteral("conversation-missing-output") &&
                    kind!=QStringLiteral("exchange-output") &&
@@ -355,6 +401,8 @@ public:
         for (QGraphicsItem *child:childItems()) {
             auto *port=dynamic_cast<QGraphicsEllipseItem*>(child);
             if (!port || (port->data(0).toString()!=QStringLiteral("output") &&
+                     port->data(0).toString()!=QStringLiteral("enemy-action-output") &&
+                     port->data(0).toString()!=QStringLiteral("event-output") &&
                      port->data(0).toString()!=QStringLiteral("conversation-output") &&
                      port->data(0).toString()!=QStringLiteral("conversation-missing-output") &&
                      port->data(0).toString()!=QStringLiteral("exchange-output") &&
@@ -377,7 +425,8 @@ public:
             auto *port=dynamic_cast<QGraphicsEllipseItem*>(child);
             if(!port)continue;
             const QString kind=port->data(0).toString();
-            if(kind==QStringLiteral("output") || kind==QStringLiteral("conversation-output") ||
+            if(kind==QStringLiteral("output") || kind==QStringLiteral("enemy-action-output") || kind==QStringLiteral("event-output") ||
+               kind==QStringLiteral("conversation-output") ||
                kind==QStringLiteral("conversation-missing-output") ||
                kind==QStringLiteral("exchange-output") || kind==QStringLiteral("give-anchor"))
                 compactOutputs.append(port);
@@ -396,7 +445,12 @@ public:
                     return a->data(2).toInt()<b->data(2).toInt();
                 });
         }
-        const qreal compactHeight=qMax(m_compactHeight,12.0+compactOutputs.size()*17.0);
+        int graphInputs=0;
+        if(data(1).toString().startsWith(QStringLiteral("@graph:")))
+            for(QGraphicsItem *child:childItems())
+                if(child->data(4).toString()==QStringLiteral("graph-input"))++graphInputs;
+        const qreal compactHeight=qMax(m_compactHeight,
+            12.0+qMax(compactOutputs.size(),graphInputs)*17.0);
         QRectF body=rect();body.setHeight(state?compactHeight:m_fullHeight);
         setRect(body);
         for (QGraphicsItem *child:childItems()) {
@@ -406,7 +460,8 @@ public:
                 portKind==QStringLiteral("conversation-input") ||
                 portKind==QStringLiteral("exchange-input")) {
                 const bool helped=child->data(2).toString()==QStringLiteral("helped");
-                const qreal compactY=m_compactHeight>35.0 ?
+                const qreal compactY=child->data(4).toString()==QStringLiteral("graph-input")
+                    ?14.0+17.0*child->data(2).toInt():m_compactHeight>35.0 ?
                     (portKind==QStringLiteral("npc-input")?(helped?39.0:24.0):9.0):18.0;
                 child->setPos(state?QPointF(0,compactY-child->boundingRect().center().y()):QPointF());
                 child->setVisible(true);
@@ -414,6 +469,8 @@ public:
             }
             if (auto *port=dynamic_cast<QGraphicsEllipseItem*>(child)) {
                 if (portKind==QStringLiteral("output") ||
+                    portKind==QStringLiteral("enemy-action-output") ||
+                    portKind==QStringLiteral("event-output") ||
                     portKind==QStringLiteral("conversation-output") ||
                     portKind==QStringLiteral("conversation-missing-output") ||
                     portKind==QStringLiteral("exchange-output") ||
@@ -438,6 +495,14 @@ public:
         if (m_fold)m_fold->setText(state?QStringLiteral("[+]"):QStringLiteral("[-]"));
     }
     void setCompactHeight(qreal height) {m_compactHeight=height;}
+    void setFullHeight(qreal height) {
+        if(qAbs(m_fullHeight-height)<0.5)return;
+        const bool folded=m_collapsed;
+        if(folded)setCollapsed(false);
+        m_fullHeight=height;
+        QRectF body=rect();body.setHeight(height);setRect(body);
+        if(folded)setCollapsed(true);
+    }
     void setFoldButton(NodeFoldButton *fold) {
         m_fold=fold;
         m_fullHeight=rect().height();
@@ -621,6 +686,8 @@ protected:
         const QString socketKind=item?item->data(0).toString():QString();
         if (event->button() == Qt::LeftButton && item &&
             (socketKind==QStringLiteral("output") ||
+             socketKind==QStringLiteral("enemy-action-output") ||
+             socketKind==QStringLiteral("event-output") ||
              socketKind==QStringLiteral("conversation-output") ||
              socketKind==QStringLiteral("conversation-missing-output") ||
              socketKind==QStringLiteral("exchange-output") ||
@@ -630,7 +697,11 @@ protected:
                 socketKind==QStringLiteral("exchange-output");
             m_choiceMissing=socketKind==QStringLiteral("conversation-missing-output");
             m_choiceOption=item->data(2).toInt();
-            m_from = item->data(1).toString();
+            m_from = socketKind==QStringLiteral("enemy-action-output")
+                ? QStringLiteral("@enemydefeat:")+item->data(1).toString()
+                : socketKind==QStringLiteral("event-output")
+                ? eventOutput(item->data(2).toString(),item->data(1).toString())
+                : item->data(1).toString();
             // Selecting a socket should focus its owning card, not the
             // synthetic output ID (e.g. @graphbranch:true:...). Otherwise
             // dimming would mistakenly fade EVERY card while starting a wire.
@@ -824,7 +895,7 @@ protected:
         }
         for (QGraphicsItem *item: items(target)) {
             const QString kind=item->data(0).toString();
-            if (kind!=QStringLiteral("link") && kind!=QStringLiteral("dialogue-link") &&
+            if (kind!=QStringLiteral("link") && kind!=QStringLiteral("event-link") && kind!=QStringLiteral("dialogue-link") &&
                 kind!=QStringLiteral("state-link") && kind!=QStringLiteral("state-true-link") &&
                 kind!=QStringLiteral("state-false-link") &&
                 kind!=QStringLiteral("state-true-action") &&
@@ -1048,6 +1119,16 @@ public:
             node.type=effectiveType;
             node.resourceIndex=i;
             node.pickupKind=data.value(QStringLiteral("pickupKind")).toInt(1);
+            const QJsonObject savedEvents=data.value(QStringLiteral("eventActions")).toObject();
+            for(const QString &key:eventKinds(effectiveType)) {
+                QVector<NodeLink> &actions=node.eventLinks[key];
+                for(const QJsonValue &v:savedEvents.value(key).toArray()) {
+                    const QJsonObject entry=v.toObject();
+                    const QString target=entry.value(QStringLiteral("objectId")).toString();
+                    const QString op=entry.value(QStringLiteral("action")).toString();
+                    if(!target.isEmpty() && supportedAction(op))actions.append({target,op});
+                }
+            }
             if (type==QStringLiteral("trigger")) {
                 node.triggerPress=data.value(QStringLiteral("triggerPress")).toBool(false);
                 node.triggerOneShot=data.value(QStringLiteral("triggerOneShot")).toBool(false);
@@ -1114,11 +1195,21 @@ public:
                     }
                 }
             }
+            if (type!=QStringLiteral("trigger") && type!=QStringLiteral("npc") &&
+                type!=QStringLiteral("player_action") && type!=QStringLiteral("collectable"))
+                node.logicNodes=data.value(QStringLiteral("logicNodes")).toArray();
             const QString legacy=data.value(QStringLiteral("targetObjectId")).toString();
             const QString action=data.value(QStringLiteral("targetAction")).toString();
             // Keep dormant "none" targets as well: editing other links must not
             // silently discard values authored in Game Object Properties.
             if (!legacy.isEmpty()) node.links.append({legacy,action});
+            if (type==QStringLiteral("enemy"))
+                for (const QJsonValue &value:data.value(QStringLiteral("enemyDefeatExtraActions")).toArray()) {
+                    const QJsonObject link=value.toObject();
+                    const QString target=link.value(QStringLiteral("objectId")).toString();
+                    const QString action=link.value(QStringLiteral("action")).toString();
+                    if (!target.isEmpty() && supportedAction(action)) node.links.append({target,action});
+                }
             if (type==QStringLiteral("trigger"))
                 for (const QJsonValue &value:data.value(QStringLiteral("triggerExtraActions")).toArray()) {
                     const QJsonObject o=value.toObject();
@@ -1410,6 +1501,7 @@ private:
                 kind==QStringLiteral("conversation-input") ||
                 kind==QStringLiteral("exchange-input");
             const bool isOutput=kind==QStringLiteral("output") ||
+                kind==QStringLiteral("enemy-action-output") ||
                 kind==QStringLiteral("conversation-output") ||
                 kind==QStringLiteral("conversation-missing-output") ||
                 kind==QStringLiteral("exchange-output") ||
@@ -1958,7 +2050,7 @@ private:
         auto *refresh=new QPushButton(tr("Refresh from World"),this);
         refresh->setToolTip(tr("Re-read Game Object, NPC conversation and Dialogue Editor links from .sbgm. Preserve the .vsgm layout."));
         auto *addCondition=new QPushButton(tr("+ Boolean"),this);
-        addCondition->setToolTip(tr("Select a Game Object controlled by a Trigger, then add a Boolean that reads its enabled/disabled state."));
+        addCondition->setToolTip(tr("Select an enemy or a Trigger-controlled Game Object, then add Boolean logic that reads its active state."));
         auto *conversationFlow=new QPushButton(tr("+ Conversation Flow"),this);
         conversationFlow->setToolTip(tr("Edit an NPC's existing conversation: speaker, text, answers and next dialogue. For advanced actions, open the exact dialogue in Adventure Editor."));
         auto *addDialogue=new QPushButton(tr("+ Show Dialogue"),this);
@@ -2215,6 +2307,7 @@ private:
             if (from.startsWith(QStringLiteral("@stateout:")) ||
                 from.startsWith(QStringLiteral("@graphvalue:")) ||
                 from.startsWith(QStringLiteral("@graphbranch:")) ||
+                isEnemyDefeatOutput(from) || isEventOutput(from) ||
                 (m_objects.contains(from) && m_objects.value(from).type!=QStringLiteral("npc")))
                 showInsertTree(point,global,from);
         };
@@ -2431,14 +2524,18 @@ private:
         QSet<QString> visible;
         for (const QString &id:m_order) {
             const NodeObject n=m_objects.value(id);
-            if (!isActionSource(n))continue;
+            if (!isActionSource(n) && eventKinds(n.type).isEmpty() && n.logicNodes.isEmpty())continue;
+            for(const QVector<NodeLink> &links:n.eventLinks)
+                for(const NodeLink &link:links) {
+                    if(!supportedAction(link.action) || !m_objects.contains(link.target))continue;
+                    visible.insert(id);visible.insert(link.target);
+                }
             for (const NodeLink &link:n.links) {
                 if (!supportedAction(link.action) || !m_objects.contains(link.target))continue;
                 visible.insert(id);
                 visible.insert(link.target);
             }
-            if (n.type!=QStringLiteral("trigger"))continue;
-            if (n.dialogueNode>=0) visible.insert(id);
+            if (n.type==QStringLiteral("trigger") && n.dialogueNode>=0) visible.insert(id);
             if (!n.logicNodes.isEmpty()) {
                 visible.insert(id);
                 for(const QJsonValue &v:n.logicNodes) {
@@ -2455,7 +2552,7 @@ private:
                         visible.insert(v.toString());
                 }
             }
-            if (!n.toggleStateTargetId.isEmpty()) {
+            if (n.type==QStringLiteral("trigger") && !n.toggleStateTargetId.isEmpty()) {
                 visible.insert(id);
                 if (m_objects.contains(n.toggleStateTargetId))visible.insert(n.toggleStateTargetId);
                 for (const QString &extra:n.toggleStateInputIds)
@@ -2490,7 +2587,7 @@ private:
         }
         for(const QString &owner:m_order) {
             const NodeObject n=m_objects.value(owner);
-            if(n.type!=QStringLiteral("trigger"))continue;
+            if(n.logicNodes.isEmpty())continue;
             for(const QJsonValue &v:n.logicNodes) {
                 const QJsonObject o=v.toObject();
                 const QString key=graphKey(owner,o.value(QStringLiteral("id")).toString());
@@ -2727,9 +2824,11 @@ private:
         const bool trigger=node.type==QStringLiteral("trigger");
         const bool npc=node.type==QStringLiteral("npc");
         const bool player=node.type==QStringLiteral("player_action");
-        const bool eventSource=isActionSource(node);
+        const bool eventSource=isActionSource(node) || !eventKinds(node.type).isEmpty();
         const qreal width=npc?344:(trigger?280:224);
-        auto *card=new NodeCard(QRectF(0,0,width,npc?266:(trigger?201:82)));
+        auto *card=new NodeCard(QRectF(0,0,width,npc?266:(trigger?201:
+            node.type==QStringLiteral("enemy")?142:
+            !eventKinds(node.type).isEmpty()?92+eventKinds(node.type).size()*29:82)));
         card->setData(0,QStringLiteral("card"));card->setData(1,id);
         card->setPen(QPen(eventSource?QColor(238,190,86):npc?QColor(207,153,236):player?QColor(198,149,226):QColor(103,153,184),1.5));
         card->setBrush(m_theme.panelBackground);
@@ -2746,7 +2845,7 @@ private:
             node.type==QStringLiteral("world_reference")?tr("WORLD OBJECT TARGET"):
             node.type==QStringLiteral("missing_reference")?tr("BROKEN CONNECTION"):
             (node.type==QStringLiteral("collectable") && node.pickupKind==3)?tr("KEY COLLECTABLE"):
-            node.type==QStringLiteral("enemy")?tr("ENEMY DEFEAT"):node.type.toUpper(),card);
+            node.type==QStringLiteral("enemy")?tr("ENEMY STATE / DEFEAT"):node.type.toUpper(),card);
         kind->setBrush(m_theme.text);kind->setPos(9,35);
         if (!npc) {
             // An incoming action is not the same thing as an outgoing state:
@@ -2772,9 +2871,42 @@ private:
             } else {
                 port->setPen(QPen(QColor(177,242,226),2));
                 port->setBrush(QColor(54,148,141));
-                port->setToolTip(eventSource ? tr("This object's existing defeat/pickup action is shown as a coloured wire. The teal socket still reads enabled state.") :
+                port->setToolTip(node.type==QStringLiteral("enemy")
+                    ? tr("STATE OUTPUT: read this enemy as a Boolean input. Create AND/NOT/OR logic directly from here without a Trigger. TRUE means active, FALSE means defeated/disabled. For actions when defeated use the gold socket below.")
+                    : eventSource ? tr("This object's existing pickup action is shown as a coloured wire. The teal socket still reads enabled state.") :
                     tr("Read this Game Object's enabled/disabled state with Logic > Boolean"));
             }
+        }
+        if (node.type==QStringLiteral("enemy")) {
+            auto *label=new QGraphicsSimpleTextItem(tr("ON DEFEAT"),card);
+            label->setBrush(QColor(238,190,86));label->setPos(9,75);
+            auto *defeat=new QGraphicsEllipseItem(QRectF(214,81,19,19),card);
+            defeat->setData(0,QStringLiteral("enemy-action-output"));
+            defeat->setData(1,id);
+            defeat->setPen(QPen(QColor(255,225,147),2));
+            defeat->setBrush(QColor(205,140,37));
+            defeat->setZValue(5);
+            defeat->setToolTip(tr("ON DEFEAT ACTION: drag to a Game Object or PLAYER command to Enable, Disable or Toggle when the final stomp defeats this enemy. Multiple ordered actions are supported."));
+        }
+        // Gold executable EVENT outputs are distinct from the teal state
+        // socket; a source can expose several independent named events.
+        const QStringList kinds=eventKinds(node.type);
+        for(int eventIndex=0;eventIndex<kinds.size();++eventIndex) {
+            const QString key=kinds.at(eventIndex);
+            const qreal y=(node.type==QStringLiteral("enemy")?108.0:79.0)+eventIndex*29.0;
+            auto *label=new QGraphicsSimpleTextItem(eventLabel(key),card);
+            label->setBrush(QColor(238,190,86));label->setPos(9,y-6);
+            auto *port=new QGraphicsEllipseItem(QRectF(214,y,19,19),card);
+            port->setData(0,QStringLiteral("event-output"));
+            port->setData(1,id);port->setData(2,key);
+            port->setPen(QPen(QColor(255,225,147),2));
+            port->setBrush(QColor(205,140,37));port->setZValue(5);
+            port->setToolTip(key==QStringLiteral("arrival")
+                ? tr("GOLD ON ARRIVAL: drag to empty canvas → Logic (Boolean/AND/OR/NOT), or to a Game Object and right-click the action wire → Toggle to alternate its state each arrival. The teal socket above reads the lift's active state instead.")
+                : ((node.type==QStringLiteral("breakable") &&
+                    (key==QStringLiteral("hit") || key==QStringLiteral("destroy")))
+                  ? tr("%1: drag to empty canvas → Logic (Boolean/AND/OR/NOT), or to a Game Object for an unconditional action.").arg(eventLabel(key))
+                  : tr("%1: drag to an action target. Executes only when this real game event occurs.").arg(eventLabel(key))));
         }
         if (npc) {
             // NPC visibility is a genuine Enable/Disable/Toggle action,
@@ -3651,7 +3783,7 @@ private:
         for (const QString &id:m_order) {
             const NodeObject node=m_objects.value(id);
             if (!linked.contains(id) && !m_placedCards.contains(id))continue;
-            const bool source=isActionSource(node);
+            const bool source=isActionSource(node) || !eventKinds(node.type).isEmpty();
             const int col=source?0:(node.type==QStringLiteral("npc")?2:1);
             const int row=source?triggerCount++:(col==2?targetCount++:otherCount++);
             // Expanded NPC cards contain two dialogue selectors and must not
@@ -3685,7 +3817,7 @@ private:
         }
         for(const QString &owner:m_order) {
             const NodeObject node=m_objects.value(owner);
-            if(node.type!=QStringLiteral("trigger"))continue;
+            if(node.logicNodes.isEmpty())continue;
             for(const QJsonValue &entry:node.logicNodes) {
                 const QJsonObject o=entry.toObject();
                 const QString id=o.value(QStringLiteral("id")).toString();
@@ -3720,7 +3852,7 @@ private:
         // If a saved visual route is no longer valid, restore its own card.
         for(const QString &owner:m_order) {
             const NodeObject trigger=m_objects.value(owner);
-            if(trigger.type!=QStringLiteral("trigger"))continue;
+            if(trigger.logicNodes.isEmpty())continue;
             for(const QJsonValue &v:trigger.logicNodes) {
                 const QJsonObject node=v.toObject();
                 const QString key=graphKey(owner,node.value(QStringLiteral("id")).toString());
@@ -3961,14 +4093,31 @@ private:
         const bool graphValue=from.startsWith(QStringLiteral("@graphvalue:"));
         const bool graphBranch=from.startsWith(QStringLiteral("@graphbranch:true:")) ||
                                from.startsWith(QStringLiteral("@graphbranch:false:"));
+        const bool eventOutputPort=isEventOutput(from) &&
+            m_objects.contains(eventOwner(from)) &&
+            eventKinds(m_objects.value(eventOwner(from)).type).contains(eventKey(from));
+        const bool enemyOutput=isEnemyDefeatOutput(from) &&
+            m_objects.value(enemyDefeatOwner(from)).type==QStringLiteral("enemy");
+        // Event outputs are action ports, not ordinary object-state outputs.
+        // Keep their conditional logic choice both visible and easy to find.
+        const bool eventLogicSource=eventOutputPort &&
+            ((eventKey(from)==QStringLiteral("arrival") &&
+              m_objects.value(eventOwner(from)).type==QStringLiteral("lift")) ||
+             ((eventKey(from)==QStringLiteral("hit") ||
+               eventKey(from)==QStringLiteral("destroy")) &&
+              m_objects.value(eventOwner(from)).type==QStringLiteral("breakable")));
         const bool objectSource=graphValue || (!from.isEmpty() && !stateOutput && m_objects.contains(from) &&
             m_objects.value(from).type!=QStringLiteral("trigger") &&
             m_objects.value(from).type!=QStringLiteral("npc") &&
-            m_objects.value(from).type!=QStringLiteral("player_action"));
+            m_objects.value(from).type!=QStringLiteral("player_action") &&
+            m_objects.value(from).type!=QStringLiteral("collectable") &&
+            m_objects.value(from).type!=QStringLiteral("player"));
         picker.setWindowTitle(from.isEmpty()?tr("Add World Node"):
             graphValue?tr("Connect RESULT to Logic or Game Object..."):
             (stateOutput || graphBranch)?tr("Connect TRUE / FALSE to..."):
-            objectSource?tr("Read Game Object State..."):tr("Connect Trigger to..."));
+            objectSource?tr("Read Game Object State..."):
+            eventOutputPort?tr("Connect %1 to...").arg(eventLabel(eventKey(from))):
+            enemyOutput?tr("Connect Enemy ON DEFEAT to..."):tr("Connect Trigger to..."));
         if (stateOutput) {
             const bool yes=from.startsWith(QStringLiteral("@stateout:true:"));
             const QString owner=from.mid(yes?QStringLiteral("@stateout:true:").size():
@@ -3984,6 +4133,12 @@ private:
         auto *search=new QLineEdit(&picker);
         search->setPlaceholderText(tr("Filter available nodes..."));
         layout->addWidget(search);
+        if(eventLogicSource) {
+            auto *hint=new QLabel(tr("%1: select Logic to combine this one-frame event with object states, "
+                "or connect directly for an unconditional action.").arg(eventLabel(eventKey(from))),&picker);
+            hint->setWordWrap(true);
+            layout->addWidget(hint);
+        }
         auto *tree=new QTreeWidget(&picker);
         tree->setHeaderHidden(true);
         tree->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -3996,10 +4151,15 @@ private:
         QTreeWidgetItem *npcsRoot=nullptr;
         QTreeWidgetItem *playerRoot=nullptr;
         QTreeWidgetItem *worldTransitionsRoot=nullptr;
+        QTreeWidgetItem *logicRoot=nullptr;
         QHash<QString,QTreeWidgetItem*> objectTypes;
         if (!objectSource || graphValue) for (const QString &id:m_order) {
-            if (linking && id==from)continue;
+            if (linking && (id==from || (enemyOutput && id==enemyDefeatOwner(from)) ||
+                (eventOutputPort && id==eventOwner(from))))continue;
             const NodeObject object=m_objects.value(id);
+            // An enemy death can change an object's active state, but cannot
+            // start an NPC conversation. Never offer a no-op target.
+            if ((enemyOutput || eventOutputPort) && object.type==QStringLiteral("npc"))continue;
             if(object.type==QStringLiteral("player_action") ||
                object.type==QStringLiteral("missing_reference"))continue;
             if(graphValue && (object.type==QStringLiteral("trigger") ||
@@ -4080,7 +4240,7 @@ private:
         // NPC start/after-helped selections point to the existing Adventure
         // dialogue IDs. TRUE/FALSE actions use the same runtime Show Dialogue
         // command as ordinary Dialogue Actions, never a new NPC event type.
-        if(linking && !objectSource && !graphValue) {
+        if(linking && !objectSource && !graphValue && !enemyOutput) {
             auto *npcConversations=new QTreeWidgetItem(tree,QStringList{tr("NPC Conversations")});
             npcConversations->setFlags(npcConversations->flags() & ~Qt::ItemIsSelectable);
             for(const QString &id:m_order) {
@@ -4105,29 +4265,47 @@ private:
         // Sort only the Game Object/NPC branches before adding dialogue nodes:
         // the Dialogue Editor's "+ Create New Dialogue" must stay last.
         tree->sortItems(0,Qt::AscendingOrder);
-        if (objectSource) {
+        if (objectSource || eventLogicSource) {
             auto *logic=new QTreeWidgetItem(tree,QStringList{tr("Logic")});
+            logicRoot=logic;
             logic->setFlags(logic->flags() & ~Qt::ItemIsSelectable);
-            auto *boolean=new QTreeWidgetItem(logic,QStringList{tr("Boolean (TRUE / FALSE)")});
+            auto *boolean=new QTreeWidgetItem(logic,QStringList{eventLogicSource?tr("Boolean (event pulse)"):
+                tr("Boolean (TRUE / FALSE)")});
             boolean->setData(0,Qt::UserRole,QStringLiteral("@logic:boolean"));
-            boolean->setToolTip(0,tr("TRUE when this object is enabled. One input."));
+            boolean->setToolTip(0,eventLogicSource?tr("TRUE only when this one-frame event occurs."):
+                tr("TRUE when this object is enabled. One input."));
             auto *andNode=new QTreeWidgetItem(logic,QStringList{tr("AND (all enabled)")});
             andNode->setData(0,Qt::UserRole,QStringLiteral("@logic:and"));
-            andNode->setToolTip(0,tr("TRUE only when at least two connected Game Objects are all enabled."));
-            auto *orNode=new QTreeWidgetItem(logic,QStringList{tr("OR (either enabled)")});
+            andNode->setToolTip(0,eventLogicSource?tr("TRUE when this event occurs AND the other connected object states are enabled."):
+                tr("TRUE only when at least two connected Game Objects are all enabled."));
+            auto *orNode=new QTreeWidgetItem(logic,QStringList{tr("OR (any enabled, 2–8 inputs)")});
             orNode->setData(0,Qt::UserRole,QStringLiteral("@logic:or"));
-            orNode->setToolTip(0,tr("TRUE when either of two connected Game Objects is enabled."));
+            orNode->setToolTip(0,tr("TRUE when any of 2–8 connected Game Objects is enabled."));
             auto *notNode=new QTreeWidgetItem(logic,QStringList{tr("NOT (invert input)")});
             notNode->setData(0,Qt::UserRole,QStringLiteral("@logic:not"));
         }
-        if (linking && !objectSource) {
+        // Named Breakable events can show an Adventure dialogue. Selecting one
+        // creates the existing one-frame BOOLEAN -> TRUE dialogue chain, so
+        // event playback uses the same validated runtime path as graph dialogue.
+        if (linking && !objectSource && !enemyOutput &&
+            (!eventOutputPort || eventLogicSource)) {
             auto *root=new QTreeWidgetItem(tree,QStringList{tr("Dialogue Actions")});
             root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
             populateDialogueChoices(tree,root);
         }
         // A large world may contain hundreds of objects: start with just the
-        // root headings, not every object and dialogue expanded.
+        // root headings, not every object and dialogue expanded. Exception:
+        // the arrival event's four existing logic choices are the purpose of
+        // this picker, so put Logic FIRST and leave it expanded.
         tree->collapseAll();
+        if((eventLogicSource || objectSource) && logicRoot) {
+            const int previousIndex=tree->indexOfTopLevelItem(logicRoot);
+            if(previousIndex>0) {
+                QTreeWidgetItem *first=tree->takeTopLevelItem(previousIndex);
+                tree->insertTopLevelItem(0,first);
+            }
+            logicRoot->setExpanded(true);
+        }
         auto *buttons=new QDialogButtonBox(QDialogButtonBox::Cancel,&picker);
         layout->addWidget(buttons);
         connect(buttons,&QDialogButtonBox::rejected,&picker,&QDialog::reject);
@@ -4179,11 +4357,27 @@ private:
             selectedId=QStringLiteral("@dialogue-node:%1").arg(dialogue);
         }
         if (selectedId.startsWith(QStringLiteral("@logic:"))) {
-            if (!objectSource)return;
+            if (!objectSource && !eventLogicSource)return;
             createGraphLogic(from,at,selectedId.mid(QStringLiteral("@logic:").size()));
             return;
         }
         if (selectedId==QStringLiteral("@create-dialogue")) {
+            if(eventLogicSource) {
+                if(m_dialogues.size()>=256) {
+                    QMessageBox::warning(this,tr("Visual Nodes"),tr("Adventure dialogues are limited to 256 nodes."));
+                    return;
+                }
+                const QString owner=eventOwner(from);
+                const int before=m_objects.value(owner).logicNodes.size();
+                createGraphLogic(from,at,QStringLiteral("boolean"));
+                const QJsonArray nodes=m_objects.value(owner).logicNodes;
+                if(nodes.size()!=before+1)return;
+                const QString key=graphKey(owner,nodes.last().toObject().value(QStringLiteral("id")).toString());
+                setGraphDialogue(key,true,-2,at+QPointF(350,0));
+                m_status->setText(tr("%1: event pulse → BOOLEAN TRUE → new Adventure dialogue. Save Graph + World to apply.")
+                    .arg(eventLabel(eventKey(from))));
+                return;
+            }
             if(graphBranch) {
                 const bool yes=from.startsWith(QStringLiteral("@graphbranch:true:"));
                 const QString key=from.mid((yes?QStringLiteral("@graphbranch:true:"):
@@ -4208,6 +4402,18 @@ private:
             bool ok=false;
             const int index=selectedId.mid(QStringLiteral("@dialogue-node:").size()).toInt(&ok);
             if (ok && index>=0 && index<m_dialogues.size()) {
+                if(eventLogicSource) {
+                    const QString owner=eventOwner(from);
+                    const int before=m_objects.value(owner).logicNodes.size();
+                    createGraphLogic(from,at,QStringLiteral("boolean"));
+                    const QJsonArray nodes=m_objects.value(owner).logicNodes;
+                    if(nodes.size()!=before+1)return;
+                    const QString key=graphKey(owner,nodes.last().toObject().value(QStringLiteral("id")).toString());
+                    setGraphDialogue(key,true,index,at+QPointF(350,0));
+                    m_status->setText(tr("%1: event pulse → BOOLEAN TRUE → Dialogue #%2. Save Graph + World to apply.")
+                        .arg(eventLabel(eventKey(from))).arg(index));
+                    return;
+                }
                 if(graphBranch) {
                     const bool yes=from.startsWith(QStringLiteral("@graphbranch:true:"));
                     const QString key=from.mid((yes?QStringLiteral("@graphbranch:true:"):
@@ -4224,8 +4430,10 @@ private:
             return;
         }
         if (linking && !stateOutput && !graphBranch && !graphValue &&
-            m_objects.contains(from) && m_objects.value(from).links.size()>=64) {
-            QMessageBox::warning(this,tr("Visual Nodes"),tr("Triggers allow up to 64 linked actions."));
+            (m_objects.contains(from) || enemyOutput) &&
+            (eventOutputPort ? m_objects.value(eventOwner(from)).eventLinks.value(eventKey(from)).size() :
+              m_objects.value(enemyOutput?enemyDefeatOwner(from):from).links.size())>=64) {
+            QMessageBox::warning(this,tr("Visual Nodes"),tr("At most 64 actions per event output."));
             return;
         }
         if (m_objects.contains(selectedId) &&
@@ -4259,17 +4467,35 @@ private:
                 const QString prefix=yes?QStringLiteral("@stateout:true:"):QStringLiteral("@stateout:false:");
                 appendBranchConnection(from.mid(prefix.size()),yes,selectedId,
                     defaultPlayerAction(selectedId,yes?QStringLiteral("enable"):QStringLiteral("disable")));
-            } else appendConnection(from,selectedId,QStringLiteral("enable"));
+            } else if(eventOutputPort)
+                appendEventConnection(eventOwner(from),eventKey(from),selectedId,
+                    defaultPlayerAction(selectedId,QStringLiteral("enable")));
+            else appendConnection(enemyOutput?enemyDefeatOwner(from):from,
+                                    selectedId,defaultPlayerAction(selectedId,QStringLiteral("enable")));
         } else {
             showDetails(selectedId);
         }
     }
+    void appendEventConnection(const QString &owner,const QString &event,
+                               const QString &target,const QString &operation) {
+        if(!m_objects.contains(owner) || !m_objects.contains(target) || owner==target ||
+           !eventKinds(m_objects.value(owner).type).contains(event) || !supportedAction(operation))return;
+        NodeObject node=m_objects.value(owner);
+        QVector<NodeLink> &links=node.eventLinks[event];
+        if(links.size()>=64) {
+            QMessageBox::warning(this,tr("Visual Nodes"),tr("At most 64 actions per event."));return;
+        }
+        links.append({target,operation});
+        m_objects.insert(owner,node);m_touched.insert(owner);m_dirty=true;
+        redrawLinks();showDetails(owner);
+    }
     void appendConnection(const QString &from,const QString &to,const QString &action) {
         if (!supportedAction(action) || !m_objects.contains(from) || !m_objects.contains(to) ||
-            m_objects.value(from).type!=QStringLiteral("trigger"))return;
+            from==to || !isActionSource(m_objects.value(from)) ||
+            m_objects.value(from).type==QStringLiteral("collectable"))return;
         NodeObject node=m_objects.value(from);
         if (node.links.size()>=64) {
-            QMessageBox::warning(this,tr("Visual Nodes"),tr("Triggers allow up to 64 linked actions."));return;
+            QMessageBox::warning(this,tr("Visual Nodes"),tr("At most 64 linked actions per Trigger or Stompable Enemy."));return;
         }
         node.links.append({to,action});
         m_objects.insert(from,node);m_touched.insert(from);m_dirty=true;
@@ -4410,7 +4636,10 @@ private:
         const int colon=text.lastIndexOf(QLatin1Char(':'));
         if(colon<1)return false;
         const QString who=text.left(colon),name=text.mid(colon+1);
-        if(!m_objects.contains(who) || m_objects.value(who).type!=QStringLiteral("trigger"))return false;
+        if(!m_objects.contains(who) || m_objects.value(who).resourceIndex<0 ||
+           m_objects.value(who).type==QStringLiteral("npc") ||
+           m_objects.value(who).type==QStringLiteral("player_action") ||
+           m_objects.value(who).type==QStringLiteral("collectable"))return false;
         const QJsonArray nodes=m_objects.value(who).logicNodes;
         for(int i=0;i<nodes.size();++i)
             if(nodes[i].toObject().value(QStringLiteral("id")).toString()==name) {
@@ -4431,31 +4660,28 @@ private:
         return true;
     }
     QString graphOwnerForObject(const QString &source) {
-        QStringList owners;
-        for(const QString &id:m_order) {
-            const NodeObject n=m_objects.value(id);
-            if(n.type!=QStringLiteral("trigger"))continue;
-            for(const NodeLink &link:n.links)if(link.target==source && supportedAction(link.action)) {
-                owners.append(id);break;
-            }
-        }
-        if(owners.isEmpty()) {
-            QMessageBox::information(this,tr("Logic Nodes"),
-                tr("Connect a Trigger action to this Game Object first. Logic is evaluated when that Trigger activates."));
+        // The source's active STATE is a legitimate independent graph input.
+        // It does not need an unrelated Trigger or a defeated enemy to own it.
+        // The runtime evaluates when a real action/event changes that state.
+        const NodeObject n=m_objects.value(source);
+        if(n.resourceIndex<0 || n.type==QStringLiteral("collectable") ||
+           n.type==QStringLiteral("npc") || n.type==QStringLiteral("player_action") ||
+           n.type==QStringLiteral("trigger") || n.type==QStringLiteral("player"))
             return QString();
-        }
-        if(owners.size()==1)return owners.first();
-        QStringList choices;
-        for(const QString &id:owners)choices.append(tr("%1 [%2]").arg(m_objects.value(id).name,id));
-        bool ok=false;
-        const QString selected=QInputDialog::getItem(this,tr("Logic Trigger"),
-            tr("Which Trigger activation evaluates these logic nodes?"),choices,0,false,&ok);
-        return ok && choices.contains(selected)?owners.at(choices.indexOf(selected)):QString();
+        return source;
     }
     void createGraphLogic(const QString &source,const QPointF &at,const QString &operation) {
         QString owner;
         QJsonObject input;
-        if(source.startsWith(QStringLiteral("@graphvalue:"))) {
+        if(isEventOutput(source) && m_objects.contains(eventOwner(source)) &&
+           ((eventKey(source)==QStringLiteral("arrival") &&
+             m_objects.value(eventOwner(source)).type==QStringLiteral("lift")) ||
+            ((eventKey(source)==QStringLiteral("hit") || eventKey(source)==QStringLiteral("destroy")) &&
+             m_objects.value(eventOwner(source)).type==QStringLiteral("breakable")))) {
+            owner=eventOwner(source);
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),source}};
+        } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QJsonObject upstreamNode;
             if(!lookupGraph(upstream,&owner,nullptr,&upstreamNode))return;
@@ -4470,7 +4696,7 @@ private:
         if(owner.isEmpty() || !m_objects.contains(owner))return;
         NodeObject n=m_objects.value(owner);
         if(n.logicNodes.size()>=64) {
-            QMessageBox::information(this,tr("Logic Nodes"),tr("Maximum 64 logic nodes per Trigger."));return;
+            QMessageBox::information(this,tr("Logic Nodes"),tr("Maximum 64 logic nodes per Game Object."));return;
         }
         QSet<QString> existing;
         for(const QJsonValue &v:n.logicNodes)existing.insert(v.toObject().value(QStringLiteral("id")).toString());
@@ -4497,7 +4723,14 @@ private:
         QString owner;int index;QJsonObject node;
         if(!lookupGraph(key,&owner,&index,&node))return;
         QJsonObject input;
-        if(source.startsWith(QStringLiteral("@graphvalue:"))) {
+        if(isEventOutput(source) && eventOwner(source)==owner &&
+           ((eventKey(source)==QStringLiteral("arrival") &&
+             m_objects.value(owner).type==QStringLiteral("lift")) ||
+            ((eventKey(source)==QStringLiteral("hit") || eventKey(source)==QStringLiteral("destroy")) &&
+             m_objects.value(owner).type==QStringLiteral("breakable")))) {
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),source}};
+        } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QString otherOwner;QJsonObject other;
             if(!lookupGraph(upstream,&otherOwner,nullptr,&other) || otherOwner!=owner || upstream==key)return;
@@ -4519,9 +4752,9 @@ private:
                 QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
             inputs=QJsonArray();
         }
-        if((op==QStringLiteral("or") && inputs.size()>=2) || inputs.size()>=16) {
+        if((op==QStringLiteral("or") && inputs.size()>=8) || inputs.size()>=16) {
             QMessageBox::information(this,tr("Logic Inputs"),
-                op==QStringLiteral("or")?tr("OR requires exactly two inputs."):tr("Maximum sixteen inputs."));return;
+                op==QStringLiteral("or")?tr("OR accepts at most eight inputs."):tr("Maximum sixteen inputs."));return;
         }
         inputs.append(input);node.insert(QStringLiteral("inputs"),inputs);
         QVector<SidboxVisualLogic::Node> parsed;
@@ -4628,6 +4861,85 @@ private:
             m_positions.value(target):viewportInsertionPoint(QSizeF(240,125)));
         redrawLinks();showDetails(key);
     }
+    void syncGraphCardSockets(const QString &key) {
+        NodeCard *card=m_cards.value(key,nullptr);
+        QJsonObject node;
+        if(!card || !lookupGraph(key,nullptr,nullptr,&node))return;
+        const QString op=node.value(QStringLiteral("op")).toString();
+        const QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
+        // AND supports 2..16, OR supports 2..8, BOOLEAN/NOT exactly one.
+        // Show a spare socket until each gate reaches its maximum input count.
+        const int inputSocketCount=op==QStringLiteral("and")?
+            qMin(16,qMax(2,static_cast<int>(inputs.size())+1)):
+            op==QStringLiteral("or")?qMin(8,qMax(2,static_cast<int>(inputs.size())+1)):1;
+        const int resultY=86+24*(inputSocketCount-1);
+        const int trueY=resultY+31,falseY=resultY+60;
+        const bool folded=card->collapsed();
+        if(folded)card->setCollapsed(false);
+        QVector<QGraphicsItem*> stale;
+        for(QGraphicsItem *child:card->childItems()) {
+            const QString role=child->data(4).toString();
+            if((role==QStringLiteral("graph-input") ||
+                role==QStringLiteral("graph-input-label")) && child->data(2).toInt()>=inputSocketCount)
+                stale.append(child);
+        }
+        for(QGraphicsItem *child:stale)delete child;
+        for(int i=0;i<inputSocketCount;++i) {
+            QGraphicsRectItem *socket=nullptr;
+            QGraphicsSimpleTextItem *label=nullptr;
+            for(QGraphicsItem *child:card->childItems()) {
+                if(child->data(2).toInt()!=i)continue;
+                if(child->data(4).toString()==QStringLiteral("graph-input"))
+                    socket=dynamic_cast<QGraphicsRectItem*>(child);
+                else if(child->data(4).toString()==QStringLiteral("graph-input-label"))
+                    label=dynamic_cast<QGraphicsSimpleTextItem*>(child);
+            }
+            const bool connected=i<inputs.size();
+            const QJsonObject entry=connected?inputs.at(i).toObject():QJsonObject();
+            const QString kind=entry.value(QStringLiteral("kind")).toString();
+            const QString id=entry.value(QStringLiteral("id")).toString();
+            const QString name=kind==QStringLiteral("node")?id:
+                kind==QStringLiteral("event")?eventLabel(eventKey(id)):
+                m_objects.contains(id)?m_objects.value(id).name:id;
+            if(!socket) {
+                socket=new QGraphicsRectItem(card);
+                socket->setData(0,QStringLiteral("input"));socket->setData(1,key);
+                socket->setData(2,i);socket->setData(4,QStringLiteral("graph-input"));
+                socket->setPen(QPen(QColor(160,237,232),1.5));
+                socket->setBrush(QColor(75,173,177));socket->setZValue(4);
+            }
+            socket->setPos(QPointF());
+            socket->setRect(QRectF(-7,45+24*i,14,14));
+            socket->setToolTip(connected?tr("INPUT %1: %2. Right-click its wire to disconnect.")
+                .arg(i+1).arg(name):tr("INPUT %1: drag a Game Object STATE or logic RESULT here.").arg(i+1));
+            if(!label) {
+                label=new QGraphicsSimpleTextItem(card);
+                label->setData(2,i);label->setData(4,QStringLiteral("graph-input-label"));
+            }
+            label->setText(connected?tr("INPUT %1: %2").arg(i+1).arg(name).left(31):
+                tr("INPUT %1: (connect)").arg(i+1));
+            label->setBrush(connected?m_theme.text:m_theme.mutedText);
+            label->setPos(10,43+24*i);
+        }
+        for(QGraphicsItem *child:card->childItems()) {
+            const QString role=child->data(4).toString();
+            if(role==QStringLiteral("graph-result-label"))child->setPos(9,resultY-13);
+            else if(role==QStringLiteral("graph-true-label"))child->setPos(9,trueY-13);
+            else if(role==QStringLiteral("graph-false-label"))child->setPos(9,falseY-13);
+            else if(role==QStringLiteral("graph-result-port") ||
+                    role==QStringLiteral("graph-true-port") ||
+                    role==QStringLiteral("graph-false-port")) {
+                auto *port=dynamic_cast<QGraphicsEllipseItem*>(child);
+                if(port) {
+                    const int y=role==QStringLiteral("graph-result-port")?resultY:
+                        role==QStringLiteral("graph-true-port")?trueY:falseY;
+                    port->setPos(QPointF());port->setRect(QRectF(265,y-9,18,18));
+                }
+            } else if(role==QStringLiteral("graph-operator"))child->setPos(9,falseY+17);
+        }
+        card->setFullHeight(falseY+59);
+        if(folded)card->setCollapsed(true);
+    }
     void makeGraphCard(const QString &owner,const QString &id) {
         const QString key=graphKey(owner,id);
         if(m_cards.contains(key))return;
@@ -4645,25 +4957,24 @@ private:
         auto *title=new QGraphicsSimpleTextItem(data.value(QStringLiteral("op")).toString().toUpper()+
                                              QStringLiteral(" | ")+id,card);
         title->setBrush(Qt::white);title->setPos(9,3);
-        auto *input=new QGraphicsRectItem(QRectF(-7,51,14,14),card);
-        input->setData(0,QStringLiteral("input"));input->setData(1,key);
-        input->setPen(QPen(QColor(160,237,232),1.5));input->setBrush(QColor(75,173,177));
-        input->setZValue(4);
-        input->setToolTip(tr("INPUT: drag Game Object state or another logic RESULT here. AND/OR may accept multiple wires."));
-        auto *description=new QGraphicsSimpleTextItem(tr("Input state → result (drag teal socket)"),card);
-        description->setBrush(m_theme.text);description->setPos(9,38);
+        // Numbered inputs are created and resized by syncGraphCardSockets().
+        // They are graphical ports only; authored input order in .sbgm is unchanged.
         auto *valueLabel=new QGraphicsSimpleTextItem(tr("RESULT"),card);
+        valueLabel->setData(4,QStringLiteral("graph-result-label"));
         valueLabel->setBrush(QColor(150,218,221));valueLabel->setPos(9,65);
         auto *valuePort=new QGraphicsEllipseItem(QRectF(265,69,18,18),card);
         valuePort->setData(0,QStringLiteral("output"));valuePort->setData(1,QStringLiteral("@graphvalue:")+key);
+        valuePort->setData(4,QStringLiteral("graph-result-port"));
         valuePort->setBrush(QColor(76,169,176));valuePort->setPen(QPen(Qt::white,1));
         valuePort->setToolTip(tr("RESULT: connect to another Logic node or a Game Object (TRUE = enabled, FALSE = disabled)."));
         for(const bool yes:{true,false}) {
             const int y=yes?109:138;
             auto *label=new QGraphicsSimpleTextItem(yes?tr("TRUE / YES"):tr("FALSE / NO"),card);
+            label->setData(4,yes?QStringLiteral("graph-true-label"):QStringLiteral("graph-false-label"));
             label->setBrush(yes?QColor(111,222,167):QColor(244,145,146));label->setPos(9,y-8);
             auto *port=new QGraphicsEllipseItem(QRectF(265,y-6,18,18),card);
             port->setData(0,QStringLiteral("output"));
+            port->setData(4,yes?QStringLiteral("graph-true-port"):QStringLiteral("graph-false-port"));
             port->setData(1,(yes?QStringLiteral("@graphbranch:true:"):
                                   QStringLiteral("@graphbranch:false:"))+key);
             port->setPen(QPen(Qt::white,1));port->setBrush(yes?QColor(76,171,118):QColor(193,86,86));
@@ -4683,6 +4994,7 @@ private:
         operatorRow->addWidget(operation,1);
         auto *operatorProxy=new QGraphicsProxyWidget(card);
         operatorProxy->setWidget(operatorPanel);
+        operatorProxy->setData(4,QStringLiteral("graph-operator"));
         operatorProxy->setPos(9,153);
         operatorProxy->setZValue(3);
         connect(operation,qOverload<int>(&QComboBox::currentIndexChanged),this,
@@ -4690,7 +5002,15 @@ private:
             QJsonObject current;
             if(!lookupGraph(key,nullptr,nullptr,&current))return;
             const QString op=operation->currentData().toString();
-            if(current.value(QStringLiteral("op")).toString()==op)return;
+            const QString previousOp=current.value(QStringLiteral("op")).toString();
+            if(previousOp==op)return;
+            if(op==QStringLiteral("or") && current.value(QStringLiteral("inputs")).toArray().size()>8) {
+                QMessageBox::information(this,tr("OR Inputs"),
+                    tr("OR supports up to eight inputs. Disconnect extra inputs before switching this gate to OR."));
+                const QSignalBlocker block(operation);
+                operation->setCurrentIndex(operation->findData(previousOp));
+                return;
+            }
             current.insert(QStringLiteral("op"),op);
             graphUpdate(key,current);
             title->setText(op.toUpper()+QStringLiteral(" | ")+id);
@@ -4699,6 +5019,7 @@ private:
         card->moved=[this,key,card] {updateLiveWires(key,card);};
         addFoldButton(card,key);
         m_cards.insert(key,card);
+        syncGraphCardSockets(key);
         auto *entry=new QListWidgetItem(tr("%1 : %2 (%3)")
             .arg(data.value(QStringLiteral("op")).toString().toUpper(),id,m_objects.value(owner).name),m_list);
         entry->setData(Qt::UserRole,key);entry->setForeground(QBrush(QColor(130,215,214)));
@@ -4844,7 +5165,7 @@ private:
         };
         for(const QString &owner:m_order) {
             const NodeObject trigger=m_objects.value(owner);
-            if(trigger.type!=QStringLiteral("trigger"))continue;
+            if(trigger.logicNodes.isEmpty())continue;
             for(const QJsonValue &value:trigger.logicNodes) {
                 const QJsonObject n=value.toObject();
                 const QString key=graphKey(owner,n.value(QStringLiteral("id")).toString());
@@ -4855,12 +5176,15 @@ private:
                     const QJsonObject v=inputs.at(i).toObject();
                     const QString kind=v.value(QStringLiteral("kind")).toString();
                     const QString id=v.value(QStringLiteral("id")).toString();
-                    const QString from=kind==QStringLiteral("node")?graphKey(owner,id):id;
+                    const QString from=kind==QStringLiteral("node")?graphKey(owner,id):
+                        kind==QStringLiteral("event")?eventOwner(id):id;
                     NodeCard *source=m_cards.value(from,nullptr);
                     if(!source)continue;
                     const QPointF a=source->wirePoint(QPointF(kind==QStringLiteral("node")?274:224,
-                                                               kind==QStringLiteral("node")?78:58));
-                    const QPointF b=target->wirePoint(QPointF(0,58));
+                        kind==QStringLiteral("node")?78:
+                        kind==QStringLiteral("event")?
+                        (eventKey(id)==QStringLiteral("destroy")?117.5:88.5):58));
+                    const QPointF b=target->wirePoint(QPointF(0,52+24*i));
                     append(a,b,QColor(105,206,207),QStringLiteral("graph-input"),key,i,from,key);
                 }
                 // RESULT can directly drive any target Game Object's enabled
@@ -4964,47 +5288,6 @@ private:
     }
     // A Boolean is a visual read of a Game Object output. The real branching
     // behaviour remains owned by the Trigger in .sbgm, not by .vsgm.
-    void addBooleanFromObject(const QString &source,const QPointF &dropAt=QPointF(),
-                              const QString &op=QStringLiteral("boolean")) {
-        if (!m_objects.contains(source) || m_objects.value(source).resourceIndex<0 ||
-            (m_objects.value(source).type==QStringLiteral("trigger") ||
-             m_objects.value(source).type==QStringLiteral("npc"))) {
-            QMessageBox::information(this,tr("Boolean"),
-                tr("Select a Game Object such as a lift, door or switch, then drag its state output."));
-            return;
-        }
-        QStringList owners;
-        for (const QString &id:m_order) {
-            const NodeObject n=m_objects.value(id);
-            if (n.type!=QStringLiteral("trigger"))continue;
-            for (const NodeLink &link:n.links) {
-                if (link.target==source && supportedAction(link.action)) {
-                    owners.append(id);break;
-                }
-            }
-        }
-        if (owners.isEmpty()) {
-            QMessageBox::information(this,tr("Boolean"),
-                tr("Connect a Trigger action to %1 first. The Boolean will then read its state after that Trigger runs.")
-                    .arg(m_objects.value(source).name));
-            return;
-        }
-        QString owner=owners.first();
-        if (owners.size()>1) {
-            QStringList choices;
-            for (const QString &id:owners)
-                choices.append(tr("%1 [%2]").arg(m_objects.value(id).name,id));
-            bool ok=false;
-            const QString chosen=QInputDialog::getItem(this,tr("Boolean Trigger"),
-                tr("Which Trigger activation should evaluate %1?").arg(m_objects.value(source).name),
-                choices,0,false,&ok);
-            if (!ok)return;
-            const int index=choices.indexOf(chosen);
-            if (index<0)return;
-            owner=owners.at(index);
-        }
-        addToggleCondition(owner,source,dropAt,op);
-    }
     void convertLegacyToggle(const QString &owner) {
         if(!m_objects.contains(owner))return;
         NodeObject n=m_objects.value(owner);
@@ -5109,10 +5392,10 @@ private:
             addToggleCondition(owner,source,QPointF());return;
         }
         if (source==n.toggleStateTargetId || n.toggleStateInputIds.contains(source))return;
-        if ((n.toggleStateOperator==QStringLiteral("or") && n.toggleStateInputIds.size()>=1) ||
+        if ((n.toggleStateOperator==QStringLiteral("or") && n.toggleStateInputIds.size()>=7) ||
             n.toggleStateInputIds.size()>=15) {
             QMessageBox::information(this,tr("Logic inputs"),
-                n.toggleStateOperator==QStringLiteral("or") ? tr("OR accepts exactly two inputs.") :
+                n.toggleStateOperator==QStringLiteral("or") ? tr("OR accepts at most eight inputs.") :
                 tr("AND accepts at most sixteen inputs."));return;
         }
         n.toggleStateInputIds.append(source);
@@ -5175,10 +5458,15 @@ private:
             NodeObject n=m_objects.value(id);
             const QString op=opCombo->currentData().toString();
             if(op==n.toggleStateOperator)return;
+            if(op==QStringLiteral("or") && n.toggleStateInputIds.size()>7) {
+                QMessageBox::information(this,tr("OR Inputs"),
+                    tr("OR supports up to eight inputs. Disconnect extra inputs before switching this gate to OR."));
+                const QSignalBlocker block(opCombo);
+                opCombo->setCurrentIndex(opCombo->findData(n.toggleStateOperator));
+                return;
+            }
             n.toggleStateOperator=op;
             if(op==QStringLiteral("boolean"))n.toggleStateInputIds.clear();
-            if(op==QStringLiteral("or") && n.toggleStateInputIds.size()>1)
-                n.toggleStateInputIds=n.toggleStateInputIds.mid(0,1);
             m_objects.insert(id,n);m_touched.insert(id);m_dirty=true;
             refreshToggleCard(id);redrawLinks();showDetails(toggleCardId(id));
         });
@@ -5796,7 +6084,7 @@ private:
         // Authored .sbgm actions never depend on the .vsgm layout hints.
         for(const QString &owner:m_order) {
             const NodeObject trigger=m_objects.value(owner);
-            if(trigger.type!=QStringLiteral("trigger"))continue;
+            if(trigger.logicNodes.isEmpty())continue;
             for(const QJsonValue &v:trigger.logicNodes) {
                 const QJsonObject node=v.toObject();
                 const QString key=graphKey(owner,node.value(QStringLiteral("id")).toString());
@@ -5815,6 +6103,10 @@ private:
                 }
             }
         }
+        // Reconcile each numbered logic input socket before calculating wire
+        // endpoints. Adding/removing a .sbgm input changes only this UI geometry.
+        for(const QString &cardId:m_cards.keys())
+            if(cardId.startsWith(QStringLiteral("@graph:")))syncGraphCardSockets(cardId);
         // NPC preview wires can terminate at collapsed group headers. Refresh
         // those header bounds BEFORE constructing wires, not afterwards.
         updateConversationFlowGroups();
@@ -5863,6 +6155,7 @@ private:
                 auto *circle=dynamic_cast<QGraphicsEllipseItem*>(child);
                 auto *square=dynamic_cast<QGraphicsRectItem*>(child);
                 const bool output=kind==QStringLiteral("output") ||
+                    kind==QStringLiteral("enemy-action-output") ||
                     kind==QStringLiteral("conversation-output") ||
                     kind==QStringLiteral("conversation-missing-output") ||
                     kind==QStringLiteral("exchange-output") ||
@@ -5922,14 +6215,15 @@ private:
         m_lines.clear();
         for (const QString &id:m_order) {
             const NodeObject node=m_objects.value(id);
-            if (!isActionSource(node)) continue;
+            if (!isActionSource(node) && eventKinds(node.type).isEmpty()) continue;
             NodeCard *from=m_cards.value(id,nullptr);
             if (!from || !from->isVisible())continue;
             for (int i=0;i<node.links.size();++i) {
                 const NodeLink link=node.links.at(i);
                 NodeCard *to=m_cards.value(link.target,nullptr);
                 if (!to || !supportedAction(link.action))continue;
-                const QPointF a=from->wirePoint(QPointF(node.type==QStringLiteral("trigger")?280:224,58));
+                const QPointF a=from->wirePoint(QPointF(node.type==QStringLiteral("trigger")?280:224,
+                    node.type==QStringLiteral("enemy")?90:58));
                 const QPointF b=to->wirePoint(QPointF(0,58));
                 const qreal bend=qMax(55.0,qAbs(b.x()-a.x())*.5);
                 // Fan out multiple actions to the same target so both remain
@@ -5953,6 +6247,32 @@ private:
                     .arg(node.name,m_objects.value(link.target).name,link.action));
                 wire->setZValue(0);
                 m_lines.append(wire);
+            }
+            const QStringList kinds=eventKinds(node.type);
+            for(int eventIndex=0;eventIndex<kinds.size();++eventIndex) {
+                const QString key=kinds.at(eventIndex);
+                const QVector<NodeLink> &links=node.eventLinks.value(key);
+                for(int linkIndex=0;linkIndex<links.size();++linkIndex) {
+                    const NodeLink link=links.at(linkIndex);
+                    NodeCard *to=m_cards.value(link.target,nullptr);
+                    if(!to || !supportedAction(link.action))continue;
+                    const qreal y=(node.type==QStringLiteral("enemy")?117.5:88.5)+eventIndex*29.0;
+                    const QPointF a=from->wirePoint(QPointF(224,y));
+                    const QPointF b=to->wirePoint(QPointF(0,58));
+                    const qreal bend=qMax(55.0,qAbs(b.x()-a.x())*.5);
+                    QPainterPath path(a);
+                    path.cubicTo(a+QPointF(bend,0),b-QPointF(bend,0),b);
+                    auto *wire=new NodeWire(path,QPen(link.action==QStringLiteral("enable")
+                        ?QColor(108,211,159):link.action==QStringLiteral("disable")
+                        ?QColor(245,127,126):QColor(238,202,113),3));
+                    m_scene->addItem(wire);
+                    wire->setData(0,QStringLiteral("event-link"));
+                    wire->setData(1,eventOutput(key,id));wire->setData(2,linkIndex);
+                    wire->setData(4,id);wire->setData(5,link.target);
+                    wire->setToolTip(tr("%1: %2 → %3 (%4)")
+                        .arg(eventLabel(key),node.name,m_objects.value(link.target).name,link.action));
+                    wire->setZValue(0);m_lines.append(wire);
+                }
             }
             if (node.type!=QStringLiteral("trigger"))continue;
             if (m_cards.contains(toggleCardId(id))) {
@@ -6417,7 +6737,7 @@ private:
                 m_inspectorType->setText(tr("Independent logic"));
                 row(tr("Operator"),node.value(QStringLiteral("op")).toString().toUpper());
                 row(tr("Inputs"),QString::number(node.value(QStringLiteral("inputs")).toArray().size()));
-                row(tr("Trigger"),m_objects.value(owner).name);
+                row(tr("Game Object"),m_objects.value(owner).name);
                 row(tr("Data source"),QStringLiteral(".sbgm / logic"));
                 return;
             }
@@ -6491,7 +6811,8 @@ private:
     }
     void showDetails(const QString &id) {
         refreshCardInspector(id);
-        const bool actionsVisible=(m_objects.contains(id) && isActionSource(m_objects.value(id))) ||
+        const bool actionsVisible=(m_objects.contains(id) &&
+            (isActionSource(m_objects.value(id)) || !eventKinds(m_objects.value(id).type).isEmpty())) ||
             id.startsWith(QStringLiteral("@toggle:"));
         if(m_actionsHeader)m_actionsHeader->setVisible(actionsVisible);
         if(m_linksList)m_linksList->setVisible(actionsVisible);
@@ -6630,7 +6951,7 @@ private:
         QString text=tr("%1\nType: %2\n\nID: %3\n\n")
             .arg(node.name,node.type,node.id);
         m_linksList->clear();
-        if (isActionSource(node)) {
+        if (isActionSource(node) || !eventKinds(node.type).isEmpty()) {
             text+=tr("LINKED ACTIONS\n");
             for (int i=0;i<node.links.size();++i) {
                 const NodeLink &link=node.links[i];
@@ -6642,11 +6963,29 @@ private:
                 row->setData(Qt::UserRole,i);
                 row->setToolTip(tr("%1 → %2: %3").arg(node.name,target,link.action));
             }
+            for (const QString &key:eventKinds(node.type)) {
+                const QVector<NodeLink> actions=node.eventLinks.value(key);
+                text+=QStringLiteral("\n%1 (%2 actions)\n").arg(eventLabel(key)).arg(actions.size());
+                for(int i=0;i<actions.size();++i) {
+                    const NodeLink &link=actions.at(i);
+                    const QString target=m_objects.contains(link.target)?m_objects.value(link.target).name:link.target;
+                    text+=QStringLiteral("  • %1 → %2\n").arg(link.action,target);
+                    auto *row=new QListWidgetItem(tr("%1: %2 → %3")
+                        .arg(eventLabel(key),link.action,target),m_linksList);
+                    // Inspect/edit via the corresponding wire context menu.
+                    row->setData(Qt::UserRole,-30000-eventKinds(node.type).indexOf(key)*100-i);
+                    row->setToolTip(tr("Right-click its coloured event wire to edit this action."));
+                }
+            }
             if (node.type==QStringLiteral("trigger"))
                 text+=tr("\nDialogue: %1 (%2)\n\nUse the golden socket to connect this Trigger to another object or its Show Dialogue card. Select a connection below to edit or remove it.")
                     .arg(node.dialogueNode).arg(node.dialogueMode);
-            else text+=tr("\nThis pre-existing %1 action runs on %2. Edit the link below or use Game Object Properties.")
-                .arg(node.type,node.type==QStringLiteral("enemy")?tr("enemy defeat"):tr("key pickup"));
+            else if(node.type==QStringLiteral("enemy"))
+                text+=tr("\nGOLD ON DEFEAT socket: drag to a Game Object or PLAYER action. The linked actions run IN ORDER when this enemy is defeated.\n"
+                         "TEAL STATE socket: feed the enemy's enabled state into Boolean / AND / OR / NOT.\n"
+                         "LEFT square: receive Enable / Disable / Toggle commands from Triggers or logic branches.\n"
+                         "Right-click an action wire to change Enable / Disable / Toggle or disconnect it.");
+            else text+=tr("\nThis pre-existing key-pickup action runs when collected. Edit the link below or use Game Object Properties.");
         } else if(node.type==QStringLiteral("npc")) {
             text+=tr("NPC CONVERSATIONS (Adventure Editor)\n\n"
                 "Opening: %1\nAfter helped: %2\nTalk radius: %3 px\nInitially visible: %4\n\n"
@@ -6661,7 +7000,7 @@ private:
         } else text+=tr("This is a target card. Its other settings remain in Game Object Properties.");
         m_editLinkButton->setEnabled(false);
         m_removeLinkButton->setEnabled(false);
-        m_linksList->setEnabled(isActionSource(node));
+        m_linksList->setEnabled(isActionSource(node) || !eventKinds(node.type).isEmpty());
         m_details->setPlainText(text);
     }
     void connectNpcDialogue(const QString &from,const QString &npcId,QString slot) {
@@ -6764,6 +7103,89 @@ private:
         return selected>=0 && selected<m_dialogues.size()?selected:-1;
     }
     void addConnection(const QString &from,const QString &to,const QString &port=QString()) {
+        if(isEventOutput(from)) {
+            if((eventKey(from)==QStringLiteral("hit") || eventKey(from)==QStringLiteral("destroy")) &&
+               m_objects.value(eventOwner(from)).type==QStringLiteral("breakable") &&
+               (to.startsWith(QStringLiteral("@graph-dialogue:")) ||
+                to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
+                to.startsWith(QStringLiteral("@dialogue:")) ||
+                to.startsWith(QStringLiteral("@conversation:")))) {
+                const int dialogue=selectedDialogueOnCard(to);
+                if(dialogue<0)return;
+                const QString owner=eventOwner(from);
+                const int before=m_objects.value(owner).logicNodes.size();
+                const QPointF at=m_cards.contains(to)?m_cards.value(to)->pos()-QPointF(350,0):viewportInsertionPoint();
+                createGraphLogic(from,at,QStringLiteral("boolean"));
+                const QJsonArray nodes=m_objects.value(owner).logicNodes;
+                if(nodes.size()!=before+1)return;
+                const QString key=graphKey(owner,nodes.last().toObject().value(QStringLiteral("id")).toString());
+                setGraphDialogue(key,true,dialogue,at+QPointF(350,0));
+                const QString display=graphDialogueKey(key,true);
+                if(dialogueCardHasLiveAction(to)) {
+                    // One canvas dialogue card can represent multiple real
+                    // actions; each graph still retains its own .sbgm ID.
+                    if(m_cards.contains(display))removeOrphanCard(display,true);
+                    m_graphDialogueRoutes.insert(display,to);
+                    redrawLinks();showDetails(to);
+                }
+                m_status->setText(tr("%1 → BOOLEAN TRUE → Dialogue #%2. Save Graph + World to apply.")
+                    .arg(eventLabel(eventKey(from))).arg(dialogue));
+                return;
+            }
+            if(to.startsWith(QStringLiteral("@graph:")) &&
+               (eventKey(from)==QStringLiteral("arrival") ||
+                eventKey(from)==QStringLiteral("hit") ||
+                eventKey(from)==QStringLiteral("destroy"))) {
+                QString graphOwner;
+                if(lookupGraph(to,&graphOwner,nullptr) && graphOwner!=eventOwner(from)) {
+                    const QString owner=eventOwner(from);
+                    QJsonObject existing;
+                    if(!lookupGraph(to,nullptr,nullptr,&existing))return;
+                    QMessageBox message(QMessageBox::Information,tr("Event-driven Logic"),
+                        tr("This gate belongs to another Game Object. %1 must own its %2 gate "
+                           "so the one-frame event is evaluated at the right time.\n\n"
+                           "Create a separate %3 gate from this event, then reconnect the other STATE inputs.")
+                            .arg(m_objects.value(owner).name,eventLabel(eventKey(from)),
+                                 existing.value(QStringLiteral("op")).toString().toUpper()),
+                        QMessageBox::NoButton,this);
+                    auto *create=message.addButton(tr("Create Event Gate"),QMessageBox::AcceptRole);
+                    message.addButton(QMessageBox::Cancel);
+                    message.exec();
+                    if(message.clickedButton()==create) {
+                        const QString operation=existing.value(QStringLiteral("op")).toString();
+                        const QPointF point=m_cards.contains(to)?m_cards.value(to)->pos()+QPointF(0,260):viewportInsertionPoint();
+                        createGraphLogic(from,point,operation);
+                        m_status->setText(tr("Created an event-owned %1 gate. Reconnect its other STATE inputs.")
+                            .arg(operation.toUpper()));
+                    }
+                    return;
+                }
+                addGraphInput(from,to);return;
+            }
+            if(!m_objects.contains(to) || m_objects.value(to).type==QStringLiteral("npc"))return;
+            appendEventConnection(eventOwner(from),eventKey(from),to,
+                defaultPlayerAction(to,QStringLiteral("enable")));
+            return;
+        }
+        if (isEnemyDefeatOutput(from)) {
+            const QString owner=enemyDefeatOwner(from);
+            if (m_objects.value(owner).type!=QStringLiteral("enemy"))return;
+            if (to.startsWith(QStringLiteral("@graph:")) || to.startsWith(QStringLiteral("@toggle:"))) {
+                QMessageBox::information(this,tr("Enemy ON DEFEAT"),
+                    tr("The gold ON DEFEAT output sends Enable / Disable / Toggle actions. "
+                       "Use the teal STATE output to connect this enemy to a Boolean input."));
+                return;
+            }
+            if (!m_objects.contains(to))return;
+            if (m_objects.value(to).type==QStringLiteral("npc")) {
+                QMessageBox::information(this,tr("Enemy ON DEFEAT"),
+                    tr("This NPC input starts a conversation, not a visibility action. "
+                       "Use a Trigger or Boolean dialogue branch for NPC conversations."));
+                return;
+            }
+            appendConnection(owner,to,defaultPlayerAction(to,QStringLiteral("enable")));
+            return;
+        }
         if(m_objects.contains(to) && m_objects.value(to).type==QStringLiteral("npc") &&
            port!=QStringLiteral("state") &&
            (from.startsWith(QStringLiteral("@graphbranch:")) ||
@@ -7080,8 +7502,10 @@ private:
         // edges and every Trigger that points at a shared target object.
         for (const QString &source:m_order) {
             const NodeObject node=m_objects.value(source);
-            if (!isActionSource(node))continue;
+            if (!isActionSource(node) && eventKinds(node.type).isEmpty() &&
+                node.logicNodes.isEmpty())continue;
             if (source==id) {
+                for(const QVector<NodeLink> &events:node.eventLinks)removedLinks+=events.size();
                 removedLinks+=node.links.size();
                 if (node.dialogueNode>=0)++removedLinks;
                 if (!node.toggleStateTargetId.isEmpty())++removedLinks;
@@ -7089,6 +7513,8 @@ private:
                 if (node.toggleFalseDialogueNode>=0)++removedLinks;
                 removedLinks+=node.toggleTrueActions.size()+node.toggleFalseActions.size();
             } else if (!dialogueCard) {
+                for (const QVector<NodeLink> &events:node.eventLinks)
+                    for(const NodeLink &link:events)if(link.target==id)++removedLinks;
                 for (const NodeLink &link:node.links)
                     if (link.target==id)++removedLinks;
                 for (const NodeLink &link:node.toggleTrueActions)
@@ -7114,11 +7540,23 @@ private:
             // The Graph is a view; these are the only .sbgm fields we modify.
             for (const QString &source:m_order) {
                 NodeObject node=m_objects.value(source);
-                if (!isActionSource(node))continue;
+                if (!isActionSource(node) && eventKinds(node.type).isEmpty() &&
+                    node.logicNodes.isEmpty())continue;
                 bool changed=false;
+                if(source==id) {
+                    for(auto &links:node.eventLinks)if(!links.isEmpty()) {links.clear();changed=true;}
+                } else {
+                    for(auto &links:node.eventLinks) {
+                        const int before=links.size();
+                        links.erase(std::remove_if(links.begin(),links.end(),
+                            [&](const NodeLink &link){return link.target==id;}),links.end());
+                        if(before!=links.size())changed=true;
+                    }
+                }
                 if (source==id) {
                     if (!node.links.isEmpty()) { node.links.clear();changed=true; }
                     if (node.type!=QStringLiteral("trigger")) {
+                        if(!node.logicNodes.isEmpty()) {node.logicNodes=QJsonArray();changed=true;}
                         if(changed) {m_objects.insert(source,node);m_touched.insert(source);m_dirty=true;}
                         continue;
                     }
@@ -7163,7 +7601,7 @@ private:
                         }
                     }
                 }
-                if (node.type!=QStringLiteral("trigger")) {
+                if (node.type!=QStringLiteral("trigger") && node.logicNodes.isEmpty()) {
                     if(changed) {m_objects.insert(source,node);m_touched.insert(source);m_dirty=true;}
                     continue;
                 }
@@ -7176,8 +7614,12 @@ private:
                     QJsonArray inputs;
                     for(const QJsonValue &v:logic.value(QStringLiteral("inputs")).toArray()) {
                         const QJsonObject ref=v.toObject();
-                        if (ref.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
-                            ref.value(QStringLiteral("id")).toString()==id) {changed=true;continue;}
+                        if ((ref.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                             ref.value(QStringLiteral("id")).toString()==id) ||
+                            (ref.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
+                             (ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+id ||
+                              ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:hit:")+id ||
+                              ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:destroy:")+id))) {changed=true;continue;}
                         inputs.append(v);
                     }
                     logic.insert(QStringLiteral("inputs"),inputs);
@@ -7211,7 +7653,7 @@ private:
         // but does not destroy unrelated nodes merely because they are now
         // orphans. The separate Remove Orphans command remains available.
         if (!dialogueCard && m_objects.contains(id)) {
-            if (m_objects.value(id).type==QStringLiteral("trigger")) {
+            if (!m_objects.value(id).logicNodes.isEmpty()) {
                 for(const QJsonValue &v:m_objects.value(id).logicNodes) {
                     const QString key=graphKey(id,v.toObject().value(QStringLiteral("id")).toString());
                     for(const bool yes:{true,false})removeOrphanCard(graphDialogueKey(key,yes),true);
@@ -7354,7 +7796,7 @@ private:
             for (const QPair<QString,QString> &option:{
                 qMakePair(QStringLiteral("boolean"),tr("Boolean (one input)")),
                 qMakePair(QStringLiteral("and"),tr("AND (2–16 inputs)")),
-                qMakePair(QStringLiteral("or"),tr("OR (exactly 2 inputs)"))}) {
+                qMakePair(QStringLiteral("or"),tr("OR (2–8 inputs)"))}) {
                 QAction *item=operators->addAction(option.second);
                 choices.insert(item,option.first);
             }
@@ -7363,10 +7805,13 @@ private:
             QAction *selected=menu.exec(at);
             if (choices.contains(selected)) {
                 NodeObject n=m_objects.value(owner);
+                if(choices.value(selected)==QStringLiteral("or") && n.toggleStateInputIds.size()>7) {
+                    QMessageBox::information(this,tr("OR Inputs"),
+                        tr("OR supports up to eight inputs. Disconnect extra inputs before switching this gate to OR."));
+                    return;
+                }
                 n.toggleStateOperator=choices.value(selected);
                 if (n.toggleStateOperator==QStringLiteral("boolean"))n.toggleStateInputIds.clear();
-                if (n.toggleStateOperator==QStringLiteral("or") && n.toggleStateInputIds.size()>1)
-                    n.toggleStateInputIds=n.toggleStateInputIds.mid(0,1);
                 m_objects.insert(owner,n);m_touched.insert(owner);m_dirty=true;
                 refreshToggleCard(owner);redrawLinks();showDetails(id);
             } else if (selected==convert)convertLegacyToggle(owner);
@@ -7444,6 +7889,26 @@ private:
         QMenu menu(this);
         QHash<QAction*,QPair<QString,int>> actionTargets;
         for (const QPair<QString,int> &ref:links) {
+            if(isEventOutput(ref.first)) {
+                const QString owner=eventOwner(ref.first),key=eventKey(ref.first);
+                const NodeObject node=m_objects.value(owner);
+                const QVector<NodeLink> eventActions=node.eventLinks.value(key);
+                if(ref.second<0 || ref.second>=eventActions.size())continue;
+                const NodeLink link=eventActions.at(ref.second);
+                QMenu *actions=menu.addMenu(tr("%1 · %2 → %3")
+                    .arg(node.name,eventLabel(key),m_objects.value(link.target).name));
+                if(!isPlayerCommand(link.target))
+                    for(const QPair<QString,QString> &choice:{
+                        qMakePair(QStringLiteral("enable"),tr("Set Enable")),
+                        qMakePair(QStringLiteral("disable"),tr("Set Disable")),
+                        qMakePair(QStringLiteral("toggle"),tr("Set Toggle"))}) {
+                        QAction *action=actions->addAction(choice.second);
+                        action->setData(choice.first);actionTargets.insert(action,ref);
+                    }
+                QAction *remove=actions->addAction(tr("Remove Connection"));
+                remove->setData(QStringLiteral("remove"));actionTargets.insert(remove,ref);
+                continue;
+            }
             const NodeObject node=m_objects.value(ref.first);
             if (!isActionSource(node))continue;
             // -1 identifies a purple Show Dialogue wire. It has no
@@ -7526,6 +7991,19 @@ private:
         if (!selected || !actionTargets.contains(selected))return;
         const QPair<QString,int> ref=actionTargets.value(selected);
         const QString operation=selected->data().toString();
+        if (isEventOutput(ref.first)) {
+            const QString owner=eventOwner(ref.first),key=eventKey(ref.first);
+            NodeObject node=m_objects.value(owner);
+            QVector<NodeLink> &actions=node.eventLinks[key];
+            if(ref.second<0 || ref.second>=actions.size())return;
+            if(operation==QStringLiteral("remove"))actions.removeAt(ref.second);
+            else if(supportedAction(operation) && !isPlayerCommand(actions[ref.second].target))
+                actions[ref.second].action=operation;
+            else return;
+            m_objects.insert(owner,node);m_touched.insert(owner);m_dirty=true;
+            hideDisconnectedCards();redrawLinks();showDetails(owner);
+            return;
+        }
         if (operation==QStringLiteral("remove")) {
             if (ref.second==-1)disconnectDialogue(ref.first);
             else if (ref.second<=-10 && ref.second>=-25) {
@@ -7708,14 +8186,22 @@ private:
         if (!m_touched.isEmpty() || m_dialoguesChanged || m_npcsChanged) {
             for(const QString &owner:m_touched) {
                 const NodeObject n=m_objects.value(owner);
-                if(n.type!=QStringLiteral("trigger") || n.logicNodes.isEmpty())continue;
+                if(n.logicNodes.isEmpty())continue;
                 QVector<SidboxVisualLogic::Node> parsed;
                 QVector<int> schedule;
                 QString issue;
                 QSet<QString> locals;
                 for(const QString &id:m_order)
                     if(m_objects.value(id).resourceIndex>=0 &&
-                       m_objects.value(id).type!=QStringLiteral("npc"))locals.insert(id);
+                       m_objects.value(id).type!=QStringLiteral("npc")) {
+                        locals.insert(id);
+                        if(m_objects.value(id).type==QStringLiteral("lift"))
+                            locals.insert(QStringLiteral("@event:arrival:")+id);
+                        if(m_objects.value(id).type==QStringLiteral("breakable")) {
+                            locals.insert(QStringLiteral("@event:hit:")+id);
+                            locals.insert(QStringLiteral("@event:destroy:")+id);
+                        }
+                    }
                 if(!SidboxVisualLogic::read(n.logicNodes,&parsed,&issue) ||
                    !SidboxVisualLogic::order(parsed,locals,&schedule,&issue))
                     return fail(tr("%1: %2").arg(n.name,issue));
@@ -7729,7 +8215,7 @@ private:
                      !node.toggleTrueActions.isEmpty() || !node.toggleFalseActions.isEmpty() ||
                      node.toggleTrueDialogueNode>=0 || node.toggleFalseDialogueNode>=0) &&
                     ((node.toggleStateOperator==QStringLiteral("and") && (count<2 || count>16)) ||
-                     (node.toggleStateOperator==QStringLiteral("or") && count!=2) ||
+                     (node.toggleStateOperator==QStringLiteral("or") && (count<2 || count>8)) ||
                      (node.toggleStateOperator==QStringLiteral("boolean") && count!=1)))
                     return fail(tr("%1: incomplete %2 state condition. Connect the required Game Object inputs before saving.")
                         .arg(node.name,node.toggleStateOperator.toUpper()));
@@ -7742,9 +8228,16 @@ private:
             QSet<QString> actionTargets;
             for (const QString &id:m_order) {
                 const NodeObject owner=m_objects.value(id);
-                if (owner.type!=QStringLiteral("trigger"))continue;
+                if (!isActionSource(owner) && eventKinds(owner.type).isEmpty() &&
+                    owner.logicNodes.isEmpty())continue;
                 for (const NodeLink &link:owner.links)
                     if (supportedAction(link.action)) actionTargets.insert(link.target);
+                for(const QVector<NodeLink> &links:owner.eventLinks)
+                    for(const NodeLink &link:links)
+                        if(supportedAction(link.action))actionTargets.insert(link.target);
+                // Legacy Boolean branches remain Trigger-only; independent DAGs
+                // can also belong to Stompable Enemies.
+                if (owner.type==QStringLiteral("trigger")) {
                 for (const NodeLink &link:owner.toggleTrueActions)
                     if (supportedAction(link.action)) actionTargets.insert(link.target);
                 for (const NodeLink &link:owner.toggleFalseActions)
@@ -7752,6 +8245,7 @@ private:
                 if (!owner.toggleStateTargetId.isEmpty())
                     actionTargets.insert(owner.toggleStateTargetId);
                 for (const QString &input:owner.toggleStateInputIds) actionTargets.insert(input);
+                }
                 // Independent logic nodes can reference decorations as either
                 // value inputs or TRUE/FALSE action targets.
                 for (const QJsonValue &value:owner.logicNodes) {
@@ -7789,20 +8283,48 @@ private:
             }
             for (const QString &id:m_touched) {
                 const NodeObject node=m_objects.value(id);
-                if (!isActionSource(node) || node.resourceIndex<0 ||
-                    node.resourceIndex>=resources.size())continue;
+                if(node.resourceIndex<0 || node.resourceIndex>=resources.size())continue;
+                const bool hadGraphField=resources.at(node.resourceIndex).toObject()
+                    .value(QStringLiteral("gameObject")).toObject()
+                    .contains(QStringLiteral("logicNodes"));
+                if(!isActionSource(node) && eventKinds(node.type).isEmpty() &&
+                   node.logicNodes.isEmpty() && !hadGraphField)continue;
                 QJsonObject resource=resources.at(node.resourceIndex).toObject();
                 if (resource.value(QStringLiteral("id")).toString()!=id)
                     return fail(tr("Game Object IDs changed. Refusing to rewrite the world."));
                 QJsonObject object=resource.value(QStringLiteral("gameObject")).toObject();
-                object.insert(QStringLiteral("targetObjectId"),node.links.isEmpty()
+                if(isActionSource(node))object.insert(QStringLiteral("targetObjectId"),node.links.isEmpty()
                     ?QString():node.links.first().target);
-                object.insert(QStringLiteral("targetAction"),node.links.isEmpty()
+                if(isActionSource(node))object.insert(QStringLiteral("targetAction"),node.links.isEmpty()
                     ?QStringLiteral("none"):node.links.first().action);
-                if (node.type!=QStringLiteral("trigger")) {
+                QJsonObject events=object.value(QStringLiteral("eventActions")).toObject();
+                for(const QString &key:eventKinds(node.type)) {
+                    QJsonArray actions;
+                    for(const NodeLink &link:node.eventLinks.value(key))
+                        actions.append(QJsonObject{{QStringLiteral("objectId"),link.target},
+                            {QStringLiteral("action"),link.action}});
+                    if(actions.isEmpty())events.remove(key);
+                    else events.insert(key,actions);
+                }
+                object.insert(QStringLiteral("eventActions"),events);
+                if (node.type==QStringLiteral("enemy")) {
+                    QJsonArray extras;
+                    for (int i=1;i<node.links.size();++i)
+                        extras.append(QJsonObject{{QStringLiteral("objectId"),node.links[i].target},
+                                                  {QStringLiteral("action"),node.links[i].action}});
+                    object.insert(QStringLiteral("enemyDefeatExtraActions"),extras);
+                    object.insert(QStringLiteral("logicNodes"),node.logicNodes);
                     resource.insert(QStringLiteral("gameObject"),object);
                     resources.replace(node.resourceIndex,resource);
-                    continue; // Never write Trigger fields into an enemy/key.
+                    continue;
+                }
+                if (node.type!=QStringLiteral("trigger")) {
+                    if(node.type!=QStringLiteral("collectable") &&
+                       node.type!=QStringLiteral("npc") && node.type!=QStringLiteral("player_action"))
+                        object.insert(QStringLiteral("logicNodes"),node.logicNodes);
+                    resource.insert(QStringLiteral("gameObject"),object);
+                    resources.replace(node.resourceIndex,resource);
+                    continue; // Never write Trigger fields into a key.
                 }
                 QJsonArray extras;
                 for (int i=1;i<node.links.size();++i)

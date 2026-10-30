@@ -13,7 +13,7 @@ adv_rt=read('idelibs/codehelpers/game/adventureruntime.rulec')
 adv_rt_h=read('idelibs/codehelpers/game/adventureruntime.ruleh')
 adv_world=read('idelibs/codehelpers/game/gameadventure.rulec')
 flow=read('gamefloweditor.cpp')
-assert 'Build: 5.166.12.271026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.111.1.291026' in read('splashscreenwidget.cpp')
 assert 'QSaveFile upgraded(world.filePath)' in editor
 assert 'current.readAll()!=world.original' in editor
 assert 'game_adventure_set_choice_signal(on_quest_choice)' in adv_world
@@ -39,7 +39,7 @@ sys.path.insert(0,str(ROOT/'development/tests'))
 from test_stage5163_rules_flow_audit import render
 folder=ROOT/'idelibs/codehelpers/game'
 flags={'HAS_ADVENTURE_RUNTIME':False,'HAS_PICKUPS':False,'HAS_SHARED_PLAYER':False,
-       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False}
+       'HAS_WORLD_PHYSICS':False,'HAS_PLAYER_VISIBILITY':False, 'HAS_TITLE':False,'HAS_MAP':False}
 quest_data='''#define GW_QUEST_COUNT 1u
 #define GW_OBJECTIVE_COUNT 1u
 typedef struct {const char *id,*title,*description,*requires,*excludes;uint16_t first,count;uint8_t initially_hidden;} gw_quest_def_t;
@@ -55,7 +55,7 @@ source=(source.replace('@IDE{WORLD_DECLARATIONS}',
        'static void fake_save(void (*)(const void*,uint32_t,void*),void*);\n'
        'static uint8_t fake_import(uint8_t (*)(void*,uint32_t,void*),void*);\n')
     .replace('@IDE{WORLD_RECORDS}',records)
-    .replace('@IDE{SAVE_KEY}','123')
+    .replace('@IDE{SAVE_KEY}','123').replace('@IDE{SAVE_IDENTITY}', '0x0123456789abcdef')
     .replace('@IDE{QUEST_DATA}',quest_data))
 header=render((folder/'gameworlds.ruleh').read_text(),flags)
 assert '@IDE' not in source and '@IDE' not in header

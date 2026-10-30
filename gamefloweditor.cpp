@@ -363,11 +363,13 @@ FlowGraph loadGraph(const QString &root) {
                 };
                 addLinked(o.value(QStringLiteral("targetObjectId")).toString(),
                           o.value(QStringLiteral("targetAction")).toString(QStringLiteral("none")));
-                for (const QJsonValue &entry:o.value(QStringLiteral("triggerExtraActions")).toArray()) {
-                    const QJsonObject link=entry.toObject();
-                    addLinked(link.value(QStringLiteral("objectId")).toString(),
-                              link.value(QStringLiteral("action")).toString());
-                }
+                for (const QString &field:{QStringLiteral("triggerExtraActions"),
+                                           QStringLiteral("enemyDefeatExtraActions")})
+                    for (const QJsonValue &entry:o.value(field).toArray()) {
+                        const QJsonObject link=entry.toObject();
+                        addLinked(link.value(QStringLiteral("objectId")).toString(),
+                                  link.value(QStringLiteral("action")).toString());
+                    }
                 const auto modeName=[](const QString &mode)->QString {
                     if (mode==QStringLiteral("single"))return QStringLiteral("single");
                     if (mode==QStringLiteral("sequence"))return QStringLiteral("sequence");
@@ -576,10 +578,10 @@ FlowGraph loadGraph(const QString &root) {
                 targetActive && targetSupported) {
                 QString foreignWorld, foreignId;
                 const bool remote=cgDecodeCrossWorldLink(target,&foreignWorld,&foreignId);
-                if (type!=QStringLiteral("trigger") &&
+                if (type==QStringLiteral("collectable") &&
                     (remote || target.startsWith(QStringLiteral("@npc:")))) {
-                    // Key pickups and enemy defeat actions are validated
-                    // against local object slots by the world exporter.
+                    // Key pickups are validated against local object slots
+                    // by the world exporter.
                     g.missing(w,from,QStringLiteral("unsupported remote action target"),target);
                 } else {
                     const QString to=target.startsWith(QStringLiteral("@npc:"))
@@ -589,18 +591,21 @@ FlowGraph loadGraph(const QString &root) {
                     else g.missing(w,from,QStringLiteral("object"),target);
                 }
             }
-            if (type==QStringLiteral("trigger") || type==QStringLiteral("save_checkpoint")) {
-                // Only ordinary Triggers export linked actions. Checkpoints
-                // share inventory USE outcomes but must not inherit stale links.
-                if (type==QStringLiteral("trigger"))
-                for (const QJsonValue &entry : obj.value(QStringLiteral("triggerExtraActions")).toArray()) {
+            if (type==QStringLiteral("trigger") || type==QStringLiteral("enemy") ||
+                type==QStringLiteral("save_checkpoint")) {
+                // Extra ON DEFEAT links are real runtime actions, just like
+                // ordered Trigger links. Checkpoints never inherit stale links.
+                if (type==QStringLiteral("trigger") || type==QStringLiteral("enemy"))
+                for (const QJsonValue &entry : obj.value(type==QStringLiteral("enemy")
+                    ?QStringLiteral("enemyDefeatExtraActions")
+                    :QStringLiteral("triggerExtraActions")).toArray()) {
                     const QJsonObject link=entry.toObject();
                     const QString id=link.value(QStringLiteral("objectId")).toString();
                     const QString action=link.value(QStringLiteral("action")).toString();
                     if (id.isEmpty() || id == QStringLiteral("@player_spotlight")) continue;
                     if (action!=QStringLiteral("enable") && action!=QStringLiteral("disable") &&
                         action!=QStringLiteral("toggle")) {
-                        g.diagnostics.append(QStringLiteral("%1: Trigger '%2' has an inactive linked action for '%3'")
+                        g.diagnostics.append(QStringLiteral("%1: Object '%2' has an inactive linked action for '%3'")
                             .arg(w,r.value(QStringLiteral("name")).toString(),id));
                         continue;
                     }
