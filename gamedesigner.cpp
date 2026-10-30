@@ -6634,9 +6634,17 @@ void SidboxGameDesigner::pasteCopiedSprite()
                             input.insert(QStringLiteral("id"),dep.id);
                             inputs.replace(j,input);
                         }
+                        if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                           input.value(QStringLiteral("id")).toString()==QStringLiteral("@triggerstate:")+id) {
+                            input.insert(QStringLiteral("id"),QStringLiteral("@triggerstate:")+dep.id);
+                            inputs.replace(j,input);
+                        }
                         if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
-                           input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+id) {
-                            input.insert(QStringLiteral("id"),QStringLiteral("@event:arrival:")+dep.id);
+                           (input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+id ||
+                            input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:hit:")+id ||
+                            input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:destroy:")+id)) {
+                            const QString type=input.value(QStringLiteral("id")).toString().section(QLatin1Char(':'),1,1);
+                            input.insert(QStringLiteral("id"),QStringLiteral("@event:")+type+QLatin1Char(':')+dep.id);
                             inputs.replace(j,input);
                         }
                     }
@@ -6691,10 +6699,17 @@ void SidboxGameDesigner::pasteCopiedSprite()
                         input.insert(QStringLiteral("id"),copy.id);
                         inputs.replace(j,input);
                     }
+                    if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                       input.value(QStringLiteral("id")).toString()==QStringLiteral("@triggerstate:")+s_copiedWorldObject.id) {
+                        input.insert(QStringLiteral("id"),QStringLiteral("@triggerstate:")+copy.id);
+                        inputs.replace(j,input);
+                    }
                     if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
-                       input.value(QStringLiteral("id")).toString()==
-                           QStringLiteral("@event:arrival:")+s_copiedWorldObject.id) {
-                        input.insert(QStringLiteral("id"),QStringLiteral("@event:arrival:")+copy.id);
+                       (input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+s_copiedWorldObject.id ||
+                        input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:hit:")+s_copiedWorldObject.id ||
+                        input.value(QStringLiteral("id")).toString()==QStringLiteral("@event:destroy:")+s_copiedWorldObject.id)) {
+                        const QString type=input.value(QStringLiteral("id")).toString().section(QLatin1Char(':'),1,1);
+                        input.insert(QStringLiteral("id"),QStringLiteral("@event:")+type+QLatin1Char(':')+copy.id);
                         inputs.replace(j,input);
                     }
                 }
@@ -9036,7 +9051,9 @@ void SidboxGameDesigner::configureGameObject(int index)
             bool readsCurrent=false;
             for(const QJsonValue &v:activeInputs)
                 if(v.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
-                   v.toObject().value(QStringLiteral("id")).toString()==old.id)
+                   (v.toObject().value(QStringLiteral("id")).toString()==old.id ||
+                    (old.objectType==QStringLiteral("trigger") &&
+                     v.toObject().value(QStringLiteral("id")).toString()==QStringLiteral("@triggerstate:")+old.id)))
                     readsCurrent=true;
             bool targetedByBranch=false;
             for(const QJsonValue &v:node.value(QStringLiteral("resultTargets")).toArray())
@@ -9082,31 +9099,59 @@ void SidboxGameDesigner::configureGameObject(int index)
             editor.inputs=new QTreeWidget(section);
             editor.inputs->setHeaderHidden(true);editor.inputs->setMinimumHeight(100);
             editor.inputs->setMaximumHeight(210);
-            const auto addInput=[&](const QString &kind,const QString &id,const QString &label) {
+            const auto addInput=[&](const QString &kind,const QString &id,const QString &label,bool inverted=false) {
                 auto *item=new QTreeWidgetItem(editor.inputs,QStringList{label});
                 item->setData(0,Qt::UserRole,id);
                 item->setData(0,Qt::UserRole+1,kind);
+                item->setData(0,Qt::UserRole+2,inverted);
                 item->setFlags(item->flags()|Qt::ItemIsUserCheckable);
                 bool checked=false;
                 for(const QJsonValue &v:activeInputs) {
                     const QJsonObject o=v.toObject();
                     if(o.value(QStringLiteral("kind")).toString()==kind &&
-                       o.value(QStringLiteral("id")).toString()==id)checked=true;
+                       o.value(QStringLiteral("id")).toString()==id &&
+                       o.value(QStringLiteral("invert")).toBool(false)==inverted)checked=true;
                 }
                 item->setCheckState(0,checked?Qt::Checked:Qt::Unchecked);
             };
             for(const Resource &object:m_resources)
                 if(object.kind==QStringLiteral("sprite") &&
                    object.objectType!=QStringLiteral("decoration") &&
-                   object.objectType!=QStringLiteral("collectable") &&
-                   object.objectType!=QStringLiteral("trigger"))
+                   !object.id.isEmpty())
                     addInput(QStringLiteral("object"),object.id,
                         object.id==old.id?tr("This object: %1").arg(object.name):
                             tr("%1 [%2]").arg(object.name,object.objectType));
-            if(candidate.objectType==QStringLiteral("lift"))
+            // Virtual Trigger switches are state sources, not activation
+            // pulses. Both polarities use the same saved UUID + invert bit.
+            for(const Resource &object:m_resources)
+                if(object.kind==QStringLiteral("sprite") &&
+                   object.objectType==QStringLiteral("trigger") && !object.id.isEmpty()) {
+                    addInput(QStringLiteral("object"),QStringLiteral("@triggerstate:")+object.id,
+                        tr("Trigger %1: STATE ON").arg(object.name));
+                    addInput(QStringLiteral("object"),QStringLiteral("@triggerstate:")+object.id,
+                        tr("Trigger %1: STATE OFF").arg(object.name),true);
+                }
+            // A gate can read its host's genuine event, never a fabricated
+            // event on some other object. Preserve named input ordering in .sbgm.
+            const QStringList ownEvents=candidate.objectType==QStringLiteral("breakable")?
+                QStringList{QStringLiteral("hit"),QStringLiteral("destroy")}:
+                candidate.objectType==QStringLiteral("enemy")?
+                QStringList{QStringLiteral("hit"),QStringLiteral("defeat")}:
+                candidate.objectType==QStringLiteral("lift")?QStringList{QStringLiteral("arrival")}:
+                candidate.objectType==QStringLiteral("hazard")?QStringList{QStringLiteral("player_hit")}:
+                candidate.objectType==QStringLiteral("goto_world")?QStringList{QStringLiteral("enter")}:
+                candidate.objectType==QStringLiteral("save_checkpoint")?QStringList{QStringLiteral("save")}:
+                candidate.objectType==QStringLiteral("collectable")?QStringList{QStringLiteral("pickup")}:
+                candidate.objectType==QStringLiteral("trigger")?QStringList{QStringLiteral("trigger")}:QStringList{};
+            for(const QString &event:ownEvents) {
+                const QString label=event==QStringLiteral("trigger")?tr("ON ACTIVATE"):
+                    event==QStringLiteral("defeat")?tr("ON DEFEAT"):
+                    event==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
+                    tr("ON %1").arg(event.toUpper().replace(QLatin1Char('_'),QLatin1Char(' ')));
                 addInput(QStringLiteral("event"),
-                    QStringLiteral("@event:arrival:")+candidate.id,
-                    tr("ON ARRIVAL pulse: %1").arg(candidate.name));
+                    QStringLiteral("@event:")+event+QLatin1Char(':')+candidate.id,
+                    tr("%1 pulse: %2").arg(label,candidate.name));
+            }
             for(const QJsonValue &other:candidate.logicNodes) {
                 const QJsonObject o=other.toObject();
                 const QString id=o.value(QStringLiteral("id")).toString();
@@ -11837,14 +11882,32 @@ void SidboxGameDesigner::configureGameObject(int index)
                 QJsonObject node=owner.logicNodes.at(index).toObject();
                 if(node.value(QStringLiteral("id")).toString()!=editor.nodeId)continue;
                 node.insert(QStringLiteral("op"),editor.operation->currentData().toString());
-                QJsonArray inputs;
+                QJsonArray checked;
                 for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
                     QTreeWidgetItem *item=editor.inputs->topLevelItem(i);
                     if(item->checkState(0)!=Qt::Checked)continue;
-                    inputs.append(QJsonObject{
-                        {QStringLiteral("kind"),item->data(0,Qt::UserRole+1).toString()},
-                        {QStringLiteral("id"),item->data(0,Qt::UserRole).toString()}});
+                    checked.append(QJsonObject{{QStringLiteral("kind"),item->data(0,Qt::UserRole+1).toString()},
+                                               {QStringLiteral("id"),item->data(0,Qt::UserRole).toString()},
+                                               {QStringLiteral("invert"),item->data(0,Qt::UserRole+2).toBool()}});
                 }
+                // Preserve the authored numbered-input order and inversion.
+                // The Properties tree is grouped by object type; its visual
+                // row order must not reshuffle a graph built in Visual Nodes.
+                QJsonArray inputs;
+                for(const QJsonValue &oldValue:node.value(QStringLiteral("inputs")).toArray()) {
+                    const QJsonObject oldInput=oldValue.toObject();
+                    for(int i=0;i<checked.size();++i) {
+                        const QJsonObject candidate=checked.at(i).toObject();
+                        if(oldInput.value(QStringLiteral("kind"))==candidate.value(QStringLiteral("kind")) &&
+                           oldInput.value(QStringLiteral("id"))==candidate.value(QStringLiteral("id")) &&
+                           oldInput.value(QStringLiteral("invert")).toBool(false)==candidate.value(QStringLiteral("invert")).toBool(false)) {
+                            inputs.append(oldInput);
+                            checked.removeAt(i);
+                            break;
+                        }
+                    }
+                }
+                for(const QJsonValue &newInput:checked)inputs.append(newInput);
                 node.insert(QStringLiteral("inputs"),inputs);
                 QJsonArray bound;
                 for(int i=0;i<editor.resultTargets->topLevelItemCount();++i) {

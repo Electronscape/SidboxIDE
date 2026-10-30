@@ -49,7 +49,7 @@ class ArrivalLogic(unittest.TestCase):
         self.assertIn('input.id!=QStringLiteral("@event:arrival:")+r->id',EXPORT)
         self.assertIn('input.id!=QStringLiteral("@event:arrival:")+owner.id',EXPORT)
         self.assertIn('QStringLiteral("@event:arrival:")+s_copiedWorldObject.id',DESIGNER)
-        self.assertIn('Build: 5.166.111.1.291026',(ROOT/'splashscreenwidget.cpp').read_text())
+        self.assertIn('Build: 5.166.113.291026',(ROOT/'splashscreenwidget.cpp').read_text())
 
     def test_native_pulse_and_condition_toggle_only_on_arrivals(self):
         program=r'''

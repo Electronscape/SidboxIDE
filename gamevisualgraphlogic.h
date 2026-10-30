@@ -24,7 +24,7 @@ struct Input {
 };
 struct Node {
     QString id;
-    QString op;              // boolean/not (1), and/or (2..16)
+    QString op;              // boolean/not (1), and (2..16), or (2..8)
     QVector<Input> inputs;
     QJsonArray trueActions, falseActions;
     QStringList resultTargets; // RESULT directly drives each Game Object active state.
@@ -32,7 +32,7 @@ struct Node {
 };
 
 inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
-    if (raw.size()>64) { if(error)*error=QStringLiteral("Maximum 64 logic nodes per Trigger.");return false; }
+    if (raw.size()>64) { if(error)*error=QStringLiteral("Maximum 64 logic nodes per Game Object.");return false; }
     QSet<QString> ids;
     QVector<Node> parsed;
     for (const QJsonValue &item:raw) {
@@ -66,9 +66,13 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
             Input in{input.value(QStringLiteral("kind")).toString(),
                      input.value(QStringLiteral("id")).toString(),
                      input.value(QStringLiteral("invert")).toBool(false)};
-            const bool eventIdValid=in.id.startsWith(QStringLiteral("@event:arrival:")) ||
-                                    in.id.startsWith(QStringLiteral("@event:hit:")) ||
-                                    in.id.startsWith(QStringLiteral("@event:destroy:"));
+            const QString eventKind=in.id.section(QLatin1Char(':'),1,1);
+            const bool eventIdValid=in.id.startsWith(QStringLiteral("@event:")) &&
+                (eventKind==QStringLiteral("arrival") || eventKind==QStringLiteral("hit") ||
+                 eventKind==QStringLiteral("destroy") || eventKind==QStringLiteral("pickup") ||
+                 eventKind==QStringLiteral("player_hit") || eventKind==QStringLiteral("enter") ||
+                 eventKind==QStringLiteral("save") || eventKind==QStringLiteral("defeat") ||
+                 eventKind==QStringLiteral("trigger"));
             if ((in.kind!=QStringLiteral("object") && in.kind!=QStringLiteral("node") &&
                  in.kind!=QStringLiteral("event")) || in.id.isEmpty() ||
                 (in.kind==QStringLiteral("event") &&
@@ -129,7 +133,8 @@ inline bool order(const QVector<Node> &nodes,const QSet<QString> &objects,
         }
         states[i]=1;
         for(const QString &target:nodes[i].resultTargets)
-            if(target.startsWith(QStringLiteral("@event:")) || !objects.contains(target)) {
+            if(target.startsWith(QStringLiteral("@event:")) ||
+               target.startsWith(QStringLiteral("@triggerstate:")) || !objects.contains(target)) {
                 if(error)*error=QStringLiteral("Logic node %1 drives missing Game Object %2.")
                     .arg(nodes[i].id,target);
                 return false;

@@ -71,6 +71,15 @@ typedef struct {
     uint8_t (*visible)(uint16_t); /* Optional: skip unrevealed quests */
 } game_adventure_quest_ui_t;
 void game_adventure_set_quest_journal(const game_adventure_quest_ui_t *source);
+/* Optional separate ABI: existing callers that use the original journal
+ * callbacks remain binary/source compatible. */
+typedef struct {
+    uint16_t (*count)(uint16_t quest);
+    const char *(*title)(uint16_t quest,uint16_t objective);
+    uint8_t (*done)(uint16_t quest,uint16_t objective);
+    uint8_t (*unordered)(uint16_t quest);
+} game_adventure_quest_objectives_t;
+void game_adventure_set_quest_objectives(const game_adventure_quest_objectives_t *source);
 /* Separate optional extension preserves the legacy quest UI struct ABI. */
 void game_adventure_quest_notices(uint8_t (*notice)(uint16_t *,uint32_t *));
 /* Project-wide visual layout; colours are 8-bit SIDBOX palette indices. */
@@ -398,6 +407,7 @@ uint8_t game_adventure_trigger_dialogue(uint16_t node);
 /* Show only the chosen node's speaker/text. No choices, gifts, NPC or quest
  * actions are run: Trigger outcomes have already committed on successful USE. */
 uint8_t game_adventure_trigger_message(uint16_t node);
+uint32_t game_adventure_dialogue_overflow_count(void);
 /* Navigate multiple existing dialogue nodes via their choice labels and Next
  * links (e.g. Continue... / Thank god!). No inventory or dialogue effects run. */
 uint8_t game_adventure_trigger_sequence(uint16_t node);

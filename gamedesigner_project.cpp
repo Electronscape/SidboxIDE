@@ -979,12 +979,13 @@ bool SidboxGameDesigner::saveDesign()
                 object.insert(QStringLiteral("enemyDefeatExtraActions"),links);
             }
             object.insert(QStringLiteral("eventActions"),r.eventActions);
-            // Independent logic can be hosted by Triggers OR Stompable Enemies.
-            // Preserve it on an ordinary world save, not just Visual Nodes Save.
+            // Preserve independent graphs for every valid Game Object owner,
+            // including Collectables. Previous versions silently stripped
+            // Collectable ON PICKUP graphs during an ordinary world save.
             if (r.objectType==QStringLiteral("trigger") ||
                 r.objectType==QStringLiteral("enemy") ||
                 r.objectType==QStringLiteral("lift") ||
-                (r.objectType!=QStringLiteral("collectable") && !r.logicNodes.isEmpty()))
+                !r.logicNodes.isEmpty())
                 object.insert(QStringLiteral("logicNodes"), r.logicNodes);
             if (r.objectType==QStringLiteral("trigger")) {
                 object.insert(QStringLiteral("toggleStateTargetId"), r.toggleStateTargetId);

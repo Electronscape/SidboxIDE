@@ -92,5 +92,5 @@ assert 'description,3,invalid);' in flow
 assert 'else if (g.nodes.at(g.byId.value(to)).problem)' in flow
 assert 'g.missing(w,from,QStringLiteral("valid spline (needs 2+ points)"),spline);' in flow
 assert 'g.link(to,from,QStringLiteral("Moves along path"));' in flow
-assert 'Build: 5.166.111.1.291026' in (root / 'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.113.291026' in (root / 'splashscreenwidget.cpp').read_text()
 print('PASS Stage 5.163: 32 world flag configurations x C/H, balanced directives/braces, invalid spline diagnostics')

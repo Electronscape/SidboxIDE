@@ -121,7 +121,9 @@ inline QSet<QString> exportedIdentifiers(const QString &bundleDirectory)
             "gameworlditems_set_active", "gameworlditems_trigger",
             "gameadventure_setup", "gameadventure_on_event",
             "gameworlditems_save_state", "gameworlditems_restore_state", "gameworlditems_sync_logic",
-            "gameworlditems_checkpoint_saved",
+            "gameworlditems_checkpoint_saved", "gameworlditems_quest_completed",
+            "gameworlditems_event_overflow_count", "gameworlditems_action_overflow_count",
+            "game_adventure_dialogue_overflow_count",
             "gameworlditems_disk_export", "gameworlditems_disk_import",
             "gameadventure_disk_export", "gameadventure_disk_import",
             "gameworlditems_remote_action", "gameworlditems_remote_reset",
@@ -217,6 +219,7 @@ inline bool publishBuildTree(const QString &bundleDirectory, const QDir &project
                      "void " + id + "_gameworlditems_restore_state(void);\n"
                      "void " + id + "_gameworlditems_sync_logic(void);\n"
                      "void " + id + "_gameworlditems_checkpoint_saved(void);\n"
+                     "void " + id + "_gameworlditems_quest_completed(const char *);\n"
                      // Stage 5.164.3: registry save callbacks MUST be declared
                      // in each world's PUBLIC API, not only its private header.
                      "void " + id + "_gameworlditems_disk_export(void (*)(const void *, uint32_t, void *), void *);\n"
@@ -762,6 +765,7 @@ inline bool publishWorldRegistry(const QDir &project, const QDir &templates,
             .arg(defaultWeatherSize.at(i), defaultWeatherTile.at(i),
                  weatherBitmapSymbols.at(i), weatherBitmapSizes.at(i));
         entry += QStringLiteral(", %1_gameworlditems_checkpoint_saved").arg(id);
+        entry += QStringLiteral(", %1_gameworlditems_quest_completed").arg(id);
         entry += QLatin1Char('}');
     }
     // Use active selection as initial world. This does NOT force main.c to

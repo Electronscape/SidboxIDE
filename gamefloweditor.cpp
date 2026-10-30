@@ -187,6 +187,60 @@ FlowGraph loadGraph(const QString &root) {
         g.addNode(world+QStringLiteral("/world"),world,QStringLiteral("World"),world,
                   QStringLiteral("World design: ")+name+QStringLiteral("\nSaved file: ")+dir.filePath(name),0);
     }
+    // Resolve built-in action destinations as graph targets, not placed
+    // Game Objects. These IDs are implemented by the runtime exporter and
+    // never appear as sprite resources in .sbgm.
+    QSet<QString> questEventSignals;
+    QFile signalsFile(dir.filePath(QStringLiteral(".codergirl/quests.json")));
+    if (signalsFile.open(QIODevice::ReadOnly)) {
+        const QJsonObject quests=QJsonDocument::fromJson(signalsFile.readAll()).object();
+        for (const QJsonValue &questValue:quests.value(QStringLiteral("quests")).toArray())
+            for (const QJsonValue &objectiveValue:questValue.toObject()
+                    .value(QStringLiteral("objectives")).toArray()) {
+                const QJsonObject objective=objectiveValue.toObject();
+                if (objective.value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
+                    questEventSignals.insert(objective.value(QStringLiteral("target")).toString());
+            }
+    }
+    const auto virtualActionName=[&](const QString &id)->QString {
+        if(id==QStringLiteral("@player_spotlight"))return QStringLiteral("PLAYER / Spotlight");
+        for(const QPair<QString,QString> &option:QVector<QPair<QString,QString>>{
+             {QStringLiteral("@player_weather:0"),QStringLiteral("PLAYER / Weather / Clear")},
+             {QStringLiteral("@player_weather:1"),QStringLiteral("PLAYER / Weather / Rain")},
+             {QStringLiteral("@player_weather:2"),QStringLiteral("PLAYER / Weather / Snow")},
+             {QStringLiteral("@player_weather:3"),QStringLiteral("PLAYER / Weather / Storm")},
+             {QStringLiteral("@player_time:0"),QStringLiteral("PLAYER / Time / Daylight")},
+             {QStringLiteral("@player_time:1"),QStringLiteral("PLAYER / Time / Night")},
+             {QStringLiteral("@player_time:2"),QStringLiteral("PLAYER / Time / Resume cycle")}})
+            if(id==option.first)return option.second;
+        if(id.startsWith(QStringLiteral("@player_world:"))) {
+            const QString name=id.mid(14);
+            if(g.worlds.contains(name))return QStringLiteral("PLAYER / World / Go to ")+name;
+        }
+        if(id.startsWith(QStringLiteral("@quest_event:"))) {
+            const QString signal=id.mid(QStringLiteral("@quest_event:").size());
+            if(questEventSignals.contains(signal))return QStringLiteral("QUEST EVENT / ")+signal;
+        }
+        return QString();
+    };
+    const auto isVirtualTarget=[](const QString &id)->bool {
+        return id.startsWith(QStringLiteral("@player_")) ||
+               id.startsWith(QStringLiteral("@quest_event:"));
+    };
+    const auto virtualActionNode=[&](const QString &world,const QString &id,
+                                      const QString &action)->QString {
+        const QString name=virtualActionName(id);
+        const bool requiresEnable=id.startsWith(QStringLiteral("@player_time:")) ||
+                                  id.startsWith(QStringLiteral("@player_world:")) ||
+                                  id.startsWith(QStringLiteral("@quest_event:"));
+        if(name.isEmpty() || (requiresEnable && action!=QStringLiteral("enable")))return QString();
+        const QString key=world+QStringLiteral("/virtual-action/")+id;
+        g.addNode(key,world,id.startsWith(QStringLiteral("@quest_event:"))
+                  ?QStringLiteral("Quest Event"):QStringLiteral("Player Action"),
+                  name,QStringLiteral("Built-in runtime action (not a Game Object)\nID: %1\nAction: %2")
+                      .arg(id,action.toUpper()),4);
+        return key;
+    };
     // First pass: register all nodes and stable IDs before resolving references.
     for (const auto &entry : documents) {
         const QString w = entry.name;
@@ -316,6 +370,8 @@ FlowGraph loadGraph(const QString &root) {
                         if (other.value(QStringLiteral("id")).toString()==target)
                             return other.value(QStringLiteral("name")).toString(target);
                     }
+                    const QString virtualName=virtualActionName(target);
+                    if(!virtualName.isEmpty())return virtualName;
                     return QStringLiteral("Missing object: ")+target;
                 };
                 QStringList events;
@@ -357,7 +413,9 @@ FlowGraph loadGraph(const QString &root) {
                                 break;
                             }
                         }
-                        events << QStringLiteral("Object: %1 -> %2")
+                        events << (isVirtualTarget(id)
+                            ? QStringLiteral("Runtime: %1 -> %2")
+                            : QStringLiteral("Object: %1 -> %2"))
                                   .arg(display,action.toUpper());
                     }
                 };
@@ -570,25 +628,29 @@ FlowGraph loadGraph(const QString &root) {
                 type==QStringLiteral("enemy") ||
                 (type==QStringLiteral("collectable") &&
                  obj.value(QStringLiteral("pickupKind")).toInt(1)==3);
-            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight") &&
-                targetActive && !targetSupported)
+            if (!target.isEmpty() && targetActive && !targetSupported)
                 g.diagnostics.append(QStringLiteral("%1: %2 has a saved object link, but this object type never executes it")
                     .arg(w,r.value(QStringLiteral("name")).toString()));
-            if (!target.isEmpty() && target != QStringLiteral("@player_spotlight") &&
-                targetActive && targetSupported) {
-                QString foreignWorld, foreignId;
-                const bool remote=cgDecodeCrossWorldLink(target,&foreignWorld,&foreignId);
-                if (type==QStringLiteral("collectable") &&
-                    (remote || target.startsWith(QStringLiteral("@npc:")))) {
-                    // Key pickups are validated against local object slots
-                    // by the world exporter.
-                    g.missing(w,from,QStringLiteral("unsupported remote action target"),target);
+            if (!target.isEmpty() && targetActive && targetSupported) {
+                if(isVirtualTarget(target)) {
+                    const QString node=virtualActionNode(w,target,targetAction);
+                    if(!node.isEmpty())g.link(from,node,QStringLiteral("Runtime action: ")+targetAction);
+                    else g.missing(w,from,QStringLiteral("invalid virtual action target"),target);
                 } else {
-                    const QString to=target.startsWith(QStringLiteral("@npc:"))
-                        ? npcActionNode(w,target)
-                        : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,target));
-                    if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object/NPC: ")+targetAction);
-                    else g.missing(w,from,QStringLiteral("object"),target);
+                    QString foreignWorld, foreignId;
+                    const bool remote=cgDecodeCrossWorldLink(target,&foreignWorld,&foreignId);
+                    if (type==QStringLiteral("collectable") &&
+                        (remote || target.startsWith(QStringLiteral("@npc:")))) {
+                        // Key pickups are validated against local object slots
+                        // by the world exporter.
+                        g.missing(w,from,QStringLiteral("unsupported remote action target"),target);
+                    } else {
+                        const QString to=target.startsWith(QStringLiteral("@npc:"))
+                            ? npcActionNode(w,target)
+                            : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,target));
+                        if (g.byId.contains(to)) g.link(from,to,QStringLiteral("Object/NPC: ")+targetAction);
+                        else g.missing(w,from,QStringLiteral("object"),target);
+                    }
                 }
             }
             if (type==QStringLiteral("trigger") || type==QStringLiteral("enemy") ||
@@ -602,21 +664,27 @@ FlowGraph loadGraph(const QString &root) {
                     const QJsonObject link=entry.toObject();
                     const QString id=link.value(QStringLiteral("objectId")).toString();
                     const QString action=link.value(QStringLiteral("action")).toString();
-                    if (id.isEmpty() || id == QStringLiteral("@player_spotlight")) continue;
+                    if (id.isEmpty()) continue;
                     if (action!=QStringLiteral("enable") && action!=QStringLiteral("disable") &&
                         action!=QStringLiteral("toggle")) {
                         g.diagnostics.append(QStringLiteral("%1: Object '%2' has an inactive linked action for '%3'")
                             .arg(w,r.value(QStringLiteral("name")).toString(),id));
                         continue;
                     }
-                    QString foreignWorld, foreignId;
-                    const bool remote=cgDecodeCrossWorldLink(id,&foreignWorld,&foreignId);
-                    const QString to=id.startsWith(QStringLiteral("@npc:"))
-                        ? npcActionNode(w,id)
-                        : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,id));
-                    if (g.byId.contains(to))
-                        g.link(from,to,QStringLiteral("Object/NPC: ")+link.value(QStringLiteral("action")).toString());
-                    else g.missing(w,from,QStringLiteral("linked object"),id);
+                    if(isVirtualTarget(id)) {
+                        const QString to=virtualActionNode(w,id,action);
+                        if(!to.isEmpty())g.link(from,to,QStringLiteral("Runtime action: ")+action);
+                        else g.missing(w,from,QStringLiteral("invalid virtual action target"),id);
+                    } else {
+                        QString foreignWorld, foreignId;
+                        const bool remote=cgDecodeCrossWorldLink(id,&foreignWorld,&foreignId);
+                        const QString to=id.startsWith(QStringLiteral("@npc:"))
+                            ? npcActionNode(w,id)
+                            : (remote ? objectKey(foreignWorld,foreignId) : objectKey(w,id));
+                        if (g.byId.contains(to))
+                            g.link(from,to,QStringLiteral("Object/NPC: ")+action);
+                        else g.missing(w,from,QStringLiteral("linked object"),id);
+                    }
                 }
                 const QString required=obj.value(QStringLiteral("interactItemName")).toString();
                 if (required.isEmpty() && obj.value(QStringLiteral("triggerDrop")).toBool())
@@ -1148,6 +1216,18 @@ FlowGraph loadGraph(const QString &root) {
                 }
             }
         }
+    }
+    // The project quest lane is registered after world links. Bridge any
+    // local virtual quest-signal action to its project-wide objective signal.
+    // This is a read-only diagnostic edge and cannot fire a runtime event.
+    for (const FlowNode &node:g.nodes) {
+        const QString prefix=QStringLiteral("/virtual-action/@quest_event:");
+        const int at=node.id.indexOf(prefix);
+        if(at<0)continue;
+        const QString signal=node.id.mid(at+prefix.size());
+        const QString destination=QStringLiteral("quests/event/")+signal;
+        if(g.byId.contains(destination))
+            g.link(node.id,destination,QStringLiteral("Sends quest event"));
     }
     return g;
 }

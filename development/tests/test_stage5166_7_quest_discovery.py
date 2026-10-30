@@ -38,7 +38,7 @@ assert 'game_adventure_set_node_signal(on_quest_node)' in (folder/'gameadventure
 assert 'dialog.setWindowState(dialog.windowState() | Qt::WindowMaximized);' in (ROOT/'gameadventureeditor.cpp').read_text()
 assert 'class QuestDialogueTreeCombo' in (ROOT/'gamequesteditor.cpp').read_text()
 assert 'dialogueKey(entry.name,ni)' in (ROOT/'gamefloweditor.cpp').read_text()
-assert 'Build: 5.166.111.1.291026' in (ROOT/'splashscreenwidget.cpp').read_text()
+assert 'Build: 5.166.113.291026' in (ROOT/'splashscreenwidget.cpp').read_text()
 with tempfile.TemporaryDirectory(prefix='quest_discovery_') as tmp:
     path=Path(tmp)
     (path/'gameworlds.c').write_text(source)

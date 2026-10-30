@@ -19,7 +19,7 @@ SPLASH=(ROOT/'splashscreenwidget.cpp').read_text()
 
 class EnemyDefeatNodeTests(unittest.TestCase):
     def test_version(self):
-        self.assertIn('Build: 5.166.111.1.291026', SPLASH)
+        self.assertIn('Build: 5.166.113.291026', SPLASH)
 
     def test_distinct_action_and_state_sockets(self):
         card=NODE[NODE.index('void makeObjectCard('):NODE.index('void setConversationField(', NODE.index('void makeObjectCard('))]

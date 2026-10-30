@@ -26,7 +26,7 @@ class ArrivalPicker(unittest.TestCase):
         self.assertIn('ON ARRIVAL: choose Logic below', NODE)
 
     def test_save_runtime_unchanged_and_build_label(self):
-        self.assertIn('Build: 5.166.111.1.291026', SPLASH)
+        self.assertIn('Build: 5.166.113.291026', SPLASH)
         self.assertIn('GOLD ON ARRIVAL', NODE)
 
 if __name__=='__main__': unittest.main()

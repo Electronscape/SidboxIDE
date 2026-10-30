@@ -1,3 +1,44 @@
+# Stage 5.166.123: Flow Debugger virtual action references (30 Oct 2026)
+
+Stage 5.166.122 plus a read-only Flow Debugger resolver correction.
+
+- Previously a real `stopLift -> @player_time:0` (daylight) action was shown as a missing Game Object even though world C export supported it. The same bug affected other built-in PLAYER and quest-event targets.
+- Trigger primary and extra links, and enemy primary and ON DEFEAT extra links, now draw valid PLAYER/Time, PLAYER/Weather, PLAYER/World, PLAYER/Spotlight and QUEST EVENT targets as named runtime-action cards instead of red "Broken reference" cards.
+- Trigger detail now labels built-in actions by their actual name rather than "Missing object". A quest signal action also links to the corresponding project-wide Quest Event node.
+- Unsupported modes, unknown world destinations, unknown quest signals and invalid enable-only actions remain visible diagnostics, not silently accepted.
+- No changes to .sbgm, .vsgm, world C generation, runtime quest logic, save data, or the user's game project.
+
+Validation: Stage 123 focused source/fixture test, Stage 121 native quest/save test, and Stage 122 native Journal renderer test passed. Some older Stage 67/69 tests no longer match the updated queue and weather runtime; they were not counted as passes. Full Qt6 IDE build is unavailable here (Qt6 dev SDK not installed). Desktop visual acceptance remains for the user.
+
+# Stage 5.166.122: Quest Journal Objective Details (30 Oct 2026)
+
+The runtime Journal now opens each quest on its description. RIGHT opens its
+complete objective checklist, LEFT returns to the description, and UP/DOWN
+changes quests while resetting to the description. RIGHT also pages long
+objective lists; ordered and unordered quests are both supported. Objective
+progress and save formats are unchanged. See
+`README-STAGE5.166.122-QUEST-OBJECTIVE-JOURNAL.txt`.
+
+---
+
+# Stage 5.166.116.4: Exporter compatibility hotfix (30 Oct 2026)
+
+See `README-STAGE5.166.116.4-EXPORTER-MATCH.txt`.  Use a clean source/build directory to prevent mixed Stage 114 and Stage 116 code.
+
+---
+
+# Stage 5.166.116.1: Qt lookupGraph compile hotfix (30 Oct 2026)
+
+Fixed the missing index argument in `VisualNodesDialog::addConnection()` for ON HIT/ON DESTROY event-to-existing-logic connections. Full Stage 116 functionality retained; no runtime or save changes. See `STAGE-5.166.116.1-RELEASE-NOTES.txt`.
+
+---
+
+# Stage 5.166.113: Numbered Logic Input Sockets (29 Oct 2026)
+
+Independent Boolean/NOT nodes display one input; OR two; AND begins with two then adds a spare input square as new wires are connected, up to sixteen. Wires terminate on their own indexed squares and the card resizes dynamically. No runtime, export, save payload or operator semantics changes. See `README-STAGE5.166.113-LOGIC-INPUT-SOCKETS.txt`.
+
+---
+
 # Stage 5.166.111.1: ON ARRIVAL Logic Picker Visibility (29 Oct 2026)
 
 On the golden ON ARRIVAL port, the Logic chooser now appears first and expanded, with a direct Toggle action hint. This is an IDE menu-only fix; the generator, saves, and existing Toggle logic are unchanged. If you see a chooser with only Game Objects/NPC Conversations/PLAYER, verify the splash build, as that matches Stage 5.166.110. See `README-STAGE5.166.111.1-ARRIVAL-PICKER.txt`.
@@ -570,3 +611,14 @@ See `development/notes/INSTALL-STAGE-5.166.39.txt`.
 Stage 5.166.71 (28 October 2026): existing Game Object connections can now be
 refreshed into the Visual Nodes graph, including Enemy defeat/key pickup links
 and explicit cross-world/NPC action targets. See development/notes/INSTALL-STAGE5.166.71.txt.
+
+## Stage 5.166.121 (30 October 2026): unordered quests and ON COMPLETED Visual Nodes
+
+- Quest Designer: per-quest **Allow objectives in ANY ORDER** checkbox. Unticked is the existing ordered behaviour, and old quest JSON defaults to ordered.
+- Unordered objectives each have an independent completion bit (256 maximum = 32 bytes globally). All must be complete for the quest to finish. Repeated signals do not double-count. Inventory/world objectives are rechecked automatically while active; dialogue and event signals are consumed only while active.
+- Project-wide quest prerequisites (`requires`) and mutually exclusive branches (`excludes`) retain their existing meaning. On completion the next prerequisite quest can unlock in the same refresh.
+- Visual Nodes: **Quest Lines / Completion Events** contains a virtual card for each quest. Its gold **ON COMPLETED** socket drives ordinary action targets, including the existing QUEST EVENT/SIGNAL target. Links are saved in the world `.sbgm` under `questCompletionActions` (not `.vsgm`). One-shot transition only, not a constant TRUE and never replayed on restore. Completion actions are local to the world where the quest finishes.
+- Generated C: world-manager completion hook appends actions to the Stage 119 bounded FIFO. No direct object actions from the quest manager and no recursive dispatcher.
+- Save payload version 4 adds a 32-byte completion bitset and accepts prior v3 ordered save payloads where the project identity/schema are still compatible. Changing objective IDs, order, or a quest to unordered changes the project quest schema and may invalidate previous saves by design.
+- Current limitations: the Journal shows the first unfinished objective for an unordered quest, not a simultaneous tick-list. Virtual ON COMPLETED nodes currently connect directly to executable targets, not independent Logic cards or dialogue cards. Worlds containing zero managed Game Objects cannot export active completion links; the exporter reports an error instead of silently omitting them. These are follow-up UI/runtime enhancements, not yet implemented.
+- Native regression: `python3 development/tests/test_stage5166_121_quest_runtime.py` verifies ordered and unordered signals, duplicates, save/load, v3 migration, and one-shot completion. `python3 development/tests/test_stage5166_121_quest_sources.py` checks editor/generator wiring. Full Qt IDE build and STM32 hardware execution remain to be verified.

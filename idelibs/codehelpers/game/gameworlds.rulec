@@ -127,6 +127,7 @@ typedef struct {
     const uint8_t *weather_particle_pixels; /* One chosen resource tile in FLASH, no PPB allocation. */
     uint8_t weather_particle_source_size;
     void (*checkpoint_saved)(void); /* Called only after a successful disk save. */
+    void (*quest_completed)(const char *quest_id); /* Current-world ON COMPLETED event. */
 } gameworlds_record_t;
 
 static const gameworlds_record_t worlds[] = {
@@ -145,6 +146,8 @@ static uint8_t gw_quest_notice_ready,gw_quest_notice_kind;
 static uint16_t gw_quest_notice_index;
 static uint32_t gw_quest_notice_revision;
 static uint16_t gw_quest_step[64];
+/* 256 objectives => just 32 bytes. Only unordered quests use these bits. */
+static uint8_t gw_quest_done[(256u+7u)/8u];
 static uint8_t gw_quest_tracked=255u, gw_quest_ready;
 static void gw_quest_refresh(void);
 static void gw_quest_reset(void);
@@ -1436,6 +1439,7 @@ static int gw_quest_find(const char *id)
 }
 static void gw_quest_reset(void)
 {
+    memset(gw_quest_done,0,sizeof(gw_quest_done));
     memset(gw_quest_status,0,sizeof(gw_quest_status));
     memset(gw_quest_step,0,sizeof(gw_quest_step));
     gw_quest_tracked=255u;gw_quest_ready=0u;
@@ -1491,6 +1495,29 @@ uint8_t gameworlds_quest_notice(uint16_t *quest_index,uint32_t *revision)
     if(revision)*revision=gw_quest_notice_revision;
     return gw_quest_notice_kind;
 }
+static uint8_t gw_quest_is_done(uint16_t objective)
+{
+    return (uint8_t)((gw_quest_done[objective>>3u]>>(objective&7u))&1u);
+}
+static uint8_t gw_quest_mark(uint16_t quest,uint16_t offset)
+{
+    const gw_quest_def_t *q=&gw_quest_defs[quest];
+    if(gw_quest_status[quest]!=1u || offset>=q->count)return 0u;
+    if(q->unordered) {
+        const uint16_t index=q->first+offset;
+        if(gw_quest_is_done(index))return 0u;
+        gw_quest_done[index>>3u]|=(uint8_t)(1u<<(index&7u));
+    } else if(offset!=gw_quest_step[quest])return 0u;
+    ++gw_quest_step[quest];
+    if(gw_quest_step[quest]==q->count) {
+        gw_quest_status[quest]=2u;
+        /* A transition, never a continuous Boolean and never on restore.
+         * The active world owns the graph; no cross-world sprite callbacks. */
+        if(!applying && active_world && active_world->quest_completed)
+            active_world->quest_completed(q->id);
+    }
+    return 1u;
+}
 static void gw_quest_refresh(void)
 {
     if (!gw_quest_ready) {gw_quest_ready=1u;gw_quest_unlock();}
@@ -1506,15 +1533,19 @@ static void gw_quest_refresh(void)
             if (gw_quest_step[i]>=q->count) {
                 gw_quest_status[i]=2u; changed=1;continue;
             }
-            const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
-            const uint8_t world=strcmp(o->kind,"world")==0 && active_world &&
-                                    strcmp(active_world->name,o->target)==0;
-            const uint8_t item=strcmp(o->kind,"item")==0 &&
-                                   inventory_get(o->target,0)!=UINT32_MAX &&
-                                   inventory_get(o->target,0)>0u;
-            if (world || item) {
-                ++gw_quest_step[i]; changed=1;
-                if (gw_quest_step[i]==q->count) gw_quest_status[i]=2u;
+            /* Ordered quests inspect one step; unordered quests inspect all
+             * not-yet-completed objectives, including world/item conditions. */
+            for(uint16_t j=0;j<q->count;++j) {
+                if(!q->unordered && j!=gw_quest_step[i])continue;
+                if(q->unordered && gw_quest_is_done(q->first+j))continue;
+                const gw_objective_def_t *o=&gw_objective_defs[q->first+j];
+                const uint8_t world=strcmp(o->kind,"world")==0 && active_world &&
+                                        strcmp(active_world->name,o->target)==0;
+                const uint8_t item=strcmp(o->kind,"item")==0 &&
+                                       inventory_get(o->target,0)!=UINT32_MAX &&
+                                       inventory_get(o->target,0)>0u;
+                if((world || item) && gw_quest_mark(i,j))changed=1;
+                if(gw_quest_status[i]!=1u)break;
             }
         }
         if (!changed)break;
@@ -1558,19 +1589,47 @@ uint8_t gameworlds_quest_status(uint16_t i)
 {gw_quest_refresh();return i<GW_QUEST_COUNT ? gw_quest_status[i] : 0u;}
 uint16_t gameworlds_quest_current_step(uint16_t i)
 {gw_quest_refresh();return i<GW_QUEST_COUNT ? gw_quest_step[i] : 0u;}
+uint16_t gameworlds_quest_objective_count(uint16_t quest)
+{return quest<GW_QUEST_COUNT ? gw_quest_defs[quest].count : 0u;}
+const char *gameworlds_quest_objective_title_at(uint16_t quest,uint16_t objective)
+{
+    if(quest>=GW_QUEST_COUNT || objective>=gw_quest_defs[quest].count)return 0;
+    return gw_objective_defs[gw_quest_defs[quest].first+objective].title;
+}
+uint8_t gameworlds_quest_objective_done_at(uint16_t quest,uint16_t objective)
+{
+    if(quest>=GW_QUEST_COUNT || objective>=gw_quest_defs[quest].count)return 0u;
+    if(gw_quest_defs[quest].unordered)
+        return gw_quest_is_done(gw_quest_defs[quest].first+objective);
+    return (uint8_t)(gw_quest_step[quest]>objective);
+}
+uint8_t gameworlds_quest_is_unordered(uint16_t quest)
+{return (uint8_t)(quest<GW_QUEST_COUNT && gw_quest_defs[quest].unordered);}
 const char *gameworlds_quest_objective(uint16_t i)
 {
     gw_quest_refresh();
     if(i>=GW_QUEST_COUNT || gw_quest_status[i]!=1u ||
        gw_quest_step[i]>=gw_quest_defs[i].count)return 0;
-    return gw_objective_defs[gw_quest_defs[i].first+gw_quest_step[i]].title;
+    const gw_quest_def_t *q=&gw_quest_defs[i];
+    if(q->unordered) {
+        for(uint16_t j=0;j<q->count;++j)
+            if(!gw_quest_is_done(q->first+j))return gw_objective_defs[q->first+j].title;
+        return 0;
+    }
+    return gw_objective_defs[q->first+gw_quest_step[i]].title;
 }
 const char *gameworlds_quest_hint(uint16_t i)
 {
     gw_quest_refresh();
     if(i>=GW_QUEST_COUNT || gw_quest_status[i]!=1u ||
        gw_quest_step[i]>=gw_quest_defs[i].count)return 0;
-    return gw_objective_defs[gw_quest_defs[i].first+gw_quest_step[i]].hint;
+    const gw_quest_def_t *q=&gw_quest_defs[i];
+    if(q->unordered) {
+        for(uint16_t j=0;j<q->count;++j)
+            if(!gw_quest_is_done(q->first+j))return gw_objective_defs[q->first+j].hint;
+        return 0;
+    }
+    return gw_objective_defs[q->first+gw_quest_step[i]].hint;
 }
 int16_t gameworlds_quest_tracked(void)
 {gw_quest_refresh();return gw_quest_tracked==255u ? -1 : (int16_t)gw_quest_tracked;}
@@ -1589,10 +1648,17 @@ uint8_t gameworlds_quest_event(const char *event_id)
     for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
         if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
         const gw_quest_def_t *q=&gw_quest_defs[i];
-        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
-        if(strcmp(o->kind,"event")!=0 || strcmp(o->target,event_id)!=0)continue;
-        ++gw_quest_step[i];++advances;
-        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+        for(uint16_t j=0;j<q->count;++j) {
+            if(!q->unordered && j!=gw_quest_step[i])continue;
+            if(q->unordered && gw_quest_is_done(q->first+j))continue;
+            const gw_objective_def_t *o=&gw_objective_defs[q->first+j];
+            if(strcmp(o->kind,"event")!=0 || strcmp(o->target,event_id)!=0)continue;
+            if(gw_quest_mark(i,j)) {
+                ++advances;
+                if(!q->unordered)break; /* one ordered event per dispatch */
+            }
+            if(gw_quest_status[i]!=1u)break;
+        }
     }
     if(advances)gw_quest_refresh();
     return advances;
@@ -1607,10 +1673,17 @@ uint8_t gameworlds_quest_event_number(uint16_t event_id)
     for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
         if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
         const gw_quest_def_t *q=&gw_quest_defs[i];
-        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
-        if(strcmp(o->kind,"adventure_event")!=0 || strcmp(o->target,token)!=0)continue;
-        ++gw_quest_step[i];++count;
-        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+        for(uint16_t j=0;j<q->count;++j) {
+            if(!q->unordered && j!=gw_quest_step[i])continue;
+            if(q->unordered && gw_quest_is_done(q->first+j))continue;
+            const gw_objective_def_t *o=&gw_objective_defs[q->first+j];
+            if(strcmp(o->kind,"adventure_event")!=0 || strcmp(o->target,token)!=0)continue;
+            if(gw_quest_mark(i,j)) {
+                ++count;
+                if(!q->unordered)break; /* one ordered event per dispatch */
+            }
+            if(gw_quest_status[i]!=1u)break;
+        }
     }
     if(count)gw_quest_refresh();
     return count;
@@ -1628,10 +1701,17 @@ uint8_t gameworlds_quest_dialogue_choice(const char *stable_choice_id)
     for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
         if(gw_quest_status[i]!=1u || gw_quest_step[i]>=gw_quest_defs[i].count)continue;
         const gw_quest_def_t *q=&gw_quest_defs[i];
-        const gw_objective_def_t *o=&gw_objective_defs[q->first+gw_quest_step[i]];
-        if(strcmp(o->kind,"dialogue_choice")!=0 || strcmp(o->target,token)!=0)continue;
-        ++gw_quest_step[i];++count;
-        if(gw_quest_step[i]>=q->count)gw_quest_status[i]=2u;
+        for(uint16_t j=0;j<q->count;++j) {
+            if(!q->unordered && j!=gw_quest_step[i])continue;
+            if(q->unordered && gw_quest_is_done(q->first+j))continue;
+            const gw_objective_def_t *o=&gw_objective_defs[q->first+j];
+            if(strcmp(o->kind,"dialogue_choice")!=0 || strcmp(o->target,token)!=0)continue;
+            if(gw_quest_mark(i,j)) {
+                ++count;
+                if(!q->unordered)break; /* one ordered event per dispatch */
+            }
+            if(gw_quest_status[i]!=1u)break;
+        }
     }
     if(count)gw_quest_refresh();
     return count;
@@ -1645,6 +1725,7 @@ static uint32_t gw_quest_schema(void)
         const char *p=gw_quest_defs[i].id;
         while(*p){h^=(uint8_t)*p++;h*=16777619u;}
         h^=gw_quest_defs[i].count;h*=16777619u;
+        if(gw_quest_defs[i].unordered){h^=0xa5u;h*=16777619u;}
     }
     for(uint16_t i=0;i<GW_OBJECTIVE_COUNT;++i) {
         const char *p=gw_objective_defs[i].id;
@@ -1778,7 +1859,7 @@ failed:
  * when the SIDBOX launcher sets that directory to the app's folder.
  * The old /CGSAVES directory remains readable for existing save slots.
  * Files use a FAT 8.3 project-key/slot/bank basename; max 256 KiB each. */
-#define GW_SAVE_VERSION 3u
+#define GW_SAVE_VERSION 4u
 #define GW_SAVE_LIMIT 262144u
 #define GW_SAVE_PROJECT_KEY @IDE{SAVE_KEY}u
 #define GW_SAVE_IDENTITY @IDE{SAVE_IDENTITY}ULL
@@ -1810,6 +1891,7 @@ typedef struct {
     uint8_t tracked, reserved;
     uint8_t status[64];
     uint16_t step[64];
+    uint8_t done[32]; /* v4 objective bitset, absent from v3 saves */
 } gw_save_quests_t;
 
 
@@ -1885,7 +1967,7 @@ static uint8_t gw_save_read_bank(uint8_t slot, char bank, uint8_t legacy,
         got!=sizeof(temp) || temp.magic!=0x56534743u ||
         // v1/v2 headers have no identity proof. They cannot safely be
         // imported into index-serialized arrays after the layout changes.
-        temp.version!=GW_SAVE_VERSION || temp.key!=GW_SAVE_PROJECT_KEY ||
+        (temp.version!=3u && temp.version!=GW_SAVE_VERSION) || temp.key!=GW_SAVE_PROJECT_KEY ||
         temp.length>GW_SAVE_LIMIT || temp.length<sizeof(gameworlds_player_state_t) ||
         temp.world_layout!=gw_save_world_layout() || temp.identity!=GW_SAVE_IDENTITY ||
         SYSFileSystem->sbfilelen(0)!=(uint32_t)sizeof(temp)+temp.length)
@@ -2003,13 +2085,22 @@ static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
 #undef GW_READ
     gw_save_quests_t questData={0};
     if (version>=2u) {
-        if (!gw_save_take(&questData,(uint32_t)sizeof(questData),&stream) ||
+        if (!gw_save_take(&questData,(uint32_t)(version>=4u ? sizeof(questData) :
+                sizeof(questData)-sizeof(questData.done)),&stream) ||
             questData.marker!=0x54534551u || questData.schema!=gw_quest_schema() ||
             questData.count!=GW_QUEST_COUNT ||
             (questData.tracked!=255u && questData.tracked>=GW_QUEST_COUNT))return 0;
         for(uint16_t i=0;i<GW_QUEST_COUNT;++i) {
             if(questData.status[i]>4u || questData.step[i]>gw_quest_defs[i].count ||
                (questData.status[i]==2u && questData.step[i]!=gw_quest_defs[i].count))return 0;
+            if(gw_quest_defs[i].unordered && version>=4u) {
+                uint16_t bits=0u;
+                for(uint16_t j=0;j<gw_quest_defs[i].count;++j) {
+                    const uint16_t k=gw_quest_defs[i].first+j;
+                    bits+=(uint16_t)((questData.done[k>>3u]>>(k&7u))&1u);
+                }
+                if(bits!=questData.step[i])return 0;
+            }
         }
     } else if (version!=1u) return 0;
     if (stream.failed || stream.offset!=length) return 0;
@@ -2019,6 +2110,9 @@ static uint8_t gw_save_decode(uint8_t *bytes,uint32_t length,uint8_t apply,
             memcpy(gw_quest_status,questData.status,sizeof(gw_quest_status));
             gw_quest_notice_ready=0u;gw_quest_notice_kind=0u;gw_quest_notice_revision=0u;
             memcpy(gw_quest_step,questData.step,sizeof(gw_quest_step));
+            if(version>=4u)memcpy(gw_quest_done,questData.done,sizeof(gw_quest_done));
+            /* v3 predates unordered progression; ordered quest steps still
+             * load unchanged from their original save layout. */
             gw_quest_tracked=questData.tracked;
             gw_quest_ready=1u;
         }
@@ -2101,6 +2195,7 @@ static void gw_save_encode(gw_save_stream_t *stream)
     questData.tracked=gw_quest_tracked;
     memcpy(questData.status,gw_quest_status,sizeof(gw_quest_status));
     memcpy(questData.step,gw_quest_step,sizeof(gw_quest_step));
+    memcpy(questData.done,gw_quest_done,sizeof(gw_quest_done));
     GW_WRITE(questData);
 #undef GW_WRITE
 }

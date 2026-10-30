@@ -201,14 +201,17 @@ public:
         requires = new QComboBox(right);
         excludes = new QComboBox(right);
         initiallyHidden = new QCheckBox(tr("Hide until dialogue enables this quest"),right);
+        unordered = new QCheckBox(tr("Allow objectives in ANY ORDER (all still required)"),right);
+        unordered->setToolTip(tr("Each objective completes independently; quest completes when ALL are done. Existing ordered quests are unchanged."));
         form->addRow(tr("Stable quest ID"),questId);
         form->addRow(tr("Title"),title);
         form->addRow(tr("Journal description"),description);
         form->addRow(tr("Unlock when quest completed"),requires);
         form->addRow(tr("Lock if quest completed"),excludes);
         form->addRow(tr("Quest discovery"),initiallyHidden);
+        form->addRow(tr("Objective progression"),unordered);
         rv->addLayout(form);
-        rv->addWidget(new QLabel(tr("OBJECTIVES (in order, one active step per quest)")));
+        rv->addWidget(new QLabel(tr("OBJECTIVES (ordered by default; ANY ORDER is selectable above)")));
         objectives = new QTableWidget(right);
         objectives->setColumnCount(5);
         objectives->setHorizontalHeaderLabels({tr("Journal objective"), tr("Condition"),
@@ -276,7 +279,7 @@ public:
             flushQuest();
             if (quests.size()>=64) { QMessageBox::warning(this,tr("Quest limit"),tr("Maximum 64 quests.")); return; }
             QJsonObject q; q["id"]=newId("quest_"); q["title"]=tr("New Quest");
-            q["description"]=QString();q["requires"]=QString();q["excludes"]=QString();q["initiallyHidden"]=false;
+            q["description"]=QString();q["requires"]=QString();q["excludes"]=QString();q["initiallyHidden"]=false;q["unordered"]=false;
             q["objectives"]=QJsonArray{}; quests.append(q);
             refreshList();questList->setCurrentRow(quests.size()-1);
         });
@@ -365,7 +368,7 @@ private:
     QListWidget *questList=nullptr;
     QLineEdit *questId=nullptr,*title=nullptr,*description=nullptr;
     QComboBox *requires=nullptr,*excludes=nullptr;
-    QCheckBox *initiallyHidden=nullptr;
+    QCheckBox *initiallyHidden=nullptr,*unordered=nullptr;
     QTableWidget *objectives=nullptr;
     struct DialogueAction { int id, node, choice; QString stableId,label; };
     struct PendingWorld { QString filePath; QByteArray original; QByteArray updated; };
@@ -529,9 +532,9 @@ private:
     void refreshDetails() {
         const bool valid=selected>=0 && selected<quests.size();
         title->setEnabled(valid);description->setEnabled(valid);
-        requires->setEnabled(valid);excludes->setEnabled(valid);initiallyHidden->setEnabled(valid);objectives->setEnabled(valid);
+        requires->setEnabled(valid);excludes->setEnabled(valid);initiallyHidden->setEnabled(valid);unordered->setEnabled(valid);objectives->setEnabled(valid);
         QSignalBlocker b1(objectives),b2(requires),b3(excludes);
-        questId->clear(); title->clear();description->clear();initiallyHidden->setChecked(false);objectives->setRowCount(0);
+        questId->clear(); title->clear();description->clear();initiallyHidden->setChecked(false);unordered->setChecked(false);objectives->setRowCount(0);
         requires->clear();excludes->clear();
         requires->addItem(tr("None"),QString()); excludes->addItem(tr("None"),QString());
         for(int i=0;i<quests.size();++i) if(i!=selected) {
@@ -544,6 +547,7 @@ private:
         questId->setText(q.value("id").toString());title->setText(q.value("title").toString());
         description->setText(q.value("description").toString());
         initiallyHidden->setChecked(q.value("initiallyHidden").toBool(false));
+        unordered->setChecked(q.value("unordered").toBool(false));
         requires->setCurrentIndex(qMax(0,requires->findData(q.value("requires").toString())));
         excludes->setCurrentIndex(qMax(0,excludes->findData(q.value("excludes").toString())));
         const QJsonArray a=q.value("objectives").toArray(); objectives->setRowCount(a.size());
@@ -574,6 +578,7 @@ private:
         q["title"]=title->text().trimmed();q["description"]=description->text().trimmed();
         q["requires"]=requires->currentData().toString();q["excludes"]=excludes->currentData().toString();
         q["initiallyHidden"]=initiallyHidden->isChecked();
+        q["unordered"]=unordered->isChecked();
         QJsonArray old=q.value("objectives").toArray(),next;
         for(int i=0;i<objectives->rowCount();++i) {
             QJsonObject o=i<old.size()?old.at(i).toObject():QJsonObject{};

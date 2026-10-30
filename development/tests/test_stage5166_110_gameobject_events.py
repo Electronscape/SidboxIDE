@@ -20,7 +20,7 @@ SPLASH=(ROOT/'splashscreenwidget.cpp').read_text()
 
 class EventOutputs(unittest.TestCase):
  def test_version(self):
-  self.assertIn('Build: 5.166.111.1.291026',SPLASH)
+  self.assertIn('Build: 5.166.113.291026',SPLASH)
  def test_all_requested_event_types(self):
   for type,events in [('breakable',['hit','destroy']),('collectable',['pickup']),('hazard',['player_hit']),('goto_world',['enter']),('save_checkpoint',['save']),('lift',['arrival']),('enemy',['hit'])]:
    self.assertIn('type==QStringLiteral("%s")'%type,NODE)

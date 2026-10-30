@@ -20,6 +20,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
 #include <QPainterPathStroker>
 #include <QPair>
@@ -112,6 +113,7 @@ struct NodeObject {
 // These are the three object kinds whose targetObjectId is executed by the
 // generated runtime. Other sprites can carry stale/inert target fields.
 QStringList eventKinds(const QString &type) {
+    if(type==QStringLiteral("quest_completed"))return {QStringLiteral("complete")};
     if(type==QStringLiteral("breakable"))return {QStringLiteral("hit"),QStringLiteral("destroy")};
     if(type==QStringLiteral("collectable"))return {QStringLiteral("pickup")};
     if(type==QStringLiteral("hazard"))return {QStringLiteral("player_hit")};
@@ -124,6 +126,16 @@ QStringList eventKinds(const QString &type) {
 bool isEventOutput(const QString &id) {return id.startsWith(QStringLiteral("@event:"));}
 QString eventKey(const QString &id) {return id.section(QLatin1Char(':'),1,1);}
 QString eventOwner(const QString &id) {return id.section(QLatin1Char(':'),2);}
+// Virtual trigger latch outputs carry the trigger UUID, never a placed sprite.
+// ON reads the remembered state; OFF reads its inverse. Both are CONDITIONS,
+// not another activation event. The saved input uses the same UUID identity.
+bool isTriggerStateOutput(const QString &id) {
+    return id.startsWith(QStringLiteral("@triggerstate:on:")) ||
+           id.startsWith(QStringLiteral("@triggerstate:off:"));
+}
+QString triggerStateOwner(const QString &id) {return id.section(QLatin1Char(':'),2);}
+bool triggerStateOff(const QString &id) {return id.startsWith(QStringLiteral("@triggerstate:off:"));}
+QString triggerStateInputId(const QString &owner) {return QStringLiteral("@triggerstate:")+owner;}
 QString eventOutput(const QString &key,const QString &owner) {
     return QStringLiteral("@event:")+key+QLatin1Char(':')+owner;
 }
@@ -134,6 +146,9 @@ QString eventLabel(const QString &key) {
     if(key==QStringLiteral("player_hit"))return QStringLiteral("ON PLAYER HIT");
     if(key==QStringLiteral("enter"))return QStringLiteral("ON ENTER");
     if(key==QStringLiteral("save"))return QStringLiteral("ON SAVE");
+    if(key==QStringLiteral("complete"))return QStringLiteral("ON COMPLETED");
+    if(key==QStringLiteral("defeat"))return QStringLiteral("ON DEFEAT");
+    if(key==QStringLiteral("trigger"))return QStringLiteral("ON ACTIVATE");
     return QStringLiteral("ON ARRIVAL");
 }
 bool isEnemyDefeatOutput(const QString &id) {
@@ -150,9 +165,12 @@ bool isActionSource(const NodeObject &node) {
 bool isWeatherTarget(const QString &id) {
     return id.startsWith(QStringLiteral("@player_weather:"));
 }
+bool isQuestEvent(const QString &id) {
+    return id.startsWith(QStringLiteral("@quest_event:"));
+}
 bool isPlayerCommand(const QString &id) {
     return id.startsWith(QStringLiteral("@player_time:")) ||
-           id.startsWith(QStringLiteral("@player_world:"));
+           id.startsWith(QStringLiteral("@player_world:")) || isQuestEvent(id);
 }
 QString defaultPlayerAction(const QString &id,const QString &ordinary) {
     return isPlayerCommand(id)?QStringLiteral("enable"):ordinary;
@@ -1195,8 +1213,11 @@ public:
                     }
                 }
             }
+            // Independent graphs are owned by the source Game Object, including
+            // Collectables. An ON PICKUP gate must survive closing/reopening
+            // Visual Nodes just like ON DESTROY and ON ARRIVAL graphs.
             if (type!=QStringLiteral("trigger") && type!=QStringLiteral("npc") &&
-                type!=QStringLiteral("player_action") && type!=QStringLiteral("collectable"))
+                type!=QStringLiteral("player_action"))
                 node.logicNodes=data.value(QStringLiteral("logicNodes")).toArray();
             const QString legacy=data.value(QStringLiteral("targetObjectId")).toString();
             const QString action=data.value(QStringLiteral("targetAction")).toString();
@@ -1263,6 +1284,49 @@ public:
              {QStringLiteral("@player_time:1"),tr("Night")},
              {QStringLiteral("@player_time:2"),tr("Resume Day/Night Cycle")}})
             addPlayer(option.first,option.second);
+        // Quest Events are project-wide virtual action targets, populated ONLY
+        // from configured "Event signal" objectives. The target ID is stable;
+        // neither the card nor its layout creates an objective. Deleted signals
+        // become visible broken references and fail world generation.
+        QJsonObject questFile;
+        const QString questPath=QDir(QFileInfo(m_worldPath).absolutePath())
+            .filePath(QStringLiteral(".codergirl/quests.json"));
+        if(readJson(questPath,&questFile)) {
+            QSet<QString> discovered;
+            for(const QJsonValue &questValue:questFile.value(QStringLiteral("quests")).toArray()) {
+                const QJsonObject quest=questValue.toObject();
+                const QString questId=quest.value(QStringLiteral("id")).toString();
+                if(!questId.isEmpty() && !m_objects.contains(QStringLiteral("@quest_complete:")+questId)) {
+                    NodeObject completion;
+                    completion.id=QStringLiteral("@quest_complete:")+questId;
+                    completion.name=tr("Quest completed: %1").arg(quest.value(QStringLiteral("title")).toString());
+                    completion.type=QStringLiteral("quest_completed");
+                    for(const QJsonValue &value:m_world.value(QStringLiteral("questCompletionActions"))
+                            .toObject().value(questId).toArray()) {
+                        const QJsonObject action=value.toObject();
+                        const QString target=action.value(QStringLiteral("objectId")).toString();
+                        const QString op=action.value(QStringLiteral("action")).toString();
+                        if(!target.isEmpty() && supportedAction(op))
+                            completion.eventLinks[QStringLiteral("complete")].append({target,op});
+                    }
+                    m_objects.insert(completion.id,completion);m_order.append(completion.id);
+                }
+                for(const QJsonValue &stepValue:quest.value(QStringLiteral("objectives")).toArray()) {
+                    const QJsonObject step=stepValue.toObject();
+                    if(step.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))continue;
+                    const QString signal=step.value(QStringLiteral("target")).toString();
+                    if(signal.isEmpty() || discovered.contains(signal))continue;
+                    discovered.insert(signal);
+                    NodeObject node;
+                    node.id=QStringLiteral("@quest_event:")+signal;
+                    node.name=tr("Quest: %1 / %2").arg(
+                        quest.value(QStringLiteral("title")).toString(),
+                        step.value(QStringLiteral("title")).toString());
+                    node.type=QStringLiteral("quest_event");
+                    m_objects.insert(node.id,node);m_order.append(node.id);
+                }
+            }
+        }
         // Match the Goto World editor: the project's .sbgm worlds are siblings.
         // Use the same runtime-name conversion as the game's world registry.
         const QDir projectDir(QFileInfo(m_worldPath).absolutePath());
@@ -2824,40 +2888,49 @@ private:
         const bool trigger=node.type==QStringLiteral("trigger");
         const bool npc=node.type==QStringLiteral("npc");
         const bool player=node.type==QStringLiteral("player_action");
+        const bool questEvent=node.type==QStringLiteral("quest_event");
+        const bool questCompleted=node.type==QStringLiteral("quest_completed");
         const bool eventSource=isActionSource(node) || !eventKinds(node.type).isEmpty();
         const qreal width=npc?344:(trigger?280:224);
-        auto *card=new NodeCard(QRectF(0,0,width,npc?266:(trigger?201:
+        auto *card=new NodeCard(QRectF(0,0,width,npc?266:(trigger?298:
             node.type==QStringLiteral("enemy")?142:
             !eventKinds(node.type).isEmpty()?92+eventKinds(node.type).size()*29:82)));
         card->setData(0,QStringLiteral("card"));card->setData(1,id);
-        card->setPen(QPen(eventSource?QColor(238,190,86):npc?QColor(207,153,236):player?QColor(198,149,226):QColor(103,153,184),1.5));
+        card->setPen(QPen((questEvent || questCompleted)?QColor(100,205,164):eventSource?QColor(238,190,86):npc?QColor(207,153,236):player?QColor(198,149,226):QColor(103,153,184),1.5));
         card->setBrush(m_theme.panelBackground);
+        if(questCompleted)card->setToolTip(tr("QUEST ON COMPLETED: emitted exactly once when every objective finishes. Saved progress never replays this pulse."));
+        if(questEvent)card->setToolTip(tr("QUEST EVENT: %1\nSignal ID: %2\nRuns only when an action fires. Quest progress uses the shared quest journal.")
+            .arg(node.name,id.mid(QStringLiteral("@quest_event:").size())));
         m_scene->addItem(card);
         card->setPos(position);
         card->enableGridSnap();
         m_positions.insert(id,position);
         auto *stripe=new QGraphicsRectItem(QRectF(0,0,width,26),card);
-        stripe->setPen(Qt::NoPen);stripe->setBrush(eventSource?QColor(138,91,35):npc?QColor(97,65,129):player?QColor(103,60,132):QColor(50,88,119));
+        stripe->setPen(Qt::NoPen);stripe->setBrush((questEvent || questCompleted)?QColor(34,103,82):eventSource?QColor(138,91,35):npc?QColor(97,65,129):player?QColor(103,60,132):QColor(50,88,119));
         auto *name=new QGraphicsSimpleTextItem(node.name.left(27),card);
         name->setBrush(Qt::white);name->setPos(8,4);
-        auto *kind=new QGraphicsSimpleTextItem(player?tr("PLAYER ACTION"):
+        auto *kind=new QGraphicsSimpleTextItem(questCompleted?tr("QUEST LINE / ON COMPLETED"):
+            questEvent?tr("QUEST EVENT / SIGNAL"):
+            player?tr("PLAYER ACTION"):
             node.type==QStringLiteral("npc_reference")?tr("NPC (OTHER WORLD)"):
             node.type==QStringLiteral("world_reference")?tr("WORLD OBJECT TARGET"):
             node.type==QStringLiteral("missing_reference")?tr("BROKEN CONNECTION"):
             (node.type==QStringLiteral("collectable") && node.pickupKind==3)?tr("KEY COLLECTABLE"):
             node.type==QStringLiteral("enemy")?tr("ENEMY STATE / DEFEAT"):node.type.toUpper(),card);
         kind->setBrush(m_theme.text);kind->setPos(9,35);
-        if (!npc) {
+        if(trigger)kind->setToolTip(tr("Gold activates this Trigger. Teal outputs read its virtual, saved ON/OFF switch (initially OFF, toggles on each successful activation)."));
+        if (!npc && !questCompleted) {
             // An incoming action is not the same thing as an outgoing state:
             // a small square on the left denotes a command/state assignment.
             auto *input=new QGraphicsRectItem(QRectF(-7,51,14,14),card);
             input->setData(0,QStringLiteral("input"));
             input->setData(1,id);
-            const QColor colour=player?QColor(176,119,212):QColor(115,190,213);
+            const QColor colour=questEvent?QColor(83,198,146):player?QColor(176,119,212):QColor(115,190,213);
             input->setPen(QPen(colour.lighter(150),1.5));
             input->setBrush(colour);
             input->setZValue(4);
-            input->setToolTip(player ? tr("INPUT: receive a PLAYER command from a Trigger or logic branch") :
+            input->setToolTip(questEvent ? tr("SIGNAL: send this quest's named event once when an action socket fires. Only Signal is supported; no active-state output.") :
+                player ? tr("INPUT: receive a PLAYER command from a Trigger or logic branch") :
                 tr("INPUT: receive Enable / Disable / Toggle or a logic RESULT assignment (where supported)"));
         }
         if (trigger || (node.resourceIndex>=0 && node.type!=QStringLiteral("npc"))) {
@@ -2875,6 +2948,40 @@ private:
                     ? tr("STATE OUTPUT: read this enemy as a Boolean input. Create AND/NOT/OR logic directly from here without a Trigger. TRUE means active, FALSE means defeated/disabled. For actions when defeated use the gold socket below.")
                     : eventSource ? tr("This object's existing pickup action is shown as a coloured wire. The teal socket still reads enabled state.") :
                     tr("Read this Game Object's enabled/disabled state with Logic > Boolean"));
+            }
+        }
+        if (trigger) {
+            // Keep all three outputs readable. The embedded settings panel
+            // occupies y=79..191 at z=3; labels in that rectangle would be
+            // painted underneath it (and disappear on an expanded card).
+            // Put the virtual switch in its own section BELOW the controls.
+            auto *actionLabel=new QGraphicsSimpleTextItem(tr("ON ACTIVATE"),card);
+            actionLabel->setBrush(QColor(255,220,137));
+            actionLabel->setPos(178,49);
+            auto *separator=new QGraphicsLineItem(9,200,259,200,card);
+            separator->setPen(QPen(QColor(91,142,153),1));
+            auto *sectionLabel=new QGraphicsSimpleTextItem(tr("Virtual switch"),card);
+            sectionLabel->setBrush(m_theme.text);
+            sectionLabel->setPos(9,208);
+            sectionLabel->setToolTip(tr("Remembered ON/OFF state; changes on each successful Trigger activation."));
+            // Use one shared centre line for each label and its socket.
+            // The header is above the rows, and the card has a bottom margin.
+            // Both the labels and the wire endpoints are tied to the actual
+            // socket geometry, never to independently guessed text baselines.
+            for(const bool off:{false,true}) {
+                const qreal centreY=off?273.0:243.0;
+                auto *label=new QGraphicsSimpleTextItem(off?tr("STATE OFF"):tr("STATE ON"),card);
+                label->setBrush(QColor(150,241,230));
+                const QRectF textBounds=label->boundingRect();
+                label->setPos(width-25.0-textBounds.right(),centreY-textBounds.center().y());
+                auto *port=new QGraphicsEllipseItem(QRectF(width-9.5,centreY-9.5,19,19),card);
+                port->setData(0,QStringLiteral("output"));
+                port->setData(1,QStringLiteral("@triggerstate:")+
+                    (off?QStringLiteral("off:"):QStringLiteral("on:"))+id);
+                port->setPen(QPen(QColor(177,242,226),2));
+                port->setBrush(QColor(54,148,141));port->setZValue(5);
+                port->setToolTip(off ? tr("Virtual switch OFF: true while this Trigger's remembered switch is OFF. No physical Game Object required.")
+                    : tr("Virtual switch ON: true while this Trigger's remembered switch is ON. Each successful activation toggles it, starting OFF. Saved with the world."));
             }
         }
         if (node.type==QStringLiteral("enemy")) {
@@ -2901,7 +3008,9 @@ private:
             port->setData(1,id);port->setData(2,key);
             port->setPen(QPen(QColor(255,225,147),2));
             port->setBrush(QColor(205,140,37));port->setZValue(5);
-            port->setToolTip(key==QStringLiteral("arrival")
+            port->setToolTip(key==QStringLiteral("complete")
+                ? tr("ON COMPLETED: one-shot quest completion. Drag to an action target or Quest Event to signal the next part. Progress is persisted, so restores do not fire it again.")
+                : key==QStringLiteral("arrival")
                 ? tr("GOLD ON ARRIVAL: drag to empty canvas → Logic (Boolean/AND/OR/NOT), or to a Game Object and right-click the action wire → Toggle to alternate its state each arrival. The teal socket above reads the lift's active state instead.")
                 : ((node.type==QStringLiteral("breakable") &&
                     (key==QStringLiteral("hit") || key==QStringLiteral("destroy")))
@@ -4100,21 +4209,24 @@ private:
             m_objects.value(enemyDefeatOwner(from)).type==QStringLiteral("enemy");
         // Event outputs are action ports, not ordinary object-state outputs.
         // Keep their conditional logic choice both visible and easy to find.
-        const bool eventLogicSource=eventOutputPort &&
-            ((eventKey(from)==QStringLiteral("arrival") &&
-              m_objects.value(eventOwner(from)).type==QStringLiteral("lift")) ||
-             ((eventKey(from)==QStringLiteral("hit") ||
-               eventKey(from)==QStringLiteral("destroy")) &&
-              m_objects.value(eventOwner(from)).type==QStringLiteral("breakable")));
-        const bool objectSource=graphValue || (!from.isEmpty() && !stateOutput && m_objects.contains(from) &&
+        const bool virtualTriggerState=isTriggerStateOutput(from) &&
+            m_objects.value(triggerStateOwner(from)).type==QStringLiteral("trigger");
+        const bool triggerLogicSource=m_objects.contains(from) &&
+            m_objects.value(from).type==QStringLiteral("trigger");
+        const bool questCompletionSource=eventOutputPort &&
+            m_objects.value(eventOwner(from)).type==QStringLiteral("quest_completed");
+        const bool eventLogicSource=(eventOutputPort && !questCompletionSource) || enemyOutput || triggerLogicSource;
+        const bool objectSource=virtualTriggerState || graphValue || (!from.isEmpty() && !stateOutput && m_objects.contains(from) &&
             m_objects.value(from).type!=QStringLiteral("trigger") &&
             m_objects.value(from).type!=QStringLiteral("npc") &&
             m_objects.value(from).type!=QStringLiteral("player_action") &&
-            m_objects.value(from).type!=QStringLiteral("collectable") &&
+            m_objects.value(from).type!=QStringLiteral("quest_event") &&
+            m_objects.value(from).type!=QStringLiteral("quest_completed") &&
             m_objects.value(from).type!=QStringLiteral("player"));
         picker.setWindowTitle(from.isEmpty()?tr("Add World Node"):
             graphValue?tr("Connect RESULT to Logic or Game Object..."):
             (stateOutput || graphBranch)?tr("Connect TRUE / FALSE to..."):
+            virtualTriggerState?tr("Read Trigger Virtual Switch State..."):
             objectSource?tr("Read Game Object State..."):
             eventOutputPort?tr("Connect %1 to...").arg(eventLabel(eventKey(from))):
             enemyOutput?tr("Connect Enemy ON DEFEAT to..."):tr("Connect Trigger to..."));
@@ -4134,8 +4246,10 @@ private:
         search->setPlaceholderText(tr("Filter available nodes..."));
         layout->addWidget(search);
         if(eventLogicSource) {
-            auto *hint=new QLabel(tr("%1: select Logic to combine this one-frame event with object states, "
-                "or connect directly for an unconditional action.").arg(eventLabel(eventKey(from))),&picker);
+            const QString eventName=triggerLogicSource?tr("ON ACTIVATE"):
+                enemyOutput?tr("ON DEFEAT"):eventLabel(eventKey(from));
+            auto *hint=new QLabel(tr("%1: combine this event pulse with Game Object states, "
+                "or connect directly for an unconditional action.").arg(eventName),&picker);
             hint->setWordWrap(true);
             layout->addWidget(hint);
         }
@@ -4161,6 +4275,8 @@ private:
             // start an NPC conversation. Never offer a no-op target.
             if ((enemyOutput || eventOutputPort) && object.type==QStringLiteral("npc"))continue;
             if(object.type==QStringLiteral("player_action") ||
+               object.type==QStringLiteral("quest_event") ||
+               object.type==QStringLiteral("quest_completed") ||
                object.type==QStringLiteral("missing_reference"))continue;
             if(graphValue && (object.type==QStringLiteral("trigger") ||
                 object.type==QStringLiteral("npc") || object.resourceIndex<0))continue;
@@ -4237,10 +4353,41 @@ private:
                     tr("Use Enable / Disable / Toggle for the player's spotlight."));
             }
         }
+        // These names are live references to Quest Designer "Event signal"
+        // objectives. They are not duplicate quest definitions.
+        if(!graphValue && !objectSource && !virtualTriggerState) {
+            QTreeWidgetItem *questsRoot=nullptr;
+            for(const QString &id:m_order) {
+                const NodeObject node=m_objects.value(id);
+                if(node.type!=QStringLiteral("quest_event"))continue;
+                if(!questsRoot) {
+                    questsRoot=new QTreeWidgetItem(tree,QStringList{tr("Quest Events")});
+                    questsRoot->setFlags(questsRoot->flags() & ~Qt::ItemIsSelectable);
+                }
+                auto *item=new QTreeWidgetItem(questsRoot,QStringList{node.name});
+                item->setData(0,Qt::UserRole,id);
+                item->setToolTip(0,tr("Signal %1 (Quest Designer → Event signal). This is a one-shot action, not a Boolean state.")
+                    .arg(id.mid(QStringLiteral("@quest_event:").size())));
+            }
+        }
+        if(!linking) {
+            QTreeWidgetItem *completedRoot=nullptr;
+            for(const QString &id:m_order) {
+                const NodeObject node=m_objects.value(id);
+                if(node.type!=QStringLiteral("quest_completed"))continue;
+                if(!completedRoot) {
+                    completedRoot=new QTreeWidgetItem(tree,QStringList{tr("Quest Lines / Completion Events")});
+                    completedRoot->setFlags(completedRoot->flags() & ~Qt::ItemIsSelectable);
+                }
+                auto *item=new QTreeWidgetItem(completedRoot,QStringList{node.name});
+                item->setData(0,Qt::UserRole,id);
+                item->setToolTip(0,tr("Project quest completion, one-shot ON COMPLETED action output."));
+            }
+        }
         // NPC start/after-helped selections point to the existing Adventure
         // dialogue IDs. TRUE/FALSE actions use the same runtime Show Dialogue
         // command as ordinary Dialogue Actions, never a new NPC event type.
-        if(linking && !objectSource && !graphValue && !enemyOutput) {
+        if(linking && !objectSource && !graphValue && !enemyOutput && !questCompletionSource) {
             auto *npcConversations=new QTreeWidgetItem(tree,QStringList{tr("NPC Conversations")});
             npcConversations->setFlags(npcConversations->flags() & ~Qt::ItemIsSelectable);
             for(const QString &id:m_order) {
@@ -4287,7 +4434,7 @@ private:
         // Named Breakable events can show an Adventure dialogue. Selecting one
         // creates the existing one-frame BOOLEAN -> TRUE dialogue chain, so
         // event playback uses the same validated runtime path as graph dialogue.
-        if (linking && !objectSource && !enemyOutput &&
+        if (linking && !objectSource && !enemyOutput && !questCompletionSource &&
             (!eventOutputPort || eventLogicSource)) {
             auto *root=new QTreeWidgetItem(tree,QStringList{tr("Dialogue Actions")});
             root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
@@ -4362,12 +4509,12 @@ private:
             return;
         }
         if (selectedId==QStringLiteral("@create-dialogue")) {
-            if(eventLogicSource) {
+            if(eventOutputPort || enemyOutput) {
                 if(m_dialogues.size()>=256) {
                     QMessageBox::warning(this,tr("Visual Nodes"),tr("Adventure dialogues are limited to 256 nodes."));
                     return;
                 }
-                const QString owner=eventOwner(from);
+                const QString owner=enemyOutput?enemyDefeatOwner(from):eventOwner(from);
                 const int before=m_objects.value(owner).logicNodes.size();
                 createGraphLogic(from,at,QStringLiteral("boolean"));
                 const QJsonArray nodes=m_objects.value(owner).logicNodes;
@@ -4375,7 +4522,7 @@ private:
                 const QString key=graphKey(owner,nodes.last().toObject().value(QStringLiteral("id")).toString());
                 setGraphDialogue(key,true,-2,at+QPointF(350,0));
                 m_status->setText(tr("%1: event pulse → BOOLEAN TRUE → new Adventure dialogue. Save Graph + World to apply.")
-                    .arg(eventLabel(eventKey(from))));
+                    .arg(enemyOutput?tr("ON DEFEAT"):eventLabel(eventKey(from))));
                 return;
             }
             if(graphBranch) {
@@ -4402,8 +4549,8 @@ private:
             bool ok=false;
             const int index=selectedId.mid(QStringLiteral("@dialogue-node:").size()).toInt(&ok);
             if (ok && index>=0 && index<m_dialogues.size()) {
-                if(eventLogicSource) {
-                    const QString owner=eventOwner(from);
+                if(eventOutputPort || enemyOutput) {
+                    const QString owner=enemyOutput?enemyDefeatOwner(from):eventOwner(from);
                     const int before=m_objects.value(owner).logicNodes.size();
                     createGraphLogic(from,at,QStringLiteral("boolean"));
                     const QJsonArray nodes=m_objects.value(owner).logicNodes;
@@ -4411,7 +4558,7 @@ private:
                     const QString key=graphKey(owner,nodes.last().toObject().value(QStringLiteral("id")).toString());
                     setGraphDialogue(key,true,index,at+QPointF(350,0));
                     m_status->setText(tr("%1: event pulse → BOOLEAN TRUE → Dialogue #%2. Save Graph + World to apply.")
-                        .arg(eventLabel(eventKey(from))).arg(index));
+                        .arg(enemyOutput?tr("ON DEFEAT"):eventLabel(eventKey(from))).arg(index));
                     return;
                 }
                 if(graphBranch) {
@@ -4638,8 +4785,7 @@ private:
         const QString who=text.left(colon),name=text.mid(colon+1);
         if(!m_objects.contains(who) || m_objects.value(who).resourceIndex<0 ||
            m_objects.value(who).type==QStringLiteral("npc") ||
-           m_objects.value(who).type==QStringLiteral("player_action") ||
-           m_objects.value(who).type==QStringLiteral("collectable"))return false;
+           m_objects.value(who).type==QStringLiteral("player_action"))return false;
         const QJsonArray nodes=m_objects.value(who).logicNodes;
         for(int i=0;i<nodes.size();++i)
             if(nodes[i].toObject().value(QStringLiteral("id")).toString()==name) {
@@ -4664,23 +4810,38 @@ private:
         // It does not need an unrelated Trigger or a defeated enemy to own it.
         // The runtime evaluates when a real action/event changes that state.
         const NodeObject n=m_objects.value(source);
-        if(n.resourceIndex<0 || n.type==QStringLiteral("collectable") ||
-           n.type==QStringLiteral("npc") || n.type==QStringLiteral("player_action") ||
-           n.type==QStringLiteral("trigger") || n.type==QStringLiteral("player"))
+        if(n.resourceIndex<0 || n.type==QStringLiteral("npc") ||
+           n.type==QStringLiteral("player_action") || n.type==QStringLiteral("trigger") ||
+           n.type==QStringLiteral("player"))
             return QString();
         return source;
     }
     void createGraphLogic(const QString &source,const QPointF &at,const QString &operation) {
+        // Virtual quest-completion sources emit queued actions, not an
+        // object-owned independent logic graph. Never create a dead graph.
+        if(isEventOutput(source) && m_objects.value(eventOwner(source)).type==QStringLiteral("quest_completed"))return;
         QString owner;
         QJsonObject input;
         if(isEventOutput(source) && m_objects.contains(eventOwner(source)) &&
-           ((eventKey(source)==QStringLiteral("arrival") &&
-             m_objects.value(eventOwner(source)).type==QStringLiteral("lift")) ||
-            ((eventKey(source)==QStringLiteral("hit") || eventKey(source)==QStringLiteral("destroy")) &&
-             m_objects.value(eventOwner(source)).type==QStringLiteral("breakable")))) {
+           eventKinds(m_objects.value(eventOwner(source)).type).contains(eventKey(source))) {
             owner=eventOwner(source);
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),source}};
+        } else if(isEnemyDefeatOutput(source) && m_objects.contains(enemyDefeatOwner(source)) &&
+                  m_objects.value(enemyDefeatOwner(source)).type==QStringLiteral("enemy")) {
+            owner=enemyDefeatOwner(source);
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),owner)}};
+        } else if(isTriggerStateOutput(source) &&
+                  m_objects.value(triggerStateOwner(source)).type==QStringLiteral("trigger")) {
+            owner=triggerStateOwner(source);
+            input={{QStringLiteral("kind"),QStringLiteral("object")},
+                   {QStringLiteral("id"),triggerStateInputId(owner)},
+                   {QStringLiteral("invert"),triggerStateOff(source)}};
+        } else if(m_objects.contains(source) && m_objects.value(source).type==QStringLiteral("trigger")) {
+            owner=source;
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),owner)}};
         } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QJsonObject upstreamNode;
@@ -4724,12 +4885,21 @@ private:
         if(!lookupGraph(key,&owner,&index,&node))return;
         QJsonObject input;
         if(isEventOutput(source) && eventOwner(source)==owner &&
-           ((eventKey(source)==QStringLiteral("arrival") &&
-             m_objects.value(owner).type==QStringLiteral("lift")) ||
-            ((eventKey(source)==QStringLiteral("hit") || eventKey(source)==QStringLiteral("destroy")) &&
-             m_objects.value(owner).type==QStringLiteral("breakable")))) {
+           eventKinds(m_objects.value(owner).type).contains(eventKey(source))) {
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),source}};
+        } else if(isEnemyDefeatOutput(source) && enemyDefeatOwner(source)==owner &&
+                  m_objects.value(owner).type==QStringLiteral("enemy")) {
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),owner)}};
+        } else if(isTriggerStateOutput(source) &&
+                  m_objects.value(triggerStateOwner(source)).type==QStringLiteral("trigger")) {
+            input={{QStringLiteral("kind"),QStringLiteral("object")},
+                   {QStringLiteral("id"),triggerStateInputId(triggerStateOwner(source))},
+                   {QStringLiteral("invert"),triggerStateOff(source)}};
+        } else if(source==owner && m_objects.value(owner).type==QStringLiteral("trigger")) {
+            input={{QStringLiteral("kind"),QStringLiteral("event")},
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),owner)}};
         } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QString otherOwner;QJsonObject other;
@@ -4744,7 +4914,8 @@ private:
         QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
         for(const QJsonValue &v:inputs)
             if(v.toObject().value(QStringLiteral("id"))==input.value(QStringLiteral("id")) &&
-               v.toObject().value(QStringLiteral("kind"))==input.value(QStringLiteral("kind")))return;
+               v.toObject().value(QStringLiteral("kind"))==input.value(QStringLiteral("kind")) &&
+               v.toObject().value(QStringLiteral("invert"))==input.value(QStringLiteral("invert")))return;
         const QString op=node.value(QStringLiteral("op")).toString();
         if((op==QStringLiteral("boolean") || op==QStringLiteral("not")) && inputs.size()>=1) {
             if(QMessageBox::question(this,tr("Replace Logic Input"),
@@ -4817,6 +4988,7 @@ private:
     void addGraphResultTarget(const QString &key,const QString &target) {
         QJsonObject node;
         if(!lookupGraph(key,nullptr,nullptr,&node) || !m_objects.contains(target) ||
+           m_objects.value(target).type==QStringLiteral("quest_event") ||
            m_objects.value(target).type==QStringLiteral("trigger") ||
            m_objects.value(target).type==QStringLiteral("npc") ||
            m_objects.value(target).resourceIndex<0)return;
@@ -4898,7 +5070,13 @@ private:
             const QJsonObject entry=connected?inputs.at(i).toObject():QJsonObject();
             const QString kind=entry.value(QStringLiteral("kind")).toString();
             const QString id=entry.value(QStringLiteral("id")).toString();
-            const QString name=kind==QStringLiteral("node")?id:
+            const bool virtualInput=kind==QStringLiteral("object") &&
+                id.startsWith(QStringLiteral("@triggerstate:"));
+            const QString stateOwner=virtualInput?id.mid(QStringLiteral("@triggerstate:").size()):QString();
+            const QString name=virtualInput && m_objects.contains(stateOwner)
+                ?m_objects.value(stateOwner).name+(entry.value(QStringLiteral("invert")).toBool(false)
+                    ?tr(" (OFF)"):tr(" (ON)")):
+                kind==QStringLiteral("node")?id:
                 kind==QStringLiteral("event")?eventLabel(eventKey(id)):
                 m_objects.contains(id)?m_objects.value(id).name:id;
             if(!socket) {
@@ -5004,9 +5182,13 @@ private:
             const QString op=operation->currentData().toString();
             const QString previousOp=current.value(QStringLiteral("op")).toString();
             if(previousOp==op)return;
-            if(op==QStringLiteral("or") && current.value(QStringLiteral("inputs")).toArray().size()>8) {
-                QMessageBox::information(this,tr("OR Inputs"),
-                    tr("OR supports up to eight inputs. Disconnect extra inputs before switching this gate to OR."));
+            const int connected=current.value(QStringLiteral("inputs")).toArray().size();
+            if((op==QStringLiteral("or") && connected>8) ||
+               ((op==QStringLiteral("boolean") || op==QStringLiteral("not")) && connected>1)) {
+                QMessageBox::information(this,tr("Logic Inputs"),
+                    op==QStringLiteral("or")?
+                        tr("OR supports up to eight inputs. Disconnect extra inputs before changing the gate."):
+                        tr("BOOLEAN and NOT accept exactly one input. Disconnect extras before changing the gate."));
                 const QSignalBlocker block(operation);
                 operation->setCurrentIndex(operation->findData(previousOp));
                 return;
@@ -5176,14 +5358,43 @@ private:
                     const QJsonObject v=inputs.at(i).toObject();
                     const QString kind=v.value(QStringLiteral("kind")).toString();
                     const QString id=v.value(QStringLiteral("id")).toString();
-                    const QString from=kind==QStringLiteral("node")?graphKey(owner,id):
+                    const bool virtualInput=kind==QStringLiteral("object") &&
+                        id.startsWith(QStringLiteral("@triggerstate:"));
+                    const QString from=virtualInput?id.mid(QStringLiteral("@triggerstate:").size()):
+                        kind==QStringLiteral("node")?graphKey(owner,id):
                         kind==QStringLiteral("event")?eventOwner(id):id;
                     NodeCard *source=m_cards.value(from,nullptr);
                     if(!source)continue;
-                    const QPointF a=source->wirePoint(QPointF(kind==QStringLiteral("node")?274:224,
-                        kind==QStringLiteral("node")?78:
-                        kind==QStringLiteral("event")?
-                        (eventKey(id)==QStringLiteral("destroy")?117.5:88.5):58));
+                    qreal eventY=88.5;
+                    if(kind==QStringLiteral("event")) {
+                        const NodeObject eventSource=m_objects.value(from);
+                        if(eventKey(id)==QStringLiteral("trigger"))eventY=58.5;
+                        else if(eventKey(id)==QStringLiteral("defeat"))eventY=90.5;
+                        else {
+                            const QStringList kinds=eventKinds(eventSource.type);
+                            const int index=kinds.indexOf(eventKey(id));
+                            eventY=(eventSource.type==QStringLiteral("enemy")?117.5:88.5)+qMax(0,index)*29.0;
+                        }
+                    }
+                    // Stage 118.4: The virtual Trigger sockets moved below the
+                    // settings panel. Resolve each wire by its *actual socket
+                    // ID*, not the old pre-layout Y coordinates. The item's
+                    // scene bounds track both expanded and compact cards.
+                    const bool virtualOff=v.value(QStringLiteral("invert")).toBool(false);
+                    QPointF a=source->wirePoint(QPointF(kind==QStringLiteral("node")?274:
+                        (virtualInput || (kind==QStringLiteral("event") && eventKey(id)==QStringLiteral("trigger")))?280:224,
+                        virtualInput?(virtualOff?273.0:243.0):
+                        kind==QStringLiteral("node")?78:kind==QStringLiteral("event")?eventY:58));
+                    if(virtualInput) {
+                        const QString socketId=QStringLiteral("@triggerstate:")+
+                            (virtualOff?QStringLiteral("off:"):QStringLiteral("on:"))+from;
+                        for(QGraphicsItem *child:source->childItems()) {
+                            if(child->data(0).toString()!=QStringLiteral("output") ||
+                               child->data(1).toString()!=socketId)continue;
+                            a=child->sceneBoundingRect().center();
+                            break;
+                        }
+                    }
                     const QPointF b=target->wirePoint(QPointF(0,52+24*i));
                     append(a,b,QColor(105,206,207),QStringLiteral("graph-input"),key,i,from,key);
                 }
@@ -7103,9 +7314,21 @@ private:
         return selected>=0 && selected<m_dialogues.size()?selected:-1;
     }
     void addConnection(const QString &from,const QString &to,const QString &port=QString()) {
+        if(isTriggerStateOutput(from)) {
+            if(to.startsWith(QStringLiteral("@graph:")))addGraphInput(from,to);
+            return;
+        }
         if(isEventOutput(from)) {
-            if((eventKey(from)==QStringLiteral("hit") || eventKey(from)==QStringLiteral("destroy")) &&
-               m_objects.value(eventOwner(from)).type==QStringLiteral("breakable") &&
+            // Quest completion has an ordinary action pulse only. A dialogue
+            // or independent logic gate would have no generated owner.
+            if(m_objects.value(eventOwner(from)).type==QStringLiteral("quest_completed") &&
+               (to.startsWith(QStringLiteral("@graph:")) ||
+                to.startsWith(QStringLiteral("@graph-dialogue:")) ||
+                to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
+                to.startsWith(QStringLiteral("@dialogue:")) ||
+                to.startsWith(QStringLiteral("@conversation:"))))return;
+            if(m_objects.contains(eventOwner(from)) &&
+               eventKinds(m_objects.value(eventOwner(from)).type).contains(eventKey(from)) &&
                (to.startsWith(QStringLiteral("@graph-dialogue:")) ||
                 to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
                 to.startsWith(QStringLiteral("@dialogue:")) ||
@@ -7132,10 +7355,7 @@ private:
                     .arg(eventLabel(eventKey(from))).arg(dialogue));
                 return;
             }
-            if(to.startsWith(QStringLiteral("@graph:")) &&
-               (eventKey(from)==QStringLiteral("arrival") ||
-                eventKey(from)==QStringLiteral("hit") ||
-                eventKey(from)==QStringLiteral("destroy"))) {
+            if(to.startsWith(QStringLiteral("@graph:"))) {
                 QString graphOwner;
                 if(lookupGraph(to,&graphOwner,nullptr) && graphOwner!=eventOwner(from)) {
                     const QString owner=eventOwner(from);
@@ -7170,12 +7390,16 @@ private:
         if (isEnemyDefeatOutput(from)) {
             const QString owner=enemyDefeatOwner(from);
             if (m_objects.value(owner).type!=QStringLiteral("enemy"))return;
-            if (to.startsWith(QStringLiteral("@graph:")) || to.startsWith(QStringLiteral("@toggle:"))) {
-                QMessageBox::information(this,tr("Enemy ON DEFEAT"),
-                    tr("The gold ON DEFEAT output sends Enable / Disable / Toggle actions. "
-                       "Use the teal STATE output to connect this enemy to a Boolean input."));
+            if (to.startsWith(QStringLiteral("@graph:"))) {
+                QString graphOwner;
+                if(lookupGraph(to,&graphOwner,nullptr) && graphOwner==owner)
+                    addGraphInput(from,to);
+                else
+                    QMessageBox::information(this,tr("Logic owner"),
+                        tr("Create a gate from this enemy's ON DEFEAT socket, then connect other STATE inputs."));
                 return;
             }
+            if(to.startsWith(QStringLiteral("@toggle:")))return;
             if (!m_objects.contains(to))return;
             if (m_objects.value(to).type==QStringLiteral("npc")) {
                 QMessageBox::information(this,tr("Enemy ON DEFEAT"),
@@ -7184,6 +7408,13 @@ private:
                 return;
             }
             appendConnection(owner,to,defaultPlayerAction(to,QStringLiteral("enable")));
+            return;
+        }
+        if(m_objects.contains(from) && m_objects.value(from).type==QStringLiteral("trigger") &&
+           to.startsWith(QStringLiteral("@graph:"))) {
+            QString graphOwner;
+            if(lookupGraph(to,&graphOwner,nullptr) && graphOwner==from)
+                addGraphInput(from,to);
             return;
         }
         if(m_objects.contains(to) && m_objects.value(to).type==QStringLiteral("npc") &&
@@ -7617,9 +7848,8 @@ private:
                         if ((ref.value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
                              ref.value(QStringLiteral("id")).toString()==id) ||
                             (ref.value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
-                             (ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:arrival:")+id ||
-                              ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:hit:")+id ||
-                              ref.value(QStringLiteral("id")).toString()==QStringLiteral("@event:destroy:")+id))) {changed=true;continue;}
+                             ref.value(QStringLiteral("id")).toString().startsWith(QStringLiteral("@event:")) &&
+                             ref.value(QStringLiteral("id")).toString().section(QLatin1Char(':'),2)==id)) {changed=true;continue;}
                         inputs.append(v);
                     }
                     logic.insert(QStringLiteral("inputs"),inputs);
@@ -7769,7 +7999,15 @@ private:
             QAction *remove=menu.addAction(tr("Delete Logic Node (disconnect links)"));
             QAction *selected=menu.exec(at);
             if(operators.contains(selected)) {
-                n.insert(QStringLiteral("op"),operators.value(selected));
+                const QString newOp=operators.value(selected);
+                const int connected=n.value(QStringLiteral("inputs")).toArray().size();
+                if((newOp==QStringLiteral("or") && connected>8) ||
+                   ((newOp==QStringLiteral("boolean") || newOp==QStringLiteral("not")) && connected>1)) {
+                    QMessageBox::information(this,tr("Logic Inputs"),
+                        tr("Disconnect extra inputs before switching this gate to %1.").arg(newOp.toUpper()));
+                    return;
+                }
+                n.insert(QStringLiteral("op"),newOp);
                 graphUpdate(id,n);redrawLinks();showDetails(id);
             } else if(selected==trueDialogue || selected==falseDialogue) {
                 const bool yes=selected==trueDialogue;
@@ -8195,12 +8433,14 @@ private:
                     if(m_objects.value(id).resourceIndex>=0 &&
                        m_objects.value(id).type!=QStringLiteral("npc")) {
                         locals.insert(id);
-                        if(m_objects.value(id).type==QStringLiteral("lift"))
-                            locals.insert(QStringLiteral("@event:arrival:")+id);
-                        if(m_objects.value(id).type==QStringLiteral("breakable")) {
-                            locals.insert(QStringLiteral("@event:hit:")+id);
-                            locals.insert(QStringLiteral("@event:destroy:")+id);
+                        for(const QString &kind:eventKinds(m_objects.value(id).type))
+                            locals.insert(eventOutput(kind,id));
+                        if(m_objects.value(id).type==QStringLiteral("trigger")) {
+                            locals.insert(eventOutput(QStringLiteral("trigger"),id));
+                            locals.insert(triggerStateInputId(id));
                         }
+                        if(m_objects.value(id).type==QStringLiteral("enemy"))
+                            locals.insert(eventOutput(QStringLiteral("defeat"),id));
                     }
                 if(!SidboxVisualLogic::read(n.logicNodes,&parsed,&issue) ||
                    !SidboxVisualLogic::order(parsed,locals,&schedule,&issue))
@@ -8319,8 +8559,10 @@ private:
                     continue;
                 }
                 if (node.type!=QStringLiteral("trigger")) {
-                    if(node.type!=QStringLiteral("collectable") &&
-                       node.type!=QStringLiteral("npc") && node.type!=QStringLiteral("player_action"))
+                    // Never drop an ON PICKUP-owned graph: the .sbgm is the
+                    // authoritative storage for ALL independent logic nodes.
+                    if(node.type!=QStringLiteral("npc") &&
+                       node.type!=QStringLiteral("player_action"))
                         object.insert(QStringLiteral("logicNodes"),node.logicNodes);
                     resource.insert(QStringLiteral("gameObject"),object);
                     resources.replace(node.resourceIndex,resource);
@@ -8358,6 +8600,20 @@ private:
             }
             QJsonObject next=m_world;
             next.insert(QStringLiteral("resources"),resources);
+            QJsonObject questCompletionActions=next.value(QStringLiteral("questCompletionActions")).toObject();
+            for(const QString &id:m_order) {
+                const NodeObject node=m_objects.value(id);
+                if(node.type!=QStringLiteral("quest_completed"))continue;
+                const QString questId=id.mid(QStringLiteral("@quest_complete:").size());
+                QJsonArray actions;
+                for(const NodeLink &link:node.eventLinks.value(QStringLiteral("complete")))
+                    if(supportedAction(link.action))
+                        actions.append(QJsonObject{{QStringLiteral("objectId"),link.target},
+                                                   {QStringLiteral("action"),link.action}});
+                if(actions.isEmpty())questCompletionActions.remove(questId);
+                else questCompletionActions.insert(questId,actions);
+            }
+            next.insert(QStringLiteral("questCompletionActions"),questCompletionActions);
             if (m_dialoguesChanged || m_npcsChanged) {
                 QJsonObject adventure=next.value(QStringLiteral("adventure")).toObject();
                 if(m_dialoguesChanged)adventure.insert(QStringLiteral("nodes"),m_dialogues);

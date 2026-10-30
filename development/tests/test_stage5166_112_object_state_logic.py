@@ -47,7 +47,7 @@ class IndependentStateGraph(unittest.TestCase):
         self.assertIn('@IDE{GRAPH_DISPATCH}', RULE)
 
     def test_compatibility_scope(self):
-        self.assertIn('Build: 5.166.112.291026', SPLASH)
+        self.assertIn('Build: 5.166.113.291026', SPLASH)
         self.assertIn('HAS_ENEMY_STATE_LOGIC', EXPORT)
         self.assertIn('if(owner.objectType==QStringLiteral("lift"))continue;',EXPORT)
         self.assertIn('GAME_OBJECT_ENEMY', RULE)

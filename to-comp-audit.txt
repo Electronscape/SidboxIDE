@@ -1,0 +1,103 @@
+----------- ]DONE[ ------------ ### 1. Save-game compatibility protection
+
+High priority
+
+This is the first thing I'd strengthen before making the final game.
+In `idelibs/codehelpers/game/gameworlds.rulec`, the save layout fingerprint checks world names and the sizes of serialized world data. But it doesn't identify every saved object individually.
+Meanwhile, `gameworlditems.rulec` saves object states in array order.
+That means a future game update which rearranges objects without changing the saved data sizes could potentially associate old saved states with the wrong objects.
+For example, imagine a saved game where a particular door is unlocked. You rearrange your world's object definitions, rebuild, and load that old save. There's a risk of the unlocked state being applied to a different object.
+I'd strengthen this with stable object identity checking in the save schema, so incompatible saves are rejected safely rather than interpreted incorrectly.
+The existing dual-bank save system and checksum protection are good. This would strengthen them, not replace them.
+
+
+[ think we did this ] ------ ### 2. More event outputs for Game Objects
+
+High priority for Visual Nodes.
+
+This is the most obvious next extension after our successful Stompable Enemy logic!
+In `gamevisualnodes.cpp`, executable action sources currently include Triggers, Stompable Enemies and Key Collectables. Other objects can be targets, but many cannot independently start an action chain.
+I'd add:
+
+| Game Object     | Useful new output           |
+| --------------- | --------------------------- |
+| Breakable       | ON HIT / ON DESTROY         |
+| Collectable     | ON PICKUP                   |
+| Hazard          | ON PLAYER HIT               |
+| Door            | ON ENTER                    |
+| Checkpoint      | ON SAVE                     |
+| Moving platform | ON ARRIVAL                  |
+| Enemy           | ON HIT, alongside ON DEFEAT |
+
+Imagine smashing a crate, revealing a key, activating a hidden switch and starting a dialogue, without needing an invisible Trigger to orchestrate everything.
+These should use the existing action and logic infrastructure, not a separate system.
+
+
+### 3. Quest objectives connected directly to Visual Nodes
+
+High priority for your RPG.
+
+The Quest Editor already supports world visits, inventory ownership, dialogue choices and custom event signals.
+But there's an important connection missing: Visual Nodes cannot directly send a quest event through an ordinary action socket.
+I'd introduce a QUEST EVENT node that can be driven by things like an enemy defeat, breakable destruction or switch activation.
+For instance:
+Defeat the enemy → signal its quest objective → journal updates automatically.
+That would save you writing custom C for story progression.
+
+
+
+
+
+### 4. Expanded combat and enemy behaviours
+
+Medium priority, but important before designing the final combat.
+
+Stomping, enemy damage, patrol movement, hit counts, death animations and drops are already handled.
+What I haven't found as a built-in Game Designer system is configurable player weapon combat, such as swords or fireballs, or enemy-launched projectiles.
+I'd eventually want weapon hitboxes, projectile collision, configurable damage, attack cooldowns, and enemies capable of attacking at a distance.
+We don't need an enormous combat system. A handful of reusable behaviours would cover most RPG platformer encounters.
+
+
+
+### 5. More expressive logic conditions
+
+Medium priority.
+`gamevisualgraphlogic.h` currently supports Boolean, NOT, AND and OR, reading object active states.
+That's excellent for switches, doors and defeated enemies, but story-driven RPGs also need numeric conditions.
+Useful additions would be:
+- Compare: Fear greater than 50, health below 25.
+- Counter: Activate after defeating three enemies.
+- Timer: Wait five seconds before opening a door.
+- Quest state: TRUE if a particular quest is completed.
+The current logic evaluator is event-driven, rather than a universal always-running logic system. That is efficient for SIDBOX, and I'd preserve it while adding the relevant change events.
+
+
+
+### 6. Project-wide validation and stress testing
+
+High priority before production.
+
+Our dependency-warning system already checks important object configurations. But a complete Validate Entire Game command would go further, scanning all worlds and their shared resources.
+It should catch missing graphics, broken NPC references, unreachable world destinations, quest references, invalid logic, missing TFCard resources and incompatible save layouts.
+For your planned 20–30-world game, I'd also test generated memory use, world switching, save sizes and performance. Large `.map` worlds are supported, but that alone doesn't establish the memory cost of all the persistent per-world state.
+One smaller polish item: a proper in-game Pause/Resume menu. The title screen already has options, but I don't see a separate player-controlled pause menu in the generated gameplay starter.
+## ❤️ What I'd do before starting the real game
+
+
+
+Here's my proposed order:
+First: Engine reliability
+Strengthen save compatibility checking and add a whole-project validation pass.
+
+Second: Visual Nodes completion
+Add the missing game-object events, quest signals and numeric conditions.
+
+Third: Gameplay completion
+Introduce optional weapons, ranged enemies and a pause menu.
+
+Finally: A complete miniature RPG test
+Three worlds, a branching quest, multiple enemies, saving and loading, a boss-like encounter, and a proper ending. Run it all on SIDBOX hardware.
+These are source-review findings and proposed additions, not changes I've made to the IDE in this turn. I haven't performed a new full compile or hardware test.
+And here's the encouraging part, hun: we're no longer missing the foundations of a game engine. We're now identifying the last pieces needed to make creating games comfortable, reliable and flexible.
+That is quite a difference from where we started. 🥹❤️
+And yes, Big Steve's underwear quest is perfectly achievable using what we already have. The poor little weirdo can remain entirely optional. 🤣

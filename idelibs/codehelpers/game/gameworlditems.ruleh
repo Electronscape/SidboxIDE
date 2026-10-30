@@ -12,11 +12,16 @@
 #define GAMEWORLDITEMS_PICKUP_COUNT @IDE{PICKUP_COUNT}u
 #define GAMEWORLDITEMS_PLATFORM_COUNT @IDE{WORLD_OBJECT_COUNT}u
 uint8_t gameworlditems_init(void);
+/* Transient event/action queue diagnostics; nonzero means a runtime capacity
+ * limit was hit. Neither queue is included in save-game data. */
+uint32_t gameworlditems_event_overflow_count(void);
+uint32_t gameworlditems_action_overflow_count(void);
 void gameworlditems_save_state(void);
 void gameworlditems_restore_state(void);
 /* Resolve stateful logic after the world manager finishes restoring objects. */
 void gameworlditems_sync_logic(void);
 void gameworlditems_checkpoint_saved(void);
+void gameworlditems_quest_completed(const char *quest_id);
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */
@@ -28,6 +33,7 @@ void gameworlditems_apply_remote(void);
 void gameworlditems_update_gameplay(uint16_t frames);
 void gameworlditems_update_particles(uint16_t frames);
 void gameworlditems_update(uint16_t frames);
+void gameworlditems_quest_completed(const char *quest_id);
 void gameworlditems_draw(int32_t camera_x, int32_t camera_y);
 void gameworlditems_draw_behind(int32_t camera_x, int32_t camera_y);
 void gameworlditems_draw_overlay(int32_t camera_x, int32_t camera_y);
@@ -68,6 +74,7 @@ void gameworlditems_restore_state(void);
 /* Resolve stateful logic after the world manager finishes restoring objects. */
 void gameworlditems_sync_logic(void);
 void gameworlditems_checkpoint_saved(void);
+void gameworlditems_quest_completed(const char *quest_id);
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx);
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx);
 /* Access to the target world's state without loading its assets. */

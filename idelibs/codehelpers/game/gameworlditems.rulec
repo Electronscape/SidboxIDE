@@ -101,6 +101,76 @@ static uint16_t cg_loop_gain[@IDE{WORLD_OBJECT_COUNT}];
 static uint16_t cg_loop_target[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
 @IDE{WORLD_DECLARATIONS}
+/* Stage 119: deterministic, bounded action command ring. No heap/recursion.
+ * The generator allocates one case per authored action (not one per frame).
+ * Keep these transient bytes OUT of persistent world saves. */
+#define CG_ACTION_QUEUE_CAPACITY 128u
+static uint16_t cg_action_queue[CG_ACTION_QUEUE_CAPACITY];
+static uint16_t cg_action_head, cg_action_tail, cg_action_size;
+static uint8_t cg_action_draining;
+static uint32_t cg_action_overflow;
+static uint8_t cg_action_enqueue(uint16_t command)
+{
+    if(cg_action_size==CG_ACTION_QUEUE_CAPACITY) {
+        ++cg_action_overflow;
+        return 0u;
+    }
+    cg_action_queue[cg_action_tail]=command;
+    cg_action_tail=(uint16_t)((cg_action_tail+1u)%CG_ACTION_QUEUE_CAPACITY);
+    ++cg_action_size;
+    return 1u;
+}
+uint32_t gameworlditems_action_overflow_count(void) {return cg_action_overflow;}
+static void cg_action_drain(void)
+{
+    if(cg_action_draining)return; /* Nested callbacks append; caller drains. */
+    cg_action_draining=1u;
+    uint16_t budget=CG_ACTION_QUEUE_CAPACITY;
+    /* Commands can append further commands. A bounded budget also protects
+     * against accidental cyclic connections; overflow is observable. */
+    while(cg_action_size && budget--) {
+        const uint16_t command=cg_action_queue[cg_action_head];
+        cg_action_head=(uint16_t)((cg_action_head+1u)%CG_ACTION_QUEUE_CAPACITY);
+        --cg_action_size;
+        switch(command) {
+@IDE{ACTION_QUEUE_CASES}        default: break;
+        }
+    }
+    if(cg_action_size) {
+        ++cg_action_overflow; /* Cycle/budget guard, not a silent deferral. */
+        cg_action_head=cg_action_tail=cg_action_size=0u;
+    }
+    cg_action_draining=0u;
+}
+/* One-shot quest completion dispatch from the world manager. The QUEUED
+ * action IDs are generated from this world's quest-completed source links. */
+void gameworlditems_quest_completed(const char *quest_id)
+{
+    if(!quest_id)return;
+@IDE{QUEST_COMPLETE_ACTIONS}}
+/* All event entries carry their source index, type and (for named events)
+ * mask. We never model events as lasting Boolean state. */
+#define CG_EVENT_QUEUE_CAPACITY 128u
+typedef struct { uint32_t sequence; uint16_t source; uint8_t kind,mask; } cg_event_record_t;
+static cg_event_record_t cg_event_queue[CG_EVENT_QUEUE_CAPACITY];
+static uint16_t cg_event_head,cg_event_tail,cg_event_size;
+static uint8_t cg_event_dispatching;
+static uint32_t cg_event_overflow,cg_event_next_sequence;
+static uint16_t cg_current_defeat_owner=UINT16_MAX;
+static uint8_t cg_event_enqueue(uint16_t source,uint8_t kind,uint8_t mask)
+{
+    if(cg_event_size==CG_EVENT_QUEUE_CAPACITY) {
+        ++cg_event_overflow;
+        return 0u;
+    }
+    cg_event_record_t *entry=&cg_event_queue[cg_event_tail];
+    entry->sequence=++cg_event_next_sequence;
+    entry->source=source;entry->kind=kind;entry->mask=mask;
+    cg_event_tail=(uint16_t)((cg_event_tail+1u)%CG_EVENT_QUEUE_CAPACITY);
+    ++cg_event_size;
+    return 1u;
+}
+uint32_t gameworlditems_event_overflow_count(void) { return cg_event_overflow; }
 @IDE_IF{HAS_NAMED_EVENTS}
 /* One-frame event owners; tracked separately from Trigger activation. */
 static uint8_t cg_named_event_sources[@IDE{WORLD_OBJECT_COUNT}];
@@ -483,6 +553,13 @@ static const uint8_t cg_initial_active[@IDE{WORLD_OBJECT_COUNT}] = {@IDE{WORLD_O
 static uint8_t cg_remote_valid[@IDE{WORLD_OBJECT_COUNT}];
 static uint8_t cg_remote_active[@IDE{WORLD_OBJECT_COUNT}];
 @IDE_END
+@IDE_IF{HAS_TRIGGERS}
+/* Virtual Trigger switch. Not a sprite and not the Trigger's active flag.
+ * One activation flips this latch. Each world owns its own persistent copy. */
+typedef struct { uint8_t active; } cg_trigger_virtual_t;
+static cg_trigger_virtual_t cg_trigger_state[@IDE{WORLD_OBJECT_COUNT}];
+static cg_trigger_virtual_t cg_saved_trigger_state[@IDE{WORLD_OBJECT_COUNT}];
+@IDE_END
 @IDE_IF{HAS_PICKUPS}
 typedef struct {
     int32_t x, y;
@@ -588,6 +665,9 @@ void gameworlditems_save_state(void)
     memcpy(cg_loot_saved,cg_loot_slots,sizeof(cg_loot_saved));
     cg_loot_saved_rng=cg_loot_rng;
 @IDE_END
+@IDE_IF{HAS_TRIGGERS}
+    memcpy(cg_saved_trigger_state,cg_trigger_state,sizeof(cg_trigger_state));
+@IDE_END
     cg_world_snapshot_valid = 1;
 }
 
@@ -607,6 +687,9 @@ void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), vo
     CG_SAVE_BYTES(cg_saved_objects);
     CG_SAVE_BYTES(cg_remote_valid);
     CG_SAVE_BYTES(cg_remote_active);
+@IDE_END
+@IDE_IF{HAS_TRIGGERS}
+    CG_SAVE_BYTES(cg_saved_trigger_state);
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
     CG_SAVE_BYTES(cg_saved_pickups);
@@ -635,6 +718,9 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
     CG_LOAD_BYTES(cg_remote_valid);
     CG_LOAD_BYTES(cg_remote_active);
 @IDE_END
+@IDE_IF{HAS_TRIGGERS}
+    CG_LOAD_BYTES(cg_saved_trigger_state);
+@IDE_END
 @IDE_IF{HAS_PICKUPS}
     CG_LOAD_BYTES(cg_saved_pickups);
     CG_LOAD_BYTES(cg_pickup_permanently_collected);
@@ -653,6 +739,9 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
 void gameworlditems_restore_state(void)
 {
     if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
+@IDE_IF{HAS_TRIGGERS}
+    memcpy(cg_trigger_state,cg_saved_trigger_state,sizeof(cg_trigger_state));
+@IDE_END
 @IDE_IF{HAS_LOOT}
     memcpy(cg_loot_slots,cg_loot_saved,sizeof(cg_loot_slots));
     cg_loot_rng=cg_loot_saved_rng ? cg_loot_saved_rng : 0xC0FFEE17u;
@@ -740,6 +829,13 @@ void gameworlditems_restore_state(void)
 
 uint8_t gameworlditems_init(void)
 {
+    cg_action_head=cg_action_tail=cg_action_size=0u;
+    cg_action_draining=0u;
+    cg_event_head=cg_event_tail=cg_event_size=0u;
+    cg_event_dispatching=0u;
+    cg_event_next_sequence=0u;
+    cg_current_defeat_owner=UINT16_MAX;
+
 @IDE_IF{HAS_LOOT}
     memset(cg_loot_slots,0,sizeof(cg_loot_slots));
     memset(cg_loot_pickups,0,sizeof(cg_loot_pickups));
@@ -814,9 +910,22 @@ void gameworlditems_remote_action(uint16_t index, uint8_t state)
  * Load Game imports the saved arrays AFTER this reset, so saves still work. */
 void gameworlditems_remote_reset(void)
 {
+    cg_action_head=cg_action_tail=cg_action_size=0u;
+    cg_action_draining=0u;
+    cg_action_overflow=0u;
+    cg_event_head=cg_event_tail=cg_event_size=0u;
+    cg_event_dispatching=0u;
+    cg_event_overflow=0u;
+    cg_event_next_sequence=0u;
+    cg_current_defeat_owner=UINT16_MAX;
+
     memset(cg_remote_valid,0,sizeof(cg_remote_valid));
     memset(cg_remote_active,0,sizeof(cg_remote_active));
     memset(cg_saved_objects,0,sizeof(cg_saved_objects));
+@IDE_IF{HAS_TRIGGERS}
+    memset(cg_trigger_state,0,sizeof(cg_trigger_state));
+    memset(cg_saved_trigger_state,0,sizeof(cg_saved_trigger_state));
+@IDE_END
 #if GAMEWORLDITEMS_PICKUP_COUNT > 0
     memset(cg_saved_pickups,0,sizeof(cg_saved_pickups));
     memset(cg_pickup_permanently_collected,0,sizeof(cg_pickup_permanently_collected));
@@ -840,6 +949,15 @@ void gameworlditems_remote_action(uint16_t index,uint8_t state) { (void)index; (
 /* Worlds with pickups but no managed platforms need the same reset. */
 void gameworlditems_remote_reset(void)
 {
+    cg_action_head=cg_action_tail=cg_action_size=0u;
+    cg_action_draining=0u;
+    cg_action_overflow=0u;
+    cg_event_head=cg_event_tail=cg_event_size=0u;
+    cg_event_dispatching=0u;
+    cg_event_overflow=0u;
+    cg_event_next_sequence=0u;
+    cg_current_defeat_owner=UINT16_MAX;
+
 #if GAMEWORLDITEMS_PICKUP_COUNT > 0
     memset(cg_saved_pickups,0,sizeof(cg_saved_pickups));
     memset(cg_pickup_permanently_collected,0,sizeof(cg_pickup_permanently_collected));
@@ -1004,8 +1122,10 @@ void gameworlditems_before(game_world_player_t *player)
     game_world_objects_before(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, player);
 }
 
-@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+/* Every event-driven or state-driven graph shares the same dispatcher.
+ * Declare it even when there are no enemy-owned graphs. */
 static void cg_run_trigger_actions(void);
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
 static uint8_t cg_enemy_logic_event_handled = 0u;
 @IDE_END
 void gameworlditems_after(game_world_player_t *player)
@@ -1056,6 +1176,7 @@ void gameworlditems_after(game_world_player_t *player)
     }
 @IDE_END
 @IDE{WORLD_EVENT_ACTIONS}
+    cg_action_drain();
 @IDE_IF{HAS_ENEMY_STATE_LOGIC}
     // An enemy may die without ANY Trigger activation. The final stomp
     // already set break_triggered and active=0 in game_world_objects_after().
@@ -1075,9 +1196,6 @@ void gameworlditems_after(game_world_player_t *player)
     uint8_t cg_named_logic_fired=0u;
     for(uint16_t cg_i=0;cg_i<@IDE{WORLD_OBJECT_COUNT};++cg_i)
         if(cg_named_event_sources[cg_i]) {cg_named_logic_fired=1u;break;}
-@IDE_IF{HAS_ENEMY_STATE_LOGIC}
-    if(cg_enemy_logic_event_handled)cg_named_logic_fired=0u;
-@IDE_END
     if(cg_named_logic_fired)cg_run_trigger_actions();
 @IDE_END
 @IDE_IF{HAS_NAMED_EVENTS}
@@ -1091,6 +1209,118 @@ void gameworlditems_after(game_world_player_t *player)
 @IDE_END
 }
 
+@IDE_END
+/* Pickup-only worlds have no platform Trigger dispatcher, but still need
+ * the same one-frame state/event logic for their Collectable nodes. */
+
+@IDE_IF{HAS_LOGIC_DISPATCH}
+/* Pull the fired flags into a FIFO exactly once and immediately consume the
+ * original bits. Multiple events in one update are not collapsed into a single
+ * Boolean; each event has its own owner/type identity. */
+static void cg_event_collect(void)
+{
+@IDE_IF{HAS_WORLDS}
+    for(uint16_t i=0u;i<@IDE{WORLD_OBJECT_COUNT};++i) {
+        if(cg_gwi_platforms[i].trigger_fired) {
+            (void)cg_event_enqueue(i,1u,0u);
+            cg_gwi_platforms[i].trigger_fired=0u;
+        }
+    }
+@IDE_END
+@IDE_IF{HAS_ENEMY_STATE_LOGIC}
+    if(!cg_enemy_logic_event_handled) {
+        for(uint16_t i=0u;i<@IDE{WORLD_OBJECT_COUNT};++i)
+            if(cg_gwi_platforms[i].type==GAME_OBJECT_ENEMY &&
+               cg_gwi_platforms[i].break_triggered) {
+                (void)cg_event_enqueue(i,2u,0u);
+                cg_enemy_logic_event_handled=1u;
+            }
+    }
+@IDE_END
+@IDE_IF{HAS_NAMED_EVENTS}
+    for(uint16_t i=0u;i<@IDE{WORLD_OBJECT_COUNT};++i) {
+        uint8_t bits=cg_named_event_sources[i];
+        cg_named_event_sources[i]=0u;
+        for(uint8_t bit=1u;bits && bit;bit=(uint8_t)(bit<<1u)) {
+            if(bits&bit){(void)cg_event_enqueue(i,3u,bit);bits=(uint8_t)(bits&~bit);}
+        }
+    }
+@IDE_END
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+    for(uint16_t i=0u;i<@IDE{PICKUP_COUNT};++i) {
+        if(cg_named_pickup_sources[i]) {
+            cg_named_pickup_sources[i]=0u;
+            (void)cg_event_enqueue(i,4u,1u);
+        }
+    }
+@IDE_END
+}
+/* Single reusable Boolean/AND/OR/NOT evaluator. The event selection is
+ * temporary. The authored node DAG and its numbered input layout are kept. */
+static void cg_logic_evaluate_once(void)
+{
+    cg_action_drain();
+@IDE{GRAPH_SNAPSHOTS}
+@IDE_IF{HAS_WORLDS}
+@IDE{TRIGGER_ACTIONS}@IDE{EVENT_ENTER_ACTIONS}
+@IDE_END
+    cg_action_drain();
+@IDE{GRAPH_EVALUATIONS}
+@IDE{GRAPH_DISPATCH}
+    cg_action_drain();
+}
+static void cg_run_trigger_actions(void)
+{
+    cg_event_collect();
+    if(cg_event_dispatching)return; /* Nested event enters same FIFO. */
+    cg_event_dispatching=1u;
+    if(!cg_event_size) {
+        /* State-only gates must still react to external state changes. */
+        cg_logic_evaluate_once();
+        cg_event_dispatching=0u;
+        return;
+    }
+    uint16_t budget=CG_EVENT_QUEUE_CAPACITY;
+    while(cg_event_size && budget--) {
+        const cg_event_record_t ev=cg_event_queue[cg_event_head];
+        cg_event_head=(uint16_t)((cg_event_head+1u)%CG_EVENT_QUEUE_CAPACITY);
+        --cg_event_size;
+        switch(ev.kind) {
+@IDE_IF{HAS_WORLDS}
+        case 1u: cg_gwi_platforms[ev.source].trigger_fired=1u;break;
+@IDE_END
+        case 2u: cg_current_defeat_owner=ev.source;break;
+@IDE_IF{HAS_NAMED_EVENTS}
+        case 3u: cg_named_event_sources[ev.source]=ev.mask;break;
+@IDE_END
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+        case 4u: cg_named_pickup_sources[ev.source]=1u;break;
+@IDE_END
+        default: break;
+        }
+        cg_logic_evaluate_once();
+        switch(ev.kind) {
+@IDE_IF{HAS_WORLDS}
+        case 1u: cg_gwi_platforms[ev.source].trigger_fired=0u;break;
+@IDE_END
+        case 2u: cg_current_defeat_owner=UINT16_MAX;break;
+@IDE_IF{HAS_NAMED_EVENTS}
+        case 3u: cg_named_event_sources[ev.source]=0u;break;
+@IDE_END
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+        case 4u: cg_named_pickup_sources[ev.source]=0u;break;
+@IDE_END
+        default: break;
+        }
+        /* An ON ENTER handler may enqueue its own named event. */
+        cg_event_collect();
+    }
+    if(cg_event_size) {
+        ++cg_event_overflow; /* Budget exhausted: observable, never recurse. */
+        cg_event_head=cg_event_tail=cg_event_size=0u;
+    }
+    cg_event_dispatching=0u;
+}
 @IDE_END
 @IDE_IF{HAS_PICKUPS}
 uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
@@ -1121,11 +1351,19 @@ uint16_t gameworlditems_check(int32_t x, int32_t y, uint16_t w, uint16_t h,
     memset(cg_named_pickup_sources,0,sizeof(cg_named_pickup_sources));
 @IDE_END
 @IDE{CHECK_ACTIONS}
+    cg_action_drain();
 @IDE_IF{HAS_NAMED_PICKUP_LOGIC}
     uint8_t cg_named_pickup_logic=0u;
     for(uint16_t cg_i=0;cg_i<@IDE{PICKUP_COUNT};++cg_i)
         if(cg_named_pickup_sources[cg_i]) {cg_named_pickup_logic=1u;break;}
     if(cg_named_pickup_logic)cg_run_trigger_actions();
+@IDE_END
+@IDE_IF{HAS_NAMED_PICKUP_EVENTS}
+    /* The pickup pulse has been delivered.  gameworlditems_trigger() also
+     * calls cg_run_trigger_actions() and may run later in this frame.  Never
+     * let that second pass see an old ON PICKUP pulse or it can replay the
+     * same dialogue and toggle actions. */
+    memset(cg_named_pickup_sources,0,sizeof(cg_named_pickup_sources));
 @IDE_END
     return count;
 }
@@ -1141,19 +1379,12 @@ uint8_t gameworlds_request_at_from(const char *name, const char *start_id, int32
 void gameworlditems_sync_logic(void)
 {
 @IDE{GRAPH_INITIAL_SYNC}}
-static void cg_run_trigger_actions(void)
-{
-    // Live state snapshots are captured before the ordinary Trigger actions.
-@IDE{GRAPH_SNAPSHOTS}@IDE{TRIGGER_ACTIONS}@IDE{EVENT_ENTER_ACTIONS}
-    // Independent graph inputs are sampled after ALL ordinary Trigger actions.
-@IDE{GRAPH_EVALUATIONS}
-    // Branch actions are dispatched from that stable state snapshot.
-@IDE{GRAPH_DISPATCH}}
 /* ON SAVE fires only for a successful confirmed TFCard write, never when
  * the checkpoint is merely touched or the picker is cancelled. */
 void gameworlditems_checkpoint_saved(void)
 {
 @IDE{EVENT_SAVE_ACTIONS}
+    cg_action_drain();
 @IDE_IF{HAS_NAMED_EVENT_LOGIC}
     uint8_t cg_named_save_logic=0u;
     for(uint16_t cg_i=0;cg_i<@IDE{WORLD_OBJECT_COUNT};++cg_i)
@@ -1217,6 +1448,9 @@ static uint8_t cg_complete_item_interaction(uint16_t rule_index, uint8_t dropped
     uint8_t consumed_here=0u;
 @IDE{INTERACT_PREFLIGHT_ACTIONS}
     o->trigger_fired=1;
+@IDE_IF{HAS_TRIGGERS}
+    cg_trigger_state[r->object].active ^= 1u;
+@IDE_END
     if (o->trigger_one_shot) o->active=0;
     cg_run_trigger_actions();
     o->trigger_fired=0;
@@ -1224,6 +1458,7 @@ static uint8_t cg_complete_item_interaction(uint16_t rule_index, uint8_t dropped
     cg_interaction_target=rule_index;
     gameworlditems_interaction_sound(1u);
 @IDE{INTERACT_DIALOGUE_ACTIONS}
+    cg_action_drain();
     cg_interaction_target=dropped ? previous : UINT16_MAX;
     return dropped ? (r->consume ? 2u : 1u)
                    : (consumed_here ? 1u : (r->consume ? 2u : 1u));
@@ -1261,6 +1496,9 @@ uint8_t gameworlditems_drop_contact(const char *name, int32_t x, int32_t y)
 uint16_t gameworlditems_trigger(int32_t x, int32_t y, uint16_t w, uint16_t h, uint8_t pressed)
 {
     uint16_t fired=game_world_objects_trigger(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, x, y, w, h, pressed);
+    for(uint16_t i=0;i<@IDE{WORLD_OBJECT_COUNT};++i)
+        if(cg_gwi_platforms[i].type==GAME_OBJECT_TRIGGER && cg_gwi_platforms[i].trigger_fired)
+            cg_trigger_state[i].active ^= 1u;
     cg_run_trigger_actions();
     return fired;
 }
@@ -1430,6 +1668,7 @@ void gameworlditems_save_state(void) {}
 void gameworlditems_restore_state(void) {}
 void gameworlditems_sync_logic(void) {}
 void gameworlditems_checkpoint_saved(void) {}
+void gameworlditems_quest_completed(const char *quest_id) { (void)quest_id; }
 void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), void *ctx)
 { (void)emit; (void)ctx; }
 uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), void *ctx)

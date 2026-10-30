@@ -16,7 +16,7 @@ RULE=(ROOT/'idelibs/codehelpers/game/gameworlditems.rulec').read_text()
 SPLASH=(ROOT/'splashscreenwidget.cpp').read_text()
 class EnemyStateLogic(unittest.TestCase):
     def test_version(self):
-        self.assertIn('Build: 5.166.111.1.291026',SPLASH)
+        self.assertIn('Build: 5.166.113.291026',SPLASH)
 
     def test_own_enemy_graph_no_trigger(self):
         self.assertIn('if (m_objects.value(source).type==QStringLiteral("enemy"))return source;',NODE)

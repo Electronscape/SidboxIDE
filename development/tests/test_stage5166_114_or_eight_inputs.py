@@ -89,6 +89,6 @@ int main(void) {
 
     def test_no_save_schema_change(self):
         self.assertIn('object.insert(QStringLiteral("logicNodes"),node.logicNodes)',VISUAL)
-        self.assertIn('Build: 5.166.114.291026',SPLASH)
+        self.assertRegex(SPLASH, r'Build: 5\.166\.(?:114\.291026|116\.4\.301026)')
 
 if __name__=='__main__': unittest.main()

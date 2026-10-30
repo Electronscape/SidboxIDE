@@ -105,6 +105,12 @@ const char *gameworlds_quest_description(uint16_t index);
 uint8_t gameworlds_quest_status(uint16_t index);
 uint16_t gameworlds_quest_current_step(uint16_t index);
 const char *gameworlds_quest_objective(uint16_t index);
+/* Enumerate every objective for the quest Journal. Stable objective indices
+ * are local to each quest; both ordered and unordered progress are readable. */
+uint16_t gameworlds_quest_objective_count(uint16_t quest);
+const char *gameworlds_quest_objective_title_at(uint16_t quest,uint16_t objective);
+uint8_t gameworlds_quest_objective_done_at(uint16_t quest,uint16_t objective);
+uint8_t gameworlds_quest_is_unordered(uint16_t quest);
 const char *gameworlds_quest_hint(uint16_t index);
 int16_t gameworlds_quest_tracked(void); /* -1 = none */
 uint8_t gameworlds_quest_track(const char *quest_id);

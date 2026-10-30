@@ -36,7 +36,7 @@ class BreakableDialogueTests(unittest.TestCase):
         self.assertIn('setGraphDialogue(key,true,dialogue,at+QPointF(350,0));',section)
     def test_cross_owned_gate_is_not_silently_connected(self):
         section=VISUAL.split('void addConnection(',1)[1].split('if (isEnemyDefeatOutput(from))',1)[0]
-        self.assertIn('if(lookupGraph(to,&graphOwner) && graphOwner!=eventOwner(from))',section)
+        self.assertIn('if(lookupGraph(to,&graphOwner,nullptr) && graphOwner!=eventOwner(from))',section)
         self.assertIn('Create Event Gate',section)
         self.assertIn('createGraphLogic(from,point,operation);',section)
     def test_preserves_existing_runtime_storage_and_pulse_semantics(self):

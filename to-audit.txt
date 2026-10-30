@@ -1,0 +1,9 @@
+Game Objects: Check every object type, its configurable events, state outputs, actions, and Visual Nodes compatibility.
+
+Logic system: Verify BOOLEAN, AND, OR, NOT, chained conditions, event pulses, and state changes.
+
+Persistence: Check graph saving, world saving, runtime save/load, and cross-world state retention.
+
+Other IDE systems: Review editors, resources, project management, generated code, and configuration consistency.
+
+Regression testing: Preserve everything already working on the real SIDBOX hardware.

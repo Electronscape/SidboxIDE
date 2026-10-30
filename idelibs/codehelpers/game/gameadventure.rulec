@@ -357,6 +357,11 @@ void gameadventure_setup(void)
     };
     game_adventure_quest_notices(gameworlds_quest_notice);
     game_adventure_set_quest_journal(&quest_journal);
+    static const game_adventure_quest_objectives_t quest_objectives={
+        gameworlds_quest_objective_count,gameworlds_quest_objective_title_at,
+        gameworlds_quest_objective_done_at,gameworlds_quest_is_unordered
+    };
+    game_adventure_set_quest_objectives(&quest_objectives);
     static const game_adventure_quest_style_t quest_style={
         @IDE{QUEST_MARGIN}u,@IDE{QUEST_SPLIT}u,@IDE{QUEST_BG}u,
         @IDE{QUEST_BORDER}u,@IDE{QUEST_TEXT}u,@IDE{QUEST_HIGHLIGHT}u,

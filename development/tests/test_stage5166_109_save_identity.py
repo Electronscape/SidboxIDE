@@ -94,7 +94,7 @@ class SaveIdentity(unittest.TestCase):
         self.assertIn('QCryptographicHash::Sha256',text)
         self.assertIn('generated.replace("@IDE{SAVE_IDENTITY}",identityLiteral)',text)
         self.assertIn('Open and re-export that world',text)
-        self.assertIn('Build: 5.166.111.1.291026',(ROOT/'splashscreenwidget.cpp').read_text())
+        self.assertIn('Build: 5.166.113.291026',(ROOT/'splashscreenwidget.cpp').read_text())
 
     def test_native_dual_bank_header_checksum_and_identity(self):
         folder=ROOT/'idelibs/codehelpers/game'

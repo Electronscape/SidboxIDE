@@ -13,7 +13,7 @@ adv_rt=read('idelibs/codehelpers/game/adventureruntime.rulec')
 adv_rt_h=read('idelibs/codehelpers/game/adventureruntime.ruleh')
 adv_world=read('idelibs/codehelpers/game/gameadventure.rulec')
 flow=read('gamefloweditor.cpp')
-assert 'Build: 5.166.111.1.291026' in read('splashscreenwidget.cpp')
+assert 'Build: 5.166.113.291026' in read('splashscreenwidget.cpp')
 assert 'QSaveFile upgraded(world.filePath)' in editor
 assert 'current.readAll()!=world.original' in editor
 assert 'game_adventure_set_choice_signal(on_quest_choice)' in adv_world
