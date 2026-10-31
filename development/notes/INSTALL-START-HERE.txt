@@ -1,6 +1,0 @@
-CoderGirl IDE Stage 5.136.251026
-Install over your existing Stage 5.135 source and rebuild CoderGirl.
-Stage 5.136 improves window geometry memory, Save/Cancel clarity,
-red/green dependency indicators and row-specific action removal.
-The .pal Palette Editor and SIDBOX game runtime are unchanged.
-Read INSTALL-STAGE5.136.txt for the detailed installation and tests.

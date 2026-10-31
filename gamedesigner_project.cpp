@@ -254,6 +254,7 @@ bool SidboxGameDesigner::loadDesign()
     m_lastFrontCyclePhase = m_lastBackCyclePhase = -1;
     m_backPalette->setEnabled(m_planeMode->currentIndex() == 1);
     m_adventure = obj.value(QStringLiteral("adventure")).toObject();
+    m_persistedAdventure = m_adventure;
     m_resources.clear();
     bool startupMusicAssigned = false; // Older projects default to no automatic music.
     const QJsonArray assets = obj.value(QStringLiteral("resources")).toArray();
@@ -711,7 +712,44 @@ bool SidboxGameDesigner::saveDesign()
             return false;
         }
     }
-    QJsonObject obj;
+    // Visual Nodes owns quest completion links and can edit Adventure dialogues
+    // while the Game Designer tab is open. Load the CURRENT on-disk world first:
+    // rebuilding a new JSON object here used to erase both questCompletion*
+    // fields every time Generate Code called saveDesign().
+    QJsonObject persistedWorld;
+    QFile liveDesign(m_filePath);
+    if (liveDesign.exists()) {
+        if (!liveDesign.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Game Designer"),
+                tr("Cannot read the current world before saving. The existing world was not changed."));
+            return false;
+        }
+        QJsonParseError parseError;
+        const QJsonDocument latest=QJsonDocument::fromJson(liveDesign.readAll(),&parseError);
+        if (parseError.error!=QJsonParseError::NoError || !latest.isObject()) {
+            QMessageBox::warning(this, tr("Game Designer"),
+                tr("The current world JSON is invalid. Save cancelled to protect existing Visual Nodes links."));
+            return false;
+        }
+        persistedWorld=latest.object();
+        const QJsonObject diskAdventure=persistedWorld.value(QStringLiteral("adventure")).toObject();
+        if (diskAdventure!=m_persistedAdventure) {
+            if (m_adventure==m_persistedAdventure) {
+                // The other editor made the change; accept its dialogues and
+                // NPC data instead of exporting a stale in-memory copy.
+                m_adventure=diskAdventure;
+            } else if (m_adventure!=diskAdventure) {
+                QMessageBox::warning(this, tr("Game Designer"),
+                    tr("Adventure dialogue was edited in both this world tab and another editor. "
+                       "Save cancelled rather than discard either change. Reopen the world to reconcile edits."));
+                return false;
+            }
+        }
+    }
+    // Preserve fields belonging to other editors, including
+    // questCompletionActions and questCompletionDialogues. Explicit Game
+    // Designer-owned keys below are updated as usual.
+    QJsonObject obj=persistedWorld;
     obj.insert(QStringLiteral("format"), QStringLiteral("SIDBOX-GAME-DESIGN"));
     obj.insert(QStringLiteral("version"), 1);
     obj.insert(QStringLiteral("worldWidth"), m_worldWidth->value());
@@ -752,11 +790,8 @@ bool SidboxGameDesigner::saveDesign()
     // preserve such IDs instead of overwriting them on the next Save World.
     QJsonArray dialogNodes=m_adventure.value(QStringLiteral("nodes")).toArray();
     QJsonArray diskNodes;
-    QFile previousDesign(m_filePath);
-    if(previousDesign.open(QIODevice::ReadOnly))
-        diskNodes=QJsonDocument::fromJson(previousDesign.readAll()).object()
-            .value(QStringLiteral("adventure")).toObject()
-            .value(QStringLiteral("nodes")).toArray();
+    diskNodes=persistedWorld.value(QStringLiteral("adventure")).toObject()
+        .value(QStringLiteral("nodes")).toArray();
     for(int ni=0;ni<dialogNodes.size();++ni) {
         QJsonObject node=dialogNodes[ni].toObject();
         QJsonArray answers=node.value(QStringLiteral("choices")).toArray();
@@ -1200,6 +1235,7 @@ bool SidboxGameDesigner::saveDesign()
         QMessageBox::warning(this, tr("Game Designer"), tr("Unable to save design:\n%1").arg(m_filePath));
         return false;
     }
+    m_persistedAdventure=m_adventure;
     // Once exported, path C data tracks saved edits to any control point.
     // Nothing is created for older projects until Export is chosen.
     const QString pathHeader = QDir(QFileInfo(m_filePath).absolutePath())

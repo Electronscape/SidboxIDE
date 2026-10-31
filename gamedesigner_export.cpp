@@ -2235,7 +2235,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 .arg(method).arg(number);
         }
         if(!commands.isEmpty())
-            questCompleteActions+=QStringLiteral("    if(strcmp(quest_id,%1)==0) {\n%2        return;\n    }\n")
+            questCompleteActions+=QStringLiteral("    if(strcmp(quest_id,%1)==0) {\n%2        cg_action_drain();\n        return;\n    }\n")
                 .arg(GameQuestGen::quoteC(questId),commands);
     }
     // Stage 119: dialogue actions share the SAME FIFO order as enable/disable/

@@ -1,9 +1,0 @@
-# Stage 5.37: PPB loading + optional collectible inventory/HUD tracking
-
-- Removes strict pixel checksum rejection from runtime PPB atlas loaders. Retains PPB dimensions/length limits, full-read/truncation checks, tile-size validation and safe allocation; also checks for trailing bytes. IDE checksum generation remains unchanged. `.map` runtime checksum comparisons are also removed; strict header/payload length and structural safety checks remain.
-- Game Object → Collectable: **Show in Inventory** and **Show in HUD (track total)**. Collectibles that explicitly use the new checkboxes choose their flags independently. Merely editing/saving an old collectible does not enable new tracking. **Pickup Value** is the amount credited, for example a coin pickup with value 10 credits 10.
-- HUD counter API: `gameworlds_hud_total(kind)` returns accumulated uint32 amount across world transitions; `gameworlds_hud_reset()` resets. **There is no visual HUD renderer yet**; the flag prepares the data for the planned HUD designer.
-- Legacy unedited `.sbgm` collectibles retain the old `on_pickup()` logic. Changing a new tracking checkbox marks its choices as configured, and the managed world callback prevents an existing custom `main.c` `game_adventure_collect(kind)` bridge double-counting.
-- Checking Show in Inventory auto-creates a matching Adventure item (up to 64 kinds) when missing, using a 65535 capacity and no icon; set its icon later in Adventure Editor. Existing item definitions and capacities are never altered. Quantities saturate at the configured capacity. HUD totals saturate at UINT32_MAX and are independent from inventory consumption.
-- No automatic `main.c` overwrite. Update Game Project to refresh gameworlds and collectables helpers; accept the one-time timestamped backup/upgrade for the older gametilemap.c/.h when prompted, then rebuild the game. Existing saved `.sbgm` content preserved.
-- Stamp animations deferred.

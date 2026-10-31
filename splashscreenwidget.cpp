@@ -103,7 +103,7 @@ void SplashScreenWidget::buildUi()
     // Version format: 5.SUBVERSION.REVISION.DDMMYY (exactly four fields).
     // New feature release: increment SUBVERSION, reset REVISION to 0.
     // Hotfix: increment REVISION. Never append an extra dotted component.
-    auto *buildLabel = new QLabel(QStringLiteral("Build: 5.128.1.301026"), panel);
+    auto *buildLabel = new QLabel(QStringLiteral("Build: 5.130.1.301026"), panel);
     buildLabel->setStyleSheet(QStringLiteral(
         "QLabel { background:transparent; border:none; border-radius:0px; "
         "font-size:15px; font-weight:bold; color:%1; }")

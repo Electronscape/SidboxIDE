@@ -1,7 +1,42 @@
+# CoderGirl IDE Build 5.128.3.301026 (30 October 2026)
+
+Quest Designer now reflects Visual Nodes `ON COMPLETED` connections in a
+read-only, per-world panel with Refresh Links. The source of truth remains
+the saved `.sbgm` `questCompletionActions` / `questCompletionDialogues`.
+See `README-STAGE5.128.3-QUEST-COMPLETION-DESIGNER-SYNC.txt`.
+No gameplay/exporter/save-format or main.c changes. Qt6 and hardware
+verification still pending.
+
+---
+
+# CoderGirl IDE Build 5.128.2.301026 (30 October 2026)
+
+Quest completion dialogue/export persistence hotfix. **Game Designer Save World / Generate Code**
+previously rebuilt `.sbgm` from an empty JSON object and dropped `questCompletionActions`
+and `questCompletionDialogues` authored by Visual Nodes. The save writer now keeps the
+current on-disk world fields, updates only Game Designer-owned properties, and reconciles
+external Adventure dialogue edits safely. If the Adventure Editor and Game Designer
+both edited the same data, it warns and cancels instead of discarding changes.
+
+Generated Quest `ON COMPLETED` callbacks now drain their queued action/dialogue
+commands immediately, using the established guarded FIFO. Quest completion still
+happens once on actual progression, never on restoring a completed quest. No `main.c`
+changes or runtime save-schema changes. Existing `gameworlds` one-shot callback retained.
+
+**After upgrade:** reconnect any Quest ON COMPLETED dialogue link lost by an
+older build, save Graph + World, generate the game again and check the link remains
+after reopening Visual Nodes. Then run a new-game quest completion hardware test.
+This source candidate passes focused source/native tests; Qt6 IDE compile and
+STM32 hardware tests are pending.
+
+**Splash version:** exactly `5.SUBVERSION.REVISION.DDMMYY`.
+
+---
+
 # Build numbering convention (from 30 October 2026)
 
 Splash: `Build: 5.SUBVERSION.REVISION.DDMMYY`, exactly four parts.
-Current release: **5.128.1.301026**.
+Prior release: **5.128.1.301026**.
 
 **5.128.1** hotfix: Quest ON COMPLETED -> Show Dialogue connections now
 select/commit an actual Adventure dialogue rather than leaving an unlinked
@@ -13,7 +48,7 @@ See `README-STAGE5.128.1-QUEST-COMPLETION-DIALOGUE-FIX.txt`.
 # Build numbering convention (from 30 October 2026)
 
 Splash: `Build: 5.SUBVERSION.REVISION.DDMMYY`, **exactly four dot-separated values**.
-Current splash: `Build: 5.128.0.301026` (this source is otherwise identical to historical Stage 5.166.128).
+Earlier splash: `Build: 5.128.0.301026` (this source is otherwise identical to historical Stage 5.166.128).
 New feature: increment SUBVERSION and reset REVISION to zero; hotfix: increment REVISION only.
 DDMMYY is the release date. Historical Stage 5.166.x.y notes below are retained unchanged for traceability.
 This update changes the splash label and documentation only, not the generated game runtime.

@@ -1,4 +1,5 @@
 #include "gamequesteditor.h"
+#include "gameadventureeditor.h"
 #include "gamequestjournaleditor.h"
 #include "gamerpguieditors.h"
 #include "gamequestgen.h"
@@ -15,6 +16,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QFrame>
 #include <QTreeWidget>
 #include <QIcon>
@@ -29,18 +31,19 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QStringList>
 #include <QStandardItemModel>
 #include <QSplitter>
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QHeaderView>
-#include <QTextEdit>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -173,7 +176,7 @@ class QuestEditor final : public QDialog {
 public:
     explicit QuestEditor(const QString &projectRoot, QWidget *parent,
                          const QString &selectQuestId)
-        : QDialog(parent), path(savePath(projectRoot)) {
+        : QDialog(parent), path(savePath(projectRoot)), projectRootPath(projectRoot) {
         readProjectTargets(projectRoot);
         setWindowTitle(tr("Quest Designer | Project-wide"));
         resize(1000, 640);
@@ -211,6 +214,140 @@ public:
         form->addRow(tr("Quest discovery"),initiallyHidden);
         form->addRow(tr("Objective progression"),unordered);
         rv->addLayout(form);
+        // Both Quest Designer and Visual Nodes edit the SAME per-world .sbgm
+        // completion records. quests.json is only for quest definitions.
+        auto *completionGroup=new QGroupBox(tr("ON QUEST COMPLETED / Edit completion actions and dialogue"),right);
+        auto *completionLayout=new QVBoxLayout(completionGroup);
+        completionStatus=new QLabel(completionGroup);
+        completionStatus->setObjectName(QStringLiteral("questCompletionEditorStatus"));
+        completionStatus->setWordWrap(true);
+        completionStatus->setToolTip(tr("Quest Designer and Visual Nodes read/write the same per-world .sbgm links. There is no separate copy in quests.json."));
+        completionLayout->addWidget(completionStatus);
+        auto *completionForm=new QFormLayout;
+        completionWorld=new QComboBox(completionGroup);
+        for(const QString &world:worldNames)completionWorld->addItem(world,world);
+        completionWorld->setObjectName(QStringLiteral("questCompletionWorldSelector"));
+        completionWorld->setToolTip(tr("Choose the world in which this quest will finish. Completion events dispatch only in the active world. Existing connected worlds are marked in this list."));
+        completionForm->addRow(tr("World for ON COMPLETED"),completionWorld);
+        // Use the same searchable folder-tree picker as Adventure Designer.
+        // Its node/folder arrays live on QuestEditor, not on the stack:
+        // the picker keeps pointers to them while the world is selected.
+        completionDialogue=createGameDialogueTreeCombo(
+            completionGroup,&completionDialogueNodes,&completionDialogueFolders);
+        completionDialogue->setToolTip(tr("Choose an Adventure dialogue from its folder tree. "
+            "The selected numeric dialogue ID is saved in this world's .sbgm."));
+        completionDialogue->setObjectName(QStringLiteral("questCompletionDialogueSelector"));
+        completionDialogueMode=new QComboBox(completionGroup);
+        completionDialogueMode->addItem(tr("Single message"),QStringLiteral("single"));
+        completionDialogueMode->addItem(tr("Message sequence"),QStringLiteral("sequence"));
+        completionDialogueMode->addItem(tr("Full conversation"),QStringLiteral("conversation"));
+        auto *dialogueLine=new QHBoxLayout;
+        dialogueLine->addWidget(completionDialogue,3);
+        dialogueLine->addWidget(completionDialogueMode,1);
+        completionForm->addRow(tr("Show dialogue ON COMPLETED"),dialogueLine);
+        completionLayout->addLayout(completionForm);
+        completionActions=new QTableWidget(completionGroup);
+        completionActions->setObjectName(QStringLiteral("questCompletionActionsEditor"));
+        completionActions->setColumnCount(2);
+        completionActions->setHorizontalHeaderLabels({tr("On completion: Game Object / Quest Event / PLAYER"),tr("Action")});
+        completionActions->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
+        completionActions->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
+        completionActions->setSelectionBehavior(QAbstractItemView::SelectRows);
+        completionActions->setSelectionMode(QAbstractItemView::SingleSelection);
+        completionActions->setMaximumHeight(118);
+        completionLayout->addWidget(completionActions);
+        auto *completionButtons=new QHBoxLayout;
+        auto *addCompletionAction=new QPushButton(tr("Add Game Object / PLAYER action"),completionGroup);
+        auto *addQuestSignal=new QPushButton(tr("Add Quest Event"),completionGroup);
+        auto *removeCompletionAction=new QPushButton(tr("Remove selected action"),completionGroup);
+        addCompletionAction->setToolTip(tr("Add an ENABLE / DISABLE / TOGGLE action to perform when this quest completes."));
+        addQuestSignal->setToolTip(tr("Signal an Event objective on another quest when this quest completes. The receiving quest must be active and awaiting that objective."));
+        completionButtons->addWidget(addCompletionAction);
+        completionButtons->addWidget(addQuestSignal);
+        completionButtons->addWidget(removeCompletionAction);
+        completionButtons->addStretch();
+        completionLayout->addLayout(completionButtons);
+        auto *completionFooter=new QHBoxLayout;
+        auto *completionNote=new QLabel(tr("Save here to author the ON COMPLETED event in .sbgm. Visual Nodes shows and can edit these SAME connections; reopen its graph after saving."),completionGroup);
+        completionNote->setWordWrap(true);
+        completionFooter->addWidget(completionNote,1);
+        auto *refreshLinks=new QPushButton(tr("Refresh Links"),completionGroup);
+        refreshLinks->setToolTip(tr("Reload ON COMPLETED actions and dialogue links from every saved world."));
+        completionFooter->addWidget(refreshLinks);
+        completionLayout->addLayout(completionFooter);
+        rv->addWidget(completionGroup);
+        connect(refreshLinks,&QPushButton::clicked,this,[this] {
+            if(completionDirty || !completionEdits.isEmpty()) {
+                if(QMessageBox::question(this,tr("Refresh world completion links"),
+                    tr("Discard UNSAVED ON COMPLETED edits and reload from .sbgm files?"))!=QMessageBox::Yes)return;
+            }
+            completionDirty=false;
+            completionEdits.clear();
+            completionOriginals.clear();
+            loadedCompletionWorld.clear();
+            loadedCompletionQuest.clear();
+            selectLinkedCompletionWorld();
+            loadCompletionEditor();
+        });
+        connect(completionWorld,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int) {
+            if(!completionLoading)loadCompletionEditor();
+        });
+        connect(completionDialogue,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int) {
+            if(!completionLoading) { completionDirty=true;refreshQuestCompletionLinks(); }
+        });
+        connect(completionDialogueMode,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int) {
+            if(!completionLoading) { completionDirty=true;refreshQuestCompletionLinks(); }
+        });
+        connect(addCompletionAction,&QPushButton::clicked,this,[this] {
+            if(selected<0 || completionWorld->currentData().toString().isEmpty())return;
+            if(completionActions->rowCount()>=64) {
+                QMessageBox::warning(this,tr("Quest completion"),tr("Maximum 64 completion actions per quest/world."));return;
+            }
+            appendCompletionAction(QString(),QStringLiteral("enable"));
+            completionDirty=true;
+            refreshQuestCompletionLinks();
+        });
+        connect(addQuestSignal,&QPushButton::clicked,this,[this] {
+            if(selected<0 || completionWorld->currentData().toString().isEmpty())return;
+            if(completionActions->rowCount()>=64) {
+                QMessageBox::warning(this,tr("Quest completion"),tr("Maximum 64 completion actions per quest/world."));return;
+            }
+            QMap<QString,QString> eventTargets;
+            for(const QJsonValue &v:quests) {
+                const QJsonObject quest=v.toObject();
+                for(const QJsonValue &step:quest.value(QStringLiteral("objectives")).toArray()) {
+                    const QJsonObject objective=step.toObject();
+                    if(objective.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))continue;
+                    const QString id=objective.value(QStringLiteral("target")).toString().trimmed();
+                    if(!id.isEmpty())eventTargets.insert(QStringLiteral("@quest_event:")+id,
+                        tr("%1 / %2  [%3]").arg(quest.value(QStringLiteral("title")).toString(),
+                            objective.value(QStringLiteral("title")).toString(),id));
+                }
+            }
+            if(eventTargets.isEmpty()) {
+                QMessageBox::information(this,tr("Quest completion"),
+                    tr("No Event signal objectives exist yet. Create one in a quest's objectives first."));return;
+            }
+            QStringList options;
+            for(auto it=eventTargets.constBegin();it!=eventTargets.constEnd();++it)
+                options.append(it.value());
+            bool ok=false;
+            const QString selection=QInputDialog::getItem(this,tr("ON COMPLETED -> Quest Event"),
+                tr("Which quest objective should receive this completion event?"),options,0,false,&ok);
+            if(!ok || selection.isEmpty())return;
+            const QString id=eventTargets.key(selection);
+            if(id.isEmpty())return;
+            appendCompletionAction(id,QStringLiteral("enable"));
+            completionDirty=true;
+            refreshQuestCompletionLinks();
+        });
+        connect(removeCompletionAction,&QPushButton::clicked,this,[this] {
+            const int row=completionActions->currentRow();
+            if(row<0)return;
+            completionActions->removeRow(row);
+            completionDirty=true;
+            refreshQuestCompletionLinks();
+        });
         rv->addWidget(new QLabel(tr("OBJECTIVES (ordered by default; ANY ORDER is selectable above)")));
         objectives = new QTableWidget(right);
         objectives->setColumnCount(5);
@@ -273,10 +410,10 @@ public:
         }
         refreshList();
         connect(questList,&QListWidget::currentRowChanged,this,[this](int row) {
-            flushQuest(); selected=row; refreshDetails();
+            flushCompletionEditor(); flushQuest(); selected=row; refreshDetails();
         });
         connect(addQuest,&QPushButton::clicked,this,[this] {
-            flushQuest();
+            flushCompletionEditor();flushQuest();
             if (quests.size()>=64) { QMessageBox::warning(this,tr("Quest limit"),tr("Maximum 64 quests.")); return; }
             QJsonObject q; q["id"]=newId("quest_"); q["title"]=tr("New Quest");
             q["description"]=QString();q["requires"]=QString();q["excludes"]=QString();q["initiallyHidden"]=false;q["unordered"]=false;
@@ -286,7 +423,7 @@ public:
         connect(delQuest,&QPushButton::clicked,this,[this] {
             const int index=questList->currentRow(); if (index<0) return;
             if (QMessageBox::question(this,tr("Remove Quest"),tr("Remove this quest and its objectives?"))!=QMessageBox::Yes) return;
-            flushQuest(); quests.removeAt(index); selected=-1;
+            flushCompletionEditor();flushQuest(); quests.removeAt(index); selected=-1;
             refreshList();questList->setCurrentRow(qMin(index,quests.size()-1));
         });
         connect(addObjective,&QPushButton::clicked,this,[this] {
@@ -319,27 +456,69 @@ public:
         connect(moveDown,&QPushButton::clicked,this,[moveObjective]{moveObjective(1);});
         connect(buttons,&QDialogButtonBox::rejected,this,&QDialog::reject);
         connect(buttons,&QDialogButtonBox::accepted,this,[this] {
+            flushCompletionEditor();
             flushQuest();
             QString why;
-            if (!validate(&why) || !GameQuestGen::validate(quests,&why)) {
+            if (!validate(&why) || !GameQuestGen::validate(quests,&why) || !validateCompletionEdits(&why)) {
                 QMessageBox::warning(this,tr("Quest validation"),why);return;
             }
-            // Assign IDs in saved .sbgm worlds only when Save is confirmed.
-            // Never overwrite another process/editor's newly saved version.
+            // Stage any stable Adventure choice IDs and edited completion links
+            // against ORIGINAL on-disk world snapshots. Never reconstruct the
+            // world from Quest data, and never overwrite a concurrent editor.
+            QMap<QString,QByteArray> expected,updated;
             for(const PendingWorld &world:pendingWorlds) {
-                QFile current(world.filePath);
-                if(!current.open(QIODevice::ReadOnly) || current.readAll()!=world.original) {
+                expected.insert(world.filePath,world.original);
+                updated.insert(world.filePath,world.updated);
+            }
+            for(auto wi=completionEdits.constBegin();wi!=completionEdits.constEnd();++wi) {
+                const QString worldPath=wi.key();
+                if(!expected.contains(worldPath)) {
+                    if(!completionOriginals.contains(worldPath)) {
+                        QMessageBox::warning(this,tr("Quest Designer"),
+                            tr("World snapshot unavailable: %1").arg(worldPath));return;
+                    }
+                    expected.insert(worldPath,completionOriginals.value(worldPath));
+                    updated.insert(worldPath,completionOriginals.value(worldPath));
+                }
+                QJsonParseError parseError;
+                const QJsonDocument doc=QJsonDocument::fromJson(updated.value(worldPath),&parseError);
+                if(parseError.error!=QJsonParseError::NoError || !doc.isObject()) {
                     QMessageBox::warning(this,tr("Quest Designer"),
-                        tr("World %1 changed while the Quest Designer was open. Save and reopen your worlds, then retry.")
-                          .arg(world.filePath));return;
+                        tr("Cannot edit invalid world JSON: %1").arg(worldPath));return;
+                }
+                QJsonObject world=doc.object();
+                QJsonObject actions=world.value(QStringLiteral("questCompletionActions")).toObject();
+                QJsonObject dialogues=world.value(QStringLiteral("questCompletionDialogues")).toObject();
+                for(auto qi=wi.value().constBegin();qi!=wi.value().constEnd();++qi) {
+                    const CompletionSettings &config=qi.value();
+                    if(config.actions.isEmpty())actions.remove(qi.key());
+                    else actions.insert(qi.key(),config.actions);
+                    if(config.dialogueNode<0)dialogues.remove(qi.key());
+                    else dialogues.insert(qi.key(),QJsonObject{
+                        {QStringLiteral("dialogueNode"),config.dialogueNode},
+                        {QStringLiteral("mode"),config.mode}});
+                }
+                world.insert(QStringLiteral("questCompletionActions"),actions);
+                world.insert(QStringLiteral("questCompletionDialogues"),dialogues);
+                updated.insert(worldPath,QJsonDocument(world).toJson(QJsonDocument::Indented));
+            }
+            // Validate all files BEFORE the first write. All unchanged fields
+            // in a world are retained, including Visual Nodes/Adventure data.
+            for(auto it=expected.constBegin();it!=expected.constEnd();++it) {
+                QFile current(it.key());
+                if(!current.open(QIODevice::ReadOnly) || current.readAll()!=it.value()) {
+                    QMessageBox::warning(this,tr("Quest Designer"),
+                        tr("World %1 changed in another editor. Reopen Quest Designer and retry; no files were overwritten.")
+                            .arg(it.key()));return;
                 }
             }
-            for(const PendingWorld &world:pendingWorlds) {
-                QSaveFile upgraded(world.filePath);
-                if(!upgraded.open(QIODevice::WriteOnly) ||
-                   upgraded.write(world.updated)!=world.updated.size() || !upgraded.commit()) {
-                    upgraded.cancelWriting();
-                    QMessageBox::warning(this,tr("Quest Designer"),tr("Could not assign stable dialogue IDs in %1").arg(world.filePath));return;
+            for(auto it=updated.constBegin();it!=updated.constEnd();++it) {
+                QSaveFile file(it.key());
+                if(!file.open(QIODevice::WriteOnly) ||
+                   file.write(it.value())!=it.value().size() || !file.commit()) {
+                    file.cancelWriting();
+                    QMessageBox::warning(this,tr("Quest Designer"),
+                        tr("Could not save updated .sbgm world %1").arg(it.key()));return;
                 }
             }
             QDir().mkpath(QFileInfo(path).absolutePath());
@@ -363,6 +542,7 @@ public:
     QString loadError;
 private:
     QString path;
+    QString projectRootPath;
     QJsonArray quests;
     int selected=-1;
     QListWidget *questList=nullptr;
@@ -370,6 +550,16 @@ private:
     QComboBox *requires=nullptr,*excludes=nullptr;
     QCheckBox *initiallyHidden=nullptr,*unordered=nullptr;
     QTableWidget *objectives=nullptr;
+    QLabel *completionStatus=nullptr;
+    QComboBox *completionWorld=nullptr,*completionDialogue=nullptr,*completionDialogueMode=nullptr;
+    // Backing data must outlive the shared Adventure DialogueTreeCombo popup.
+    QJsonArray completionDialogueNodes,completionDialogueFolders;
+    QTableWidget *completionActions=nullptr;
+    struct CompletionSettings { int dialogueNode=-1; QString mode=QStringLiteral("conversation"); QJsonArray actions; };
+    QMap<QString,QMap<QString,CompletionSettings>> completionEdits; // world path -> quest ID
+    QMap<QString,QByteArray> completionOriginals;
+    QString loadedCompletionWorld,loadedCompletionQuest;
+    bool completionDirty=false,completionLoading=false;
     struct DialogueAction { int id, node, choice; QString stableId,label; };
     struct PendingWorld { QString filePath; QByteArray original; QByteArray updated; };
     QVector<PendingWorld> pendingWorlds;
@@ -525,6 +715,273 @@ private:
         }
     }
 
+    QString completionFilePath() const {
+        const QString world=completionWorld ? completionWorld->currentData().toString() : QString();
+        return world.isEmpty() ? QString() : QDir(projectRootPath).filePath(world+QStringLiteral(".sbgm"));
+    }
+
+    // Source of truth is the current .sbgm, never a duplicate in quests.json.
+    QJsonObject completionWorldData(const QString &filePath) {
+        if(filePath.isEmpty())return {};
+        if(!completionOriginals.contains(filePath)) {
+            QFile file(filePath);
+            if(!file.open(QIODevice::ReadOnly))return {};
+            completionOriginals.insert(filePath,file.readAll());
+        }
+        const QJsonDocument doc=QJsonDocument::fromJson(completionOriginals.value(filePath));
+        return doc.isObject()?doc.object():QJsonObject{};
+    }
+
+    void appendCompletionAction(const QString &targetId,const QString &operation) {
+        if(!completionActions)return;
+        const int row=completionActions->rowCount();
+        completionActions->insertRow(row);
+        auto *target=new QComboBox(completionActions);
+        target->setObjectName(QStringLiteral("questCompletionTarget"));
+        const QJsonObject world=completionWorldData(loadedCompletionWorld);
+        const QJsonArray resources=world.value(QStringLiteral("resources")).toArray();
+        target->addItem(tr("Select action target..."),QString());
+        QSet<QString> inserted;
+        auto offer=[&](const QString &name,const QString &id) {
+            if(id.isEmpty() || inserted.contains(id))return;
+            inserted.insert(id);
+            target->addItem(name,id);
+        };
+        for(const QJsonValue &value:resources) {
+            const QJsonObject res=value.toObject();
+            const QString type=res.value(QStringLiteral("gameObject"))
+                .toObject().value(QStringLiteral("type")).toString();
+            const QString id=res.value(QStringLiteral("id")).toString();
+            if(type.isEmpty() || type==QStringLiteral("particle_emitter"))continue;
+            offer(tr("Game Object: %1  (%2)").arg(res.value(QStringLiteral("name")).toString(),type),id);
+        }
+        for(const QJsonValue &value:world.value(QStringLiteral("adventure"))
+                 .toObject().value(QStringLiteral("npcs")).toArray()) {
+            const QJsonObject npc=value.toObject();
+            const QString id=npc.value(QStringLiteral("spriteId")).toString();
+            offer(tr("NPC: %1").arg(id),id);
+        }
+        for(const QJsonValue &value:quests) {
+            const QJsonObject quest=value.toObject();
+            for(const QJsonValue &obj:quest.value(QStringLiteral("objectives")).toArray()) {
+                const QJsonObject objective=obj.toObject();
+                if(objective.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))continue;
+                const QString signal=objective.value(QStringLiteral("target")).toString();
+                if(!signal.isEmpty())offer(tr("Quest event: %1").arg(signal),QStringLiteral("@quest_event:")+signal);
+            }
+        }
+        offer(tr("PLAYER / Spotlight"),QStringLiteral("@player_spotlight"));
+        for(int i=0;i<4;++i)offer(tr("PLAYER / Weather %1").arg(i),QStringLiteral("@player_weather:%1").arg(i));
+        for(int i=0;i<3;++i)offer(tr("PLAYER / Day/Night %1").arg(i),QStringLiteral("@player_time:%1").arg(i));
+        for(const QString &name:worldNames)
+            offer(tr("PLAYER / Travel to %1").arg(name),QStringLiteral("@player_world:")+name);
+        if(!targetId.isEmpty() && target->findData(targetId)<0)
+            target->addItem(tr("Existing external target: %1").arg(targetId),targetId);
+        target->setCurrentIndex(qMax(0,target->findData(targetId)));
+        completionActions->setCellWidget(row,0,target);
+        auto *action=new QComboBox(completionActions);
+        action->addItem(tr("ENABLE / signal"),QStringLiteral("enable"));
+        action->addItem(tr("DISABLE"),QStringLiteral("disable"));
+        action->addItem(tr("TOGGLE"),QStringLiteral("toggle"));
+        action->setCurrentIndex(qMax(0,action->findData(operation)));
+        completionActions->setCellWidget(row,1,action);
+        target->setToolTip(tr("Action targets use the real world resource ID, or a named Quest Event / PLAYER target. The same ID is used by Visual Nodes."));
+        connect(target,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this,action,target](int) {
+            if(completionLoading)return;
+            const QString id=target->currentData().toString();
+            if((id.startsWith(QStringLiteral("@quest_event:")) ||
+                id.startsWith(QStringLiteral("@player_time:")) ||
+                id.startsWith(QStringLiteral("@player_world:"))) &&
+                action->currentData().toString()!=QStringLiteral("enable"))
+                action->setCurrentIndex(action->findData(QStringLiteral("enable")));
+            completionDirty=true;
+            refreshQuestCompletionLinks();
+        });
+        connect(action,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int) {
+            if(!completionLoading) {
+                completionDirty=true;
+                refreshQuestCompletionLinks();
+            }
+        });
+    }
+
+    void flushCompletionEditor() {
+        if(completionLoading || !completionDirty || loadedCompletionWorld.isEmpty() ||
+           loadedCompletionQuest.isEmpty())return;
+        CompletionSettings config;
+        config.dialogueNode=completionDialogue->currentData().toInt();
+        config.mode=completionDialogueMode->currentData().toString();
+        for(int row=0;row<completionActions->rowCount();++row) {
+            const auto *target=qobject_cast<QComboBox *>(completionActions->cellWidget(row,0));
+            const auto *action=qobject_cast<QComboBox *>(completionActions->cellWidget(row,1));
+            if(target && action) config.actions.append(QJsonObject{
+                {QStringLiteral("objectId"),target->currentData().toString()},
+                {QStringLiteral("action"),action->currentData().toString()}});
+        }
+        completionEdits[loadedCompletionWorld].insert(loadedCompletionQuest,config);
+        completionDirty=false;
+    }
+
+    void loadCompletionEditor() {
+        if(!completionWorld || !completionDialogue || !completionActions)return;
+        flushCompletionEditor();
+        completionLoading=true;
+        loadedCompletionWorld=completionFilePath();
+        loadedCompletionQuest=selected>=0 && selected<quests.size() ?
+            quests.at(selected).toObject().value(QStringLiteral("id")).toString():QString();
+        const bool valid=!loadedCompletionWorld.isEmpty() && !loadedCompletionQuest.isEmpty();
+        completionWorld->setEnabled(selected>=0 && selected<quests.size());
+        completionDialogue->setEnabled(valid);
+        completionDialogueMode->setEnabled(valid);
+        completionActions->setEnabled(valid);
+        // The shared picker reads these arrays by pointer. Refresh their
+        // contents whenever the selected world/quest is loaded, BEFORE the
+        // combo is repopulated, so its folders always match this .sbgm.
+        const QJsonObject world=valid?completionWorldData(loadedCompletionWorld):QJsonObject{};
+        const QJsonObject adventure=world.value(QStringLiteral("adventure")).toObject();
+        completionDialogueNodes=adventure.value(QStringLiteral("nodes")).toArray();
+        completionDialogueFolders=adventure.value(QStringLiteral("dialogueFolders")).toArray();
+        completionDialogue->clear();
+        completionActions->setRowCount(0);
+        completionDialogue->addItem(tr("None (no completion dialogue)"),-1);
+        CompletionSettings config;
+        if(valid) {
+            const QJsonArray &nodes=completionDialogueNodes;
+            for(int i=0;i<nodes.size();++i) {
+                const QJsonObject node=nodes.at(i).toObject();
+                completionDialogue->addItem(tr("#%1 %2: %3").arg(i)
+                    .arg(node.value(QStringLiteral("speaker")).toString(),
+                         node.value(QStringLiteral("text")).toString().simplified().left(70)),i);
+            }
+            const QJsonObject link=world.value(QStringLiteral("questCompletionDialogues"))
+                .toObject().value(loadedCompletionQuest).toObject();
+            config.dialogueNode=link.value(QStringLiteral("dialogueNode")).toInt(-1);
+            config.mode=link.value(QStringLiteral("mode")).toString(QStringLiteral("conversation"));
+            config.actions=world.value(QStringLiteral("questCompletionActions"))
+                .toObject().value(loadedCompletionQuest).toArray();
+            if(completionEdits.contains(loadedCompletionWorld) &&
+               completionEdits.value(loadedCompletionWorld).contains(loadedCompletionQuest))
+                config=completionEdits.value(loadedCompletionWorld).value(loadedCompletionQuest);
+            if(config.dialogueNode>=0 && completionDialogue->findData(config.dialogueNode)<0)
+                completionDialogue->addItem(tr("MISSING dialogue #%1").arg(config.dialogueNode),config.dialogueNode);
+            completionDialogue->setCurrentIndex(qMax(0,completionDialogue->findData(config.dialogueNode)));
+            completionDialogueMode->setCurrentIndex(qMax(0,completionDialogueMode->findData(config.mode)));
+            for(const QJsonValue &value:config.actions) {
+                const QJsonObject link=value.toObject();
+                appendCompletionAction(link.value(QStringLiteral("objectId")).toString(),
+                                       link.value(QStringLiteral("action")).toString());
+            }
+        } else {
+            completionDialogue->setCurrentIndex(0);
+            completionDialogueMode->setCurrentIndex(2);
+        }
+        completionDirty=false;
+        completionLoading=false;
+        refreshQuestCompletionLinks();
+    }
+
+    bool validateCompletionEdits(QString *why) const {
+        for(auto wi=completionEdits.constBegin();wi!=completionEdits.constEnd();++wi) {
+            for(auto qi=wi.value().constBegin();qi!=wi.value().constEnd();++qi) {
+                const CompletionSettings &config=qi.value();
+                if(config.actions.size()>64) {
+                    *why=tr("Quest %1 exceeds 64 ON COMPLETED actions.").arg(qi.key());return false;
+                }
+                const QJsonDocument doc=QJsonDocument::fromJson(completionOriginals.value(wi.key()));
+                const QJsonArray nodes=doc.object().value(QStringLiteral("adventure"))
+                    .toObject().value(QStringLiteral("nodes")).toArray();
+                if(config.dialogueNode>=nodes.size() || config.dialogueNode< -1) {
+                    *why=tr("Quest %1 references a missing completion dialogue.").arg(qi.key());return false;
+                }
+                for(const QJsonValue &value:config.actions) {
+                    const QJsonObject a=value.toObject();
+                    const QString id=a.value(QStringLiteral("objectId")).toString();
+                    const QString op=a.value(QStringLiteral("action")).toString();
+                    if(id.isEmpty() || !(op==QStringLiteral("enable") ||
+                        op==QStringLiteral("disable") || op==QStringLiteral("toggle")) ||
+                       ((id.startsWith(QStringLiteral("@quest_event:")) ||
+                         id.startsWith(QStringLiteral("@player_time:")) ||
+                         id.startsWith(QStringLiteral("@player_world:"))) &&
+                         op!=QStringLiteral("enable"))) {
+                        *why=tr("Quest %1 has an incomplete or invalid completion action: %2.")
+                            .arg(qi.key(),id);return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    // The Quest Designer IS the editor for these .sbgm actions. Visual Nodes is
+    // an alternative editor for exactly the same data, not a second authority.
+    // Show the selected world's live settings, including unsaved UI changes,
+    // instead of a stale read-only digest from some OTHER world.
+    void refreshQuestCompletionLinks() {
+        if(!completionStatus || !completionWorld)return;
+        const QString quest=selected>=0 && selected<quests.size()
+            ? quests.at(selected).toObject().value(QStringLiteral("id")).toString() : QString();
+        if(quest.isEmpty()) { completionStatus->setText(tr("Select a quest to edit its ON COMPLETED event."));return; }
+        const QString world=completionWorld->currentData().toString();
+        if(world.isEmpty()) { completionStatus->setText(tr("No .sbgm world available. Add a world to configure completion events."));return; }
+        int connectedWorldCount=0;
+        const QStringList worldList=worldNames;
+        for(const QString &name:worldList) {
+            const QString file=QDir(projectRootPath).filePath(name+QStringLiteral(".sbgm"));
+            QJsonObject doc=completionWorldData(file);
+            bool hasAction=!doc.value(QStringLiteral("questCompletionActions")).toObject()
+                .value(quest).toArray().isEmpty();
+            bool hasDialogue=doc.value(QStringLiteral("questCompletionDialogues")).toObject().contains(quest);
+            if(completionEdits.value(file).contains(quest)) {
+                const CompletionSettings config=completionEdits.value(file).value(quest);
+                hasAction=!config.actions.isEmpty();
+                hasDialogue=config.dialogueNode>=0;
+            }
+            if(file==loadedCompletionWorld && quest==loadedCompletionQuest && completionDirty) {
+                hasAction=completionActions && completionActions->rowCount()>0;
+                hasDialogue=completionDialogue && completionDialogue->currentData().toInt()>=0;
+            }
+            if(hasAction || hasDialogue)++connectedWorldCount;
+            const int index=completionWorld->findData(name);
+            if(index>=0)completionWorld->setItemText(index,
+                (hasAction || hasDialogue)?tr("%1  [ON COMPLETED configured]").arg(name):name);
+        }
+        const int count=completionActions?completionActions->rowCount():0;
+        const int dialogue=completionDialogue?completionDialogue->currentData().toInt():-1;
+        completionStatus->setText(tr("Editing: %1  |  Dialogue: %2  |  Actions / events: %3%4. "
+            "Runs only when the final objective completes while this world is active.")
+            .arg(world)
+            .arg(dialogue>=0?tr("#%1").arg(dialogue):tr("None"))
+            .arg(count)
+            .arg(connectedWorldCount>1?tr("  |  %1 worlds configured").arg(connectedWorldCount):QString()));
+    }
+
+    // On selecting a NEW quest, present the world where its completion event
+    // is already authored. Otherwise alphabetical 'forest' hides 'world1'
+    // links and makes the editor appear disconnected.
+    void selectLinkedCompletionWorld() {
+        if(!completionWorld || selected<0 || selected>=quests.size())return;
+        const QString id=quests.at(selected).toObject().value(QStringLiteral("id")).toString();
+        if(id.isEmpty())return;
+        QString firstConnected;
+        for(const QString &world:worldNames) {
+            const QString file=QDir(projectRootPath).filePath(world+QStringLiteral(".sbgm"));
+            const QJsonObject root=completionWorldData(file);
+            const bool saved=!root.value(QStringLiteral("questCompletionActions")).toObject()
+                    .value(id).toArray().isEmpty() ||
+                root.value(QStringLiteral("questCompletionDialogues")).toObject().contains(id);
+            bool linked=saved;
+            if(completionEdits.value(file).contains(id)) {
+                const CompletionSettings config=completionEdits.value(file).value(id);
+                linked=config.dialogueNode>=0 || !config.actions.isEmpty();
+            }
+            if(linked) {firstConnected=world;break;}
+        }
+        if(firstConnected.isEmpty())return;
+        QSignalBlocker block(completionWorld);
+        const int index=completionWorld->findData(firstConnected);
+        if(index>=0)completionWorld->setCurrentIndex(index);
+    }
+
     void refreshList() {
         QSignalBlocker block(questList);questList->clear();
         for (const auto &v:quests) questList->addItem(v.toObject().value("title").toString());
@@ -542,6 +999,10 @@ private:
             requires->addItem(q.value("title").toString(),q.value("id").toString());
             excludes->addItem(q.value("title").toString(),q.value("id").toString());
         }
+        if(loadedCompletionQuest!=(valid?
+            quests.at(selected).toObject().value(QStringLiteral("id")).toString():QString()))
+            selectLinkedCompletionWorld();
+        loadCompletionEditor();
         if (!valid) return;
         const QJsonObject q=quests.at(selected).toObject();
         questId->setText(q.value("id").toString());title->setText(q.value("title").toString());

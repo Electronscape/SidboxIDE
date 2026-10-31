@@ -4322,9 +4322,8 @@ private:
             if (linking && (id==from || (enemyOutput && id==enemyDefeatOwner(from)) ||
                 (eventOutputPort && id==eventOwner(from))))continue;
             const NodeObject object=m_objects.value(id);
-            // An enemy death can change an object's active state, but cannot
-            // start an NPC conversation. Never offer a no-op target.
-            if ((enemyOutput || eventOutputPort) && object.type==QStringLiteral("npc"))continue;
+            // EVENT → NPC is a visibility action (ENABLE/DISABLE/TOGGLE).
+            // NPC conversation input sockets remain a distinct dialogue route.
             if(object.type==QStringLiteral("player_action") ||
                object.type==QStringLiteral("quest_event") ||
                object.type==QStringLiteral("quest_completed") ||
@@ -4373,7 +4372,10 @@ private:
             }
             auto *item=new QTreeWidgetItem(parent,QStringList{object.name});
             item->setData(0,Qt::UserRole,id);
-            item->setToolTip(0,tr("%1 | %2").arg(object.type,id));
+            item->setToolTip(0,(object.type==QStringLiteral("npc") &&
+                (enemyOutput || eventOutputPort))?
+                tr("NPC visibility action only (show/hide/toggle). To start a conversation, connect an NPC conversation socket or dialogue card."):
+                tr("%1 | %2").arg(object.type,id));
         }
         // PLAYER branches are real actions, not RESULT bindings or inputs.
         if (!graphValue && !objectSource) {
@@ -7623,7 +7625,7 @@ private:
                 }
                 addGraphInput(from,to);return;
             }
-            if(!m_objects.contains(to) || m_objects.value(to).type==QStringLiteral("npc"))return;
+            if(!m_objects.contains(to))return;
             appendEventConnection(eventOwner(from),eventKey(from),to,
                 defaultPlayerAction(to,QStringLiteral("enable")));
             return;
@@ -7642,12 +7644,8 @@ private:
             }
             if(to.startsWith(QStringLiteral("@toggle:")))return;
             if (!m_objects.contains(to))return;
-            if (m_objects.value(to).type==QStringLiteral("npc")) {
-                QMessageBox::information(this,tr("Enemy ON DEFEAT"),
-                    tr("This NPC input starts a conversation, not a visibility action. "
-                       "Use a Trigger or Boolean dialogue branch for NPC conversations."));
-                return;
-            }
+            // Gold ON DEFEAT → NPC card is visibility, not conversation.
+            // It uses the normal queued NPC target action exporter.
             appendConnection(owner,to,defaultPlayerAction(to,QStringLiteral("enable")));
             return;
         }

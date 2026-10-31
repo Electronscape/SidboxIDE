@@ -8558,6 +8558,31 @@ void SidboxGameDesigner::configureGameObject(int index)
                     cgCrossWorldLink(world,id));
             }
         }
+        // The same authored Quest/Event-signal objectives exposed by Visual Nodes.
+        // @quest_event is an ENABLE-only pulse, never an object visibility state.
+        QFile questFile(QDir(QFileInfo(m_filePath).absolutePath())
+                            .filePath(QStringLiteral(".codergirl/quests.json")));
+        if(questFile.open(QIODevice::ReadOnly)) {
+            QJsonParseError questError;
+            const QJsonDocument quests=QJsonDocument::fromJson(questFile.readAll(),&questError);
+            if(questError.error==QJsonParseError::NoError && quests.isObject()) {
+                QSet<QString> questSignalIds;
+                for(const QJsonValue &questValue:quests.object().value(QStringLiteral("quests")).toArray()) {
+                    const QJsonObject quest=questValue.toObject();
+                    for(const QJsonValue &objectiveValue:quest.value(QStringLiteral("objectives")).toArray()) {
+                        const QJsonObject objective=objectiveValue.toObject();
+                        if(objective.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))continue;
+                        const QString signal=objective.value(QStringLiteral("target")).toString();
+                        if(signal.isEmpty() || questSignalIds.contains(signal))continue;
+                        questSignalIds.insert(signal);
+                        object->addItem(tr("QUEST EVENT / %1 / %2 (%3)")
+                            .arg(quest.value(QStringLiteral("title")).toString(),
+                                 objective.value(QStringLiteral("title")).toString(),signal),
+                            QStringLiteral("@quest_event:")+signal);
+                    }
+                }
+            }
+        }
         if (!link.objectId.isEmpty() && object->findData(link.objectId)<0)
             object->addItem(tr("MISSING: %1").arg(link.objectId),link.objectId);
         object->setCurrentIndex(qMax(0,object->findData(link.objectId)));
@@ -8570,13 +8595,15 @@ void SidboxGameDesigner::configureGameObject(int index)
                 [object,action](int) {
             const QString id=object->currentData().toString();
             const bool command=id.startsWith(QStringLiteral("@player_time:")) ||
-                               id.startsWith(QStringLiteral("@player_world:"));
+                               id.startsWith(QStringLiteral("@player_world:")) ||
+                               id.startsWith(QStringLiteral("@quest_event:"));
             if(command)action->setCurrentIndex(action->findData(QStringLiteral("enable")));
             action->setEnabled(!command);
         });
         const QString chosen=object->currentData().toString();
         action->setEnabled(!(chosen.startsWith(QStringLiteral("@player_time:")) ||
-                             chosen.startsWith(QStringLiteral("@player_world:"))));
+                             chosen.startsWith(QStringLiteral("@player_world:")) ||
+                             chosen.startsWith(QStringLiteral("@quest_event:"))));
         linkedActionRows->setCellWidget(row,0,object);
         linkedActionRows->setCellWidget(row,1,action);
         auto *rowControls=new QWidget(linkedActionRows);
@@ -8644,22 +8671,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
         insertLink(linkedActionRows->rowCount(),{QString(),QStringLiteral("enable")});
     });
-    // Named event links are owned by the same .sbgm object as Visual Nodes.
-    // Show them in Properties without rewriting them on an unrelated edit.
-    // All modifications to these wires are made in the Visual Nodes editor.
-    auto *namedEventLinks = new QTreeWidget(&dialog);
-    namedEventLinks->setHeaderLabels({tr("Event output"), tr("Target / Action")});
-    namedEventLinks->setRootIsDecorated(true);
-    namedEventLinks->setMinimumHeight(116);
-    namedEventLinks->setMaximumHeight(205);
-    namedEventLinks->header()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
-    namedEventLinks->header()->setSectionResizeMode(1,QHeaderView::Stretch);
-    linkedCard.form->addRow(tr("Visual Node event actions"),namedEventLinks);
-    auto *namedEventHelp=new QLabel(tr("These event actions are saved with this Game Object. "
-        "Edit their connections, order and commands in Visual Nodes; "
-        "ordinary Properties changes leave them intact."),&dialog);
-    namedEventHelp->setWordWrap(true);
-    linkedCard.form->addRow(QString(),namedEventHelp);
+    // Named Game Object event outputs are edited here AND in Visual Nodes.
+    // Both write Resource::eventActions into the same authoritative .sbgm.
+    // Keep legacy single-key pickup and Trigger/Enemy linked actions separate.
     const auto propertyEventKinds=[](const QString &behaviour)->QStringList {
         if(behaviour==QStringLiteral("breakable"))return {QStringLiteral("hit"),QStringLiteral("destroy")};
         if(behaviour==QStringLiteral("collectable"))return {QStringLiteral("pickup")};
@@ -8670,32 +8684,238 @@ void SidboxGameDesigner::configureGameObject(int index)
         if(behaviour==QStringLiteral("enemy"))return {QStringLiteral("hit")};
         return {};
     };
-    const auto reloadNamedEventLinks=[&]() {
-        namedEventLinks->clear();
+    auto *namedEventKind=new GameComboBox(&dialog);
+    auto *namedEventRows=new QTableWidget(0,3,&dialog);
+    namedEventRows->setHorizontalHeaderLabels({tr("Action target"),tr("Command"),tr("Move / Remove")});
+    namedEventRows->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
+    namedEventRows->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
+    namedEventRows->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Fixed);
+    namedEventRows->horizontalHeader()->resizeSection(2,146);
+    namedEventRows->verticalHeader()->hide();
+    namedEventRows->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    namedEventRows->setMinimumHeight(142);
+    auto *namedEventAdd=new QPushButton(tr("+ Add event action"),&dialog);
+    auto *namedEventHelp=new QLabel(tr("Named events are one-shot pulses. Actions execute in list order. "
+        "Changes are stored in this Game Object's .sbgm and appear in Visual Nodes after reopening it. "
+        "Collectable key actions above remain a separate legacy mechanism."),&dialog);
+    namedEventHelp->setWordWrap(true);
+    linkedCard.form->addRow(tr("Event output"),namedEventKind);
+    linkedCard.form->addRow(tr("Event actions"),namedEventRows);
+    linkedCard.form->addRow(QString(),namedEventAdd);
+    linkedCard.form->addRow(QString(),namedEventHelp);
+    QJsonObject namedEventDraft=old.eventActions;
+    QString selectedNamedEvent;
+    bool loadingNamedEvents=false;
+    // The same set of local/remote targets and NPC visibility IDs as ordinary actions.
+    const auto insertNamedEventRow=[&](int row,const QString &targetId,const QString &command) {
+        namedEventRows->insertRow(row);
+        auto *target=new GameComboBox(namedEventRows);
+        target->addItem(tr("Select action target..."),QString());
+        target->addItem(tr("PLAYER / Spotlight"),QStringLiteral("@player_spotlight"));
+        for(const QPair<QString,QString> &item:QVector<QPair<QString,QString>>{
+             {QStringLiteral("@player_weather:0"),tr("PLAYER / Weather / Clear")},
+             {QStringLiteral("@player_weather:1"),tr("PLAYER / Weather / Rain")},
+             {QStringLiteral("@player_weather:2"),tr("PLAYER / Weather / Snow")},
+             {QStringLiteral("@player_weather:3"),tr("PLAYER / Weather / Storm")},
+             {QStringLiteral("@player_time:0"),tr("PLAYER / Time / Daylight")},
+             {QStringLiteral("@player_time:1"),tr("PLAYER / Time / Night")},
+             {QStringLiteral("@player_time:2"),tr("PLAYER / Time / Cycle")}})
+            target->addItem(item.second,item.first);
+        const QDir worlds(QFileInfo(m_filePath).absolutePath());
+        const QString currentWorld=sidboxTilemapWorldBaseName(m_filePath);
+        for(const QFileInfo &worldFile:worlds.entryInfoList(
+            QStringList{QStringLiteral("*.sbgm")},QDir::Files,QDir::Name)) {
+            const QString world=sidboxTilemapWorldBaseName(worldFile.absoluteFilePath());
+            target->addItem(tr("PLAYER / World / %1").arg(world),QStringLiteral("@player_world:")+world);
+            QJsonObject design;
+            if(world==currentWorld) {
+                // Use the live Game Designer resources below for local objects.
+                continue;
+            }
+            QFile input(worldFile.absoluteFilePath());
+            if(!input.open(QIODevice::ReadOnly))continue;
+            const QJsonDocument doc=QJsonDocument::fromJson(input.readAll());
+            if(!doc.isObject())continue;
+            design=doc.object();
+            for(const QJsonValue &entry:design.value(QStringLiteral("resources")).toArray()) {
+                const QJsonObject resource=entry.toObject();
+                const QString type=resource.value(QStringLiteral("gameObject")).toObject()
+                    .value(QStringLiteral("type")).toString(QStringLiteral("decoration"));
+                if(resource.value(QStringLiteral("kind")).toString()!=QStringLiteral("sprite") ||
+                   type==QStringLiteral("decoration") || type==QStringLiteral("collectable"))continue;
+                const QString id=resource.value(QStringLiteral("id")).toString();
+                if(!id.isEmpty())target->addItem(tr("%1 / %2 [%3]")
+                    .arg(world,resource.value(QStringLiteral("name")).toString(),type),cgCrossWorldLink(world,id));
+            }
+            for(const QJsonValue &npcValue:design.value(QStringLiteral("adventure")).toObject()
+                .value(QStringLiteral("npcs")).toArray()) {
+                const QString id=npcValue.toObject().value(QStringLiteral("spriteId")).toString();
+                if(!id.isEmpty())target->addItem(tr("%1 / NPC [%2]").arg(world,id),
+                    QStringLiteral("@npc:%1:%2").arg(world,id));
+            }
+        }
+        for(const Resource &resource:m_resources) {
+            if(resource.kind!=QStringLiteral("sprite") || resource.id==old.id ||
+               resource.objectType==QStringLiteral("decoration") ||
+               resource.objectType==QStringLiteral("collectable"))continue;
+            target->addItem(tr("%1 [%2]").arg(resource.name,resource.objectType),resource.id);
+        }
+        for(const QJsonValue &npcValue:m_adventure.value(QStringLiteral("npcs")).toArray()) {
+            const QString id=npcValue.toObject().value(QStringLiteral("spriteId")).toString();
+            if(!id.isEmpty())target->addItem(tr("NPC visibility [%1]").arg(id),
+                QStringLiteral("@npc:%1:%2").arg(currentWorld,id));
+        }
+        QFile questsFile(worlds.filePath(QStringLiteral(".codergirl/quests.json")));
+        if(questsFile.open(QIODevice::ReadOnly)) {
+            const QJsonDocument quests=QJsonDocument::fromJson(questsFile.readAll());
+            if(quests.isObject()) {
+                QSet<QString> questSignalIds;
+                for(const QJsonValue &questValue:quests.object().value(QStringLiteral("quests")).toArray()) {
+                    const QJsonObject quest=questValue.toObject();
+                    for(const QJsonValue &objectiveValue:quest.value(QStringLiteral("objectives")).toArray()) {
+                        const QJsonObject objective=objectiveValue.toObject();
+                        if(objective.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))continue;
+                        const QString signal=objective.value(QStringLiteral("target")).toString();
+                        if(signal.isEmpty() || questSignalIds.contains(signal))continue;
+                        questSignalIds.insert(signal);
+                        target->addItem(tr("QUEST EVENT / %1 / %2 (%3)")
+                            .arg(quest.value(QStringLiteral("title")).toString(),
+                                 objective.value(QStringLiteral("title")).toString(),signal),
+                            QStringLiteral("@quest_event:")+signal);
+                    }
+                }
+            }
+        }
+        if(!targetId.isEmpty() && target->findData(targetId)<0)
+            target->addItem(tr("MISSING: %1").arg(targetId),targetId);
+        target->setCurrentIndex(qMax(0,target->findData(targetId)));
+        auto *action=new GameComboBox(namedEventRows);
+        action->addItem(tr("Enable"),QStringLiteral("enable"));
+        action->addItem(tr("Disable"),QStringLiteral("disable"));
+        action->addItem(tr("Toggle"),QStringLiteral("toggle"));
+        action->setCurrentIndex(qMax(0,action->findData(command)));
+        const auto updateCommand=[target,action]() {
+            const QString id=target->currentData().toString();
+            const bool enableOnly=id.startsWith(QStringLiteral("@player_time:")) ||
+                id.startsWith(QStringLiteral("@player_world:")) ||
+                id.startsWith(QStringLiteral("@quest_event:"));
+            if(enableOnly)action->setCurrentIndex(action->findData(QStringLiteral("enable")));
+            action->setEnabled(!enableOnly);
+        };
+        connect(target,qOverload<int>(&QComboBox::currentIndexChanged),namedEventRows,
+            [updateCommand](int){updateCommand();});
+        updateCommand();
+        namedEventRows->setCellWidget(row,0,target);
+        namedEventRows->setCellWidget(row,1,action);
+        auto *controls=new QWidget(namedEventRows);
+        auto *buttons=new QHBoxLayout(controls);
+        buttons->setContentsMargins(2,0,2,0);
+        buttons->setSpacing(2);
+        for(const QPair<int,QString> &motion:QVector<QPair<int,QString>>{
+             {-1,tr("Up")},{1,tr("Down")},{0,tr("Delete")}}) {
+            auto *button=new QPushButton(motion.second,controls);
+            button->setFixedWidth(motion.first==0?54:40);
+            buttons->addWidget(button);
+            connect(button,&QPushButton::clicked,namedEventRows,[=]() {
+                int current=-1;
+                for(int i=0;i<namedEventRows->rowCount();++i)
+                    if(namedEventRows->cellWidget(i,2)==controls){current=i;break;}
+                if(current<0)return;
+                if(motion.first==0) {
+                    if(QMessageBox::question(namedEventRows,tr("Remove event action?"),
+                        tr("Delete event action #%1? Saved when you save Object Properties.").arg(current+1),
+                        QMessageBox::Yes|QMessageBox::No,QMessageBox::No)==QMessageBox::Yes)
+                        namedEventRows->removeRow(current);
+                    return;
+                }
+                const int other=current+motion.first;
+                if(other<0 || other>=namedEventRows->rowCount())return;
+                auto *dst=qobject_cast<QComboBox *>(namedEventRows->cellWidget(other,0));
+                auto *act=qobject_cast<QComboBox *>(namedEventRows->cellWidget(other,1));
+                if(!dst || !act)return;
+                const QString oldTarget=target->currentData().toString();
+                const QString oldAction=action->currentData().toString();
+                const QString newTarget=dst->currentData().toString();
+                const QString newAction=act->currentData().toString();
+                if(dst->findData(oldTarget)<0)dst->addItem(tr("MISSING: %1").arg(oldTarget),oldTarget);
+                if(target->findData(newTarget)<0)target->addItem(tr("MISSING: %1").arg(newTarget),newTarget);
+                target->setCurrentIndex(target->findData(newTarget));
+                dst->setCurrentIndex(dst->findData(oldTarget));
+                action->setCurrentIndex(action->findData(newAction));
+                act->setCurrentIndex(act->findData(oldAction));
+                namedEventRows->selectRow(other);
+            });
+        }
+        namedEventRows->setCellWidget(row,2,controls);
+        namedEventRows->setRowHeight(row,32);
+    };
+    const auto saveNamedEventRows=[&]() {
+        if(loadingNamedEvents || selectedNamedEvent.isEmpty())return;
+        QJsonArray links;
+        for(int row=0;row<namedEventRows->rowCount();++row) {
+            auto *target=qobject_cast<QComboBox *>(namedEventRows->cellWidget(row,0));
+            auto *action=qobject_cast<QComboBox *>(namedEventRows->cellWidget(row,1));
+            if(!target || !action)continue;
+            const QString id=target->currentData().toString();
+            if(id.isEmpty())continue; // An unfinished new row is not a saved action.
+            links.append(QJsonObject{{QStringLiteral("objectId"),id},
+                {QStringLiteral("action"),action->currentData().toString()}});
+        }
+        if(links.isEmpty())namedEventDraft.remove(selectedNamedEvent);
+        else namedEventDraft.insert(selectedNamedEvent,links);
+    };
+    const auto reloadNamedEventLinks=[&](bool resetObject=false) {
+        if(!resetObject)saveNamedEventRows();
+        else namedEventDraft=old.eventActions;
+        loadingNamedEvents=true;
+        const QString current=resetObject?QString():namedEventKind->currentData().toString();
         const QStringList kinds=propertyEventKinds(type->currentData().toString());
+        namedEventKind->clear();
         for(const QString &key:kinds) {
-            const QString name=key==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
+            const QString label=key==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
                 key==QStringLiteral("destroy")?tr("ON DESTROY"):
                 key==QStringLiteral("pickup")?tr("ON PICKUP"):
                 key==QStringLiteral("enter")?tr("ON ENTER"):
                 key==QStringLiteral("save")?tr("ON SAVE"):
                 key==QStringLiteral("arrival")?tr("ON ARRIVAL"):tr("ON HIT");
-            const QJsonArray actions=old.eventActions.value(key).toArray();
-            auto *parent=new QTreeWidgetItem(namedEventLinks,{name,
-                tr("%1 linked action(s)").arg(actions.size())});
-            for(const QJsonValue &entry:actions) {
-                const QJsonObject action=entry.toObject();
-                const QString id=action.value(QStringLiteral("objectId")).toString();
-                QString label=id;
-                for(const Resource &r:m_resources)if(r.id==id){label=r.name;break;}
-                new QTreeWidgetItem(parent,{action.value(QStringLiteral("action")).toString().toUpper(),label});
-            }
-            parent->setExpanded(true);
+            namedEventKind->addItem(label,key);
         }
+        namedEventKind->setCurrentIndex(qMax(0,namedEventKind->findData(current)));
+        selectedNamedEvent=namedEventKind->currentData().toString();
+        namedEventRows->setRowCount(0);
+        for(const QJsonValue &entry:namedEventDraft.value(selectedNamedEvent).toArray()) {
+            const QJsonObject link=entry.toObject();
+            insertNamedEventRow(namedEventRows->rowCount(),
+                link.value(QStringLiteral("objectId")).toString(),
+                link.value(QStringLiteral("action")).toString(QStringLiteral("enable")));
+        }
+        loadingNamedEvents=false;
     };
-    reloadNamedEventLinks();
-    connect(type,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,
-        [reloadNamedEventLinks](int){reloadNamedEventLinks();});
+    reloadNamedEventLinks(true);
+    connect(namedEventKind,qOverload<int>(&QComboBox::activated),&dialog,[&](int) {
+        // activated fires after selection changes, so preserve the previous key.
+        saveNamedEventRows();
+        loadingNamedEvents=true;
+        selectedNamedEvent=namedEventKind->currentData().toString();
+        namedEventRows->setRowCount(0);
+        for(const QJsonValue &entry:namedEventDraft.value(selectedNamedEvent).toArray()) {
+            const QJsonObject link=entry.toObject();
+            insertNamedEventRow(namedEventRows->rowCount(),
+                link.value(QStringLiteral("objectId")).toString(),
+                link.value(QStringLiteral("action")).toString(QStringLiteral("enable")));
+        }
+        loadingNamedEvents=false;
+    });
+    connect(type,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int) {
+        if(!loadingNamedEvents)reloadNamedEventLinks();
+    });
+    connect(namedEventAdd,&QPushButton::clicked,&dialog,[&]() {
+        if(selectedNamedEvent.isEmpty())return;
+        if(namedEventRows->rowCount()>=64) {
+            QMessageBox::warning(&dialog,tr("Event actions"),tr("At most 64 actions per event."));return;
+        }
+        insertNamedEventRow(namedEventRows->rowCount(),QString(),QStringLiteral("enable"));
+    });
     form = generalCard.form; // State artwork belongs on the target (e.g. Door), not only on the Trigger.
     auto *activeStateFrame = spin(-1, 255, old.activeStateFrame);
     auto *inactiveStateFrame = spin(-1, 255, old.inactiveStateFrame);
@@ -10903,6 +11123,15 @@ void SidboxGameDesigner::configureGameObject(int index)
         linkedActionRows->setVisible(multiLinks);
         actionRowControls->setVisible(multiLinks);
         linkedActionsHint->setVisible(multiLinks);
+        const bool hasNamedEvents=!propertyEventKinds(behaviour).isEmpty();
+        for(QWidget *field:{static_cast<QWidget *>(namedEventKind),
+                            static_cast<QWidget *>(namedEventRows),
+                            static_cast<QWidget *>(namedEventAdd),
+                            static_cast<QWidget *>(namedEventHelp)}) {
+            field->setVisible(hasNamedEvents);
+            if(QWidget *label=linkedCard.form->labelForField(field))
+                label->setVisible(hasNamedEvents);
+        }
         linkedActionsHint->setText(isTrigger
             ? tr("Each action runs when this Trigger activates, in order. Drag action connections in Visual Nodes or edit them here. Disabling an object without an INACTIVE frame hides it.")
             : tr("Each action runs ONCE when this enemy is defeated, in order. Drag from the gold ON DEFEAT socket in Visual Nodes or edit actions here. This is separate from the teal state-reading socket."));
@@ -10998,12 +11227,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         animationCard.panel->setVisible(isObject && animated->isChecked());
         collisionCard.panel->setVisible(isObject && behaviour != QStringLiteral("particle_emitter"));
         collectCard.panel->setVisible(isCollect);
-        const bool hasNamedEvents=!propertyEventKinds(behaviour).isEmpty();
         linkedCard.panel->setVisible(isTrigger || isKey || isEnemy || hasNamedEvents);
-        namedEventLinks->setVisible(hasNamedEvents);
-        namedEventHelp->setVisible(hasNamedEvents);
-        if(QWidget *label=linkedCard.form->labelForField(namedEventLinks))
-            label->setVisible(hasNamedEvents);
         incomingBooleanCard.panel->setVisible((hasIncomingBoolean || hasIncomingGraph) && isObject);
         triggerCard.panel->setVisible(isTrigger || behaviour == QStringLiteral("save_checkpoint"));
         liftCard.panel->setVisible(false); // sound controls are in Audio Events
@@ -11384,6 +11608,44 @@ void SidboxGameDesigner::configureGameObject(int index)
                 tr("The saved linked Game Object no longer exists. Choose a valid "
                    "target or remove the linked action."),
                 targetObject, true, [=]() { targetObject->setCurrentIndex(0); });
+        if(!propertyEventKinds(behaviour).isEmpty()) {
+            saveNamedEventRows();
+            QStringList broken;
+            for(const QString &key:propertyEventKinds(behaviour))
+                for(const QJsonValue &v:namedEventDraft.value(key).toArray()) {
+                    const QJsonObject a=v.toObject();
+                    const QString id=a.value(QStringLiteral("objectId")).toString();
+                    const QString action=a.value(QStringLiteral("action")).toString();
+                    bool present=id.startsWith(QStringLiteral("@player_"));
+                    if(id.startsWith(QStringLiteral("@quest_event:"))) {
+                        present=false;
+                        QFile file(QDir(QFileInfo(m_filePath).absolutePath())
+                            .filePath(QStringLiteral(".codergirl/quests.json")));
+                        if(file.open(QIODevice::ReadOnly)) {
+                            const QJsonDocument doc=QJsonDocument::fromJson(file.readAll());
+                            for(const QJsonValue &q:doc.object().value(QStringLiteral("quests")).toArray())
+                                for(const QJsonValue &obj:q.toObject().value(QStringLiteral("objectives")).toArray())
+                                    if(obj.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
+                                       obj.toObject().value(QStringLiteral("target")).toString()==id.mid(13))present=true;
+                        }
+                    } else if(id.startsWith(QStringLiteral("@npc:")) || id.startsWith(QStringLiteral("@world/"))) {
+                        // Cross-world references are checked again by the exporter.
+                        present=true;
+                    } else {
+                        for(const Resource &target:m_resources)
+                            if(target.id==id && target.id!=old.id){present=true;break;}
+                    }
+                    if(!present || (action!=QStringLiteral("enable") && action!=QStringLiteral("disable") &&
+                                    action!=QStringLiteral("toggle")) ||
+                       ((id.startsWith(QStringLiteral("@quest_event:")) ||
+                         id.startsWith(QStringLiteral("@player_time:")) ||
+                         id.startsWith(QStringLiteral("@player_world:"))) && action!=QStringLiteral("enable")))
+                        broken.append(tr("%1 → %2 (%3)").arg(key,id,action));
+                }
+            if(!broken.isEmpty())report(tr("Invalid named event action"),
+                tr("Correct the following named event targets before saving:\n%1")
+                    .arg(broken.join(QStringLiteral("\n"))),namedEventRows,true);
+        }
         if (behaviour == QStringLiteral("trigger") || behaviour == QStringLiteral("enemy")) {
             QStringList missing;
             for (int row = 0; row < linkedActionRows->rowCount(); ++row) {
@@ -11827,12 +12089,12 @@ void SidboxGameDesigner::configureGameObject(int index)
     r.cellHeight = stamped.cellHeight;
     r.frame = stamped.frame;
     r.objectType = newType;
-    if(newType!=old.objectType) {
-        QJsonObject relevant;
-        for(const QString &key:propertyEventKinds(newType))
-            if(old.eventActions.contains(key))relevant.insert(key,old.eventActions.value(key));
-        r.eventActions=relevant;
-    }
+    saveNamedEventRows();
+    // No second Visual Nodes data structure: Resource::eventActions is canonical.
+    QJsonObject relevant;
+    for(const QString &key:propertyEventKinds(newType))
+        if(namedEventDraft.contains(key))relevant.insert(key,namedEventDraft.value(key));
+    r.eventActions=relevant;
     r.pickupKind = pickup->currentData().toInt();
     r.objectValue = value->value();
     r.pickupTrackingConfigured = newType == QStringLiteral("collectable") &&
@@ -12107,7 +12369,8 @@ void SidboxGameDesigner::configureGameObject(int index)
         for (QWidget *widget : dialog.findChildren<QWidget *>()) {
             // Linked rows are recreated on each switch; inspect their actual
             // row order below, not widgets awaiting Qt deferred deletion.
-            if (linkedActionRows->isAncestorOf(widget)) continue;
+            if (linkedActionRows->isAncestorOf(widget) ||
+                namedEventRows->isAncestorOf(widget)) continue;
             if (auto *combo = qobject_cast<QComboBox *>(widget)) {
                 values << combo->currentData() << combo->currentText();
             } else if (auto *check = qobject_cast<QCheckBox *>(widget)) {
@@ -12157,6 +12420,8 @@ void SidboxGameDesigner::configureGameObject(int index)
                 }
             }
         }
+        saveNamedEventRows();
+        values << QJsonDocument(namedEventDraft).toJson(QJsonDocument::Compact);
         values << linkedActionRows->rowCount();
         for (int row = 0; row < linkedActionRows->rowCount(); ++row) {
             auto *target = qobject_cast<QComboBox *>(linkedActionRows->cellWidget(row, 0));
@@ -12181,6 +12446,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         auditLoading = true;
         index = selectedIndex;
         old = m_resources.at(index);
+        loadingNamedEvents=true; // Don't save the previous object's rows into the new one.
         fadePreviewFrames = 0;
         fadeCanvasPercent = -1;
         draftSpriteStamp = old.spriteStamp;
@@ -12250,7 +12516,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         targetObject->setCurrentIndex(qMax(0, targetObject->findData(old.targetObjectId)));
         targetAction->setCurrentIndex(qMax(0, targetAction->findData(old.targetAction)));
         reloadLinks();
-        reloadNamedEventLinks();
+        reloadNamedEventLinks(true);
         if (!old.gotoWorldName.isEmpty() && gotoWorld->findData(old.gotoWorldName) < 0) {
             gotoWorld->addItem(tr("[Missing: missing world] %1").arg(old.gotoWorldName), old.gotoWorldName);
             gotoWorld->setItemIcon(gotoWorld->count()-1, dialog.style()->standardIcon(QStyle::SP_MessageBoxWarning));
