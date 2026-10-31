@@ -358,6 +358,10 @@ private:
     QVector<Resource> m_resources;
     QJsonObject m_adventure; // Advanced Platformer dialogue/inventory data (in .sbgm)
     QJsonObject m_persistedAdventure; // Snapshot for detecting Visual Nodes / Adventure external edits
+    // The .sbgm is authoritative. Catch concurrent Visual Nodes edits to
+    // Game Object logic and event actions before Game Designer re-exports.
+    QHash<QString,QJsonArray> m_persistedLogicNodes;
+    QHash<QString,QJsonObject> m_persistedEventActions;
     // Stage 5.4: world owns spawn only. The player is project-owned (.sbpi).
     QString m_playerProfile = QStringLiteral("players/player.sbpi");
     QString m_playerEntry = QStringLiteral("default");

@@ -24,7 +24,9 @@ struct Input {
 };
 struct Node {
     QString id;
-    QString op;              // boolean/not (1), and (2..16), or (2..8)
+    QString op;              // boolean/not/and/or, stat_compare, quest_done
+    QString statName, compareOp, questId;
+    int threshold = 0;
     QVector<Input> inputs;
     QJsonArray trueActions, falseActions;
     QStringList resultTargets; // RESULT directly drives each Game Object active state.
@@ -50,15 +52,46 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
         }
         ids.insert(n.id);
         if(n.op!=QStringLiteral("boolean") && n.op!=QStringLiteral("not") &&
-           n.op!=QStringLiteral("and") && n.op!=QStringLiteral("or")) {
+           n.op!=QStringLiteral("and") && n.op!=QStringLiteral("or") &&
+           n.op!=QStringLiteral("stat_compare") && n.op!=QStringLiteral("quest_done")) {
             if(error)*error=QStringLiteral("Unknown operator on logic node %1.").arg(n.id);
             return false;
         }
         const QJsonArray rawInputs=o.value(QStringLiteral("inputs")).toArray();
-        if(rawInputs.size()>16 || (n.op==QStringLiteral("boolean") || n.op==QStringLiteral("not")
-              ? rawInputs.size()!=1 : n.op==QStringLiteral("or") ? (rawInputs.size()<2 || rawInputs.size()>8) : rawInputs.size()<2)) {
+        const bool sourceCondition=n.op==QStringLiteral("stat_compare") || n.op==QStringLiteral("quest_done");
+        if(rawInputs.size()>16 || (sourceCondition ? rawInputs.size()>1 :
+            (n.op==QStringLiteral("boolean") || n.op==QStringLiteral("not")
+              ? rawInputs.size()!=1 : n.op==QStringLiteral("or") ? (rawInputs.size()<2 || rawInputs.size()>8) : rawInputs.size()<2))) {
             if(error)*error=QStringLiteral("Logic node %1 has an invalid number of inputs.").arg(n.id);
             return false;
+        }
+        if(n.op==QStringLiteral("stat_compare")) {
+            n.statName=o.value(QStringLiteral("statName")).toString().trimmed();
+            n.compareOp=o.value(QStringLiteral("compareOp")).toString();
+            n.threshold=o.value(QStringLiteral("threshold")).toInt();
+            if(n.statName.isEmpty() || n.statName.size()>64 ||
+               !QStringList{QStringLiteral("<"),QStringLiteral("<="),QStringLiteral("=="),
+                   QStringLiteral("!="),QStringLiteral(">="),QStringLiteral(">")} .contains(n.compareOp)) {
+                if(error)*error=QStringLiteral("Logic node %1 has an invalid statistic/comparison.").arg(n.id);
+                return false;
+            }
+            for(const QChar ch:n.statName)
+                if(n.statName!=QStringLiteral("@health") && !ch.isLetterOrNumber() && ch!=QLatin1Char(' ') && ch!=QLatin1Char('_') && ch!=QLatin1Char('-')) {
+                    if(error)*error=QStringLiteral("Logic node %1 has an invalid statistic name.").arg(n.id);
+                    return false;
+                }
+        }
+        if(n.op==QStringLiteral("quest_done")) {
+            n.questId=o.value(QStringLiteral("questId")).toString().trimmed();
+            if(n.questId.isEmpty() || n.questId.size()>128) {
+                if(error)*error=QStringLiteral("Logic node %1 has no quest ID.").arg(n.id);
+                return false;
+            }
+            for(const QChar ch:n.questId)
+                if(!ch.isLetterOrNumber() && ch!=QLatin1Char('_') && ch!=QLatin1Char('-')) {
+                    if(error)*error=QStringLiteral("Logic node %1 has an invalid quest ID.").arg(n.id);
+                    return false;
+                }
         }
         QSet<QString> unique;
         for(int inputIndex=0;inputIndex<rawInputs.size();++inputIndex) {
@@ -175,13 +208,32 @@ inline bool order(const QVector<Node> &nodes,const QSet<QString> &objects,
 
 inline QString expression(const Node &node,const QHash<QString,QString> &objects,
                           const QHash<QString,QString> &values) {
+    // Only safe alphanumeric/spaces IDs can reach these C string literals;
+    // read() rejects malformed IDs before the exporter calls expression().
     QStringList parts;
     for(const Input &input:node.inputs) {
+        // Trigger virtual latch resolves to cg_trigger_state[index].active
+        // (a scalar field of cg_trigger_virtual_t); ordinary placed Game
+        // Objects also have .active, but require the suffix here.
         QString x=input.kind==QStringLiteral("object")
-            ? objects.value(input.id)+QStringLiteral(".active")
+            ? (input.id.startsWith(QStringLiteral("@triggerstate:"))
+                ? objects.value(input.id)
+                : objects.value(input.id)+QStringLiteral(".active"))
             : input.kind==QStringLiteral("event") ? objects.value(input.id) : values.value(input.id);
         if(input.invert)x=QStringLiteral("!(%1)").arg(x);
         parts.append(QStringLiteral("(%1)").arg(x));
+    }
+    // COMPARE and QUEST STATE are live condition sources, optionally guarded
+    // by a single WHEN input. With no input they preserve their original
+    // independent, revision-driven behaviour. A gold event WHEN gates the
+    // condition to that one pulse; a teal state WHEN is held.
+    if(node.op==QStringLiteral("stat_compare") || node.op==QStringLiteral("quest_done")) {
+        const QString condition=node.op==QStringLiteral("stat_compare")
+            ?QStringLiteral("cg_logic_stat_compare(\"%1\", \"%2\", %3)")
+                .arg(node.statName,node.compareOp).arg(node.threshold)
+            :QStringLiteral("cg_logic_quest_done(\"%1\")").arg(node.questId);
+        return parts.isEmpty()?condition:
+            QStringLiteral("((%1) && (%2))").arg(parts.first(),condition);
     }
     QString joined=parts.join(node.op==QStringLiteral("or")?QStringLiteral(" || "):
                               QStringLiteral(" && "));

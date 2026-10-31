@@ -12,6 +12,7 @@
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QMap>
+#include <QHash>
 #include <QGraphicsItem>
 #include <QPen>
 #include <QFont>
@@ -4465,6 +4466,20 @@ private:
         // Sort only the Game Object/NPC branches before adding dialogue nodes:
         // the Dialogue Editor's "+ Create New Dialogue" must stay last.
         tree->sortItems(0,Qt::AscendingOrder);
+        // Condition sources have an OPTIONAL WHEN input. Let developers
+        // create them from the ordinary empty-canvas Logic palette instead
+        // of forcing them to drag a Game Object's STATE/EVENT output first.
+        // Their .sbgm owner is selected when they are created.
+        if (!linking) {
+            logicRoot=new QTreeWidgetItem(tree,QStringList{tr("Logic")});
+            logicRoot->setFlags(logicRoot->flags() & ~Qt::ItemIsSelectable);
+            auto *compare=new QTreeWidgetItem(logicRoot,QStringList{tr("COMPARE (Player stat / Health)")});
+            compare->setData(0,Qt::UserRole,QStringLiteral("@logic:stat_compare"));
+            compare->setToolTip(0,tr("Independent condition. Pick a Game Object owner, then edit the stat and threshold in the card."));
+            auto *quest=new QTreeWidgetItem(logicRoot,QStringList{tr("QUEST STATE (Completed?)")});
+            quest->setData(0,Qt::UserRole,QStringLiteral("@logic:quest_done"));
+            quest->setToolTip(0,tr("Independent quest-completion state. Pick a Game Object owner, then edit its quest in the card."));
+        }
         if (objectSource || eventLogicSource) {
             auto *logic=new QTreeWidgetItem(tree,QStringList{tr("Logic")});
             logicRoot=logic;
@@ -4483,6 +4498,50 @@ private:
             orNode->setToolTip(0,tr("TRUE when any of 2–8 connected Game Objects is enabled."));
             auto *notNode=new QTreeWidgetItem(logic,QStringList{tr("NOT (invert input)")});
             notNode->setData(0,Qt::UserRole,QStringLiteral("@logic:not"));
+            // Independent conditions require a real world object as their
+            // .sbgm owner. A pulse or another RESULT is not a stat/quest input.
+            // An optional WHEN input lets a condition be authored by dragging
+            // an object/event/logic output. The new node inherits the same
+            // .sbgm owner, so the wire is a real executable dependency.
+            const QString sourceOwner=eventLogicSource?
+                (enemyOutput?enemyDefeatOwner(from):eventOutputPort?eventOwner(from):from):
+                virtualTriggerState?triggerStateOwner(from):
+                graphValue?from.mid(QStringLiteral("@graphvalue:").size()):from;
+            QString graphOwner;
+            if(graphValue)lookupGraph(sourceOwner,&graphOwner,nullptr);
+            const QString realOwner=graphValue?graphOwner:sourceOwner;
+            const bool conditionOwner=m_objects.contains(realOwner) &&
+                m_objects.value(realOwner).resourceIndex>=0 &&
+                m_objects.value(realOwner).type!=QStringLiteral("npc") &&
+                m_objects.value(realOwner).type!=QStringLiteral("player") &&
+                m_objects.value(realOwner).type!=QStringLiteral("collectable") &&
+                m_objects.value(realOwner).type!=QStringLiteral("decoration") &&
+                m_objects.value(realOwner).type!=QStringLiteral("quest_completed");
+            // Collectables are templates, not stable condition hosts. Their
+            // ON PICKUP pulse may nevertheless feed a condition owned by a
+            // placed Game Object in this world.
+            bool anyPlacedOwner=false;
+            for(const QString &candidateId:m_order) {
+                const NodeObject candidate=m_objects.value(candidateId);
+                if(candidate.resourceIndex>=0 && candidate.type!=QStringLiteral("npc") &&
+                   candidate.type!=QStringLiteral("collectable") &&
+                   candidate.type!=QStringLiteral("decoration") &&
+                   candidate.type!=QStringLiteral("player_action") &&
+                   candidate.type!=QStringLiteral("quest_completed") &&
+                   candidate.type!=QStringLiteral("quest_event")) {
+                    anyPlacedOwner=true;break;
+                }
+            }
+            if(conditionOwner || (eventLogicSource && anyPlacedOwner &&
+                m_objects.value(realOwner).type==QStringLiteral("collectable"))) {
+                auto *compare=new QTreeWidgetItem(logic,QStringList{tr("COMPARE (Player stat / Health)")});
+                compare->setData(0,Qt::UserRole,QStringLiteral("@logic:stat_compare"));
+                compare->setToolTip(0,tr("Persistent numeric condition. Configure the statistic, operator and value inside the node. "
+                    "Its RESULT, TRUE and FALSE outputs connect to the same Game Objects and Adventure dialogues as other logic."));
+                auto *quest=new QTreeWidgetItem(logic,QStringList{tr("QUEST STATE (Completed?)")});
+                quest->setData(0,Qt::UserRole,QStringLiteral("@logic:quest_done"));
+                quest->setToolTip(0,tr("Persistent Quest Designer completion condition, with editable quest selection inside the node."));
+            }
         }
         // Named Breakable events can show an Adventure dialogue. Selecting one
         // creates the existing one-frame BOOLEAN -> TRUE dialogue chain, so
@@ -4494,11 +4553,10 @@ private:
             populateDialogueChoices(tree,root);
         }
         // A large world may contain hundreds of objects: start with just the
-        // root headings, not every object and dialogue expanded. Exception:
-        // the arrival event's four existing logic choices are the purpose of
-        // this picker, so put Logic FIRST and leave it expanded.
+        // root headings. Keep the Logic folder expanded when adding independent
+        // conditions or extending a Game Object's established gate graph.
         tree->collapseAll();
-        if((eventLogicSource || objectSource) && logicRoot) {
+        if(logicRoot && (!linking || eventLogicSource || objectSource)) {
             const int previousIndex=tree->indexOfTopLevelItem(logicRoot);
             if(previousIndex>0) {
                 QTreeWidgetItem *first=tree->takeTopLevelItem(previousIndex);
@@ -4557,8 +4615,72 @@ private:
             selectedId=QStringLiteral("@dialogue-node:%1").arg(dialogue);
         }
         if (selectedId.startsWith(QStringLiteral("@logic:"))) {
-            if (!objectSource && !eventLogicSource)return;
-            createGraphLogic(from,at,selectedId.mid(QStringLiteral("@logic:").size()));
+            const QString op=selectedId.mid(QStringLiteral("@logic:").size());
+            QString source=from;
+            if (!linking) {
+                // Compare and Quest State are persistent source conditions.
+                // Store them with a genuine placed Game Object in .sbgm,
+                // just like AND/OR/NOT. The owning object is NOT an input.
+                if (op!=QStringLiteral("stat_compare") && op!=QStringLiteral("quest_done"))return;
+                QStringList choices;
+                QHash<QString,QString> byChoice;
+                for(const QString &id:m_order) {
+                    const NodeObject object=m_objects.value(id);
+                    if(object.resourceIndex<0 || object.type==QStringLiteral("npc") ||
+                       object.type==QStringLiteral("player") ||
+                       object.type==QStringLiteral("collectable") ||
+                       object.type==QStringLiteral("decoration") ||
+                       object.type==QStringLiteral("player_action") ||
+                       object.type==QStringLiteral("quest_completed") ||
+                       object.type==QStringLiteral("quest_event"))continue;
+                    const QString label=QStringLiteral("%1 [%2]").arg(object.name,id);
+                    choices.append(label);byChoice.insert(label,id);
+                }
+                if(choices.isEmpty()) {
+                    QMessageBox::information(this,tr("Logic"),
+                        tr("Place a Game Object in this world first. Logic conditions are stored with their Game Object owner in .sbgm."));
+                    return;
+                }
+                choices.sort(Qt::CaseInsensitive);
+                bool accepted=false;
+                const QString choice=QInputDialog::getItem(this,tr("Logic condition owner"),
+                    tr("Store this condition with which Game Object?\nChoose the SAME owner as any AND/OR/NOT gates it must feed."),
+                    choices,0,false,&accepted);
+                if(!accepted || choice.isEmpty())return;
+                source=byChoice.value(choice);
+            } else if(!objectSource && !eventLogicSource)return;
+            QString host;
+            // A Collectable is a reusable template; keep the incoming ON
+            // PICKUP event, but store the condition on a placed Game Object.
+            if(linking && isEventOutput(from) &&
+               m_objects.value(eventOwner(from)).type==QStringLiteral("collectable")) {
+                QStringList choices;
+                QHash<QString,QString> byChoice;
+                for(const QString &id:m_order) {
+                    const NodeObject candidate=m_objects.value(id);
+                    if(candidate.resourceIndex<0 || candidate.type==QStringLiteral("npc") ||
+                       candidate.type==QStringLiteral("collectable") ||
+                       candidate.type==QStringLiteral("decoration") ||
+                       candidate.type==QStringLiteral("player_action") ||
+                       candidate.type==QStringLiteral("quest_completed") ||
+                       candidate.type==QStringLiteral("quest_event"))continue;
+                    const QString label=QStringLiteral("%1 [%2]").arg(candidate.name,id);
+                    choices.append(label);byChoice.insert(label,id);
+                }
+                if(choices.isEmpty()) {
+                    QMessageBox::information(this,tr("Logic owner"),
+                        tr("Place a Game Object before connecting Collectable ON PICKUP to a condition."));
+                    return;
+                }
+                choices.sort(Qt::CaseInsensitive);
+                bool accepted=false;
+                const QString choice=QInputDialog::getItem(this,tr("Logic owner"),
+                    tr("Store this condition under which Game Object?\nThe Collectable remains its ON PICKUP source."),
+                    choices,0,false,&accepted);
+                if(!accepted || choice.isEmpty())return;
+                host=byChoice.value(choice);
+            }
+            createGraphLogic(source,at,op,linking,host);
             return;
         }
         if (selectedId==QStringLiteral("@create-dialogue")) {
@@ -4877,13 +4999,101 @@ private:
             return QString();
         return source;
     }
-    void createGraphLogic(const QString &source,const QPointF &at,const QString &operation) {
+    bool configureAdvancedGraphCondition(QJsonObject *node) {
+        if(!node)return false;
+        const QString op=node->value(QStringLiteral("op")).toString();
+        const QDir project(QFileInfo(m_worldPath).absolutePath());
+        if(op==QStringLiteral("stat_compare")) {
+            const QString profile=m_world.value(QStringLiteral("playerStart"))
+                .toObject().value(QStringLiteral("profile")).toString(QStringLiteral("players/player.sbpi"));
+            QFile file(project.filePath(profile));
+            QStringList available;
+            if(file.open(QIODevice::ReadOnly)) {
+                const QJsonArray stats=QJsonDocument::fromJson(file.readAll())
+                    .object().value(QStringLiteral("customStats")).toArray();
+                for(const QJsonValue &v:stats) {
+                    const QString name=v.toObject().value(QStringLiteral("name")).toString().trimmed();
+                    if(!name.isEmpty())available.append(name);
+                }
+            }
+            if(available.isEmpty()) {
+                // Health is provided by the world manager even without custom stats.
+                available.append(tr("Health (built-in)"));
+            }
+            if(!available.contains(tr("Health (built-in)")))
+                available.prepend(tr("Health (built-in)"));
+            bool accepted=false;
+            const QString oldStat=node->value(QStringLiteral("statName")).toString()==QStringLiteral("@health") ?
+                tr("Health (built-in)") : node->value(QStringLiteral("statName")).toString();
+            const QString selected=QInputDialog::getItem(this,tr("Compare Player Stat"),
+                tr("Player statistic:"),available,qMax(0,available.indexOf(oldStat)),false,&accepted);
+            if(!accepted)return false;
+            const QStringList choices{QStringLiteral("<"),QStringLiteral("<="),
+                QStringLiteral("=="),QStringLiteral("!="),QStringLiteral(">="),QStringLiteral(">")} ;
+            const QString selectedOp=QInputDialog::getItem(this,tr("Comparison"),tr("Condition:"),
+                choices,qMax(0,choices.indexOf(node->value(QStringLiteral("compareOp")).toString())),false,&accepted);
+            if(!accepted)return false;
+            const int limit=QInputDialog::getInt(this,tr("Comparison Value"),tr("Compare against:"),
+                node->value(QStringLiteral("threshold")).toInt(),-1000000,1000000,1,&accepted);
+            if(!accepted)return false;
+            node->insert(QStringLiteral("statName"),selected==tr("Health (built-in)") ?
+                QStringLiteral("@health") : selected);
+            node->insert(QStringLiteral("compareOp"),selectedOp);
+            node->insert(QStringLiteral("threshold"),limit);
+            return true;
+        }
+        if(op==QStringLiteral("quest_done")) {
+            QFile file(project.filePath(QStringLiteral(".codergirl/quests.json")));
+            QStringList labels,ids;
+            if(file.open(QIODevice::ReadOnly)) {
+                const QJsonArray quests=QJsonDocument::fromJson(file.readAll())
+                    .object().value(QStringLiteral("quests")).toArray();
+                for(const QJsonValue &v:quests) {
+                    const QJsonObject q=v.toObject();
+                    const QString id=q.value(QStringLiteral("id")).toString();
+                    if(id.isEmpty())continue;
+                    ids.append(id);
+                    labels.append(q.value(QStringLiteral("title")).toString(id)+QStringLiteral(" (%1)").arg(id));
+                }
+            }
+            if(ids.isEmpty()) {
+                QMessageBox::information(this,tr("Quest State"),
+                    tr("No quests available. Create a quest in Quest Designer first."));
+                return false;
+            }
+            bool accepted=false;
+            const QString selected=QInputDialog::getItem(this,tr("Quest Completed Condition"),
+                tr("TRUE when this quest has completed:"),labels,
+                qMax(0,ids.indexOf(node->value(QStringLiteral("questId")).toString())),false,&accepted);
+            if(!accepted)return false;
+            node->insert(QStringLiteral("questId"),ids.at(labels.indexOf(selected)));
+            return true;
+        }
+        return false;
+    }
+    void createGraphLogic(const QString &source,const QPointF &at,const QString &operation,
+                          bool attachWhen=false,const QString &host=QString()) {
         // Virtual quest-completion sources emit queued actions, not an
         // object-owned independent logic graph. Never create a dead graph.
         if(isEventOutput(source) && m_objects.value(eventOwner(source)).type==QStringLiteral("quest_completed"))return;
+        const bool advanced=operation==QStringLiteral("stat_compare") || operation==QStringLiteral("quest_done");
         QString owner;
         QJsonObject input;
-        if(isEventOutput(source) && m_objects.contains(eventOwner(source)) &&
+        if(advanced && m_objects.contains(source) && m_objects.value(source).resourceIndex>=0 &&
+           m_objects.value(source).type!=QStringLiteral("npc") &&
+           m_objects.value(source).type!=QStringLiteral("collectable") &&
+           m_objects.value(source).type!=QStringLiteral("decoration")) {
+            owner=source; // .sbgm object owns persistent condition, never .vsgm
+            if(attachWhen) {
+                // A drag from an existing Game Object STATE or Trigger EVENT
+                // is a genuine WHEN wire, not merely an arbitrary owner pick.
+                input=source==owner && m_objects.value(source).type==QStringLiteral("trigger")?
+                    QJsonObject{{QStringLiteral("kind"),QStringLiteral("event")},
+                                {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),owner)}}:
+                    QJsonObject{{QStringLiteral("kind"),QStringLiteral("object")},
+                                {QStringLiteral("id"),source}};
+            }
+        } else if(isEventOutput(source) && m_objects.contains(eventOwner(source)) &&
            eventKinds(m_objects.value(eventOwner(source)).type).contains(eventKey(source))) {
             owner=eventOwner(source);
             input={{QStringLiteral("kind"),QStringLiteral("event")},
@@ -4892,7 +5102,7 @@ private:
                   m_objects.value(enemyDefeatOwner(source)).type==QStringLiteral("enemy")) {
             owner=enemyDefeatOwner(source);
             input={{QStringLiteral("kind"),QStringLiteral("event")},
-                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),owner)}};
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),enemyDefeatOwner(source))}};
         } else if(isTriggerStateOutput(source) &&
                   m_objects.value(triggerStateOwner(source)).type==QStringLiteral("trigger")) {
             owner=triggerStateOwner(source);
@@ -4915,6 +5125,12 @@ private:
             owner=graphOwnerForObject(source);
             input={{QStringLiteral("kind"),QStringLiteral("object")},{QStringLiteral("id"),source}};
         } else return;
+        if(advanced && !host.isEmpty()) {
+            if(!m_objects.contains(host) || m_objects.value(host).resourceIndex<0 ||
+               m_objects.value(host).type==QStringLiteral("collectable") ||
+               m_objects.value(host).type==QStringLiteral("npc"))return;
+            owner=host;
+        }
         if(owner.isEmpty() || !m_objects.contains(owner))return;
         NodeObject n=m_objects.value(owner);
         if(n.logicNodes.size()>=64) {
@@ -4925,12 +5141,39 @@ private:
         int serial=1;while(existing.contains(QStringLiteral("logic%1").arg(serial)))++serial;
         const QString name=QStringLiteral("logic%1").arg(serial);
         const QString op=QStringList{QStringLiteral("boolean"),QStringLiteral("and"),
-                           QStringLiteral("or"),QStringLiteral("not")}.contains(operation)
+                           QStringLiteral("or"),QStringLiteral("not"),
+                           QStringLiteral("stat_compare"),QStringLiteral("quest_done")}.contains(operation)
             ?operation:QStringLiteral("boolean");
         QJsonObject node{{QStringLiteral("id"),name},{QStringLiteral("op"),op},
-            {QStringLiteral("inputs"),QJsonArray{input}},
+            {QStringLiteral("inputs"),input.isEmpty() ? QJsonArray() : QJsonArray{input}},
             {QStringLiteral("trueDialogueNode"),-1},{QStringLiteral("falseDialogueNode"),-1},
             {QStringLiteral("trueActions"),QJsonArray()},{QStringLiteral("falseActions"),QJsonArray()}};
+        if(advanced) {
+            if(op==QStringLiteral("stat_compare")) {
+                node.insert(QStringLiteral("statName"),QStringLiteral("@health"));
+                node.insert(QStringLiteral("compareOp"),QStringLiteral(">"));
+                node.insert(QStringLiteral("threshold"),0);
+            } else {
+                const QDir project(QFileInfo(m_worldPath).absolutePath());
+                QFile file(project.filePath(QStringLiteral(".codergirl/quests.json")));
+                if(!file.open(QIODevice::ReadOnly)) {
+                    QMessageBox::information(this,tr("Quest State"),
+                        tr("Create a quest in Quest Designer first."));return;
+                }
+                const QJsonArray quests=QJsonDocument::fromJson(file.readAll())
+                    .object().value(QStringLiteral("quests")).toArray();
+                QString firstId;
+                for(const QJsonValue &v:quests) {
+                    firstId=v.toObject().value(QStringLiteral("id")).toString();
+                    if(!firstId.isEmpty())break;
+                }
+                if(firstId.isEmpty()) {
+                    QMessageBox::information(this,tr("Quest State"),
+                        tr("No quests available. Create a quest in Quest Designer first."));return;
+                }
+                node.insert(QStringLiteral("questId"),firstId);
+            }
+        }
         n.logicNodes.append(node);
         m_objects.insert(owner,n);m_touched.insert(owner);m_dirty=true;
         const QString key=graphKey(owner,name);
@@ -4938,6 +5181,10 @@ private:
         m_placedCards.insert(key);
         makeGraphCard(owner,name);
         redrawLinks();showDetails(key);
+        if(advanced)m_status->setText(tr("%1 is ready. Edit the condition INSIDE this node. "
+            "Drag RESULT to a Game Object state, or TRUE/FALSE to an action, Quest Event, or Adventure dialogue. "
+            "Save Graph + World to update .sbgm.")
+            .arg(op==QStringLiteral("stat_compare")?tr("COMPARE"):tr("QUEST STATE")));
         if(op==QStringLiteral("not") && input.value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
             m_status->setText(graphSocketGuidance(node));
         if(op==QStringLiteral("and") || op==QStringLiteral("or"))
@@ -4947,12 +5194,13 @@ private:
         QString owner;int index;QJsonObject node;
         if(!lookupGraph(key,&owner,&index,&node))return;
         QJsonObject input;
-        if(isEventOutput(source) && eventOwner(source)==owner &&
-           eventKinds(m_objects.value(owner).type).contains(eventKey(source))) {
+        if(isEventOutput(source) && m_objects.contains(eventOwner(source)) &&
+           m_objects.value(eventOwner(source)).type!=QStringLiteral("quest_completed") &&
+           eventKinds(m_objects.value(eventOwner(source)).type).contains(eventKey(source))) {
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),source}};
-        } else if(isEnemyDefeatOutput(source) && enemyDefeatOwner(source)==owner &&
-                  m_objects.value(owner).type==QStringLiteral("enemy")) {
+        } else if(isEnemyDefeatOutput(source) &&
+                  m_objects.value(enemyDefeatOwner(source)).type==QStringLiteral("enemy")) {
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),owner)}};
         } else if(isTriggerStateOutput(source) &&
@@ -4960,13 +5208,21 @@ private:
             input={{QStringLiteral("kind"),QStringLiteral("object")},
                    {QStringLiteral("id"),triggerStateInputId(triggerStateOwner(source))},
                    {QStringLiteral("invert"),triggerStateOff(source)}};
-        } else if(source==owner && m_objects.value(owner).type==QStringLiteral("trigger")) {
+        } else if(m_objects.value(source).type==QStringLiteral("trigger")) {
             input={{QStringLiteral("kind"),QStringLiteral("event")},
-                   {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),owner)}};
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),source)}};
         } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QString otherOwner;QJsonObject other;
-            if(!lookupGraph(upstream,&otherOwner,nullptr,&other) || otherOwner!=owner || upstream==key)return;
+            if(!lookupGraph(upstream,&otherOwner,nullptr,&other) || upstream==key)return;
+            if(otherOwner!=owner) {
+                QMessageBox::information(this,tr("Logic owner mismatch"),
+                    tr("These Logic cards belong to different Game Objects. \n"
+                       "Their .sbgm graphs cannot connect across owners. \n"
+                       "Right-click the destination AND/OR/NOT card and choose \n"
+                       "'Add Logic condition (same Game Object)' to create a compatible COMPARE/QUEST STATE card."));
+                return;
+            }
             input={{QStringLiteral("kind"),QStringLiteral("node")},
                    {QStringLiteral("id"),other.value(QStringLiteral("id"))}};
         } else if(m_objects.contains(source) && m_objects.value(source).resourceIndex>=0 &&
@@ -4980,7 +5236,8 @@ private:
                v.toObject().value(QStringLiteral("kind"))==input.value(QStringLiteral("kind")) &&
                v.toObject().value(QStringLiteral("invert"))==input.value(QStringLiteral("invert")))return;
         const QString op=node.value(QStringLiteral("op")).toString();
-        if((op==QStringLiteral("boolean") || op==QStringLiteral("not")) && inputs.size()>=1) {
+        if((op==QStringLiteral("boolean") || op==QStringLiteral("not") ||
+            op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done")) && inputs.size()>=1) {
             if(QMessageBox::question(this,tr("Replace Logic Input"),
                 tr("Replace the existing input on this %1 node?").arg(op.toUpper()),
                 QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
@@ -5110,6 +5367,16 @@ private:
             if(kind==QStringLiteral("event"))eventInput=true;
             if(kind==QStringLiteral("object"))stateInput=true;
         }
+        if(op==QStringLiteral("stat_compare"))
+            return tr("COMPARE: %1 %2 %3. Optional WHEN accepts a STATE, EVENT pulse, or logic RESULT. "
+                      "Without WHEN it watches Player stats/Health independently. TRUE/FALSE can drive actions and dialogues.")
+                .arg(node.value(QStringLiteral("statName")).toString(),
+                     node.value(QStringLiteral("compareOp")).toString())
+                .arg(node.value(QStringLiteral("threshold")).toInt());
+        if(op==QStringLiteral("quest_done"))
+            return tr("QUEST STATE: TRUE when quest '%1' is completed. An optional WHEN input can gate it "
+                      "using a STATE, EVENT pulse or logic RESULT; otherwise it watches quest changes independently.")
+                .arg(node.value(QStringLiteral("questId")).toString());
         if(op==QStringLiteral("not") && eventInput)
             return tr("CAUTION: NOT(EVENT) is NOT the opposite of a persistent STATE. "
                       "The pulse is TRUE only while the event occurs; NOT reverses that instantaneous value. "
@@ -5198,17 +5465,24 @@ private:
             socket->setPen(QPen(kind==QStringLiteral("event")?QColor(255,225,147):QColor(160,237,232),1.5));
             socket->setBrush(connected?socketColour:QColor(25,41,53));
             socket->setToolTip(connected?tr("INPUT %1: %2\n%3").arg(i+1).arg(name).arg(inputTip):
-                tr("INPUT %1: connect a teal STATE, gold EVENT, or another logic RESULT.").arg(i+1));
+                (op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done"))?
+                    tr("Optional WHEN: connect a teal STATE, gold EVENT pulse, or logic RESULT. "
+                       "Leave unconnected to watch this condition independently."):
+                    tr("INPUT %1: connect a teal STATE, gold EVENT, or another logic RESULT.").arg(i+1));
             if(!label) {
                 label=new QGraphicsSimpleTextItem(card);
                 label->setData(2,i);label->setData(4,QStringLiteral("graph-input-label"));
             }
-            label->setText(connected?tr("INPUT %1: %2").arg(i+1).arg(name).left(31):
-                tr("INPUT %1: (connect)").arg(i+1));
+            const bool optionalWhen=op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done");
+            label->setText(connected?(optionalWhen?tr("WHEN: %1").arg(name).left(31):
+                    tr("INPUT %1: %2").arg(i+1).arg(name).left(31)):
+                optionalWhen?tr("WHEN: (optional)"):tr("INPUT %1: (connect)").arg(i+1));
             label->setBrush(connected && kind==QStringLiteral("event")?QColor(238,190,86):
                 connected?m_theme.text:m_theme.mutedText);
             label->setToolTip(connected?inputTip:
-                tr("Connect a teal STATE, gold EVENT, or another logic RESULT."));
+                ((op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done"))?
+                    tr("Optional WHEN condition; leave empty to watch Player/Quest changes."):
+                    tr("Connect a teal STATE, gold EVENT, or another logic RESULT.")));
             label->setPos(10,43+24*i);
         }
         for(QGraphicsItem *child:card->childItems()) {
@@ -5226,8 +5500,12 @@ private:
                     port->setPos(QPointF());port->setRect(QRectF(265,y-9,18,18));
                 }
             } else if(role==QStringLiteral("graph-operator"))child->setPos(9,falseY+17);
+            else if(role==QStringLiteral("graph-condition"))child->setPos(9,falseY+53);
         }
-        card->setFullHeight(falseY+59);
+        int cardHeight=falseY+59;
+        if(op==QStringLiteral("stat_compare"))cardHeight+=107;
+        else if(op==QStringLiteral("quest_done"))cardHeight+=77;
+        card->setFullHeight(cardHeight);
         const QString guidance=graphSocketGuidance(node);
         card->setToolTip(guidance);
         card->setPen(QPen(guidance.startsWith(tr("CAUTION:"))?
@@ -5290,6 +5568,13 @@ private:
         for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
                                QStringLiteral("and"),QStringLiteral("or")})
             operation->addItem(op.toUpper(),op);
+        const QString configured=data.value(QStringLiteral("op")).toString();
+        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done")) {
+            operation->addItem(configured==QStringLiteral("stat_compare") ?
+                tr("COMPARE PLAYER STAT") : tr("QUEST COMPLETED"),configured);
+            operation->setEnabled(false); // zero-input condition; settings are directly below on this card
+            operation->setToolTip(tr("Compare and Quest State are zero-input conditions. Edit their parameters below."));
+        }
         operation->setCurrentIndex(qMax(0,operation->findData(data.value(QStringLiteral("op")).toString())));
         operatorRow->addWidget(operation,1);
         auto *operatorProxy=new QGraphicsProxyWidget(card);
@@ -5323,6 +5608,106 @@ private:
             if(op==QStringLiteral("not") && graphSocketGuidance(current).startsWith(tr("CAUTION:")))
                 m_status->setText(graphSocketGuidance(current));
         });
+        // These are ordinary Logic cards. Keep their configuration in the
+        // graph, not three QInputDialog pop-ups or a separate editor window.
+        // Every edit writes the original .sbgm logicNodes record via graphUpdate().
+        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done")) {
+            auto *settings=new QWidget;
+            settings->setFixedSize(254,configured==QStringLiteral("stat_compare")?99:69);
+            settings->setStyleSheet(m_controlsStyle);
+            auto *fields=new QGridLayout(settings);
+            fields->setContentsMargins(3,3,3,3);
+            fields->setHorizontalSpacing(4);
+            fields->setVerticalSpacing(3);
+            if(configured==QStringLiteral("stat_compare")) {
+                auto *stat=new QComboBox(settings);
+                stat->setToolTip(tr("Player stat from the current Player Profile, or built-in Health."));
+                stat->addItem(tr("Health (built-in)"),QStringLiteral("@health"));
+                const QDir project(QFileInfo(m_worldPath).absolutePath());
+                const QString profile=m_world.value(QStringLiteral("playerStart"))
+                    .toObject().value(QStringLiteral("profile")).toString(QStringLiteral("players/player.sbpi"));
+                QFile playerFile(project.filePath(profile));
+                if(playerFile.open(QIODevice::ReadOnly)) {
+                    const QJsonArray stats=QJsonDocument::fromJson(playerFile.readAll())
+                        .object().value(QStringLiteral("customStats")).toArray();
+                    QSet<QString> names;
+                    for(const QJsonValue &v:stats) {
+                        const QString name=v.toObject().value(QStringLiteral("name")).toString().trimmed();
+                        if(!name.isEmpty() && !names.contains(name)) {
+                            stat->addItem(name,name);names.insert(name);
+                        }
+                    }
+                }
+                const QString saved=data.value(QStringLiteral("statName")).toString(QStringLiteral("@health"));
+                if(stat->findData(saved)<0)stat->addItem(tr("MISSING: %1").arg(saved),saved);
+                stat->setCurrentIndex(qMax(0,stat->findData(saved)));
+                fields->addWidget(new QLabel(tr("Player stat:"),settings),0,0);
+                fields->addWidget(stat,0,1,1,2);
+                auto *compare=new QComboBox(settings);
+                for(const QString &symbol:{QStringLiteral("<"),QStringLiteral("<="),
+                    QStringLiteral("=="),QStringLiteral("!="),QStringLiteral(">="),QStringLiteral(">")})
+                    compare->addItem(symbol,symbol);
+                compare->setCurrentIndex(qMax(0,compare->findData(
+                    data.value(QStringLiteral("compareOp")).toString(QStringLiteral(">")))));
+                auto *threshold=new QSpinBox(settings);
+                threshold->setRange(-1000000,1000000);
+                threshold->setValue(data.value(QStringLiteral("threshold")).toInt());
+                fields->addWidget(new QLabel(tr("Compare:"),settings),1,0);
+                fields->addWidget(compare,1,1);
+                fields->addWidget(threshold,1,2);
+                fields->addWidget(new QLabel(tr("TRUE / FALSE = action or dialogue"),settings),2,0,1,3);
+                auto apply=[this,key,stat,compare,threshold]() {
+                    QJsonObject current;
+                    if(!lookupGraph(key,nullptr,nullptr,&current))return;
+                    current.insert(QStringLiteral("statName"),stat->currentData().toString());
+                    current.insert(QStringLiteral("compareOp"),compare->currentData().toString());
+                    current.insert(QStringLiteral("threshold"),threshold->value());
+                    graphUpdate(key,current);
+                    syncGraphCardSockets(key);
+                    showDetails(key);
+                };
+                connect(stat,qOverload<int>(&QComboBox::currentIndexChanged),this,
+                    [apply](int){apply();});
+                connect(compare,qOverload<int>(&QComboBox::currentIndexChanged),this,
+                    [apply](int){apply();});
+                connect(threshold,qOverload<int>(&QSpinBox::valueChanged),this,
+                    [apply](int){apply();});
+            } else {
+                auto *quest=new QComboBox(settings);
+                quest->setToolTip(tr("Choose an existing quest from Quest Designer. TRUE when it is completed."));
+                const QDir project(QFileInfo(m_worldPath).absolutePath());
+                QFile questFile(project.filePath(QStringLiteral(".codergirl/quests.json")));
+                if(questFile.open(QIODevice::ReadOnly)) {
+                    const QJsonArray quests=QJsonDocument::fromJson(questFile.readAll())
+                        .object().value(QStringLiteral("quests")).toArray();
+                    for(const QJsonValue &v:quests) {
+                        const QJsonObject questDef=v.toObject();
+                        const QString id=questDef.value(QStringLiteral("id")).toString();
+                        if(id.isEmpty())continue;
+                        quest->addItem(questDef.value(QStringLiteral("title")).toString(id),id);
+                    }
+                }
+                const QString saved=data.value(QStringLiteral("questId")).toString();
+                if(quest->findData(saved)<0)quest->addItem(tr("MISSING: %1").arg(saved),saved);
+                quest->setCurrentIndex(qMax(0,quest->findData(saved)));
+                fields->addWidget(new QLabel(tr("Quest:"),settings),0,0);
+                fields->addWidget(quest,0,1);
+                fields->addWidget(new QLabel(tr("TRUE = completed  |  FALSE = incomplete"),settings),1,0,1,2);
+                connect(quest,qOverload<int>(&QComboBox::currentIndexChanged),this,
+                    [this,key,quest](int) {
+                        QJsonObject current;
+                        if(!lookupGraph(key,nullptr,nullptr,&current))return;
+                        current.insert(QStringLiteral("questId"),quest->currentData().toString());
+                        graphUpdate(key,current);
+                        syncGraphCardSockets(key);
+                        showDetails(key);
+                    });
+            }
+            auto *proxy=new QGraphicsProxyWidget(card);
+            proxy->setWidget(settings);
+            proxy->setData(4,QStringLiteral("graph-condition"));
+            proxy->setZValue(3);
+        }
         card->moved=[this,key,card] {updateLiveWires(key,card);};
         addFoldButton(card,key);
         m_cards.insert(key,card);
@@ -5521,7 +5906,8 @@ private:
                         }
                     }
                     const QPointF b=target->wirePoint(QPointF(0,52+24*i));
-                    append(a,b,QColor(105,206,207),QStringLiteral("graph-input"),key,i,from,key);
+                    append(a,b,kind==QStringLiteral("event")?QColor(233,182,75):QColor(105,206,207),
+                           QStringLiteral("graph-input"),key,i,from,key);
                 }
                 // RESULT can directly drive any target Game Object's enabled
                 // state. One teal wire replaces the misleading TRUE+FALSE pair.
@@ -7167,6 +7553,12 @@ private:
                 row(tr("Operator"),node.value(QStringLiteral("op")).toString().toUpper());
                 row(tr("Input guidance"),guidance);
                 row(tr("Inputs"),QString::number(node.value(QStringLiteral("inputs")).toArray().size()));
+                if(node.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare"))
+                    row(tr("Stat condition"),QStringLiteral("%1 %2 %3")
+                        .arg(node.value(QStringLiteral("statName")).toString(),node.value(QStringLiteral("compareOp")).toString())
+                        .arg(node.value(QStringLiteral("threshold")).toInt()));
+                if(node.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done"))
+                    row(tr("Quest ID"),node.value(QStringLiteral("questId")).toString());
                 row(tr("Game Object"),m_objects.value(owner).name);
                 row(tr("Data source"),QStringLiteral(".sbgm / logic"));
                 return;
@@ -7600,7 +7992,13 @@ private:
             }
             if(to.startsWith(QStringLiteral("@graph:"))) {
                 QString graphOwner;
-                if(lookupGraph(to,&graphOwner,nullptr) && graphOwner!=eventOwner(from)) {
+                QJsonObject targetNode;
+                if(lookupGraph(to,&graphOwner,nullptr,&targetNode) && graphOwner!=eventOwner(from) &&
+                   (targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done"))) {
+                    addGraphInput(from,to);return;
+                }
+                if(!graphOwner.isEmpty() && graphOwner!=eventOwner(from)) {
                     const QString owner=eventOwner(from);
                     QJsonObject existing;
                     if(!lookupGraph(to,nullptr,nullptr,&existing))return;
@@ -7635,7 +8033,11 @@ private:
             if (m_objects.value(owner).type!=QStringLiteral("enemy"))return;
             if (to.startsWith(QStringLiteral("@graph:"))) {
                 QString graphOwner;
-                if(lookupGraph(to,&graphOwner,nullptr) && graphOwner==owner)
+                QJsonObject targetNode;
+                if(lookupGraph(to,&graphOwner,nullptr,&targetNode) &&
+                   (graphOwner==owner ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done")))
                     addGraphInput(from,to);
                 else
                     QMessageBox::information(this,tr("Logic owner"),
@@ -7652,7 +8054,11 @@ private:
         if(m_objects.contains(from) && m_objects.value(from).type==QStringLiteral("trigger") &&
            to.startsWith(QStringLiteral("@graph:"))) {
             QString graphOwner;
-            if(lookupGraph(to,&graphOwner,nullptr) && graphOwner==from)
+            QJsonObject targetNode;
+            if(lookupGraph(to,&graphOwner,nullptr,&targetNode) &&
+               (graphOwner==from ||
+                targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
+                targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done")))
                 addGraphInput(from,to);
             return;
         }
@@ -8182,6 +8588,7 @@ private:
         showDetails(id);
         QMenu menu(this);
         QAction *branch=nullptr,*clearBranch=nullptr;
+        QAction *statCompare=nullptr,*questCondition=nullptr;
         if(id.startsWith(QStringLiteral("@give:"))) {
             int dialogue=-1,answer=-1;
             if(!giveCardReference(id,&dialogue,&answer))return;
@@ -8231,7 +8638,15 @@ private:
         if(id.startsWith(QStringLiteral("@graph:"))) {
             QJsonObject n;
             if(!lookupGraph(id,nullptr,nullptr,&n))return;
+            const bool advanced=n.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
+                n.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done");
+            QAction *editCondition=advanced?menu.addAction(tr("Edit Condition inside node")):nullptr;
+            if(editCondition)editCondition->setEnabled(false);
+            QMenu *addCondition=menu.addMenu(tr("Add Logic condition (same Game Object)"));
+            QAction *addCompare=addCondition->addAction(tr("COMPARE (Player stat / Health)"));
+            QAction *addQuest=addCondition->addAction(tr("QUEST STATE (Completed?)"));
             QMenu *opMenu=menu.addMenu(tr("Logic operator"));
+            opMenu->setEnabled(!advanced);
             QHash<QAction*,QString> operators;
             for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
                                    QStringLiteral("and"),QStringLiteral("or")})
@@ -8241,7 +8656,14 @@ private:
             QAction *falseDialogue=menu.addAction(tr("FALSE → Show Dialogue..."));
             QAction *remove=menu.addAction(tr("Delete Logic Node (disconnect links)"));
             QAction *selected=menu.exec(at);
-            if(operators.contains(selected)) {
+            if(selected==addCompare || selected==addQuest) {
+                QString owner;
+                if(!lookupGraph(id,&owner,nullptr))return;
+                const QPointF next=m_cards.contains(id)?m_cards.value(id)->pos()+QPointF(350,20):
+                    viewportInsertionPoint(QSizeF(300,280));
+                createGraphLogic(owner,next,selected==addCompare?
+                    QStringLiteral("stat_compare"):QStringLiteral("quest_done"));
+            } else if(operators.contains(selected)) {
                 const QString newOp=operators.value(selected);
                 const int connected=n.value(QStringLiteral("inputs")).toArray().size();
                 if((newOp==QStringLiteral("or") && connected>8) ||
@@ -8309,6 +8731,18 @@ private:
             branch=menu.addAction(tr("Logic → Boolean (read enabled state)"));
             menu.addSeparator();
         }
+        // Numeric / quest conditions have one optional WHEN socket. They may be owned
+        // by any ordinary placed world object (including Triggers), but not
+        // NPCs, virtual nodes or Collectable templates.
+        if(m_objects.contains(id) && m_objects.value(id).resourceIndex>=0 &&
+           m_objects.value(id).type!=QStringLiteral("npc") &&
+           m_objects.value(id).type!=QStringLiteral("player") &&
+           m_objects.value(id).type!=QStringLiteral("collectable") &&
+           m_objects.value(id).type!=QStringLiteral("decoration")) {
+            statCompare=menu.addAction(tr("Logic → Compare Player Stat..."));
+            questCondition=menu.addAction(tr("Logic → Quest Completed..."));
+            menu.addSeparator();
+        }
         QAction *npcOpening=nullptr,*npcAfter=nullptr;
         if(m_objects.contains(id) && m_objects.value(id).type==QStringLiteral("npc")) {
             const NodeObject npc=m_objects.value(id);
@@ -8326,6 +8760,10 @@ private:
             showConversationFlow(m_objects.value(id).npcStartNode);
         } else if(selected==npcAfter && npcAfter) {
             showConversationFlow(m_objects.value(id).npcDoneNode);
+        } else if (selected==statCompare && statCompare) {
+            createGraphLogic(id,m_cards.value(id)->pos()+QPointF(360,30),QStringLiteral("stat_compare"));
+        } else if (selected==questCondition && questCondition) {
+            createGraphLogic(id,m_cards.value(id)->pos()+QPointF(360,30),QStringLiteral("quest_done"));
         } else if (selected==branch && m_objects.contains(id)) {
             createGraphLogic(id,m_cards.value(id)->pos()+QPointF(360,30),QStringLiteral("boolean"));
         } else if (selected==branch || selected==clearBranch) {

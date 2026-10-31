@@ -190,6 +190,15 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     QVector<const Resource *> pickups, platforms;
     QVector<int> pickupPaths, platformPaths;
     for (const Resource &r : m_resources) {
+        if(r.kind==QStringLiteral("sprite") && r.objectType==QStringLiteral("decoration")) {
+            for(const QJsonValue &entry:r.logicNodes) {
+                const QString op=entry.toObject().value(QStringLiteral("op")).toString();
+                if(op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done")) {
+                    if(error)*error=tr("Logic condition on Decoration '%1' cannot run: choose a managed Game Object as its owner.").arg(r.name);
+                    return false;
+                }
+            }
+        }
         if (r.kind != QStringLiteral("sprite") || r.objectType == QStringLiteral("decoration")) continue;
         if (r.scale != 100 || r.path.isEmpty() ||
             QFileInfo(resolvedPath(r.path)).suffix().compare(QStringLiteral("ppb"), Qt::CaseInsensitive)) {
@@ -520,7 +529,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             // Virtual readable latch, NOT the trigger's .active (which only
             // means the trigger can fire). It is toggled on each activation.
             objectSlot.insert(QStringLiteral("@triggerstate:")+id,
-                QStringLiteral("cg_trigger_state[%1]").arg(i));
+                QStringLiteral("cg_trigger_state[%1].active").arg(i));
         }
         if(type==QStringLiteral("enemy"))
             objectSlot.insert(QStringLiteral("@event:defeat:")+id,
@@ -545,6 +554,18 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     for(int i=0;i<np;++i)
         objectSlot.insert(QStringLiteral("@event:pickup:")+pickups.at(i)->id,
             QStringLiteral("cg_named_pickup_sources[%1u]").arg(i));
+    // WHOLE-WORLD event dependencies: the host is not necessarily the source.
+    QSet<QString> watchedLogicEvents;
+    for(const Resource *host:platforms)
+        for(const QJsonValue &record:host->logicNodes)
+            for(const QJsonValue &raw:record.toObject().value(QStringLiteral("inputs")).toArray())
+                if(raw.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
+                    watchedLogicEvents.insert(raw.toObject().value(QStringLiteral("id")).toString());
+    for(const Resource *host:pickups)
+        for(const QJsonValue &record:host->logicNodes)
+            for(const QJsonValue &raw:record.toObject().value(QStringLiteral("inputs")).toArray())
+                if(raw.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
+                    watchedLogicEvents.insert(raw.toObject().value(QStringLiteral("id")).toString());
     // One target-type contract for *every* Trigger and logic-branch action.
     // A boolean RESULT can only bind a local object .active (validated by
     // SidboxVisualLogic::order); a TRUE/FALSE command can additionally operate
@@ -828,23 +849,33 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 if(error)*error=tr("Game Object '%1' logic graph: %2").arg(r->name,issue);
                 return false;
             }
+            const QString sbpiPath=projectDir.filePath(m_playerProfile);
+            QJsonArray currentPlayerStats;
+            QFile currentPlayerFile(sbpiPath);
+            if(currentPlayerFile.open(QIODevice::ReadOnly))
+                currentPlayerStats=QJsonDocument::fromJson(currentPlayerFile.readAll())
+                    .object().value(QStringLiteral("customStats")).toArray();
             for(const SidboxVisualLogic::Node &node:nodes) {
+                if(node.op==QStringLiteral("stat_compare")) {
+                    bool statAvailable=node.statName==QStringLiteral("@health");
+                    for(const QJsonValue &v:currentPlayerStats)
+                        if(v.toObject().value(QStringLiteral("name")).toString()==node.statName)
+                            statAvailable=true;
+                    if(!statAvailable) {
+                        if(error)*error=tr("Logic %1 requires player statistic '%2', but it does not exist in %3.")
+                            .arg(node.id,node.statName,m_playerProfile);
+                        return false;
+                    }
+                }
+                if(node.op==QStringLiteral("quest_done") && !questCompletedIds.contains(node.questId)) {
+                    if(error)*error=tr("Logic %1 references removed quest '%2'.")
+                        .arg(node.id,node.questId);
+                    return false;
+                }
                 for(const SidboxVisualLogic::Input &input:node.inputs)
-                    if(input.kind==QStringLiteral("event") &&
-                       !((r->objectType==QStringLiteral("lift") && input.id==QStringLiteral("@event:arrival:")+r->id) ||
-                         (r->objectType==QStringLiteral("breakable") &&
-                          (input.id==QStringLiteral("@event:hit:")+r->id || input.id==QStringLiteral("@event:destroy:")+r->id)) ||
-                         (r->objectType==QStringLiteral("enemy") &&
-                          (input.id==QStringLiteral("@event:hit:")+r->id || input.id==QStringLiteral("@event:defeat:")+r->id)) ||
-                         (r->objectType==QStringLiteral("hazard") && input.id==QStringLiteral("@event:player_hit:")+r->id) ||
-                         (r->objectType==QStringLiteral("goto_world") && input.id==QStringLiteral("@event:enter:")+r->id) ||
-                         (r->objectType==QStringLiteral("save_checkpoint") && input.id==QStringLiteral("@event:save:")+r->id) ||
-                         (r->objectType==QStringLiteral("trigger") && input.id==QStringLiteral("@event:trigger:")+r->id) ||
-                         (r->objectType==QStringLiteral("collectable") && input.id==QStringLiteral("@event:pickup:")+r->id))) {
-                        if(error)*error=tr("Game Object '%1': logic node '%2' has invalid event input '%3' "
-                            "for type '%4'. An event must belong to its source Game Object and must be "
-                            "a real event that object emits.")
-                            .arg(r->name,node.id,input.id,r->objectType);
+                    if(input.kind==QStringLiteral("event") && !objectSlot.contains(input.id)) {
+                        if(error)*error=tr("Game Object '%1' logic node '%2' reads unknown event '%3'.")
+                            .arg(r->name,node.id,input.id);
                         return false;
                     }
                 if(node.trueDialogue<-1 || node.trueDialogue>=dialogueNodes.size() ||
@@ -1482,11 +1513,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                 bool neededForLogic=false;
                 {
                     const QString eventId=QStringLiteral("@event:")+eventName+QLatin1Char(':')+r.id;
-                    for(const QJsonValue &entry:r.logicNodes)
-                        for(const QJsonValue &input:entry.toObject().value(QStringLiteral("inputs")).toArray())
-                            if(input.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
-                               input.toObject().value(QStringLiteral("id")).toString()==eventId)
-                                neededForLogic=true;
+                    neededForLogic=watchedLogicEvents.contains(eventId);
                 }
                 if(action.isEmpty() && !neededForLogic)continue;
                 if(eventName==QStringLiteral("save")) {
@@ -1678,6 +1705,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     // Capture EVERY node result before dispatching ANY graph branch action.
     QString graphSnapshotsBody, graphEvaluationBody, graphDispatchBody;
     QString graphInitialSyncBody;
+    bool hasStatCompare=false,hasQuestCondition=false;
     bool hasNamedPlatformLogic=false, hasNamedPickupLogic=false;
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
@@ -1779,6 +1807,15 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         const int pickupIndex=ownerIndex-nw;
         const Resource &owner=pickupOwner?*pickups.at(pickupIndex):*platforms.at(ownerIndex);
         if(owner.logicNodes.isEmpty())continue;
+        if(pickupOwner) {
+            for(const QJsonValue &entry:owner.logicNodes) {
+                const QString op=entry.toObject().value(QStringLiteral("op")).toString();
+                if(op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done")) {
+                    if(error)*error=tr("Persistent Compare/Quest conditions must be owned by a placed Game Object, not a Collectable template.");
+                    return false;
+                }
+            }
+        }
         QVector<SidboxVisualLogic::Node> nodes;
         QVector<int> sorted;
         QString issue;
@@ -1789,22 +1826,15 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if(error)*error=tr("Game Object '%1' invalid logic graph: %2").arg(owner.name,issue);
             return false;
         }
+        for(const SidboxVisualLogic::Node &node:nodes) {
+            if(node.op==QStringLiteral("stat_compare"))hasStatCompare=true;
+            if(node.op==QStringLiteral("quest_done"))hasQuestCondition=true;
+        }
         for(const SidboxVisualLogic::Node &node:nodes)
             for(const SidboxVisualLogic::Input &input:node.inputs)
-                if(input.kind==QStringLiteral("event") &&
-                   !((owner.objectType==QStringLiteral("lift") && input.id==QStringLiteral("@event:arrival:")+owner.id) ||
-                     (owner.objectType==QStringLiteral("breakable") &&
-                      (input.id==QStringLiteral("@event:hit:")+owner.id || input.id==QStringLiteral("@event:destroy:")+owner.id)) ||
-                     (owner.objectType==QStringLiteral("enemy") &&
-                      (input.id==QStringLiteral("@event:hit:")+owner.id || input.id==QStringLiteral("@event:defeat:")+owner.id)) ||
-                     (owner.objectType==QStringLiteral("hazard") && input.id==QStringLiteral("@event:player_hit:")+owner.id) ||
-                     (owner.objectType==QStringLiteral("goto_world") && input.id==QStringLiteral("@event:enter:")+owner.id) ||
-                     (owner.objectType==QStringLiteral("save_checkpoint") && input.id==QStringLiteral("@event:save:")+owner.id) ||
-                     (owner.objectType==QStringLiteral("trigger") && input.id==QStringLiteral("@event:trigger:")+owner.id) ||
-                     (owner.objectType==QStringLiteral("collectable") && input.id==QStringLiteral("@event:pickup:")+owner.id))) {
-                    if(error)*error=tr("Game Object '%1': logic node '%2' reads event '%3' "
-                        "which does not belong to this %4.")
-                        .arg(owner.name,node.id,input.id,owner.objectType);
+                if(input.kind==QStringLiteral("event") && !objectSlot.contains(input.id)) {
+                    if(error)*error=tr("Game Object '%1' logic node '%2' reads unknown event '%3'.")
+                        .arg(owner.name,node.id,input.id);
                     return false;
                 }
         QSet<QString> graphInputs;
@@ -1814,6 +1844,24 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         QStringList graphInputIds=graphInputs.values();
         graphInputIds.sort(); // Deterministic generated C and event order.
         QStringList activationEvents;
+        // Keep ordinary Game Object/event activation separate from persistent
+        // stat/quest watches: a sibling Compare must not replay another node's
+        // TRUE dialogue when Health or a quest changes.
+        const QString statWatch=QStringLiteral("cg_logic_stat_changed_%1").arg(ownerIndex);
+        const QString questWatch=QStringLiteral("cg_logic_quest_changed_%1").arg(ownerIndex);
+        bool watchesStat=false, watchesQuest=false;
+        QSet<QString> graphEventInputs;
+        for(const SidboxVisualLogic::Node &node:nodes)
+            for(const SidboxVisualLogic::Input &input:node.inputs)
+                if(input.kind==QStringLiteral("event"))graphEventInputs.insert(input.id);
+        QStringList sortedGraphEvents=graphEventInputs.values();
+        sortedGraphEvents.sort();
+        for(const QString &eventId:sortedGraphEvents)
+            activationEvents.append(objectSlot.value(eventId));
+        for(const SidboxVisualLogic::Node &node:nodes) {
+            if(node.op==QStringLiteral("stat_compare"))watchesStat=true;
+            if(node.op==QStringLiteral("quest_done"))watchesQuest=true;
+        }
         if(pickupOwner) {
             hasNamedPickupLogic=true;
             activationEvents.append(QStringLiteral("cg_named_pickup_sources[%1u]").arg(pickupIndex));
@@ -1920,20 +1968,43 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
         }
         for(int inputIndex=0;inputIndex<graphInputIds.size();++inputIndex) {
-            const QString source=objectSlot.value(graphInputIds.at(inputIndex));
+            const QString inputId=graphInputIds.at(inputIndex);
+            const QString source=objectSlot.value(inputId);
+            const QString state=inputId.startsWith(QStringLiteral("@triggerstate:"))
+                ? QStringLiteral("(%1 != 0u)").arg(source)
+                : QStringLiteral("(%1.active != 0u)").arg(source);
             const QString before=QStringLiteral("cg_logic_before_%1_%2")
                 .arg(ownerIndex).arg(inputIndex);
             graphSnapshotsBody+=QStringLiteral(
-                "    const unsigned char %1 = (%2.active != 0u);\n")
-                .arg(before,source);
+                "    const unsigned char %1 = %2;\n")
+                .arg(before,state);
             if(owner.objectType!=QStringLiteral("lift"))
-                activationEvents.append(QStringLiteral("(%1 != (%2.active != 0u))")
-                    .arg(before,source));
+                activationEvents.append(QStringLiteral("(%1 != %2)")
+                    .arg(before,state));
         }
         const QString run=QStringLiteral("cg_logic_run_%1").arg(ownerIndex);
+        const QString baseRun=QStringLiteral("cg_logic_base_run_%1").arg(ownerIndex);
         graphEvaluationBody+=QStringLiteral("    const unsigned char %1 = (%2) ? 1u : 0u;\n")
-            .arg(run,activationEvents.isEmpty() ? QStringLiteral("0") :
+            .arg(baseRun,activationEvents.isEmpty() ? QStringLiteral("0") :
                  activationEvents.join(QStringLiteral(" || ")));
+        QStringList ownerWatches{baseRun};
+        if(watchesStat) {
+            graphEvaluationBody+=QStringLiteral(
+                "    const unsigned char %1 = "
+                "(gameplayer_stat_revision() != cg_logic_seen_stat_revision || "
+                "gameworlds_state()->health != cg_logic_seen_health) ? 1u : 0u;\n")
+                .arg(statWatch);
+            ownerWatches.append(statWatch);
+        }
+        if(watchesQuest) {
+            graphEvaluationBody+=QStringLiteral(
+                "    const unsigned char %1 = "
+                "(gameworlds_quest_revision() != cg_logic_seen_quest_revision) ? 1u : 0u;\n")
+                .arg(questWatch);
+            ownerWatches.append(questWatch);
+        }
+        graphEvaluationBody+=QStringLiteral("    const unsigned char %1 = (%2) ? 1u : 0u;\n")
+            .arg(run,ownerWatches.join(QStringLiteral(" || ")));
         QHash<QString,QString> expressionNames;
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
@@ -1963,9 +2034,31 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
             if(!pulses.isEmpty())nodePulseGate.insert(node.id,pulses.join(QStringLiteral(" || ")));
         }
+        // A persistent change may recompute every node expression, but it may
+        // dispatch ONLY nodes depending on that particular watched condition.
+        // Compute transitive dependencies in topological order so AND/OR gates
+        // consuming a COMPARE (or QUEST STATE) are notified too.
+        QHash<QString,bool> nodeNeedsStat, nodeNeedsQuest;
+        for(int index:sorted) {
+            const SidboxVisualLogic::Node &node=nodes[index];
+            bool stat=node.op==QStringLiteral("stat_compare");
+            bool quest=node.op==QStringLiteral("quest_done");
+            for(const SidboxVisualLogic::Input &input:node.inputs) {
+                if(input.kind!=QStringLiteral("node"))continue;
+                stat |= nodeNeedsStat.value(input.id,false);
+                quest |= nodeNeedsQuest.value(input.id,false);
+            }
+            nodeNeedsStat.insert(node.id,stat);
+            nodeNeedsQuest.insert(node.id,quest);
+        }
         graphDispatchBody+=QStringLiteral("    if (%1) {\n").arg(run);
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
+            QStringList nodeWatches{baseRun};
+            if(nodeNeedsStat.value(node.id,false))nodeWatches.append(statWatch);
+            if(nodeNeedsQuest.value(node.id,false))nodeWatches.append(questWatch);
+            graphDispatchBody+=QStringLiteral("        if (%1) {\n")
+                .arg(nodeWatches.join(QStringLiteral(" || ")));
             // Event-dependent results and branches only fire for a real pulse.
             // Do not turn an inactive event into a repeating FALSE action.
             if(nodePulseGate.contains(node.id))
@@ -2005,6 +2098,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             }
             graphDispatchBody+=QStringLiteral("        }\n");
             if(nodePulseGate.contains(node.id))graphDispatchBody+=QStringLiteral("        }\n");
+            graphDispatchBody+=QStringLiteral("        }\n"); // per-node watch guard
         }
         graphDispatchBody+=QStringLiteral("    }\n");
 
@@ -2155,12 +2249,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             target.targetAction=link.value(QStringLiteral("action")).toString();
             if(!queueTargetAction(target,&action))return false;
         }
-        bool pickupGraph=false;
-        for(const QJsonValue &entry:r.logicNodes)
-            for(const QJsonValue &input:entry.toObject().value(QStringLiteral("inputs")).toArray())
-                if(input.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
-                   input.toObject().value(QStringLiteral("id")).toString()==QStringLiteral("@event:pickup:")+r.id)
-                    pickupGraph=true;
+        bool pickupGraph=watchedLogicEvents.contains(QStringLiteral("@event:pickup:")+r.id);
         if(!r.logicNodes.isEmpty())pickupGraph=true;
         if(!action.isEmpty() || pickupGraph) {
             action.prepend(QStringLiteral("        cg_named_pickup_sources[%1u]=1u;\n").arg(i));
@@ -2307,6 +2396,8 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     // Also re-evaluate Trigger-owned graphs that read enemy state when an
     // enemy is defeated, even when no Trigger fired that frame.
     bool hasDefeatGraphInput=hasEnemyLogic;
+    for(const QString &eventId:watchedLogicEvents)
+        if(eventId.startsWith(QStringLiteral("@event:defeat:")))hasDefeatGraphInput=true;
     for(const Resource *owner:platforms)
         for(const QJsonValue &entry:owner->logicNodes)
             for(const QJsonValue &raw:entry.toObject().value(QStringLiteral("inputs")).toArray())
@@ -2330,6 +2421,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
                     }
                 }
     bool namedPlatforms=false,namedPickups=false;
+    for(const QString &eventId:watchedLogicEvents)
+        if(eventId.startsWith(QStringLiteral("@event:pickup:"))) {
+            namedPickups=true;
+            hasNamedPickupLogic=true;
+        }
     for(int i=0;i<nw;++i)
         if(!platforms.at(i)->logicNodes.isEmpty()) {
             const Resource &host=*platforms.at(i);
@@ -2364,13 +2460,15 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("HAS_NAMED_PICKUP_LOGIC"),flag(hasNamedPickupLogic));
     sourceFields.insert(QStringLiteral("HAS_PICKUP_ONLY_LOGIC"),flag(nw==0 && hasNamedPickupLogic));
     sourceFields.insert(QStringLiteral("HAS_LOGIC_DISPATCH"),flag(nw!=0 || hasNamedPickupLogic));
+    sourceFields.insert(QStringLiteral("HAS_STAT_COMPARE"),flag(hasStatCompare));
+    sourceFields.insert(QStringLiteral("HAS_QUEST_CONDITION"),flag(hasQuestCondition));
     sourceFields.insert(QStringLiteral("HAS_ENEMY_STATE_LOGIC"),flag(hasDefeatGraphInput));
     sourceFields.insert(QStringLiteral("HAS_TILEMAP_WORLDS"), flag(nw && m_tilemapEnabled));
     sourceFields.insert(QStringLiteral("HAS_TILEMAP_PICKUPS"), flag(np && m_tilemapEnabled));
     sourceFields.insert(QStringLiteral("HAS_REWARDS"), flag(hasBreakRewards));
     sourceFields.insert(QStringLiteral("HAS_AUDIO_WORLDS"), flag(nw && !usedSfx.isEmpty()));
     sourceFields.insert(QStringLiteral("HAS_AUDIO_PICKUPS"), flag(np && !usedSfx.isEmpty()));
-    bool eventPickups=false;
+    bool eventPickups=hasNamedPickupLogic;
     for(const Resource *r:pickups) {
         if(!r->eventActions.value(QStringLiteral("pickup")).toArray().isEmpty() ||
            !r->logicNodes.isEmpty())eventPickups=true;

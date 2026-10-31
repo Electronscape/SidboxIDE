@@ -9282,6 +9282,10 @@ void SidboxGameDesigner::configureGameObject(int index)
     struct GraphEditor {
         QString ownerId,nodeId;
         QComboBox *operation=nullptr;
+        // Persistent condition parameters live on the same .sbgm logicNode.
+        // Do not replace an advanced op with BOOLEAN when Properties is saved.
+        QComboBox *statName=nullptr,*compareOp=nullptr,*questId=nullptr;
+        QSpinBox *threshold=nullptr;
         QTreeWidget *inputs=nullptr;
         QTreeWidget *resultTargets=nullptr;
         QComboBox *trueDialogue=nullptr,*falseDialogue=nullptr;
@@ -9307,10 +9311,12 @@ void SidboxGameDesigner::configureGameObject(int index)
             const QJsonArray activeInputs=node.value(QStringLiteral("inputs")).toArray();
             bool readsCurrent=false;
             for(const QJsonValue &v:activeInputs)
-                if(v.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
-                   (v.toObject().value(QStringLiteral("id")).toString()==old.id ||
-                    (old.objectType==QStringLiteral("trigger") &&
-                     v.toObject().value(QStringLiteral("id")).toString()==QStringLiteral("@triggerstate:")+old.id)))
+                if((v.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("object") &&
+                    (v.toObject().value(QStringLiteral("id")).toString()==old.id ||
+                     (old.objectType==QStringLiteral("trigger") &&
+                      v.toObject().value(QStringLiteral("id")).toString()==QStringLiteral("@triggerstate:")+old.id))) ||
+                   (v.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event") &&
+                    v.toObject().value(QStringLiteral("id")).toString().section(QLatin1Char(':'),2)==old.id))
                     readsCurrent=true;
             bool targetedByBranch=false;
             for(const QJsonValue &v:node.value(QStringLiteral("resultTargets")).toArray())
@@ -9348,11 +9354,81 @@ void SidboxGameDesigner::configureGameObject(int index)
             GraphEditor editor;
             editor.ownerId=candidate.id;editor.nodeId=nodeId;
             editor.operation=new GameComboBox(section);
-            for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
-                                   QStringLiteral("and"),QStringLiteral("or")})
-                editor.operation->addItem(op.toUpper(),op);
-            editor.operation->setCurrentIndex(qMax(0,editor.operation->findData(node.value(QStringLiteral("op")).toString())));
+            const QString savedOperator=node.value(QStringLiteral("op")).toString();
+            const bool compareCondition=savedOperator==QStringLiteral("stat_compare");
+            const bool questCondition=savedOperator==QStringLiteral("quest_done");
+            if(compareCondition || questCondition) {
+                // A zero-input source cannot be converted into an ordinary
+                // gate here without wiring inputs first. Visual Nodes handles
+                // that transformation. Keep the saved operator intact.
+                editor.operation->addItem(compareCondition?tr("COMPARE"):tr("QUEST STATE"),savedOperator);
+                editor.operation->setEnabled(false);
+            } else {
+                for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
+                                       QStringLiteral("and"),QStringLiteral("or")})
+                    editor.operation->addItem(op.toUpper(),op);
+                const int match=editor.operation->findData(savedOperator);
+                if(match<0) {
+                    editor.operation->addItem(tr("Unknown operator: %1").arg(savedOperator),savedOperator);
+                    editor.operation->setEnabled(false);
+                }
+                editor.operation->setCurrentIndex(qMax(0,editor.operation->findData(savedOperator)));
+            }
             form->addRow(tr("Operator"),editor.operation);
+            if(compareCondition) {
+                editor.statName=new GameComboBox(section);
+                editor.statName->addItem(tr("Health (built-in)"),QStringLiteral("@health"));
+                QJsonObject playerProfile;
+                QFile playerFile(QDir(QFileInfo(m_filePath).absolutePath()).filePath(m_playerProfile));
+                if(playerFile.open(QIODevice::ReadOnly)) {
+                    playerProfile=QJsonDocument::fromJson(playerFile.readAll()).object();
+                    for(const QJsonValue &value:playerProfile.value(QStringLiteral("customStats")).toArray()) {
+                        const QString name=value.toObject().value(QStringLiteral("name")).toString().trimmed();
+                        if(!name.isEmpty() && editor.statName->findData(name)<0)
+                            editor.statName->addItem(name,name);
+                    }
+                }
+                const QString selectedStat=node.value(QStringLiteral("statName")).toString();
+                if(editor.statName->findData(selectedStat)<0)
+                    editor.statName->addItem(tr("MISSING statistic: %1").arg(selectedStat),selectedStat);
+                editor.statName->setCurrentIndex(qMax(0,editor.statName->findData(selectedStat)));
+                form->addRow(tr("Player statistic"),editor.statName);
+                editor.compareOp=new GameComboBox(section);
+                for(const QString &comparison:{QStringLiteral("<"),QStringLiteral("<="),
+                                               QStringLiteral("=="),QStringLiteral("!="),
+                                               QStringLiteral(">="),QStringLiteral(">")})
+                    editor.compareOp->addItem(comparison,comparison);
+                const QString savedComparison=node.value(QStringLiteral("compareOp")).toString();
+                if(editor.compareOp->findData(savedComparison)<0)
+                    editor.compareOp->addItem(tr("INVALID: %1").arg(savedComparison),savedComparison);
+                editor.compareOp->setCurrentIndex(qMax(0,editor.compareOp->findData(savedComparison)));
+                form->addRow(tr("Comparison"),editor.compareOp);
+                editor.threshold=new QSpinBox(section);
+                editor.threshold->setRange(-1000000,1000000);
+                editor.threshold->setValue(node.value(QStringLiteral("threshold")).toInt());
+                form->addRow(tr("Threshold"),editor.threshold);
+            }
+            if(questCondition) {
+                editor.questId=new GameComboBox(section);
+                const QDir project(QFileInfo(m_filePath).absolutePath());
+                QFile questsFile(project.filePath(QStringLiteral(".codergirl/quests.json")));
+                if(questsFile.open(QIODevice::ReadOnly)) {
+                    const QJsonArray quests=QJsonDocument::fromJson(questsFile.readAll())
+                        .object().value(QStringLiteral("quests")).toArray();
+                    for(const QJsonValue &value:quests) {
+                        const QJsonObject quest=value.toObject();
+                        const QString id=quest.value(QStringLiteral("id")).toString();
+                        if(!id.isEmpty() && editor.questId->findData(id)<0)
+                            editor.questId->addItem(quest.value(QStringLiteral("title")).toString(id)+
+                                QStringLiteral(" (%1)").arg(id),id);
+                    }
+                }
+                const QString selectedQuest=node.value(QStringLiteral("questId")).toString();
+                if(editor.questId->findData(selectedQuest)<0)
+                    editor.questId->addItem(tr("MISSING quest: %1").arg(selectedQuest),selectedQuest);
+                editor.questId->setCurrentIndex(qMax(0,editor.questId->findData(selectedQuest)));
+                form->addRow(tr("Quest completed"),editor.questId);
+            }
             editor.inputs=new QTreeWidget(section);
             editor.inputs->setHeaderHidden(true);editor.inputs->setMinimumHeight(100);
             editor.inputs->setMaximumHeight(210);
@@ -9388,26 +9464,31 @@ void SidboxGameDesigner::configureGameObject(int index)
                     addInput(QStringLiteral("object"),QStringLiteral("@triggerstate:")+object.id,
                         tr("Trigger %1: STATE OFF").arg(object.name),true);
                 }
-            // A gate can read its host's genuine event, never a fabricated
-            // event on some other object. Preserve named input ordering in .sbgm.
-            const QStringList ownEvents=candidate.objectType==QStringLiteral("breakable")?
-                QStringList{QStringLiteral("hit"),QStringLiteral("destroy")}:
-                candidate.objectType==QStringLiteral("enemy")?
-                QStringList{QStringLiteral("hit"),QStringLiteral("defeat")}:
-                candidate.objectType==QStringLiteral("lift")?QStringList{QStringLiteral("arrival")}:
-                candidate.objectType==QStringLiteral("hazard")?QStringList{QStringLiteral("player_hit")}:
-                candidate.objectType==QStringLiteral("goto_world")?QStringList{QStringLiteral("enter")}:
-                candidate.objectType==QStringLiteral("save_checkpoint")?QStringList{QStringLiteral("save")}:
-                candidate.objectType==QStringLiteral("collectable")?QStringList{QStringLiteral("pickup")}:
-                candidate.objectType==QStringLiteral("trigger")?QStringList{QStringLiteral("trigger")}:QStringList{};
-            for(const QString &event:ownEvents) {
-                const QString label=event==QStringLiteral("trigger")?tr("ON ACTIVATE"):
-                    event==QStringLiteral("defeat")?tr("ON DEFEAT"):
-                    event==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
-                    tr("ON %1").arg(event.toUpper().replace(QLatin1Char('_'),QLatin1Char(' ')));
-                addInput(QStringLiteral("event"),
-                    QStringLiteral("@event:")+event+QLatin1Char(':')+candidate.id,
-                    tr("%1 pulse: %2").arg(label,candidate.name));
+            // Advanced predicates may be gated by an event from ANY source
+            // in this world. Their graph itself still belongs to candidate.
+            // Other gate types retain their established local-event contract.
+            for(const Resource &eventSource:m_resources) {
+                if(eventSource.kind!=QStringLiteral("sprite") || eventSource.id.isEmpty() ||
+                   (!(compareCondition || questCondition) && eventSource.id!=candidate.id))continue;
+                const QStringList sourceEvents=eventSource.objectType==QStringLiteral("breakable")?
+                    QStringList{QStringLiteral("hit"),QStringLiteral("destroy")}:
+                    eventSource.objectType==QStringLiteral("enemy")?
+                    QStringList{QStringLiteral("hit"),QStringLiteral("defeat")}:
+                    eventSource.objectType==QStringLiteral("lift")?QStringList{QStringLiteral("arrival")}:
+                    eventSource.objectType==QStringLiteral("hazard")?QStringList{QStringLiteral("player_hit")}:
+                    eventSource.objectType==QStringLiteral("goto_world")?QStringList{QStringLiteral("enter")}:
+                    eventSource.objectType==QStringLiteral("save_checkpoint")?QStringList{QStringLiteral("save")}:
+                    eventSource.objectType==QStringLiteral("collectable")?QStringList{QStringLiteral("pickup")}:
+                    eventSource.objectType==QStringLiteral("trigger")?QStringList{QStringLiteral("trigger")}:QStringList{};
+                for(const QString &event:sourceEvents) {
+                    const QString label=event==QStringLiteral("trigger")?tr("ON ACTIVATE"):
+                        event==QStringLiteral("defeat")?tr("ON DEFEAT"):
+                        event==QStringLiteral("player_hit")?tr("ON PLAYER HIT"):
+                        tr("ON %1").arg(event.toUpper().replace(QLatin1Char('_'),QLatin1Char(' ')));
+                    addInput(QStringLiteral("event"),
+                        QStringLiteral("@event:")+event+QLatin1Char(':')+eventSource.id,
+                        tr("%1 pulse: %2").arg(label,eventSource.name));
+                }
             }
             for(const QJsonValue &other:candidate.logicNodes) {
                 const QJsonObject o=other.toObject();
@@ -9416,6 +9497,14 @@ void SidboxGameDesigner::configureGameObject(int index)
                     tr("Logic %1 (%2)").arg(id,o.value(QStringLiteral("op")).toString().toUpper()));
             }
             form->addRow(tr("State / logic inputs"),editor.inputs);
+            if(compareCondition || questCondition) {
+                // A numeric/quest condition has at most one optional WHEN
+                // input. Leave unchecked for its original independent mode.
+                if(QWidget *fieldLabel=form->labelForField(editor.inputs))
+                    fieldLabel->setToolTip(tr("Optional WHEN: leave empty for a live condition, or check ONE state/event/logic input to gate it."));
+                editor.inputs->setToolTip(tr("COMPARE and QUEST STATE accept one optional WHEN input. "
+                    "Selecting a STATE or EVENT gates the predicate without changing the .sbgm format."));
+            }
             editor.resultTargets=new QTreeWidget(section);
             editor.resultTargets->setHeaderHidden(true);
             editor.resultTargets->setMinimumHeight(95);
@@ -11961,6 +12050,21 @@ void SidboxGameDesigner::configureGameObject(int index)
             return false;
         }
     }
+    // Never silently erase or multiply the optional WHEN input when the
+    // Game Object editor saves a condition authored in Visual Nodes.
+    for(const GraphEditor &editor:graphEditors) {
+        const QString op=editor.operation->currentData().toString();
+        if(op!=QStringLiteral("stat_compare") && op!=QStringLiteral("quest_done"))continue;
+        int selected=0;
+        for(int i=0;i<editor.inputs->topLevelItemCount();++i)
+            if(editor.inputs->topLevelItem(i)->checkState(0)==Qt::Checked)++selected;
+        if(selected>1) {
+            QMessageBox::warning(&dialog,tr("Logic WHEN input"),
+                tr("COMPARE and QUEST STATE accept at most one optional WHEN input. "
+                   "Uncheck the extra inputs before saving."));
+            return false;
+        }
+    }
     // Validate the draft BEFORE adding to the undo history or mutating the
     // actual object. A missing sheet cannot partially commit an object.
     Resource stamped = old;
@@ -12278,7 +12382,16 @@ void SidboxGameDesigner::configureGameObject(int index)
             for(int index=0;index<owner.logicNodes.size();++index) {
                 QJsonObject node=owner.logicNodes.at(index).toObject();
                 if(node.value(QStringLiteral("id")).toString()!=editor.nodeId)continue;
-                node.insert(QStringLiteral("op"),editor.operation->currentData().toString());
+                const QString currentOperator=editor.operation->currentData().toString();
+                node.insert(QStringLiteral("op"),currentOperator);
+                if(currentOperator==QStringLiteral("stat_compare") &&
+                   editor.statName && editor.compareOp && editor.threshold) {
+                    node.insert(QStringLiteral("statName"),editor.statName->currentData().toString());
+                    node.insert(QStringLiteral("compareOp"),editor.compareOp->currentData().toString());
+                    node.insert(QStringLiteral("threshold"),editor.threshold->value());
+                }
+                if(currentOperator==QStringLiteral("quest_done") && editor.questId)
+                    node.insert(QStringLiteral("questId"),editor.questId->currentData().toString());
                 QJsonArray checked;
                 for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
                     QTreeWidgetItem *item=editor.inputs->topLevelItem(i);
@@ -12305,6 +12418,8 @@ void SidboxGameDesigner::configureGameObject(int index)
                     }
                 }
                 for(const QJsonValue &newInput:checked)inputs.append(newInput);
+                // Preserve the optional WHEN input on COMPARE/QUEST STATE.
+                // The shared schema and exporter enforce at most one.
                 node.insert(QStringLiteral("inputs"),inputs);
                 QJsonArray bound;
                 for(int i=0;i<editor.resultTargets->topLevelItemCount();++i) {
@@ -12401,6 +12516,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         for(const GraphEditor &editor:graphEditors) {
             values << editor.ownerId << editor.nodeId << editor.operation->currentData()
                    << editor.trueDialogue->currentData() << editor.falseDialogue->currentData();
+            if(editor.statName)values << editor.statName->currentData();
+            if(editor.compareOp)values << editor.compareOp->currentData();
+            if(editor.threshold)values << editor.threshold->value();
+            if(editor.questId)values << editor.questId->currentData();
             for(int row=0;row<editor.inputs->topLevelItemCount();++row) {
                 QTreeWidgetItem *item=editor.inputs->topLevelItem(row);
                 values << item->data(0,Qt::UserRole) << item->data(0,Qt::UserRole+1)

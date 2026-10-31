@@ -255,6 +255,8 @@ bool SidboxGameDesigner::loadDesign()
     m_backPalette->setEnabled(m_planeMode->currentIndex() == 1);
     m_adventure = obj.value(QStringLiteral("adventure")).toObject();
     m_persistedAdventure = m_adventure;
+    m_persistedLogicNodes.clear();
+    m_persistedEventActions.clear();
     m_resources.clear();
     bool startupMusicAssigned = false; // Older projects default to no automatic music.
     const QJsonArray assets = obj.value(QStringLiteral("resources")).toArray();
@@ -541,6 +543,10 @@ bool SidboxGameDesigner::loadDesign()
         r.audio.loopStart = qBound(0, audio.value(QStringLiteral("loopStart")).toInt(0), 2147483647);
         r.audio.loopLength = qBound(0, audio.value(QStringLiteral("loopLength")).toInt(0), 2147483647);
         r.audio.subsong = qBound(0, audio.value(QStringLiteral("subsong")).toInt(0), 255);
+        if(!r.id.isEmpty()) {
+            m_persistedLogicNodes.insert(r.id,r.logicNodes);
+            m_persistedEventActions.insert(r.id,r.eventActions);
+        }
         m_resources.append(r);
         if (m_resources.size() >= 8192) break; // corrupt/hostile data guard
     }
@@ -732,6 +738,44 @@ bool SidboxGameDesigner::saveDesign()
             return false;
         }
         persistedWorld=latest.object();
+        // Visual Nodes writes the very same resource.gameObject.logicNodes
+        // and eventActions records. Preserve them if Game Designer's copy is
+        // untouched, and STOP if both editors have independently changed one.
+        QHash<QString,QJsonArray> diskLogic;
+        QHash<QString,QJsonObject> diskEvents;
+        for(const QJsonValue &entry:persistedWorld.value(QStringLiteral("resources")).toArray()) {
+            const QJsonObject savedResource=entry.toObject();
+            const QJsonObject object=savedResource.value(QStringLiteral("gameObject")).toObject();
+            const QString id=savedResource.value(QStringLiteral("id")).toString();
+            if(id.isEmpty())continue;
+            diskLogic.insert(id,object.value(QStringLiteral("logicNodes")).toArray());
+            diskEvents.insert(id,object.value(QStringLiteral("eventActions")).toObject());
+        }
+        for(Resource &resource:m_resources) {
+            if(resource.id.isEmpty() || !diskLogic.contains(resource.id))continue;
+            const QJsonArray previousLogic=m_persistedLogicNodes.value(resource.id);
+            const QJsonArray latestLogic=diskLogic.value(resource.id);
+            if(latestLogic!=previousLogic) {
+                if(resource.logicNodes==previousLogic)resource.logicNodes=latestLogic;
+                else if(resource.logicNodes!=latestLogic) {
+                    QMessageBox::warning(this,tr("Logic edited in both editors"),
+                        tr("The .sbgm logic for '%1' was changed by Visual Nodes while Game Designer also had unsaved edits. "
+                           "Save cancelled. Reopen this world to reconcile the two changes.").arg(resource.name));
+                    return false;
+                }
+            }
+            const QJsonObject previousEvents=m_persistedEventActions.value(resource.id);
+            const QJsonObject latestEvents=diskEvents.value(resource.id);
+            if(latestEvents!=previousEvents) {
+                if(resource.eventActions==previousEvents)resource.eventActions=latestEvents;
+                else if(resource.eventActions!=latestEvents) {
+                    QMessageBox::warning(this,tr("Events edited in both editors"),
+                        tr("The .sbgm event actions for '%1' were changed by Visual Nodes while Game Designer also had unsaved edits. "
+                           "Save cancelled. Reopen this world to reconcile the two changes.").arg(resource.name));
+                    return false;
+                }
+            }
+        }
         const QJsonObject diskAdventure=persistedWorld.value(QStringLiteral("adventure")).toObject();
         if (diskAdventure!=m_persistedAdventure) {
             if (m_adventure==m_persistedAdventure) {
@@ -1236,6 +1280,13 @@ bool SidboxGameDesigner::saveDesign()
         return false;
     }
     m_persistedAdventure=m_adventure;
+    m_persistedLogicNodes.clear();
+    m_persistedEventActions.clear();
+    for(const Resource &resource:m_resources) {
+        if(resource.id.isEmpty())continue;
+        m_persistedLogicNodes.insert(resource.id,resource.logicNodes);
+        m_persistedEventActions.insert(resource.id,resource.eventActions);
+    }
     // Once exported, path C data tracks saved edits to any control point.
     // Nothing is created for older projects until Export is chosen.
     const QString pathHeader = QDir(QFileInfo(m_filePath).absolutePath())

@@ -103,6 +103,7 @@ const char *gameworlds_quest_id(uint16_t index);
 const char *gameworlds_quest_title(uint16_t index);
 const char *gameworlds_quest_description(uint16_t index);
 uint8_t gameworlds_quest_status(uint16_t index);
+uint32_t gameworlds_quest_revision(void); /* status/objective-change notification */
 uint16_t gameworlds_quest_current_step(uint16_t index);
 const char *gameworlds_quest_objective(uint16_t index);
 /* Enumerate every objective for the quest Journal. Stable objective indices
