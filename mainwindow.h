@@ -99,6 +99,9 @@ private:
     void removeSelectedProjectFile();
     void renameSelectedProjectFile();
     void handleCompilerFinished(int exitCode);
+    void startV1CompileJobs();
+    void handleV1CompileJobFinished(QProcess *process, int exitCode,
+                                    bool normalExit);
     void setCompileProgressStage(const QString &text);
     void finishCompileProgress();
     bool closeEditorTab(int index);
@@ -216,7 +219,8 @@ private:
 
     enum class BuildStep {
         None,
-        V2Compiling, // Legacy fallback; new CGARM builds use cgarm-build.
+        V1Compiling, // GCC -c: one V1 source per process for real file progress.
+        V2Compiling, // Old V2 fallback; new CGARM builds use cgarm-build.
         V2CliBuilding, // Independent CGARM V2 compiler, linker and packer.
         V2CliProbe, // Re-link same PIC objects against maximum SDRAM V2 span for sizing.
         V2CliRelink, // Re-link and pack with the accepted new RAM allowance.
@@ -252,6 +256,23 @@ private:
     QString m_pendingElfPath;
     QString m_pendingAsmPath;
     QString m_pendingAppPath;
+    // Actual V1 progress counts successful GCC compilation processes, not lines
+    // of compiler output. The original flags, source order and linker inputs
+    // are retained when moving from one GCC invocation to compile + link.
+    bool m_v1ProgressActive = false;
+    QString m_v1CompilerPath;
+    QStringList m_v1CompileFlags;
+    QStringList m_v1CompileSources;
+    QStringList m_v1CompiledObjects;
+    QStringList m_v1LinkArguments;
+    int m_v1ParallelJobs = 4; // Per-project preference.
+    int m_v1BuildJobs = 4; // Snapshot for the current build.
+    int m_v1NextJobIndex = 0;
+    int m_v1CompletedCount = 0;
+    bool m_v1CompileFailed = false;
+    QHash<QProcess *, int> m_v1ActiveJobs;
+    QHash<QProcess *, QByteArray> m_v1JobStdout;
+    QHash<QProcess *, QByteArray> m_v1JobStderr;
     QString m_v2CliPath; // Bundled standalone cgarm-build frontend.
     // Asynchronous two-stage V2 path: bundled GCC -c -> LLVM LLD -pie.
     // Legacy V1 and gaming still use the existing GCC link command.

@@ -155,6 +155,11 @@ void game_adventure_world_map_animations(const game_adventure_map_animation_t *a
 void game_adventure_world_map_tiles(const uint16_t *cells,uint16_t columns,uint16_t rows,
                                     const uint8_t *pixels,const char *path,
                                     uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size);
+/* Packed index data is expanded once into owned RAM and freed on world change. */
+void game_adventure_world_map_tiles_rle(const uint8_t *packed,uint32_t packed_size,
+                                        uint32_t cell_count,uint16_t columns,uint16_t rows,
+                                        const uint8_t *pixels,const char *path,
+                                        uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size);
 
 
 

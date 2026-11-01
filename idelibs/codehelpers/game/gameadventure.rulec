@@ -332,7 +332,11 @@ void gameadventure_setup(void)
     }
     {
         static const game_adventure_map_point_t map_points[]={@IDE{WORLD_MAP_POINTS}};
+@IDE_IF{WORLD_MAP_PACKED}
+        static const uint8_t map_tiles_rle[]={@IDE{WORLD_MAP_PACKED_DATA}};
+@IDE_ELSE
         static const uint16_t map_tiles[]={@IDE{WORLD_MAP_TILES}};
+@IDE_END
         static const game_adventure_map_animation_t map_animations[]={@IDE{WORLD_MAP_ANIMATIONS}};
         uint16_t map_aw=0u,map_ah=0u;
         const uint8_t *map_pixels=gameassets_find_ppb(@IDE{WORLD_MAP_ATLAS},&map_aw,&map_ah);
@@ -341,9 +345,16 @@ void gameadventure_setup(void)
         game_adventure_world_map_animations(map_animations,@IDE{WORLD_MAP_ANIM_COUNT}u);
         game_adventure_world_map(map_points,@IDE{WORLD_MAP_COUNT}u,
            @IDE{WORLD_MAP_WIDTH}u,@IDE{WORLD_MAP_HEIGHT}u,gameworlds_active);
+@IDE_IF{WORLD_MAP_PACKED}
+        game_adventure_world_map_tiles_rle(map_tiles_rle,(uint32_t)sizeof(map_tiles_rle),
+             @IDE{WORLD_MAP_TILE_COUNT}u,@IDE{WORLD_MAP_COLS}u,@IDE{WORLD_MAP_ROWS}u,
+             map_pixels,@IDE{WORLD_MAP_ATLAS},@IDE{WORLD_MAP_ATLAS_W}u,
+             @IDE{WORLD_MAP_ATLAS_H}u,@IDE{WORLD_MAP_TILE_SIZE}u);
+@IDE_ELSE
         game_adventure_world_map_tiles(map_tiles,@IDE{WORLD_MAP_COLS}u,@IDE{WORLD_MAP_ROWS}u,
              map_pixels,@IDE{WORLD_MAP_ATLAS},@IDE{WORLD_MAP_ATLAS_W}u,
              @IDE{WORLD_MAP_ATLAS_H}u,@IDE{WORLD_MAP_TILE_SIZE}u);
+@IDE_END
     }
     /* Keep the runtime journal pointed at the project-wide quest manager.
      * Registration follows game_adventure_start() because a world load resets

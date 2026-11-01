@@ -24,6 +24,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     , m_appletFormatCombo(new QComboBox(this))
     , m_v2LinkerCombo(new QComboBox(this))
     , m_optimizationCombo(new QComboBox(this))
+    , m_v1ParallelJobsSpinBox(new QSpinBox(this))
     , m_suppressWarningsCheck(new QCheckBox(tr("Suppress all compiler warnings (-w)"), this))
     , m_wallCheck(new QCheckBox(tr("Common warnings (-Wall)"), this))
     , m_wextraCheck(new QCheckBox(tr("Extra warnings (-Wextra)"), this))
@@ -51,7 +52,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
         updateDefaultLinkerLabel();
         const bool gui = projectType() == QStringLiteral("gui");
         if (!gui) {
-            m_appletFormatCombo->setCurrentIndex(0); // Game is always legacy v1.
+            m_appletFormatCombo->setCurrentIndex(0); // Game projects always use fixed-address V1.
         }
         m_appletFormatCombo->setEnabled(gui);
         m_v2LinkerCombo->setEnabled(gui && appletFormat() == QStringLiteral("v2"));
@@ -100,7 +101,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     auto *formLayout = new QFormLayout(generalPage);
     formLayout->setContentsMargins(12, 12, 12, 12);
     formLayout->addRow(tr("Project type"), m_projectTypeCombo);
-    m_appletFormatCombo->addItem(tr("Legacy V1 - fixed SDRAM address"), QStringLiteral("v1"));
+    m_appletFormatCombo->addItem(tr("V1 - fixed SDRAM address"), QStringLiteral("v1"));
     m_appletFormatCombo->addItem(tr("Relocatable GUI (V2 applet)"), QStringLiteral("v2"));
     m_appletFormatCombo->setToolTip(tr("V2 builds position-independent executables and require compatible SIDBOX firmware. "
                                         "Unsupported relocations or dependencies will cause a safe build failure."));
@@ -167,6 +168,13 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget *parent)
     auto *compilerForm = new QFormLayout(compilerPage);
     compilerForm->setContentsMargins(12, 12, 12, 12);
     compilerForm->addRow(tr("Optimisation"), m_optimizationCombo);
+    m_v1ParallelJobsSpinBox->setRange(1, 8);
+    m_v1ParallelJobsSpinBox->setValue(4);
+    m_v1ParallelJobsSpinBox->setToolTip(tr(
+        "Maximum number of V1 source files compiled simultaneously. "
+        "Default: 4. Linking and packing run only after every file succeeds. "
+        "V2 uses its own build system."));
+    compilerForm->addRow(tr("V1 parallel compiler jobs"), m_v1ParallelJobsSpinBox);
     compilerForm->addRow(QString(), m_functionSectionsCheck);
     compilerForm->addRow(QString(), m_dataSectionsCheck);
     compilerForm->addRow(QString(), m_stackUsageCheck);
@@ -377,6 +385,16 @@ void ProjectSettingsDialog::updateDefaultLinkerLabel()
     m_defaultLinkerLabel->setText(QDir::toNativeSeparators(path));
 }
 
+
+int ProjectSettingsDialog::v1ParallelJobs() const
+{
+    return m_v1ParallelJobsSpinBox->value();
+}
+
+void ProjectSettingsDialog::setV1ParallelJobs(int jobs)
+{
+    m_v1ParallelJobsSpinBox->setValue(qBound(1, jobs, 8));
+}
 
 QString ProjectSettingsDialog::optimizationFlag() const
 {

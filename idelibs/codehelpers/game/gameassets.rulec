@@ -20,6 +20,31 @@ extern uint8_t gametitle_music_enabled(void) __attribute__((weak));
 @IDE{SPRITE_DECLARATIONS}
 @IDE{SOUND_DECLARATIONS}
 
+@IDE_IF{HAS_EMBED_RLE}
+/* Run/literal RLE: byte 0..127 is literal count (control+1), 128..255
+   repeats the following byte ((control & 127)+1) times. */
+static uint8_t gameassets_unpack_pixels(const uint8_t *src, uint32_t packed_len,
+                                        uint8_t *dst, uint32_t output_len)
+{
+    uint32_t in = 0u, out = 0u;
+    while (in < packed_len && out < output_len) {
+        const uint8_t op = src[in++];
+        const uint32_t n = (uint32_t)(op & 127u) + 1u;
+        if (n > output_len - out) return 0u;
+        if (op & 128u) {
+            if (in >= packed_len) return 0u;
+            memset(dst + out, src[in++], n);
+        } else {
+            if (n > packed_len - in) return 0u;
+            memcpy(dst + out, src + in, n);
+            in += n;
+        }
+        out += n;
+    }
+    return (uint8_t)(in == packed_len && out == output_len);
+}
+@IDE_END
+
 /* Patterned BOB fade animation: percentage, NOT RGB alpha. */
 @IDE_IF{HAS_FADE_ANIM}
 typedef struct {
@@ -177,11 +202,28 @@ void gameassets_show_background(void)
 @IDE{MUSIC_FUNCTIONS}
 
 @IDE_SECTION{BITMAP_EMBED}
-/* Original PPB indexed pixels, unchanged; @IDE{WIDTH} x @IDE{HEIGHT}. */
+@IDE_IF{COMPRESSED}
+/* Compressed embedded PPB, expanded once into owned RAM at init. */
+static const uint8_t @IDE{PIXEL_SYMBOL}_rle[] = {
+@IDE{PIXEL_DATA}
+};
+static uint8_t *@IDE{PIXEL_SYMBOL} = NULL;
+@IDE_ELSE
+/* Incompressible pixels retain the original read-only representation. */
 static const uint8_t @IDE{PIXEL_SYMBOL}[] __attribute__((aligned(32))) = {
 @IDE{PIXEL_DATA}
 };
-
+@IDE_END
+@IDE_SECTION_END
+@IDE_SECTION{BITMAP_UNPACK}
+    @IDE{PIXEL_SYMBOL} = (uint8_t *)malloc(@IDE{PIXEL_COUNT}u);
+    if (!@IDE{PIXEL_SYMBOL}) goto failed;
+    if (!gameassets_unpack_pixels(@IDE{PIXEL_SYMBOL}_rle,
+                                  (uint32_t)sizeof(@IDE{PIXEL_SYMBOL}_rle),
+                                  @IDE{PIXEL_SYMBOL}, @IDE{PIXEL_COUNT}u)) goto failed;
+@IDE_SECTION_END
+@IDE_SECTION{BITMAP_FREE_EMBED}
+    free(@IDE{PIXEL_SYMBOL}); @IDE{PIXEL_SYMBOL} = NULL;
 @IDE_SECTION_END
 @IDE_SECTION{BITMAP_EXTERNAL}
 static uint8_t *@IDE{PIXEL_SYMBOL} = NULL;

@@ -1200,18 +1200,28 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     // semantics, so every target type is handled exactly as before.
     QString queuedActionCases;
     unsigned int queuedActionCount=0u;
+    // The FIFO stores command IDs, not source-link IDs. Repeated links to the
+    // same operation must still enqueue separately (and keep their order),
+    // but they can share a single switch case in the generated game C.
+    // Use disjoint key spaces for Game Object actions and dialogue commands.
+    QMap<QString, unsigned int> queuedCommandIds;
     auto queueTargetAction = [&](const Resource &target, QString *destination) -> bool {
         QString immediate;
         if(!targetAction(target,&immediate))return false;
         if(immediate.isEmpty())return true;
-        if(queuedActionCount>=65535u) {
-            if(error)*error=tr("This world exceeds the maximum 65535 generated action commands.");
-            return false;
+        const QString key = QStringLiteral("action:") + immediate;
+        unsigned int commandId = queuedCommandIds.value(key, 0u);
+        if(commandId == 0u) {
+            if(queuedActionCount>=65535u) {
+                if(error)*error=tr("This world exceeds the maximum 65535 distinct generated action commands.");
+                return false;
+            }
+            commandId = ++queuedActionCount;
+            queuedCommandIds.insert(key, commandId);
+            queuedActionCases+=QStringLiteral("        case %1u: {\n%2            break;\n        }\n")
+                .arg(commandId).arg(immediate);
         }
-        ++queuedActionCount;
-        queuedActionCases+=QStringLiteral("        case %1u: {\n%2            break;\n        }\n")
-            .arg(queuedActionCount).arg(immediate);
-        *destination+=QStringLiteral("        (void)cg_action_enqueue(%1u);\n").arg(queuedActionCount);
+        *destination+=QStringLiteral("        (void)cg_action_enqueue(%1u);\n").arg(commandId);
         return true;
     };
     auto audioFields = [&](const QString &soundId, int index, int radius) -> QMap<QString, QString> {
@@ -1706,6 +1716,7 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     QString graphSnapshotsBody, graphEvaluationBody, graphDispatchBody;
     QString graphInitialSyncBody;
     bool hasStatCompare=false,hasQuestCondition=false;
+    int logicCounterCount=0,logicTimerCount=0;
     bool hasNamedPlatformLogic=false, hasNamedPickupLogic=false;
     if (nt) for (int i = 0; i < nw; ++i) {
         const Resource &r = *platforms.at(i);
@@ -1810,8 +1821,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         if(pickupOwner) {
             for(const QJsonValue &entry:owner.logicNodes) {
                 const QString op=entry.toObject().value(QStringLiteral("op")).toString();
-                if(op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done")) {
-                    if(error)*error=tr("Persistent Compare/Quest conditions must be owned by a placed Game Object, not a Collectable template.");
+                if(op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done") ||
+                   op==QStringLiteral("timer")) {
+                    if(error)*error=tr("Persistent Compare/Quest/Timer conditions must be owned by a placed Game Object, not a Collectable template.");
                     return false;
                 }
             }
@@ -1826,10 +1838,24 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if(error)*error=tr("Game Object '%1' invalid logic graph: %2").arg(owner.name,issue);
             return false;
         }
+        QHash<QString,int> counterSlots,timerSlots;
         for(const SidboxVisualLogic::Node &node:nodes) {
+            if(node.op==QStringLiteral("counter"))counterSlots.insert(node.id,logicCounterCount++);
+            if(node.op==QStringLiteral("timer"))timerSlots.insert(node.id,logicTimerCount++);
             if(node.op==QStringLiteral("stat_compare"))hasStatCompare=true;
             if(node.op==QStringLiteral("quest_done"))hasQuestCondition=true;
         }
+        for(const SidboxVisualLogic::Node &node:nodes)
+            if(node.op==QStringLiteral("timer")) {
+                bool hasStart=false;
+                for(const SidboxVisualLogic::Input &input:node.inputs)
+                    hasStart |= input.command==QStringLiteral("start");
+                if(!hasStart) {
+                    if(error)*error=tr("Game Object '%1' TIMER '%2' needs a START EVENT connection.")
+                        .arg(owner.name,node.id);
+                    return false;
+                }
+            }
         for(const SidboxVisualLogic::Node &node:nodes)
             for(const SidboxVisualLogic::Input &input:node.inputs)
                 if(input.kind==QStringLiteral("event") && !objectSlot.contains(input.id)) {
@@ -1850,14 +1876,30 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         const QString statWatch=QStringLiteral("cg_logic_stat_changed_%1").arg(ownerIndex);
         const QString questWatch=QStringLiteral("cg_logic_quest_changed_%1").arg(ownerIndex);
         bool watchesStat=false, watchesQuest=false;
-        QSet<QString> graphEventInputs;
+        // Counter-only pulses must not wake the owner's unrelated sibling
+        // logic nodes. Only this counter and nodes depending on it are run.
+        QSet<QString> graphEventInputs, counterEventInputs, timerEventInputs;
         for(const SidboxVisualLogic::Node &node:nodes)
             for(const SidboxVisualLogic::Input &input:node.inputs)
-                if(input.kind==QStringLiteral("event"))graphEventInputs.insert(input.id);
+                if(input.kind==QStringLiteral("event")) {
+                    if(node.op==QStringLiteral("counter"))counterEventInputs.insert(input.id);
+                    else if(node.op==QStringLiteral("timer"))timerEventInputs.insert(input.id);
+                    else graphEventInputs.insert(input.id);
+                }
         QStringList sortedGraphEvents=graphEventInputs.values();
         sortedGraphEvents.sort();
         for(const QString &eventId:sortedGraphEvents)
             activationEvents.append(objectSlot.value(eventId));
+        QStringList counterActivationEvents;
+        QStringList sortedCounterEvents=counterEventInputs.values();
+        sortedCounterEvents.sort();
+        for(const QString &eventId:sortedCounterEvents)
+            counterActivationEvents.append(objectSlot.value(eventId));
+        QStringList sortedTimerEvents=timerEventInputs.values();
+        sortedTimerEvents.sort();
+        QStringList timerActivationEvents;
+        for(const QString &eventId:sortedTimerEvents)
+            timerActivationEvents.append(objectSlot.value(eventId));
         for(const SidboxVisualLogic::Node &node:nodes) {
             if(node.op==QStringLiteral("stat_compare"))watchesStat=true;
             if(node.op==QStringLiteral("quest_done"))watchesQuest=true;
@@ -1988,6 +2030,18 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             .arg(baseRun,activationEvents.isEmpty() ? QStringLiteral("0") :
                  activationEvents.join(QStringLiteral(" || ")));
         QStringList ownerWatches{baseRun};
+        if(!counterActivationEvents.isEmpty())
+            ownerWatches.append(QStringLiteral("(%1)").arg(counterActivationEvents.join(QStringLiteral(" || "))));
+        if(!timerActivationEvents.isEmpty())
+            ownerWatches.append(QStringLiteral("(%1)").arg(timerActivationEvents.join(QStringLiteral(" || "))));
+        if(!timerSlots.isEmpty()) {
+            QStringList timerTicks;
+            QList<int> timerSlotIndices=timerSlots.values();
+            std::sort(timerSlotIndices.begin(),timerSlotIndices.end());
+            for(int timerSlotIndex:timerSlotIndices)
+                timerTicks.append(QStringLiteral("cg_logic_timer_tick[%1u]").arg(timerSlotIndex));
+            ownerWatches.append(QStringLiteral("(%1)").arg(timerTicks.join(QStringLiteral(" || "))));
+        }
         if(watchesStat) {
             graphEvaluationBody+=QStringLiteral(
                 "    const unsigned char %1 = "
@@ -2015,9 +2069,66 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         graphEvaluationBody+=QStringLiteral("    if (%1) {\n").arg(run);
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
+            if(node.op==QStringLiteral("counter")) {
+                const int slot=counterSlots.value(node.id);
+                QStringList pulses;
+                QStringList resets;
+                for(const SidboxVisualLogic::Input &input:node.inputs) {
+                    if(input.command==QStringLiteral("reset"))resets.append(objectSlot.value(input.id));
+                    else pulses.append(objectSlot.value(input.id));
+                }
+                if(!resets.isEmpty())
+                    graphEvaluationBody+=QStringLiteral(
+                        "        if (%1) { cg_logic_counter_value[%2u]=0u; cg_logic_counter_tick[%2u]=1u; }\n")
+                        .arg(resets.join(QStringLiteral(" || "))).arg(slot);
+                // Count each distinct incoming pulse, not just the OR of all
+                // pulses. Two independent events in the same dispatch count
+                // twice. Saturate at the target; RESET always has priority.
+                const QString noReset=resets.isEmpty()?QStringLiteral("1"):
+                    QStringLiteral("!(%1)").arg(resets.join(QStringLiteral(" || ")));
+                for(const QString &pulse:pulses)
+                    graphEvaluationBody+=QStringLiteral(
+                        "        if ((%1) && (%2) && cg_logic_counter_value[%3u] < %4u) {\n"
+                        "            ++cg_logic_counter_value[%3u]; cg_logic_counter_tick[%3u]=1u;\n"
+                        "        }\n")
+                        .arg(noReset,pulse).arg(slot).arg(node.targetCount);
+            }
+            if(node.op==QStringLiteral("timer")) {
+                const int slot=timerSlots.value(node.id);
+                QHash<QString,QString> commands;
+                for(const SidboxVisualLogic::Input &input:node.inputs)
+                    commands.insert(input.command,objectSlot.value(input.id));
+                // Precedence if multiple controls pulse simultaneously:
+                // RESET > STOP > CONTINUE > START. Each pulse is one-shot.
+                QStringList clauses;
+                const QStringList order{QStringLiteral("reset"),QStringLiteral("stop"),
+                    QStringLiteral("continue"),QStringLiteral("start")};
+                for(const QString &command:order) {
+                    if(!commands.contains(command))continue;
+                    QString effect;
+                    if(command==QStringLiteral("reset"))
+                        effect=QStringLiteral("cg_logic_timer_left[%1u]=%2u; cg_logic_timer_mode[%1u]=0u;")
+                            .arg(slot).arg(node.durationFrames);
+                    else if(command==QStringLiteral("stop"))
+                        effect=QStringLiteral("if(cg_logic_timer_mode[%1u]==1u)cg_logic_timer_mode[%1u]=2u;").arg(slot);
+                    else if(command==QStringLiteral("continue"))
+                        effect=QStringLiteral("if(cg_logic_timer_mode[%1u]==2u)cg_logic_timer_mode[%1u]=1u;").arg(slot);
+                    else effect=QStringLiteral("cg_logic_timer_left[%1u]=%2u; cg_logic_timer_mode[%1u]=1u;")
+                            .arg(slot).arg(node.durationFrames);
+                    clauses.append(QStringLiteral("        %1if (%2) { %3 cg_logic_timer_tick[%4u]=1u; cg_logic_timer_finished_pulse[%4u]=0u; }\n")
+                        .arg(clauses.isEmpty()?QString():QStringLiteral("else "),commands.value(command),effect)
+                        .arg(slot));
+                }
+                // The generated control statements are evaluated only during
+                // the existing ordered event FIFO dispatch, never each frame.
+                for(const QString &clause:clauses)graphEvaluationBody+=clause;
+            }
+            SidboxVisualLogic::Node resolved=node;
+            if(node.op==QStringLiteral("counter"))resolved.runtimeCounterSlot=counterSlots.value(node.id);
+            if(node.op==QStringLiteral("timer"))resolved.runtimeTimerSlot=timerSlots.value(node.id);
             graphEvaluationBody+=QStringLiteral("        %1 = ((%2) ? 1u : 0u);\n")
                 .arg(expressionNames.value(node.id),
-                     SidboxVisualLogic::expression(node,objectSlot,expressionNames));
+                     SidboxVisualLogic::expression(resolved,objectSlot,expressionNames));
         }
         graphEvaluationBody+=QStringLiteral("    }\n");
         // A one-frame pulse is an event, not a persistent FALSE state.
@@ -2027,7 +2138,11 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
             QStringList pulses;
-            for(const SidboxVisualLogic::Input &input:node.inputs) {
+            if(node.op==QStringLiteral("counter"))
+                pulses.append(QStringLiteral("cg_logic_counter_tick[%1u]").arg(counterSlots.value(node.id)));
+            else if(node.op==QStringLiteral("timer"))
+                pulses.append(QStringLiteral("cg_logic_timer_finished_pulse[%1u]").arg(timerSlots.value(node.id)));
+            else for(const SidboxVisualLogic::Input &input:node.inputs) {
                 if(input.kind==QStringLiteral("event"))pulses.append(objectSlot.value(input.id));
                 if(input.kind==QStringLiteral("node") && nodePulseGate.contains(input.id))
                     pulses.append(nodePulseGate.value(input.id));
@@ -2039,35 +2154,76 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         // Compute transitive dependencies in topological order so AND/OR gates
         // consuming a COMPARE (or QUEST STATE) are notified too.
         QHash<QString,bool> nodeNeedsStat, nodeNeedsQuest;
+        QHash<QString,QSet<int>> nodeNeedsCounters;
+        QHash<QString,QSet<int>> nodeNeedsTimers;
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
             bool stat=node.op==QStringLiteral("stat_compare");
             bool quest=node.op==QStringLiteral("quest_done");
+            QSet<int> counters,timers;
+            if(node.op==QStringLiteral("counter"))counters.insert(counterSlots.value(node.id));
+            if(node.op==QStringLiteral("timer"))timers.insert(timerSlots.value(node.id));
             for(const SidboxVisualLogic::Input &input:node.inputs) {
                 if(input.kind!=QStringLiteral("node"))continue;
                 stat |= nodeNeedsStat.value(input.id,false);
                 quest |= nodeNeedsQuest.value(input.id,false);
+                counters.unite(nodeNeedsCounters.value(input.id));
+                timers.unite(nodeNeedsTimers.value(input.id));
             }
             nodeNeedsStat.insert(node.id,stat);
             nodeNeedsQuest.insert(node.id,quest);
+            nodeNeedsCounters.insert(node.id,counters);
+            nodeNeedsTimers.insert(node.id,timers);
         }
         graphDispatchBody+=QStringLiteral("    if (%1) {\n").arg(run);
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
-            QStringList nodeWatches{baseRun};
+            QStringList nodeWatches;
+            if(node.op==QStringLiteral("counter"))
+                nodeWatches.append(QStringLiteral("cg_logic_counter_tick[%1u]").arg(counterSlots.value(node.id)));
+            else if(node.op==QStringLiteral("timer"))
+                nodeWatches.append(QStringLiteral("cg_logic_timer_tick[%1u]").arg(timerSlots.value(node.id)));
+            else nodeWatches.append(baseRun);
             if(nodeNeedsStat.value(node.id,false))nodeWatches.append(statWatch);
             if(nodeNeedsQuest.value(node.id,false))nodeWatches.append(questWatch);
+            if(node.op!=QStringLiteral("counter") && node.op!=QStringLiteral("timer")) {
+                QList<int> watchTimers=nodeNeedsTimers.value(node.id).values();
+                std::sort(watchTimers.begin(),watchTimers.end());
+                for(int slot:watchTimers)
+                    nodeWatches.append(QStringLiteral("cg_logic_timer_tick[%1u]").arg(slot));
+                QList<int> watchCounters=nodeNeedsCounters.value(node.id).values();
+                std::sort(watchCounters.begin(),watchCounters.end());
+                for(int slot:watchCounters)
+                    nodeWatches.append(QStringLiteral("cg_logic_counter_tick[%1u]").arg(slot));
+            }
             graphDispatchBody+=QStringLiteral("        if (%1) {\n")
                 .arg(nodeWatches.join(QStringLiteral(" || ")));
             // Event-dependent results and branches only fire for a real pulse.
             // Do not turn an inactive event into a repeating FALSE action.
-            if(nodePulseGate.contains(node.id))
+            const bool timerDependent=!nodeNeedsTimers.value(node.id).isEmpty();
+            if(nodePulseGate.contains(node.id) && !timerDependent)
                 graphDispatchBody+=QStringLiteral("        if (%1) {\n").arg(nodePulseGate.value(node.id));
             // RESULT is a direct state binding. It is not an Enable action
             // duplicated on TRUE and FALSE: FALSE must assign zero.
             for(const QString &targetId:node.resultTargets)
                 graphDispatchBody+=QStringLiteral("        %1.active = %2 ? 1u : 0u;\n")
                     .arg(objectSlot.value(targetId),expressionNames.value(node.id));
+            if(timerDependent && nodePulseGate.contains(node.id)) {
+                if(node.op==QStringLiteral("timer")) {
+                    // TIMER TRUE runs only on expiry. TIMER FALSE is a one-shot
+                    // activation/resume action while RUNNING (mode 1), never a
+                    // repeated 'not finished' action on each frame. STOP and
+                    // RESET deliberately dispatch neither action branch.
+                    const int timerIndex=timerSlots.value(node.id);
+                    graphDispatchBody+=QStringLiteral(
+                        "        if (cg_logic_timer_finished_pulse[%1u] || "
+                        "(cg_logic_timer_tick[%1u] && cg_logic_timer_mode[%1u] == 1u)) {\n")
+                        .arg(timerIndex);
+                } else {
+                    graphDispatchBody+=QStringLiteral("        if (%1) {\n")
+                        .arg(nodePulseGate.value(node.id));
+                }
+            }
             graphDispatchBody+=QStringLiteral("        if (%1) {\n").arg(expressionNames.value(node.id));
             for(const bool yes:{true,false}) {
                 if(!yes)graphDispatchBody+=QStringLiteral("        } else {\n");
@@ -2106,6 +2262,9 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         for(int index:sorted) {
             const SidboxVisualLogic::Node &node=nodes[index];
             bool pulse=false;
+            if(node.op==QStringLiteral("counter") || node.op==QStringLiteral("timer")) {
+                nodeDependsOnPulse.insert(node.id,false);continue;
+            }
             for(const SidboxVisualLogic::Input &input:node.inputs)
                 pulse |= input.kind==QStringLiteral("event") ||
                     (input.kind==QStringLiteral("node") && nodeDependsOnPulse.value(input.id,false));
@@ -2130,7 +2289,12 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
             if(nodeDependsOnPulse.value(node.id))continue;
             graphInitialSyncBody+=QStringLiteral("    const unsigned char %1 = ((%2) ? 1u : 0u);\n")
                 .arg(initialNames.value(node.id),
-                     SidboxVisualLogic::expression(node,objectSlot,initialNames));
+                     SidboxVisualLogic::expression([&]() {
+                         SidboxVisualLogic::Node resolved=node;
+                         if(node.op==QStringLiteral("counter"))resolved.runtimeCounterSlot=counterSlots.value(node.id);
+                         if(node.op==QStringLiteral("timer"))resolved.runtimeTimerSlot=timerSlots.value(node.id);
+                         return resolved;
+                     }(),objectSlot,initialNames));
         }
         // RESULT must be applied before evaluating the next Trigger's graph.
         for(int index:sorted) {
@@ -2339,15 +2503,23 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
         while(matches.hasNext()) {
             const QRegularExpressionMatch m=matches.next();
             queued+=body->mid(cursor,m.capturedStart()-cursor);
-            if(queuedActionCount>=65535u) {
-                if(error)*error=tr("Too many generated dialogue commands in this world.");
-                return false;
+            const QString key = QStringLiteral("dialogue:") + m.captured(1)
+                + QLatin1Char(':') + m.captured(2);
+            unsigned int commandId = queuedCommandIds.value(key, 0u);
+            if(commandId == 0u) {
+                if(queuedActionCount>=65535u) {
+                    if(error)*error=tr("Too many distinct generated dialogue commands in this world.");
+                    return false;
+                }
+                commandId = ++queuedActionCount;
+                queuedCommandIds.insert(key, commandId);
+                queuedActionCases+=QStringLiteral(
+                    "        case %1u: (void)game_adventure_trigger_%2(%3u); break;\n")
+                    .arg(commandId).arg(m.captured(1),m.captured(2));
             }
-            ++queuedActionCount;
-            queuedActionCases+=QStringLiteral(
-                "        case %1u: (void)game_adventure_trigger_%2(%3u); break;\n")
-                .arg(queuedActionCount).arg(m.captured(1),m.captured(2));
-            queued+=QStringLiteral("(void)cg_action_enqueue(%1u);").arg(queuedActionCount);
+            // Preserve one enqueue per original trigger: distinct occurrences
+            // must not be collapsed even when their command body is identical.
+            queued+=QStringLiteral("(void)cg_action_enqueue(%1u);").arg(commandId);
             cursor=m.capturedEnd();
         }
         queued+=body->mid(cursor);
@@ -2461,6 +2633,10 @@ bool SidboxGameDesigner::exportWorldItems(QString *error)
     sourceFields.insert(QStringLiteral("HAS_PICKUP_ONLY_LOGIC"),flag(nw==0 && hasNamedPickupLogic));
     sourceFields.insert(QStringLiteral("HAS_LOGIC_DISPATCH"),flag(nw!=0 || hasNamedPickupLogic));
     sourceFields.insert(QStringLiteral("HAS_STAT_COMPARE"),flag(hasStatCompare));
+    sourceFields.insert(QStringLiteral("HAS_LOGIC_COUNTER"),flag(logicCounterCount>0));
+    sourceFields.insert(QStringLiteral("LOGIC_COUNTER_COUNT"),number(logicCounterCount));
+    sourceFields.insert(QStringLiteral("HAS_LOGIC_TIMER"),flag(logicTimerCount>0));
+    sourceFields.insert(QStringLiteral("LOGIC_TIMER_COUNT"),number(logicTimerCount));
     sourceFields.insert(QStringLiteral("HAS_QUEST_CONDITION"),flag(hasQuestCondition));
     sourceFields.insert(QStringLiteral("HAS_ENEMY_STATE_LOGIC"),flag(hasDefeatGraphInput));
     sourceFields.insert(QStringLiteral("HAS_TILEMAP_WORLDS"), flag(nw && m_tilemapEnabled));

@@ -63,6 +63,37 @@ struct Music {
     QString sdPath;
 };
 
+// Compress embedded PPB indices only. The matching decoder lives in
+// gameassets.rulec; SD-loaded PPBs retain their existing loader.
+QByteArray packedPixelRuns(const QByteArray &pixels)
+{
+    QByteArray packed;
+    packed.reserve(pixels.size());
+    qsizetype i = 0;
+    while (i < pixels.size()) {
+        qsizetype run = 1;
+        while (run < 128 && i + run < pixels.size() && pixels[i + run] == pixels[i]) ++run;
+        if (run >= 3) {
+            packed.append(char(0x80u | unsigned(run - 1)));
+            packed.append(pixels[i]);
+            i += run;
+            continue;
+        }
+        const qsizetype start = i;
+        i += run;
+        while (i < pixels.size() && i - start < 128) {
+            qsizetype nextRun = 1;
+            while (nextRun < 3 && i + nextRun < pixels.size()
+                   && pixels[i + nextRun] == pixels[i]) ++nextRun;
+            if (nextRun >= 3) break;
+            i += qMin(nextRun, qsizetype(128) - (i - start));
+        }
+        packed.append(char(unsigned(i - start - 1)));
+        packed.append(pixels.constData() + start, i - start);
+    }
+    return packed;
+}
+
 bool isIdentifier(const QString &s)
 {
     static const QRegularExpression rx(QStringLiteral("^[A-Za-z_][A-Za-z_0-9]*$"));
@@ -350,7 +381,7 @@ Result generate(const Request &request)
             return result;
         }
         if (result.embeddedBytes > 1024*1024)
-            result.warnings.append(QStringLiteral("Embedding %1 KiB of uncompressed sprite data in the V1 app. Check SDRAM/linker budget.")
+            result.warnings.append(QStringLiteral("Embedding %1 KiB of sprite pixels before optional RLE. Check SDRAM/linker budget.")
                                    .arg((result.embeddedBytes + 1023) / 1024));
     }
     // Stage 4.51: gameassets.rulec/.ruleh own every emitted C statement.
@@ -389,8 +420,15 @@ Result generate(const Request &request)
         }
         mainRules.insert(ext, whole.toUtf8());
     }
+    // Do not silently write packed bytes into an older rule that exposes
+    // an uncompressed const pointer and never expands the data.
+    if (!mainRules.value(QStringLiteral(".rulec")).contains("@IDE_IF{HAS_EMBED_RLE}")) {
+        result.error = QStringLiteral("gameassets.rulec does not support embedded PPB RLE. Update the game asset rule.");
+        return result;
+    }
     const QStringList expectedSections = {
-        QStringLiteral("BITMAP_EMBED"), QStringLiteral("BITMAP_EXTERNAL"),
+        QStringLiteral("BITMAP_EMBED"), QStringLiteral("BITMAP_UNPACK"),
+        QStringLiteral("BITMAP_FREE_EMBED"), QStringLiteral("BITMAP_EXTERNAL"),
         QStringLiteral("PALETTE"), QStringLiteral("DIRECT_DECL"),
         QStringLiteral("SPRITE_DECL"), QStringLiteral("SOUND_DECL"),
         QStringLiteral("BITMAP_LOAD"), QStringLiteral("DIRECT_INIT"),
@@ -469,6 +507,7 @@ Result generate(const Request &request)
                                QStringLiteral("SPRITE_HEADERS"),
                                QStringLiteral("SOUND_HEADERS"),
                                QStringLiteral("MUSIC_HEADERS")}) hdr.insert(key, {});
+    code.insert(QStringLiteral("HAS_EMBED_RLE"), QStringLiteral("0"));
     code.insert(QStringLiteral("DUAL_PLANE"), flag(request.dualPlane));
     code.insert(QStringLiteral("HAS_FADE_ANIM"), QStringLiteral("0"));
     code.insert(QStringLiteral("HAS_FRONT_PALETTE"), flag(!frontClut.isEmpty()));
@@ -488,21 +527,30 @@ Result generate(const Request &request)
             {QStringLiteral("LOAD_GUARD"), request.embedPixels ? QString() : QStringLiteral(" && ") + bm.symbol}
         };
         if (request.embedPixels) {
-            // Only pixel DATA is formatted by Qt. The C declaration is in the rule.
+            // The template owns both the C storage and decompression code.
+            const QByteArray packed = packedPixelRuns(bm.pixels);
+            const bool useRle = bm.pixels.size() >= 512 && packed.size() + 128 < bm.pixels.size();
+            const QByteArray &stored = useRle ? packed : bm.pixels;
             QString pixelData;
             QTextStream data(&pixelData);
-            for (qsizetype i = 0; i < bm.pixels.size(); ++i) {
+            for (qsizetype i = 0; i < stored.size(); ++i) {
                 if (i % 20 == 0) data << "    ";
-                data << "0x" << QStringLiteral("%1").arg(unsigned(uchar(bm.pixels.at(i))),
+                data << "0x" << QStringLiteral("%1").arg(unsigned(uchar(stored.at(i))),
                                       2, 16, QLatin1Char('0')).toUpper();
-                if (i != bm.pixels.size() - 1) data << ',';
-                if (i % 20 == 19 || i == bm.pixels.size() - 1) data << '\n';
+                if (i != stored.size() - 1) data << ',';
+                if (i % 20 == 19 || i == stored.size() - 1) data << '\n';
                 else data << ' ';
             }
             data.flush();
             QMap<QString, QString> embed = fields;
             embed.insert(QStringLiteral("PIXEL_DATA"), pixelData);
+            embed.insert(QStringLiteral("COMPRESSED"), flag(useRle));
             if (!section(QStringLiteral("BITMAP_EMBED"), embed, code[QStringLiteral("BITMAP_DECLARATIONS")])) return result;
+            if (useRle) {
+                code[QStringLiteral("HAS_EMBED_RLE")] = QStringLiteral("1");
+                if (!section(QStringLiteral("BITMAP_UNPACK"), embed, code[QStringLiteral("BITMAP_LOADS")]) ||
+                    !section(QStringLiteral("BITMAP_FREE_EMBED"), embed, code[QStringLiteral("BITMAP_FREES")])) return result;
+            }
         } else {
             if (!section(QStringLiteral("BITMAP_EXTERNAL"), fields, code[QStringLiteral("BITMAP_DECLARATIONS")]) ||
                 !section(QStringLiteral("BITMAP_LOAD"), fields, code[QStringLiteral("BITMAP_LOADS")]) ||

@@ -476,6 +476,14 @@ static const char *(*ga_map_current)(void);
 static uint8_t ga_map_open;
 static int16_t ga_map_pan_x,ga_map_pan_y;
 static const uint16_t *ga_map_cells;
+/* Sole owner of decompressed project World Map indices. */
+static uint16_t *ga_map_owned_cells;
+static void ga_map_release_cells(void)
+{
+    free(ga_map_owned_cells);
+    ga_map_owned_cells = NULL;
+    ga_map_cells = NULL;
+}
 static uint16_t ga_map_columns,ga_map_rows,ga_map_atlas_w,ga_map_atlas_h;
 static const uint8_t *ga_map_pixels;
 static uint8_t ga_map_tile_size;
@@ -544,7 +552,8 @@ void game_adventure_world_map_tiles(const uint16_t *cells,uint16_t columns,uint1
                                     const uint8_t *pixels,const char *path,
                                     uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size)
 {
-    ga_map_cells=0;ga_map_pixels=0;ga_map_columns=ga_map_rows=0u;
+    ga_map_release_cells();
+    ga_map_pixels=0;ga_map_columns=ga_map_rows=0u;
     if(!cells || !columns || !rows || !tile_size ||
        (tile_size!=8u && tile_size!=16u) ||
        (uint32_t)columns*rows>16384u ||
@@ -553,6 +562,45 @@ void game_adventure_world_map_tiles(const uint16_t *cells,uint16_t columns,uint1
     ga_map_cells=cells;ga_map_columns=columns;ga_map_rows=rows;
     ga_map_atlas_w=atlas_w;ga_map_atlas_h=atlas_h;ga_map_tile_size=tile_size;
     ga_map_pixels=pixels?pixels:ga_load_ppb(path,atlas_w,atlas_h);
+}
+/* Decode run/literal 16-bit little-endian tile indices into aligned RAM.
+   The output is identical to the original const uint16_t table. */
+void game_adventure_world_map_tiles_rle(const uint8_t *packed,uint32_t packed_size,
+                                        uint32_t cell_count,uint16_t columns,uint16_t rows,
+                                        const uint8_t *pixels,const char *path,
+                                        uint16_t atlas_w,uint16_t atlas_h,uint8_t tile_size)
+{
+    uint16_t *cells = NULL;
+    if (packed && cell_count && cell_count <= 16384u &&
+        (uint32_t)columns * rows == cell_count) {
+        cells = (uint16_t *)malloc(cell_count * sizeof(uint16_t));
+        if (cells) {
+            uint32_t in = 0u, out = 0u;
+            while (in < packed_size && out < cell_count) {
+                const uint8_t op = packed[in++];
+                const uint32_t n = (uint32_t)(op & 127u) + 1u;
+                if (n > cell_count - out) break;
+                if (op & 128u) {
+                    if (packed_size - in < 2u) break;
+                    const uint16_t value = (uint16_t)(packed[in] | ((uint16_t)packed[in+1u] << 8));
+                    in += 2u;
+                    for (uint32_t k=0u;k<n;++k) cells[out++]=value;
+                } else {
+                    if (n > (packed_size - in) / 2u) break;
+                    for (uint32_t k=0u;k<n;++k) {
+                        cells[out++] = (uint16_t)(packed[in] | ((uint16_t)packed[in+1u] << 8));
+                        in += 2u;
+                    }
+                }
+            }
+            if (in != packed_size || out != cell_count) {
+                free(cells);
+                cells = NULL;
+            }
+        }
+    }
+    game_adventure_world_map_tiles(cells,columns,rows,pixels,path,atlas_w,atlas_h,tile_size);
+    ga_map_owned_cells = cells;
 }
 static void ga_map_center_current(void)
 {
@@ -1373,6 +1421,7 @@ void game_adventure_start(const game_adventure_item_t *items, uint16_t item_coun
                           game_adventure_action_t action, void *user)
 {
     ga_release_owned_ppbs(); /* BEFORE old world assets are destroyed. */
+    ga_map_release_cells();
     ga_items = items; ga_item_count = item_count > GA_MAX_ITEMS ? GA_MAX_ITEMS : item_count;
     game_adventure_item_styles(0,0);
     memset(ga_icon_atlas,0,sizeof(ga_icon_atlas));

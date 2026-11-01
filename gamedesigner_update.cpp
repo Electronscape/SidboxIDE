@@ -10,9 +10,11 @@
 #include "gamemainownership.h"
 #include "gamehelpertemplates.h"
 #include "gameworldsnapshot.h"
+#include "gamevisualgraphlogic.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QColor>
 #include <QPaintEvent>
 #include <QDir>
 #include <QDirIterator>
@@ -77,6 +79,7 @@
 #include <QSaveFile>
 #include <zlib.h>
 #include <limits>
+#include <utility>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
@@ -85,6 +88,7 @@
 #include <QStringList>
 #include <QSignalBlocker>
 #include <QTextStream>
+#include <QTextEdit>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QToolButton>
@@ -491,6 +495,309 @@ bool SidboxGameDesigner::updateGameProject(bool fromCompile)
         if (confirm.clickedButton() != proceed) return false;
 
         embedPixels = embed->isChecked();
+    }
+
+    // Publish preflight checks authored references before backup or generation.
+    // The Game Object / Adventure .sbgm model is authoritative; .vsgm is layout.
+    struct PublishIssue {
+        bool blocking = true;
+        QString area;
+        QString subject;
+        QString message;
+        QString details;
+        int resourceIndex = -1;
+        bool adventure = false;
+        QString missingFile;
+        QString fileProperty; // 'path' only: publishing checks required resource files.
+    };
+    QVector<PublishIssue> preflight;
+    QSet<QString> issueKeys;
+    const auto addIssue = [&](bool blocking, const QString &area, const QString &subject,
+                              const QString &message, const QString &details,
+                              int resourceIndex = -1, bool adventure = false,
+                              const QString &missingFile = QString(),
+                              const QString &fileProperty = QString()) {
+        const QString key = QString::number(blocking) + QLatin1Char('|') + area +
+                            QLatin1Char('|') + subject + QLatin1Char('|') + message +
+                            QLatin1Char('|') + QString::number(resourceIndex) +
+                            QLatin1Char('|') + details;
+        if (issueKeys.contains(key)) return;
+        issueKeys.insert(key);
+        preflight.append({blocking, area, subject, message, details,
+                          resourceIndex, adventure, missingFile, fileProperty});
+    };
+    QHash<QString, QString> resourceTypes, resourceNames, resourcePaths;
+    QHash<QString, int> resourceIndices;
+    QSet<QString> objectIds;
+    for (int index = 0; index < m_resources.size(); ++index) {
+        const Resource &r = m_resources.at(index);
+        if (r.id.isEmpty()) continue;
+        resourceTypes.insert(r.id, r.kind);
+        resourceNames.insert(r.id, r.name);
+        resourcePaths.insert(r.id, r.path);
+        resourceIndices.insert(r.id, index);
+        if (r.kind != QStringLiteral("sprite")) continue;
+        objectIds.insert(r.id);
+        // A Trigger has a virtual *switch state* that is not a separate
+        // Resource. The graph editor and exporter deliberately allow it.
+        if (r.objectType == QStringLiteral("trigger"))
+            objectIds.insert(QStringLiteral("@triggerstate:") + r.id);
+    }
+    const auto named = [](const Resource &r) {
+        return r.name.isEmpty() ? r.id : r.name;
+    };
+    const auto checkAtlas = [&](const QString &id, const QString &subject, bool adventure) {
+        if (id.isEmpty()) return;
+        const int index = resourceIndices.value(id, -1);
+        const QString kind = resourceTypes.value(id);
+        const bool validAtlas = (kind == QStringLiteral("tileatlas") || kind == QStringLiteral("sprite"));
+        if (!validAtlas) {
+            addIssue(true, tr("Graphics"), subject, tr("PPB atlas was deleted or is unavailable"),
+                     tr("Referenced PPB atlas ID: %1. Select an existing sprite or Tile Atlas in the relevant editor.").arg(id),
+                     -1, adventure);
+        } else if (resourcePaths.value(id).isEmpty() ||
+                   !QFileInfo(resolvedPath(resourcePaths.value(id))).isFile()) {
+            addIssue(true, tr("Graphics"), subject, tr("PPB atlas source file is missing"),
+                     tr("Atlas: %1\nExpected file: %2").arg(resourceNames.value(id, id), resourcePaths.value(id)),
+                     index, adventure, resourcePaths.value(id), QStringLiteral("path"));
+        }
+    };
+    const auto checkPalette = [&](const QString &id, const QString &subject) {
+        if (id.isEmpty()) return;
+        const int index = resourceIndices.value(id, -1);
+        if (resourceTypes.value(id) != QStringLiteral("palette")) {
+            addIssue(true, tr("Graphics"), subject, tr("Selected palette no longer exists"),
+                     tr("Referenced palette ID: %1. Select another palette.").arg(id));
+        } else if (resourcePaths.value(id).isEmpty() ||
+                   !QFileInfo(resolvedPath(resourcePaths.value(id))).isFile()) {
+            addIssue(true, tr("Graphics"), subject, tr("Palette source file is missing"),
+                     tr("Palette: %1\nExpected file: %2").arg(resourceNames.value(id, id), resourcePaths.value(id)),
+                     index, false, resourcePaths.value(id), QStringLiteral("path"));
+        }
+    };
+    checkPalette(m_activeForegroundPalette, tr("Foreground palette"));
+    checkPalette(m_activeBackgroundPalette, tr("Background palette"));
+    if (m_tilemapEnabled) {
+        if (m_tilemap.atlasPath.isEmpty())
+            addIssue(false, tr("Graphics"), tr("Tilemap"), tr("No graphics atlas selected"),
+                     tr("Choose a tile atlas if the tilemap is intended to display graphics."));
+        else if (!QFileInfo(resolvedPath(m_tilemap.atlasPath)).isFile())
+            addIssue(true, tr("Graphics"), tr("Tilemap"), tr("Tilemap atlas PPB is missing"),
+                     tr("Expected file: %1").arg(m_tilemap.atlasPath));
+    }
+    for (int index = 0; index < m_resources.size(); ++index) {
+        const Resource &r = m_resources.at(index);
+        const QString subject = named(r);
+        const bool requiredImage = r.kind == QStringLiteral("sprite") ||
+                                   r.kind == QStringLiteral("background");
+        const bool fileExists = !r.path.isEmpty() && QFileInfo(resolvedPath(r.path)).isFile();
+        if (requiredImage && !fileExists)
+            addIssue(true, tr("Graphics"), subject, tr("Required graphic is missing"),
+                     tr("%1 '%2'\nExpected PPB: %3\nChoose a valid PPB in the resource properties.")
+                         .arg(r.kind, subject, r.path.isEmpty() ? tr("(none assigned)") : r.path),
+                     index, false, r.path, QStringLiteral("path"));
+        else if (!requiredImage && !r.path.isEmpty() && !fileExists) {
+            const bool critical = r.kind == QStringLiteral("tileatlas") ||
+                                  r.kind == QStringLiteral("palette");
+            if (critical || r.kind == QStringLiteral("music") || r.kind == QStringLiteral("sound"))
+                addIssue(critical, tr("Resources"), subject, tr("Resource file is missing"),
+                         tr("Resource type: %1\nExpected file: %2").arg(r.kind, r.path),
+                         index, false, r.path, QStringLiteral("path"));
+        }
+        // .sbanim is editor authoring data, not a published runtime dependency.
+        // NPC Idle/Talking frames live in the Adventure .sbgm and are exported
+        // through NPC_FRAME_ROWS / NPC_ANIMATION_ROWS, so a missing sprite
+        // animation sidecar must not warn about an otherwise valid NPC.
+        if (r.logicNodes.isEmpty()) continue;
+        QVector<SidboxVisualLogic::Node> nodes;
+        QVector<int> order;
+        QString problem;
+        if (!SidboxVisualLogic::read(r.logicNodes, &nodes, &problem) ||
+            !SidboxVisualLogic::order(nodes, objectIds, &order, &problem)) {
+            QString readable = problem;
+            // Never show an internal pseudo-UUID as the entire explanation.
+            const QRegularExpression virtualState(QStringLiteral("@triggerstate:([A-Za-z0-9_-]+)"));
+            QRegularExpressionMatch match = virtualState.match(problem);
+            if (match.hasMatch()) {
+                const QString id = match.captured(1);
+                const QString ownerName = resourceNames.value(id);
+                readable = tr("A Boolean input refers to %1.")
+                    .arg(ownerName.isEmpty() ? tr("a missing Trigger switch") :
+                         tr("Trigger '%1' switch state").arg(ownerName));
+            }
+            addIssue(true, tr("Visual Logic"), subject, tr("Logic graph: %1").arg(readable),
+                     tr("Game Object: %1\n%2\nOpen this Game Object's Logic settings or Visual Nodes to repair the connection.")
+                         .arg(subject, problem), index);
+        }
+    }
+    checkAtlas(m_adventure.value(QStringLiteral("skinAtlasId")).toString(),
+               tr("Adventure dialogue skin"), true);
+    for (const QJsonValue &entry : m_adventure.value(QStringLiteral("items")).toArray()) {
+        const QJsonObject item = entry.toObject();
+        const QString subject = tr("Inventory: %1").arg(item.value(QStringLiteral("name")).toString());
+        const QString portable = item.value(QStringLiteral("iconPpbPath")).toString();
+        if (!portable.isEmpty() && !QFileInfo(resolvedPath(portable)).isFile())
+            addIssue(true, tr("Adventure"), subject, tr("Inventory icon PPB is missing"),
+                     tr("Expected file: %1\nOpen Adventure Editor and select a valid icon.").arg(portable),
+                     -1, true);
+        else if (portable.isEmpty())
+            checkAtlas(item.value(QStringLiteral("iconAtlasId")).toString(), subject, true);
+    }
+    const QJsonArray dialogueNodes = m_adventure.value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValue &entry : m_adventure.value(QStringLiteral("npcs")).toArray()) {
+        const QJsonObject npc = entry.toObject();
+        const QString id = npc.value(QStringLiteral("spriteId")).toString();
+        const QString subject = tr("NPC: %1").arg(resourceNames.value(id, id.isEmpty() ? tr("Unassigned") : id));
+        if (resourceTypes.value(id) != QStringLiteral("sprite"))
+            addIssue(true, tr("Adventure"), subject, tr("NPC sprite no longer exists"),
+                     tr("Missing sprite ID: %1\nAssign an existing sprite in Adventure Editor.").arg(id),
+                     -1, true);
+        const int first = npc.value(QStringLiteral("node")).toInt(0);
+        if (first < 0 || first >= dialogueNodes.size())
+            addIssue(true, tr("Adventure"), subject, tr("NPC dialogue is missing"),
+                     tr("Dialogue #%1 is outside the available dialogue list.").arg(first),
+                     -1, true);
+    }
+    if (!preflight.isEmpty()) {
+        // Show a compact, non-repeated list; the full technical reason is in
+        // the separate details pane, not duplicated in QMessageBox paragraphs.
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Publish Game - Preflight"));
+        dialog.resize(920, 510);
+        dialog.setMinimumSize(700, 380);
+        dialog.setStyleSheet(QStringLiteral(
+            "QDialog, QTreeWidget, QPushButton, QTextEdit, QHeaderView, QLabel { border-radius: 0px; }"));
+        auto *layout = new QVBoxLayout(&dialog);
+        int errors = 0, warnings = 0;
+        for (const PublishIssue &issue : std::as_const(preflight))
+            issue.blocking ? ++errors : ++warnings;
+        auto *heading = new QLabel(tr("%1 error(s), %2 warning(s). No generated files have been changed.")
+                                      .arg(errors).arg(warnings), &dialog);
+        layout->addWidget(heading);
+        auto *list = new QTreeWidget(&dialog);
+        list->setRootIsDecorated(false);
+        list->setAlternatingRowColors(true);
+        list->setSelectionMode(QAbstractItemView::SingleSelection);
+        list->setHeaderLabels({tr("Level"), tr("Area"), tr("Object / Resource"), tr("Problem")});
+        for (int i = 0; i < preflight.size(); ++i) {
+            const PublishIssue &issue = preflight.at(i);
+            auto *row = new QTreeWidgetItem(list,
+                QStringList{issue.blocking ? tr("ERROR") : tr("Warning"),
+                            issue.area, issue.subject, issue.message});
+            row->setData(0, Qt::UserRole, i);
+            if (issue.blocking) row->setForeground(0, QBrush(QColor(220, 82, 82)));
+        }
+        list->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+        list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        list->header()->setSectionResizeMode(3, QHeaderView::Stretch);
+        layout->addWidget(list, 1);
+        auto *details = new QTextEdit(&dialog);
+        details->setReadOnly(true);
+        details->setMaximumHeight(115);
+        layout->addWidget(details);
+        auto *buttons = new QHBoxLayout();
+        auto *go = new QPushButton(tr("Go to Problem"), &dialog);
+        auto *fix = new QPushButton(tr("Auto Fix"), &dialog);
+        auto *cancel = new QPushButton(tr("Close"), &dialog);
+        buttons->addWidget(go);
+        buttons->addWidget(fix);
+        buttons->addStretch();
+        QPushButton *publish = nullptr;
+        if (!errors) {
+            publish = new QPushButton(tr("Publish Anyway"), &dialog);
+            buttons->addWidget(publish);
+        }
+        buttons->addWidget(cancel);
+        layout->addLayout(buttons);
+        int chosenIssue = -1;
+        int chosenAction = 0; // 1: continue, 2: navigate, 3: repair file path.
+        QString uniqueReplacement;
+        const auto findUniqueReplacement = [&](const PublishIssue &issue) -> QString {
+            if (issue.resourceIndex < 0 || issue.missingFile.isEmpty() || issue.fileProperty.isEmpty())
+                return {};
+            const QString filename = QFileInfo(issue.missingFile).fileName();
+            if (filename.isEmpty()) return {};
+            QString candidate;
+            QDirIterator it(project.absolutePath(), QDir::Files | QDir::NoSymLinks,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString path = it.next();
+                const QString relative = project.relativeFilePath(path);
+                if (relative.startsWith(QStringLiteral(".codergirl-backups/")) ||
+                    relative.startsWith(QStringLiteral("build"))) continue;
+                if (QFileInfo(path).fileName().compare(filename, Qt::CaseSensitive) != 0) continue;
+                if (!candidate.isEmpty()) return {}; // Ambiguous: never guess.
+                candidate = path;
+            }
+            return candidate;
+        };
+        const auto currentIssue = [&]() -> int {
+            QTreeWidgetItem *row = list->currentItem();
+            return row ? row->data(0, Qt::UserRole).toInt() : -1;
+        };
+        const auto updateSelection = [&]() {
+            const int i = currentIssue();
+            if (i < 0 || i >= preflight.size()) return;
+            const PublishIssue &issue = preflight.at(i);
+            details->setPlainText(issue.details);
+            go->setEnabled(issue.resourceIndex >= 0 || issue.adventure);
+            uniqueReplacement = findUniqueReplacement(issue);
+            fix->setEnabled(!uniqueReplacement.isEmpty());
+            fix->setToolTip(uniqueReplacement.isEmpty()
+                ? tr("No safe automatic repair. Use Go to Problem, then select the correct resource.\n"
+                     "Auto Fix is available only when exactly one matching missing file exists in the project.")
+                : tr("Relink this resource to: %1").arg(project.relativeFilePath(uniqueReplacement)));
+        };
+        QObject::connect(list, &QTreeWidget::currentItemChanged, &dialog,
+                         [&](QTreeWidgetItem *, QTreeWidgetItem *) { updateSelection(); });
+        QObject::connect(go, &QPushButton::clicked, &dialog, [&]() {
+            chosenIssue = currentIssue(); chosenAction = 2; dialog.accept();
+        });
+        QObject::connect(list, &QTreeWidget::itemDoubleClicked, &dialog,
+                         [&](QTreeWidgetItem *, int) {
+            if (!go->isEnabled()) return;
+            chosenIssue = currentIssue(); chosenAction = 2; dialog.accept();
+        });
+        QObject::connect(fix, &QPushButton::clicked, &dialog, [&]() {
+            chosenIssue = currentIssue(); chosenAction = 3; dialog.accept();
+        });
+        QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+        if (publish)
+            QObject::connect(publish, &QPushButton::clicked, &dialog, [&]() {
+                chosenAction = 1; dialog.accept();
+            });
+        if (list->topLevelItemCount()) list->setCurrentItem(list->topLevelItem(0));
+        dialog.exec();
+        if (chosenAction == 2 && chosenIssue >= 0 && chosenIssue < preflight.size()) {
+            const PublishIssue &issue = preflight.at(chosenIssue);
+            raise();
+            activateWindow();
+            if (issue.resourceIndex >= 0) {
+                selectResource(issue.resourceIndex);
+                if (issue.area == tr("Visual Logic"))
+                    configureGameObject(issue.resourceIndex);
+            } else if (issue.adventure) {
+                openAdventureEditor();
+            }
+            return false;
+        }
+        if (chosenAction == 3 && chosenIssue >= 0 && chosenIssue < preflight.size()) {
+            const PublishIssue &issue = preflight.at(chosenIssue);
+            const QString found = findUniqueReplacement(issue);
+            if (!found.isEmpty() && issue.resourceIndex >= 0) {
+                Resource &r = m_resources[issue.resourceIndex];
+                const QString portable = storedPath(found);
+                if (issue.fileProperty == QStringLiteral("path")) r.path = portable;
+                setDirty();
+                selectResource(issue.resourceIndex);
+                QMessageBox::information(this, tr("Resource Relinked"),
+                    tr("Updated '%1' to use:\n%2\n\nSave this world, then run Update Game Project again.\n"
+                       "No generated files have been changed.").arg(named(r), portable));
+            }
+            return false;
+        }
+        if (chosenAction != 1) return false;
     }
 
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));

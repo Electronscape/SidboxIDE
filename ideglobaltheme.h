@@ -206,7 +206,6 @@ inline QString ideGlobalControlStyle(const IDETheme &theme)
         QProgressBar { background:@input; color:@text; border:1px solid @border;
             border-radius:0px; text-align:center; }
         QProgressBar::chunk { background:@accent; border-radius:0px; }
-        QProgressBar#compileProgress::chunk { width:18px; margin:1px; }
         QPlainTextEdit, QTextEdit { background:@input; color:@text;
             border:1px solid @border; border-radius:0px;
             selection-background-color:@chosen; selection-color:@chosenText; }

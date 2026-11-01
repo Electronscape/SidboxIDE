@@ -4390,7 +4390,7 @@ void SidboxGameDesigner::buildUi()
     m_propPlane->addItem(tr("Foreground"), QStringLiteral("foreground"));
     m_propPlane->addItem(tr("Background"), QStringLiteral("background"));
     m_propBackgroundMode = new GameComboBox(propertiesPanel);
-    m_propBackgroundMode->addItem(tr("Sprite / blit (legacy)"), QStringLiteral("sprite"));
+    m_propBackgroundMode->addItem(tr("Sprite / blit"), QStringLiteral("sprite"));
     m_propBackgroundMode->addItem(tr("Direct — prepared PPB"), QStringLiteral("direct_ready"));
     m_propBackgroundMode->addItem(tr("Direct — convert PPB"), QStringLiteral("direct_convert"));
     m_propBackgroundMode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -8207,18 +8207,68 @@ void SidboxGameDesigner::configureGameObject(int index)
     if (pickupStat->findData(initialPickupStat) < 0)
         pickupStat->addItem(initialPickupStat, initialPickupStat);
     pickupStat->setCurrentIndex(qMax(0, pickupStat->findData(initialPickupStat)));
-    pickupStat->setToolTip(tr("When Show in Inventory is OFF, add Pickup Value directly to this player stat. "
-        "Health pickups default to Player Health. When Show in Inventory is ON, the pickup goes "
-        "to the backpack instead; this direct effect is disabled."));
+    pickupStat->setToolTip(tr("Apply Pickup Value directly to the selected player stat. "
+        "Choosing a stat switches Show in Inventory OFF. Health-type pickups "
+        "default to Player Health, but the selection can always be changed. "
+        "An inventory pickup does not directly heal or change a stat."));
     collectCard.form->addRow(tr("Apply pickup value to"), pickupStat);
-    const auto updatePickupStat = [pickupStat, pickupShowInventory]() {
-        pickupStat->setEnabled(!pickupShowInventory->isChecked());
+    auto *pickupStatModeHelp = new QLabel(&dialog);
+    pickupStatModeHelp->setWordWrap(true);
+    collectCard.form->addRow(pickupStatModeHelp);
+    // A coloured outline and a text label tell the developer whether a
+    // pickup will actually modify a player stat. Inventory and callback-only
+    // modes are valid but do NOT apply Pickup Value directly to that stat.
+    // This is presentation only; the authoritative .sbgm fields stay unchanged.
+    const auto updatePickupStat = [pickupStatModeHelp, pickupShowInventory, pickupStat]() {
+        const bool inventory = pickupShowInventory->isChecked();
+        const QString target = pickupStat->currentData().toString();
+        const bool directStat = !inventory && !target.isEmpty() &&
+                                target != QStringLiteral("none");
+        const QString indicatorColour = directStat
+            ? QStringLiteral("#40d690") : QStringLiteral("#ee5966");
+        pickupStat->setStyleSheet(QStringLiteral(
+            "QComboBox { border: 2px solid %1; border-radius: 0px; } "
+            "QComboBox:disabled { border: 1px solid palette(mid); }")
+            .arg(indicatorColour));
+        pickupStatModeHelp->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; font-weight: 600; }").arg(indicatorColour));
+        if (inventory) {
+            pickupStatModeHelp->setText(QObject::tr(
+                "INVENTORY MODE: No automatic Player stat change. "
+                "Collected items go to the backpack. Choose a stat above "
+                "to switch to direct-stat mode."));
+        } else if (directStat) {
+            pickupStatModeHelp->setText(QObject::tr(
+                "DIRECT STAT ACTIVE: Pickup Value changes %1 when collected.")
+                .arg(pickupStat->currentText()));
+        } else {
+            pickupStatModeHelp->setText(QObject::tr(
+                "CALLBACK ONLY: No automatic Player stat change. "
+                "Select a stat above to apply Pickup Value on collection."));
+        }
     };
     connect(pickupShowInventory, &QCheckBox::toggled, &dialog, updatePickupStat);
+    connect(pickupStat, qOverload<int>(&QComboBox::currentIndexChanged),
+            &dialog, updatePickupStat);
     updatePickupStat();
     bool pickupStatTouched = false;
     connect(pickupStat, qOverload<int>(&QComboBox::activated), &dialog,
-            [&](int) { pickupStatTouched = true; pickupOptionsTouched = true; });
+            [&](int) {
+                pickupStatTouched = true;
+                pickupOptionsTouched = true;
+                if (pickupStat->currentData().toString() != QStringLiteral("none") &&
+                    pickupShowInventory->isChecked())
+                    pickupShowInventory->setChecked(false);
+            });
+    connect(pickupShowInventory, &QCheckBox::clicked, &dialog,
+            [&](bool checked) {
+                if (checked && pickupStat->currentData().toString() != QStringLiteral("none")) {
+                    const int noneIndex = pickupStat->findData(QStringLiteral("none"));
+                    if (noneIndex >= 0) pickupStat->setCurrentIndex(noneIndex);
+                    pickupStatTouched = true;
+                    pickupOptionsTouched = true;
+                }
+            });
     connect(pickup, qOverload<int>(&QComboBox::currentIndexChanged), &dialog,
             [&](int) {
                 if (pickupStatTouched || !old.pickupStatTarget.isEmpty()) return;
@@ -8697,7 +8747,7 @@ void SidboxGameDesigner::configureGameObject(int index)
     auto *namedEventAdd=new QPushButton(tr("+ Add event action"),&dialog);
     auto *namedEventHelp=new QLabel(tr("Named events are one-shot pulses. Actions execute in list order. "
         "Changes are stored in this Game Object's .sbgm and appear in Visual Nodes after reopening it. "
-        "Collectable key actions above remain a separate legacy mechanism."),&dialog);
+        "Collectable key actions above are configured independently."),&dialog);
     namedEventHelp->setWordWrap(true);
     linkedCard.form->addRow(tr("Event output"),namedEventKind);
     linkedCard.form->addRow(tr("Event actions"),namedEventRows);
@@ -9116,7 +9166,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             auto *collapse=new QToolButton(outer);
             collapse->setText(incoming ?
                 tr("Trigger %1: Boolean / AND / OR").arg(candidate.name) :
-                tr("Legacy Trigger state condition (optional)"));
+                tr("Trigger state condition (optional)"));
             collapse->setCheckable(true);collapse->setChecked(false);
             collapse->setArrowType(Qt::RightArrow);
             collapse->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -9132,7 +9182,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             });
             auto *form = new QFormLayout(group);
             form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-            auto *hint = new QLabel(tr("Legacy Trigger condition, evaluated after normal actions. "
+            auto *hint = new QLabel(tr("Trigger state condition, evaluated after normal actions. "
                 "Independent Logic Nodes (including logic1) are a SEPARATE section below; "
                 "their connected state inputs do not require any tick boxes here."), group);
             hint->setWordWrap(true);
@@ -9275,8 +9325,9 @@ void SidboxGameDesigner::configureGameObject(int index)
         }
     };
     buildBooleanRows();
-    // Stage 5.166.108: independent DAG nodes belong to Triggers or Stompable Enemies.
-    // Both Visual Nodes and Game Object Properties edit the SAME .sbgm JSON.
+    // Independent DAG nodes use the same .sbgm JSON whether configured from
+    // Game Object Properties or Visual Nodes. Node owners may be any supported
+    // placed Game Object; do not copy the logic into a second editor model.
     // Present one collapsed card for each node which belongs to this Trigger
     // or reads the currently edited Game Object. No parallel object callbacks.
     struct GraphEditor {
@@ -9287,6 +9338,7 @@ void SidboxGameDesigner::configureGameObject(int index)
         QComboBox *statName=nullptr,*compareOp=nullptr,*questId=nullptr;
         QSpinBox *threshold=nullptr;
         QTreeWidget *inputs=nullptr;
+        QHash<QString,QComboBox*> timerControls;
         QTreeWidget *resultTargets=nullptr;
         QComboBox *trueDialogue=nullptr,*falseDialogue=nullptr;
         QTableWidget *trueActions=nullptr,*falseActions=nullptr;
@@ -9357,11 +9409,14 @@ void SidboxGameDesigner::configureGameObject(int index)
             const QString savedOperator=node.value(QStringLiteral("op")).toString();
             const bool compareCondition=savedOperator==QStringLiteral("stat_compare");
             const bool questCondition=savedOperator==QStringLiteral("quest_done");
-            if(compareCondition || questCondition) {
+            const bool counterCondition=savedOperator==QStringLiteral("counter");
+            const bool timerCondition=savedOperator==QStringLiteral("timer");
+            if(compareCondition || questCondition || counterCondition || timerCondition) {
                 // A zero-input source cannot be converted into an ordinary
                 // gate here without wiring inputs first. Visual Nodes handles
                 // that transformation. Keep the saved operator intact.
-                editor.operation->addItem(compareCondition?tr("COMPARE"):tr("QUEST STATE"),savedOperator);
+                editor.operation->addItem(compareCondition?tr("COMPARE"):
+                    counterCondition?tr("COUNTER"):timerCondition?tr("TIMER"):tr("QUEST STATE"),savedOperator);
                 editor.operation->setEnabled(false);
             } else {
                 for(const QString &op:{QStringLiteral("boolean"),QStringLiteral("not"),
@@ -9408,6 +9463,21 @@ void SidboxGameDesigner::configureGameObject(int index)
                 editor.threshold->setValue(node.value(QStringLiteral("threshold")).toInt());
                 form->addRow(tr("Threshold"),editor.threshold);
             }
+            if(timerCondition) {
+                editor.threshold=new QSpinBox(section);
+                editor.threshold->setRange(1,600);
+                editor.threshold->setValue(qMax(1,node.value(QStringLiteral("durationFrames")).toInt(250)/50));
+                editor.threshold->setToolTip(tr("TIMER: FALSE / RUNNING action fires once on START or CONTINUE; "
+                                               "TRUE / FINISHED fires once at timeout. STOP and RESET do not "
+                                               "fire either branch. RESULT is held FINISHED state."));
+                form->addRow(tr("Duration (seconds, 50Hz)"),editor.threshold);
+            }
+            if(counterCondition) {
+                editor.threshold=new QSpinBox(section);
+                editor.threshold->setRange(1,65535);
+                editor.threshold->setValue(node.value(QStringLiteral("targetCount")).toInt(3));
+                form->addRow(tr("Target event count"),editor.threshold);
+            }
             if(questCondition) {
                 editor.questId=new GameComboBox(section);
                 const QDir project(QFileInfo(m_filePath).absolutePath());
@@ -9432,24 +9502,34 @@ void SidboxGameDesigner::configureGameObject(int index)
             editor.inputs=new QTreeWidget(section);
             editor.inputs->setHeaderHidden(true);editor.inputs->setMinimumHeight(100);
             editor.inputs->setMaximumHeight(210);
-            const auto addInput=[&](const QString &kind,const QString &id,const QString &label,bool inverted=false) {
+            const auto addInput=[&](const QString &kind,const QString &id,const QString &label,
+                                    bool inverted=false,const QString &logicOutput=QString()) {
                 auto *item=new QTreeWidgetItem(editor.inputs,QStringList{label});
                 item->setData(0,Qt::UserRole,id);
                 item->setData(0,Qt::UserRole+1,kind);
                 item->setData(0,Qt::UserRole+2,inverted);
+                item->setData(0,Qt::UserRole+3,logicOutput);
                 item->setFlags(item->flags()|Qt::ItemIsUserCheckable);
                 bool checked=false;
                 for(const QJsonValue &v:activeInputs) {
                     const QJsonObject o=v.toObject();
-                    if(o.value(QStringLiteral("kind")).toString()==kind &&
-                       o.value(QStringLiteral("id")).toString()==id &&
-                       o.value(QStringLiteral("invert")).toBool(false)==inverted)checked=true;
+                    if(counterCondition && o.value(QStringLiteral("command")).toString()==QStringLiteral("reset"))
+                        continue; // RESET has its own selector, never counts as a pickup/event.
+                    if(o.value(QStringLiteral("kind")).toString()!=kind ||
+                       o.value(QStringLiteral("id")).toString()!=id ||
+                       o.value(QStringLiteral("invert")).toBool(false)!=inverted)continue;
+                    const QString savedOutput=o.value(QStringLiteral("logicOutput")).toString();
+                    if(kind==QStringLiteral("node") && !logicOutput.isEmpty() &&
+                       (savedOutput.isEmpty() && o.value(QStringLiteral("invert")).toBool(false)?
+                            QStringLiteral("no"):savedOutput.isEmpty()?QStringLiteral("result"):savedOutput)!=logicOutput)
+                        continue;
+                    checked=true;
                 }
                 item->setCheckState(0,checked?Qt::Checked:Qt::Unchecked);
             };
             for(const Resource &object:m_resources)
-                if(object.kind==QStringLiteral("sprite") &&
-                   object.objectType!=QStringLiteral("decoration") &&
+                if(!counterCondition && !timerCondition && object.kind==QStringLiteral("sprite") &&
+                   object.objectType!=QStringLiteral("npc") &&
                    !object.id.isEmpty())
                     addInput(QStringLiteral("object"),object.id,
                         object.id==old.id?tr("This object: %1").arg(object.name):
@@ -9457,7 +9537,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             // Virtual Trigger switches are state sources, not activation
             // pulses. Both polarities use the same saved UUID + invert bit.
             for(const Resource &object:m_resources)
-                if(object.kind==QStringLiteral("sprite") &&
+                if(!counterCondition && !timerCondition && object.kind==QStringLiteral("sprite") &&
                    object.objectType==QStringLiteral("trigger") && !object.id.isEmpty()) {
                     addInput(QStringLiteral("object"),QStringLiteral("@triggerstate:")+object.id,
                         tr("Trigger %1: STATE ON").arg(object.name));
@@ -9469,7 +9549,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             // Other gate types retain their established local-event contract.
             for(const Resource &eventSource:m_resources) {
                 if(eventSource.kind!=QStringLiteral("sprite") || eventSource.id.isEmpty() ||
-                   (!(compareCondition || questCondition) && eventSource.id!=candidate.id))continue;
+                   (!(compareCondition || questCondition || counterCondition || timerCondition) && eventSource.id!=candidate.id))continue;
                 const QStringList sourceEvents=eventSource.objectType==QStringLiteral("breakable")?
                     QStringList{QStringLiteral("hit"),QStringLiteral("destroy")}:
                     eventSource.objectType==QStringLiteral("enemy")?
@@ -9490,13 +9570,114 @@ void SidboxGameDesigner::configureGameObject(int index)
                         tr("%1 pulse: %2").arg(label,eventSource.name));
                 }
             }
-            for(const QJsonValue &other:candidate.logicNodes) {
+            if(!counterCondition && !timerCondition)for(const QJsonValue &other:candidate.logicNodes) {
                 const QJsonObject o=other.toObject();
                 const QString id=o.value(QStringLiteral("id")).toString();
-                if(id!=nodeId)addInput(QStringLiteral("node"),id,
-                    tr("Logic %1 (%2)").arg(id,o.value(QStringLiteral("op")).toString().toUpper()));
+                if(id==nodeId)continue;
+                const QString upstreamOp=o.value(QStringLiteral("op")).toString();
+                if(upstreamOp==QStringLiteral("counter")) {
+                    // These are three sockets in Visual Nodes. Properties must
+                    // not silently discard NO or change YES into RESULT.
+                    addInput(QStringLiteral("node"),id,tr("Logic %1 COUNTER: RESULT").arg(id),
+                        false,QStringLiteral("result"));
+                    addInput(QStringLiteral("node"),id,tr("Logic %1 COUNTER: YES (reached)").arg(id),
+                        false,QStringLiteral("yes"));
+                    addInput(QStringLiteral("node"),id,tr("Logic %1 COUNTER: NO (below)").arg(id),
+                        true,QStringLiteral("no"));
+                } else {
+                    addInput(QStringLiteral("node"),id,
+                        tr("Logic %1 (%2): RESULT").arg(id,upstreamOp.toUpper()));
+                }
             }
-            form->addRow(tr("State / logic inputs"),editor.inputs);
+            // RESULT and YES express the same held TRUE for a COUNTER. Do
+            // not allow both copies of that signal into one gate: they have
+            // identical semantics and the exporter rejects duplicates.
+            connect(editor.inputs,&QTreeWidget::itemChanged,section,
+                [tree=editor.inputs](QTreeWidgetItem *chosen,int) {
+                    if(chosen->checkState(0)!=Qt::Checked ||
+                       chosen->data(0,Qt::UserRole+1).toString()!=QStringLiteral("node"))return;
+                    const QString id=chosen->data(0,Qt::UserRole).toString();
+                    const bool invert=chosen->data(0,Qt::UserRole+2).toBool();
+                    const QSignalBlocker guard(tree);
+                    for(int row=0;row<tree->topLevelItemCount();++row) {
+                        QTreeWidgetItem *other=tree->topLevelItem(row);
+                        if(other!=chosen && other->data(0,Qt::UserRole+1).toString()==QStringLiteral("node") &&
+                           other->data(0,Qt::UserRole).toString()==id &&
+                           other->data(0,Qt::UserRole+2).toBool()==invert)
+                            other->setCheckState(0,Qt::Unchecked);
+                    }
+                });
+            if(counterCondition) {
+                // Match the gold RESET socket in Visual Nodes. It is a control
+                // event, not one of the counted EVENT inputs.
+                auto *picker=new GameComboBox(section);
+                picker->addItem(tr("None (keep current count)"),QString());
+                for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
+                    QTreeWidgetItem *item=editor.inputs->topLevelItem(i);
+                    if(item->data(0,Qt::UserRole+1).toString()==QStringLiteral("event"))
+                        picker->addItem(item->text(0),item->data(0,Qt::UserRole));
+                }
+                for(const QJsonValue &value:activeInputs) {
+                    const QJsonObject input=value.toObject();
+                    if(input.value(QStringLiteral("command")).toString()!=QStringLiteral("reset"))continue;
+                    const QString id=input.value(QStringLiteral("id")).toString();
+                    if(picker->findData(id)<0)picker->addItem(tr("MISSING: %1").arg(id),id);
+                    picker->setCurrentIndex(qMax(0,picker->findData(id)));
+                    break;
+                }
+                picker->setToolTip(tr("Gold RESET clears the saved count to zero. "
+                    "An event cannot also be a COUNT input; selecting RESET unticks its COUNT row."));
+                // Keep RESET and COUNT exclusive at edit time, not only in
+                // the exporter. This makes the resulting .sbgm predictable.
+                connect(picker,qOverload<int>(&QComboBox::currentIndexChanged),section,
+                    [tree=editor.inputs,picker](int) {
+                        const QString selected=picker->currentData().toString();
+                        if(selected.isEmpty())return;
+                        const QSignalBlocker block(tree);
+                        for(int i=0;i<tree->topLevelItemCount();++i) {
+                            QTreeWidgetItem *item=tree->topLevelItem(i);
+                            if(item->data(0,Qt::UserRole+1).toString()==QStringLiteral("event") &&
+                               item->data(0,Qt::UserRole).toString()==selected)
+                                item->setCheckState(0,Qt::Unchecked);
+                        }
+                    });
+                connect(editor.inputs,&QTreeWidget::itemChanged,section,
+                    [picker](QTreeWidgetItem *item,int) {
+                        if(item->checkState(0)==Qt::Checked &&
+                           item->data(0,Qt::UserRole+1).toString()==QStringLiteral("event") &&
+                           item->data(0,Qt::UserRole).toString()==picker->currentData().toString())
+                            picker->setCurrentIndex(0);
+                    });
+                editor.timerControls.insert(QStringLiteral("reset"),picker);
+                form->addRow(tr("RESET EVENT"),picker);
+            }
+            if(timerCondition) {
+                const QStringList commands{QStringLiteral("start"),QStringLiteral("stop"),
+                    QStringLiteral("continue"),QStringLiteral("reset")};
+                for(const QString &command:commands) {
+                    auto *picker=new GameComboBox(section);
+                    picker->addItem(tr("None (no event)"),QString());
+                    for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
+                        auto *item=editor.inputs->topLevelItem(i);
+                        if(item->data(0,Qt::UserRole+1).toString()!=QStringLiteral("event"))continue;
+                        const QString eventId=item->data(0,Qt::UserRole).toString();
+                        picker->addItem(item->text(0),eventId);
+                    }
+                    for(const QJsonValue &value:activeInputs) {
+                        const QJsonObject existing=value.toObject();
+                        if(existing.value(QStringLiteral("command")).toString()!=command)continue;
+                        const QString id=existing.value(QStringLiteral("id")).toString();
+                        if(picker->findData(id)<0)picker->addItem(tr("MISSING: %1").arg(id),id);
+                        picker->setCurrentIndex(qMax(0,picker->findData(id)));
+                        break;
+                    }
+                    editor.timerControls.insert(command,picker);
+                    form->addRow(command.toUpper()+tr(" EVENT"),picker);
+                }
+                editor.inputs->setParent(section); // invisible source-list staging, not a second editor
+                editor.inputs->hide();
+            } else form->addRow(counterCondition?tr("Count these EVENT pulses"):tr("State / logic inputs"),editor.inputs);
+            if(counterCondition)editor.inputs->setToolTip(tr("COUNTER accepts 1 to 16 gold EVENT inputs. Each pulse increases the saved count by one."));
             if(compareCondition || questCondition) {
                 // A numeric/quest condition has at most one optional WHEN
                 // input. Leave unchecked for its original independent mode.
@@ -9513,7 +9694,7 @@ void SidboxGameDesigner::configureGameObject(int index)
             for(const Resource &object:m_resources) {
                 if(object.kind!=QStringLiteral("sprite") ||
                    object.objectType==QStringLiteral("trigger") ||
-                   object.objectType==QStringLiteral("decoration") ||
+                   object.objectType==QStringLiteral("npc") ||
                    object.id.isEmpty())continue;
                 auto *row=new QTreeWidgetItem(editor.resultTargets,
                     QStringList{tr("%1 [%2]").arg(object.name,object.objectType)});
@@ -11192,6 +11373,10 @@ void SidboxGameDesigner::configureGameObject(int index)
         pickup->setEnabled(behaviour == QStringLiteral("collectable"));
         value->setEnabled(behaviour == QStringLiteral("collectable"));
         pickupShowInventory->setEnabled(behaviour == QStringLiteral("collectable"));
+        // The stat selector stays editable even in Inventory mode. Selecting
+        // a direct stat switches Inventory off, avoiding a greyed-out default.
+        pickupStat->setEnabled(behaviour == QStringLiteral("collectable"));
+        pickupStatModeHelp->setVisible(behaviour == QStringLiteral("collectable"));
         pickupShowHud->setEnabled(behaviour == QStringLiteral("collectable"));
         pickupPersistent->setEnabled(behaviour == QStringLiteral("collectable"));
         const bool isTrigger = behaviour == QStringLiteral("trigger");
@@ -12390,34 +12575,83 @@ void SidboxGameDesigner::configureGameObject(int index)
                     node.insert(QStringLiteral("compareOp"),editor.compareOp->currentData().toString());
                     node.insert(QStringLiteral("threshold"),editor.threshold->value());
                 }
+                if(currentOperator==QStringLiteral("counter") && editor.threshold)
+                    node.insert(QStringLiteral("targetCount"),editor.threshold->value());
+                if(currentOperator==QStringLiteral("timer") && editor.threshold)
+                    node.insert(QStringLiteral("durationFrames"),editor.threshold->value()*50);
                 if(currentOperator==QStringLiteral("quest_done") && editor.questId)
                     node.insert(QStringLiteral("questId"),editor.questId->currentData().toString());
                 QJsonArray checked;
-                for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
+                if(currentOperator==QStringLiteral("timer")) {
+                    const QStringList commands{QStringLiteral("start"),QStringLiteral("stop"),
+                        QStringLiteral("continue"),QStringLiteral("reset")};
+                    for(const QString &command:commands) {
+                        QComboBox *picker=editor.timerControls.value(command,nullptr);
+                        if(!picker || picker->currentData().toString().isEmpty())continue;
+                        checked.append(QJsonObject{{QStringLiteral("kind"),QStringLiteral("event")},
+                            {QStringLiteral("id"),picker->currentData().toString()},
+                            {QStringLiteral("command"),command}});
+                    }
+                } else for(int i=0;i<editor.inputs->topLevelItemCount();++i) {
                     QTreeWidgetItem *item=editor.inputs->topLevelItem(i);
                     if(item->checkState(0)!=Qt::Checked)continue;
-                    checked.append(QJsonObject{{QStringLiteral("kind"),item->data(0,Qt::UserRole+1).toString()},
-                                               {QStringLiteral("id"),item->data(0,Qt::UserRole).toString()},
-                                               {QStringLiteral("invert"),item->data(0,Qt::UserRole+2).toBool()}});
+                    QJsonObject chosen{{QStringLiteral("kind"),item->data(0,Qt::UserRole+1).toString()},
+                                       {QStringLiteral("id"),item->data(0,Qt::UserRole).toString()},
+                                       {QStringLiteral("invert"),item->data(0,Qt::UserRole+2).toBool()}};
+                    const QString output=item->data(0,Qt::UserRole+3).toString();
+                    if(!output.isEmpty())chosen.insert(QStringLiteral("logicOutput"),output);
+                    checked.append(chosen);
+                }
+                if(currentOperator==QStringLiteral("counter")) {
+                    QJsonArray eventOnly;
+                    for(const QJsonValue &value:checked)
+                        if(value.toObject().value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
+                            eventOnly.append(value);
+                    checked=eventOnly;
                 }
                 // Preserve the authored numbered-input order and inversion.
                 // The Properties tree is grouped by object type; its visual
                 // row order must not reshuffle a graph built in Visual Nodes.
                 QJsonArray inputs;
-                for(const QJsonValue &oldValue:node.value(QStringLiteral("inputs")).toArray()) {
+                if(currentOperator==QStringLiteral("timer"))inputs=checked;
+                else for(const QJsonValue &oldValue:node.value(QStringLiteral("inputs")).toArray()) {
                     const QJsonObject oldInput=oldValue.toObject();
                     for(int i=0;i<checked.size();++i) {
                         const QJsonObject candidate=checked.at(i).toObject();
                         if(oldInput.value(QStringLiteral("kind"))==candidate.value(QStringLiteral("kind")) &&
                            oldInput.value(QStringLiteral("id"))==candidate.value(QStringLiteral("id")) &&
-                           oldInput.value(QStringLiteral("invert")).toBool(false)==candidate.value(QStringLiteral("invert")).toBool(false)) {
+                           oldInput.value(QStringLiteral("invert")).toBool(false)==candidate.value(QStringLiteral("invert")).toBool(false) &&
+                           (oldInput.value(QStringLiteral("logicOutput")).toString().isEmpty() &&
+                               oldInput.value(QStringLiteral("invert")).toBool(false)?QStringLiteral("no"):
+                               oldInput.value(QStringLiteral("logicOutput")).toString().isEmpty()?QStringLiteral("result"):
+                               oldInput.value(QStringLiteral("logicOutput")).toString())==
+                           (candidate.value(QStringLiteral("logicOutput")).toString().isEmpty() &&
+                               candidate.value(QStringLiteral("invert")).toBool(false)?QStringLiteral("no"):
+                               candidate.value(QStringLiteral("logicOutput")).toString().isEmpty()?QStringLiteral("result"):
+                               candidate.value(QStringLiteral("logicOutput")).toString())) {
                             inputs.append(oldInput);
                             checked.removeAt(i);
                             break;
                         }
                     }
                 }
-                for(const QJsonValue &newInput:checked)inputs.append(newInput);
+                if(currentOperator!=QStringLiteral("timer"))
+                    for(const QJsonValue &newInput:checked)inputs.append(newInput);
+                if(currentOperator==QStringLiteral("counter")) {
+                    QComboBox *reset=editor.timerControls.value(QStringLiteral("reset"),nullptr);
+                    const QString eventId=reset?reset->currentData().toString():QString();
+                    if(!eventId.isEmpty()) {
+                        // A single EVENT source may not be counted AND reset
+                        // simultaneously; RESET is an explicit control and wins.
+                        QJsonArray counting;
+                        for(const QJsonValue &value:inputs)
+                            if(value.toObject().value(QStringLiteral("id")).toString()!=eventId)
+                                counting.append(value);
+                        inputs=counting;
+                        inputs.append(QJsonObject{{QStringLiteral("kind"),QStringLiteral("event")},
+                            {QStringLiteral("id"),eventId},{QStringLiteral("command"),QStringLiteral("reset")}});
+                    }
+                }
                 // Preserve the optional WHEN input on COMPARE/QUEST STATE.
                 // The shared schema and exporter enforce at most one.
                 node.insert(QStringLiteral("inputs"),inputs);

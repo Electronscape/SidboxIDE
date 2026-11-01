@@ -124,8 +124,33 @@ void MainWindow::setCompileProgressStage(const QString &text)
     statusBar()->showMessage(text);
 
     if (m_compileProgressBar) {
-        m_compileProgressBar->setFormat(text);
+        if (m_v1ProgressActive) {
+            // 0-85%: files actually compiled; 90-99%: completed build phases.
+            // These are completed-work milestones, not elapsed-time guesses.
+            int percent = 0;
+            if (m_buildStep == BuildStep::V1Compiling && !m_v1CompileSources.isEmpty()) {
+                percent = (m_v1CompletedCount * 85) / m_v1CompileSources.size();
+            } else if (m_buildStep == BuildStep::Linking) {
+                percent = 90;
+            } else if (m_buildStep == BuildStep::Asm) {
+                percent = 95;
+            } else if (m_buildStep == BuildStep::Objcopy) {
+                percent = 99;
+            }
+            m_compileProgressBar->setRange(0, 100);
+            m_compileProgressBar->setValue(percent);
+            m_compileProgressBar->setFormat(QStringLiteral("%p%"));
+        } else {
+            // Existing animated indicator for V2 (no file-count protocol yet).
+            m_compileProgressBar->setRange(0, 0);
+            m_compileProgressBar->setFormat(text);
+        }
 
+        if (m_v1ProgressActive) {
+            // The determinate V1 bar has useful information from file one.
+            m_compileProgressBar->show();
+            return;
+        }
         if (m_compileProgressBar->isVisible()) {
             return;
         }
@@ -145,8 +170,10 @@ void MainWindow::finishCompileProgress()
 
     if (m_compileProgressBar) {
         m_compileProgressBar->hide();
+        m_compileProgressBar->setRange(0, 0);
         m_compileProgressBar->setFormat(tr("Compiling..."));
     }
+    m_v1ProgressActive = false;
 }
 
 void MainWindow::clearCompilerDiagnostics()

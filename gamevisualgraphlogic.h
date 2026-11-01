@@ -21,11 +21,17 @@ struct Input {
     QString kind;            // "object", "node", or one-frame "event"
     QString id;              // stable resource ID or logic node ID
     bool invert = false;     // a FALSE output means NOT the upstream result
+    QString logicOutput;     // exact selected pin: result, yes or no
+    QString command;         // TIMER: start, stop, continue, reset (gold event only)
 };
 struct Node {
     QString id;
     QString op;              // boolean/not/and/or, stat_compare, quest_done
     QString statName, compareOp, questId;
+int targetCount = 3;
+    int runtimeCounterSlot = -1; // Generated world-local index, never written to .sbgm.
+    int durationFrames = 250;   // TIMER, 5 seconds at the default 50Hz game clock.
+    int runtimeTimerSlot = -1;   // Generated world-local index, never saved in .sbgm.
     int threshold = 0;
     QVector<Input> inputs;
     QJsonArray trueActions, falseActions;
@@ -53,17 +59,34 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
         ids.insert(n.id);
         if(n.op!=QStringLiteral("boolean") && n.op!=QStringLiteral("not") &&
            n.op!=QStringLiteral("and") && n.op!=QStringLiteral("or") &&
-           n.op!=QStringLiteral("stat_compare") && n.op!=QStringLiteral("quest_done")) {
+           n.op!=QStringLiteral("stat_compare") && n.op!=QStringLiteral("quest_done") &&
+           n.op!=QStringLiteral("counter") && n.op!=QStringLiteral("timer")) {
             if(error)*error=QStringLiteral("Unknown operator on logic node %1.").arg(n.id);
             return false;
         }
         const QJsonArray rawInputs=o.value(QStringLiteral("inputs")).toArray();
         const bool sourceCondition=n.op==QStringLiteral("stat_compare") || n.op==QStringLiteral("quest_done");
-        if(rawInputs.size()>16 || (sourceCondition ? rawInputs.size()>1 :
+        const bool counter=n.op==QStringLiteral("counter");
+        const bool timer=n.op==QStringLiteral("timer");
+        if(rawInputs.size()>(counter?17:16) || (counter ? (rawInputs.size()<1 || rawInputs.size()>17) : timer ? rawInputs.size()>4 : sourceCondition ? rawInputs.size()>1 :
             (n.op==QStringLiteral("boolean") || n.op==QStringLiteral("not")
               ? rawInputs.size()!=1 : n.op==QStringLiteral("or") ? (rawInputs.size()<2 || rawInputs.size()>8) : rawInputs.size()<2))) {
             if(error)*error=QStringLiteral("Logic node %1 has an invalid number of inputs.").arg(n.id);
             return false;
+        }
+        if(counter) {
+            n.targetCount=o.value(QStringLiteral("targetCount")).toInt(3);
+            if(n.targetCount<1 || n.targetCount>65535) {
+                if(error)*error=QStringLiteral("Counter %1 requires a target between 1 and 65535.").arg(n.id);
+                return false;
+            }
+        }
+        if(timer) {
+            n.durationFrames=o.value(QStringLiteral("durationFrames")).toInt(250);
+            if(n.durationFrames<1 || n.durationFrames>30000) {
+                if(error)*error=QStringLiteral("Timer %1 must have 1 to 30000 game frames.").arg(n.id);
+                return false;
+            }
         }
         if(n.op==QStringLiteral("stat_compare")) {
             n.statName=o.value(QStringLiteral("statName")).toString().trimmed();
@@ -94,11 +117,23 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
                 }
         }
         QSet<QString> unique;
+        QSet<QString> timerCommands;
+        bool counterResetSeen=false;
         for(int inputIndex=0;inputIndex<rawInputs.size();++inputIndex) {
             const QJsonObject input=rawInputs.at(inputIndex).toObject();
             Input in{input.value(QStringLiteral("kind")).toString(),
                      input.value(QStringLiteral("id")).toString(),
                      input.value(QStringLiteral("invert")).toBool(false)};
+            in.logicOutput=input.value(QStringLiteral("logicOutput")).toString();
+            if(!in.logicOutput.isEmpty() &&
+               (in.kind!=QStringLiteral("node") ||
+                !QStringList{QStringLiteral("result"),QStringLiteral("yes"),
+                             QStringLiteral("no")}.contains(in.logicOutput) ||
+                (in.logicOutput==QStringLiteral("no"))!=in.invert)) {
+                if(error)*error=QStringLiteral("Logic node %1 INPUT %2 has an invalid Boolean output pin.")
+                    .arg(n.id).arg(inputIndex+1);
+                return false;
+            }
             const QString eventKind=in.id.section(QLatin1Char(':'),1,1);
             const bool eventIdValid=in.id.startsWith(QStringLiteral("@event:")) &&
                 (eventKind==QStringLiteral("arrival") || eventKind==QStringLiteral("hit") ||
@@ -119,6 +154,35 @@ inline bool read(const QJsonArray &raw, QVector<Node> *nodes, QString *error) {
             const QString identity=in.kind+QLatin1Char(':')+in.id+(in.invert?QStringLiteral(":not"):QString());
             if(unique.contains(identity)) {
                 if(error)*error=QStringLiteral("Logic node %1 contains a duplicate input.").arg(n.id);
+                return false;
+            }
+            if(timer) {
+                const QString command=input.value(QStringLiteral("command")).toString();
+                if(in.kind!=QStringLiteral("event") ||
+                   !QStringList{QStringLiteral("start"),QStringLiteral("stop"),
+                                QStringLiteral("continue"),QStringLiteral("reset")}.contains(command) ||
+                   timerCommands.contains(command)) {
+                    if(error)*error=QStringLiteral("Timer %1 requires unique EVENT controls: START/STOP/CONTINUE/RESET.").arg(n.id);
+                    return false;
+                }
+                timerCommands.insert(command);
+                in.command=command;
+            }
+            if(counter && !input.value(QStringLiteral("command")).toString().isEmpty() &&
+               input.value(QStringLiteral("command")).toString()!=QStringLiteral("reset")) {
+                if(error)*error=QStringLiteral("Counter %1 has an invalid GOLD EVENT command.").arg(n.id);
+                return false;
+            }
+            if(counter && input.value(QStringLiteral("command")).toString()==QStringLiteral("reset")) {
+                if(in.kind!=QStringLiteral("event") || counterResetSeen) {
+                    if(error)*error=QStringLiteral("Counter %1 requires one unique gold RESET event.").arg(n.id);
+                    return false;
+                }
+                counterResetSeen=true;
+                in.command=QStringLiteral("reset");
+            }
+            if(counter && in.kind!=QStringLiteral("event")) {
+                if(error)*error=QStringLiteral("Counter %1 accepts EVENT pulses only, not held STATE or LOGIC values.").arg(n.id);
                 return false;
             }
             unique.insert(identity);
@@ -196,6 +260,14 @@ inline bool order(const QVector<Node> &nodes,const QSet<QString> &objects,
                         .arg(nodes[i].id,input.id);
                     return false;
                 }
+                const Node &upstream=nodes[byId.value(input.id)];
+                if((input.logicOutput==QStringLiteral("yes") ||
+                    input.logicOutput==QStringLiteral("no")) &&
+                   upstream.op!=QStringLiteral("counter")) {
+                    if(error)*error=QStringLiteral("Logic node %1 reads a YES/NO socket on non-Counter %2.")
+                        .arg(nodes[i].id,input.id);
+                    return false;
+                }
                 if(!visit(byId.value(input.id)))return false;
             }
         }
@@ -223,6 +295,11 @@ inline QString expression(const Node &node,const QHash<QString,QString> &objects
         if(input.invert)x=QStringLiteral("!(%1)").arg(x);
         parts.append(QStringLiteral("(%1)").arg(x));
     }
+    if(node.op==QStringLiteral("timer"))
+        return QStringLiteral("(cg_logic_timer_mode[%1u] == 3u)").arg(node.runtimeTimerSlot);
+    if(node.op==QStringLiteral("counter"))
+        return QStringLiteral("(cg_logic_counter_value[%1u] >= %2u)")
+            .arg(node.runtimeCounterSlot).arg(node.targetCount);
     // COMPARE and QUEST STATE are live condition sources, optionally guarded
     // by a single WHEN input. With no input they preserve their original
     // independent, revision-driven behaviour. A gold event WHEN gates the

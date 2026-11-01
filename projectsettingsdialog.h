@@ -50,6 +50,9 @@ public:
     void setDefaultLinkerScriptPath(const QString &path);
     void setDefaultLinkerScriptPaths(const QString &guiPath, const QString &gamePath);
 
+    int v1ParallelJobs() const;
+    void setV1ParallelJobs(int jobs);
+
     QString optimizationFlag() const;
     void setOptimizationFlag(const QString &flag);
     bool suppressWarnings() const;
@@ -78,6 +81,7 @@ private:
     QComboBox *m_appletFormatCombo;
     QComboBox *m_v2LinkerCombo;
     QComboBox *m_optimizationCombo;
+    QSpinBox *m_v1ParallelJobsSpinBox;
     QCheckBox *m_suppressWarningsCheck;
     QCheckBox *m_wallCheck;
     QCheckBox *m_wextraCheck;

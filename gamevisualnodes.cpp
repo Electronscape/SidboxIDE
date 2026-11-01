@@ -7,6 +7,9 @@
 
 #include <QCryptographicHash>
 #include <QElapsedTimer>
+#include <QFocusEvent>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -42,6 +45,9 @@
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
+#include <QImage>
+#include <QPaintEvent>
+#include <QResizeEvent>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -71,6 +77,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QtMath>
 #include <QCloseEvent>
 #include <QShowEvent>
 #include <QTransform>
@@ -80,6 +87,7 @@
 #include <functional>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 
@@ -354,6 +362,243 @@ private:
     NodeFoldButton *m_fold=nullptr;
 };
 
+// A user's visual grouping, distinct from the read-only NPC conversation flows.
+// Member cards remain independent scene items; only the .vsgm layout owns this box.
+struct UserNodeGroup {
+    QString id, title;
+    QStringList members;
+    QHash<QString,QPointF> beforePositions;
+    QSet<QString> beforeCollapsed;
+    QPointF compactPosition;
+    bool compactPositionSet=false;
+    bool collapsed=false;
+};
+
+// Edit a visual group's title directly in its header. A deliberate second click
+// after the first (or an ordinary double-click) starts editing; the group count
+// is display-only and never becomes part of the editable, saved name.
+class UserGroupTitleItem final : public QGraphicsTextItem {
+public:
+    std::function<void(const QString &)> renamed;
+    explicit UserGroupTitleItem(QGraphicsItem *parent) : QGraphicsTextItem(parent) {
+        setDefaultTextColor(Qt::white);
+        document()->setDocumentMargin(0.0);
+        setTextInteractionFlags(Qt::NoTextInteraction);
+        setAcceptedMouseButtons(Qt::LeftButton);
+        setToolTip(QObject::tr("Click, then click again to rename this group. Enter saves; Escape cancels."));
+    }
+    void setGroupTitle(const QString &title,int count) {
+        m_title=title;m_count=count;
+        if(!m_editing)setPlainText(QStringLiteral("%1: %2").arg(m_title).arg(m_count));
+    }
+    bool editing() const {return m_editing;}
+    void beginRename() {
+        if(m_editing)return;
+        m_editing=true;
+        setPlainText(m_title);
+        setTextInteractionFlags(Qt::TextEditorInteraction);
+        setFocus(Qt::MouseFocusReason);
+        QTextCursor cursor=textCursor();
+        cursor.select(QTextCursor::Document);
+        setTextCursor(cursor);
+        update();
+    }
+protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if(!m_editing && event->button()==Qt::LeftButton) {
+            const qint64 gap=m_lastClick.isValid()?m_lastClick.elapsed():-1;
+            m_lastClick.restart();
+            if(gap>=180 && gap<=1400)beginRename();
+            event->accept();
+            return;
+        }
+        QGraphicsTextItem::mousePressEvent(event);
+    }
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override {
+        if(!m_editing && event->button()==Qt::LeftButton) {
+            beginRename();event->accept();return;
+        }
+        QGraphicsTextItem::mouseDoubleClickEvent(event);
+    }
+    void keyPressEvent(QKeyEvent *event) override {
+        if(m_editing && (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter)) {
+            finishRename(true);event->accept();return;
+        }
+        if(m_editing && event->key()==Qt::Key_Escape) {
+            finishRename(false);event->accept();return;
+        }
+        QGraphicsTextItem::keyPressEvent(event);
+    }
+    void focusOutEvent(QFocusEvent *event) override {
+        if(m_editing)finishRename(true,false);
+        QGraphicsTextItem::focusOutEvent(event);
+    }
+    void paint(QPainter *painter,const QStyleOptionGraphicsItem *option,QWidget *widget) override {
+        if(m_editing) {
+            painter->fillRect(boundingRect(),QColor(20,24,34));
+            painter->setPen(QPen(Qt::white,1));
+            painter->drawRect(boundingRect().adjusted(0.5,0.5,-0.5,-0.5));
+        }
+        QGraphicsTextItem::paint(painter,option,widget);
+    }
+private:
+    void finishRename(bool accept,bool clear=true) {
+        if(!m_editing)return;
+        const QString name=toPlainText().simplified().left(50);
+        m_editing=false;
+        setTextInteractionFlags(Qt::NoTextInteraction);
+        setPlainText(QStringLiteral("%1: %2").arg(m_title).arg(m_count));
+        if(clear && hasFocus())clearFocus();
+        if(accept && !name.isEmpty() && name!=m_title && renamed)renamed(name);
+    }
+    QString m_title;
+    int m_count=0;
+    bool m_editing=false;
+    QElapsedTimer m_lastClick;
+};
+
+class UserNodeGroupBox final : public QGraphicsRectItem {
+public:
+    std::function<void(const QPointF &)> moved;
+    std::function<void()> dragFinished;
+    std::function<void()> foldClicked;
+    std::function<void(const QString &)> renamed;
+    void beginRename() {if(m_title)m_title->beginRename();}
+    explicit UserNodeGroupBox(const QColor &panel,const QColor &heading)
+        : QGraphicsRectItem() {
+        setData(0,QStringLiteral("user-node-group"));
+        setZValue(-0.5);
+        setFlags(ItemIsMovable | ItemSendsGeometryChanges);
+        setAcceptedMouseButtons(Qt::LeftButton);
+        setPen(QPen(heading,1.5));
+        QColor translucent=panel;translucent.setAlpha(90);
+        setBrush(translucent);
+        m_header=new QGraphicsRectItem(this);
+        m_header->setPen(Qt::NoPen);m_header->setBrush(heading);
+        m_header->setAcceptedMouseButtons(Qt::NoButton);
+        m_title=new UserGroupTitleItem(this);
+        m_title->setPos(9,6);
+        m_title->setZValue(8);
+        m_title->renamed=[this](const QString &name) {if(renamed)renamed(name);};
+        m_fold=new NodeFoldButton(this);
+        m_fold->clicked=[this]{if(foldClicked)foldClicked();};
+        m_fold->setToolTip(QObject::tr("Collapse or expand this visual group"));
+        m_fold->setZValue(9);
+    }
+    bool collapsed() const {return m_collapsed;}
+    void setFrame(const QRectF &bounds,const QPointF &compact,bool collapsed,
+                  const QString &title,int memberCount,const QVector<QPair<QColor,int>> &counts,
+                  int inbound=0,int outbound=0) {
+        m_adjusting=true;
+        m_collapsed=collapsed;
+        // Connection proxy ports belong to the compact group only. Remove
+        // them when expanded; the real node sockets and wires take over.
+        if(!collapsed) {
+            qDeleteAll(m_ports);
+            m_ports.clear();
+        }
+        setZValue(collapsed?1.0:-0.5);
+        const QString shownTitle=title.left(50);
+        if(m_displayTitle!=shownTitle || m_displayMemberCount!=memberCount) {
+            m_title->setGroupTitle(shownTitle,memberCount);
+            m_displayTitle=shownTitle;
+            m_displayMemberCount=memberCount;
+        }
+        const qreal minimumWidth=qMax(310.0,m_title->boundingRect().width()+
+            65.0+counts.size()*45.0);
+        const qreal width=collapsed?qMax(minimumWidth,80.0+counts.size()*48.0):
+                         qMax(bounds.width(),minimumWidth);
+        const qreal height=collapsed?qMax(40.0,36.0+qMax(inbound,outbound)*18.0):bounds.height();
+        setRect(QRectF(0,0,width,height));
+        setPos(collapsed?compact:bounds.topLeft());
+        m_header->setRect(QRectF(0,0,width,30));
+        m_fold->setText(collapsed?QStringLiteral("[+]"):QStringLiteral("[-]"));
+        m_fold->setPos(width-29,5);
+        // Frame geometry changes on every member drag. Keep badge graphics
+        // alive while their categories/counts are unchanged, and only move
+        // them as the width changes. Recreating child items here was costly.
+        if(m_badgeCounts!=counts) {
+            qDeleteAll(m_badges);m_badges.clear();
+            for(const auto &entry:counts) {
+                auto *background=new QGraphicsRectItem(QRectF(0,0,42,26),this);
+                background->setBrush(entry.first);background->setPen(Qt::NoPen);
+                background->setAcceptedMouseButtons(Qt::NoButton);
+                auto *number=new QGraphicsSimpleTextItem(QString::number(entry.second),background);
+                number->setBrush(Qt::black);number->setAcceptedMouseButtons(Qt::NoButton);
+                number->setPos((42-number->boundingRect().width())/2.0,3);
+                m_badges.append(background);
+            }
+            m_badgeCounts=counts;
+        }
+        qreal x=width-38.0-counts.size()*45.0;
+        for(QGraphicsRectItem *background:m_badges) {
+            background->setPos(x,2);
+            x+=45;
+        }
+        m_adjusting=false;
+    }
+    void setPorts(const QVector<QColor> &incoming,const QVector<QColor> &outgoing) {
+        qDeleteAll(m_ports);m_ports.clear();
+        if(!m_collapsed)return; // Expanded groups have no proxy sockets.
+        const qreal height=qMax(40.0,36.0+18.0*qMax(incoming.size(),outgoing.size()));
+        if(m_collapsed)setRect(QRectF(0,0,rect().width(),height));
+        for(int i=0;i<incoming.size();++i) {
+            auto *port=new QGraphicsRectItem(QRectF(-6,40+i*18,12,12),this);
+            port->setPen(QPen(incoming.at(i),1.5));port->setBrush(incoming.at(i));
+            port->setAcceptedMouseButtons(Qt::NoButton);
+            port->setToolTip(QObject::tr("Connection into a member node. Expand to edit."));
+            port->setZValue(4);m_ports.append(port);
+        }
+        for(int i=0;i<outgoing.size();++i) {
+            auto *port=new QGraphicsEllipseItem(QRectF(rect().width()-6,40+i*18,12,12),this);
+            port->setPen(QPen(outgoing.at(i),1.5));port->setBrush(outgoing.at(i));
+            port->setAcceptedMouseButtons(Qt::NoButton);
+            port->setToolTip(QObject::tr("Connection from a member node. Expand to edit."));
+            port->setZValue(4);m_ports.append(port);
+        }
+    }
+    QPainterPath shape() const override {
+        // Only the header grabs drags; cards remain interactive inside the frame.
+        QPainterPath path;path.addRect(QRectF(0,0,rect().width(),30));return path;
+    }
+protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if(event->button()==Qt::LeftButton) {
+            m_dragging=true;m_origin=pos();m_previous=pos();
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
+        const bool dragged=m_dragging;m_dragging=false;
+        QGraphicsRectItem::mouseReleaseEvent(event);
+        if(dragged && dragFinished)dragFinished();
+    }
+    QVariant itemChange(GraphicsItemChange change,const QVariant &value) override {
+        if(change==ItemPositionChange && m_dragging && !m_adjusting) {
+            const QPointF d=value.toPointF()-m_origin;
+            return QGraphicsRectItem::itemChange(change,m_origin+QPointF(
+                std::round(d.x()/8.0)*8.0,std::round(d.y()/8.0)*8.0));
+        }
+        const QVariant result=QGraphicsRectItem::itemChange(change,value);
+        if(change==ItemPositionHasChanged && m_dragging && !m_adjusting) {
+            const QPointF d=pos()-m_previous;m_previous=pos();
+            if(moved && (!qFuzzyIsNull(d.x()) || !qFuzzyIsNull(d.y())))moved(d);
+        }
+        return result;
+    }
+private:
+    bool m_collapsed=false,m_adjusting=false,m_dragging=false;
+    QPointF m_origin,m_previous;
+    QGraphicsRectItem *m_header=nullptr;
+    UserGroupTitleItem *m_title=nullptr;
+    NodeFoldButton *m_fold=nullptr;
+    QList<QGraphicsRectItem*> m_badges;
+    QVector<QPair<QColor,int>> m_badgeCounts;
+    QString m_displayTitle;
+    int m_displayMemberCount=-1;
+    QList<QGraphicsItem*> m_ports;
+};
+
 class NodeCard final : public QGraphicsRectItem {
 public:
     std::function<void()> moved;
@@ -588,12 +833,25 @@ public:
         return QGraphicsPathItem::boundingRect().adjusted(-12,-12,12,12);
     }
     QPainterPath shape() const override {
-        QPainterPathStroker stroker;
-        stroker.setWidth(20.0);
-        stroker.setCapStyle(Qt::RoundCap);
-        stroker.setJoinStyle(Qt::RoundJoin);
-        return stroker.createStroke(path());
+        // Qt performs wire hit tests during hover, selection and panning.
+        // Stroking an unchanged cubic on every test is unnecessarily costly.
+        // Comparing the path also handles setPath() calls through the base
+        // QGraphicsPathItem pointer used by the live-wire drag cache.
+        const QPainterPath current=path();
+        if(!m_hitShapeValid || current!=m_hitPath) {
+            QPainterPathStroker stroker;
+            stroker.setWidth(20.0);
+            stroker.setCapStyle(Qt::RoundCap);
+            stroker.setJoinStyle(Qt::RoundJoin);
+            m_hitShape=stroker.createStroke(current);
+            m_hitPath=current;
+            m_hitShapeValid=true;
+        }
+        return m_hitShape;
     }
+private:
+    mutable QPainterPath m_hitPath,m_hitShape;
+    mutable bool m_hitShapeValid=false;
 };
 
 class NodeCanvas final : public QGraphicsView {
@@ -619,6 +877,7 @@ public:
     std::function<void(const QString &)> wireSelected;
     std::function<void()> cardDragFinished;
     std::function<void(const QString &,const QPoint &)> cardMenuRequested;
+    std::function<void(const QString &,const QPoint &)> userGroupMenuRequested;
     std::function<void()> deleteRequested;
     explicit NodeCanvas(QGraphicsScene *scene, QWidget *parent = nullptr)
         : QGraphicsView(scene, parent) {
@@ -633,7 +892,10 @@ public:
         // Without this, restoring the saved pan before its final resize can shift it.
         setResizeAnchor(QGraphicsView::AnchorViewCenter);
         setBackgroundBrush(QColor(26, 31, 41));
-        setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+        // A long curved wire has a very large bounding rectangle. BoundingRect
+        // mode repaints that entire region whenever its endpoint moves.
+        // Minimal mode limits updates to the actual changed areas instead.
+        setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
     }
     void zoom(qreal factor) {
         const qreal current=transform().m11();
@@ -644,11 +906,37 @@ public:
         if (!qFuzzyCompare(current,target))scale(target/current,target/current);
     }
 protected:
+    void paintEvent(QPaintEvent *event) override {
+        // Pan-only raster snapshot: embedded Qt controls remain fully live
+        // outside a middle-button drag. In particular, their cached contents
+        // cannot go stale after an edit, hover, or focus change.
+        if (m_panning && !m_panBitmap.isNull()) {
+            QPainter painter(viewport());
+            painter.setClipRegion(event->region());
+            painter.drawImage(QPoint(m_panOffset.x()-m_panMargin,
+                                     m_panOffset.y()-m_panMargin),m_panBitmap);
+            return;
+        }
+        QGraphicsView::paintEvent(event);
+    }
     void wheelEvent(QWheelEvent *event) override {
+        if (m_panning) finishBitmapPan();
         zoom(event->angleDelta().y() >= 0 ? 1.12 : 1.0/1.12);
         event->accept();
     }
+    void resizeEvent(QResizeEvent *event) override {
+        if (m_panning) finishBitmapPan();
+        QGraphicsView::resizeEvent(event);
+    }
+    void focusOutEvent(QFocusEvent *event) override {
+        if (m_panning) finishBitmapPan();
+        QGraphicsView::focusOutEvent(event);
+    }
     void keyPressEvent(QKeyEvent *event) override {
+        // While an in-scene group title is being renamed, its text editor
+        // owns Escape, Delete and Enter. Never interpret them as graph actions.
+        if(scene())if(auto *title=dynamic_cast<UserGroupTitleItem*>(scene()->focusItem()))
+            if(title->editing()) {QGraphicsView::keyPressEvent(event);return;}
         // Do not steal Delete from QLineEdit/QPlainTextEdit inside a purple
         // dialogue-card proxy. Delete applies to a selected canvas card only.
         if (event->key()==Qt::Key_Escape && cardSelected) {
@@ -669,8 +957,16 @@ protected:
     }
     void mousePressEvent(QMouseEvent *event) override {
         if (event->button()==Qt::MiddleButton) {
+            // One offscreen rasterisation instead of redrawing every proxy
+            // widget, card, text label and curved wire for every pan pixel.
+            capturePanBitmap();
             m_panning=true;
             m_panPosition=event->pos();
+            if (!m_panBitmap.isNull()) {
+                m_previousViewportMode=viewportUpdateMode();
+                m_panViewportFrozen=true;
+                setViewportUpdateMode(QGraphicsView::NoViewportUpdate);
+            }
             viewport()->setCursor(Qt::ClosedHandCursor);
             event->accept();
             return;
@@ -772,8 +1068,26 @@ protected:
         if (m_panning) {
             const QPoint movement=event->pos()-m_panPosition;
             m_panPosition=event->pos();
-            horizontalScrollBar()->setValue(horizontalScrollBar()->value()-movement.x());
-            verticalScrollBar()->setValue(verticalScrollBar()->value()-movement.y());
+            const int oldX=horizontalScrollBar()->value();
+            const int oldY=verticalScrollBar()->value();
+            horizontalScrollBar()->setValue(oldX-movement.x());
+            verticalScrollBar()->setValue(oldY-movement.y());
+            if (!m_panBitmap.isNull()) {
+                // Use the *actual* scrollbar displacement, including when
+                // panning hits a scene boundary, so pixels don't drift.
+                m_panOffset+=QPoint(oldX-horizontalScrollBar()->value(),
+                                    oldY-verticalScrollBar()->value());
+                // Refresh only after leaving the cached overscan margin.
+                if (qAbs(m_panOffset.x())>m_panMargin-48 ||
+                    qAbs(m_panOffset.y())>m_panMargin-48) {
+                    capturePanBitmap();
+                    if (m_panBitmap.isNull() && m_panViewportFrozen) {
+                        setViewportUpdateMode(m_previousViewportMode);
+                        m_panViewportFrozen=false;
+                    }
+                }
+                viewport()->update();
+            }
             event->accept();
             return;
         }
@@ -790,8 +1104,7 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
         if (event->button()==Qt::MiddleButton && m_panning) {
-            m_panning=false;
-            viewport()->unsetCursor();
+            finishBitmapPan();
             event->accept();
             return;
         }
@@ -814,6 +1127,9 @@ protected:
                 if(dynamic_cast<NodeWire*>(hit))continue;
                 QString candidate, port;
                 for(QGraphicsItem *p=hit;p;p=p->parentItem()) {
+                    if(p->data(0).toString()==QStringLiteral("input") &&
+                       p->data(4).toString()==QStringLiteral("graph-input"))
+                        port=QStringLiteral("graph-input:")+p->data(2).toString();
                     if(p->data(0).toString()==QStringLiteral("npc-input") ||
                        (p->data(0).toString()==QStringLiteral("input") &&
                         p->data(2).toString()==QStringLiteral("state")))
@@ -884,6 +1200,13 @@ protected:
                 return;
             }
         }
+        for(QGraphicsItem *p=top;p;p=p->parentItem()) {
+            if(p->data(0).toString()==QStringLiteral("user-node-group")) {
+                if(userGroupMenuRequested)
+                    userGroupMenuRequested(p->data(1).toString(),event->globalPos());
+                event->accept();return;
+            }
+        }
         // The self-loop runs OUTSIDE the card and remains easy to right-click.
         for(QGraphicsItem *wire:items(event->pos())) {
             const QString kind=wire->data(0).toString();
@@ -943,8 +1266,68 @@ protected:
         QGraphicsView::contextMenuEvent(event);
     }
 private:
+    void capturePanBitmap() {
+        m_panBitmap=QImage();
+        m_panOffset=QPoint();
+        m_panMargin=0;
+        if (!scene() || !viewport()) return;
+        const QSize viewSize=viewport()->size();
+        if (viewSize.width()<1 || viewSize.height()<1) return;
+        const qreal dpr=viewport()->devicePixelRatioF();
+        if (dpr<=0.0) return;
+        // Cap the cached bitmap at 16 million device pixels (~64 MiB).
+        // Overscan makes ordinary middle-drag pans completely raster-only;
+        // larger moves recapture at the new scroll position as necessary.
+        int margin=qMin(512,qMax(128,qMin(viewSize.width(),viewSize.height())/3));
+        constexpr qint64 maxPixels=16LL*1024*1024;
+        const auto fits=[&](int extra) {
+            const qint64 pixelsWide=qCeil((viewSize.width()+2.0*extra)*dpr);
+            const qint64 pixelsHigh=qCeil((viewSize.height()+2.0*extra)*dpr);
+            return pixelsWide>0 && pixelsHigh>0 &&
+                   pixelsWide* pixelsHigh<=maxPixels;
+        };
+        while (margin>64 && !fits(margin)) margin/=2;
+        if (!fits(margin)) return; // Oversized HiDPI views use live Qt painting.
+        const int logicalWidth=viewSize.width()+2*margin;
+        const int logicalHeight=viewSize.height()+2*margin;
+        QImage bitmap(QSize(qCeil(logicalWidth*dpr),qCeil(logicalHeight*dpr)),
+                      QImage::Format_RGB32);
+        if (bitmap.isNull()) return;
+        bitmap.setDevicePixelRatio(dpr);
+        bitmap.fill(backgroundBrush().color());
+        QPainter painter(&bitmap);
+        painter.setRenderHints(renderHints());
+        const QPointF upperLeft=mapToScene(QPoint(-margin,-margin));
+        const QPointF lowerRight=mapToScene(
+            QPoint(viewSize.width()+margin,viewSize.height()+margin));
+        // QGraphicsScene::render includes cards, QGraphicsProxyWidget controls,
+        // groups and wires in one capture. No game/editor data is modified.
+        scene()->render(&painter,QRectF(0,0,logicalWidth,logicalHeight),
+                        QRectF(upperLeft,lowerRight).normalized(),
+                        Qt::IgnoreAspectRatio);
+        painter.end();
+        m_panMargin=margin;
+        m_panBitmap=std::move(bitmap);
+    }
+    void finishBitmapPan() {
+        if (m_panViewportFrozen) {
+            setViewportUpdateMode(m_previousViewportMode);
+            m_panViewportFrozen=false;
+        }
+        m_panBitmap=QImage();
+        m_panMargin=0;
+        m_panOffset=QPoint();
+        m_panning=false;
+        viewport()->unsetCursor();
+        viewport()->update(); // Restore real interactive Qt widgets instantly.
+    }
     bool m_panning=false;
+    bool m_panViewportFrozen=false;
     QPoint m_panPosition;
+    QPoint m_panOffset;
+    QImage m_panBitmap;
+    int m_panMargin=0;
+    QGraphicsView::ViewportUpdateMode m_previousViewportMode=QGraphicsView::MinimalViewportUpdate;
     QString m_from;
     bool m_choiceDrag=false,m_choiceMissing=false,m_giveDrag=false;
     int m_choiceOption=-1;
@@ -1100,6 +1483,7 @@ public:
                 m_positions.insert(it.key(),QPointF(qBound(-30000.,xy.at(0).toDouble(),30000.),
                                                     qBound(-30000.,xy.at(1).toDouble(),30000.)));
         }
+        readUserGroups(graph.value(QStringLiteral("nodeGroups")).toArray());
         // Dialogue entries are index-addressed by the runtime. Editing or adding
         // them preserves all existing node indices and advanced choice fields.
         const QJsonObject adventure=m_world.value(QStringLiteral("adventure")).toObject();
@@ -1544,6 +1928,10 @@ private:
             if (!card || !card->isVisible())continue;
             result=result.isNull()?card->sceneBoundingRect():result.united(card->sceneBoundingRect());
         }
+        for (UserNodeGroupBox *group:m_userGroupBoxes) {
+            if(!group || !group->isVisible())continue;
+            result=result.isNull()?group->sceneBoundingRect():result.united(group->sceneBoundingRect());
+        }
         for (FlowGroupBox *group:m_flowGroups) {
             if(!group || !group->isVisible())continue;
             result=result.isNull()?group->sceneBoundingRect():result.united(group->sceneBoundingRect());
@@ -1637,7 +2025,7 @@ private:
         QSet<int> roots,hiddenConversationRoots;
         QHash<QString,QJsonObject> npcRoutes;
         QHash<QString,QString> graphDialogueRoutes;
-        QJsonArray dialogues,npcs;
+        QJsonArray dialogues,npcs,userGroups;
         bool dirty=false,dialoguesChanged=false,npcsChanged=false;
         QByteArray digest;
     };
@@ -1688,6 +2076,7 @@ private:
             positions.insert(id,QJsonArray{point.x(),point.y()});
         }
         data.insert(QStringLiteral("positions"),positions);
+        data.insert(QStringLiteral("userGroups"),userGroupsJson());
         QStringList routeKeys=m_npcDialogueRoutes.keys();std::sort(routeKeys.begin(),routeKeys.end());
         for(const QString &id:routeKeys)routes.insert(id,m_npcDialogueRoutes.value(id));
         data.insert(QStringLiteral("routes"),routes);
@@ -1723,6 +2112,7 @@ private:
         snap.npcRoutes=m_npcDialogueRoutes;
         snap.graphDialogueRoutes=m_graphDialogueRoutes;
         snap.dialogues=m_dialogues;snap.npcs=m_npcEntries;
+        snap.userGroups=userGroupsJson();
         snap.dirty=m_dirty;snap.dialoguesChanged=m_dialoguesChanged;
         snap.npcsChanged=m_npcsChanged;
         snap.digest=graphDigest();
@@ -1774,7 +2164,7 @@ private:
         // including FlowGroupBox and its child title/fold controls. The hash
         // is non-owning and must be invalidated FIRST. Otherwise renderCards()
         // reuses dangling FlowGroupBox pointers during Undo/Redo (use-after-free).
-        m_flowGroups.clear();
+        m_flowGroups.clear();m_userGroupBoxes.clear();
         m_scene->clear();m_list->clear();
         m_selectedCardId.clear();m_multiSelectedCards.clear();m_selectedWireKey.clear();
         m_objects=snap.objects;m_positions=snap.positions;
@@ -1785,6 +2175,7 @@ private:
         m_npcDialogueRoutes=snap.npcRoutes;
         m_graphDialogueRoutes=snap.graphDialogueRoutes;
         m_dialogues=snap.dialogues;m_npcEntries=snap.npcs;
+        readUserGroups(snap.userGroups);
         m_dialoguesChanged=snap.dialoguesChanged;m_npcsChanged=snap.npcsChanged;
         renderCards();updateCanvasBounds();showDetails(QString());
         m_dirty=snap.dirty;
@@ -2114,6 +2505,9 @@ private:
         auto *zoomIn=new QPushButton(tr("+"),this);
         auto *fit=new QPushButton(tr("Fit All"),this);
         auto *tidy=new QPushButton(tr("Tidy"),this);
+        auto *groupButton=new QPushButton(tr("Group Selection"),this);
+        groupButton->setToolTip(tr("Group two or more selected nodes visually (Ctrl+G). No game logic changes."));
+        connect(groupButton,&QPushButton::clicked,this,[this]{groupSelectedNodes();});
         m_historyUndoButton=new QPushButton(tr("Undo"),this);
         m_historyRedoButton=new QPushButton(tr("Redo"),this);
         m_historyUndoButton->setEnabled(false);
@@ -2131,7 +2525,7 @@ private:
         addDialogue->setToolTip(tr("Select a Trigger or Quest Line completion card, then add its Show Dialogue action."));
         auto *save=new QPushButton(tr("Save Graph + World"),this);
         auto *closeButton=new QPushButton(tr("Close"),this);
-        for (auto *b:{zoomOut,zoomIn,fit,tidy,m_historyUndoButton,m_historyRedoButton,refresh,addCondition,addDialogue,conversationFlow,save,closeButton}) toolbar->addWidget(b);
+        for (auto *b:{zoomOut,zoomIn,fit,tidy,groupButton,m_historyUndoButton,m_historyRedoButton,refresh,addCondition,addDialogue,conversationFlow,save,closeButton}) toolbar->addWidget(b);
         main->addLayout(toolbar);
         auto *split=new QSplitter(Qt::Horizontal,this);
         m_splitter=split;
@@ -2387,6 +2781,7 @@ private:
         };
         m_view->dropRequested=[this](const QString &from,const QPointF &point,const QPoint &global) {
             if (from.startsWith(QStringLiteral("@stateout:")) ||
+                isTriggerStateOutput(from) ||
                 from.startsWith(QStringLiteral("@graphvalue:")) ||
                 from.startsWith(QStringLiteral("@graphbranch:")) ||
                 isEnemyDefeatOutput(from) || isEventOutput(from) ||
@@ -2487,6 +2882,12 @@ private:
                 break;
             }
         };
+        m_view->userGroupMenuRequested=[this](const QString &id,const QPoint &point) {
+            userGroupMenu(id,point);
+        };
+        auto *groupShortcut=new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_G),this);
+        groupShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(groupShortcut,&QShortcut::activated,this,[this]{groupSelectedNodes();});
         m_view->cardMenuRequested=[this](const QString &id,const QPoint &global) {
             showCardContextMenu(id,global);
         };
@@ -3936,6 +4337,287 @@ private:
         if(point)*point=m_cards.value(npcId)->wirePoint(QPointF(0,slot==QStringLiteral("start")?101:163));
         return true;
     }
+    QJsonArray userGroupsJson() const {
+        QJsonArray result;
+        QStringList keys=m_userGroups.keys();keys.sort();
+        for(const QString &key:keys) {
+            const UserNodeGroup &g=m_userGroups[key];
+            QJsonArray members,restored;
+            for(const QString &id:g.members) {
+                members.append(id);
+                const QPointF p=g.beforePositions.value(id);
+                restored.append(QJsonObject{{QStringLiteral("id"),id},
+                    {QStringLiteral("xy"),QJsonArray{p.x(),p.y()}},
+                    {QStringLiteral("folded"),g.beforeCollapsed.contains(id)}});
+            }
+            result.append(QJsonObject{
+                {QStringLiteral("id"),g.id},{QStringLiteral("title"),g.title},
+                {QStringLiteral("members"),members},
+                {QStringLiteral("before"),restored},
+                {QStringLiteral("collapsed"),g.collapsed},
+                {QStringLiteral("compactSet"),g.compactPositionSet},
+                {QStringLiteral("compact"),QJsonArray{g.compactPosition.x(),g.compactPosition.y()}}
+            });
+        }
+        return result;
+    }
+    void readUserGroups(const QJsonArray &items) {
+        m_userGroups.clear();m_nextUserGroupNumber=1;
+        QSet<QString> claimed;
+        for(const QJsonValue &value:items) {
+            const QJsonObject j=value.toObject();
+            UserNodeGroup g;
+            g.id=j.value(QStringLiteral("id")).toString();
+            if(g.id.isEmpty() || m_userGroups.contains(g.id))continue;
+            g.title=j.value(QStringLiteral("title")).toString(tr("Group"));
+            const QJsonArray pos=j.value(QStringLiteral("compact")).toArray();
+            if(pos.size()==2 && pos.at(0).isDouble() && pos.at(1).isDouble()) {
+                g.compactPosition=QPointF(pos.at(0).toDouble(),pos.at(1).toDouble());
+                g.compactPositionSet=j.value(QStringLiteral("compactSet")).toBool(true);
+            }
+            g.collapsed=j.value(QStringLiteral("collapsed")).toBool(false);
+            for(const QJsonValue &v:j.value(QStringLiteral("before")).toArray()) {
+                const QJsonObject b=v.toObject();
+                const QString id=b.value(QStringLiteral("id")).toString();
+                const QJsonArray xy=b.value(QStringLiteral("xy")).toArray();
+                if(xy.size()!=2 || !xy.at(0).isDouble() || !xy.at(1).isDouble())continue;
+                g.beforePositions.insert(id,QPointF(xy.at(0).toDouble(),xy.at(1).toDouble()));
+                if(b.value(QStringLiteral("folded")).toBool())g.beforeCollapsed.insert(id);
+            }
+            for(const QJsonValue &v:j.value(QStringLiteral("members")).toArray()) {
+                const QString id=v.toString();
+                if(id.isEmpty() || claimed.contains(id) || !g.beforePositions.contains(id))continue;
+                g.members.append(id);claimed.insert(id);
+            }
+            if(g.members.isEmpty())continue;
+            if(g.id.startsWith(QStringLiteral("group-")))
+                m_nextUserGroupNumber=qMax(m_nextUserGroupNumber,
+                    g.id.mid(6).toInt()+1);
+            m_userGroups.insert(g.id,g);
+        }
+    }
+    QString userGroupFor(const QString &card) const {
+        for(auto it=m_userGroups.cbegin();it!=m_userGroups.cend();++it)
+            if(it.value().members.contains(card))return it.key();
+        return QString();
+    }
+    void revealUserGroupMembers() {
+        // A collapsed group hides its member cards at the end of redrawLinks().
+        // Reveal ALL members before rebuilding links: the group may have been
+        // expanded since the previous redraw, so checking g.collapsed here
+        // would leave its cards invisible even though their wires are drawn.
+        // The end of redrawLinks() hides only currently collapsed groups.
+        for(const UserNodeGroup &g:m_userGroups)
+            for(const QString &id:g.members)
+                if(NodeCard *card=m_cards.value(id,nullptr))card->setVisible(true);
+    }
+    void layoutUserGroupBoxes(bool alterVisibility=true) {
+        // Never change member coordinates in this pass. Each expanded frame
+        // derives its bounds from the actual cards, which may move independently.
+        const QStringList existing=m_userGroupBoxes.keys();
+        for(const QString &id:existing)if(!m_userGroups.contains(id)) {
+            UserNodeGroupBox *box=m_userGroupBoxes.take(id);
+            if(box) {m_scene->removeItem(box);delete box;}
+        }
+        QStringList empty;
+        for(auto it=m_userGroups.begin();it!=m_userGroups.end();++it) {
+            UserNodeGroup &g=it.value();
+            QRectF bounds;QStringList survivors;
+            QMap<QString,QPair<QColor,int>> types;
+            for(const QString &id:g.members) {
+                NodeCard *card=m_cards.value(id,nullptr);
+                if(!card)continue;
+                survivors.append(id);
+                const QRectF rect=card->sceneBoundingRect();
+                bounds=bounds.isNull()?rect:bounds.united(rect);
+                const QColor color=card->pen().color();
+                const QString category=color.name();
+                if(!types.contains(category))types.insert(category,qMakePair(color,0));
+                types[category].second++;
+            }
+            g.members=survivors;
+            if(survivors.isEmpty()) {empty.append(g.id);continue;}
+            bounds.adjust(-18,-44,18,20);
+            if(!g.compactPositionSet) {
+                g.compactPosition=bounds.topLeft();g.compactPositionSet=true;
+            }
+            UserNodeGroupBox *box=m_userGroupBoxes.value(g.id,nullptr);
+            if(!box) {
+                box=new UserNodeGroupBox(m_theme.panelBackground,m_theme.accent);
+                box->setData(1,g.id);
+                m_scene->addItem(box);m_userGroupBoxes.insert(g.id,box);
+                const QString id=g.id;
+                box->foldClicked=[this,id] {toggleUserGroup(id);};
+                box->renamed=[this,id](const QString &name) {
+                    if(!m_userGroups.contains(id))return;
+                    if(m_userGroups[id].title==name)return;
+                    m_userGroups[id].title=name;
+                    m_dirty=true;redrawLinks();recordHistoryNow();
+                };
+                box->moved=[this,id](const QPointF &delta) {
+                    if(!m_userGroups.contains(id))return;
+                    UserNodeGroup &state=m_userGroups[id];
+                    if(state.collapsed) {
+                        state.compactPosition+=delta;
+                        // The proxy sockets are children of the moving frame,
+                        // so they already follow it. Update only wire endpoints
+                        // attached to this group; a full rebuild would delete
+                        // and recreate EVERY group port on each mouse move.
+                        for(QGraphicsPathItem *wire:m_lines) {
+                            if(!wire || !wire->isVisible())continue;
+                            const bool source=state.members.contains(wire->data(4).toString());
+                            const bool destination=state.members.contains(wire->data(5).toString());
+                            if(!source && !destination)continue;
+                            QPainterPath path=wire->path();
+                            const int count=path.elementCount();
+                            if(count<2)continue;
+                            if(source && destination)path.translate(delta);
+                            else {
+                                if(source) {
+                                    const auto start=path.elementAt(0);
+                                    path.setElementPositionAt(0,start.x+delta.x(),start.y+delta.y());
+                                    if(count>1 && path.elementAt(1).type==QPainterPath::CurveToElement) {
+                                        const auto control=path.elementAt(1);
+                                        path.setElementPositionAt(1,control.x+delta.x(),control.y+delta.y());
+                                    }
+                                }
+                                if(destination) {
+                                    const int end=count-1;
+                                    const auto last=path.elementAt(end);
+                                    path.setElementPositionAt(end,last.x+delta.x(),last.y+delta.y());
+                                    if(end>0 && path.elementAt(end-1).type==QPainterPath::CurveToDataElement) {
+                                        const auto control=path.elementAt(end-1);
+                                        path.setElementPositionAt(end-1,control.x+delta.x(),control.y+delta.y());
+                                    }
+                                }
+                            }
+                            wire->setPath(path);
+                        }
+                    } else {
+                        m_movingUserGroup=true;
+                        for(const QString &member:state.members)
+                            if(NodeCard *card=m_cards.value(member,nullptr))
+                                card->setPos(card->pos()+delta);
+                        m_movingUserGroup=false;
+                    }
+                    m_dirty=true;
+                };
+                box->dragFinished=[this] {
+                    redrawLinks();recordHistoryNow();
+                };
+            }
+            QVector<QPair<QColor,int>> counts;
+            for(auto v=types.cbegin();v!=types.cend();++v)counts.append(v.value());
+            box->setFrame(bounds,g.compactPosition,g.collapsed,
+                g.title,g.members.size(),counts);
+            if(alterVisibility)
+                for(const QString &id:g.members)
+                    if(NodeCard *card=m_cards.value(id,nullptr))card->setVisible(!g.collapsed);
+        }
+        for(const QString &id:empty)m_userGroups.remove(id);
+    }
+    void applyUserGroupWires() {
+        // .sbgm wires retain their exact source/target IDs. The proxy sockets
+        // exist only for drawing external links while this group is compact.
+        QHash<QString,QVector<QColor>> incoming,outgoing;
+        for(QGraphicsPathItem *wire:m_lines) {
+            const QString from=wire->data(4).toString(),to=wire->data(5).toString();
+            const QString a=userGroupFor(from),b=userGroupFor(to);
+            if(a==b && !a.isEmpty() && m_userGroups.value(a).collapsed)continue;
+            if(m_userGroups.value(a).collapsed)outgoing[a].append(wire->pen().color());
+            if(m_userGroups.value(b).collapsed)incoming[b].append(wire->pen().color());
+        }
+        QHash<QString,int> inIndex,outIndex;
+        for(auto it=m_userGroups.cbegin();it!=m_userGroups.cend();++it) {
+            if(!it.value().collapsed)continue;
+            if(UserNodeGroupBox *box=m_userGroupBoxes.value(it.key(),nullptr))
+                box->setPorts(incoming.value(it.key()),outgoing.value(it.key()));
+        }
+        for(QGraphicsPathItem *wire:m_lines) {
+            const QString from=wire->data(4).toString(),to=wire->data(5).toString();
+            const QString a=userGroupFor(from),b=userGroupFor(to);
+            const bool left=m_userGroups.value(a).collapsed;
+            const bool right=m_userGroups.value(b).collapsed;
+            if(left && right && a==b) {wire->setVisible(false);continue;}
+            if(!left && !right)continue;
+            const QPainterPath path=wire->path();
+            QPointF start=path.pointAtPercent(0),end=path.pointAtPercent(1);
+            if(left)if(UserNodeGroupBox *box=m_userGroupBoxes.value(a,nullptr))
+                start=box->scenePos()+QPointF(box->rect().width(),46+outIndex[a]++*18);
+            if(right)if(UserNodeGroupBox *box=m_userGroupBoxes.value(b,nullptr))
+                end=box->scenePos()+QPointF(0,46+inIndex[b]++*18);
+            wire->setPath(smoothNodeCurve(start,end));
+        }
+    }
+    void toggleUserGroup(const QString &id) {
+        if(!m_userGroups.contains(id))return;
+        m_userGroups[id].collapsed=!m_userGroups[id].collapsed;
+        m_dirty=true;redrawLinks();recordHistoryNow();
+    }
+    void ungroupUserNodes(const QString &id) {
+        if(!m_userGroups.contains(id))return;
+        const UserNodeGroup g=m_userGroups.take(id);
+        for(const QString &member:g.members) {
+            if(NodeCard *card=m_cards.value(member,nullptr)) {
+                card->setVisible(true);
+                card->setPos(g.beforePositions.value(member,card->pos()));
+                const bool fold=g.beforeCollapsed.contains(member);
+                card->setCollapsed(fold);
+                if(fold)m_collapsedCards.insert(member);
+                else m_collapsedCards.remove(member);
+                m_positions[member]=card->pos();
+            }
+        }
+        m_dirty=true;redrawLinks();recordHistoryNow();
+    }
+    void userGroupMenu(const QString &id,const QPoint &point) {
+        if(!m_userGroups.contains(id))return;
+        QMenu menu(this);
+        QAction *fold=menu.addAction(m_userGroups[id].collapsed?tr("Expand Group"):tr("Collapse Group"));
+        QAction *rename=menu.addAction(tr("Rename Group..."));
+        QAction *ungroup=menu.addAction(tr("Ungroup (restore original positions)"));
+        QAction *selected=menu.exec(point);
+        if(selected==fold)toggleUserGroup(id);
+        else if(selected==rename) {
+            if(UserNodeGroupBox *box=m_userGroupBoxes.value(id,nullptr))box->beginRename();
+        } else if(selected==ungroup)ungroupUserNodes(id);
+    }
+    void groupSelectedNodes() {
+        if(!m_scene)return;
+        QStringList selection;
+        for(QGraphicsItem *item:m_scene->selectedItems()) {
+            if(!item || item->data(0).toString()!=QStringLiteral("card"))continue;
+            const QString id=item->data(1).toString();
+            if(!m_cards.contains(id) || userGroupFor(id).size())continue;
+            // Conversation previews already belong to their own dynamic flow
+            // containers; don't create overlapping group ownership.
+            if(id.startsWith(QStringLiteral("@conversation:")) ||
+               id.startsWith(QStringLiteral("@give:")))continue;
+            selection.append(id);
+        }
+        selection.removeDuplicates();selection.sort();
+        if(selection.size()<2) {
+            QMessageBox::information(this,tr("Group Nodes"),
+                tr("Select at least two ungrouped nodes (Ctrl-click or drag a selection rectangle)."));
+            return;
+        }
+        UserNodeGroup g;
+        do {g.id=QStringLiteral("group-%1").arg(m_nextUserGroupNumber++);}
+            while(m_userGroups.contains(g.id));
+        g.title=tr("Group #%1").arg(m_nextUserGroupNumber-1);
+        g.members=selection;
+        for(const QString &id:selection) {
+            NodeCard *card=m_cards.value(id);
+            g.beforePositions[id]=card->pos();
+            if(card->collapsed())g.beforeCollapsed.insert(id);
+        }
+        m_userGroups.insert(g.id,g);
+        m_scene->clearSelection();m_multiSelectedCards.clear();
+        m_dirty=true;redrawLinks();recordHistoryNow();
+        if(m_status)m_status->setText(tr("Grouped %1 nodes. Drag the header to move them; collapse or right-click the header for actions.")
+            .arg(selection.size()));
+    }
+
     void renderCards() {
         const QSet<QString> linked=linkedObjectIds();
         int triggerCount=0,targetCount=0,otherCount=0;
@@ -4254,6 +4936,12 @@ private:
         const bool graphValue=from.startsWith(QStringLiteral("@graphvalue:"));
         const bool graphBranch=from.startsWith(QStringLiteral("@graphbranch:true:")) ||
                                from.startsWith(QStringLiteral("@graphbranch:false:"));
+        const bool branchYes=from.startsWith(QStringLiteral("@graphbranch:true:"));
+        const QString branchKey=graphBranch?from.mid((branchYes?
+            QStringLiteral("@graphbranch:true:"):QStringLiteral("@graphbranch:false:")).size()):QString();
+        QJsonObject branchNode;
+        const bool counterBranch=graphBranch && lookupGraph(branchKey,nullptr,nullptr,&branchNode) &&
+            branchNode.value(QStringLiteral("op")).toString()==QStringLiteral("counter");
         const bool eventOutputPort=isEventOutput(from) &&
             m_objects.contains(eventOwner(from)) &&
             eventKinds(m_objects.value(eventOwner(from)).type).contains(eventKey(from));
@@ -4268,7 +4956,7 @@ private:
         const bool questCompletionSource=eventOutputPort &&
             m_objects.value(eventOwner(from)).type==QStringLiteral("quest_completed");
         const bool eventLogicSource=(eventOutputPort && !questCompletionSource) || enemyOutput || triggerLogicSource;
-        const bool objectSource=virtualTriggerState || graphValue || (!from.isEmpty() && !stateOutput && m_objects.contains(from) &&
+        const bool objectSource=virtualTriggerState || graphValue || counterBranch || (!from.isEmpty() && !stateOutput && m_objects.contains(from) &&
             m_objects.value(from).type!=QStringLiteral("trigger") &&
             m_objects.value(from).type!=QStringLiteral("npc") &&
             m_objects.value(from).type!=QStringLiteral("player_action") &&
@@ -4278,7 +4966,8 @@ private:
         picker.setWindowTitle(from.isEmpty()?tr("Add World Node"):
             graphValue?tr("Connect RESULT to Logic or Game Object..."):
             (stateOutput || graphBranch)?tr("Connect TRUE / FALSE to..."):
-            virtualTriggerState?tr("Read Trigger Virtual Switch State..."):
+            virtualTriggerState?tr("Connect Trigger STATE %1 to...")
+                .arg(triggerStateOff(from)?tr("OFF"):tr("ON")):
             objectSource?tr("Read Game Object State..."):
             eventOutputPort?tr("Connect %1 to...").arg(eventLabel(eventKey(from))):
             enemyOutput?tr("Connect Enemy ON DEFEAT to..."):tr("Connect Trigger to..."));
@@ -4305,6 +4994,15 @@ private:
             hint->setWordWrap(true);
             layout->addWidget(hint);
         }
+        if(virtualTriggerState) {
+            auto *hint=new QLabel(triggerStateOff(from)?
+                tr("STATE OFF is a held condition, not an ON ACTIVATE event. "
+                   "Connect it to an existing logic input or create a new Logic condition."):
+                tr("STATE ON is a held condition, not an ON ACTIVATE event. "
+                   "Connect it to an existing logic input or create a new Logic condition."),&picker);
+            hint->setWordWrap(true);
+            layout->addWidget(hint);
+        }
         auto *tree=new QTreeWidget(&picker);
         tree->setHeaderHidden(true);
         tree->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -4319,7 +5017,7 @@ private:
         QTreeWidgetItem *worldTransitionsRoot=nullptr;
         QTreeWidgetItem *logicRoot=nullptr;
         QHash<QString,QTreeWidgetItem*> objectTypes;
-        if (!objectSource || graphValue) for (const QString &id:m_order) {
+        if (!objectSource || graphValue || counterBranch) for (const QString &id:m_order) {
             if (linking && (id==from || (enemyOutput && id==enemyDefeatOwner(from)) ||
                 (eventOutputPort && id==eventOwner(from))))continue;
             const NodeObject object=m_objects.value(id);
@@ -4379,7 +5077,7 @@ private:
                 tr("%1 | %2").arg(object.type,id));
         }
         // PLAYER branches are real actions, not RESULT bindings or inputs.
-        if (!graphValue && !objectSource) {
+        if (!graphValue && (!objectSource || counterBranch)) {
             if(!playerRoot) {
                 playerRoot=new QTreeWidgetItem(tree,QStringList{tr("PLAYER")});
                 playerRoot->setFlags(playerRoot->flags() & ~Qt::ItemIsSelectable);
@@ -4409,7 +5107,7 @@ private:
         }
         // These names are live references to Quest Designer "Event signal"
         // objectives. They are not duplicate quest definitions.
-        if(!graphValue && !objectSource && !virtualTriggerState) {
+        if(!graphValue && (!objectSource || counterBranch) && !virtualTriggerState) {
             QTreeWidgetItem *questsRoot=nullptr;
             for(const QString &id:m_order) {
                 const NodeObject node=m_objects.value(id);
@@ -4476,6 +5174,12 @@ private:
             auto *compare=new QTreeWidgetItem(logicRoot,QStringList{tr("COMPARE (Player stat / Health)")});
             compare->setData(0,Qt::UserRole,QStringLiteral("@logic:stat_compare"));
             compare->setToolTip(0,tr("Independent condition. Pick a Game Object owner, then edit the stat and threshold in the card."));
+            auto *timer=new QTreeWidgetItem(logicRoot,QStringList{tr("TIMER (START / STOP / CONTINUE / RESET)")});
+            timer->setData(0,Qt::UserRole,QStringLiteral("@logic:timer"));
+            timer->setToolTip(0,tr("A game-clock countdown with four optional gold EVENT controls. Configure duration and connections inside its card."));
+            auto *counter=new QTreeWidgetItem(logicRoot,QStringList{tr("COUNTER (count EVENT pulses)")});
+            counter->setData(0,Qt::UserRole,QStringLiteral("@logic:counter"));
+            counter->setToolTip(0,tr("Count individual EVENT pulses from up to 16 sources. Configure target inside the node; progress persists in world saves."));
             auto *quest=new QTreeWidgetItem(logicRoot,QStringList{tr("QUEST STATE (Completed?)")});
             quest->setData(0,Qt::UserRole,QStringLiteral("@logic:quest_done"));
             quest->setToolTip(0,tr("Independent quest-completion state. Pick a Game Object owner, then edit its quest in the card."));
@@ -4506,10 +5210,11 @@ private:
             const QString sourceOwner=eventLogicSource?
                 (enemyOutput?enemyDefeatOwner(from):eventOutputPort?eventOwner(from):from):
                 virtualTriggerState?triggerStateOwner(from):
+                counterBranch?branchKey:
                 graphValue?from.mid(QStringLiteral("@graphvalue:").size()):from;
             QString graphOwner;
-            if(graphValue)lookupGraph(sourceOwner,&graphOwner,nullptr);
-            const QString realOwner=graphValue?graphOwner:sourceOwner;
+            if(graphValue || counterBranch)lookupGraph(sourceOwner,&graphOwner,nullptr);
+            const QString realOwner=(graphValue || counterBranch)?graphOwner:sourceOwner;
             const bool conditionOwner=m_objects.contains(realOwner) &&
                 m_objects.value(realOwner).resourceIndex>=0 &&
                 m_objects.value(realOwner).type!=QStringLiteral("npc") &&
@@ -4538,15 +5243,54 @@ private:
                 compare->setData(0,Qt::UserRole,QStringLiteral("@logic:stat_compare"));
                 compare->setToolTip(0,tr("Persistent numeric condition. Configure the statistic, operator and value inside the node. "
                     "Its RESULT, TRUE and FALSE outputs connect to the same Game Objects and Adventure dialogues as other logic."));
+                if(eventLogicSource) {
+                    auto *timer=new QTreeWidgetItem(logic,QStringList{tr("TIMER (START / STOP / CONTINUE / RESET)")});
+                    timer->setData(0,Qt::UserRole,QStringLiteral("@logic:timer"));
+                    timer->setToolTip(0,tr("Countdown on the game clock; distinct gold control sockets. START begins a fresh countdown."));
+                    auto *counter=new QTreeWidgetItem(logic,QStringList{tr("COUNTER (count EVENT pulses)" )});
+                    counter->setData(0,Qt::UserRole,QStringLiteral("@logic:counter"));
+                    counter->setToolTip(0,tr("Counts one per incoming EVENT and fires at the selected total."));
+                }
                 auto *quest=new QTreeWidgetItem(logic,QStringList{tr("QUEST STATE (Completed?)")});
                 quest->setData(0,Qt::UserRole,QStringLiteral("@logic:quest_done"));
                 quest->setToolTip(0,tr("Persistent Quest Designer completion condition, with editable quest selection inside the node."));
             }
         }
+        // Trigger virtual STATE outputs can already connect to existing graph
+        // inputs by direct dragging. Offer those same real .sbgm destinations
+        // when the wire ends on empty canvas; the picker must not offer
+        // one-shot action/dialogue targets for a held STATE.
+        if(virtualTriggerState) {
+            QTreeWidgetItem *existingRoot=nullptr;
+            for(const QString &objectId:m_order) {
+                const NodeObject object=m_objects.value(objectId);
+                if(object.resourceIndex<0 || object.logicNodes.isEmpty())continue;
+                QTreeWidgetItem *ownerRoot=nullptr;
+                for(const QJsonValue &value:object.logicNodes) {
+                    const QJsonObject record=value.toObject();
+                    const QString nodeId=record.value(QStringLiteral("id")).toString();
+                    if(nodeId.isEmpty())continue;
+                    if(!existingRoot) {
+                        existingRoot=new QTreeWidgetItem(tree,QStringList{tr("Existing Logic (connect STATE)")});
+                        existingRoot->setFlags(existingRoot->flags() & ~Qt::ItemIsSelectable);
+                    }
+                    if(!ownerRoot) {
+                        ownerRoot=new QTreeWidgetItem(existingRoot,QStringList{object.name});
+                        ownerRoot->setFlags(ownerRoot->flags() & ~Qt::ItemIsSelectable);
+                    }
+                    const QString name=record.value(QStringLiteral("op")).toString().toUpper()+
+                        QStringLiteral(" | ")+nodeId;
+                    auto *entry=new QTreeWidgetItem(ownerRoot,QStringList{name});
+                    entry->setData(0,Qt::UserRole,graphKey(objectId,nodeId));
+                    entry->setToolTip(0,tr("Connect this Trigger's held STATE to a Logic input. "
+                        "The connection is saved as an input in the owning world's .sbgm."));
+                }
+            }
+        }
         // Named Breakable events can show an Adventure dialogue. Selecting one
         // creates the existing one-frame BOOLEAN -> TRUE dialogue chain, so
         // event playback uses the same validated runtime path as graph dialogue.
-        if (linking && !objectSource && !enemyOutput &&
+        if(linking && (!objectSource || counterBranch) && !enemyOutput &&
             (!eventOutputPort || eventLogicSource || questCompletionSource)) {
             auto *root=new QTreeWidgetItem(tree,QStringList{tr("Dialogue Actions")});
             root->setFlags(root->flags() & ~Qt::ItemIsSelectable);
@@ -4599,6 +5343,19 @@ private:
         picker.move(global-QPoint(20,45));
         search->setFocus();
         if (picker.exec()!=QDialog::Accepted || selectedId.isEmpty())return;
+        // A held Trigger STATE can feed any supported existing Logic input.
+        // addGraphInput validates capacity/duplicates and persists the .sbgm
+        // connection; do not turn a STATE selection into a one-shot action.
+        if(virtualTriggerState && selectedId.startsWith(QStringLiteral("@graph:"))) {
+            if(!m_cards.contains(selectedId)) {
+                QString logicOwner;
+                QJsonObject logic;
+                if(!lookupGraph(selectedId,&logicOwner,nullptr,&logic))return;
+                makeGraphCard(logicOwner,logic.value(QStringLiteral("id")).toString());
+            }
+            addGraphInput(from,selectedId);
+            return;
+        }
         // Resolve a chosen NPC conversation to its actual dialogue node ID.
         // The emitted action is identical to choosing that dialogue directly.
         if(selectedId.startsWith(QStringLiteral("@npc-dialogue:"))) {
@@ -4621,7 +5378,8 @@ private:
                 // Compare and Quest State are persistent source conditions.
                 // Store them with a genuine placed Game Object in .sbgm,
                 // just like AND/OR/NOT. The owning object is NOT an input.
-                if (op!=QStringLiteral("stat_compare") && op!=QStringLiteral("quest_done"))return;
+                if (op!=QStringLiteral("stat_compare") && op!=QStringLiteral("quest_done") &&
+                    op!=QStringLiteral("counter") && op!=QStringLiteral("timer"))return;
                 QStringList choices;
                 QHash<QString,QString> byChoice;
                 for(const QString &id:m_order) {
@@ -4638,13 +5396,22 @@ private:
                 }
                 if(choices.isEmpty()) {
                     QMessageBox::information(this,tr("Logic"),
-                        tr("Place a Game Object in this world first. Logic conditions are stored with their Game Object owner in .sbgm."));
+                        tr("Place a Game Object in this world first. Logic conditions are stored with their Game Object owner in .sbgm.\n"
+                           "Alternatively, pull out from the node you want to use this feature from."));
                     return;
                 }
                 choices.sort(Qt::CaseInsensitive);
                 bool accepted=false;
                 const QString choice=QInputDialog::getItem(this,tr("Logic condition owner"),
-                    tr("Store this condition with which Game Object?\nChoose the SAME owner as any AND/OR/NOT gates it must feed."),
+                    op==QStringLiteral("timer")?
+                        tr("Which placed Game Object should store this TIMER in .sbgm?\n"
+                           "The owner is NOT a START event. Connect a gold EVENT to the START socket afterward.\n"
+                           "Alternatively, pull out from the Game Object's ON ACTIVATE / ON HIT event socket."):
+                        tr("Which placed Game Object should store this condition in .sbgm?\n"
+                           "The owner is NOT an EVENT connection. After placing the card, "
+                           "connect an EVENT or STATE to WHEN if needed.\n"
+                           "To feed an existing AND/OR/NOT, choose the same owner.\n"
+                           "Alternatively, pull out from the node you want to use this feature from."),
                     choices,0,false,&accepted);
                 if(!accepted || choice.isEmpty())return;
                 source=byChoice.value(choice);
@@ -4786,8 +5553,12 @@ private:
                 const bool yes=from.startsWith(QStringLiteral("@graphbranch:true:"));
                 const QString key=from.mid((yes?QStringLiteral("@graphbranch:true:"):
                     QStringLiteral("@graphbranch:false:")).size());
-                addGraphAction(key,yes,selectedId,
-                               defaultPlayerAction(selectedId,yes?QStringLiteral("enable"):QStringLiteral("disable")));
+                QJsonObject graphNode;
+                const bool timerAction=lookupGraph(key,nullptr,nullptr,&graphNode) &&
+                    graphNode.value(QStringLiteral("op")).toString()==QStringLiteral("timer");
+                addGraphAction(key,yes,selectedId,defaultPlayerAction(selectedId,
+                    timerAction?(yes?QStringLiteral("disable"):QStringLiteral("enable")):
+                                (yes?QStringLiteral("enable"):QStringLiteral("disable"))));
                 return;
             }
             // Every TRUE/FALSE branch can perform the same real enable,
@@ -5076,7 +5847,8 @@ private:
         // Virtual quest-completion sources emit queued actions, not an
         // object-owned independent logic graph. Never create a dead graph.
         if(isEventOutput(source) && m_objects.value(eventOwner(source)).type==QStringLiteral("quest_completed"))return;
-        const bool advanced=operation==QStringLiteral("stat_compare") || operation==QStringLiteral("quest_done");
+        const bool advanced=operation==QStringLiteral("stat_compare") || operation==QStringLiteral("quest_done") ||
+            operation==QStringLiteral("counter") || operation==QStringLiteral("timer");
         QString owner;
         QJsonObject input;
         if(advanced && m_objects.contains(source) && m_objects.value(source).resourceIndex>=0 &&
@@ -5113,12 +5885,24 @@ private:
             owner=source;
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),owner)}};
+        } else if(source.startsWith(QStringLiteral("@graphbranch:"))) {
+            const bool yes=source.startsWith(QStringLiteral("@graphbranch:true:"));
+            const QString upstream=source.mid((yes?QStringLiteral("@graphbranch:true:"):
+                QStringLiteral("@graphbranch:false:")).size());
+            QJsonObject upstreamNode;
+            if(!lookupGraph(upstream,&owner,nullptr,&upstreamNode) ||
+                upstreamNode.value(QStringLiteral("op")).toString()!=QStringLiteral("counter"))return;
+            input={{QStringLiteral("kind"),QStringLiteral("node")},
+                   {QStringLiteral("id"),upstreamNode.value(QStringLiteral("id"))},
+                   {QStringLiteral("invert"),!yes},
+                   {QStringLiteral("logicOutput"),yes?QStringLiteral("yes"):QStringLiteral("no")}};
         } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QJsonObject upstreamNode;
             if(!lookupGraph(upstream,&owner,nullptr,&upstreamNode))return;
             input={{QStringLiteral("kind"),QStringLiteral("node")},
-                   {QStringLiteral("id"),upstreamNode.value(QStringLiteral("id"))}};
+                   {QStringLiteral("id"),upstreamNode.value(QStringLiteral("id"))},
+                   {QStringLiteral("logicOutput"),QStringLiteral("result")}};
         } else if(m_objects.contains(source) && m_objects.value(source).resourceIndex>=0 &&
                   m_objects.value(source).type!=QStringLiteral("trigger") &&
                   m_objects.value(source).type!=QStringLiteral("npc")) {
@@ -5142,13 +5926,27 @@ private:
         const QString name=QStringLiteral("logic%1").arg(serial);
         const QString op=QStringList{QStringLiteral("boolean"),QStringLiteral("and"),
                            QStringLiteral("or"),QStringLiteral("not"),
-                           QStringLiteral("stat_compare"),QStringLiteral("quest_done")}.contains(operation)
+                           QStringLiteral("stat_compare"),QStringLiteral("quest_done"),QStringLiteral("counter"),QStringLiteral("timer")}.contains(operation)
             ?operation:QStringLiteral("boolean");
         QJsonObject node{{QStringLiteral("id"),name},{QStringLiteral("op"),op},
             {QStringLiteral("inputs"),input.isEmpty() ? QJsonArray() : QJsonArray{input}},
             {QStringLiteral("trueDialogueNode"),-1},{QStringLiteral("falseDialogueNode"),-1},
             {QStringLiteral("trueActions"),QJsonArray()},{QStringLiteral("falseActions"),QJsonArray()}};
-        if(advanced) {
+        if(op==QStringLiteral("timer")) {
+            node.insert(QStringLiteral("durationFrames"),250);
+            if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event")) {
+                input.insert(QStringLiteral("command"),QStringLiteral("start"));
+                node.insert(QStringLiteral("inputs"),QJsonArray{input});
+            } else node.insert(QStringLiteral("inputs"),QJsonArray());
+        }
+        if(op==QStringLiteral("counter")) {
+            node.insert(QStringLiteral("targetCount"),3);
+            // A Counter consumes EVENT pulses only. Creating from a held
+            // STATE leaves it awaiting an EVENT connection instead.
+            if(input.value(QStringLiteral("kind")).toString()!=QStringLiteral("event"))
+                node.insert(QStringLiteral("inputs"),QJsonArray());
+        }
+        if(advanced && op!=QStringLiteral("counter") && op!=QStringLiteral("timer")) {
             if(op==QStringLiteral("stat_compare")) {
                 node.insert(QStringLiteral("statName"),QStringLiteral("@health"));
                 node.insert(QStringLiteral("compareOp"),QStringLiteral(">"));
@@ -5184,13 +5982,14 @@ private:
         if(advanced)m_status->setText(tr("%1 is ready. Edit the condition INSIDE this node. "
             "Drag RESULT to a Game Object state, or TRUE/FALSE to an action, Quest Event, or Adventure dialogue. "
             "Save Graph + World to update .sbgm.")
-            .arg(op==QStringLiteral("stat_compare")?tr("COMPARE"):tr("QUEST STATE")));
+            .arg(op==QStringLiteral("stat_compare")?tr("COMPARE"):op==QStringLiteral("counter")?tr("COUNTER"):
+                 op==QStringLiteral("timer")?tr("TIMER"):tr("QUEST STATE")));
         if(op==QStringLiteral("not") && input.value(QStringLiteral("kind")).toString()==QStringLiteral("event"))
             m_status->setText(graphSocketGuidance(node));
         if(op==QStringLiteral("and") || op==QStringLiteral("or"))
             m_status->setText(tr("Connect at least one more input to %1 before saving.").arg(op.toUpper()));
     }
-    void addGraphInput(const QString &source,const QString &key) {
+    void addGraphInput(const QString &source,const QString &key,const QString &port=QString()) {
         QString owner;int index;QJsonObject node;
         if(!lookupGraph(key,&owner,&index,&node))return;
         QJsonObject input;
@@ -5201,8 +6000,11 @@ private:
                    {QStringLiteral("id"),source}};
         } else if(isEnemyDefeatOutput(source) &&
                   m_objects.value(enemyDefeatOwner(source)).type==QStringLiteral("enemy")) {
+            // Keep the SOURCE enemy identity, not this Logic node's owner.
+            // Otherwise every ON DEFEAT dragged from a second/third enemy
+            // becomes the first owner's event and is silently deduplicated.
             input={{QStringLiteral("kind"),QStringLiteral("event")},
-                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),owner)}};
+                   {QStringLiteral("id"),eventOutput(QStringLiteral("defeat"),enemyDefeatOwner(source))}};
         } else if(isTriggerStateOutput(source) &&
                   m_objects.value(triggerStateOwner(source)).type==QStringLiteral("trigger")) {
             input={{QStringLiteral("kind"),QStringLiteral("object")},
@@ -5211,6 +6013,22 @@ private:
         } else if(m_objects.value(source).type==QStringLiteral("trigger")) {
             input={{QStringLiteral("kind"),QStringLiteral("event")},
                    {QStringLiteral("id"),eventOutput(QStringLiteral("trigger"),source)}};
+        } else if(source.startsWith(QStringLiteral("@graphbranch:"))) {
+            const bool yes=source.startsWith(QStringLiteral("@graphbranch:true:"));
+            const QString upstream=source.mid((yes?QStringLiteral("@graphbranch:true:"):
+                QStringLiteral("@graphbranch:false:")).size());
+            QString otherOwner;QJsonObject other;
+            if(!lookupGraph(upstream,&otherOwner,nullptr,&other) || upstream==key ||
+               other.value(QStringLiteral("op")).toString()!=QStringLiteral("counter"))return;
+            if(otherOwner!=owner) {
+                QMessageBox::information(this,tr("Logic owner mismatch"),
+                    tr("Both Logic cards must belong to the same Game Object."));
+                return;
+            }
+            input={{QStringLiteral("kind"),QStringLiteral("node")},
+                   {QStringLiteral("id"),other.value(QStringLiteral("id"))},
+                   {QStringLiteral("invert"),!yes},
+                   {QStringLiteral("logicOutput"),yes?QStringLiteral("yes"):QStringLiteral("no")}};
         } else if(source.startsWith(QStringLiteral("@graphvalue:"))) {
             const QString upstream=source.mid(QStringLiteral("@graphvalue:").size());
             QString otherOwner;QJsonObject other;
@@ -5224,17 +6042,90 @@ private:
                 return;
             }
             input={{QStringLiteral("kind"),QStringLiteral("node")},
-                   {QStringLiteral("id"),other.value(QStringLiteral("id"))}};
+                   {QStringLiteral("id"),other.value(QStringLiteral("id"))},
+                   {QStringLiteral("logicOutput"),QStringLiteral("result")}};
         } else if(m_objects.contains(source) && m_objects.value(source).resourceIndex>=0 &&
                   m_objects.value(source).type!=QStringLiteral("trigger") &&
                   m_objects.value(source).type!=QStringLiteral("npc"))
             input={{QStringLiteral("kind"),QStringLiteral("object")},{QStringLiteral("id"),source}};
         else return;
+        if(node.value(QStringLiteral("op")).toString()==QStringLiteral("counter") &&
+           input.value(QStringLiteral("kind")).toString()!=QStringLiteral("event")) {
+            QMessageBox::information(this,tr("Counter EVENT Connection"),
+                tr("COUNTER accepts GOLD EVENT pulses only. Drag ON HIT, ON DEFEAT, ON PICKUP, ON ACTIVATE, or another Event socket."));
+            return;
+        }
         QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
+        if(node.value(QStringLiteral("op")).toString()==QStringLiteral("timer")) {
+            if(input.value(QStringLiteral("kind")).toString()!=QStringLiteral("event")) {
+                QMessageBox::information(this,tr("Timer control"),
+                    tr("TIMER accepts GOLD EVENT pulses for START, STOP, CONTINUE and RESET. Held STATE connections cannot control the clock."));
+                return;
+            }
+            const QStringList commands{QStringLiteral("start"),QStringLiteral("stop"),
+                QStringLiteral("continue"),QStringLiteral("reset")};
+            QString command;
+            if(port.startsWith(QStringLiteral("graph-input:"))) {
+                bool ok=false;
+                const int index=port.mid(12).toInt(&ok);
+                if(ok && index>=0 && index<commands.size())command=commands.at(index);
+            }
+            if(command.isEmpty()) {
+                bool ok=false;
+                command=QInputDialog::getItem(this,tr("Connect TIMER event"),
+                    tr("Which control should this event activate?"),
+                    QStringList{tr("START (fresh countdown)"),tr("STOP (pause)"),
+                                tr("CONTINUE (resume)"),tr("RESET (clear, ready) ")},0,false,&ok);
+                if(!ok)return;
+                if(command.startsWith(QStringLiteral("START")))command=commands.at(0);
+                else if(command.startsWith(QStringLiteral("STOP")))command=commands.at(1);
+                else if(command.startsWith(QStringLiteral("CONTINUE")))command=commands.at(2);
+                else command=commands.at(3);
+            }
+            input.insert(QStringLiteral("command"),command);
+            QJsonArray updated;
+            for(const QJsonValue &value:inputs)
+                if(value.toObject().value(QStringLiteral("command")).toString()!=command)
+                    updated.append(value);
+            updated.append(input);
+            node.insert(QStringLiteral("inputs"),updated);
+            graphUpdate(key,node);syncGraphCardSockets(key);redrawLinks();showDetails(key);
+            m_status->setText(tr("TIMER %1 connected. Save Graph + World to update .sbgm.").arg(command.toUpper()));
+            return;
+        }
+        if(node.value(QStringLiteral("op")).toString()==QStringLiteral("counter")) {
+            bool resetPort=false;
+            if(port.startsWith(QStringLiteral("graph-input:"))) {
+                bool ok=false;
+                resetPort=port.mid(12).toInt(&ok)==0 && ok;
+            }
+            if(resetPort) {
+                input.insert(QStringLiteral("command"),QStringLiteral("reset"));
+                QJsonArray updated;
+                for(const QJsonValue &v:inputs)
+                    if(v.toObject().value(QStringLiteral("command")).toString()!=QStringLiteral("reset"))
+                        updated.append(v);
+                updated.append(input);
+                node.insert(QStringLiteral("inputs"),updated);
+                graphUpdate(key,node);syncGraphCardSockets(key);redrawLinks();showDetails(key);
+                m_status->setText(tr("COUNTER RESET connected. The gold pulse clears its stored count to zero."));
+                return;
+            }
+            int events=0;
+            for(const QJsonValue &v:inputs)
+                if(v.toObject().value(QStringLiteral("command")).toString()!=QStringLiteral("reset"))++events;
+            if(events>=16) {
+                QMessageBox::information(this,tr("COUNTER"),tr("Maximum 16 counting events, plus RESET."));return;
+            }
+        }
         for(const QJsonValue &v:inputs)
             if(v.toObject().value(QStringLiteral("id"))==input.value(QStringLiteral("id")) &&
                v.toObject().value(QStringLiteral("kind"))==input.value(QStringLiteral("kind")) &&
-               v.toObject().value(QStringLiteral("invert"))==input.value(QStringLiteral("invert")))return;
+               v.toObject().value(QStringLiteral("invert"))==input.value(QStringLiteral("invert"))) {
+                if(node.value(QStringLiteral("op")).toString()==QStringLiteral("counter"))
+                    m_status->setText(tr("COUNTER already listens to this EVENT source. Connect another enemy, or activate this same source again during gameplay to add another count."));
+                return;
+            }
         const QString op=node.value(QStringLiteral("op")).toString();
         if((op==QStringLiteral("boolean") || op==QStringLiteral("not") ||
             op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done")) && inputs.size()>=1) {
@@ -5248,7 +6139,6 @@ private:
                 op==QStringLiteral("or")?tr("OR accepts at most eight inputs."):tr("Maximum sixteen inputs."));return;
         }
         inputs.append(input);node.insert(QStringLiteral("inputs"),inputs);
-        QVector<SidboxVisualLogic::Node> parsed;
         // A partly wired AND/OR is allowed while editing, but never a cycle.
         // Check the dependency graph independently so cycles are rejected even
         // before the final input count is satisfied.
@@ -5361,12 +6251,26 @@ private:
     QString graphSocketGuidance(const QJsonObject &node) const {
         const QString op=node.value(QStringLiteral("op")).toString();
         const QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
+        if(op==QStringLiteral("counter"))
+            return tr("COUNTER: counts to %1, then holds. RESET (gold) clears the count. "
+                      "RESULT and YES are TRUE once target is reached; NO is TRUE below target. "
+                      "All three outputs can feed AND/OR/NOT gates. "
+                      "Progress is included in world snapshots and TFCard saves.")
+                .arg(node.value(QStringLiteral("targetCount")).toInt(3));
         bool eventInput=false,stateInput=false;
         for(const QJsonValue &value:inputs) {
             const QString kind=value.toObject().value(QStringLiteral("kind")).toString();
             if(kind==QStringLiteral("event"))eventInput=true;
             if(kind==QStringLiteral("object"))stateInput=true;
         }
+        if(op==QStringLiteral("timer"))
+            return tr("TIMER: TRUE / FINISHED emits once when the countdown reaches zero. "
+                      "FALSE / RUNNING emits once on START or CONTINUE, not on every frame. "
+                      "STOP pauses with no action; RESET clears to ready with no action. "
+                      "RESULT is the held FINISHED state. Use FALSE ENABLE and TRUE DISABLE "
+                      "on the same target for a timed visibility window. "
+                      "Action wire colours indicate ENABLE (green), DISABLE (red) or TOGGLE (amber); "
+                      "right-click the wire to change the operation.");
         if(op==QStringLiteral("stat_compare"))
             return tr("COMPARE: %1 %2 %3. Optional WHEN accepts a STATE, EVENT pulse, or logic RESULT. "
                       "Without WHEN it watches Player stats/Health independently. TRUE/FALSE can drive actions and dialogues.")
@@ -5402,9 +6306,78 @@ private:
         if(!card || !lookupGraph(key,nullptr,nullptr,&node))return;
         const QString op=node.value(QStringLiteral("op")).toString();
         const QJsonArray inputs=node.value(QStringLiteral("inputs")).toArray();
+        // EVENT CONNECTION is an explanatory status, not an additional socket.
+        // Ordinary gates may use only STATE inputs; COMPARE/QUEST STATE may run
+        // from Player/Quest revisions without any incoming EVENT. A separate
+        // mandatory event port would change existing .sbgm game semantics.
+        QString owner;
+        (void)lookupGraph(key,&owner,nullptr);
+        QString directEventName;
+        bool eventThroughLogic=false;
+        QSet<QString> seenUpstream;
+        std::function<bool(const QString &)> upstreamHasEvent=[&](const QString &id) -> bool {
+            if(seenUpstream.contains(id))return false;
+            seenUpstream.insert(id);
+            QJsonObject upstream;
+            if(!lookupGraph(graphKey(owner,id),nullptr,nullptr,&upstream))return false;
+            for(const QJsonValue &value:upstream.value(QStringLiteral("inputs")).toArray()) {
+                const QJsonObject input=value.toObject();
+                if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("event"))return true;
+                if(input.value(QStringLiteral("kind")).toString()==QStringLiteral("node") &&
+                   upstreamHasEvent(input.value(QStringLiteral("id")).toString()))return true;
+            }
+            return false;
+        };
+        for(const QJsonValue &value:inputs) {
+            const QJsonObject input=value.toObject();
+            const QString kind=input.value(QStringLiteral("kind")).toString();
+            if(kind==QStringLiteral("event")) {
+                if(directEventName.isEmpty())directEventName=eventLabel(eventKey(input.value(QStringLiteral("id")).toString()));
+                else directEventName=tr("multiple pulses");
+            } else if(kind==QStringLiteral("node") &&
+                      upstreamHasEvent(input.value(QStringLiteral("id")).toString())) {
+                eventThroughLogic=true;
+            }
+        }
+        const bool hasEvent=!directEventName.isEmpty() || eventThroughLogic;
+        const bool conditionSource=op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done");
+        const int requiredInputs=(conditionSource || op==QStringLiteral("timer"))?0:
+            ((op==QStringLiteral("boolean") || op==QStringLiteral("not") || op==QStringLiteral("counter"))?1:2);
+        const QString eventStatus=hasEvent ?
+            (directEventName.isEmpty()?tr("EVENT CONNECTION: via LOGIC"):
+                tr("EVENT CONNECTION: %1").arg(directEventName).left(40)) :
+            (conditionSource?tr("EVENT CONNECTION: optional"):
+                op==QStringLiteral("timer")?tr("EVENT CONNECTION: START needed"):
+                inputs.size()<requiredInputs?tr("EVENT CONNECTION: inputs needed"):
+                tr("EVENT CONNECTION: none (state-driven)"));
+        QGraphicsSimpleTextItem *eventHint=nullptr;
+        for(QGraphicsItem *child:card->childItems())
+            if(child->data(4).toString()==QStringLiteral("graph-event-status")) {
+                eventHint=dynamic_cast<QGraphicsSimpleTextItem*>(child);
+                break;
+            }
+        if(!eventHint) {
+            eventHint=new QGraphicsSimpleTextItem(card);
+            eventHint->setData(4,QStringLiteral("graph-event-status"));
+            QFont smallFont=eventHint->font();smallFont.setPointSizeF(8.5);
+            eventHint->setFont(smallFont);
+            eventHint->setPos(9,28);
+        }
+        eventHint->setText(eventStatus);
+        eventHint->setBrush(hasEvent?QColor(238,190,86):m_theme.mutedText);
+        eventHint->setToolTip(hasEvent?
+            tr("GOLD EVENT connected. This graph is pulse-dependent: its event-driven branches run on the relevant pulse. A chained LOGIC input can also carry a pulse."):
+            conditionSource?
+            tr("No EVENT is required. This condition watches changes in Player statistics or Quest completion. The optional WHEN socket can also accept a gold EVENT pulse or teal STATE."):
+            tr("No GOLD EVENT input. This is valid STATE-driven logic: its values are evaluated when relevant Game Object changes activate the graph. Connect a GOLD EVENT to tie actions to a particular occurrence. BOOLEAN/NOT need one condition input; AND/OR need at least two."));
         // AND supports 2..16, OR supports 2..8, BOOLEAN/NOT exactly one.
         // Show a spare socket until each gate reaches its maximum input count.
-        const int inputSocketCount=op==QStringLiteral("and")?
+        int counterPulseInputs=0;
+        for(const QJsonValue &v:inputs)
+            if(v.toObject().value(QStringLiteral("command")).toString()!=QStringLiteral("reset"))++counterPulseInputs;
+        const int inputSocketCount=op==QStringLiteral("timer")?4:op==QStringLiteral("counter")?
+            1+qMin(16,counterPulseInputs+1):
+            op==QStringLiteral("and")?
             qMin(16,qMax(2,static_cast<int>(inputs.size())+1)):
             op==QStringLiteral("or")?qMin(8,qMax(2,static_cast<int>(inputs.size())+1)):1;
         const int resultY=86+24*(inputSocketCount-1);
@@ -5429,8 +6402,27 @@ private:
                 else if(child->data(4).toString()==QStringLiteral("graph-input-label"))
                     label=dynamic_cast<QGraphicsSimpleTextItem*>(child);
             }
-            const bool connected=i<inputs.size();
-            const QJsonObject entry=connected?inputs.at(i).toObject():QJsonObject();
+            const QStringList timerCommands{QStringLiteral("start"),QStringLiteral("stop"),
+                QStringLiteral("continue"),QStringLiteral("reset")};
+            QJsonObject entry;
+            if(op==QStringLiteral("timer")) {
+                for(const QJsonValue &value:inputs)
+                    if(value.toObject().value(QStringLiteral("command")).toString()==timerCommands.at(i)) {
+                        entry=value.toObject();break;
+                    }
+            } else if(op==QStringLiteral("counter")) {
+                int pulseIndex=0;
+                for(const QJsonValue &v:inputs) {
+                    const QJsonObject candidate=v.toObject();
+                    if(i==0 && candidate.value(QStringLiteral("command")).toString()==QStringLiteral("reset")) {
+                        entry=candidate;break;
+                    }
+                    if(candidate.value(QStringLiteral("command")).toString()==QStringLiteral("reset"))continue;
+                    if(i==pulseIndex+1) {entry=candidate;break;}
+                    ++pulseIndex;
+                }
+            } else if(i<inputs.size())entry=inputs.at(i).toObject();
+            const bool connected=!entry.isEmpty();
             const QString kind=entry.value(QStringLiteral("kind")).toString();
             const QString id=entry.value(QStringLiteral("id")).toString();
             const bool virtualInput=kind==QStringLiteral("object") &&
@@ -5439,7 +6431,10 @@ private:
             const QString name=virtualInput && m_objects.contains(stateOwner)
                 ?tr("STATE %1 (%2)").arg(m_objects.value(stateOwner).name)
                     .arg(entry.value(QStringLiteral("invert")).toBool(false)?tr("OFF"):tr("ON")):
-                kind==QStringLiteral("node")?tr("LOGIC %1").arg(id):
+                kind==QStringLiteral("node")?tr("LOGIC %1 (%2)").arg(id,
+                    entry.value(QStringLiteral("logicOutput")).toString(
+                        entry.value(QStringLiteral("invert")).toBool(false)?
+                            QStringLiteral("no"):QStringLiteral("result")).toUpper()):
                 kind==QStringLiteral("event")?tr("EVENT %1").arg(eventLabel(eventKey(id))):
                 m_objects.contains(id)?tr("STATE %1").arg(m_objects.value(id).name):id;
             const QString inputTip=kind==QStringLiteral("event")
@@ -5450,7 +6445,8 @@ private:
                 ?tr("TEAL STATE: %1 is a persistent condition read when logic evaluates. "
                     "Use AND with an EVENT to act only when the event occurs while this state is TRUE. "
                     "Right-click this wire to disconnect.").arg(name)
-                :tr("LOGIC RESULT: reads the connected gate's output. Its semantics depend on that gate. "
+                :tr("LOGIC INPUT: reads the selected gate output (RESULT, YES or NO). "
+                    "Counter YES means target reached, NO means below target. "
                     "Right-click this wire to disconnect.");
             if(!socket) {
                 socket=new QGraphicsRectItem(card);
@@ -5461,10 +6457,16 @@ private:
             }
             socket->setPos(QPointF());
             socket->setRect(QRectF(-7,45+24*i,14,14));
-            const QColor socketColour=kind==QStringLiteral("event")?QColor(205,140,37):QColor(75,173,177);
-            socket->setPen(QPen(kind==QStringLiteral("event")?QColor(255,225,147):QColor(160,237,232),1.5));
+            const bool eventSocket=op==QStringLiteral("counter") || op==QStringLiteral("timer") || kind==QStringLiteral("event");
+            const QColor socketColour=eventSocket?QColor(205,140,37):QColor(75,173,177);
+            socket->setPen(QPen(eventSocket?QColor(255,225,147):QColor(160,237,232),1.5));
             socket->setBrush(connected?socketColour:QColor(25,41,53));
             socket->setToolTip(connected?tr("INPUT %1: %2\n%3").arg(i+1).arg(name).arg(inputTip):
+                op==QStringLiteral("timer")?
+                    tr("TIMER %1: GOLD EVENT pulse. START restarts, STOP pauses, CONTINUE resumes, RESET clears without starting.").arg(timerCommands.at(i).toUpper()):
+                op==QStringLiteral("counter")?
+                    (i==0?tr("COUNTER RESET: connect a GOLD EVENT pulse to clear the saved count."):
+                    tr("COUNTER INPUT %1: GOLD EVENT pulse (ON DEFEAT, ON HIT, ON PICKUP, ON ACTIVATE).").arg(i)):
                 (op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done"))?
                     tr("Optional WHEN: connect a teal STATE, gold EVENT pulse, or logic RESULT. "
                        "Leave unconnected to watch this condition independently."):
@@ -5475,18 +6477,60 @@ private:
             }
             const bool optionalWhen=op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done");
             label->setText(connected?(optionalWhen?tr("WHEN: %1").arg(name).left(31):
+                    op==QStringLiteral("timer")?
+                        tr("%1: %2").arg(timerCommands.at(i).toUpper(),name).left(31):
                     tr("INPUT %1: %2").arg(i+1).arg(name).left(31)):
-                optionalWhen?tr("WHEN: (optional)"):tr("INPUT %1: (connect)").arg(i+1));
+                optionalWhen?tr("WHEN: EVENT / STATE (optional)"):
+                    op==QStringLiteral("timer")?tr("%1: GOLD EVENT").arg(timerCommands.at(i).toUpper()):
+                    op==QStringLiteral("counter")?(i==0?tr("RESET: GOLD EVENT"):
+                        tr("COUNT %1: GOLD EVENT").arg(i)):
+                    i==0?tr("INPUT 1: EVENT / STATE"):
+                    tr("INPUT %1: EVENT / STATE / LOGIC").arg(i+1));
             label->setBrush(connected && kind==QStringLiteral("event")?QColor(238,190,86):
                 connected?m_theme.text:m_theme.mutedText);
             label->setToolTip(connected?inputTip:
+                (op==QStringLiteral("timer")?
+                    tr("Connect a GOLD EVENT to this TIMER control. Remaining time is saved with the world."):
+                (op==QStringLiteral("counter")?
+                    tr("Connect another GOLD EVENT. COUNTER accumulates pulses over time; it is not an AND gate."):
                 ((op==QStringLiteral("stat_compare") || op==QStringLiteral("quest_done"))?
                     tr("Optional WHEN condition; leave empty to watch Player/Quest changes."):
-                    tr("Connect a teal STATE, gold EVENT, or another logic RESULT.")));
+                    tr("Connect a teal STATE, gold EVENT, or another logic RESULT.")))));
             label->setPos(10,43+24*i);
         }
         for(QGraphicsItem *child:card->childItems()) {
             const QString role=child->data(4).toString();
+            if(op==QStringLiteral("counter")) {
+                if(role==QStringLiteral("graph-true-label")) {
+                    if(auto *label=dynamic_cast<QGraphicsSimpleTextItem*>(child))label->setText(tr("YES / TARGET REACHED"));
+                } else if(role==QStringLiteral("graph-false-label")) {
+                    if(auto *label=dynamic_cast<QGraphicsSimpleTextItem*>(child))label->setText(tr("NO / BELOW TARGET"));
+                } else if(role==QStringLiteral("graph-result-label")) {
+                    if(auto *label=dynamic_cast<QGraphicsSimpleTextItem*>(child))label->setText(tr("RESULT"));
+                } else if(role==QStringLiteral("graph-true-port")) {
+                    child->setToolTip(tr("COUNTER YES: held TRUE after target is reached. Can feed AND/OR/NOT, or run a YES action when evaluated."));
+                } else if(role==QStringLiteral("graph-false-port")) {
+                    child->setToolTip(tr("COUNTER NO: held TRUE while count is below target. Can feed AND/OR/NOT, or run a NO action when evaluated."));
+                } else if(role==QStringLiteral("graph-result-port")) {
+                    child->setToolTip(tr("COUNTER RESULT: held TRUE after target is reached; FALSE while below target. Connect to AND/OR/NOT or Game Object state."));
+                }
+            }
+            if(op==QStringLiteral("timer")) {
+                if(role==QStringLiteral("graph-true-label")) {
+                    if(auto *label=dynamic_cast<QGraphicsSimpleTextItem*>(child))
+                        label->setText(tr("TRUE / FINISHED"));
+                } else if(role==QStringLiteral("graph-false-label")) {
+                    if(auto *label=dynamic_cast<QGraphicsSimpleTextItem*>(child))
+                        label->setText(tr("FALSE / RUNNING"));
+                } else if(role==QStringLiteral("graph-true-port")) {
+                    child->setToolTip(tr("FINISHED: one action pulse at zero seconds. Use DISABLE to hide the target."));
+                } else if(role==QStringLiteral("graph-false-port")) {
+                    child->setToolTip(tr("RUNNING: one action pulse on START or CONTINUE. Use ENABLE to show the target. STOP/RESET are silent."));
+                } else if(role==QStringLiteral("graph-result-port")) {
+                    child->setToolTip(tr("HELD RESULT: TRUE once TIMER has finished, FALSE otherwise. "
+                                         "For visibility windows use the separate RUNNING and FINISHED action outputs."));
+                }
+            }
             if(role==QStringLiteral("graph-result-label"))child->setPos(9,resultY-13);
             else if(role==QStringLiteral("graph-true-label"))child->setPos(9,trueY-13);
             else if(role==QStringLiteral("graph-false-label"))child->setPos(9,falseY-13);
@@ -5505,6 +6549,8 @@ private:
         int cardHeight=falseY+59;
         if(op==QStringLiteral("stat_compare"))cardHeight+=107;
         else if(op==QStringLiteral("quest_done"))cardHeight+=77;
+        else if(op==QStringLiteral("counter"))cardHeight+=76;
+        else if(op==QStringLiteral("timer"))cardHeight+=76;
         card->setFullHeight(cardHeight);
         const QString guidance=graphSocketGuidance(node);
         card->setToolTip(guidance);
@@ -5543,7 +6589,10 @@ private:
             "On state-only logic, reevaluation can happen after later state changes."));
         for(const bool yes:{true,false}) {
             const int y=yes?109:138;
-            auto *label=new QGraphicsSimpleTextItem(yes?tr("TRUE / YES"):tr("FALSE / NO"),card);
+            const bool isTimer=data.value(QStringLiteral("op")).toString()==QStringLiteral("timer");
+            auto *label=new QGraphicsSimpleTextItem(isTimer?
+                (yes?tr("TRUE / FINISHED"):tr("FALSE / RUNNING")):
+                (yes?tr("TRUE / YES"):tr("FALSE / NO")),card);
             label->setData(4,yes?QStringLiteral("graph-true-label"):QStringLiteral("graph-false-label"));
             label->setBrush(yes?QColor(111,222,167):QColor(244,145,146));label->setPos(9,y-8);
             auto *port=new QGraphicsEllipseItem(QRectF(265,y-6,18,18),card);
@@ -5552,11 +6601,15 @@ private:
             port->setData(1,(yes?QStringLiteral("@graphbranch:true:"):
                                   QStringLiteral("@graphbranch:false:"))+key);
             port->setPen(QPen(Qt::white,1));port->setBrush(yes?QColor(76,171,118):QColor(193,86,86));
-            port->setToolTip(yes?tr("TRUE action: runs when this gate evaluates TRUE. "
-                "A held STATE alone may cause repeat dispatch on subsequent reevaluation; "
-                "combine with an EVENT to require a specific occurrence."):
-                tr("FALSE action: runs when this gate evaluates FALSE. "
-                "A pulse-dependent gate only dispatches when its event occurs."));
+            port->setToolTip(isTimer ?
+                (yes?tr("FINISHED: fires ONCE at zero seconds. Use DISABLE to hide a pickup."):
+                    tr("RUNNING: fires on START or CONTINUE, never each frame. "
+                       "Use ENABLE to show a pickup. STOP/RESET are silent.")):
+                (yes?tr("TRUE action: runs when this gate evaluates TRUE. "
+                    "A held STATE alone may cause repeat dispatch on subsequent reevaluation; "
+                    "combine with an EVENT to require a specific occurrence."):
+                    tr("FALSE action: runs when this gate evaluates FALSE. "
+                       "A pulse-dependent gate only dispatches when its event occurs.")));
         }
         auto *operatorPanel=new QWidget;
         operatorPanel->setFixedSize(254,33);
@@ -5569,11 +6622,19 @@ private:
                                QStringLiteral("and"),QStringLiteral("or")})
             operation->addItem(op.toUpper(),op);
         const QString configured=data.value(QStringLiteral("op")).toString();
-        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done")) {
+        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done") ||
+           configured==QStringLiteral("counter") || configured==QStringLiteral("timer")) {
             operation->addItem(configured==QStringLiteral("stat_compare") ?
-                tr("COMPARE PLAYER STAT") : tr("QUEST COMPLETED"),configured);
-            operation->setEnabled(false); // zero-input condition; settings are directly below on this card
-            operation->setToolTip(tr("Compare and Quest State are zero-input conditions. Edit their parameters below."));
+                tr("COMPARE PLAYER STAT") : configured==QStringLiteral("counter")?
+                tr("COUNTER") : configured==QStringLiteral("timer")?
+                tr("TIMER") : tr("QUEST COMPLETED"),configured);
+            operation->setEnabled(false); // typed condition; its optional WHEN is edited via a wire
+            operation->setToolTip(configured==QStringLiteral("timer")?
+                tr("TIMER runs on gameplay frames. START/CONTINUE emits FALSE / RUNNING once; "
+                   "expiry emits TRUE / FINISHED once. STOP/RESET dispatch no branch actions."):
+                configured==QStringLiteral("counter")?
+                tr("COUNTER stores one per EVENT pulse and fires its TRUE branch upon reaching the target."):
+                tr("COMPARE / QUEST STATE watches its value independently, or accepts an optional WHEN EVENT / STATE. Edit its parameters below."));
         }
         operation->setCurrentIndex(qMax(0,operation->findData(data.value(QStringLiteral("op")).toString())));
         operatorRow->addWidget(operation,1);
@@ -5611,7 +6672,8 @@ private:
         // These are ordinary Logic cards. Keep their configuration in the
         // graph, not three QInputDialog pop-ups or a separate editor window.
         // Every edit writes the original .sbgm logicNodes record via graphUpdate().
-        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done")) {
+        if(configured==QStringLiteral("stat_compare") || configured==QStringLiteral("quest_done") ||
+           configured==QStringLiteral("counter") || configured==QStringLiteral("timer")) {
             auto *settings=new QWidget;
             settings->setFixedSize(254,configured==QStringLiteral("stat_compare")?99:69);
             settings->setStyleSheet(m_controlsStyle);
@@ -5672,6 +6734,38 @@ private:
                     [apply](int){apply();});
                 connect(threshold,qOverload<int>(&QSpinBox::valueChanged),this,
                     [apply](int){apply();});
+            } else if(configured==QStringLiteral("timer")) {
+                auto *seconds=new QSpinBox(settings);
+                seconds->setRange(1,600);
+                seconds->setValue(qMax(1,data.value(QStringLiteral("durationFrames")).toInt(250)/50));
+                seconds->setToolTip(tr("Game clock at 50Hz. Pauses when this world's gameplay is paused or unloaded. "
+                                       "RUNNING fires on START/CONTINUE; FINISHED fires once at zero."));
+                fields->addWidget(new QLabel(tr("Seconds:"),settings),0,0);
+                fields->addWidget(seconds,0,1);
+                fields->addWidget(new QLabel(tr("Gold START / STOP / CONTINUE / RESET"),settings),1,0,1,3);
+                connect(seconds,qOverload<int>(&QSpinBox::valueChanged),this,
+                    [this,key,seconds](int) {
+                        QJsonObject current;
+                        if(!lookupGraph(key,nullptr,nullptr,&current))return;
+                        current.insert(QStringLiteral("durationFrames"),seconds->value()*50);
+                        graphUpdate(key,current);syncGraphCardSockets(key);showDetails(key);
+                    });
+            } else if(configured==QStringLiteral("counter")) {
+                auto *target=new QSpinBox(settings);
+                target->setRange(1,65535);
+                target->setValue(data.value(QStringLiteral("targetCount")).toInt(3));
+                target->setToolTip(tr("Number of individual EVENT pulses required."));
+                fields->addWidget(new QLabel(tr("Target events:"),settings),0,0);
+                fields->addWidget(target,0,1);
+                fields->addWidget(new QLabel(tr("Gold EVENT inputs only (max 16)"),settings),1,0,1,3);
+                connect(target,qOverload<int>(&QSpinBox::valueChanged),this,
+                    [this,key,target](int) {
+                        QJsonObject current;
+                        if(!lookupGraph(key,nullptr,nullptr,&current))return;
+                        current.insert(QStringLiteral("targetCount"),target->value());
+                        graphUpdate(key,current);
+                        syncGraphCardSockets(key);showDetails(key);
+                    });
             } else {
                 auto *quest=new QComboBox(settings);
                 quest->setToolTip(tr("Choose an existing quest from Quest Designer. TRUE when it is completed."));
@@ -5894,7 +6988,27 @@ private:
                     QPointF a=source->wirePoint(QPointF(kind==QStringLiteral("node")?274:
                         (virtualInput || (kind==QStringLiteral("event") && eventKey(id)==QStringLiteral("trigger")))?280:224,
                         virtualInput?(virtualOff?273.0:243.0):
-                        kind==QStringLiteral("node")?78:kind==QStringLiteral("event")?eventY:58));
+                        kind==QStringLiteral("node")?78.0:kind==QStringLiteral("event")?eventY:58));
+                    QColor inputColour=kind==QStringLiteral("event")?QColor(233,182,75):QColor(105,206,207);
+                    if(kind==QStringLiteral("node")) {
+                        QJsonObject upstream;
+                        if(lookupGraph(from,nullptr,nullptr,&upstream) &&
+                           upstream.value(QStringLiteral("op")).toString()==QStringLiteral("counter")) {
+                            // An old wire without logicOutput retains the same Boolean meaning:
+                            // non-inverted means RESULT, inverted means NO. New wires keep
+                            // the selected YES / NO / RESULT socket distinct in .sbgm.
+                            const QString output=v.value(QStringLiteral("logicOutput")).toString(
+                                v.value(QStringLiteral("invert")).toBool(false)?
+                                    QStringLiteral("no"):QStringLiteral("result"));
+                            if(output==QStringLiteral("yes")) {
+                                a=source->wirePoint(QPointF(274,117));
+                                inputColour=QColor(108,211,159);
+                            } else if(output==QStringLiteral("no")) {
+                                a=source->wirePoint(QPointF(274,146));
+                                inputColour=QColor(245,127,126);
+                            }
+                        }
+                    }
                     if(virtualInput) {
                         const QString socketId=QStringLiteral("@triggerstate:")+
                             (virtualOff?QStringLiteral("off:"):QStringLiteral("on:"))+from;
@@ -5905,9 +7019,24 @@ private:
                             break;
                         }
                     }
-                    const QPointF b=target->wirePoint(QPointF(0,52+24*i));
-                    append(a,b,kind==QStringLiteral("event")?QColor(233,182,75):QColor(105,206,207),
-                           QStringLiteral("graph-input"),key,i,from,key);
+                    int socketIndex=i;
+                    if(n.value(QStringLiteral("op")).toString()==QStringLiteral("counter")) {
+                        if(v.value(QStringLiteral("command")).toString()==QStringLiteral("reset"))socketIndex=0;
+                        else {
+                            socketIndex=1;
+                            for(int preceding=0;preceding<i;++preceding)
+                                if(inputs.at(preceding).toObject().value(QStringLiteral("command")).toString()!=QStringLiteral("reset"))
+                                    ++socketIndex;
+                        }
+                    }
+                    if(n.value(QStringLiteral("op")).toString()==QStringLiteral("timer")) {
+                        const QStringList commands{QStringLiteral("start"),QStringLiteral("stop"),
+                            QStringLiteral("continue"),QStringLiteral("reset")};
+                        socketIndex=commands.indexOf(v.value(QStringLiteral("command")).toString());
+                        if(socketIndex<0)continue;
+                    }
+                    const QPointF b=target->wirePoint(QPointF(0,52+24*socketIndex));
+                    append(a,b,inputColour,QStringLiteral("graph-input"),key,i,from,key);
                 }
                 // RESULT can directly drive any target Game Object's enabled
                 // state. One teal wire replaces the misleading TRUE+FALSE pair.
@@ -5920,16 +7049,26 @@ private:
                            QStringLiteral("graph-result-binding"),key,j,key,resultTargets[j].toString());
                 }
                 for(const bool yes:{true,false}) {
-                    const QColor color=yes?QColor(111,222,167):QColor(244,145,146);
                     const QPointF a=target->wirePoint(QPointF(274,yes?117:146));
                     const QString field=yes?QStringLiteral("trueActions"):QStringLiteral("falseActions");
                     const QJsonArray actions=n.value(field).toArray();
                     for(int j=0;j<actions.size();++j) {
-                        const QString dest=actions[j].toObject().value(QStringLiteral("objectId")).toString();
+                        const QJsonObject link=actions[j].toObject();
+                        const QString dest=link.value(QStringLiteral("objectId")).toString();
+                        const QString operation=link.value(QStringLiteral("action")).toString();
                         NodeCard *card=m_cards.value(dest,nullptr);
-                        if(!card)continue;
-                        append(a,card->wirePoint(QPointF(0,58)),color,
+                        if(!card || !supportedAction(operation))continue;
+                        const QColor actionColour=operation==QStringLiteral("enable")?QColor(108,211,159):
+                            operation==QStringLiteral("disable")?QColor(245,127,126):QColor(238,202,113);
+                        append(a,card->wirePoint(QPointF(0,58)),actionColour,
                                yes?QStringLiteral("graph-true-action"):QStringLiteral("graph-false-action"),key,j,key,dest);
+                        // Colour and tooltip describe the saved ACTION, not just
+                        // which TRUE/FALSE output triggered it. This makes
+                        // right-click ENABLE/DISABLE edits immediately visible.
+                        if(!m_lines.isEmpty())m_lines.last()->setToolTip(
+                            tr("%1 → %2: %3 (right-click to edit/remove)")
+                                .arg(yes?tr("TRUE"):tr("FALSE"),
+                                     m_objects.value(dest).name,operation.toUpper()));
                     }
                     const int dialogue=n.value(yes?QStringLiteral("trueDialogueNode"):
                                                  QStringLiteral("falseDialogueNode")).toInt(-1);
@@ -5939,11 +7078,11 @@ private:
                     const QString visualTo=graphDialogueVisualTarget(key,yes,dialogue);
                     NodeCard *card=m_cards.value(visualTo,nullptr);
                     if(dialogue>=0 && npcRoutePoint(source,dialogue,&npcPoint))
-                        append(a,npcPoint,color,yes?QStringLiteral("graph-true-dialogue"):
+                        append(a,npcPoint,yes?QColor(108,211,159):QColor(245,127,126),yes?QStringLiteral("graph-true-dialogue"):
                             QStringLiteral("graph-false-dialogue"),key,0,key,
                             m_npcDialogueRoutes.value(source).value(QStringLiteral("npc")).toString());
                     else if(dialogue>=0 && card)
-                        append(a,card->wirePoint(QPointF(0,57)),color,
+                        append(a,card->wirePoint(QPointF(0,57)),yes?QColor(108,211,159):QColor(245,127,126),
                                yes?QStringLiteral("graph-true-dialogue"):QStringLiteral("graph-false-dialogue"),key,0,
                                key,visualTo);
                 }
@@ -5962,9 +7101,16 @@ private:
             const QJsonArray actions=n.value(field).toArray();
             const QString target=index>=0 && index<actions.size()?
                 actions[index].toObject().value(QStringLiteral("objectId")).toString():QString();
-            if(!isPlayerCommand(target))
-                for(const QString &op:{QStringLiteral("enable"),QStringLiteral("disable"),QStringLiteral("toggle")})
-                    changes.insert(menu.addAction(tr("Set %1").arg(op)),op);
+            if(!isPlayerCommand(target)) {
+                const QString current=index>=0 && index<actions.size()?
+                    actions[index].toObject().value(QStringLiteral("action")).toString():QString();
+                for(const QString &op:{QStringLiteral("enable"),QStringLiteral("disable"),QStringLiteral("toggle")}) {
+                    QAction *option=menu.addAction(tr("Set %1").arg(op.toUpper()));
+                    option->setCheckable(true);
+                    option->setChecked(current==op);
+                    changes.insert(option,op);
+                }
+            }
         }
         QAction *remove=menu.addAction(tr("Remove Connection"));
         QAction *selected=menu.exec(at);
@@ -5984,10 +7130,17 @@ private:
                 QStringLiteral("trueActions"):QStringLiteral("falseActions");
             QJsonArray actions=n.value(field).toArray();
             if(index<0 || index>=actions.size())return;
-            if(selected==remove)actions.removeAt(index);
-            else if(changes.contains(selected)) {
+            if(selected==remove) {
+                actions.removeAt(index);
+                m_status->setText(tr("Removed logic action connection. Save Graph + World to apply."));
+            } else if(changes.contains(selected)) {
                 QJsonObject item=actions[index].toObject();
-                item.insert(QStringLiteral("action"),changes.value(selected));actions.replace(index,item);
+                const QString operation=changes.value(selected);
+                item.insert(QStringLiteral("action"),operation);actions.replace(index,item);
+                m_status->setText(tr("Logic %1 → %2: %3. Wire colour now reflects the saved operation. Save Graph + World to apply.")
+                    .arg(kind.startsWith(QStringLiteral("graph-true"))?tr("TRUE"):tr("FALSE"),
+                         m_objects.value(item.value(QStringLiteral("objectId")).toString()).name,
+                         operation.toUpper()));
             } else return;
             n.insert(field,actions);
         } else if(selected==remove) {
@@ -6014,7 +7167,7 @@ private:
         if(!m_objects.contains(owner))return;
         NodeObject n=m_objects.value(owner);
         if(n.type!=QStringLiteral("trigger") || n.toggleStateTargetId.isEmpty())return;
-        if(QMessageBox::question(this,tr("Convert Legacy Condition"),
+        if(QMessageBox::question(this,tr("Convert Trigger Condition"),
             tr("Convert this Trigger's old single condition into an independent graph node?\n\n"
                "All inputs, TRUE/FALSE actions and dialogue IDs will be copied. The old "
                "condition will be cleared so it cannot run twice. The source .sbgm is backed "
@@ -6066,7 +7219,7 @@ private:
                              QStringLiteral("falseDialogueNode")).toInt(-1)>=0)
                 makeGraphDialogueCard(key,yes);
         redrawLinks();showDetails(key);
-        m_status->setText(tr("Converted legacy condition into independent node %1. Save Graph + World to commit.").arg(name));
+        m_status->setText(tr("Converted Trigger condition into independent node %1. Save Graph + World to commit.").arg(name));
     }
     void addToggleCondition(const QString &owner,const QString &source,const QPointF &dropAt,
                             const QString &op=QStringLiteral("boolean")) {
@@ -6811,6 +7964,8 @@ private:
         const QPointF now=card->pos();
         const QPointF previous=m_liveWirePositions.value(id,now);
         m_positions.insert(id,now);
+        if(!m_movingUserGroup && !userGroupFor(id).isEmpty())
+            layoutUserGroupBoxes(false);
         const QPointF delta=now-previous;
         if (qFuzzyIsNull(delta.x()) && qFuzzyIsNull(delta.y()))return;
         m_dirty=true;
@@ -6866,6 +8021,7 @@ private:
     }
 
     void redrawLinks() {
+        revealUserGroupMembers();
         // A shared Show Dialogue target can be changed or deleted independently.
         // Restore the source branch's owned card if its display route is stale.
         // Authored .sbgm actions never depend on the .vsgm layout hints.
@@ -7343,6 +8499,11 @@ private:
                 wire->setZValue(0);m_scene->addItem(wire);m_lines.append(wire);
             }
         }
+        layoutUserGroupBoxes(false);
+        applyUserGroupWires();
+        for(const UserNodeGroup &g:m_userGroups)
+            if(g.collapsed)for(const QString &member:g.members)
+                if(NodeCard *card=m_cards.value(member,nullptr))card->setVisible(false);
         // Wire identities use authored source/target and branch indexes, not
         // ephemeral QGraphicsItem pointers or curve geometry; selection survives
         // redrawLinks() while panning, moving and collapsing cards.
@@ -7559,6 +8720,16 @@ private:
                         .arg(node.value(QStringLiteral("threshold")).toInt()));
                 if(node.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done"))
                     row(tr("Quest ID"),node.value(QStringLiteral("questId")).toString());
+                for(const bool yes:{true,false}) {
+                    const QString field=yes?QStringLiteral("trueActions"):QStringLiteral("falseActions");
+                    for(const QJsonValue &value:node.value(field).toArray()) {
+                        const QJsonObject link=value.toObject();
+                        const QString targetId=link.value(QStringLiteral("objectId")).toString();
+                        row(yes?tr("TRUE action"):tr("FALSE action"),
+                            tr("%1 → %2").arg(link.value(QStringLiteral("action")).toString().toUpper(),
+                                m_objects.contains(targetId)?m_objects.value(targetId).name:targetId));
+                    }
+                }
                 row(tr("Game Object"),m_objects.value(owner).name);
                 row(tr("Data source"),QStringLiteral(".sbgm / logic"));
                 return;
@@ -7931,7 +9102,7 @@ private:
     }
     void addConnection(const QString &from,const QString &to,const QString &port=QString()) {
         if(isTriggerStateOutput(from)) {
-            if(to.startsWith(QStringLiteral("@graph:")))addGraphInput(from,to);
+            if(to.startsWith(QStringLiteral("@graph:")))addGraphInput(from,to,port);
             return;
         }
         if(isEventOutput(from)) {
@@ -7995,8 +9166,10 @@ private:
                 QJsonObject targetNode;
                 if(lookupGraph(to,&graphOwner,nullptr,&targetNode) && graphOwner!=eventOwner(from) &&
                    (targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
-                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done"))) {
-                    addGraphInput(from,to);return;
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("counter") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("timer"))) {
+                    addGraphInput(from,to,port);return;
                 }
                 if(!graphOwner.isEmpty() && graphOwner!=eventOwner(from)) {
                     const QString owner=eventOwner(from);
@@ -8021,7 +9194,7 @@ private:
                     }
                     return;
                 }
-                addGraphInput(from,to);return;
+                addGraphInput(from,to,port);return;
             }
             if(!m_objects.contains(to))return;
             appendEventConnection(eventOwner(from),eventKey(from),to,
@@ -8037,8 +9210,10 @@ private:
                 if(lookupGraph(to,&graphOwner,nullptr,&targetNode) &&
                    (graphOwner==owner ||
                     targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
-                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done")))
-                    addGraphInput(from,to);
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("counter") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("timer")))
+                    addGraphInput(from,to,port);
                 else
                     QMessageBox::information(this,tr("Logic owner"),
                         tr("Create a gate from this enemy's ON DEFEAT socket, then connect other STATE inputs."));
@@ -8058,8 +9233,10 @@ private:
             if(lookupGraph(to,&graphOwner,nullptr,&targetNode) &&
                (graphOwner==from ||
                 targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
-                targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done")))
-                addGraphInput(from,to);
+                targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("counter") ||
+                    targetNode.value(QStringLiteral("op")).toString()==QStringLiteral("timer")))
+                addGraphInput(from,to,port);
             return;
         }
         if(m_objects.contains(to) && m_objects.value(to).type==QStringLiteral("npc") &&
@@ -8071,7 +9248,7 @@ private:
             return;
         }
         if(from.startsWith(QStringLiteral("@graphvalue:"))) {
-            if(to.startsWith(QStringLiteral("@graph:")))addGraphInput(from,to);
+            if(to.startsWith(QStringLiteral("@graph:")))addGraphInput(from,to,port);
             else if(m_objects.contains(to))
                 addGraphResultTarget(from.mid(QStringLiteral("@graphvalue:").size()),to);
             return;
@@ -8080,6 +9257,13 @@ private:
             const bool yes=from.startsWith(QStringLiteral("@graphbranch:true:"));
             const QString key=from.mid((yes?QStringLiteral("@graphbranch:true:"):
                 QStringLiteral("@graphbranch:false:")).size());
+            if(to.startsWith(QStringLiteral("@graph:"))) {
+                QJsonObject branchNode;
+                if(lookupGraph(key,nullptr,nullptr,&branchNode) &&
+                    branchNode.value(QStringLiteral("op")).toString()==QStringLiteral("counter"))
+                    addGraphInput(from,to,port);
+                return;
+            }
             if(to.startsWith(QStringLiteral("@graph-dialogue:")) ||
                to.startsWith(QStringLiteral("@toggle-dialogue:")) ||
                to.startsWith(QStringLiteral("@dialogue:")) ||
@@ -8121,8 +9305,14 @@ private:
                     .arg(yes?tr("TRUE"):tr("FALSE")).arg(selected));
                 return;
             }
-            if(m_objects.contains(to))addGraphAction(key,yes,to,
-                defaultPlayerAction(to,yes?QStringLiteral("enable"):QStringLiteral("disable")));
+            if(m_objects.contains(to)) {
+                QJsonObject graphNode;
+                const bool timerAction=lookupGraph(key,nullptr,nullptr,&graphNode) &&
+                    graphNode.value(QStringLiteral("op")).toString()==QStringLiteral("timer");
+                addGraphAction(key,yes,to,defaultPlayerAction(to,
+                    timerAction?(yes?QStringLiteral("disable"):QStringLiteral("enable")):
+                                (yes?QStringLiteral("enable"):QStringLiteral("disable"))));
+            }
             return;
         }
         if (from.startsWith(QStringLiteral("@stateout:"))) {
@@ -8158,7 +9348,7 @@ private:
         }
         if (m_objects.contains(from) && m_objects.value(from).type!=QStringLiteral("trigger") &&
             m_objects.value(from).type!=QStringLiteral("player_action")) {
-            if(to.startsWith(QStringLiteral("@graph:"))) {addGraphInput(from,to);return;}
+            if(to.startsWith(QStringLiteral("@graph:"))) {addGraphInput(from,to,port);return;}
             if (to.startsWith(QStringLiteral("@toggle:"))) {
                 const QString owner=to.mid(QStringLiteral("@toggle:").size());
                 addInputToCondition(owner,from);
@@ -8585,6 +9775,20 @@ private:
     }
     void showCardContextMenu(const QString &id,const QPoint &at) {
         if (!m_cards.contains(id))return;
+        if(m_scene && m_scene->selectedItems().size()>1) {
+            QMenu menu(this);
+            QAction *group=menu.addAction(tr("Group Selected Nodes (Ctrl+G)"));
+            if(menu.exec(at)==group)groupSelectedNodes();
+            return;
+        }
+        const QString existing=userGroupFor(id);
+        if(!existing.isEmpty()) {
+            QMenu menu(this);
+            QAction *actions=menu.addAction(tr("Group Options..."));
+            QAction *selected=menu.exec(at);
+            if(selected==actions)userGroupMenu(existing,at);
+            return;
+        }
         showDetails(id);
         QMenu menu(this);
         QAction *branch=nullptr,*clearBranch=nullptr;
@@ -8639,12 +9843,16 @@ private:
             QJsonObject n;
             if(!lookupGraph(id,nullptr,nullptr,&n))return;
             const bool advanced=n.value(QStringLiteral("op")).toString()==QStringLiteral("stat_compare") ||
-                n.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done");
+                n.value(QStringLiteral("op")).toString()==QStringLiteral("quest_done") ||
+                n.value(QStringLiteral("op")).toString()==QStringLiteral("counter") ||
+                n.value(QStringLiteral("op")).toString()==QStringLiteral("timer");
             QAction *editCondition=advanced?menu.addAction(tr("Edit Condition inside node")):nullptr;
             if(editCondition)editCondition->setEnabled(false);
             QMenu *addCondition=menu.addMenu(tr("Add Logic condition (same Game Object)"));
             QAction *addCompare=addCondition->addAction(tr("COMPARE (Player stat / Health)"));
             QAction *addQuest=addCondition->addAction(tr("QUEST STATE (Completed?)"));
+            QAction *addCounter=addCondition->addAction(tr("COUNTER (Event pulses)"));
+            QAction *addTimer=addCondition->addAction(tr("TIMER (Game clock)"));
             QMenu *opMenu=menu.addMenu(tr("Logic operator"));
             opMenu->setEnabled(!advanced);
             QHash<QAction*,QString> operators;
@@ -8656,13 +9864,14 @@ private:
             QAction *falseDialogue=menu.addAction(tr("FALSE → Show Dialogue..."));
             QAction *remove=menu.addAction(tr("Delete Logic Node (disconnect links)"));
             QAction *selected=menu.exec(at);
-            if(selected==addCompare || selected==addQuest) {
+            if(selected==addCompare || selected==addQuest || selected==addCounter || selected==addTimer) {
                 QString owner;
                 if(!lookupGraph(id,&owner,nullptr))return;
                 const QPointF next=m_cards.contains(id)?m_cards.value(id)->pos()+QPointF(350,20):
                     viewportInsertionPoint(QSizeF(300,280));
                 createGraphLogic(owner,next,selected==addCompare?
-                    QStringLiteral("stat_compare"):QStringLiteral("quest_done"));
+                    QStringLiteral("stat_compare"):selected==addCounter?QStringLiteral("counter"):
+                    selected==addTimer?QStringLiteral("timer"):QStringLiteral("quest_done"));
             } else if(operators.contains(selected)) {
                 const QString newOp=operators.value(selected);
                 const int connected=n.value(QStringLiteral("inputs")).toArray().size();
@@ -9025,6 +10234,7 @@ private:
             positions.insert(flowGroupId(it.key()),QJsonArray{pt.x(),pt.y()});
         }
         root.insert(QStringLiteral("positions"),positions);
+        root.insert(QStringLiteral("nodeGroups"),userGroupsJson());
         QJsonArray collapsed;
         for(const QString &id:m_collapsedCards)
             if(m_cards.contains(id) || id.startsWith(QStringLiteral("@flowgroup:")))collapsed.append(id);
@@ -9373,6 +10583,10 @@ private:
     QHash<QString,QPointF> m_positions;
     QHash<QString,NodeCard*> m_cards;
     QHash<int,FlowGroupBox*> m_flowGroups;
+    QHash<QString,UserNodeGroup> m_userGroups;
+    QHash<QString,UserNodeGroupBox*> m_userGroupBoxes;
+    bool m_movingUserGroup=false;
+    int m_nextUserGroupNumber=1;
     bool m_movingFlowGroup=false;
     QSet<QString> m_touched;
     QList<QGraphicsPathItem*> m_lines;

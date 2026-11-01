@@ -5393,9 +5393,116 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     atlasPath.replace("\\", "\\\\");
     atlasPath.replace("\"", "\\\"");
     const bool embedded = !externalMap;
+    // Qt only packs tile arrays. worldmap.rulec owns runtime decoding,
+    // allocations, pointers and cleanup; no generated C logic lives here.
+    struct EmbeddedRleField {
+        QString name;
+        QByteArray raw;
+        int unit;
+        QByteArray packed;
+    };
+    QVector<EmbeddedRleField> rleFields;
+    bool compressedEmbedded = false;
+    quint64 embeddedRamBytes = 0;
+    if (embedded) {
+        rleFields = {
+            {QStringLiteral("graphics"), map.graphics, 2, {}},
+            {QStringLiteral("collisions"), map.collisions, 1, {}},
+            {QStringLiteral("flips"), map.flips, 1, {}}
+        };
+        if (custom) rleFields.append({QStringLiteral("slopes"), map.slopes, 1, {}});
+        if (pointShapes) rleFields.append({QStringLiteral("shape_refs"), shapeRefs, 2, {}});
+        const auto sameUnit = [](const QByteArray &bytes, int unit, int a, int b) {
+            for (int k = 0; k < unit; ++k)
+                if (bytes.at(a * unit + k) != bytes.at(b * unit + k)) return false;
+            return true;
+        };
+        const auto runLength = [&](const QByteArray &bytes, int unit, int start) {
+            const int cells = bytes.size() / unit;
+            int length = 1;
+            while (length < 128 && start + length < cells &&
+                   sameUnit(bytes, unit, start, start + length)) ++length;
+            return length;
+        };
+        quint64 packedTotal = 0;
+        for (EmbeddedRleField &field : rleFields) {
+            // 16-bit graphics and shape references must remain aligned in SDRAM.
+            embeddedRamBytes = (embeddedRamBytes + quint64(field.unit - 1))
+                             & ~quint64(field.unit - 1);
+            embeddedRamBytes += quint64(field.raw.size());
+            const int units = field.raw.size() / field.unit;
+            if (!units || field.raw.size() % field.unit) {
+                if (error) *error = QStringLiteral("Invalid embedded map RLE field size.");
+                return false;
+            }
+            for (int i = 0; i < units;) {
+                const int run = runLength(field.raw, field.unit, i);
+                if (run >= 3) {
+                    field.packed.append(char(0x80u | unsigned(run - 1)));
+                    field.packed.append(field.raw.constData() + i * field.unit, field.unit);
+                    i += run;
+                } else {
+                    const int start = i;
+                    i += run;
+                    while (i < units && i - start < 128) {
+                        const int nextRun = runLength(field.raw, field.unit, i);
+                        if (nextRun >= 3) break;
+                        i += qMin(nextRun, 128 - (i - start));
+                    }
+                    const int count = i - start;
+                    field.packed.append(char(unsigned(count - 1)));
+                    field.packed.append(field.raw.constData() + start * field.unit,
+                                        count * field.unit);
+                }
+            }
+            packedTotal += quint64(field.packed.size());
+        }
+        // The decoder costs code space. For high-entropy maps retain the
+        // original direct ROM arrays rather than making the .app larger.
+        compressedEmbedded = embeddedRamBytes > packedTotal + 512u;
+        if (compressedEmbedded && embeddedRamBytes > 3u * 1024u * 1024u) {
+            if (error) *error = QStringLiteral(
+                "Compressed embedded map requires more than 3 MiB of SDRAM.");
+            return false;
+        }
+    }
+    // These are DATA tokens, not C functions. The rules decide how to use them.
+    QMap<QString, QString> packedRows;
+    QMap<QString, QString> rawSizes;
+    QMap<QString, QString> rawOffsets;
+    quint64 packedOffset = 0;
+    for (const EmbeddedRleField &field : rleFields) {
+        packedOffset = (packedOffset + quint64(field.unit - 1))
+                     & ~quint64(field.unit - 1);
+        const QString name = field.name.toUpper();
+        packedRows.insert(name, byteRows(field.packed));
+        rawSizes.insert(name, num(field.raw.size()));
+        rawOffsets.insert(name, num(packedOffset));
+        packedOffset += quint64(field.raw.size());
+    }
+    const auto rleValue = [](const QMap<QString, QString> &map, const QString &name) {
+        return map.value(name, QStringLiteral("0"));
+    };
     const QMap<QString, QString> cfields = {
         {QStringLiteral("EXTERNAL"), externalMap ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("EMBEDDED"), embedded ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("RLE_COMPRESSED"), compressedEmbedded ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("RLE_TOTAL_BYTES"), num(embeddedRamBytes)},
+        {QStringLiteral("RLE_GRAPHICS_ROWS"), rleValue(packedRows, QStringLiteral("GRAPHICS"))},
+        {QStringLiteral("RLE_COLLISIONS_ROWS"), rleValue(packedRows, QStringLiteral("COLLISIONS"))},
+        {QStringLiteral("RLE_FLIPS_ROWS"), rleValue(packedRows, QStringLiteral("FLIPS"))},
+        {QStringLiteral("RLE_SLOPES_ROWS"), rleValue(packedRows, QStringLiteral("SLOPES"))},
+        {QStringLiteral("RLE_SHAPE_REFS_ROWS"), rleValue(packedRows, QStringLiteral("SHAPE_REFS"))},
+        {QStringLiteral("RLE_GRAPHICS_SIZE"), rleValue(rawSizes, QStringLiteral("GRAPHICS"))},
+        {QStringLiteral("RLE_COLLISIONS_SIZE"), rleValue(rawSizes, QStringLiteral("COLLISIONS"))},
+        {QStringLiteral("RLE_FLIPS_SIZE"), rleValue(rawSizes, QStringLiteral("FLIPS"))},
+        {QStringLiteral("RLE_SLOPES_SIZE"), rleValue(rawSizes, QStringLiteral("SLOPES"))},
+        {QStringLiteral("RLE_SHAPE_REFS_SIZE"), rleValue(rawSizes, QStringLiteral("SHAPE_REFS"))},
+        {QStringLiteral("RLE_GRAPHICS_OFFSET"), rleValue(rawOffsets, QStringLiteral("GRAPHICS"))},
+        {QStringLiteral("RLE_COLLISIONS_OFFSET"), rleValue(rawOffsets, QStringLiteral("COLLISIONS"))},
+        {QStringLiteral("RLE_FLIPS_OFFSET"), rleValue(rawOffsets, QStringLiteral("FLIPS"))},
+        {QStringLiteral("RLE_SLOPES_OFFSET"), rleValue(rawOffsets, QStringLiteral("SLOPES"))},
+        {QStringLiteral("RLE_SHAPE_REFS_OFFSET"), rleValue(rawOffsets, QStringLiteral("SHAPE_REFS"))},
         {QStringLiteral("HAS_LEGACY_SLOPES"), custom ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_POINT_SHAPES"), pointShapes ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_LOOPS"), map.loops.isEmpty() ? QStringLiteral("0") : QStringLiteral("1")},
@@ -5416,9 +5523,9 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
         {QStringLiteral("TILE_COUNT"), num(tileCount)},
         {QStringLiteral("ANIM_POINTER"), embedded && !map.animations.isEmpty() ? worldSymbol + QStringLiteral("_animations") : QStringLiteral("0")},
         {QStringLiteral("ANIM_COUNT"), embedded ? num(map.animations.size()) : QStringLiteral("0")},
-        {QStringLiteral("FLIP_POINTER"), embedded ? worldSymbol + QStringLiteral("_flips") : QStringLiteral("0 /* TFCard flips loaded later */")},
-        {QStringLiteral("SLOPE_POINTER"), embedded && custom ? worldSymbol + QStringLiteral("_slopes") : QStringLiteral("0")},
-        {QStringLiteral("SHAPE_REF_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_refs") : QStringLiteral("0")},
+        {QStringLiteral("FLIP_POINTER"), embedded && !compressedEmbedded ? worldSymbol + QStringLiteral("_flips") : QStringLiteral("0")},
+        {QStringLiteral("SLOPE_POINTER"), embedded && custom && !compressedEmbedded ? worldSymbol + QStringLiteral("_slopes") : QStringLiteral("0")},
+        {QStringLiteral("SHAPE_REF_POINTER"), embedded && pointShapes && !compressedEmbedded ? worldSymbol + QStringLiteral("_shape_refs") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_INSTANCE_POINTER"), embedded && pointShapes ? worldSymbol + QStringLiteral("_shape_instances") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_DEF_POINTER"), embedded && pointShapes ? QStringLiteral("game_global_collision_stamps") : QStringLiteral("0")},
         {QStringLiteral("SHAPE_POINTS_POINTER"), embedded && pointShapes ? QStringLiteral("game_global_collision_points") : QStringLiteral("0")},
@@ -5437,6 +5544,7 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
     };
     const QMap<QString, QString> hfields = {
         {QStringLiteral("EMBEDDED"), embedded ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("RLE_COMPRESSED"), compressedEmbedded ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("ZONE_ROWS"), zones},
         {QStringLiteral("WORLD_HEADER_FILENAME"), worldHeader},
         {QStringLiteral("WORLD_HEADER_GUARD"), worldBase == QStringLiteral("level1")
@@ -5444,6 +5552,15 @@ bool sidboxExportTilemap(const SidboxTilemap &map, const QString &designDirector
              : QStringLiteral("SIDBOX_GAME_") + worldSymbol + QStringLiteral("_H")},
         {QStringLiteral("WORLD_SYMBOL"), worldSymbol}
     };
+    // Compressed map behaviour is owned entirely by worldmap.rulec/.ruleh.
+    // Fail explicitly rather than emitting incomplete code from older rules.
+    if (!templates.value(QStringLiteral(".rulec")).contains("@IDE_IF{RLE_COMPRESSED}") ||
+        !templates.value(QStringLiteral(".ruleh")).contains("@IDE_IF{RLE_COMPRESSED}")) {
+        if (error) *error = QStringLiteral(
+            "Missing embedded RLE support in worldmap.rulec/.ruleh. "
+            "Install the updated game rules before exporting.");
+        return false;
+    }
     QByteArray header, source, conditional;
     if (!templates.value(QStringLiteral(".ruleh")).contains("@IDE{ZONE_ROWS}") ||
         !templates.value(QStringLiteral(".rulec")).contains("@IDE{MAP_WIDTH}")) {

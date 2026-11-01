@@ -8,11 +8,19 @@
  * Zones 1..8 are unchanged by solid/pass-through selection. */
 @IDE{ZONE_ROWS}
 @IDE_IF{EMBEDDED}
+@IDE_IF{RLE_COMPRESSED}
+extern const uint16_t *@IDE{WORLD_SYMBOL}_graphics;
+extern const uint8_t *@IDE{WORLD_SYMBOL}_collisions;
+extern const uint8_t *@IDE{WORLD_SYMBOL}_flips;
+extern const uint8_t *@IDE{WORLD_SYMBOL}_slopes;
+extern const uint16_t *@IDE{WORLD_SYMBOL}_shape_refs;
+@IDE_ELSE
 extern const uint16_t @IDE{WORLD_SYMBOL}_graphics[];
 extern const uint8_t @IDE{WORLD_SYMBOL}_collisions[];
 extern const uint8_t @IDE{WORLD_SYMBOL}_flips[];
 extern const uint8_t @IDE{WORLD_SYMBOL}_slopes[];
 extern const uint16_t @IDE{WORLD_SYMBOL}_shape_refs[];
+@IDE_END
 /* Shape definitions and point arrays live once in gameglobalstamps.c. */
 extern const game_tile_shape_instance_t @IDE{WORLD_SYMBOL}_shape_instances[];
 extern const game_tile_animation_t @IDE{WORLD_SYMBOL}_animations[];

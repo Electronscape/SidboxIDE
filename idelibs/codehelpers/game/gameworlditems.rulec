@@ -76,6 +76,23 @@ static uint8_t cg_logic_stat_compare(const char *name,const char *op,int32_t thr
     return 0u;
 }
 @IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+/* Per-world, saturating event counters. Saved snapshots hold counts; tick
+ * flags are transient and cannot replay actions after loading a game. */
+static uint16_t cg_logic_counter_value[@IDE{LOGIC_COUNTER_COUNT}];
+static uint16_t cg_logic_counter_saved[@IDE{LOGIC_COUNTER_COUNT}];
+static uint8_t cg_logic_counter_tick[@IDE{LOGIC_COUNTER_COUNT}];
+@IDE_END
+@IDE_IF{HAS_LOGIC_TIMER}
+/* Generated world-local game-clock timers. Mode: 0 ready, 1 running,
+ * 2 paused, 3 finished. No per-frame logic evaluation while counting. */
+static uint16_t cg_logic_timer_left[@IDE{LOGIC_TIMER_COUNT}];
+static uint16_t cg_logic_timer_saved_left[@IDE{LOGIC_TIMER_COUNT}];
+static uint8_t cg_logic_timer_mode[@IDE{LOGIC_TIMER_COUNT}];
+static uint8_t cg_logic_timer_saved_mode[@IDE{LOGIC_TIMER_COUNT}];
+static uint8_t cg_logic_timer_tick[@IDE{LOGIC_TIMER_COUNT}];
+static uint8_t cg_logic_timer_finished_pulse[@IDE{LOGIC_TIMER_COUNT}];
+@IDE_END
 @IDE_IF{HAS_QUEST_CONDITION}
 static uint32_t cg_logic_seen_quest_revision;
 static uint8_t cg_logic_quest_done(const char *id)
@@ -702,6 +719,13 @@ void gameworlditems_save_state(void)
 @IDE_IF{HAS_TRIGGERS}
     memcpy(cg_saved_trigger_state,cg_trigger_state,sizeof(cg_trigger_state));
 @IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    memcpy(cg_logic_counter_saved,cg_logic_counter_value,sizeof(cg_logic_counter_saved));
+@IDE_END
+@IDE_IF{HAS_LOGIC_TIMER}
+    memcpy(cg_logic_timer_saved_left,cg_logic_timer_left,sizeof(cg_logic_timer_left));
+    memcpy(cg_logic_timer_saved_mode,cg_logic_timer_mode,sizeof(cg_logic_timer_mode));
+@IDE_END
     cg_world_snapshot_valid = 1;
 }
 
@@ -713,6 +737,13 @@ void gameworlditems_disk_export(void (*emit)(const void *, uint32_t, void *), vo
     if (!emit) return;
 #define CG_SAVE_BYTES(v) emit(&(v), (uint32_t)sizeof(v), ctx)
     CG_SAVE_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_LOGIC_TIMER}
+    CG_SAVE_BYTES(cg_logic_timer_saved_left);
+    CG_SAVE_BYTES(cg_logic_timer_saved_mode);
+@IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    CG_SAVE_BYTES(cg_logic_counter_saved);
+@IDE_END
 @IDE_IF{HAS_LOOT}
     CG_SAVE_BYTES(cg_loot_saved);
     CG_SAVE_BYTES(cg_loot_saved_rng);
@@ -743,6 +774,13 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
     if (!take) return 0;
 #define CG_LOAD_BYTES(v) if (!take(&(v), (uint32_t)sizeof(v), ctx)) return 0
     CG_LOAD_BYTES(cg_world_snapshot_valid);
+@IDE_IF{HAS_LOGIC_TIMER}
+    CG_LOAD_BYTES(cg_logic_timer_saved_left);
+    CG_LOAD_BYTES(cg_logic_timer_saved_mode);
+@IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    CG_LOAD_BYTES(cg_logic_counter_saved);
+@IDE_END
 @IDE_IF{HAS_LOOT}
     CG_LOAD_BYTES(cg_loot_saved);
     CG_LOAD_BYTES(cg_loot_saved_rng);
@@ -773,6 +811,16 @@ uint8_t gameworlditems_disk_import(uint8_t (*take)(void *, uint32_t, void *), vo
 void gameworlditems_restore_state(void)
 {
     if (!cg_world_snapshot_valid) return; /* First entry uses editor defaults. */
+@IDE_IF{HAS_LOGIC_TIMER}
+    memcpy(cg_logic_timer_left,cg_logic_timer_saved_left,sizeof(cg_logic_timer_left));
+    memcpy(cg_logic_timer_mode,cg_logic_timer_saved_mode,sizeof(cg_logic_timer_mode));
+    memset(cg_logic_timer_tick,0,sizeof(cg_logic_timer_tick));
+    memset(cg_logic_timer_finished_pulse,0,sizeof(cg_logic_timer_finished_pulse));
+@IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    memcpy(cg_logic_counter_value,cg_logic_counter_saved,sizeof(cg_logic_counter_value));
+    memset(cg_logic_counter_tick,0,sizeof(cg_logic_counter_tick));
+@IDE_END
 @IDE_IF{HAS_TRIGGERS}
     memcpy(cg_trigger_state,cg_saved_trigger_state,sizeof(cg_trigger_state));
 @IDE_END
@@ -978,6 +1026,19 @@ void gameworlditems_remote_reset(void)
     memset(cg_loot_saved,0,sizeof(cg_loot_saved));
     cg_loot_saved_rng=0xC0FFEE17u;
 @IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    memset(cg_logic_counter_value,0,sizeof(cg_logic_counter_value));
+    memset(cg_logic_counter_saved,0,sizeof(cg_logic_counter_saved));
+    memset(cg_logic_counter_tick,0,sizeof(cg_logic_counter_tick));
+@IDE_END
+@IDE_IF{HAS_LOGIC_TIMER}
+    memset(cg_logic_timer_left,0,sizeof(cg_logic_timer_left));
+    memset(cg_logic_timer_saved_left,0,sizeof(cg_logic_timer_saved_left));
+    memset(cg_logic_timer_mode,0,sizeof(cg_logic_timer_mode));
+    memset(cg_logic_timer_saved_mode,0,sizeof(cg_logic_timer_saved_mode));
+    memset(cg_logic_timer_tick,0,sizeof(cg_logic_timer_tick));
+    memset(cg_logic_timer_finished_pulse,0,sizeof(cg_logic_timer_finished_pulse));
+@IDE_END
     cg_world_snapshot_valid=0u;
 }
 @IDE_ELSE
@@ -1010,6 +1071,19 @@ void gameworlditems_remote_reset(void)
     memset(cg_loot_saved,0,sizeof(cg_loot_saved));
     cg_loot_saved_rng=0xC0FFEE17u;
 @IDE_END
+@IDE_IF{HAS_LOGIC_COUNTER}
+    memset(cg_logic_counter_value,0,sizeof(cg_logic_counter_value));
+    memset(cg_logic_counter_saved,0,sizeof(cg_logic_counter_saved));
+    memset(cg_logic_counter_tick,0,sizeof(cg_logic_counter_tick));
+@IDE_END
+@IDE_IF{HAS_LOGIC_TIMER}
+    memset(cg_logic_timer_left,0,sizeof(cg_logic_timer_left));
+    memset(cg_logic_timer_saved_left,0,sizeof(cg_logic_timer_saved_left));
+    memset(cg_logic_timer_mode,0,sizeof(cg_logic_timer_mode));
+    memset(cg_logic_timer_saved_mode,0,sizeof(cg_logic_timer_saved_mode));
+    memset(cg_logic_timer_tick,0,sizeof(cg_logic_timer_tick));
+    memset(cg_logic_timer_finished_pulse,0,sizeof(cg_logic_timer_finished_pulse));
+@IDE_END
     cg_world_snapshot_valid=0u;
 }
 void gameworlditems_apply_remote(void) {}
@@ -1023,6 +1097,20 @@ static uint8_t cg_enemy_tile_blocked(int32_t x, int32_t y, uint16_t w, uint16_t 
 void gameworlditems_update_gameplay(uint16_t frames)
 {
     gameassets_fade_update(frames);
+@IDE_IF{HAS_LOGIC_TIMER}
+    /* Advance only when this world's gameplay clock advances. Paused worlds
+     * retain their remaining time; no full logic graph is evaluated per tick.
+     * Saturating subtract handles skipped/multiple frames deterministically. */
+    for(uint16_t ti=0u;ti<@IDE{LOGIC_TIMER_COUNT};++ti) {
+        if(cg_logic_timer_mode[ti]!=1u || frames==0u)continue;
+        if(frames >= cg_logic_timer_left[ti]) {
+            cg_logic_timer_left[ti]=0u;
+            cg_logic_timer_mode[ti]=3u;
+            cg_logic_timer_tick[ti]=1u;
+            cg_logic_timer_finished_pulse[ti]=1u;
+        } else cg_logic_timer_left[ti]=(uint16_t)(cg_logic_timer_left[ti]-frames);
+    }
+@IDE_END
 @IDE_IF{HAS_WORLDS}
     game_world_objects_update(cg_gwi_platforms, @IDE{WORLD_OBJECT_COUNT}, frames);
 @IDE_END
@@ -1260,6 +1348,10 @@ void gameworlditems_after(game_world_player_t *player)
 @IDE_IF{HAS_QUEST_CONDITION}
     if(cg_logic_seen_quest_revision != gameworlds_quest_revision())cg_run_trigger_actions();
 @IDE_END
+@IDE_IF{HAS_LOGIC_TIMER}
+    for(uint16_t ti=0u;ti<@IDE{LOGIC_TIMER_COUNT};++ti)
+        if(cg_logic_timer_tick[ti]) {cg_run_trigger_actions();break;}
+@IDE_END
 }
 
 @IDE_END
@@ -1313,6 +1405,9 @@ static void cg_event_collect(void)
 static void cg_logic_evaluate_once(void)
 {
     cg_action_drain();
+@IDE_IF{HAS_LOGIC_COUNTER}
+    memset(cg_logic_counter_tick,0,sizeof(cg_logic_counter_tick));
+@IDE_END
 @IDE{GRAPH_SNAPSHOTS}
 @IDE_IF{HAS_WORLDS}
 @IDE{TRIGGER_ACTIONS}@IDE{EVENT_ENTER_ACTIONS}
@@ -1327,6 +1422,10 @@ static void cg_logic_evaluate_once(void)
     cg_logic_seen_quest_revision=gameworlds_quest_revision();
 @IDE_END
 @IDE{GRAPH_DISPATCH}
+@IDE_IF{HAS_LOGIC_TIMER}
+    memset(cg_logic_timer_tick,0,sizeof(cg_logic_timer_tick));
+    memset(cg_logic_timer_finished_pulse,0,sizeof(cg_logic_timer_finished_pulse));
+@IDE_END
     cg_action_drain();
 }
 static void cg_run_trigger_actions(void)

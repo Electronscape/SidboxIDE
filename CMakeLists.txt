@@ -264,15 +264,33 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 
+# Keep everyday Qt Creator builds fast. LTO can be enabled deliberately
+# when making a final optimized desktop IDE release.
+option(SIDBOX_IDE_ENABLE_LTO "Enable slow link-time optimization for Release builds" OFF)
+option(SIDBOX_IDE_USE_MOLD "Use the mold linker on Linux when available" ON)
+
 target_compile_options(SidboxIDE PRIVATE
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Release>:-march=native>
-    $<$<CONFIG:Release>:-flto>
 )
 
-target_link_options(SidboxIDE PRIVATE
-    $<$<CONFIG:Release>:-flto>
-)
+if(SIDBOX_IDE_ENABLE_LTO)
+    target_compile_options(SidboxIDE PRIVATE $<$<CONFIG:Release>:-flto>)
+    target_link_options(SidboxIDE PRIVATE $<$<CONFIG:Release>:-flto>)
+endif()
+
+# mold only changes the native IDE link step, not the ARM game toolchain.
+if(SIDBOX_IDE_USE_MOLD AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+        AND (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+             OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    find_program(SIDBOX_MOLD_EXECUTABLE NAMES mold)
+    if(SIDBOX_MOLD_EXECUTABLE)
+        target_link_options(SidboxIDE PRIVATE -fuse-ld=mold)
+        message(STATUS "SidboxIDE: fast linker mold enabled")
+    else()
+        message(STATUS "SidboxIDE: mold not found; using system linker")
+    endif()
+endif()
 
 install(SCRIPT ${deploy_script})
 

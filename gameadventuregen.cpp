@@ -168,6 +168,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
     // #includes, setup function, event callback and array structure all belong
     // to gameadventure.rulec/.ruleh, not the Qt program.
     QMap<QString, QString> fields;
+    fields.insert(QStringLiteral("WORLD_MAP_PACKED"), QStringLiteral("0"));
+    fields.insert(QStringLiteral("WORLD_MAP_PACKED_DATA"), QStringLiteral("0"));
+    fields.insert(QStringLiteral("WORLD_MAP_TILE_COUNT"), QStringLiteral("0"));
     fields.insert(QStringLiteral("ITEM_COUNT"), QString::number(itemList.size()));
     fields.insert(QStringLiteral("NODE_COUNT"), QString::number(nodes.size()));
     fields.insert(QStringLiteral("NPC_COUNT"), QString::number(npcList.size()));
@@ -470,7 +473,9 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
             atlasCols=atlasW/tile;atlasCount=atlasCols*(atlasH/tile);
         }
         QStringList tileRows;
+        QVector<quint16> tileValues;
         const int count=schematicOnly?0:(mapW/tile)*(mapH/tile);
+        tileValues.reserve(count);
         if(!schematicOnly && !painted.isEmpty() && painted.size()!=count){
             if(error)*error=QStringLiteral("World Map tile count disagrees with the map dimensions.");
             return false;
@@ -482,6 +487,7 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                 return false;
             }
             tileRows<<QString::number(cell);
+            tileValues.append(quint16(cell));
         }
         /* Per-atlas-cell animations, matching the Visual Tilemap editor.
          * Existing version-1 maps simply have no animations. */
@@ -522,6 +528,47 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
                       QString::number(std::clamp(map.value(QStringLiteral("borderColour")).toInt(15),0,255)));
         fields.insert(QStringLiteral("WORLD_MAP_FLAG_FLASH_COLOUR"),
                       QString::number(std::clamp(map.value(QStringLiteral("flagFlashColour")).toInt(14),0,255)));
+        // Tile indices are pure data, not C implementation. RLE decoder and
+        // owned storage are supplied by adventureruntime.rulec.
+        QByteArray packedTiles;
+        for (qsizetype i = 0; i < tileValues.size();) {
+            qsizetype run = 1;
+            while (run < 128 && i + run < tileValues.size()
+                   && tileValues.at(i + run) == tileValues.at(i)) ++run;
+            if (run >= 3) {
+                packedTiles.append(char(0x80u | unsigned(run - 1)));
+                const quint16 value = tileValues.at(i);
+                packedTiles.append(char(value & 255u));
+                packedTiles.append(char(value >> 8));
+                i += run;
+            } else {
+                const qsizetype begin = i;
+                i += run;
+                while (i < tileValues.size() && i - begin < 128) {
+                    qsizetype next = 1;
+                    while (next < 3 && i + next < tileValues.size()
+                           && tileValues.at(i + next) == tileValues.at(i)) ++next;
+                    if (next >= 3) break;
+                    i += qMin(next, qsizetype(128) - (i - begin));
+                }
+                packedTiles.append(char(unsigned(i - begin - 1)));
+                for (qsizetype j = begin; j < i; ++j) {
+                    const quint16 value = tileValues.at(j);
+                    packedTiles.append(char(value & 255u));
+                    packedTiles.append(char(value >> 8));
+                }
+            }
+        }
+        const bool packWorldMap = count >= 256 && packedTiles.size() + 128 < count * int(sizeof(quint16));
+        QStringList packedRows;
+        if (packWorldMap) {
+            packedRows.reserve(packedTiles.size());
+            for (const char byte : packedTiles)
+                packedRows.append(QString::number(quint8(byte)));
+        }
+        fields.insert(QStringLiteral("WORLD_MAP_PACKED"),packWorldMap?QStringLiteral("1"):QStringLiteral("0"));
+        fields.insert(QStringLiteral("WORLD_MAP_PACKED_DATA"),packedRows.isEmpty()?QStringLiteral("0"):packedRows.join(QLatin1Char(',')));
+        fields.insert(QStringLiteral("WORLD_MAP_TILE_COUNT"),QString::number(count));
         fields.insert(QStringLiteral("WORLD_MAP_TILES"),tileRows.isEmpty()?QStringLiteral("65535"):tileRows.join(QLatin1Char(',')));
         fields.insert(QStringLiteral("WORLD_MAP_COLS"),QString::number(schematicOnly?0:mapW/tile));
         fields.insert(QStringLiteral("WORLD_MAP_ROWS"),QString::number(schematicOnly?0:mapH/tile));
@@ -1221,7 +1268,8 @@ bool generateGameAdventure(const QJsonObject &payload, const QString &projectRoo
         QStringLiteral("WORLD_MAP_COUNT"),QStringLiteral("WORLD_MAP_WIDTH"),
         QStringLiteral("WORLD_MAP_HEIGHT"),QStringLiteral("WORLD_MAP_POINTS"),
         QStringLiteral("WORLD_MAP_BORDER_COLOUR"),QStringLiteral("WORLD_MAP_FLAG_FLASH_COLOUR"),
-        QStringLiteral("WORLD_MAP_TILES"),QStringLiteral("WORLD_MAP_COLS"),QStringLiteral("WORLD_MAP_ROWS"),
+        QStringLiteral("WORLD_MAP_TILES"),QStringLiteral("WORLD_MAP_PACKED_DATA"),
+        QStringLiteral("WORLD_MAP_TILE_COUNT"),QStringLiteral("WORLD_MAP_COLS"),QStringLiteral("WORLD_MAP_ROWS"),
         QStringLiteral("WORLD_MAP_TILE_SIZE"),QStringLiteral("WORLD_MAP_ATLAS"),
         QStringLiteral("WORLD_MAP_ATLAS_W"),QStringLiteral("WORLD_MAP_ATLAS_H"),
         QStringLiteral("DROP_FOOT_X"),QStringLiteral("DROP_FOOT_Y"),
