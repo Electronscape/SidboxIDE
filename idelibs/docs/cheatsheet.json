@@ -1000,324 +1000,506 @@
     {
       "title": "01 - V1 games vs V2 GUI applets",
       "category": "Game Engines/Foundations",
-      "summary": "Game Designer and its platformer helpers build classic V1 fixed-address SIDBOX games. The V2/CGARM GUI Designer workflow is separate.",
-      "notes": "Choose a V1 Gaming project for Game Designer, tilemaps, gfxbob_t sprites and gamehelpers. Use a V2 GUI project for windows/gadgets and relocatable GUI applets. Do not mix V1 game physics and V2 GUI startup code.\nGame Designer is a visual arranger and code generator, not a separate run-time executable engine.",
-      "example": "V1: Game Designer -> Generate V1 Game Code / Update Project...\nV2: GUI Designer -> .sbui -> generated GUI applet."
+      "summary": "Choose the right project type before creating a game.",
+      "notes": "A V1 Game project is for games with scrolling levels, a controllable player, sprites, collision, enemies, inventory and quests. A V2 GUI project is for window-based applications such as calculators or file managers.\n\n1. Create a new project and choose the V1 Gaming option.\n2. Open Game Designer to build your level visually.\n3. Save the design and use Update Game Project to prepare the game for building.\n\nTip: The Game Engines guides describe V1 games. You do not need to understand the generated C code to start designing a level.",
+      "example": "Making a platform game? Choose V1 Gaming.\nMaking a window with buttons and text fields? Choose V2 GUI."
     },
     {
       "title": "02 - Explore Game Designer",
       "category": "Game Engines/Foundations",
-      "summary": "World canvas, resource tree, camera/LCD frame, tilemaps, splines and sprite instances are edited in Game Designer.",
-      "notes": "Open Game Designer in a V1 Gaming project. Add/import PPB sprites under Sprites; use the world canvas to position them. Backgrounds, sounds and palettes have their own resource categories.\nThe yellow 480x320 LCD frame represents the visible viewport; the world can be larger. Camera X/Y edits the current view. Right-click the world for context actions; middle-drag pans the editor.\nUse Tilemap Editor... for atlas artwork and collision, Save Design for the .sbgm file.",
-      "example": "Game Resources -> Sprites / Game Objects / Sounds / Backgrounds\nCanvas: click/select; drag to place; right-click for actions."
+      "summary": "Find your way around Game Designer and its main editing areas.",
+      "notes": "1. Open Game Designer from your V1 Gaming project.\n2. Look in Game Resources for Sprites, Game Objects, Sounds, Backgrounds, Tile Atlases and other assets.\n3. Select a sprite and place or move it on the world canvas.\n4. The visible 480×320 LCD frame shows what the player can see at once. A level can extend far beyond it.\n5. Open Tilemap Editor to paint floors and walls. Right-click a placed sprite to configure its behaviour.\n6. Save Design when finished.\n\nTip: Middle-mouse drag moves the editor view. This does not move objects in the game.",
+      "example": "Try it: Add a sprite, drag it outside the LCD frame, then move the editor view to find it again."
     },
     {
-      "title": "03 - Generate, update, build",
+      "title": "03 - Save, update and build your game",
       "category": "Game Engines/Foundations",
-      "summary": "Generate a complete, tailored V1 starter program, with the correct SDK helpers and safe Update Project backups.",
-      "notes": "1. Create a V1 Game project and a .sbgm design. Add a tilemap, player, backgrounds and any objects.\n2. Save Design -> Update Game Project backs up files, updates helpers and writes maingame.c.txt with complete documented C source.\n3. A NEW game project main.c is IDE-owned; a missing main.c is generated with // OWNER: IDE. Only this version may be regenerated automatically.\n4. CoderGirl records CRC32 + source length in .codergirl/main-ownership.json. Update first checks that the current main.c exactly matches the last generated version; manually adding OWNER: IDE alone NEVER permits replacement.\n5. The first modified Save of main.c in CoderGirl changes // OWNER: IDE to // OWNER: user. An external edit detected on regeneration does the same, preserving all other source. A pre-existing unregistered main.c remains protected.\n6. Owner:user is permanent until main.c is deliberately removed or control is explicitly reset in a future feature. maingame.c.txt is always regenerated, even when main.c is user-owned.\n7. Unsaved editor changes block main.c regeneration; close/save the editor before expecting updated source.\n8. For SD maps, copy the .map and PPB assets to the card before running on SIDBOX.",
-      "example": "Save Design -> Update Game Project -> IDE-owned main.c generated / refreshed\nEdit main.c and Save -> OWNER: user (permanently protected)\nExternal edit -> CRC32 mismatch -> OWNER: user (no overwrite)\nmaingame.c.txt -> latest complete generated example, always"
+      "summary": "Save a game design, generate its game files and compile it.",
+      "notes": "1. Create a V1 Gaming project and open Game Designer.\n2. Add a player, some ground and any other objects you want.\n3. Choose Save Design to keep your edits.\n4. Choose Update Game Project. This checks required resources and creates the files the game uses.\n5. Correct any reported errors, then choose Build.\n6. Copy any required map, graphics or music files to the TF/SD card before playing on SIDBOX.\n\nImportant: When CoderGirl creates main.c and you have not edited it, the IDE can update it for you. Once you edit main.c, the IDE protects your version. If you later need the latest example code, look in maingame.c.txt. Update Game Project makes backups before replacing generated files.\n\nYou can build your first game without manually editing C.",
+      "example": "Game Designer → Save Design → Update Game Project → Build → Run on SIDBOX."
     },
     {
-      "title": "04 - World positions vs screen positions",
+      "title": "04 - Scrolling worlds and the camera",
       "category": "Game Engines/Foundations",
-      "summary": "Physics and collision use world coordinates; the renderer subtracts the camera position when drawing.",
-      "notes": "The 480x320 LCD is a window onto a possibly larger level. A sprite placed at world X=800 does not collide at its on-screen X coordinate. Use physics.x100 / 100 and physics.y100 / 100 (or the generated game loop values) for collection/collision.\nA placed game object uses its own canvas world coordinates and can optionally follow a spline. Avoid subtracting camera X/Y yourself when using the generated world-object draw function.",
-      "example": "gameworlditems_draw(camera_x, camera_y);\n/* Object collision uses WORLD positions, not camera-adjusted screen positions. */"
+      "summary": "Understand why a scrolling game’s positions differ from what is on screen.",
+      "notes": "A world position describes where something is in the whole level. A screen position describes where it appears within the current camera view.\n\n1. Put a sprite a long way to the right of the starting area.\n2. Move the camera view and notice the sprite can appear in different screen positions.\n3. The sprite has not moved in the world: only the camera changed.\n\nGame Designer and generated collision code handle this distinction for ordinary game objects. Avoid manually moving objects to compensate for the camera.",
+      "example": "Example: A coin at world X = 800 appears near the left edge when the camera has scrolled to X = 780."
     },
     {
       "title": "01 - Advanced Platformer overview",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "V1 Advanced Platformer currently provides tilemap collision, player physics, collectables, keys, switches, doors, moving lifts, conveyors, springs, splines, animations and sound events.",
-      "notes": "This section documents the REAL controls in the current Game Designer. A game object starts as a PPB sprite INSTANCE, then gains gameplay behaviour in Game Object Properties.\nYou can assemble puzzles (key -> door), moving hazards/platforms, secret pressure plates, launchers and sliding jumps. The game still owns its overall loop and any custom logic such as score/health.\nChange an option, Save Design, use Update Project..., then test on SIDBOX.",
-      "example": "Example puzzle: Key [Disable target] -> Door / Solid blocker\nExample traversal: Touch spring [launch right + slidy] -> moving lift"
+      "summary": "Discover what the Advanced Platformer Game Builder can create.",
+      "notes": "Start with a player and a tilemap, then add Game Objects that make the level interactive. You can create springs, doors, switches, enemies, moving platforms, collectables and hazards without writing their basic behaviour in C.\n\nFor conversations and inventory, open Adventure Editor. For quests, use Quest Editor. For connections between objects, open Visual Nodes. For additional levels, use World Manager.\n\nA good first project is one small room with a floor, a player, a coin and a door. Save Design and Update Game Project after changing game behaviour.",
+      "example": "First project idea: Player jumps onto a platform, collects a key, and unlocks a door."
     },
     {
-      "title": "02 - Tilemaps, walls, slopes and hazards",
+      "title": "02 - Paint ground, walls and hazards",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Tilemap Editor stores artwork separately from collision: floors, walls, slopes, one-way surfaces, hazards and door-marked tiles.",
-      "notes": "Open Tilemap Editor... and edit/export the level. The graphics map uses 16-bit IDs; collision uses separate 8-bit IDs. The helper resolves normal terrain collisions. Hazard/door tile meanings require your game logic where indicated by the tilemap helper.\nThe generated level references a PPB atlas on the SD card, loaded once with a size/checksum check. Do not assume the C level embeds atlas pixels. Copy the CURRENT atlas to SD.\nVERY IMPORTANT: A switch-controlled Door / Solid blocker must not overlap permanently solid tilemap collision, or the invisible solid tile remains after disabling the door.\nSee gamehelpers/gametilemap.txt in your game project for rendering and atlas-lifetime details.",
-      "example": "Tilemap Editor... -> Export Tilemap -> Update Project...\nStartup: game_level1_load_atlas() after gameassets_init()\nShutdown: game_level1_unload_atlas() before gameassets_shutdown()"
+      "summary": "Paint level graphics and choose which parts the player can stand on.",
+      "notes": "Graphics and collision are two separate layers. A tile can look like a wall without being solid, or be solid without visible artwork.\n\n1. Open Tilemap Editor and select a Tile Atlas (the sheet of small graphics).\n2. Paint ground and scenery on the graphics layer.\n3. Choose a collision brush and paint solid areas where the player must stop.\n4. Use slope, hazard or one-way collision types where they fit your level.\n5. Save the tilemap, then Update Game Project.\n\nImportant: If a Door Game Object must open, do not also paint permanent solid collision across the doorway; the door would disappear but the invisible wall would remain.",
+      "example": "Try it: Paint a stone floor, add solid collision beneath it, and leave the sky with no collision."
     },
     {
-      "title": "03 - Player physics and frame order",
+      "title": "03 - Player movement and jumping",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "The advanced tilemap player helper handles jumping, gravity, collisions and slopes. World objects must update before and after player physics in the proper order.",
-      "notes": "Use the actual project-generated maingame.c.txt as the source of truth for your level and includes. Player physics runs once per VBlank. Normal jumps retain variable height (short release, long hold); springs use a separate fixed launch arc unless intentional extra jump boost is enabled.\nThe generated world-player bindings connect physics position, vertical velocity, on-ground and optional jump state. Do not mix the basic platformer and tilemap physics controllers on one player.\nOrdering is essential for carrying, spring launch, doors and button switches.",
-      "example": "/* Representative call order INSIDE the game loop: */\ngameworlditems_update(1);\ngameworlditems_before(&world_player);\ngame_tile_player_run(&player_physics, getjoyport(), 1);\ngameworlditems_after(&world_player);\n/* Collectables after physics, before draw: */\n/* gameworlditems_check(...); */\n/* gameworlditems_draw(camera_x, camera_y) during drawing. */"
+      "summary": "Set up player movement, jumping and collision in a platform game.",
+      "notes": "The platformer controller handles gravity, jumping, floors, walls and slopes. The game files generated by Game Designer already connect the normal movement steps.\n\n1. Place and configure a player sprite.\n2. Paint a solid floor in Tilemap Editor.\n3. Save Design and choose Update Game Project.\n4. Build and test left/right movement and jumping.\n5. Adjust the Player or Physics Profile if the player moves too quickly, slowly or jumps too high.\n\nYou do not need to copy physics functions into main.c for a normal generated project. If you choose to customise the game loop in C later, read the generated maingame.c.txt example and keep its update order.",
+      "example": "Try it: Change the player's jump strength, rebuild, and compare how high they jump."
     },
     {
       "title": "04 - Sprites and Game Objects are two views",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A configured Game Object is still a sprite. Selecting it on the canvas reveals its Game Objects tree alias; the same instance remains under Sprites.",
-      "notes": "Sprites holds the artwork placement and image reference. Game Objects holds the behaviour of configured sprites; they are not two separate copies.\nClick an ordinary sprite on the world canvas and Sprites is highlighted. Click a configured object and Game Objects is highlighted. You can also select its Sprites entry to edit ordinary sprite properties.\nRight-click a sprite or its tree entry and select Configure Game Object... to assign behaviour. Its stable instance ID makes links resistant to renaming/reordering.",
-      "example": "Game Resources -> Sprites -> [your sprite]\nGame Resources -> Game Objects -> [same configured sprite]\nRight-click -> Configure Game Object..."
+      "summary": "Learn the difference between a sprite and a Game Object.",
+      "notes": "A sprite is a picture placed in the world. A Game Object is that same sprite with an assigned gameplay behaviour, such as a door, coin or spring.\n\n1. Select a placed sprite on the world canvas.\n2. Right-click and choose Configure Game Object.\n3. Choose a behaviour and save its properties.\n4. Look under Game Objects in Game Resources. This is another way to select the configured sprite, not an extra copy.\n\nTip: Moving the object on the canvas moves the actual placed sprite. You do not need to move two separate items.",
+      "example": "Example: Place a red gem sprite → Configure Game Object → Collectable. It appears in the Sprites and Game Objects trees."
     },
     {
       "title": "05 - Hitboxes and activation state",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Game-object behaviours use a configurable rectangular collision width and height, plus an Active when the level starts option.",
-      "notes": "For an object to have gameplay behaviour, it must reference a PPB sprite at 100% scale. Adjust Collision width / height to fit the intended touch or solid area, not necessarily the image size. Game Designer displays a dashed hitbox outline for configured objects.\nActive when the level starts OFF is useful for hidden/unlocked later objects; a trigger or key can Enable one. A disabled object is not drawn or processed as an active collision target.\nAn ordinary Decoration has no special gameplay behaviour.\nEditing artwork is separate from configuring one placed instance.",
-      "example": "Configure Game Object...\nBehaviour: Door / Solid blocker\nCollision width: 24   Collision height: 48\nActive when the level starts: ON"
+      "summary": "Use hitboxes and starting state to decide when an object can be touched.",
+      "notes": "A hitbox is the invisible rectangle used to detect contact with the player. It can be smaller or larger than the visible artwork.\n\n1. Right-click a placed PPB sprite and choose Configure Game Object.\n2. Select a behaviour such as Collectable or Door.\n3. Adjust Collision width and Collision height until the displayed hitbox fits the object.\n4. Leave Active when the level starts enabled for an object that should appear immediately.\n5. Turn it off for an item that a switch, key or other action should reveal later.\n\nTip: Use an appropriately sized sprite at 100% scale for game objects. A disabled object does not behave as an active target.",
+      "example": "Example: A secret gem starts inactive. A hidden switch uses Enable to make it appear."
     },
     {
       "title": "06 - Collectables: coins, health, gems and keys",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Collectable supports Coin, Health, Key and Gem pickup types, a numeric value, optional animation/spline, pickup sound and respawn timing.",
-      "notes": "Add a PPB sprite (100% scale), Configure Game Object... -> Collectable. Choose Pickup type and Pickup value. Use Respawn after frames = 0 for a permanent pickup or a positive number for a timed respawn.\nThe generated gameworlditems_check(...) performs player-bound collision after movement. Your game callback determines score/health/gameplay rewards for ordinary pickups; do not assume selecting Health edits your player-health variable automatically.\nA Key can additionally perform a linked Enable/Disable/Toggle action, detailed below. Sound effects are optional.",
-      "example": "Behaviour: Collectable\nPickup type: Coin / Health / Key / Gem\nPickup value: 10\nRespawn after frames: 0 (never)"
+      "summary": "Make items that the player can pick up for points, health or inventory.",
+      "notes": "1. Place a PPB sprite in the world and configure it as Collectable.\n2. Choose Coin, Health, Gem, Key or Custom and set its value.\n3. Decide what happens on pickup. For a direct Health change, turn Show in Inventory OFF and choose Player Health as the target.\n4. For a carried item, turn Show in Inventory ON and set up its Inventory definition in Adventure Editor.\n5. Set an optional pickup sound or respawn delay, then Save Design and Update Game Project.\n\nA collectable can start hidden and appear after a trigger or defeated enemy. Quest keys and unique rewards should not be added to repeatable random enemy loot.",
+      "example": "Try it: Place a Health pickup → Show in Inventory OFF → Apply to Player Health → test the HUD."
     },
     {
       "title": "07 - Walkthrough: key unlocks a door",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Use a Key collectable to Disable a placed Door / Solid blocker elsewhere in the level. No manually typed numeric IDs are needed.",
-      "notes": "1. Place a PPB sprite for the door at 100% scale. Configure its Behaviour as Door / Solid blocker; size its collision rectangle and leave Active when the level starts checked.\n2. Place a second PPB sprite for the key at 100%. Configure as Collectable -> Key.\n3. In the KEY properties, set Activate/deactivate object to your door sprite and Linked action to Disable target.\n4. Set key Respawn after frames to 0 if it should be collected once.\n5. Save Design and Update Project... to regenerate the binding. Collecting the key deactivates the door (both appearance and blocking).\nDo not paint permanently solid map tiles in the openable doorway.",
-      "example": "DOOR: Behaviour = Door / Solid blocker; Active at start = ON\nKEY: Behaviour = Collectable; Pickup type = Key\n     Activate/deactivate object = [door]\n     Linked action = Disable target\n     Respawn after frames = 0"
+      "summary": "Build a simple puzzle in which picking up a key opens a door.",
+      "notes": "1. Place a door sprite, choose Configure Game Object, and set Door / Solid blocker.\n2. Leave the door active when the level starts and size its collision rectangle.\n3. Place a key sprite and set it to Collectable → Key.\n4. In the key properties, select the placed door as the target and choose Disable target.\n5. Set the key's respawn delay to 0 for a single-use key.\n6. Save Design, Update Game Project and test collecting the key.\n\nImportant: Leave the doorway free from permanent solid tilemap collision so it becomes passable after the door turns off.",
+      "example": "Door starts ON. Key pickup → Disable door. Player can now walk through."
     },
     {
       "title": "08 - Doors and solid blockers",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A Door / Solid blocker is a full-solid rectangular runtime object. Disabling it also removes its live solid collision.",
-      "notes": "Configure a sprite as Door / Solid blocker, size its hitbox, and choose its startup active state. A key or switch can Enable, Disable or Toggle it. An active door blocks player movement; a disabled door is hidden/non-blocking.\nUse Active at start OFF + Enable target for a barrier that appears later, or ON + Disable target for an unlockable door. Unlike a normal lift, the door is solid rather than a one-way platform.\nDo not leave permanent solid tilemap collision inside its doorway. For unusually high speeds or moving blockers, test collision on real hardware.",
-      "example": "Start ON + Disable target  = unlocked/opened door\nStart OFF + Enable target  = new barrier appears\nStart ON + Toggle target   = open/close switch"
+      "summary": "Create a barrier that can open, close or appear during the game.",
+      "notes": "1. Place a door or barrier sprite and configure it as Door / Solid blocker.\n2. Size the hitbox to cover the doorway.\n3. Choose whether it starts active (blocking) or inactive (open).\n4. Make a key, switch or Visual Nodes action target that door.\n5. Use Disable to open it, Enable to close it, or Toggle to swap between the two.\n\nA Door / Solid blocker uses solid collision when active. A moving lift is different: players normally land on it from above. Do not put permanent solid tiles through an opening door.",
+      "example": "Hidden barrier: Active at start OFF + Switch ENABLE.\nNormal locked door: Active at start ON + Key DISABLE."
     },
     {
       "title": "09 - Switches: touch or FIRE2",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Trigger / Switch controls another placed object with Enable, Disable or Toggle. It can activate on contact or require FIRE2 while touching.",
-      "notes": "1. Configure a PPB sprite as Trigger / Switch. Set its Collision width / height as a sensor region.\n2. Select Activate/deactivate object; choose Linked action.\n3. Leave Require FIRE2 while touching unchecked for a touch plate. Check it for a deliberate button-activated switch (FIRE2 is the second fire button, not the normal Jump FIRE).\n4. For a repeatable switch, leave Remove switch after activation OFF. It rearms after a new touch, or a new FIRE2 press while touching. Holding contact does not toggle the door each frame.\n5. Save Design -> Update Project.... The existing gameworlditems_after() call handles switches in the normal generated game loop.",
-      "example": "Behaviour: Trigger / Switch\nActivate/deactivate object: [door]\nLinked action: Toggle target (ON / OFF)\nRequire FIRE2 while touching: ON\nRemove switch after activation: OFF"
+      "summary": "Make a switch activate by touch or by pressing FIRE2.",
+      "notes": "1. Place a switch sprite and configure it as Trigger / Switch.\n2. Set a hitbox that the player can reach.\n3. Choose the Game Object that the switch controls and select Enable, Disable or Toggle.\n4. Leave Require FIRE2 while touching OFF for a pressure plate. Turn it ON for a switch the player must press.\n5. Leave Remove switch after activation OFF if the switch should be usable again.\n6. Save Design and Update Game Project.\n\nFIRE2 is the interaction button, separate from the normal jump button. A repeatable switch waits for another activation rather than switching on every game frame.",
+      "example": "Pressure plate: FIRE2 OFF → toggles a door on touch.\nWall switch: FIRE2 ON → toggles when the player presses FIRE2 nearby."
     },
     {
       "title": "10 - One-shot triggers and room discovery",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A trigger can perform its linked action once and remove itself. Useful for secrets, opening another room, and single-use pressure plates.",
-      "notes": "Configure Trigger / Switch with the desired target/action, then check Remove switch after activation (one-shot). With FIRE2 unchecked, entering its hitbox activates it. Afterwards that trigger is disabled and no longer displayed/processed.\nSet the TARGET initially inactive and use Enable for a hidden item or passage that appears after entering a room. Set target initially active and choose Disable to open an already-closed barrier.\nThis is an in-level action, not an automatic persistent save to SD. Keeping a door unlocked across game restarts requires your game save logic.",
-      "example": "INVISIBLE/DECORATED SENSOR: Trigger / Switch\nTarget: [remote door]   Linked action: Disable target\nRequire FIRE2: OFF      Remove after activation: ON"
+      "summary": "Make a trigger run once for a secret or special event.",
+      "notes": "1. Place a sprite in the level and configure it as Trigger / Switch.\n2. Pick a target and an action, such as Disable a door or Enable a hidden gem.\n3. Enable Remove switch after activation.\n4. Choose touch activation or Require FIRE2.\n5. Save the design, update the game and walk into the trigger.\n\nAfter its first activation the trigger stops working during that run. If progress must survive restarting SIDBOX, use the game's Save Points and save slots.",
+      "example": "Secret passage: Trigger activates once → Disable hidden barrier → player enters new room."
     },
     {
       "title": "11 - Springers: normal bounce",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Spring / Bouncer launches the player upward when landing on top. Its upward strength and extra-jump option are independently configurable.",
-      "notes": "Configure a PPB sprite as Spring / Bouncer. Spring upward launch is measured in pixels per frame. The normal mode triggers only on a landing from above.\nA spring normally overrides the regular jump impulse and uses the controlled shorter spring arc; HOLDING Jump does not secretly add extra height. Combine jump + spring launch is an explicit optional boost when a NEW Jump press coincides with contact (requires jump physics bindings).\nSet Spring sideways launch to zero for a purely vertical bounce. Each successful bounce may play its configured launch sound.",
-      "example": "Behaviour: Spring / Bouncer\nSpring upward launch (px/frame): 11\nSpring sideways launch: 0\nActivate on touch (any side): OFF\nCombine jump + spring launch: OFF"
+      "summary": "Bounce the player upward with a Spring / Bouncer.",
+      "notes": "1. Place a spring sprite and choose Configure Game Object → Spring / Bouncer.\n2. Adjust the hitbox to cover the top of the spring.\n3. Set Spring upward launch. Start with a modest value and increase it after testing.\n4. Keep Spring sideways launch at 0 for a straight-up bounce.\n5. Save the design, update the project and test landing on the spring.\n\nBy default, the spring activates when the player lands on top. Combining a fresh jump press with a spring boost is an optional setting, not the default.",
+      "example": "Try it: Put a spring beneath a high ledge and adjust its upward launch until the player can reach it."
     },
     {
       "title": "12 - Springers: touch and directional launches",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A spring can trigger when touched from ANY side and launch left, right or vertically, without requiring a landing from above.",
-      "notes": "Enable Activate on touch (any side). Contact from above, below, left or right triggers the spring once; the player must leave the hitbox before it can rearm.\nSpring sideways launch: negative launches LEFT, positive launches RIGHT, zero is vertical. This is independent of the upward strength and of Slidy kickback.\nYou can build bumper walls, sideways cannons, or ceiling springs. Use modest initial strengths and a correctly sized hitbox; very large values can send the player through nearby scenery between frames.",
-      "example": "SPRING A: Upward 11, Sideways -6, Touch ON  -> up and LEFT\nSPRING B: Upward 11, Sideways +6, Touch ON  -> up and RIGHT\nSPRING C: Upward 11, Sideways  0, Touch OFF -> land to bounce"
+      "summary": "Make springs that bounce from the side, ceiling or any direction.",
+      "notes": "1. Create a Spring / Bouncer as in the previous guide.\n2. Enable Activate on touch (any side).\n3. Set Spring sideways launch to a negative number for left or positive for right.\n4. Keep an upward value if you also want a rising bounce.\n5. Test contact from different directions and adjust the hitbox.\n\nA touch spring activates when the player enters its area; the player must leave it before it can trigger again. Large launch values can make movement difficult to control.",
+      "example": "Example: Put a spring on the right wall and use a negative sideways launch to bounce the player left."
     },
     {
       "title": "13 - Springers: slidy inertia and jump boost",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Slidy kickback applies decaying horizontal momentum after a spring launch, including a ground skid; the old rigid kickback is still available.",
-      "notes": "Slidy kickback OFF: the sideways launch stays constant until landing, then stops.\nSlidy kickback ON: with a tilemap player bound to force_vx100, the spring adds an external impulse controlled by the current physics preset (Ice 2% drag; Normal 12%; Water 18%; Space 0%). Joystick steering, apply_force() and collision handling share the same player solver.\nIMPORTANT for OWNER: user main.c: after the existing world_player.x100/y100/vy100 bindings, add world_player.spring_force_vx100 = &player_physics.force_vx100; and Update Game Project to refresh the gameworldobjects helper. Without this new optional binding, slidy springs retain the old fixed 6% airborne/14% ground damping.\nCombine jump + spring launch is a SEPARATE opt-in and is unaffected. Non-slidy springs keep their existing behaviour. Springs are still configured individually.",
-      "example": "Behaviour: Spring / Bouncer\nSpring sideways launch: +8\nActivate on touch (any side): ON\nSlidy kickback (inertia + friction): ON\nCombine jump + spring launch: OFF"
+      "summary": "Give a spring a sliding launch or optional jump boost.",
+      "notes": "1. Configure a Spring / Bouncer and set an upward and sideways launch.\n2. Enable Slidy kickback when you want the sideways push to carry on after leaving the spring.\n3. Test it on different Player Physics Profiles. Ice stays slippery longer; Water slows movement more quickly.\n4. If you want a fresh jump press to add extra height, enable Combine jump + spring launch separately.\n5. Save, update and test the results on the game device.\n\nFor games with a manually edited main.c, these advanced spring settings may need the extra physics binding shown in the generated maingame.c.txt. A normal IDE-generated starter already provides the standard integration.",
+      "example": "Try it: Launch the player across a gap using a spring with Slidy ON, then compare Slidy OFF."
     },
     {
       "title": "14 - Moving lifts and platforms",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Moving platform / Lift can carry the player on its top while travelling along a configured spline path.",
-      "notes": "Place a platform sprite and configure as Moving platform / Lift. Assign Movement spline if it should travel; otherwise it remains at its placed coordinates.\nThe generated helper handles swept landings and attempts to carry the player without embedding them in solid tilemap walls or slope interiors (when an attached collision map exists). Sideways carry stops at a wall even if the platform continues beneath the rider.\nLift surfaces are one-way from above; they are not solid ceilings or general vertical walls. Optional sound events cover movement start/move/stop/reversal.",
-      "example": "Behaviour: Moving platform / Lift\nMovement spline: [lift_path]\nCollision width/height: fit the platform top\nOptional sound: Start / Move / Stop / Reverse"
+      "summary": "Carry the player on a moving platform or lift.",
+      "notes": "1. Place a platform sprite and configure it as Moving platform / Lift.\n2. Adjust its collision width and height to match the surface the player stands on.\n3. To make it move, create a Spline path with at least two points.\n4. Select that path in the lift's Movement spline setting.\n5. Save Design, Update Game Project and test standing on the platform as it travels.\n\nLifts act like surfaces the player can land on from above. They are not solid walls on every side. Test the path near walls to make sure the player cannot become trapped.",
+      "example": "Example: Draw a vertical path between the ground floor and a ledge, then assign it to a lift."
     },
     {
       "title": "15 - Conveyors",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Conveyor platforms move the player sideways while they stand on top, with a signed speed and optional ambient audio.",
-      "notes": "Configure the sprite as Conveyor, adjust Collision width/height and Conveyor px/frame. Negative values move LEFT, positive values move RIGHT. As with lifts, it acts from the top rather than as a solid wall.\nA conveyor can also be attached to a Movement spline for a travelling belt. Test interaction near walls and platform edges. The ambient sound can be given a radius and fading controls.",
-      "example": "Behaviour: Conveyor\nConveyor px/frame: -2 (left) / +2 (right)\nMovement spline: None or [path]\nAmbient sound: optional"
+      "summary": "Move the player sideways while they stand on a conveyor belt.",
+      "notes": "1. Place a conveyor sprite on the level.\n2. Configure it as Conveyor and size the surface hitbox.\n3. Set Conveyor px/frame to a positive value for right or a negative value for left.\n4. Save Design and Update Game Project.\n5. Test walking, jumping and stopping on the belt.\n\nYou can optionally attach the conveyor to a spline to make the whole platform travel. A conveyor is a surface, not a full solid wall.",
+      "example": "Conveyor px/frame = +2 → moves the player right.\nConveyor px/frame = -2 → moves the player left."
     },
     {
       "title": "16 - Splines: move objects through a level",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A spline is a set of editor control points used to move sprites/objects along a path; optional pauses can be placed at nodes.",
-      "notes": "Create/edit a path in Game Designer (at least two nodes). Configure a placed sprite as a Game Object (for example Moving platform / Lift), then set Game Object Properties -> Movement spline to that path. Choose Update Game Project. GamerGirl installs gamespline.c/.h and exports splinepaths.c/.h, then generates gameworlditems.c and a COMPLETE maingame.c.txt.\n\nFor attached objects, main.c only needs gameworlditems_init(), gameworlditems_update(1), and gameworlditems_draw(camera_x,camera_y), already emitted by the starter. NEVER call start_spline()/run_spline() a second time for the same object. Normal sprite/decoration resources aren't automatically attached, even if a spline exists.\n\nFor manual spline movement on an ordinary sprite, see the full copyable example emitted into maingame.c.txt when your design contains spline paths. Make sure gamespline.c and splinepaths.c are part of the compiled project, and do not draw the same sprite twice. User-owned main.c is never overwritten; an unchanged IDE-owned main.c may be regenerated.",
-      "example": "1. Create Spline -> name it lift_path; add at least 2 points\n2. Configure sprite -> Behaviour: Moving platform / Lift\n3. Movement spline: lift_path\n4. Update Game Project -> generated maingame.c.txt\n\n/* Included automatically by the generated starter if splines exist: */\n#include \"gamehelpers/gamespline.h\"\n#include \"gamehelpers/splinepaths.h\"\n\n/* Already placed in generated main.c for configured objects: */\ngameworlditems_init();           // starts linked splines\ngameworlditems_update(1);        // advances linked splines\ngameworlditems_draw(camera_x, camera_y); // draws objects"
+      "summary": "Draw a path and make a Game Object follow it.",
+      "notes": "A Spline is a path made of points. It is useful for moving lifts, travelling platforms and other moving objects.\n\n1. In Game Designer, add a Spline and place at least two path points.\n2. Give the path a recognisable name.\n3. Place a sprite, configure it as a compatible moving Game Object, then open its Movement spline setting.\n4. Choose your path from the list.\n5. Save Design and Update Game Project.\n\nThe generated starter code runs attached moving objects for you. Do not add a second manual movement update for the same object.",
+      "example": "Try it: Create a three-point path that rises, crosses a gap and returns; assign it to a Moving Lift."
     },
     {
       "title": "17 - Sprite animation on objects",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Game objects can animate frames from a PPB atlas while their behaviour (pickup, spring, platform, etc.) continues running.",
-      "notes": "Tick Animate sprite frames. Configure First frame (0 based), Number of frames and Frames per picture. Modes are Loop, Ping-pong, or Once. A sprite can animate and move along a spline simultaneously.\nKeep sprite sheet dimensions/cell layout consistent with the actual PPB. The generic Sprite Animation helper can also be used in hand-written game C.",
-      "example": "Animate sprite frames: ON\nFirst frame: 0  Number of frames: 4\nFrames per picture: 5\nAnimation mode: Loop"
+      "summary": "Animate a Game Object using several frames of sprite artwork.",
+      "notes": "1. Prepare a PPB sprite sheet containing the animation frames.\n2. Open the object's Game Object Properties.\n3. Turn on Animate sprite frames.\n4. Choose the first frame, number of frames and Frames per picture (how long each frame stays visible).\n5. Choose Loop, Ping-pong or Once and test it in the running game.\n\nThe animation changes the picture, not the object's gameplay behaviour. A moving platform can animate while it moves.",
+      "example": "First frame 0, Number of frames 4, Frames per picture 5, Mode Loop → a simple four-frame animation."
     },
     {
       "title": "18 - Tile atlas animation",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Tilemap graphics IDs and atlas tile animations are managed separately from placed Game Object sprite animation.",
-      "notes": "Open Tilemap Editor... to set animation sequences in the tile atlas. The runtime advances shared atlas animation by graphics ID with game_tilemap_animation_tick(1) per VBlank. There is no need to add a world object for every animated tile.\nThe atlas PPB on SD must be the same current artwork that the generated level validates. Regenerate/export the level and update SD assets after editing atlas graphics.",
-      "example": "game_tilemap_animation_tick(1); // once per VBlank\n/* Then blit the visible tiles with game_tilemap_blit_view(...). */"
+      "summary": "Animate water, lights or other tiles directly in the Tile Atlas.",
+      "notes": "Animated tiles are useful when many map cells should share the same moving graphic, such as a river.\n\n1. Open Tilemap Editor and select the Tile Atlas.\n2. Set up the graphic frames for the tile animation.\n3. Paint the animated tile wherever it is needed.\n4. Save the tilemap and Update Game Project.\n5. Make sure the latest matching PPB artwork is on the TF/SD card when using external artwork.\n\nYou do not need to create a separate Game Object for every animated map tile.",
+      "example": "Try it: Set up two or more water frames, then paint the same animated tile across a river."
     },
     {
       "title": "19 - Sound effects, radius and channels",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Game Object Properties can link existing Sound resources to pickup, respawn, lift, conveyor and spring events.",
-      "notes": "Add/import WAV sounds under Sounds, configure the SIDBOX audio channel, and select those resources in the Game Object Properties sound section. Events are generated automatically for the supported object type.\nOptional Audio radius and fade frames help with spatial effects for applicable sounds. Shared channels interrupt/reconfigure one another, so choose channels deliberately. Triggerable links have no dedicated switch sound field in the current dialog; add a separate sound event in your game code if needed.",
-      "example": "Game Resources -> Sounds -> [WAV sound]\nGame Object Properties -> SOUND / AUDIO -> choose event sound\nUpdate Project... -> regenerated event wrappers"
+      "summary": "Play sounds when the player picks up an item or uses an object.",
+      "notes": "1. Add a suitable WAV under Game Resources → Sounds.\n2. Configure the Game Object that should make the sound.\n3. Find its Sound / Audio settings and choose the desired event sound, such as pickup or spring launch.\n4. If available, adjust its audio channel, distance or fade settings.\n5. Save Design, Update Game Project and test with SIDBOX audio enabled.\n\nTip: Sounds using the same channel can interrupt each other. Pick different channels for sounds that need to overlap.",
+      "example": "Example: Assign a short chime to a Gem Collectable's pickup event."
     },
     {
-      "title": "20 - Troubleshooting checklist",
+      "title": "20 - Fix common game problems",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Use these checks when a door does not unlock, a spring will not bounce, or generated game behaviour seems missing.",
-      "notes": "1. Did you Save Design, then Update Project... after changing behaviour?\n2. Is the sprite a real PPB at 100% scale, not a placeholder or background?\n3. Does the object hitbox overlap the player path?\n4. Is the target a configured game object, selected in the dropdown? A deleted target will produce a generation error.\n5. Is the target initially active/inactive as the action expects?\n6. Is the door ALSO painted as permanent solid tilemap collision? Remove that collision from its opening.\n7. Does main.c follow maingame.c.txt, including before -> physics -> after, pickup checks and draw?\n8. Is the latest tile atlas PPB copied to SD, and loaded at startup?\n9. Are you using Jump/FIRE versus FIRE2 as intended?\n10. Avoid hand-editing generated gameworlditems.c; change the .sbgm design and regenerate.",
-      "example": "A key unlock did nothing?\nCheck: Key -> target = correct Door -> Linked action = Disable\nCheck: door start active ON, no permanent solid tile in opening\nCheck: gameworlditems_check(...) runs after player movement."
+      "summary": "Check the most common causes of an object not working.",
+      "notes": "Try these checks in order:\n1. Save Design, then choose Update Game Project and rebuild.\n2. Check that the sprite uses a valid PPB resource and is configured as the intended Game Object.\n3. Make sure its hitbox is large enough for the player to touch.\n4. Check its Active when the level starts setting and any required FIRE2 interaction.\n5. If a switch or key controls something, confirm the selected target and action.\n6. For opening doors, remove any permanent solid collision covering the doorway.\n7. For missing artwork or audio, confirm the required files are on the TF/SD card.\n8. If Update Game Project reports an error, use Go to Problem to open the relevant editor and correct it.\n\nAvoid manually modifying generated game helper files. Change the design and regenerate instead. If you have modified main.c, compare it with the updated maingame.c.txt instructions.",
+      "example": "Door does not open? Check: Door starts active → Key targets that Door → Action is Disable → no solid tile inside doorway."
     },
     {
       "title": "21 - Puzzle recipes to try",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Combine documented features without any new engine code: secret doors, timed pickups, moving springs, reversible switches and sliding traversal puzzles.",
-      "notes": "Secret exit: a one-shot touch trigger disables a remote door.\nWall switch: a repeatable FIRE2 Trigger / Switch toggles a door each press.\nHidden treasure: a key enables an initially inactive Gem collectable.\nTimed coin trail: moving/animated collectables with a respawn delay.\nSpring gauntlet: touch springs with opposite left/right horizontal launches and Slidy ON.\nElevator puzzle: moving lift on a spline carries the player up to a key which disables a door.\nRemember: target actions affect objects in the current running level; persistent state across reloads is not automatically saved.",
-      "example": "Trigger -> [Door] Disable + one-shot ON\nKey -> [Gem] Enable (Gem initially inactive)\nSpring -> sideways +8, Touch ON, Slidy ON"
+      "summary": "Try small puzzles by combining Game Objects already in the editor.",
+      "notes": "Start with one idea at a time:\n1. Secret door: a one-time trigger disables a hidden barrier.\n2. Repeatable switch: FIRE2 toggles a door open and closed.\n3. Treasure room: a trigger enables a gem that started hidden.\n4. Lift puzzle: a moving platform carries the player to a key.\n5. Spring challenge: a sideways spring sends the player across a gap.\n\nTo save puzzle progress between sessions, configure the normal Save Point and Save/Load features. An unsaved game session should not be expected to survive restarting SIDBOX.",
+      "example": "Beginner challenge: Make a pressure plate reveal a gem. Then add a second switch that closes the entrance."
     },
     {
       "title": "22 - Switches that start or stop music",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Trigger / Switch game objects can automatically start a tune from Game Resources > Music or stop the active music when touched or activated with FIRE2.",
-      "notes": "1. Add a tracker tune in the Music branch; keep the actual audio file on the SD card at its game resource path.\n2. Select a placed sprite, right-click and choose Configure Game Object, then set Trigger / Switch.\n3. Under When triggered — music, choose Play selected tune and select the Music tree resource in Tune. To stop the current song instead, choose Stop current music; no Tune selection is needed.\n4. Choose touch or Require FIRE2; choose Remove switch after activation for a one-time zone.\n5. Update Game Project to regenerate gameworlditems.c and gameassets.c. The game loop must call music_update() regularly (the generated main example does).\n6. Music and an Enable/Disable/Toggle linked-object action may be configured on the same switch.\nMusic is global SIDBOX playback; starting a track replaces the song already playing, and Stop stops the currently playing tune. The source Music resource is referenced by a stable ID, not a hard-coded filename. User-owned game main.c is never overwritten.",
-      "example": "/* Generated automatically for a music trigger (illustrative): */\nif (platforms[0].trigger_fired) playmusicboss_theme();\n/* OR, for a stop-music trigger: */\nif (platforms[1].trigger_fired) music_stop();\n/* In the main game loop, keep calling: */\nmusic_update();"
+      "summary": "Start or stop background music with a switch.",
+      "notes": "1. Import a suitable music file under Game Resources → Music.\n2. Place and configure a Trigger / Switch.\n3. Find the switch's music settings and choose Play selected tune, then pick a Music resource.\n4. Alternatively, choose Stop current music to stop whatever is playing.\n5. Choose whether the switch activates by touch or FIRE2.\n6. Save Design, Update Game Project and ensure any external music files are on the TF/SD card.\n\nPlaying a new track replaces the currently playing music. You can use the same switch to control another object too.",
+      "example": "Example: Walking into a boss room activates a one-shot switch that starts the boss music."
     },
     {
       "title": "23 - Export embedded C or SD .map tilemaps",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Save level tile graphics, collisions and tile animations inside the .app as generated .c, or export a compact checked .map file loaded from the SD card.",
-      "notes": "1. In Game Designer open the tilemap context menu and choose Export Tilemap (.c / .map)...\n2. Choose Export embedded .c to compile data into the game, or Export SD .map to write gamelevels/level1.map alongside the tiny generated level1.c/.h wrapper.\n3. The choice is saved in the .sbgm game design and respected by Update Game Project. Earlier designs default to embedded C.\n4. In SD mode copy gamelevels/level1.map onto the SIDBOX SD card at gamelevels/level1.map. AFTER initMalloc() and gameassets_init(), call game_level1_load_map(\"gamelevels/level1.map\") and test its return value, THEN call game_level1_load_atlas().\n5. When leaving a level, first game_level1_unload_atlas(), then game_level1_unload_map(), then gameassets_shutdown().\n6. The loader checks magic, version, dimensions, tile size, tile IDs, collision IDs, tile animations and checksum before replacing live data. It leaves the current map intact on failure. You can call it again to load another compatible .map using the same tile size and atlas.\nIMPORTANT: .map only includes tile graphics, tile collisions, and tile animations. Objects, sprites, keys, door states, positions, and music triggers are still compiled from the current Game Designer layout; this is not yet a complete multi-level object loader. The atlas PPB is a separate SD file. Keep gamehelpers/gametilemap.c/.h updated with Update Project.",
-      "example": "/* SD mode, after initMalloc() and gameassets_init(): */\nif (!game_level1_load_map(\"gamelevels/level1.map\")) return 6;\nif (!game_level1_load_atlas()) return 5;\n/* Exit or change level (unload atlas before releasing assets): */\ngame_level1_unload_atlas();\ngame_level1_unload_map();\ngameassets_shutdown();"
+      "summary": "Choose whether a world’s tilemap is built into the game or loaded from the card.",
+      "notes": "Tilemaps have two storage choices:\n• Embedded: The map is included when the game is built. Repeating data may be compressed automatically to save space.\n• External .map: The map is a separate file read from the TF/SD card when its world loads.\n\n1. Open Tilemap Editor and choose the required export mode.\n2. Save the level and choose Update Game Project.\n3. For an external map, copy the generated .map and required PPB artwork to the correct card paths.\n4. Build and test entering the world, leaving it, then returning.\n\nBoth modes can be used in multi-world games. Collectables, quests and object state are part of the world/game systems, not stored inside the .map tile-data file.",
+      "example": "Small self-contained game → Embedded map.\nMany large maps on a card → External .map files can be convenient."
     },
     {
-      "title": "24 - Hazard tiles: Entered, Inside, Exited",
+      "title": "24 - Hazard tiles: entering and leaving",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Tile hazards are non-blocking sensors: receive ENTERED on contact, INSIDE each following physics update, and EXITED when leaving.",
-      "notes": "1. Paint GAME_TILE_HAZARD (collision type 5) in the Tilemap Editor. Tiles remain non-blocking.\n2. Register game_death_set_callback(on_player_death, NULL) after game_tile_player_start(); the four-argument callback signature does not change.\n3. GAME_HAZARD_TILE_ENTERED fires on the first overlapping frame, GAME_HAZARD_TILE_INSIDE on each later physics update while overlapping, GAME_HAZARD_TILE_EXITED on the first update after leaving. Crossing adjacent hazard tiles does not create false exits. Fast swept crossings still generate ENTERED.\n4. At 50 FPS, INSIDE can occur around 50 times per second; DO NOT subtract an entire hit point every callback unless intended. Throttle with a counter or use game time.\n5. Existing GAME_DEATH_TILE_HAZARD equals GAME_HAZARD_TILE_ENTERED, so old callbacks retain one-hit-on-entry behaviour. GAME_DEATH_ZONE likewise equals GAME_HAZARD_ZONE_ENTERED.\n6. Touching a hazard NEVER freezes physics by itself. Your own callback may call game_death_mark_dead() when health reaches zero. game_tile_player_reset() rearms player physics.\n7. A death triggered separately by game_death_trigger(GAME_DEATH_SCRIPT, x, y) still fires GAME_DEATH_SCRIPT once and freezes the player.\n8. Update Game Project to replace gametilemap.c/.h and generated gameworlditems.c. No edits to current main.c are necessary unless you want to respond to the new events.",
-      "example": "/* Four-argument callback remains unchanged: */\nstatic int health = 3;\nstatic unsigned hazard_frames = 0;\nstatic void on_player_death(uint8_t reason, int32_t x, int32_t y, void *user)\n{\n    (void)x; (void)y; (void)user;\n    if (reason == GAME_HAZARD_TILE_ENTERED || reason == GAME_HAZARD_ZONE_ENTERED) {\n        hazard_frames = 0;  /* optional sound/visual effect */\n    } else if (reason == GAME_HAZARD_TILE_INSIDE || reason == GAME_HAZARD_ZONE_INSIDE) {\n        if (++hazard_frames >= 50) { /* about once per second at 50 FPS */\n            hazard_frames = 0;\n            if (health > 0) --health;\n            if (health == 0) game_death_mark_dead();\n        }\n    } else if (reason == GAME_HAZARD_TILE_EXITED || reason == GAME_HAZARD_ZONE_EXITED) {\n        hazard_frames = 0;\n    }\n}\n/* After player start: */ game_death_set_callback(on_player_death, NULL);\n/* For simultaneous tile + zone contact, track two timers separately. */"
+      "summary": "Learn when the player enters, stays inside or leaves a hazardous tile.",
+      "notes": "A Hazard tile detects contact without acting like a solid wall. It can be used for spikes, hot surfaces or dangerous water.\n\n1. In Tilemap Editor, paint Hazard collision on the tiles that should be dangerous.\n2. Save and update the game.\n3. Test walking into, standing inside and leaving the area.\n\nThere are three contact events: Entered (first touch), Inside (while touching) and Exited (after leaving). Hazards do not automatically decide how much damage to cause. A custom C callback can react to these events; see the generated game example if you want to program your own effects.\n\nImportant: Inside can fire on every game frame (about 50 times per second). Do not subtract a whole health point on every call unless that is intentional. For beginner-friendly configurable damage, consider a placed Hazard Zone Game Object.",
+      "example": "Example: Paint a lava floor with Hazard collision. A custom callback could subtract Health once per second while the player remains inside."
     },
     {
-      "title": "25 - Hazard Zones: Three contact events",
+      "title": "25 - Hazard Zones: dangerous areas",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "A Game Object Hazard Zone reports entered, inside, and exited through the same callback, without blocking or automatically killing the player.",
-      "notes": "1. Right-click a sprite -> Configure Game Object -> Hazard Zone (touch = callback). Saved Death Zone objects remain compatible.\n2. Give it a hitbox and enable it. It is a SENSOR, not a wall.\n3. gameworlditems_after() dispatches GAME_HAZARD_ZONE_ENTERED at first overlap, GAME_HAZARD_ZONE_INSIDE each subsequent overlapping call, and GAME_HAZARD_ZONE_EXITED after leaving all active Hazard Zones. Moving between overlapping/adjacent zones is treated as continued contact.\n4. Your existing callback game_death_set_callback(on_player_death, NULL) is unchanged. Old GAME_DEATH_ZONE comparisons still match ENTERED.\n5. INSIDE is per call to gameworlditems_after(), usually once per game frame; throttle damage according to your game update rate. If tile hazards and zones overlap, both may send events in a frame.\n6. Only your game can call game_death_mark_dead() to freeze physics. Call game_tile_player_reset() to respawn. Explicit scripted death still uses game_death_trigger(GAME_DEATH_SCRIPT, x, y).\n7. Update Game Project to regenerate gameworlditems.c after rebuilding this IDE.",
-      "example": "if (reason == GAME_HAZARD_ZONE_ENTERED) { /* player just entered */ }\nif (reason == GAME_HAZARD_ZONE_INSIDE)  { /* overlapping this frame */ }\nif (reason == GAME_HAZARD_ZONE_EXITED)  { /* player just left */ }\n/* Existing GAME_DEATH_ZONE == GAME_HAZARD_ZONE_ENTERED */"
+      "summary": "Place a hazard area that detects the player without blocking movement.",
+      "notes": "1. Place a sprite or marked area in Game Designer.\n2. Configure it as a Hazard Zone Game Object.\n3. Resize the hitbox to cover the dangerous area.\n4. Choose any available player damage or stat settings in the object's properties.\n5. Save Design, Update Game Project and test entering and leaving the zone.\n\nA Hazard Zone can report Entered, Inside and Exited contact. It is not automatically a solid obstacle, and a custom C callback may be used for specialised effects. If the zone remains dangerous while the player stands still, make sure repeated damage is limited to the intended rate.",
+      "example": "Try it: Put a narrow hazard over a glowing floor tile and check that the player can leave the area."
     },
     {
       "title": "26 - Stamp Bank: Reusable tile arrangements",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Build named multi-tile stamps in the Tilemap Editor and paint them onto the map as normal cells, preserving each cell's graphic and collision.",
-      "notes": "1. Open Game Designer -> Tilemap Editor. On the RIGHT, Stamp Bank is above Stamp Editor; the tile atlas remains on the LEFT.\n2. Click Add to create a stamp. Rename it and set Width/Height (1-16 cells). The lower-right editor displays the stamp grid.\n3. Click an atlas graphic on the LEFT, then LEFT-click a cell in the lower-right Stamp Editor to assign that graphic. The toolbar Paint collision option can also assign per-cell collision types. RIGHT-click clears both layers of a stamp cell.\n4. Click the stamp thumbnail in the upper-right bank. Your canvas brush becomes that entire stamp. LEFT-drag places it on a stamp-sized grid anchored to your first click; RIGHT-drag clears its whole footprint on the same grid. Fast drags fill intervening stamp positions. Map edges clip safely.\n5. To resume painting ordinary tiles, click an atlas tile on the LEFT. The stamp remains editable in the lower-right panel.\n6. Stamps are saved with the .sbgm design (including names, dimensions and cell data), and edits/placements use Ctrl+Z / Ctrl+Y. Removing a stamp never removes cells already painted onto the map.\n7. The exported .c/.map contains only the ordinary placed tile IDs, collisions and flip flags; there is NO stamp data at runtime. Original projects without stamps load normally.\n8. Individual stamp cells preserve their own X/Y flip flags. Mirror stamp X/Y reverses positions and XORs those flags during painting.\n9. Stamps are tied to the tile size used when they were made. Switch the map back to that tile size to place the stamp.",
-      "example": "Stamp Bank -> Add -> Rename -> Width 4, Height 4\nClick tile in atlas -> click cell in Stamp Editor\nClick stamp thumbnail -> click or drag in map\nSave (stays open and saves .sbgm), or Apply to Design (closes)"
+      "summary": "Save groups of tiles as reusable stamps for faster map painting.",
+      "notes": "A Tile Stamp is a reusable arrangement of graphics and optional collision cells, such as a doorway or a 4×4 patch of stonework.\n\n1. Open Tilemap Editor and find the Stamp Bank on the right.\n2. Choose Add, give the stamp a name and set its width and height in tile cells.\n3. Select a tile from the atlas and paint into the Stamp Editor grid.\n4. Select the finished stamp's thumbnail to use it as the brush.\n5. Left-click or drag on the map to place copies; right-click to erase placements.\n6. Choose Save to keep editing, or Apply to Design to finish.\n\nTile Stamps are shared by atlas, so check where a shared stamp is used before changing or deleting it. Placed artwork is exported as ordinary tiles: the game does not need the Stamp Bank at runtime.",
+      "example": "Try it: Make a 3×2 doorway stamp, paint one doorway, then use the same stamp in another room."
     },
     {
-      "title": "27 - Complete beginner: first playable V1 platformer",
-      "category": "Game Engines/Advanced Platformer",
-      "summary": "Create a scrolling, playable V1 game with a tilemap and player, using the generated complete starter program.",
-      "notes": "1. Create a V1 Gaming project; the initial generic main.c is IDE-owned unless you edit it.\n2. Open Game Designer, select a PPB atlas, paint solid ground and place a PPB sprite named player.\n3. Save Design -> Update Game Project exports helpers, tilemap and assets, and generates a complete maingame.c.txt.\n4. If main.c is still IDE-owned and unchanged, it is also regenerated automatically from your design. If missing, a new IDE-owned main.c is created.\n5. Press Build to compile the V1 game; add SD .map, PPBs and audio assets as needed.\n6. To customise C, edit main.c and Save: OWNER changes to user and no later generator may replace it. For updated integration examples, open maingame.c.txt.\n7. Older main.c files lacking ownership metadata are treated as programmer-owned, even if they say OWNER: IDE; never overwritten.\n8. The update command backs up main.c and its ownership metadata before modifying any files.",
-      "example": "Game Designer -> tilemap + player -> Save Design -> Update Game Project\nmain.c: // OWNER: IDE -> generated automatically\nEdit + Save -> // OWNER: user -> protected forever\nmaingame.c.txt -> kept current automatically"
+      "title": "05 - Make your first playable V1 game",
+      "category": "Game Engines/Foundations",
+      "summary": "Build and play your first V1 platform game without starting from C code.",
+      "notes": "1. Create a V1 Gaming project and open Game Designer.\n2. Add a player PPB sprite and choose its Player/Physics settings.\n3. Open Tilemap Editor, select a Tile Atlas, paint visible ground and add solid collision.\n4. Return to Game Designer, place one Collectable and save the design.\n5. Choose Update Game Project. Resolve any listed missing-resource problems.\n6. Choose Build. Copy required external PPB or .map resources to the TF/SD card and run the game.\n7. Try walking, jumping and collecting your item.\n\nCoderGirl can maintain the generated main.c until you edit it yourself. If you do edit it later, your changes are protected and the latest generated example can still be found in maingame.c.txt.",
+      "example": "First-game checklist: player visible ✓ floor solid ✓ player moves ✓ item collects ✓ game builds ✓"
     },
     {
-      "title": "28 - Flip X/Y for individual tile cells",
+      "title": "27 - Flip X/Y for individual tile cells",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Mirror tile graphics independently without duplicating 8x8 atlas artwork.",
-      "notes": "1. Open GamerGirl Tilemap Editor. Click an atlas graphic on the left.\n2. Enable Cell Flip X and/or Cell Flip Y in the paint toolbar.\n3. Click the map to paint with the chosen graphic and flip flags; preview and game output should match.\n4. To flip an ALREADY PLACED tile without changing its graphic ID, select Paint graphic: Don't change graphic. Keep Apply flip flags and paint the chosen cell using the checkboxes.\n5. For collision-only edits, set Don't change flip flags and Don't change graphic.\n6. The separate collision tile remains unchanged when merely flipping artwork. If using directional slopes, confirm that the collision geometry still matches the artwork.\n7. Update Game Project after regenerating the level. Embedded .c exports a new game_level1_flips[] array; external .map exports SBMP v2 with per-cell flips. Copy the updated SD map and helper files.\n8. Existing .sbgm projects and SBMP v1 maps default to no flips. The new helper accepts both v1 and v2; the old helper cannot load v2.",
-      "example": "/* Each map cell has 2 independent graphic flags. Runtime gfx_drawbob() receives the matching BOB flags. */\nGAME_TILE_FLIP_X  /* 1 */\nGAME_TILE_FLIP_Y  /* 2 */"
+      "summary": "Flip a tile horizontally or vertically without making another picture.",
+      "notes": "1. Open Tilemap Editor and select a tile from the atlas.\n2. Turn on Cell Flip X to mirror left/right or Cell Flip Y to mirror top/bottom.\n3. Click the map to place the flipped tile. The preview shows the result before painting.\n4. To flip an existing graphic without replacing it, select Don't change graphic and apply only the flip flags.\n5. Save and Update Game Project.\n\nTile artwork and collision are separate. Flipping a picture does not automatically make its slope collision face the other way.",
+      "example": "Try it: Paint one arrow tile, then paint its mirror with Cell Flip X."
     },
     {
-      "title": "29 - Mirror stamps while keeping per-cell flips",
+      "title": "28 - Mirror stamps while keeping per-cell flips",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Mirror whole stamp placements while preserving constituent cell transformations.",
-      "notes": "1. Create/select a stamp in the right-hand Stamp Bank. Select atlas graphics and paint in the lower-right Stamp Editor.\n2. Set Cell Flip X and/or Y before painting individual stamp cells. Each retains its own flip flags when saved, reopened, or resized.\n3. Select the stamp thumbnail as your map brush. Enable Mirror stamp X or Mirror stamp Y in the toolbar.\n4. When placing the stamp, the editor reverses the cell positions along each chosen axis and XORs the corresponding flip flags. Double mirroring restores the original orientation.\n5. The source stamp itself is not changed; mirror controls affect the placement only. Previously placed stamps are ordinary map cells, and retain the flags from the moment they were placed.\n6. Horizontal mirroring of a complete stamp swaps the two slope collision IDs (rising/falling). Vertical mirroring only affects graphics because ceiling slopes are not currently supported.\n7. Use Save to commit the stamp bank and painted map without closing the tile editor, or Apply to Design to close it. Regenerate your map export and project helpers for SIDBOX.",
-      "example": "/* Each placed tile ends with the combined graphics flags: */\nfinal_flip_x = cell_flip_x ^ mirror_stamp_x;\nfinal_flip_y = cell_flip_y ^ mirror_stamp_y;"
+      "summary": "Mirror an entire Tile Stamp while keeping individual tile flips.",
+      "notes": "1. Select a saved stamp in the Tilemap Editor's Stamp Bank.\n2. If needed, give individual stamp cells their own Cell Flip X or Y settings.\n3. Enable Mirror stamp X or Mirror stamp Y before placing the stamp.\n4. Look at the preview and click the map to place the mirrored version.\n5. Turn mirroring off to place the original orientation again.\n\nMirroring changes the newly placed copy, not the saved source stamp. A mirrored graphic stamp can change the direction of ordinary slope collision, so test slope edges after painting.",
+      "example": "Example: Make one corner decoration stamp, then use Mirror stamp X to decorate the opposite corner."
     },
     {
-      "title": "30 - Save while editing and drag stamps on a stamp-sized grid",
+      "title": "29 - Save while editing and drag stamps on a stamp-sized grid",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Save map and stamp edits without closing the editor, and paint repeating stamps aligned to the first mouse click.",
-      "notes": "1. At the bottom of Tilemap Editor, Save commits your current tiles and stamp definitions to the Game Designer AND saves the .sbgm file without closing the editor. You can continue painting immediately.\n2. Save offers the existing export choice: Yes saves the design and exports the level/required files, No saves only the game design.\n3. Apply to Design retains its previous behaviour: closes the editor and prompts about exporting. Choosing No applies changes to the parent design in memory, which you can save later.\n4. Cancel discards edits since the most recent successful Save or Apply, but cannot undo an earlier successful disk Save.\n5. Select a stamp in the upper-right Stamp Bank. Press and hold LEFT on the map: the FIRST clicked cell anchors a temporary grid with spacing equal to stamp width and height. Move the mouse to tile the stamp without overlaps.\n6. Moving quickly across cells fills intervening stamp positions. Left/up movement also snaps correctly. RIGHT-drag erases whole stamps on the same grid. Releasing the mouse ends the grid; the next stroke gets a fresh anchor.\n7. Single atlas tiles still paint at the normal cell resolution. Individual stamp cells retain graphics, collision types and X/Y flips; Mirror stamp X/Y still works. Ctrl+Z undoes a full dragged stamp stroke as one operation.\n8. Stamps are purely design-time. Neither the embedded .c nor the SD .map file format changes for stamp-sized dragging.",
-      "example": "Stamp Bank -> choose 4x2 stamp -> click map at cell (7,5)\nDrag right: origins (7,5), (11,5), (15,5), ...\nDrag down: origins (7,7), (7,9), ...\nSave -> continue editing, Apply to Design -> close editor, Cancel -> discard unsaved changes"
+      "summary": "Save the map without closing the editor and paint repeating stamps.",
+      "notes": "1. In Tilemap Editor, select a Tile Stamp from the Stamp Bank.\n2. Press and hold the left mouse button on the map and drag. The brush repeats the stamp on a grid based on that stamp's size.\n3. Right-drag to erase whole stamp-sized areas.\n4. Press Ctrl+Z to undo a dragged paint operation if the result is wrong.\n5. Choose Save to write the design while keeping Tilemap Editor open. Choose Apply to Design when you want to return to Game Designer.\n\nWhen Save asks about exporting, Yes also writes the level output; No saves the design only. Cancel cannot undo work that was already saved successfully.",
+      "example": "Try it: Make a 4×2 stone platform stamp, drag across the map, choose Save, and continue painting."
     },
     {
-      "title": "31 - Live tile and stamp placement preview",
+      "title": "30 - Live tile and stamp placement preview",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Hover over the tilemap before painting to see a transparent preview of the selected cell or whole stamp, including mirroring and individual flip flags.",
-      "notes": "1. Select a tile in the atlas on the left, or select a stamp from the right-hand Stamp Bank.\n2. Move the mouse over the central tilemap. The tile or full stamp appears as a semi-transparent graphic with a bright square outline before you click.\n3. Cell Flip X/Y, Mirror Stamp X/Y, and the individual flips already saved in the stamp are included in the preview.\n4. When dragging a stamp, the preview snaps to the temporary stamp-sized grid anchored by your first click. Release the mouse to reset the grid.\n5. Right-dragging shows a red erase outline. Moving the cursor outside the canvas hides the preview.\n6. In the lower-right Stamp Editor, the selected atlas tile also appears over the cell you are about to paint.\n7. Preview does not edit or export anything. Only actual brush strokes change the tilemap.",
-      "example": "For an 8x8 cell map, a 4x2 stamp displays an 32x16 pixel translucent preview. Click-and-drag to place complete stamps with the same flip flags you see in the preview."
+      "summary": "Preview exactly where the next tile or stamp will be painted.",
+      "notes": "1. Select an atlas tile or a saved Tile Stamp.\n2. Move the pointer across the map without clicking.\n3. A faint preview shows its size, position and any X/Y mirroring.\n4. Left-click to paint; drag a stamp to repeat it on its temporary grid.\n5. Use right-drag to preview and erase a stamp-sized area.\n\nThe preview itself does not change the map. Nothing is placed until you click or drag with the paint tool.",
+      "example": "Try it: Select a large stamp and move it near the map edge to see its full footprint before placing it."
     },
     {
-      "title": "32 - Collision stamps: Editable point-defined slopes",
+      "title": "31 - Make walkable slopes with Collision Stamps",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Create point-defined ground surfaces over faded tile artwork; reused slope shapes are linked to whole stamp placements and exported compactly.",
-      "notes": "1. Under Tile Stamps select the matching artwork for the faint reference. Switch to Collision Stamps and Add a shape.\n2. A new shape starts with two endpoints on opposite edges. LEFT-CLICK open space to insert a point; drag any point to move it; RIGHT-CLICK an interior point to delete it. Endpoints can move vertically but remain on the left and right boundaries.\n3. Use the stamp bank to select a slope; the point editor, name, dimensions and brush NOW all switch to the chosen shape. SHIFT+LEFT-CLICK an already-placed slope on the tilemap to open its shared definition directly. Select a point with a click or drag it; precise Point X/Y spinboxes also move the selected point. Use Insert Point to split the widest segment, and Delete Point to remove a selected interior point. Endpoints are locked to left/right edges but their Y may change.\n4. Select the shape thumbnail. LEFT-DRAG on the map to place whole collision instances on a stamp-sized temporary grid. Mirror stamp X flips the slope without altering the shared definition. RIGHT-CLICK/DRAG on an occupied region removes the ENTIRE instance; overlaps replace whole previous instances.\n5. Editing the original shape points changes every placement of that shape in the level immediately (including mirrored copies). Width/Height changes also update placed copies if the new footprints fit on the map and do not overlap other stamps or collisions. Invalid resizing is rejected without changing the original. Collisions remain separate from graphics and tile flip flags. Graphical stamps can overwrite collision placements; apply collision stamps last.\n6. After Save / Update Game Project, the generated helper automatically handles collisions. Pure point-slope maps use SD SBMP v4 with a compact per-cell reference map and shape/placement tables. No per-pixel height array is exported for NEW slope shapes. Embedded C exports the same tables.\n7. Old Stage 3.35 painted slopes (collision type 7) remain exact legacy per-pixel data, because they did not record original stamp identities. Mixed v4 maps include the legacy heights until old slopes are cleared or repainted.\n8. Update the gametilemap.c/.h helpers when the IDE prompts, rebuild the .app, and recopy level1.map to SD. The v4 loader still accepts old v1/v2/v3 files.\n9. This remains walkable ground with solid space below the surface only. Very steep faces may behave as walls. No ceilings/loops or vertical mirroring.",
-      "example": "Collision Stamps -> select a slope thumbnail OR Shift+left-click a placed slope -> edit points by dragging or entering X/Y -> every placed copy redraws instantly. Save -> Update Game Project -> rebuild and recopy the SD .map to see the changed collisions on SIDBOX."
+      "summary": "Draw reusable walkable slopes using the Collision Stamp editor.",
+      "notes": "A Collision Stamp defines the ground surface with a line made from movable points. It is useful for hills and ramps.\n\n1. Open Tilemap Editor → Collision Stamps and choose Add.\n2. Adjust the left and right endpoints and click to insert extra points along the slope.\n3. Drag points to shape the ramp; remove an unwanted middle point with right-click.\n4. Select the finished slope stamp and paint it on the map.\n5. Edit the original stamp later to update all of its placed copies.\n6. Save the design and Update Game Project.\n\nTip: Shift+left-click a placed slope to reopen its shared shape. Add its decorative artwork separately; a collision stamp is not a picture. Apply collision stamps after ordinary graphics stamps if those also paint collision.",
+      "example": "Try it: Draw a gentle hill with three points, place two copies and then move the middle point."
     },
     {
-      "title": "33 - Whole collision stamps and compact slope maps",
+      "title": "32 - Edit or erase shared Collision Stamps",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Edit shared polyline slopes, mirror placements and delete them as whole objects without leaving stray collision cells.",
-      "notes": "Create/edit points in Collision Stamps. Placing stores an instance, not a copied array of heights. Right-drag across a placed slope removes it entirely. Changing the original points updates all its instances. Rebuild the game after Update Project, and copy the new v4 .map onto SD. Existing v3 height-painted areas are kept for compatibility, but need repainting as point-defined stamps to remove their original dense array from exports. Graphical stamps still edit collision cells and may replace point-defined placements where painted. Keep the collision-only pass last. Shift+left-click any placed slope to select and edit its shared source. Editing points updates all copies immediately inside the IDE. Safe resizing updates every placement, or declines if it would overlap other collisions or exceed map bounds.",
-      "example": "Shift+left-click a placed slope -> select a point in the lower editor -> drag it or set exact X/Y -> every copy updates. Insert Point / Delete Point work on the shared definition; Ctrl+Z restores the prior points."
+      "summary": "Understand how shared Collision Stamps behave when edited or erased.",
+      "notes": "A placed Collision Stamp refers back to its original shape. That means changing the shape can update every copy already used in the map.\n\n1. Select a Collision Stamp and place a few copies.\n2. Shift+left-click one of its placements to edit the source shape.\n3. Move a point and watch the other copies update.\n4. Right-drag across a placement to remove the whole collision shape, not only one tile.\n5. Save the map, update the project and replace an external .map file on the card if your world uses one.\n\nFor old maps with hand-painted slopes, repainting with the newer Collision Stamps may reduce the stored collision data. Keep ordinary tile graphics separate from the slope collision shapes.",
+      "example": "Example: One hillside stamp used five times can be adjusted once to change all five hills."
     },
     {
-      "title": "34 - Tilemap editor view and brush memory",
+      "title": "33 - Tilemap editor view and brush memory",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Keep zoom, brush choices and per-project pan positions between Tilemap Editor sessions.",
-      "notes": "Zoom, collision brush, selected graphic ID, graphic paint mode, and X/Y/front brush flags are restored when reopening. Map panning is remembered separately for each game-design directory. Save or close the editor to store the view. The atlas on the left reflows its tile IDs to the panel width: scroll vertically to reach every atlas cell.",
-      "example": "Zoom to 3x, select atlas tile 42 and Collision=Dont change, pan to a hill, then Apply and reopen: the view and brushes return."
+      "summary": "Reuse Tilemap Editor brush settings and quickly fill connected areas.",
+      "notes": "Tilemap Editor remembers useful settings, including the selected brush, zoom and map view, when you reopen it.\n\n1. Choose a normal tile from the Tile Atlas.\n2. Click the paint bucket button or press F to turn on Flood Fill.\n3. Left-click a connected area to replace its matching tiles; right-click to erase the matching area.\n4. Press F again to return to normal painting.\n5. Use Ctrl+Z to undo the entire fill, or Ctrl+Y to redo it.\n\nFill spreads up, down, left and right, not diagonally. If the result is too wide, undo it and check whether the area is separated by a different tile. Selecting a stamp returns to its normal placement tool.",
+      "example": "Try it: Draw a closed rectangle with one tile type, then Flood Fill its inside with a different tile."
     },
     {
-      "title": "35 - Draw tiles in front of the player",
+      "title": "34 - Draw tiles in front of the player",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Put foliage, arches and platforms over the player without a second tilemap or larger SD file.",
-      "notes": "In the Tilemap Editor choose Apply tile flags and check Draw in front of player, then paint individual tiles. For graphical stamp placement, check Stamp: use Draw Front setting to make the whole stamp use that checkbox for front/back; otherwise, every stamp cell uses its saved front/back flag. In either case, per-cell X/Y flips and stamp mirroring are retained. The front bit shares the existing per-cell flag byte with Flip X/Y. The main rendering pass skips these tiles; a second pass draws ONLY front tiles after sprites and player. Collision settings are independent. Old maps and embedded C maps remain valid. Projects with older gametilemap helpers are offered a backed-up update. Re-export the level after editing, then rebuild the .app; SD map version remains unchanged. Existing hand-written main.c needs the call after drawing the player.",
-      "example": "game_tilemap_blit_view_cleared(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);\n/* Draw game objects and player here. */\ngame_tilemap_blit_view_front(&game_level1, camera_x, camera_y, VIEW_W, VIEW_H);"
+      "summary": "Make foreground scenery that appears in front of the player.",
+      "notes": "Foreground tiles are useful for bushes, arches, tall grass or tree branches that the player can walk behind.\n\n1. Open Tilemap Editor and select the artwork you want.\n2. Turn on Apply tile flags and Draw in front of player.\n3. Paint the foreground graphics where they belong.\n4. Save the map and Update Game Project.\n5. Run the game and walk behind the artwork to check the layering.\n\nCollision is a separate choice: a foreground tile can be walk-through scenery or a solid obstacle. For stamps, the Draw Front setting can apply to the whole placed stamp or keep each cell's saved value.",
+      "example": "Try it: Paint tall grass in the foreground so the player's feet disappear behind it while walking."
     },
     {
-      "title": "36 - Copy and paste a tilemap region",
+      "title": "35 - Copy and paste a tilemap region",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Shift-drag a rectangular map area and use it immediately as a temporary stamp with graphics, collisions and flip/foreground flags.",
-      "notes": "Shift+left-drag in the main map selects an inclusive rectangle. A simple Shift-click still opens a placed point-slope for editing. After selecting, move the cursor to preview the copied area; left-click pastes once, and left-drag repositions the preview without pasting until you click. Right-click erases the whole temporary brush footprint. Press Escape to discard the temporary brush and leave paste mode WITHOUT making any final paste; Shift+Escape is not required. Already-pasted changes remain and can be undone with Ctrl+Z. All graphics, X/Y and draw-front flags, ordinary collisions and legacy slope samples are copied. Point-based collision stamps keep their shared definitions: selecting part of one expands the copy to include its entire placement. Stamp: use Draw Front setting optionally overrides the copied foreground bits when placing. The temporary copy is never added to the permanent stamp bank. Every paste/erase is a single undo action. Areas must fit fully in the map; nothing is exported or saved until a paste or erase is applied. Save or Apply to Design saves the edited map normally.",
-      "example": "Shift+drag over a 4x2-cell platform -> move the ghost to a new area -> left-click to paste -> press Esc to exit without making another paste. Ctrl+Z undoes the paste."
+      "summary": "Copy part of a map and paste it elsewhere without saving a permanent stamp.",
+      "notes": "1. In Tilemap Editor, hold Shift and left-drag a rectangle around the tiles to copy.\n2. Move the pointer to preview the copied area at a new location.\n3. Left-click to paste. Repeat if you need another copy.\n4. Press Escape to leave temporary paste mode.\n5. Use Ctrl+Z if a pasted region was placed incorrectly.\n\nA copied region includes its ordinary graphics, collision and tile flags. Collision Stamp shapes are kept together so you do not accidentally copy half a linked slope. The copied brush is temporary and will not be added to the Stamp Bank.",
+      "example": "Try it: Shift-drag a decorated 4×2 platform, paste it across a gap, then press Escape."
     },
     {
-      "title": "37 - Programmable custom collision zones",
+      "title": "36 - Make custom water, ice or other zones",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Eight named collision zones with optional solid blocking, three contact events and optional player-physics presets.",
-      "notes": "Tilemap Editor -> Paint collision -> choose Custom 1..8. Rename with Name Zone; friendly names are saved in .sbgm and exported as GAME_ZONE_ID_NAME aliases in gamelevels/level1.h (for example, Space => GAME_ZONE_ID_SPACE). The always-available GAME_ZONE_ID_CUSTOM_1..8 remain numeric 1..8, including for solid zones. Regenerate after renaming; gamehelpers/gametilemap.h is deliberately shared and unchanged. Names are sanitized to uppercase C identifiers, and duplicate labels get unique suffixes. Tick Custom is solid to stop the player at the tile boundary, or untick it for walk-through zones. These tile types use collision values 9..16 (pass-through) and 17..24 (solid). They do not require extra map bytes. Paint zones directly or include these collision values in a graphical stamp. The generated maingame.c.txt contains on_custom_zone() only when a design uses custom zones AND a player sprite is named player; it registers with game_tile_set_zone_callback(). Events: GAME_ZONE_ENTERED once upon contact, GAME_ZONE_INSIDE on subsequent updates, and GAME_ZONE_EXITED upon leaving. Custom zones NEVER change physics on their own. Commented starter examples show game_tile_player_set_physics_ice/water/slow/space/floating/jetpack, game_tile_player_set_gravity and game_tile_player_set_walk_speed. Uncomment or replace only what your game needs. Physics preset normal resets to original values; overlapping zone priorities are the programmer's decision. Regenerate the game and accept the BACKUP-FIRST upgrade of the tilemap helper files. User-owned main.c is never overwritten. Older SBMP v1-v4 files still load; new custom-only maps use v2 and custom+shape maps use v4, requiring the updated helper. Blocking zones can be sensed at a 1-pixel hitbox boundary; pass-through zones require overlap.",
-      "example": "Paint Custom 2, rename it Water, leave Custom is solid OFF. Update Game Project. In the generated on_custom_zone callback, find case GAME_ZONE_ID_WATER and uncomment game_tile_player_set_physics_water(p) for ENTERED and game_tile_player_set_physics_normal(p) for EXITED. A solid Custom 1 can represent a rock that reports touch while blocking movement."
+      "summary": "Create special floor regions such as water, ice or zero gravity.",
+      "notes": "Custom collision zones are named map areas that a game can detect. They can be walk-through regions or solid barriers.\n\n1. Open Tilemap Editor and choose a Custom collision type (Custom 1–8).\n2. Use Name Zone to give it a helpful name, such as Water.\n3. Choose whether Custom is solid should be ON (blocks the player) or OFF (allows walking through).\n4. Paint the zone on the collision layer, save and Update Game Project.\n5. Test that the player can enter or touch the area as expected.\n\nAdvanced option: Custom zones can send Entered, Inside and Exited events to a C callback. To make Water actually change swimming physics, follow the optional generated on_custom_zone example in maingame.c.txt. Simply painting a named zone does not automatically change movement.",
+      "example": "Try it: Paint Custom 1, name it Water, leave it non-solid. Add swimming behaviour later using the generated example."
     },
     {
-      "title": "38 - Forces, wind, explosions and zero-G thrusters",
+      "title": "37 - Add wind or floating forces (optional C)",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Impulse forces for normal movement or custom joystick-driven space motion, with full collision physics.",
-      "notes": "The V1 tilemap player helper exposes apply_force(&player_physics, float x, float y). X is horizontal (+right), Y vertical (+down). Units: extra PIXELS PER PHYSICS FRAME of velocity, accumulated per call and clamped for safety. Calling apply_force() does not advance the simulation; every frame call exactly ONE of game_tile_player_run(&player_physics, getjoyport(), 1) (normal joystick/jump input) or game_tile_player_step(&player_physics, 1) (no built-in joystick input). Both resolve solids, slopes, hazards, custom-zone callbacks, and external forces. One call gives an impulse, repeated calls create sustained wind or thrust. Horizontal drag is adjustable with game_tile_player_set_force_drag(&player_physics, percent): 0 means coast (ideal in zero G); normal movement defaults to 12% per frame. Vertical inertia is affected by gravity; for proper zero G set gravity to 0 when activating the space preset. The generated maingame.c.txt contains a complete OPTIONAL conditional thruster example; ordinary movement stays enabled unless you edit your main.c. Changing and saving your main.c makes it user-owned; Update Game Project never overwrites user-owned source. New tilemap helper files are copied by the backed-up Update Game Project process.",
-      "example": "/* Normal game loop: wind can add force before player-run. */\napply_force(&player_physics, 0.15f, -0.20f);\ngame_tile_player_run(&player_physics, getjoyport(), 1);\n\n/* OR: after enabling zero G, use input as external thrust: */\nuint8_t joy = getjoyport();\nif (joy & BTN_LEFT)  apply_force(&player_physics, -0.18f, 0.0f);\nif (joy & BTN_RIGHT) apply_force(&player_physics,  0.18f, 0.0f);\nif (joy & BTN_UP)    apply_force(&player_physics, 0.0f, -0.18f);\nif (joy & BTN_DOWN)  apply_force(&player_physics, 0.0f,  0.18f);\ngame_tile_player_step(&player_physics, 1); // collision-safe!"
+      "summary": "Learn what extra movement forces are and when you might use them.",
+      "notes": "Forces are optional pushes added to player movement. They can create wind, explosions or floating in space, but this is an advanced C-customisation feature.\n\nStart with normal Player Physics Profiles first. When you are ready to customise C:\n1. Open the current generated maingame.c.txt example.\n2. Find the optional movement or thruster example.\n3. Apply a force before the normal player physics update.\n4. Rebuild and test a small force first.\n\nA force applied once gives a push; one applied every frame acts continuously. Negative X pushes left and negative Y pushes up. Do not run two different player physics update functions in the same frame.",
+      "example": "Optional C example for a gentle wind before normal movement:\napply_force(&player_physics, 0.15f, -0.20f);\ngame_tile_player_run(&player_physics, getjoyport(), 1);"
     },
     {
-      "title": "39 - Dedicated Tile Atlases in Game Resources",
+      "title": "38 - Add a Tile Atlas to Game Resources",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Keep PPB tile sheets under Tile Atlases instead of placing an invisible sprite on the game canvas.",
-      "notes": "In Game Designer, right-click the Game Resources tree and choose Add Tile Atlas... (PPB only), or drop a PPB file directly onto the Tile Atlases group. Then open Tilemap Editor and select the named PPB in the Tile Atlas dropdown. It has no canvas position, no draw call, and never creates a game sprite BOB. The .sbgm file stores the resource entry and the tilemap continues to store its PPB path; older projects and SBMP map exports remain compatible. If you have an old decorative sprite used only to hold a tilemap PPB, right-click that sprite and choose Move to Tile Atlases (stop drawing). The IDE asks before removing it from game drawing, retains the atlas path and does not touch the source PPB. Do not convert real player, object, or sprite assets: game C that refers to the old sprite variable would need updating. The tilemap dropdown continues to show the currently selected legacy sprite atlas while migrating older projects. Update Game Project regenerates gameassets to load the selected Tile Atlas PPB once from SD (or embed it, depending on generation mode). game_level1_load_atlas() borrows the matching gameassets pixels after verifying its checksum, avoiding a duplicate bitmap allocation; standalone .map/.c atlas loading still works. Only the chosen atlas is included in generated assets. The shared CLUT builder includes the chosen Tile Atlas even though it is not on the world canvas. No firmware changes, collision format changes, or tilemap helper upgrades are required. Replacing the PPB file on an active Tile Atlas resource relinks the tilemap to its new path; ensure the new artwork has compatible tile dimensions/IDs.",
-      "example": "Game Resources -> Add Tile Atlas... -> tiles.ppb -> Tilemap Editor -> Tile Atlas: tiles. Save the .sbgm; Update Game Project to regenerate gameassets/ and gamelevels/. For an existing project, right-click the old decorative atlas-holder sprite -> Move to Tile Atlases."
+      "summary": "Register a Tile Atlas without placing it as a visible sprite.",
+      "notes": "A Tile Atlas is the sheet of small graphics used to paint a tilemap. It does not have to appear as a large picture on the world canvas.\n\n1. In Game Designer, right-click Game Resources and choose Add Tile Atlas.\n2. Select a PPB file containing your tiles.\n3. Open Tilemap Editor and select that atlas from the Tile Atlas list.\n4. Paint the map, save it and Update Game Project.\n\nIf an old project uses a decorative sprite solely to hold the map atlas, its context menu may offer Move to Tile Atlases. Only use this for an atlas-holder sprite, not a visible character or other game sprite.",
+      "example": "Game Resources → Add Tile Atlas → select terrain.ppb → Tilemap Editor → choose terrain."
     },
     {
-      "title": "40 - Palette-aware PNG Import: Ranges, Dithering and Shared CLUTs",
+      "title": "39 - Convert PNG pictures into PPB graphics",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Convert PNG to indexed PPB using an explicit palette-index range; build or reuse a project CLUT with a live preview.",
-      "notes": "Right-click Game Resources > Convert PNG -> PPB. Choose Sprites, Tile Atlases or Backgrounds; choose the foreground/background CLUT where applicable (Tile Atlases use foreground; Backgrounds use background in two-plane mode and foreground in single-plane mode). The converter reserves index 0 for transparency (alpha below 50%). Specify a 1..255 range, such as 1..15 for the player, then 16..23 for scenery. Generate colours in that range, keeping the selected project CLUT entries outside the range unchanged; or match against existing colours without changing the CLUT. If starting a brand-new palette, choose Start with a blank palette. The modes are None (exact for small palettes), Floyd-Steinberg, Ordered 4x4 and Noise dither. Before/after previews use full-resolution pixels for accurate inspection: Fit to Window, 1:1 (100%), +/- buttons and mouse wheel adjust zoom without smoothing; drag either picture to pan both together. Maximizing the dialog gives both views more room. Large PNGs can take longer to update when palette settings change; saving still performs the full-resolution conversion on a background worker. Build mode writes a .pal palette file separately with an explicit filename/overwrite prompt, adds or reselects it under Palettes, and activates it for that bank. Subsequent imports can use the active .pal and a new non-overlapping index range to incrementally add artwork. The original PNG is never modified. An existing 2048-byte dual-bank .pal keeps the other bank unchanged. CAUTION: reusing/overwriting previously allocated palette indices can change colours in other existing PPBs. IDE Undo only rolls back resource-tree entries, NOT overwritten .pal/.ppb disk contents; make a backup when modifying an existing palette. PNG only (no GIF/BMP importer). No firmware changes, new map format or runtime helper changes.",
-      "example": "Import sprite.png: Sprites, Foreground, Generate, indices 1..15, Dither None, save sprite.ppb and gamepalettes/png_import_foreground.pal. Next import scenery.png: Tile Atlases, Generate, indices 16..23, keep existing CLUT, save scenery.ppb and update the SAME .pal. Select the generated foreground CLUT for the game and pick scenery.ppb in Tilemap Editor."
+      "summary": "Convert PNG artwork into SIDBOX PPB graphics using a shared palette.",
+      "notes": "SIDBOX graphics use a limited set of palette colours. The PNG converter helps you choose which colours each new image can use.\n\n1. In Game Resources, choose Convert PNG → PPB.\n2. Choose whether the new graphic belongs to Sprites, Tile Atlases or Backgrounds.\n3. Pick a palette and a colour index range for the image. Index 0 is reserved for transparency.\n4. Compare Before and After previews. Try a dithering setting if the image has more colours than the chosen range.\n5. Save the new PPB and any required palette file.\n6. Import the next image using a different range if the existing colour entries must stay unchanged.\n\nImportant: Reusing palette indexes can change colours in artwork already using those indexes. Back up existing .pal and .ppb files before overwriting them; Undo does not restore overwritten image files.",
+      "example": "Beginner example: Use colours 1–15 for a player sprite and 16–31 for scenery, keeping the same foreground palette."
     },
     {
-      "title": "52 - Automatic Source Ownership (main.c)",
+      "title": "40 - Keep your main.c edits safe",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Safe IDE-owned main.c generation with a CRC32 ownership handover and permanent protection for user edits.",
-      "notes": "New Gaming projects create an IDE-owned main.c; Update Game Project regenerates it only if the on-disk file matches the CRC32 and byte size stored in .codergirl/main-ownership.json and begins with the generated ownership header. If main.c is missing, GamerGirl generates a fresh IDE-owned copy from maingame.c.txt. An older existing main.c without valid ownership metadata is NEVER adopted, even if somebody adds OWNER: IDE manually. After you edit and SAVE the generated source in CoderGirl, the only automatic source change is OWNER: IDE -> OWNER: user in its header. External edits trigger the same transfer at the next regeneration, preserving all other bytes. Unsaved changes in an open editor prevent regeneration. Once OWNER: user, CoderGirl will never regenerate main.c; maingame.c.txt is always updated. A zipped Update Game Project backup includes main.c and the ownership record so changes are recoverable. CRC32 is intended to detect accidental changes, not a cryptographic proof; do not treat the header alone as authorization.",
-      "example": "// GAMERGIRL GENERATED MAIN.C\n// OWNER: IDE\n// When OWNER is user, GamerGirl no longer regenerates main.c.\n// Refer to maingame.c.txt for updated modular support and examples.\n\n/* After first manual Save: OWNER becomes user. */"
+      "summary": "Learn how CoderGirl protects a main.c file you have edited.",
+      "notes": "For a new V1 game, CoderGirl can create and maintain the starter main.c for you.\n\n1. Build your game in Game Designer and use Update Game Project.\n2. Leave main.c unedited if you want future updates to keep it in step with the design.\n3. If you choose to edit and save main.c yourself, CoderGirl switches it to user-owned and stops replacing it.\n4. You can still open maingame.c.txt to see the newest generated starter and copy any changes you need manually.\n\nAn older or externally edited main.c is also protected from automatic replacement. Before updates, CoderGirl makes backups. Do not change ownership headers in an attempt to force replacement: the IDE also checks whether the actual file matches its recorded original.",
+      "example": "Beginner rule: Do not edit main.c unless you mean to maintain it yourself. Game Designer can generate the ordinary game loop."
     },
     {
-      "title": "53 - Curved collision stamps and optional loop tracks",
+      "title": "41 - Make curved hills and loop tracks",
       "category": "Game Engines/Advanced Platformer",
-      "summary": "Draw cubic Bezier ramps and bowls, then use circular guided tracks for bidirectional Sonic-style loops.",
-      "notes": "Tilemap Editor > Collision Stamps > select a stamp > Generate Bezier Curve. Adjust Handle A/B X/Y and inspect the before-saving preview. The start/end points come from the original stamp; the curve is baked into the usual <=128 ordered-X points. After Apply, the regular point editor can refine those points. The map format is unchanged: this is still solid-under-surface collision type 8. Steeper than 45-degree sections may now climb up to two tile heights per horizontal step for grounded players, but a full loop is NOT an ordinary slope. For circular loops, select the Loop Tracks tab, Add Loop and set its center X/Y, radius and minimum entry speed. A dashed blue circle with yellow bottom entrance is shown on the tilemap while Show collisions is enabled. Place normal art and curved ramps separately; the loop is a physics track, not a graphic or solid collision stamp. With a named Player and updated game_tilemap.c/.h helpers, entering the yellow entrance at sufficient horizontal speed from either direction attaches automatically. Gravity reduces tangential speed uphill; too slow near the top releases the player to ordinary falling; full revolution returns them to ground preserving remaining speed. Zone/hazard callbacks remain active. The generated level1.c embeds tracks even if the tilemap uses external SD .map. The player sprite stays upright because gfxbob has no rotation field; this first version applies to the tilemap player, not generic rocks or pinball balls, and circular tracks only (not arbitrary spline loops). Updating an IDE-owned main.c is safe; user-owned main.c is not touched. No STM32 firmware change is needed. Hardware/Qt testing is still required. Back up your current design and game before experimenting.",
-      "example": "/* Loop tracks need NO extra main.c binding when using generated game_level1. */\ngame_tile_player_run(&player_physics, getjoyport(), 1);\nif (game_tile_player_on_loop(&player_physics)) {\n    /* Optional: animate a rolling player; graphics do not auto-rotate. */\n}\n"
+      "summary": "Create curved hills and optional loop-the-loop tracks.",
+      "notes": "A Bezier Curve helps you turn a straight Collision Stamp into a smooth hill or ramp.\n\n1. Open Tilemap Editor → Collision Stamps and select a slope.\n2. Choose Generate Bezier Curve.\n3. Move the handles until the preview looks right, then apply it.\n4. Place the shape and test how the player walks along it.\n\nFor a circular loop, use the separate Loop Tracks tab. Add a loop, set its centre, radius and minimum entry speed, then draw artwork to match it. A loop is a movement track, not an automatically drawn circle or an ordinary solid slope. The player needs enough speed to stay attached while travelling around it. Test in-game before building an entire level around a loop.",
+      "example": "Try it: Make a shallow curved ramp first. Then create a loop with a straight approach so the player can build speed."
+    },
+    {
+      "title": "01 - Adventure Editor: NPC conversations",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Make a character talk to the player using the Adventure Editor.",
+      "notes": "An NPC is a character the player can talk to. Dialogue is the conversation that appears on screen.\n\n1. Place the character's sprite in Game Designer and configure it as an NPC.\n2. Open Adventure Editor for that world.\n3. Add a Dialogue entry and write what the character says.\n4. Select the NPC and assign the dialogue that should start when the player talks to them.\n5. Add more dialogue entries and link them if you want a longer conversation.\n6. Save the world, choose Update Game Project and talk to the character in the game.\n\nTip: Dialogue folders help keep large stories organised. Use double-click to open an existing dialogue for editing.",
+      "example": "Try it: Make a forest guard say “The bridge is closed.” when the player talks to them."
+    },
+    {
+      "title": "02 - NPC Idle and Talking animations",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Give an NPC different animations when waiting and talking.",
+      "notes": "1. Prepare the NPC's PPB sprite frames.\n2. Open Adventure Editor and select the NPC.\n3. Open its Animation Designer.\n4. Choose the Idle frames to show when the NPC is not speaking.\n5. Choose the Talking frames to play while dialogue is on screen.\n6. Set the frame timing, save the world and Update Game Project.\n\nIdle and Talking animations are stored as part of the NPC's Adventure setup. You do not need to create an extra animation sidecar file for these two sequences. Check that the chosen frames exist in the sprite artwork.",
+      "example": "Example: Idle uses a blinking animation; Talking uses a two-frame mouth movement."
+    },
+    {
+      "title": "03 - Dialogue choices, wrong items and repeats",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Offer dialogue choices and respond to the right or wrong inventory item.",
+      "notes": "1. Open Adventure Editor and create the NPC's opening dialogue.\n2. Add a Choice if the player should select a reply.\n3. If the NPC expects an item, choose the required Inventory Item in the exchange settings.\n4. Create follow-up dialogue for receiving the correct item, having no item or offering the wrong item.\n5. Use the repeat settings if you want different responses when a player keeps offering unsuitable items.\n6. Save, update and test each possible outcome.\n\nKeep item requirements and conversations in Adventure Editor. Visual Nodes can connect dialogue with other game actions, but the dialogue text and item exchange rules are edited here.",
+      "example": "Example: Guard asks for a pass. Correct pass → “You may enter.” Wrong item → “That is not a pass!”"
+    },
+    {
+      "title": "04 - Inventory, item icons and dropping",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Create inventory items the player can carry, use or drop.",
+      "notes": "1. Open Adventure Editor → Inventory Items and add a named item.\n2. Choose its small icon from registered PPB graphics. Icons may use a single tile or a 2×2 stamp.\n3. Place a Collectable sprite in Game Designer.\n4. In its properties, turn on Show in Inventory and connect the correct item definition.\n5. Choose which actions are allowed, such as Use, Drop or Destroy.\n6. Save Design, Update Game Project and collect the item in-game.\n\nItems needed by quests or NPCs may be protected from destruction. If a pickup should change Health instead of entering the bag, turn Show in Inventory OFF and choose a direct player-stat target. Opening Inventory pauses active gameplay until it closes.",
+      "example": "Try it: Create a “Small Key” with an icon, collect it, open Inventory and check that it appears."
+    },
+    {
+      "title": "05 - Quests and Journal objectives",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Give the player a quest with objectives shown in the Journal.",
+      "notes": "A Quest is a goal made from smaller objectives, such as finding an item or activating switches.\n\n1. Open Quest Editor and add a quest with a name and description.\n2. Add one or more objectives.\n3. For an objective completed by game logic, choose Event signal.\n4. Open Visual Nodes and connect a matching Game Object event to that quest objective.\n5. Choose Allow objectives in ANY ORDER if players should be able to complete them in any sequence.\n6. Save the world, Update Game Project and check the Quest Journal in-game.\n\nAll required objectives must be completed, even when their order is flexible. The Journal can show active, tracked and completed quests. Opening it pauses gameplay.",
+      "example": "Try it: Quest “Open the gate” → activate two switches → show the completed quest in the Journal."
+    },
+    {
+      "title": "06 - Dialogue thought bubbles and queued speech",
+      "category": "Game Engines/Adventure & Quests",
+      "summary": "Show the player’s thoughts and display several conversations in order.",
+      "notes": "The Adventure Editor can show Player Speech as an ordinary line of dialogue or a thought bubble above the player.\n\n1. Open a Player Speech entry in Adventure Editor.\n2. Choose Use as thought bubble if that is the effect you want.\n3. Choose whether the bubble belongs with this dialogue or the next dialogue, where that option is available.\n4. Save and Update Game Project.\n5. Test the scene to check the bubble appears at the right moment.\n\nIf two events request dialogue almost simultaneously, the game queues the conversations instead of replacing the first one. The second speech may appear after the first finishes.",
+      "example": "Example: NPC says “Did you hear that?” and the player’s thought bubble shows “I should investigate.”"
+    },
+    {
+      "title": "01 - Events and states: understand the wire colours",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Learn the two basic connection types in Visual Nodes: events and states.",
+      "notes": "Visual Nodes is a visual way to connect Game Objects, dialogue, quests and game logic.\n\nAn EVENT means something happened once, such as “switch activated” or “coin picked up”. Event connections are shown in gold.\nA STATE means something is currently true or false, such as “switch is ON”. State connections are shown in teal.\n\n1. Open Visual Nodes for the current world.\n2. Find a Trigger / Switch object.\n3. Drag from its ON ACTIVATE event to an action when you want an immediate response.\n4. Use its ON/OFF state when a logic condition needs to know whether the switch remains on.\n5. Save Graph + World after changes.\n\nTip: Read the socket tooltips if unsure which connection to use. You do not need to edit the game's generated files to create a normal node connection.",
+      "example": "Event example: Switch ON ACTIVATE → show dialogue.\nState example: Switch ON → AND with another switch's ON state."
+    },
+    {
+      "title": "02 - AND, OR and NOT: combine switch conditions",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Combine conditions with AND, OR and NOT logic nodes.",
+      "notes": "Logic nodes help you create puzzles involving several switches or other conditions.\n\nAND is true only when all connected conditions are true.\nOR is true when at least one connected condition is true.\nNOT reverses one condition: ON becomes OFF, or true becomes false.\n\n1. Open Visual Nodes and add the logic node you need.\n2. Connect compatible teal STATE outputs from your switches or other objects.\n3. Connect the logic result to an action or object state.\n4. Save Graph + World and test each combination in the game.\n\nTip: Start with two switches and one AND node before making a large puzzle. Some nodes add extra inputs as you connect more sources.",
+      "example": "Two-switch gate: Switch A ON + Switch B ON → AND → make a hidden doorway visible."
+    },
+    {
+      "title": "03 - COUNTER: count hits, pickups and switches",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Count repeated events and respond when the target number is reached.",
+      "notes": "A COUNTER is useful when the player must do something several times, such as hit an enemy three times or activate three switches.\n\n1. In Visual Nodes, add a COUNTER logic node and select its placed Game Object owner when asked.\n2. Set Target events to the number required.\n3. Connect a gold event such as ON ACTIVATE, ON HIT or ON PICKUP to a count input.\n4. Use the YES / RESULT state when the count has reached the target.\n5. Use NO when the count is still below the target.\n6. Connect RESET to a suitable gold event if you want to clear the count and start again.\n\nEach event counts, even if the same source sends several events. YES and NO describe the current counter state; they are not separate pickup or hit events. Save Graph + World and test the required number of actions.",
+      "example": "Example: Enemy ON HIT → COUNTER (Target = 3) → YES → unlock a door after the third hit."
+    },
+    {
+      "title": "04 - TIMER: make something happen after a delay",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Start a countdown and trigger actions when it starts or finishes.",
+      "notes": "A TIMER counts game frames. At 50 frames per second, 250 frames is about five seconds.\n\n1. Add a TIMER node in Visual Nodes and choose the Game Object that owns it.\n2. Enter the duration in frames.\n3. Connect a gold event to START to begin a fresh countdown.\n4. Connect a destination action to FALSE / RUNNING if it should run once when the timer starts or continues.\n5. Connect another action to TRUE / FINISHED if it should happen when the time runs out.\n6. Use STOP to pause, CONTINUE to resume or RESET to clear the timer.\n\nThe RUNNING and FINISHED action outputs are not events that happen every frame. A finished timer can be started again. To make an item appear only once ever, also use a saved pickup counter or quest condition.",
+      "example": "Timed door: Switch ON ACTIVATE → TIMER START (250 frames); TIMER RUNNING → open door; TIMER FINISHED → close door."
+    },
+    {
+      "title": "05 - Connect a game event to a quest objective",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Complete a quest objective from a switch, collectable or logic result.",
+      "notes": "1. In Quest Editor, create a quest and an objective.\n2. Choose Event signal as the objective type.\n3. Open Visual Nodes. The objective appears as a quest node that can receive an event.\n4. Connect a compatible gold event, such as a Trigger's ON ACTIVATE, to that quest objective.\n5. Save Graph + World and Update Game Project.\n6. Activate the event in-game and check that the Quest Journal updates.\n\nA Quest State or QUEST DONE node can also be used as a condition for other logic. You do not need an extra trigger merely to read whether a quest has already been completed.",
+      "example": "Example: “Ring the bell” objective ← Bell switch ON ACTIVATE. The Journal marks that objective complete."
+    },
+    {
+      "title": "06 - Organise Visual Nodes into groups",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Organise a large Visual Nodes graph into collapsible groups.",
+      "notes": "1. Open Visual Nodes and select two or more cards that belong together.\n2. Press Ctrl+G, or choose Group Selected Nodes.\n3. Rename the group so its purpose is clear, for example “Castle Door Puzzle”.\n4. Drag the group header to move the expanded group with its contents.\n5. Collapse the group to hide its internal cards while keeping external connections visible.\n6. Expand it again whenever you need to edit its contents. Save Graph + World to keep the layout.\n\nCollapsing a group does not disable its game logic. Ungroup separates the original cards again. Group names and positions are for organisation only.",
+      "example": "Example: Group the two switch nodes, AND condition and door action as “Entrance Puzzle”."
+    },
+    {
+      "title": "07 - Move, zoom and save a Visual Nodes graph",
+      "category": "Game Engines/Visual Nodes",
+      "summary": "Move around the Visual Nodes canvas and save your changes safely.",
+      "notes": "1. Open Visual Nodes and use the mouse wheel or zoom controls to inspect the graph.\n2. Hold the middle mouse button and drag to pan around large graphs.\n3. Move cards and groups to make the connections easier to follow.\n4. Use Undo/Redo if you move or edit something by mistake.\n5. Choose Save Graph + World when you have changed connections, actions or the layout.\n\nThe editor saves both game behaviour and the visual arrangement. Moving a card does not change what the player experiences, but changing a connection can. When another editor has modified the graph or world, reload before overwriting its newer changes.",
+      "example": "Try it: Move your switch and door nodes closer together, group them, then save and reopen the graph."
+    },
+    {
+      "title": "01 - Travel between different worlds",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Build a game with more than one world and travel between them.",
+      "notes": "A World is a separate level or area with its own map and placed objects. A game can contain several worlds, such as a village and a forest.\n\n1. Open World Manager and create another world.\n2. Design each world's map and place its Player Start.\n3. Configure a doorway or transition in the first world to lead to the second.\n4. Select the destination world and the intended start position.\n5. Create a return route if players should be able to travel back.\n6. Save, Update Game Project and test both directions.\n\nThe game manages changing the active map and world objects. Items, quests and saved object states can persist as players travel between areas.",
+      "example": "Example: Village door → Forest entrance. Forest exit → Village return point."
+    },
+    {
+      "title": "02 - Choose where the player appears",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Choose exactly where the player appears when entering a world.",
+      "notes": "Each world has a default Player Start. You can also create named starts for different entrances.\n\n1. Open the destination world in Game Designer.\n2. Place or configure a Player Start where the player should appear.\n3. Give it a clear name, such as “Forest West Entrance”.\n4. Return to the doorway in the source world.\n5. Choose the destination world and that named Player Start.\n6. Save and test the doorway in-game.\n\nTip: Different doors can enter the same world at different locations. Be sure the arrival point is not inside a wall or hazard.",
+      "example": "Example: Coming from Village uses “Forest South Gate”; returning from Cave uses “Forest Cave Exit”."
+    },
+    {
+      "title": "03 - Save and load the game",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Save progress in a slot and restore it after leaving the game.",
+      "notes": "Save Points and save slots let players keep progress such as the current world, collected items, quests and switch states.\n\n1. Configure a Save Point where the player can use it.\n2. Start a new game and activate a few switches or collect an item.\n3. Use the Save Point and choose an available save slot.\n4. Leave the game or restart SIDBOX.\n5. Choose Load Game from the title screen and select the saved slot.\n6. Check that the player returns to the correct world with the previous progress.\n\nStarting New Game begins a fresh run; it does not mean loading an earlier saved run. Test saving after moving between worlds, not only in the starting room.",
+      "example": "Try it: Open a door and collect a gem → Save → restart → Load → check both are still as saved."
+    },
+    {
+      "title": "04 - Title screens, death and world transitions",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Add a title screen, handle player death and make world transitions smoother.",
+      "notes": "1. Open the game's Title Screen settings in Game Designer.\n2. Enable the title screen and choose text or PPB artwork for its appearance.\n3. Optionally choose background music.\n4. Configure New Game and Load Game options as needed.\n5. Choose a transition effect, such as Fade or Circle, for entering or leaving worlds.\n6. Save Design, Update Game Project and test beginning, loading and dying in the game.\n\nNew Game resets the current adventure. Load Game restores a saved slot. If the player dies without a usable save, the game can return to the title screen. A death message can explain what happened.",
+      "example": "Try it: Create a title image, select Fade for transitions, then test New Game and Load Game separately."
+    },
+    {
+      "title": "05 - Create a World Map and Quest Journal",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Create an overview World Map and customise the Quest Journal.",
+      "notes": "A World Map is an overview screen showing important locations. It is separate from the detailed ground tiles used during gameplay.\n\n1. Open World Map Designer.\n2. Choose a registered Tile Atlas and palette for the map artwork.\n3. Paint the overview and place markers for your worlds.\n4. Save the map and open it in the running game to check readability.\n5. Open Quest Journal Designer to change its appearance, including palette, icons and layout.\n\nThe Inventory and Quest Journal screens pause ordinary gameplay while the player reads them. The World Map's artwork does not change the collision or tile graphics inside your individual worlds.",
+      "example": "Example: Paint a simple island overview with markers for Village, Forest and Cave."
+    },
+    {
+      "title": "06 - Add weather, day/night and particles",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Give each world atmosphere with weather, time of day and particles.",
+      "notes": "1. Open a world's settings in Game Designer.\n2. Choose a weather effect, such as rain or snow, and adjust its available options.\n3. Set up the day/night clock or colour changes if you want lighting to change over time.\n4. To add scenery particles, place a sprite and configure it as a Particle Spawner.\n5. Choose a suitable effect, such as leaves, dust or fireflies, and use the live preview.\n6. Choose whether particles appear behind or in front of the player, then save and test the scene.\n\nWeather and particles add atmosphere; they do not automatically make a floor slippery or damage the player. Those effects need separately configured collision or game logic.",
+      "example": "Try it: Give a forest gentle rain, a darkening evening sky and fireflies behind the player."
+    },
+    {
+      "title": "07 - Make a HUD for Health and other player stats",
+      "category": "Game Engines/Worlds & Persistence",
+      "summary": "Show Health and other player values on a HUD and reuse player profiles.",
+      "notes": "A HUD (heads-up display) shows information during gameplay, such as Health, points or a custom Fear meter.\n\n1. Open the Player or Player Profile settings and choose the values to track.\n2. Open HUD Editor and add a number, bar or other indicator.\n3. Bind that indicator to the correct stat, such as Player Health or Fear.\n4. Choose its position or dock it along an edge of the game screen.\n5. Add a pickup or hazard that changes the stat.\n6. Save, Update Game Project and watch the indicator during play.\n\nPlayer and Physics Profiles let several worlds reuse movement and control settings. A world can select its starting profile, while game actions may change it later.",
+      "example": "Try it: Add a Health bar, then create a Health pickup that visibly increases it."
+    },
+    {
+      "title": "01 - Choose enemy drops and rewards",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Choose what an enemy drops when defeated: a unique reward or repeatable loot.",
+      "notes": "1. Place a sprite and configure it as Stompable Enemy.\n2. Set how many hits it needs before defeat.\n3. For an important one-time reward, create a hidden Collectable and choose it as the enemy's Unique drop.\n4. For common drops, use Random loot pool and select eligible repeatable items such as Coins, Health or Gems.\n5. A non-quest Custom Collectable must explicitly allow repeatable enemy loot before it can join the random pool.\n6. Save the design and defeat a few enemies to test the results.\n\nA unique quest reward cannot be assigned to several enemies or added to a repeatable random pool. Key and quest items are not random repeatable loot. The editor warns when selected options contradict each other.",
+      "example": "Example: Boss → Unique drop: Ancient Key.\nOrdinary slime → Random loot: Coin or Health."
+    },
+    {
+      "title": "02 - Add optional melee attacks",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Add an optional close-range player attack and enemy hit feedback.",
+      "notes": "1. Open Player Profile settings.\n2. Enable the optional Melee attack if the game should have combat.\n3. Choose the available attack reach and animation settings.\n4. Configure a Stompable Enemy with a suitable hit count.\n5. Enable or adjust its hit feedback where available.\n6. Save Design, Update Game Project and test attacking the enemy.\n\nMelee is optional. You can leave it disabled in games focused on exploring, talking to characters or solving puzzles. Enemies can also respond to configured player collision and other game events.",
+      "example": "Try it: Set an enemy to survive three hits and watch its hit feedback before the final blow."
+    },
+    {
+      "title": "03 - Flood Fill: paint or erase a whole area",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Fill or erase a connected part of the tilemap in one action.",
+      "notes": "Flood Fill is the paint bucket in the Tilemap Editor. It changes an entire connected area of matching tiles.\n\n1. Open Tilemap Editor and choose a normal Tile Atlas graphic.\n2. Click the bucket in Paint Graphics, or press F.\n3. Left-click the map to fill a connected region with the selected graphic.\n4. Right-click to erase a connected region.\n5. Press Ctrl+Z to undo the whole fill or Ctrl+Y to redo it.\n6. Press F again when you want to paint individual tiles.\n\nFill travels horizontally and vertically through matching cells, not diagonally. Collision Stamp placements are protected. If you want to change collision only, choose Don't change graphic and a collision brush.",
+      "example": "Try it: Paint the outline of a pond, select a water tile, then fill the inside with one click."
+    },
+    {
+      "title": "04 - Keep the built game smaller automatically",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Understand how Game Builder keeps embedded map and image files smaller.",
+      "notes": "Games have a limited amount of storage space. When a map contains many repeated values, CoderGirl can automatically compress those values in an embedded game build.\n\n1. Choose Embedded map export when you want the tilemap included in the game.\n2. Save Design and Update Game Project as usual.\n3. Build and look at the final application size.\n4. Compare results after making larger or more detailed levels.\n\nThis is automatic; you do not need to enable a special compression switch or edit generated files. Files stored separately on the TF/SD card are still separate files. A compressed map uses memory again when it is loaded, so a smaller built application does not automatically mean lower gameplay RAM use.",
+      "example": "Example: A map with many repeated empty or ground tiles usually compresses better than one filled with random tile numbers."
+    },
+    {
+      "title": "05 - Fix game errors before exporting",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Fix missing resources and broken links before exporting a game.",
+      "notes": "Update Game Project runs a publishing check (preflight) before generating the game files.\n\n1. Save Design and choose Update Game Project.\n2. If a problem list appears, read the first error.\n3. Click Go to Problem to open the relevant editor or item.\n4. Fix the missing graphic, incorrect target or invalid connection.\n5. If a safe Auto Fix option is offered, check what it will change before accepting it.\n6. Repeat Update Game Project until blocking errors are gone.\n\nErrors must be fixed before export continues. Warnings explain things worth checking and may allow you to continue. A valid inventory icon can come from either a Sprite PPB or a Tile Atlas PPB.",
+      "example": "Example: A door targets a deleted switch → Go to Problem → choose an existing target → retry Update Game Project."
+    },
+    {
+      "title": "06 - Build the game and check its size",
+      "category": "Game Engines/Graphics, Objects & Publishing",
+      "summary": "Build a V1 game and read the progress and size information.",
+      "notes": "1. Save Design and choose Update Game Project.\n2. Open Project Settings → Compiler.\n3. Choose how many compiler jobs to use. Four is the usual starting choice; you can use 1–8 depending on your computer.\n4. Choose the size-oriented -Os optimisation if appropriate for your project.\n5. Click Build and watch the progress indicator.\n6. After building, review Total, RAM, APP and Budget to check whether the game fits your target.\n\nAPP and Budget describe built-file size, while RAM reports known static allocations. They do not tell you the highest memory use during gameplay. Large maps, many effects or loaded images may still need runtime testing on real hardware.",
+      "example": "Beginner build routine: Update Game Project → Build → check for errors → check Budget → run on SIDBOX."
     }
   ]
 }

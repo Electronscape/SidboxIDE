@@ -6,6 +6,10 @@
 #include "gameeditoricons.h"
 
 #include <QAbstractScrollArea>
+#include <QAbstractSpinBox>
+#include <QApplication>
+#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QCheckBox>
@@ -340,18 +344,21 @@ private:
 // Dedicated paint-mode buttons: 16x16 above the Tile Atlas and 24x24
 // collision shortcuts beside the collision brush. The current brush values
 // remain in the existing QComboBoxes, so saving/painting logic is unchanged.
+// Paint Graphics only: change this one value to resize all four buttons.
+static constexpr int kGraphicPaintButtonSize = 32;
+
 class TilemapPaintButton final : public QToolButton
 {
 public:
     enum Glyph { KeepGraphic, EmptyGraphic, AtlasGraphic, KeepCollision, EmptyCollision,
-                 ApplyFlags, KeepFlags };
+                 ApplyFlags, KeepFlags, FloodFill };
     TilemapPaintButton(Glyph glyph, const QString &name, QWidget *parent)
         : QToolButton(parent), m_glyph(glyph)
     {
         setCheckable(true);
         setAutoRaise(false);
-        const bool small = glyph == KeepGraphic || glyph == EmptyGraphic || glyph == AtlasGraphic;
-        setFixedSize(small ? QSize(28, 28) : QSize(38, 36));
+        const bool small = glyph == KeepGraphic || glyph == EmptyGraphic || glyph == AtlasGraphic || glyph == FloodFill;
+        setFixedSize(small ? QSize(kGraphicPaintButtonSize, kGraphicPaintButtonSize) : QSize(38, 36));
         setIconSize(small ? QSize(16, 16) : QSize(24, 24));
         setAccessibleName(name);
         const QStringList filenames = {
@@ -361,9 +368,14 @@ public:
             QStringLiteral("tilemap_collision_keep.png"),
             QStringLiteral("tilemap_collision_empty.png"),
             QStringLiteral("tilemap_flags_apply.png"),
-            QStringLiteral("tilemap_flags_keep.png")
+            QStringLiteral("tilemap_flags_keep.png"),
+            QStringLiteral("tilemap_graphic_fill.png")
         };
-        setIcon(gameEditorExternalIcon(filenames.at(int(glyph))));
+        // Flood Fill is a built-in themed glyph. An external icon override
+        // would bypass paintEvent's fallback and make its appearance depend
+        // on a possibly stale PNG in the IDE icons directory.
+        if (glyph != FloodFill)
+            setIcon(gameEditorExternalIcon(filenames.at(int(glyph))));
         setFocusPolicy(Qt::TabFocus);
     }
     void setGlyphColours(const QColor &normal, const QColor &selected)
@@ -417,6 +429,20 @@ protected:
             p.drawRect(QRectF(3, 13, 8, 8));
             p.setBrush(ink);
             p.drawRect(QRectF(13, 13, 8, 8));
+            break;
+        case FloodFill:
+            // Crisp tilted paint bucket with a visible pour stream, drawn in
+            // the same compact editor-glyph language as the neighbouring tools.
+            p.setPen(QPen(ink, 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(QPolygonF({QPointF(5, 9), QPointF(10, 4),
+                                     QPointF(17, 11), QPointF(12, 16)}));
+            p.drawLine(QPointF(6, 8), QPointF(11, 3));      // handle left arm
+            p.drawLine(QPointF(10, 5), QPointF(14, 2));     // handle right arm
+            p.drawLine(QPointF(15, 13), QPointF(19, 16));   // paint stream
+            p.drawLine(QPointF(19, 16), QPointF(17, 19));
+            p.setBrush(ink);
+            p.drawRect(QRectF(16, 19, 3, 3));               // paint droplet
             break;
         }
     }
@@ -555,6 +581,8 @@ public:
     // -1 = preserve existing value, 0 = erase, 1 = selected atlas tile.
     int graphicMode = 1;
     int graphicBrush = 1;
+    bool floodFillMode = false; // editor-only: replaces a four-connected region
+    std::function<void(bool)> floodFillModeChanged;
     int collisionBrush = -1;
     int flipMode = 1; // -1 = preserve existing, 1 = apply the current flip checkboxes
     quint8 flipBrush = 0;
@@ -1035,6 +1063,100 @@ public:
         painter.setPen(QPen(erase ? QColor(255, 110, 110) : QColor(93, 255, 226), 1));
         painter.drawRect(footprint.adjusted(1, 1, -2, -2));
         painter.restore();
+    }
+    void floodFillAt(const QPoint &at, bool erase)
+    {
+        if (!map || temporaryActive || loopEditMode) return;
+        if (stampIndex >= 0 || collisionStampIndex >= 0) {
+            if (temporaryStatus)
+                temporaryStatus(QObject::tr("Choose an ordinary tile/collision brush before using Flood Fill."));
+            return;
+        }
+        // The selected edit layer defines the boundary. A graphics fill
+        // follows the original tile ID; collision-only fill follows the
+        // original collision type. Never use diagonal neighbours.
+        const bool byGraphic = graphicMode >= 0;
+        if (!byGraphic && collisionBrush < 0) return;
+        const int px = map->tileSize * zoom;
+        const int tx = (at.x() + horizontalScrollBar()->value()) / px;
+        const int ty = (at.y() + verticalScrollBar()->value()) / px;
+        if (tx < 0 || tx >= map->width || ty < 0 || ty >= map->height) return;
+        const int width = map->width, height = map->height;
+        const int cells = width * height;
+        const int seed = ty * width + tx;
+        const quint16 originalTile = mapGraphic(map->graphics, seed);
+        const char originalCollision = map->collisions.at(seed);
+        // Mark installed shape footprints once. Repeatedly searching the
+        // placement list for every tile would be quadratic on large maps.
+        QByteArray occupied;
+        if (!map->collisionPlacements.isEmpty() && (!byGraphic || collisionBrush >= 0)) {
+            occupied = QByteArray(cells, char(0));
+            for (const SidboxCollisionPlacement &placed : std::as_const(map->collisionPlacements)) {
+                if (placed.stamp < 0 || placed.stamp >= map->collisionStamps.size()) continue;
+                const SidboxCollisionStamp &shape = map->collisionStamps.at(placed.stamp);
+                for (int y = qMax(0, placed.y); y < qMin(height, placed.y + shape.height); ++y)
+                    for (int x = qMax(0, placed.x); x < qMin(width, placed.x + shape.width); ++x)
+                        occupied[y * width + x] = 1;
+            }
+        }
+        const auto isOccupied = [&](int index) {
+            return !occupied.isEmpty() && occupied.at(index) != 0;
+        };
+        // A collision-only fill cannot enter or cross a placed slope stamp.
+        if (!byGraphic && isOccupied(seed)) return;
+        const auto matches = [&](int index) {
+            return byGraphic ? mapGraphic(map->graphics, index) == originalTile
+                             : map->collisions.at(index) == originalCollision;
+        };
+        QByteArray seen(cells, char(0));
+        QVector<int> queue;
+        queue.reserve(qMin(cells, 4096));
+        queue.append(seed);
+        seen[seed] = 1;
+        for (qsizetype head = 0; head < queue.size(); ++head) {
+            const int index = queue.at(head);
+            const int x = index % width;
+            const int y = index / width;
+            const auto enqueue = [&](int next) {
+                if (seen.at(next)) return;
+                seen[next] = 1;
+                if (!matches(next)) return;
+                if (!byGraphic && isOccupied(next)) return;
+                queue.append(next);
+            };
+            if (x > 0) enqueue(index - 1);
+            if (x + 1 < width) enqueue(index + 1);
+            if (y > 0) enqueue(index - width);
+            if (y + 1 < height) enqueue(index + width);
+        }
+        const quint16 tile = quint16(erase ? 0 : (graphicMode == 0 ? 0 : graphicBrush));
+        const char flags = char(erase || graphicMode == 0 ? 0 : flipBrush);
+        const char collision = char(erase ? 0 : collisionBrush);
+        bool began = false;
+        for (const int index : std::as_const(queue)) {
+            const bool safeCollision = collisionBrush >= 0 && !isOccupied(index);
+            bool changed = (byGraphic && mapGraphic(map->graphics, index) != tile) ||
+                ((erase || flipMode >= 0) && map->flips.at(index) != flags) ||
+                (safeCollision && map->collisions.at(index) != collision);
+            if (safeCollision && !changed)
+                for (int k = 0; k < map->tileSize; ++k)
+                    if (map->slopes.at(index * map->tileSize + k) != 0) {
+                        changed = true; break;
+                    }
+            if (!changed) continue;
+            if (!began) { if (strokeStarted) strokeStarted(); began = true; }
+            if (byGraphic) setMapGraphic(map->graphics, index, tile);
+            if (erase || flipMode >= 0) map->flips[index] = flags;
+            if (safeCollision) {
+                map->collisions[index] = collision;
+                for (int k = 0; k < map->tileSize; ++k)
+                    map->slopes[index * map->tileSize + k] = 0;
+            }
+        }
+        if (began) {
+            if (strokeFinished) strokeFinished();
+            viewport()->update();
+        }
     }
     void paintAt(const QPoint &at, bool erase)
     {
@@ -1578,6 +1700,12 @@ protected:
                 applyTemporary(true);
                 e->accept(); return;
             }
+        }
+        if (floodFillMode && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
+            setFocus();
+            floodFillAt(e->position().toPoint(), e->button() == Qt::RightButton);
+            updateHover(e->position().toPoint());
+            e->accept(); return;
         }
         if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
             setFocus();
@@ -2432,6 +2560,8 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
         if (!tool) continue;
         static_cast<TilemapPaintButton *>(tool)->setGlyphColours(theme.text, selectedText);
     }
+    if (auto *fill = findChild<QToolButton *>(QStringLiteral("tilemapFloodFillButton")))
+        static_cast<TilemapPaintButton *>(fill)->setGlyphColours(theme.text, selectedText);
 
     // Stage 4.00: the three tilemap selection banks use the same bordered,
     // theme-accent cards as Game Object Properties. The item stylesheet is
@@ -2467,6 +2597,35 @@ void SidboxTilemapEditor::setTheme(const IDETheme &theme)
         if (!bank) continue;
         bank->setPalette(dialogPalette);
         bank->setStyleSheet(selectionStyle);
+    }
+
+    // Only the four Paint Graphics tools use 32x32 buttons and 16x16 icons;
+    // use matching theme states. A separate Flood Fill style made it solid accent-red,
+    // unlike the dark selected fill and bright border used by its neighbours.
+    const QString graphicToolStyle = QStringLiteral(R"GRAPHICTOOLS(
+        QToolButton {
+            background:%1; color:%2; border:1px solid %3;
+            border-radius:0px; padding:0px;
+        }
+        QToolButton:hover:!checked {
+            background:%4; border-color:%5;
+        }
+        QToolButton:checked {
+            background:%6; color:%7; border:1px solid %5;
+        }
+        QToolButton:disabled { color:%8; }
+    )GRAPHICTOOLS")
+        .arg(C(theme.panelBackground), C(theme.text), C(theme.border),
+             C(theme.hover), C(theme.accent), C(selectedBase),
+             C(selectedText), C(theme.mutedText));
+    for (QToolButton *tool : {m_graphicKeep, m_graphicEmpty, m_graphicAtlas,
+                              findChild<QToolButton *>(QStringLiteral("tilemapFloodFillButton"))}) {
+        if (!tool) continue;
+        tool->setStyleSheet(graphicToolStyle);
+        // Apply after QSS: keep these four controls physically identical even
+        // if the global theme sets a different minimum button height.
+        tool->setFixedSize(kGraphicPaintButtonSize, kGraphicPaintButtonSize);
+        tool->setIconSize(QSize(16, 16));
     }
 
     // Popup lists inherit the application-wide palette and QSS. Do not
@@ -2813,6 +2972,15 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     graphicModes->addWidget(m_graphicKeep);
     graphicModes->addWidget(m_graphicEmpty);
     graphicModes->addWidget(m_graphicAtlas);
+    auto *floodFillButton = new TilemapPaintButton(TilemapPaintButton::FloodFill,
+        tr("Flood Fill"), sidebar);
+    floodFillButton->setObjectName(QStringLiteral("tilemapFloodFillButton"));
+    floodFillButton->setToolTip(tr("Flood Fill (F): click a tile to replace its connected area "
+        "with the current graphics and collision brushes. Four-way neighbours only. "
+        "When graphics are set to Don't change, the area follows matching collision types. "
+        "Right-click fills with empty values. Stamps are not filled. Undo is one step."));
+    graphicModes->addSpacing(8);
+    graphicModes->addWidget(floodFillButton);
     graphicModes->addStretch(1);
     sideLayout->addLayout(graphicModes);
 
@@ -2887,10 +3055,43 @@ SidboxTilemapEditor::SidboxTilemapEditor(SidboxTilemap map,
     m_canvas = new Canvas(m_splitter);
     m_canvas->setToolTip(tr("Middle-drag: pan. Wheel or Ctrl+/-: zoom around pointer. "
         "Ctrl+0: 100%. Ctrl+F: fit to canvas (minimum 100%). "
-        "ESC cancels a temporary paste before asking whether to close."));
+        "F: toggle Flood Fill. ESC cancels a temporary paste before asking whether to close."));
     m_canvas->setMinimumWidth(300);
     m_canvas->map = &m_map;
     m_canvas->atlas = &m_atlas;
+    m_canvas->floodFillMode = windowSettings.value(
+        QStringLiteral("GameTilemapEditor/floodFill"), false).toBool();
+    floodFillButton->setChecked(m_canvas->floodFillMode);
+    connect(floodFillButton, &QToolButton::toggled, this, [this](bool enabled) {
+        m_canvas->floodFillMode = enabled;
+        if (enabled) {
+            m_canvas->stampIndex = -1;
+            m_canvas->collisionStampIndex = -1;
+        }
+        if (m_stampStatus)
+            m_stampStatus->setText(enabled ? tr("Brush: flood fill") : tr("Brush: normal painting"));
+        m_canvas->viewport()->update();
+    });
+    m_canvas->floodFillModeChanged = [floodFillButton](bool enabled) {
+        floodFillButton->setChecked(enabled);
+    };
+    // F must work regardless of whether the map canvas has keyboard focus.
+    // Reuse the button signal so UI, stamp selection and persistence stay in sync.
+    auto *fillShortcut = new QShortcut(QKeySequence(Qt::Key_F), this);
+    fillShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    fillShortcut->setAutoRepeat(false);
+    connect(fillShortcut, &QShortcut::activated, this, [this, floodFillButton]() {
+        if (m_canvas && !m_canvas->loopEditMode) floodFillButton->toggle();
+    });
+    // A plain F must not hijack text entry in the resource/size editors.
+    connect(qApp, &QApplication::focusChanged, fillShortcut,
+        [fillShortcut](QWidget *, QWidget *now) {
+            const bool typing = now && (qobject_cast<QLineEdit *>(now) ||
+                qobject_cast<QAbstractSpinBox *>(now) ||
+                qobject_cast<QTextEdit *>(now) ||
+                qobject_cast<QPlainTextEdit *>(now));
+            fillShortcut->setEnabled(!typing);
+        });
     auto *placePlayerShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
     placePlayerShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     placePlayerShortcut->setAutoRepeat(false);
@@ -4422,7 +4623,13 @@ void SidboxTilemapEditor::selectStamp(int row)
         if (m_canvas) m_canvas->stampIndex = -1;
     } else {
         const bool compatible = m_map.stamps.at(row).tileSize == m_map.tileSize;
-        if (m_canvas) m_canvas->stampIndex = compatible ? row : -1;
+        if (m_canvas) {
+            m_canvas->stampIndex = compatible ? row : -1;
+            if (compatible && m_canvas->floodFillMode) {
+                m_canvas->floodFillMode = false;
+                if (m_canvas->floodFillModeChanged) m_canvas->floodFillModeChanged(false);
+            }
+        }
         // Never silently reinterpret a stamp built with another atlas grid.
         // A status message below explains why it cannot paint this map.
     }
@@ -4670,6 +4877,10 @@ void SidboxTilemapEditor::selectCollisionStamp(int row)
     m_canvas->stampIndex = -1;
     m_canvas->collisionStampIndex = row >= 0 && row < m_map.collisionStamps.size() &&
         m_map.collisionStamps.at(row).tileSize == m_map.tileSize ? row : -1;
+    if (m_canvas->collisionStampIndex >= 0 && m_canvas->floodFillMode) {
+        m_canvas->floodFillMode = false;
+        if (m_canvas->floodFillModeChanged) m_canvas->floodFillModeChanged(false);
+    }
     if (m_stampStatus) m_stampStatus->setText(m_canvas->collisionStampIndex >= 0
         ? tr("Brush: collision stamp '%1'").arg(m_map.collisionStamps.at(row).name)
         : tr("Brush: no compatible collision stamp"));
@@ -4831,6 +5042,7 @@ void SidboxTilemapEditor::saveViewSettings()
     settings.setValue(QStringLiteral("GameTilemapEditor/zoom"), m_canvas->zoom);
     settings.setValue(QStringLiteral("GameTilemapEditor/collisionBrush"), m_canvas->collisionBrush);
     settings.setValue(QStringLiteral("GameTilemapEditor/graphicMode"), m_canvas->graphicMode);
+    settings.setValue(QStringLiteral("GameTilemapEditor/floodFill"), m_canvas->floodFillMode);
     settings.setValue(QStringLiteral("GameTilemapEditor/graphicId"), m_canvas->graphicBrush);
     settings.setValue(QStringLiteral("GameTilemapEditor/flipMode"), m_canvas->flipMode);
     settings.setValue(QStringLiteral("GameTilemapEditor/brushFlags"), m_canvas->flipBrush);
