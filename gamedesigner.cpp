@@ -1231,9 +1231,12 @@ void SidboxGameDesigner::openPlayerAnimationEditor(int resourceIndex)
         resource.name.trimmed().compare(QStringLiteral("player"), Qt::CaseInsensitive) == 0
             ? QStringLiteral("gameanimations/player_anim.h")
             : QStringLiteral("gameanimations/%1_anim.h").arg(resource.id));
+    QJsonObject playerProfile = GamePlayerProfile::defaults();
+    GamePlayerProfile::read(QDir(QFileInfo(m_filePath).absolutePath()), &playerProfile);
     SidboxPlayerAnimationEditor editor(atlas, absoluteAnimationFile, headerFile,
         resource.cellWidth > 0 ? resource.cellWidth : 32,
-        resource.cellHeight > 0 ? resource.cellHeight : 32, this, m_theme);
+        resource.cellHeight > 0 ? resource.cellHeight : 32, this, m_theme,
+        playerProfile, m_tilemap.tileSize, sidboxTilemapWorldBaseName(m_filePath));
     if (!editor.isUsable()) return;
     if (editor.exec() != QDialog::Accepted) return;
     // The atlas is never converted or modified by this editor. Store only
@@ -1322,6 +1325,9 @@ void SidboxGameDesigner::openPlayerEditor()
         "for your game's C code."), appearance);
     animNote->setWordWrap(true);
     af->addRow(animNote);
+    QJsonArray physicsDefs = GamePlayerProfile::physicsProfiles(profile);
+    int currentPhysicsId = GamePlayerProfile::startingPhysicsId(profile);
+    QJsonObject worldPhysics = GamePlayerProfile::worldPhysicsOverrides(profile);
     connect(editAnim, &QPushButton::clicked, &dialog, [&,this] {
         const QFileInfo art(project.filePath(atlas->text().trimmed()));
         if (!art.isFile() || art.suffix().compare(QStringLiteral("ppb"),Qt::CaseInsensitive)
@@ -1340,10 +1346,15 @@ void SidboxGameDesigner::openPlayerEditor()
                 tr("The .sbanim definition must be stored inside this game project."));
             return;
         }
+        QJsonObject liveProfile = profile;
+        liveProfile.insert(QStringLiteral("physicsProfiles"), physicsDefs);
+        liveProfile.insert(QStringLiteral("physicsPresetId"), currentPhysicsId);
+        liveProfile.insert(QStringLiteral("worldPhysics"), worldPhysics);
         SidboxPlayerAnimationEditor editor(art.absoluteFilePath(),
             animationPath.absoluteFilePath(),
             project.filePath(QStringLiteral("gameanimations/player_anim.h")),
-            cw->value(), ch->value(), &dialog, m_theme);
+            cw->value(), ch->value(), &dialog, m_theme,
+            liveProfile, m_tilemap.tileSize, sidboxTilemapWorldBaseName(m_filePath));
         if (!editor.isUsable() || editor.exec()!=QDialog::Accepted) return;
         anim->setText(project.relativeFilePath(editor.animationFile()));
         cw->setValue(editor.cellWidth());
@@ -1448,9 +1459,7 @@ void SidboxGameDesigner::openPlayerEditor()
         "Old profiles remain jump-only until combat is checked."), movement);
     physicsNotice->setWordWrap(true);
     physicsPage->addWidget(physicsNotice);
-    QJsonArray physicsDefs = GamePlayerProfile::physicsProfiles(profile);
-    int currentPhysicsId = GamePlayerProfile::startingPhysicsId(profile);
-    QJsonObject worldPhysics = GamePlayerProfile::worldPhysicsOverrides(profile);
+
     const auto refreshWorldPhysicsChoices = [&] {
         QSignalBlocker blocker(worldStartProfile);
         worldStartProfile->clear();

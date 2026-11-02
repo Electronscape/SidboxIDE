@@ -5,6 +5,7 @@
 #include "codeeditor.h"
 #include "guidesigner.h"
 #include "gamedesigner.h"
+#include "notefloweditor.h"
 #include "gamemainownership.h"
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
@@ -299,7 +300,7 @@ void MainWindow::addExistingProjectFile()
         this,
         tr("Add File"),
         baseDirectory,
-        tr("Project files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md *.sbui *.sbgm *.vsgm *.sbpi *.uis *.ppb *.pal *.act *.map *.png *.bmp *.jpg *.jpeg *.gif *.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
+        tr("Project files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md *.sbui *.sbgm *.vsgm *.notef *.sbpi *.uis *.ppb *.pal *.act *.map *.png *.bmp *.jpg *.jpeg *.gif *.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
            "Audio files (*.wav *.mod *.s3m *.xm *.med *.tfmx *.sid *.sba *.spc *.mp3);;"
            "Source files (*.c *.h *.inc *.cc *.cpp *.hpp *.res *.txt *.md);;All files (*)"));
 
@@ -667,7 +668,7 @@ void MainWindow::renameSelectedProjectFile()
 
     const QString newPath = QFileInfo(oldInfo.dir().filePath(newName)).absoluteFilePath();
     if (!isProjectExplorerFile(newPath)) {
-        QMessageBox::warning(this, tr("Rename File"), tr("Use one of these extensions: .c, .h, .inc, .res, .txt, .md, .sbui, .sbgm, .uis"));
+        QMessageBox::warning(this, tr("Rename File"), tr("Use a supported project extension, including .notef for workflow notes."));
         return;
     }
 
@@ -719,3 +720,44 @@ void MainWindow::renameSelectedProjectFile()
     statusBar()->showMessage(tr("File renamed: %1").arg(displayPath(newPath)));
 }
 
+
+// Planning boards are project-local documentation, shared by V1 games and
+// V2 GUI projects. They never join the compilation or runtime resource list.
+void MainWindow::createWorkflowNotes(const QString &directory)
+{
+    if (m_projectPath.isEmpty() || m_projectFilePath.isEmpty()) {
+        QMessageBox::information(this, tr("Workflow Notes"),
+            tr("Open or create a project first. Workflow boards are stored with the project."));
+        return;
+    }
+    bool accepted = false;
+    const QString name = QInputDialog::getText(this, tr("New Workflow Board"),
+        tr("Board filename (without .notef):"), QLineEdit::Normal,
+        QStringLiteral("Planning"), &accepted).trimmed();
+    if (!accepted || name.isEmpty()) return;
+    if (name==QStringLiteral(".") || name==QStringLiteral("..") ||
+        name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\'))) {
+        QMessageBox::warning(this, tr("Workflow Notes"),
+            tr("Enter a filename without slashes."));
+        return;
+    }
+    const QString basename = name.endsWith(QStringLiteral(".notef"),Qt::CaseInsensitive)
+        ? name.left(name.size()-6) : name;
+    if (basename.isEmpty() || basename==QStringLiteral(".") || basename==QStringLiteral("..")) return;
+    const QString folder = directory.isEmpty() ? m_projectPath : directory;
+    const QString path = QDir(folder).filePath(basename+QStringLiteral(".notef"));
+    if (QFileInfo::exists(path)) {
+        QMessageBox::information(this, tr("Workflow Notes"),
+            tr("That board already exists. Open it from the project tree."));
+        return;
+    }
+    QString error;
+    if (!createEmptyNoteFlowFile(path,&error)) {
+        QMessageBox::warning(this,tr("Workflow Notes"),tr("Could not create board: %1").arg(error));
+        return;
+    }
+    addProjectFile(path);
+    refreshProjectFiles();
+    saveProjectFile(m_projectFilePath);
+    openFile(path);
+}

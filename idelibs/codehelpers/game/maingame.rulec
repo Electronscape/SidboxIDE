@@ -124,6 +124,9 @@
  *    Saving animation edits can update the header again on request.
  * 3. Set GAMERGIRL_PLAYER_ANIMATIONS to 1 below and rebuild the V1 game.
  *    The starter selects Idle, Walk, Jump, Fall, Hurt and optional Melee.
+ *    Add a custom state named Upstairs to play it on grounded climbs above
+ *    30 degrees. Its numeric ID comes from the animation editor's state order;
+ *    it is never hardcoded. Missing Upstairs frames fall back to Walk.
  *    A custom state named Melee (any letter case) automatically plays once
  *    per accepted FIRE1 swing while the active physics profile enables combat.
  *    Animation is selected AFTER moving-platform/spring collision resolution.
@@ -148,6 +151,14 @@
 #include "gameanimations/player_anim.h"
 static player_anim_playeranim_t player_anim = {0};
 static uint8_t player_anim_facing = PLAYER_ANIM_DIR_RIGHT;
+#if defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE
+/* Small grace period masks pixel rounding on stepped/curved ramps. */
+static uint8_t player_upstairs_hold = 0u;
+#endif
+#if defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE
+/* Independent downhill grace period, for quantised tile slopes. */
+static uint8_t player_downstairs_hold = 0u;
+#endif
 #endif
 @IDE_END
 
@@ -743,6 +754,12 @@ int main(int argc, char *argv[])
              * activation. A fresh game / loaded save must never first show
              * the previous life's Hurt BOB index. */
             player_anim.started=0u;
+#if defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE
+            player_upstairs_hold = 0u;
+#endif
+#if defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE
+            player_downstairs_hold = 0u;
+#endif
             player_anim_step(&player_anim,&GAMERGIRL_PLAYER_BOB,
                 PLAYER_ANIM_STATE_IDLE,player_anim_facing,0u);
 #endif
@@ -789,6 +806,16 @@ int main(int argc, char *argv[])
 @IDE_IF{HAS_PHYSICS}
 @IDE_IF{HAS_WORLD_PLAYER}
         gameworlds_before(&world_player);
+@IDE_END
+@IDE_IF{HAS_PLAYER_ANIMATION}
+#if GAMERGIRL_PLAYER_ANIMATIONS && \
+    ((defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE) || \
+     (defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE))
+        /* Capture after gameworlds_before() but before the physics step.
+         * We use actual ground-following motion, not just a guessed tile type. */
+        const int32_t player_before_step_x100 = player_physics.x100;
+        const int32_t player_before_step_y100 = player_physics.y100;
+#endif
 @IDE_END
         /* OPTIONAL THRUSTERS: replace the next line with the in_space
          * example above, and still step physics every frame. */
@@ -894,7 +921,60 @@ int main(int argc, char *argv[])
                               ? PLAYER_ANIM_STATE_JUMP : PLAYER_ANIM_STATE_FALL;
         } else if (player_buttons & (BTN_LEFT | BTN_RIGHT)) {
             player_anim_state = PLAYER_ANIM_STATE_WALK;
+#if (defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE) || \
+    (defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE)
+            /* For grounded movement, Y grows DOWN the screen. Compare the
+             * vertical movement to horizontal distance: tan(30 deg)=0.577.
+             * A 4-frame hold smooths one-pixel stair/slope quantisation. */
+            const int32_t step_dx100 = player_physics.x100 - player_before_step_x100;
+            const int32_t step_dy100 = player_physics.y100 - player_before_step_y100;
+            const int32_t step_horizontal100 = step_dx100 < 0 ? -step_dx100 : step_dx100;
+            const uint8_t goes_right = (player_buttons & BTN_RIGHT) && !(player_buttons & BTN_LEFT);
+            const uint8_t goes_left = (player_buttons & BTN_LEFT) && !(player_buttons & BTN_RIGHT);
+            const uint8_t input_matches_motion =
+                (goes_right && step_dx100 > 0) || (goes_left && step_dx100 < 0);
+            const uint8_t steep_slope = input_matches_motion && step_horizontal100 > 0 &&
+                (int64_t)(step_dy100 < 0 ? -(int64_t)step_dy100 : step_dy100) * 1000 >
+                (int64_t)step_horizontal100 * 577;
+#if defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE
+            if (!input_matches_motion || step_dy100 > 0)
+                player_upstairs_hold = 0u;
+            else if (steep_slope && step_dy100 < 0)
+                player_upstairs_hold = 4u;
+            else if (player_upstairs_hold)
+                --player_upstairs_hold;
+#endif
+#if defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE
+            if (!input_matches_motion || step_dy100 < 0)
+                player_downstairs_hold = 0u;
+            else if (steep_slope && step_dy100 > 0)
+                player_downstairs_hold = 4u;
+            else if (player_downstairs_hold)
+                --player_downstairs_hold;
+#endif
+#if defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE
+            /* Empty clips fall back to Walk, never an unplanned Idle frame. */
+            if (player_upstairs_hold && player_anim_clips[
+                    (uint16_t)PLAYER_ANIM_STATE_UPSTAIRS * PLAYER_ANIM_DIRECTION_COUNT
+                    + player_anim_facing].count)
+                player_anim_state = PLAYER_ANIM_STATE_UPSTAIRS;
+#endif
+#if defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE
+            if (player_downstairs_hold && player_anim_clips[
+                    (uint16_t)PLAYER_ANIM_STATE_DOWNSTAIRS * PLAYER_ANIM_DIRECTION_COUNT
+                    + player_anim_facing].count)
+                player_anim_state = PLAYER_ANIM_STATE_DOWNSTAIRS;
+#endif
+#endif
         }
+#if defined(PLAYER_ANIM_HAS_UPSTAIRS_STATE) && PLAYER_ANIM_HAS_UPSTAIRS_STATE
+        if (!player_physics.on_ground || !(player_buttons & (BTN_LEFT | BTN_RIGHT)))
+            player_upstairs_hold = 0u;
+#endif
+#if defined(PLAYER_ANIM_HAS_DOWNSTAIRS_STATE) && PLAYER_ANIM_HAS_DOWNSTAIRS_STATE
+        if (!player_physics.on_ground || !(player_buttons & (BTN_LEFT | BTN_RIGHT)))
+            player_downstairs_hold = 0u;
+#endif
 @IDE_IF{HAS_MURDER_OBJECTS}
 #if defined(PLAYER_ANIM_HAS_HURT_STATE) && PLAYER_ANIM_HAS_HURT_STATE
         /* Hazard "Use player Hurt animation" overrides Jump/Fall while

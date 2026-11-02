@@ -2,6 +2,7 @@
  * Requires the original atlas loaded into gfxbob_t (cell dimensions match).
  * Call after moving the player and before gfx_drawbob().
  * State/direction numbers follow the enums below. 50 ticks/second.
+ * Duration values are MILLISECONDS (1-5000 ms); one game tick = 20 ms.
  */
 #ifndef @IDE{PREFIX_UPPER}_PLAYERANIM_H
 #define @IDE{PREFIX_UPPER}_PLAYERANIM_H
@@ -26,9 +27,14 @@ enum {
 
 #define @IDE{PREFIX_UPPER}_HAS_HURT_STATE @IDE{HAS_HURT}
 #define @IDE{PREFIX_UPPER}_HAS_MELEE_STATE @IDE{HAS_MELEE}
+/* Set only when a custom state named Upstairs is present (case-insensitive).
+ * Its numeric ID follows the editor's state order: do NOT assume 11. */
+#define @IDE{PREFIX_UPPER}_HAS_UPSTAIRS_STATE @IDE{HAS_UPSTAIRS}
+/* Optional Downstairs clip, discovered by name rather than numeric ID. */
+#define @IDE{PREFIX_UPPER}_HAS_DOWNSTAIRS_STATE @IDE{HAS_DOWNSTAIRS}
 
-typedef struct { const uint8_t *frames; const uint8_t *frame_ticks; uint16_t count; uint16_t ticks; uint8_t loop; uint8_t flip_x; } @IDE{PREFIX}_clip_t;
-typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; uint32_t melee_ticks_left; } @IDE{PREFIX}_playeranim_t;
+typedef struct { const uint8_t *frames; const uint16_t *frame_ms; uint16_t count; uint16_t duration_ms; uint8_t loop; uint8_t flip_x; } @IDE{PREFIX}_clip_t;
+typedef struct { uint16_t elapsed, position; uint8_t state, direction, started; uint32_t melee_ms_left; } @IDE{PREFIX}_playeranim_t;
 
 @IDE{CLIP_ARRAYS}
 static const @IDE{PREFIX}_clip_t @IDE{PREFIX}_clips[@IDE{CLIP_COUNT}] = {
@@ -47,11 +53,11 @@ static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob
      */
 #if @IDE{PREFIX_UPPER}_HAS_MELEE_STATE && defined(CODERGIRL_SHARED_PLAYER_H)
     if (frame_step == 0u || !a->started || !gameplayer_combat_enabled()) {
-        a->melee_ticks_left = 0u;
+        a->melee_ms_left = 0u;
     }
 #if @IDE{PREFIX_UPPER}_HAS_HURT_STATE
     if (state == @IDE{PREFIX_UPPER}_STATE_HURT)
-        a->melee_ticks_left = 0u; /* taking damage interrupts the swing */
+        a->melee_ms_left = 0u; /* taking damage interrupts the swing */
     else
 #endif
     if (frame_step && gameplayer_combat_enabled()) {
@@ -60,16 +66,16 @@ static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob
         if (gameplayer_attack_started() && melee->frames && melee->count) {
             uint32_t duration = 0u;
             for (uint16_t i = 0u; i < melee->count; ++i)
-                duration += melee->frame_ticks ? melee->frame_ticks[i] : melee->ticks;
-            a->melee_ticks_left = duration;
+                duration += melee->frame_ms ? melee->frame_ms[i] : melee->duration_ms;
+            a->melee_ms_left = duration;
             a->started = 0u; /* first frame on each accepted attack */
         }
-        if (a->melee_ticks_left && melee->frames && melee->count) {
+        if (a->melee_ms_left && melee->frames && melee->count) {
             state = @IDE{PREFIX_UPPER}_STATE_MELEE;
-            a->melee_ticks_left = frame_step >= a->melee_ticks_left
-                ? 0u : a->melee_ticks_left - frame_step;
+            a->melee_ms_left = (uint32_t)frame_step * 20u >= a->melee_ms_left
+                ? 0u : a->melee_ms_left - (uint32_t)frame_step * 20u;
         } else if (!melee->frames || !melee->count) {
-            a->melee_ticks_left = 0u;
+            a->melee_ms_left = 0u;
         }
     }
 #endif
@@ -84,11 +90,11 @@ static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob
         a->started = 1; a->state = state; a->direction = direction;
         a->position = 0; a->elapsed = 0;
     } else if (frame_step && (clip->loop || a->position + 1u < clip->count)) {
-        uint32_t remaining = (uint32_t)a->elapsed + frame_step;
-        if (!clip->frame_ticks) {
-            /* Fast path for uniform timings, identical to legacy playback. */
-            uint32_t steps = remaining / clip->ticks;
-            a->elapsed = (uint16_t)(remaining % clip->ticks);
+        uint32_t remaining = (uint32_t)a->elapsed + (uint32_t)frame_step * 20u;
+        if (!clip->frame_ms) {
+            /* Uniform clip timings in milliseconds. Carry the remainder across 50 Hz ticks. */
+            uint32_t steps = remaining / clip->duration_ms;
+            a->elapsed = (uint16_t)(remaining % clip->duration_ms);
             if (steps) {
                 uint32_t next = (uint32_t)a->position + steps;
                 a->position = clip->loop ? (uint16_t)(next % clip->count)
@@ -96,13 +102,13 @@ static inline void @IDE{PREFIX}_step(@IDE{PREFIX}_playeranim_t *a, gfxbob_t *bob
             }
         } else {
             /* Duration belongs to the frame POSITION, not its atlas index. */
-            uint16_t duration = clip->frame_ticks[a->position];
+            uint16_t duration = clip->frame_ms[a->position];
             while (remaining >= duration) {
                 remaining -= duration;
                 if (a->position + 1u < clip->count) ++a->position;
                 else if (clip->loop) a->position = 0;
                 else { remaining = 0; break; }
-                duration = clip->frame_ticks[a->position];
+                duration = clip->frame_ms[a->position];
             }
             a->elapsed = (uint16_t)remaining;
         }
@@ -141,9 +147,9 @@ static inline uint8_t @IDE{PREFIX}_auto_state(uint8_t on_ground, int32_t vy100,
 @IDE_SECTION{FRAME_ARRAY}
 static const uint8_t @IDE{ARRAY_NAME}[] = { @IDE{FRAME_VALUES} };
 @IDE_SECTION_END
-@IDE_SECTION{TICK_ARRAY}
-static const uint8_t @IDE{ARRAY_NAME}[] = { @IDE{TICK_VALUES} };
+@IDE_SECTION{DURATION_ARRAY}
+static const uint16_t @IDE{ARRAY_NAME}[] = { @IDE{DURATION_VALUES} };
 @IDE_SECTION_END
 @IDE_SECTION{CLIP_ENTRY}
-    { @IDE{FRAME_ARRAY}, @IDE{TICK_ARRAY}, @IDE{FRAME_COUNT}u, @IDE{TICKS}u, @IDE{LOOP}, @IDE{FLIP} },
+    { @IDE{FRAME_ARRAY}, @IDE{DURATION_ARRAY}, @IDE{FRAME_COUNT}u, @IDE{DURATION_MS}u, @IDE{LOOP}, @IDE{FLIP} },
 @IDE_SECTION_END

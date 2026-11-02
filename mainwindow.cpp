@@ -8,6 +8,7 @@
 #include "guidesigner.h"
 #include "gamedesigner.h"
 #include "gamevisualnodes.h"
+#include "notefloweditor.h"
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
 #include "optionsdialog.h"
@@ -1426,7 +1427,7 @@ bool isProjectExplorerSuffix(const QString &suffix)
         || lower == QStringLiteral("inc") || lower == QStringLiteral("txt")
         || lower == QStringLiteral("md") || lower == QStringLiteral("res")
         || lower == QStringLiteral("sbui") || lower == QStringLiteral("sbgm")
-        || lower == QStringLiteral("vsgm")
+        || lower == QStringLiteral("vsgm") || lower == QStringLiteral("notef")
         || lower == QStringLiteral("sbpi")
         || lower == QStringLiteral("uis")
         || lower == QStringLiteral("ppb") || lower == QStringLiteral("pal")
@@ -6403,6 +6404,8 @@ void MainWindow::setupInterface()
     guiDesignerAction->setToolTip(tr("Create a visual CoderGirl 480x320 GUI design"));
     QAction *gameDesignerAction = toolBar->addAction(gameEditorIcon("toolbar_gamedesigner.png"), tr("Game Designer"));
     gameDesignerAction->setToolTip(tr("Create a V1 game world, camera layout, and resource references"));
+    QAction *workflowAction = toolBar->addAction(gameEditorIcon("tree_file_txt.png"), tr("Workflow Notes"));
+    workflowAction->setToolTip(tr("Create a stand-alone .notef planning board (V1 and V2)."));
     QAction *optionsAction = toolBar->addAction(gameEditorIcon("options.png"), tr("Options"));
 
 
@@ -6469,6 +6472,7 @@ void MainWindow::setupInterface()
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(guiDesignerAction, &QAction::triggered, this, &MainWindow::createGuiDesigner);
     connect(gameDesignerAction, &QAction::triggered, this, &MainWindow::createGameDesigner);
+    connect(workflowAction, &QAction::triggered, this, [this]{ createWorkflowNotes(); });
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(aboutIdeAction, &QAction::triggered, this, &MainWindow::showAboutIde);
     connect(findReplaceAction, &QAction::triggered, this, &MainWindow::showFindReplace);
@@ -6779,6 +6783,9 @@ void MainWindow::setupInterface()
         });
 
         menu.addAction(tr("Create GUI Design"), this, &MainWindow::createGuiDesigner);
+        menu.addAction(tr("Create Workflow Notes (.notef)"), this, [this, targetDirectory] {
+            createWorkflowNotes(targetDirectory);
+        });
         menu.addAction(tr("Add File"), this, &MainWindow::addExistingProjectFile);
         menu.addAction(tr("Rescan Project Files"), this, &MainWindow::rescanProjectFiles);
 
@@ -12190,6 +12197,11 @@ bool MainWindow::openFile(const QString &filePath)
     if (QFileInfo(filePath).suffix().compare(QStringLiteral("sbgm"), Qt::CaseInsensitive) == 0) {
         return openGameDesigner(filePath);
     }
+    if (QFileInfo(filePath).suffix().compare(QStringLiteral("notef"), Qt::CaseInsensitive) == 0) {
+        const bool opened = openNoteFlowEditor(this, filePath, m_theme);
+        if (opened) refreshProjectFiles();
+        return opened;
+    }
     if (QFileInfo(filePath).suffix().compare(QStringLiteral("vsgm"), Qt::CaseInsensitive) == 0) {
         const QString sbgmPath = QFileInfo(filePath).absolutePath() + QLatin1Char('/') +
             QFileInfo(filePath).completeBaseName() + QStringLiteral(".sbgm");
@@ -15483,7 +15495,7 @@ QStringList MainWindow::projectFolderSourceFiles() const
         QStringLiteral("*.c"), QStringLiteral("*.h"), QStringLiteral("*.inc"),
         QStringLiteral("*.cc"), QStringLiteral("*.cpp"), QStringLiteral("*.hpp"),
         QStringLiteral("*.res"), QStringLiteral("*.txt"), QStringLiteral("*.md"),
-        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.vsgm"), QStringLiteral("*.sbpi"), QStringLiteral("*.uis"),
+        QStringLiteral("*.sbui"), QStringLiteral("*.sbgm"), QStringLiteral("*.vsgm"), QStringLiteral("*.notef"), QStringLiteral("*.sbpi"), QStringLiteral("*.uis"),
         QStringLiteral("*.ppb"), QStringLiteral("*.pal"), QStringLiteral("*.act"),
         QStringLiteral("*.map"),
         QStringLiteral("*.png"), QStringLiteral("*.bmp"), QStringLiteral("*.jpg"),

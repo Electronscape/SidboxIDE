@@ -91,6 +91,7 @@ private:
     void createGuiDesigner();
     bool openGuiDesigner(const QString &filePath);
     void createGameDesigner();
+    void createWorkflowNotes(const QString &directory = QString());
     bool openGameDesigner(const QString &filePath);
     bool saveGuiDesignerTab(QWidget *widget);
     void createProjectFolderInDirectory(const QString &directoryPath);

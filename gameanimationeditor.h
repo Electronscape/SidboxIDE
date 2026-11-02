@@ -4,6 +4,8 @@
 #include <QDialog>
 #include <QImage>
 #include <QMap>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QStringList>
 #include <QVector>
 #include "idetheme.h"
@@ -13,6 +15,7 @@ class QListWidget;
 class QComboBox;
 class QButtonGroup;
 class QSpinBox;
+class QScrollArea;
 class QCheckBox;
 class QLabel;
 class QPushButton;
@@ -29,7 +32,10 @@ public:
                                const QString &defaultHeaderFile,
                                int cellWidth, int cellHeight,
                                QWidget *parent = nullptr,
-                               const IDETheme &theme = defaultIDETheme());
+                               const IDETheme &theme = defaultIDETheme(),
+                               const QJsonObject &playerProfile = QJsonObject(),
+                               int worldTileSize = 16,
+                               const QString &worldName = QString());
     ~SidboxPlayerAnimationEditor() override;
     QString animationFile() const { return m_file; }
     bool isUsable() const { return !m_atlas.isNull(); }
@@ -39,8 +45,8 @@ public:
 private:
     struct Clip {
         QVector<int> frames;
-        QVector<int> frameTicks; // Per-position VBlank duration; never separate from frames.
-        int ticks = 5; // SIDBOX 50 Hz VBlanks per image
+        QVector<int> frameMs; // Per-position millisecond duration; paired with frames.
+        int durationMs = 100; // Five 50 Hz VBlanks
         bool loop = true;
     };
     IDETheme m_theme;
@@ -60,8 +66,20 @@ private:
     bool m_savedShowFoot = true, m_savedShowBox = true;
     int m_selectedAtlasFrame = -1;
     int m_previewPosition = 0;
-    int m_previewElapsed = 0;
+    int m_previewElapsed = 0; // Milliseconds carried between 50 Hz preview ticks
+    int m_previewSpeedPercent = 100; // Preview only: 100 = normal 50 Hz timing.
+    int m_previewSpeedAccumulator = 0; // Fixed-point real ticks -> preview ticks.
     bool m_playing = true;
+    // Design-time flat-floor preview only. World game physics are not modified.
+    QJsonArray m_previewPhysicsProfiles;
+    QString m_previewWorldName;
+    int m_worldTileSize = 16;
+    int m_startPhysicsId = 0;
+    int m_floorTravel100 = 0; // World pixel distance, 100 = 1 pixel
+    int m_iceVelocity100 = 0;
+    int m_iceRemainder100 = 0;
+    bool m_previewFloorEnabled = true;
+    bool m_gameScaleWalkingFloor = true; // 1:1 game pixels when the moving floor is visible.
     QColor m_paletteZeroBackground;
     bool m_hasPaletteZeroBackground = false;
     QColor m_customPreviewBackground = QColor(145, 150, 160);
@@ -71,15 +89,17 @@ private:
     QComboBox *m_directions = nullptr;
     QButtonGroup *m_directionModeButtons = nullptr;
     QListWidget *m_timeline = nullptr;
-    QSpinBox *m_width = nullptr, *m_height = nullptr, *m_zoom = nullptr, *m_ticks = nullptr;
-    QSpinBox *m_frameTicks = nullptr;
+    QSpinBox *m_width = nullptr, *m_height = nullptr, *m_zoom = nullptr, *m_defaultDuration = nullptr;
+    QSpinBox *m_previewZoom = nullptr; // Display-only magnification, not physics scale.
+    QSpinBox *m_frameDuration = nullptr;
     QSpinBox *m_footX = nullptr, *m_footY = nullptr;
     QSpinBox *m_boxX = nullptr, *m_boxY = nullptr, *m_boxW = nullptr, *m_boxH = nullptr;
     QCheckBox *m_loop = nullptr, *m_mirrorCheck = nullptr, *m_autoCheck = nullptr;
-    QCheckBox *m_showFoot = nullptr, *m_showBox = nullptr;
-    QLabel *m_preview = nullptr, *m_status = nullptr, *m_atlasInfo = nullptr;
-    QPushButton *m_play = nullptr, *m_previewColourButton = nullptr;
-    QComboBox *m_previewBackgroundChoice = nullptr;
+    QCheckBox *m_showFoot = nullptr, *m_showBox = nullptr, *m_walkingFloor = nullptr, *m_gameScaleCheck = nullptr;
+    QLabel *m_preview = nullptr, *m_status = nullptr, *m_atlasInfo = nullptr, *m_floorInfo = nullptr;
+    QScrollArea *m_previewScroll = nullptr;
+    QPushButton *m_play = nullptr, *m_previewColourButton = nullptr, *m_setAllFrameDurations = nullptr;
+    QComboBox *m_previewBackgroundChoice = nullptr, *m_previewPhysics = nullptr;
     QWidget *m_atlasView = nullptr;
     QTimer *m_timer = nullptr;
 
@@ -94,13 +114,14 @@ private:
     void refreshAll();
     void refreshTimeline();
     void refreshPreview();
+    void updateWalkingPreviewControls();
     void updateAtlas();
     void appendFrame(int index, bool range);
     void removeFrame();
     void moveFrame(int delta);
     void saveClipSettings();
-    void saveSelectedFrameTicks();
-    void updateSelectedFrameTicks();
+    void saveSelectedFrameDuration();
+    void updateSelectedFrameDuration();
     void readDocument();
     bool writeDocument();
     void exportHeader();

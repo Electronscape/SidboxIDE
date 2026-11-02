@@ -1,7 +1,14 @@
-GamerGirl Stage 4.31 — changed files
--------------------------------------
-Back up your Stage 4.30 IDE before replacing files.
-Copy the replacement source files to corresponding relative paths in the IDE source tree.
-Rebuild the IDE, then open your game design and run Update Game Project.
-See Stage4.31-Adventure-Usability-README.md for the custom main.c integration and tests.
-The protected main.c will not be modified by the IDE.
+SIDBOX IDE 5.136.3.011126 - Workflow Notes: explicit line breaks
+
+Apply over 5.136.2.011126 by replacing these two files at their existing source locations:
+  notefloweditor.cpp
+  splashscreenwidget.cpp
+
+Notes and decision descriptions now honour manually inserted line breaks and blank
+lines, while continuing to word-wrap and grow the card to fit the full text.
+Uses QTextDocument's plain-text layout instead of QStaticText.
+
+Everything else in Workflow Notes, including saved pan/zoom, snapping, checklist
+status, branch collapsing, files and wiring, is unchanged.
+
+Qt6 compilation cannot be verified in this environment (Qt6 SDK unavailable).

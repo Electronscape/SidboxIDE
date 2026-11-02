@@ -1,5 +1,6 @@
 #include "gameanimationeditor.h"
 #include "gamehelpertemplates.h"
+#include "gameplayerprofile.h"
 #include "gameeditoricons.h"
 #include "ppbcodec.h"
 
@@ -105,7 +106,7 @@ QIcon animationStateIcon(const QString &state, const IDETheme &theme)
 }
 
 // A real timeline drag: transfer the source/destination positions, not QListWidget's
-// visual icon coordinates. The editor then updates frames AND frameTicks together.
+// visual icon coordinates. The editor then updates frames AND frameMs together.
 class AnimationTimelineList final : public QListWidget {
 public:
     explicit AnimationTimelineList(QWidget *parent = nullptr) : QListWidget(parent) {}
@@ -261,7 +262,7 @@ public:
                     card.right() - 1, card.bottom() - 23);
 
         const int cell = index.data(Qt::UserRole).toInt();
-        const int ticks = qMax(1, index.data(Qt::UserRole + 1).toInt());
+        const int durationMs = qMax(1, index.data(Qt::UserRole + 1).toInt());
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         QFont font = option.font;
         font.setPixelSize(12);
@@ -284,7 +285,7 @@ public:
         p->setPen(m_theme.mutedText);
         p->drawText(QRect(card.left() + 2, card.bottom() - 22,
                           card.width() - 4, 21), Qt::AlignCenter,
-                    QStringLiteral("%1ms").arg(ticks * 20));
+                    QStringLiteral("%1ms").arg(durationMs));
         p->restore();
     }
 private:
@@ -485,6 +486,67 @@ private:
     QPoint m_lastGlobal;
 };
 
+// Live Preview uses its own scroll area so zoomed previews can be panned
+// in every animation state without affecting atlas frame selection.
+class AnimationPreviewScrollArea final : public QScrollArea {
+public:
+    explicit AnimationPreviewScrollArea(QWidget *parent = nullptr) : QScrollArea(parent) {
+        viewport()->installEventFilter(this);
+        setToolTip(QObject::tr("Drag with the left or middle mouse button to pan a zoomed preview."));
+    }
+
+    void setPreviewWidget(QWidget *preview) {
+        setWidget(preview);
+        preview->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (watched != viewport() && watched != widget())
+            return QScrollArea::eventFilter(watched, event);
+
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if ((mouse->button() == Qt::LeftButton || mouse->button() == Qt::MiddleButton)
+                && (horizontalScrollBar()->maximum() > 0 || verticalScrollBar()->maximum() > 0)) {
+                m_dragging = true;
+                m_dragButton = mouse->button();
+                m_lastGlobal = mouse->globalPosition().toPoint();
+                viewport()->setCursor(Qt::ClosedHandCursor);
+                if (widget()) widget()->setCursor(Qt::ClosedHandCursor);
+                mouse->accept();
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseMove && m_dragging) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            const QPoint global = mouse->globalPosition().toPoint();
+            const QPoint delta = global - m_lastGlobal;
+            m_lastGlobal = global;
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+            mouse->accept();
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease && m_dragging) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == m_dragButton) {
+                m_dragging = false;
+                m_dragButton = Qt::NoButton;
+                viewport()->unsetCursor();
+                if (widget()) widget()->unsetCursor();
+                mouse->accept();
+                return true;
+            }
+        }
+        return QScrollArea::eventFilter(watched, event);
+    }
+private:
+    bool m_dragging = false;
+    Qt::MouseButton m_dragButton = Qt::NoButton;
+    QPoint m_lastGlobal;
+};
+
 QIcon frameIcon(const QImage &atlas, int frame, int w, int h)
 {
     const int cols = atlas.width() / w;
@@ -496,12 +558,17 @@ QIcon frameIcon(const QImage &atlas, int frame, int w, int h)
 
 SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFile,
         const QString &animationFile, const QString &defaultHeaderFile,
-        int cellWidth, int cellHeight, QWidget *parent, const IDETheme &theme)
+        int cellWidth, int cellHeight, QWidget *parent, const IDETheme &theme,
+        const QJsonObject &playerProfile, int worldTileSize, const QString &worldName)
     : QDialog(parent), m_theme(theme), m_file(animationFile),
       m_defaultHeaderFile(defaultHeaderFile), m_atlasFile(atlasFile),
       m_cellW(cellWidth > 0 && cellWidth <= 256 ? cellWidth : 32),
       m_cellH(cellHeight > 0 && cellHeight <= 256 ? cellHeight : 32)
 {
+    m_previewPhysicsProfiles = GamePlayerProfile::physicsProfiles(playerProfile);
+    m_startPhysicsId = GamePlayerProfile::physicsForWorld(playerProfile, worldName);
+    m_previewWorldName = worldName;
+    m_worldTileSize = qBound(1, worldTileSize, 256);
     if (QFileInfo(atlasFile).suffix().compare("ppb", Qt::CaseInsensitive) == 0) {
         SidboxPpb::Picture pic;
         if (SidboxPpb::read(atlasFile, &pic)) {
@@ -535,6 +602,10 @@ SidboxPlayerAnimationEditor::SidboxPlayerAnimationEditor(const QString &atlasFil
     m_customPreviewBackground = previewSettings.value(
         QStringLiteral("PlayerAnimation/previewBackgroundColour"),
         QColor(145, 150, 160)).value<QColor>();
+    m_previewFloorEnabled = previewSettings.value(
+        QStringLiteral("PlayerAnimation/walkingFloorEnabled"), true).toBool();
+    m_gameScaleWalkingFloor = previewSettings.value(
+        QStringLiteral("PlayerAnimation/walkingFloorGameScale"), true).toBool();
     if (!m_customPreviewBackground.isValid())
         m_customPreviewBackground = QColor(145, 150, 160);
     setWindowTitle(tr("Player Animation Editor — %1").arg(QFileInfo(atlasFile).fileName()));
@@ -562,7 +633,8 @@ SidboxPlayerAnimationEditor::~SidboxPlayerAnimationEditor()
 
 QString SidboxPlayerAnimationEditor::currentState() const
 {
-    return m_stateList && m_stateList->currentItem() ? m_stateList->currentItem()->text() : QString();
+    // The visible state ID is for users; the saved/exported name stays unchanged.
+    return m_stateList ? m_states.value(m_stateList->currentRow()) : QString();
 }
 QString SidboxPlayerAnimationEditor::currentDirection() const
 {
@@ -743,24 +815,76 @@ void SidboxPlayerAnimationEditor::createUi()
     auto *moveRight = new QPushButton(tr("Move →"), middle);
     timelineActions->addWidget(removeFrame); timelineActions->addWidget(moveLeft);
     timelineActions->addWidget(moveRight); timelineActions->addStretch();
-    m_ticks = new QSpinBox(middle); m_ticks->setRange(1, 250); m_ticks->setValue(5);
-    m_ticks->setSuffix(tr(" ticks"));
-    m_ticks->setToolTip(tr("Default duration assigned to newly inserted frames. 50 Hz: 5 ticks = 100 ms."));
-    timelineActions->addWidget(new QLabel(tr("New frame duration:"), middle));
-    timelineActions->addWidget(m_ticks);
-    m_frameTicks = new QSpinBox(middle);
-    m_frameTicks->setRange(1, 250);
-    m_frameTicks->setSuffix(tr(" ticks"));
-    m_frameTicks->setToolTip(tr("Duration of the currently selected timeline frame (50 Hz: 1 tick = 20 ms)."));
-    m_frameTicks->setEnabled(false);
-    timelineActions->addWidget(new QLabel(tr("Selected frame:"), middle));
-    timelineActions->addWidget(m_frameTicks);
+    // Give the frame timing controls their own row so the new bulk button
+    // doesn't squash the timeline or force the splitter wider.
+    auto *timingActions = new QHBoxLayout;
+    m_defaultDuration = new QSpinBox(middle); m_defaultDuration->setRange(1, 5000); m_defaultDuration->setSingleStep(10); m_defaultDuration->setValue(100);
+    m_defaultDuration->setSuffix(tr(" ms"));
+    m_defaultDuration->setToolTip(tr("Default duration for newly inserted frames. Wheel: 10 ms; type any value from 1 to 5000 ms. SIDBOX displays at 50 Hz (20 ms per screen refresh)."));
+    timingActions->addWidget(new QLabel(tr("New frame duration:"), middle));
+    timingActions->addWidget(m_defaultDuration);
+    m_setAllFrameDurations = new QPushButton(tr("Set all frames ms"), middle);
+    m_setAllFrameDurations->setToolTip(tr("Set every frame of the selected animation state and direction "
+        "to the New frame duration value. Other states and directions are unchanged."));
+    m_setAllFrameDurations->setEnabled(false);
+    timingActions->addWidget(m_setAllFrameDurations);
+    m_frameDuration = new QSpinBox(middle);
+    m_frameDuration->setRange(1, 5000);
+    m_frameDuration->setSingleStep(10);
+    m_frameDuration->setSuffix(tr(" ms"));
+    m_frameDuration->setToolTip(tr("Selected frame duration in milliseconds. Wheel: 10 ms; type any value from 1 to 5000 ms. Runtime retains the remainder across 20 ms VBlanks."));
+    m_frameDuration->setEnabled(false);
+    timingActions->addWidget(new QLabel(tr("Selected frame:"), middle));
+    timingActions->addWidget(m_frameDuration);
     m_loop = new QCheckBox(tr("Loop"), middle); m_loop->setChecked(true);
     timelineActions->addWidget(m_loop);
     mid->addLayout(timelineActions);
+    timingActions->addStretch();
+    mid->addLayout(timingActions);
 
     auto *right = new QWidget(split);
     auto *rightLayout = new QVBoxLayout(right);
+    // Display magnification only: keep the 256x256 game-pixel canvas and
+    // flat-floor physics unchanged, then nearest-neighbour scale its image.
+    auto *previewZoomRow = new QHBoxLayout;
+    previewZoomRow->addWidget(new QLabel(tr("Preview zoom"), right));
+    m_previewZoom = new QSpinBox(right);
+    m_previewZoom->setRange(1, 6);
+    m_previewZoom->setSingleStep(1);
+    m_previewZoom->setSuffix(QStringLiteral("×"));
+    m_previewZoom->setToolTip(tr("Magnify the entire Live Preview in every animation state (1–6×). "
+        "Drag the zoomed preview to pan; the display zoom does not change "
+        "animation timing, physics or exported data."));
+    QSettings zoomSettings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+    m_previewZoom->setValue(qBound(1, zoomSettings.value(
+        QStringLiteral("PlayerAnimation/livePreviewZoom"), 1).toInt(), 6));
+    m_previewZoom->setMaximumWidth(95);
+    previewZoomRow->addWidget(m_previewZoom);
+    previewZoomRow->addSpacing(12);
+    previewZoomRow->addWidget(new QLabel(tr("Preview speed"), right));
+    auto *previewSpeed = new QComboBox(right);
+    for (const int percent : {10, 25, 50, 75, 100})
+        previewSpeed->addItem(tr("%1%").arg(percent), percent);
+    previewSpeed->setToolTip(tr("Slow down the live preview's animation AND walking floor together. "
+        "100% is normal 50 Hz game speed. This does not change frame timings, "
+        "physics profiles, saved animation data or the generated game."));
+    const int savedPreviewSpeed = zoomSettings.value(
+        QStringLiteral("PlayerAnimation/livePreviewSpeedPercent"), 100).toInt();
+    const int speedIndex = previewSpeed->findData(savedPreviewSpeed);
+    previewSpeed->setCurrentIndex(speedIndex < 0 ? previewSpeed->findData(100) : speedIndex);
+    m_previewSpeedPercent = previewSpeed->currentData().toInt();
+    previewSpeed->setMaximumWidth(88);
+    previewZoomRow->addWidget(previewSpeed);
+    connect(previewSpeed, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this, previewSpeed](int) {
+        m_previewSpeedPercent = previewSpeed->currentData().toInt();
+        m_previewSpeedAccumulator = 0;
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/livePreviewSpeedPercent"),
+                          m_previewSpeedPercent);
+    });
+    previewZoomRow->addStretch(1);
+    rightLayout->addLayout(previewZoomRow);
     auto *previewHeading = new QHBoxLayout;
     previewHeading->addWidget(new QLabel(tr("Live Preview"), right));
     previewHeading->addStretch(1);
@@ -798,13 +922,104 @@ void SidboxPlayerAnimationEditor::createUi()
         settings.setValue(QStringLiteral("PlayerAnimation/previewBackgroundColour"), colour);
         refreshPreview();
     });
-    m_preview = new QLabel(right);
-    m_preview->setAlignment(Qt::AlignCenter);
-    m_preview->setMinimumSize(210, 220);
-    m_preview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_preview->setStyleSheet(QStringLiteral("background:%1; border:1px solid %2; border-radius:0px;")
+    m_previewScroll = new AnimationPreviewScrollArea(right);
+    m_previewScroll->setWidgetResizable(false);
+    m_previewScroll->setAlignment(Qt::AlignCenter);
+    m_previewScroll->setMinimumSize(210, 220);
+    m_previewScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_previewScroll->setStyleSheet(QStringLiteral("QScrollArea { background:%1; border:1px solid %2; border-radius:0px; }")
         .arg(ideThemeColorName(m_theme.panelBackground), ideThemeColorName(m_theme.border)));
-    rightLayout->addWidget(m_preview, 1);
+    m_preview = new QLabel;
+    m_preview->setAlignment(Qt::AlignCenter);
+    m_preview->setFixedSize(256 * m_previewZoom->value(), 256 * m_previewZoom->value());
+    m_preview->setStyleSheet(QStringLiteral("background:transparent; border:0px; border-radius:0px;"));
+    static_cast<AnimationPreviewScrollArea *>(m_previewScroll)->setPreviewWidget(m_preview);
+    rightLayout->addWidget(m_previewScroll, 1);
+    // Focus the sprite at its foot-anchored position after Qt has laid out the
+    // viewport. Re-focus ONLY when the view/state changes, never on animation
+    // ticks, so deliberate left/middle-drag panning remains under user control.
+    const auto centreLivePreview = [this]() {
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_previewScroll || !m_previewZoom || !m_footY) return;
+            const int editorScale = qMax(1, qMin(6,
+                qMin(220 / qMax(1, m_cellW), 220 / qMax(1, m_cellH))));
+            const int scale = m_gameScaleWalkingFloor ? 1 : editorScale;
+            const int spriteTop = 211 - m_footY->value() * scale;
+            const int spriteCentreY = spriteTop + m_cellH * scale / 2;
+            const int zoom = m_previewZoom->value();
+            auto *horizontal = m_previewScroll->horizontalScrollBar();
+            auto *vertical = m_previewScroll->verticalScrollBar();
+            horizontal->setValue(qBound(0,
+                128 * zoom - m_previewScroll->viewport()->width() / 2,
+                horizontal->maximum()));
+            vertical->setValue(qBound(0,
+                spriteCentreY * zoom - m_previewScroll->viewport()->height() / 2,
+                vertical->maximum()));
+        });
+    };
+    connect(m_previewZoom, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this, centreLivePreview](int zoom) {
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/livePreviewZoom"), zoom);
+        refreshPreview();
+        updateWalkingPreviewControls();
+        centreLivePreview();
+    });
+    centreLivePreview(); // Initial saved zoom, after the window is shown.
+    // Walking-on-floor preview: 50 Hz profile speed, world tile geometry, no
+    // effect on the .sbanim, tilemap, physics profiles or exported game.
+    auto *walkingControls = new QHBoxLayout;
+    m_walkingFloor = new QCheckBox(tr("Moving floor"), right);
+    m_walkingFloor->setChecked(m_previewFloorEnabled);
+    m_walkingFloor->setToolTip(tr("Walk preview only. Scrolls a flat, segmented floor beneath the player at the selected physics profile's actual walking speed. Does not simulate slopes or collisions."));
+    walkingControls->addWidget(m_walkingFloor);
+    m_gameScaleCheck = new QCheckBox(tr("Game size (1×)"), right);
+    m_gameScaleCheck->setChecked(m_gameScaleWalkingFloor);
+    m_gameScaleCheck->setToolTip(tr("Use the same real 1:1 SIDBOX pixel size in ALL animation states. "
+        "Untick for the larger editor-scale view in ALL states. "
+        "Preview zoom then magnifies that same size, without changing physics or exported timing."));
+    walkingControls->addWidget(m_gameScaleCheck);
+    m_previewPhysics = new QComboBox(right);
+    for (const QJsonValue &value : m_previewPhysicsProfiles) {
+        const QJsonObject physics = value.toObject();
+        m_previewPhysics->addItem(physics.value(QStringLiteral("name")).toString(),
+                                  physics.value(QStringLiteral("id")).toInt());
+    }
+    const int startingIndex = m_previewPhysics->findData(m_startPhysicsId);
+    m_previewPhysics->setCurrentIndex(startingIndex >= 0 ? startingIndex : 0);
+    m_previewPhysics->setToolTip(tr("Select an existing player physics profile to compare walking speed. Does not change the game's selected physics profile."));
+    walkingControls->addWidget(m_previewPhysics, 1);
+    rightLayout->addLayout(walkingControls);
+    m_floorInfo = new QLabel(right);
+    m_floorInfo->setWordWrap(true);
+    rightLayout->addWidget(m_floorInfo);
+    connect(m_walkingFloor, &QCheckBox::toggled, this, [this, centreLivePreview](bool enabled) {
+        m_previewFloorEnabled = enabled;
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/walkingFloorEnabled"), enabled);
+        m_floorTravel100 = 0;
+        m_iceVelocity100 = 0;
+        m_iceRemainder100 = 0;
+        updateWalkingPreviewControls();
+        refreshPreview();
+        centreLivePreview();
+    });
+    connect(m_gameScaleCheck, &QCheckBox::toggled, this, [this, centreLivePreview](bool enabled) {
+        m_gameScaleWalkingFloor = enabled;
+        QSettings settings(QStringLiteral("Sidbox"), QStringLiteral("SidboxIDE"));
+        settings.setValue(QStringLiteral("PlayerAnimation/walkingFloorGameScale"), enabled);
+        updateWalkingPreviewControls();
+        refreshPreview();
+        centreLivePreview();
+    });
+    connect(m_previewPhysics, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+        m_floorTravel100 = 0;
+        m_iceVelocity100 = 0;
+        m_iceRemainder100 = 0;
+        updateWalkingPreviewControls();
+        refreshPreview();
+    });
     m_play = new QPushButton(tr("Pause preview"), right);
     rightLayout->addWidget(m_play);
     rightLayout->addWidget(new QLabel(tr("Animation Properties"), right));
@@ -845,11 +1060,14 @@ void SidboxPlayerAnimationEditor::createUi()
     outer->addLayout(bottom);
 
     rebuildStateList(); rebuildDirections(); updateAtlas(); refreshAll();
-    connect(m_stateList, &QListWidget::currentRowChanged, this, [this] { refreshAll(); });
-    connect(m_directions, &QComboBox::currentIndexChanged, this, [this] { refreshAll(); });
-    connect(m_directionModeButtons, &QButtonGroup::idClicked, this, [this](int mode) {
+    connect(m_stateList, &QListWidget::currentRowChanged, this,
+            [this, centreLivePreview] { refreshAll(); centreLivePreview(); });
+    connect(m_directions, &QComboBox::currentIndexChanged, this,
+            [this, centreLivePreview] { refreshAll(); centreLivePreview(); });
+    connect(m_directionModeButtons, &QButtonGroup::idClicked, this,
+            [this, centreLivePreview](int mode) {
         m_mode = mode;
-        rebuildDirections(); refreshAll();
+        rebuildDirections(); refreshAll(); centreLivePreview();
     });
     connect(m_mirrorCheck, &QCheckBox::toggled, this, [this](bool v) { m_mirror = v; refreshAll(); });
     connect(m_autoCheck, &QCheckBox::toggled, this, [this](bool v) { m_autoState = v; });
@@ -878,8 +1096,14 @@ void SidboxPlayerAnimationEditor::createUi()
         const int pos = m_states.indexOf(s); m_states.removeAt(pos);
         rebuildStateList(qMin(pos, m_states.size() - 1)); refreshAll();
     });
-    connect(m_width, &QSpinBox::valueChanged, this, [this](int v) { m_cellW = v; updateAtlas(); refreshAll(); });
-    connect(m_height, &QSpinBox::valueChanged, this, [this](int v) { m_cellH = v; updateAtlas(); refreshAll(); });
+    connect(m_width, &QSpinBox::valueChanged, this,
+            [this, centreLivePreview](int v) {
+        m_cellW = v; updateAtlas(); refreshAll(); centreLivePreview();
+    });
+    connect(m_height, &QSpinBox::valueChanged, this,
+            [this, centreLivePreview](int v) {
+        m_cellH = v; updateAtlas(); refreshAll(); centreLivePreview();
+    });
     connect(m_zoom, &QSpinBox::valueChanged, this, [this](int) { updateAtlas(); });
     atlas->doubleClicked = [this](int index, bool range) { appendFrame(index, range); };
     static_cast<AnimationTimelineList *>(m_timeline)->reordered = [this](int from, int to) {
@@ -893,12 +1117,12 @@ void SidboxPlayerAnimationEditor::createUi()
         if (from < 0 || to < 0 || from >= it->frames.size() || to >= it->frames.size())
             return;
         // Move the *pair* — duplicate atlas cells can each have unique pauses.
-        while (it->frameTicks.size() < it->frames.size())
-            it->frameTicks.append(it->ticks);
+        while (it->frameMs.size() < it->frames.size())
+            it->frameMs.append(it->durationMs);
         const int frame = it->frames.takeAt(from);
-        const int ticks = it->frameTicks.takeAt(from);
+        const int durationMs = it->frameMs.takeAt(from);
         it->frames.insert(to, frame);
-        it->frameTicks.insert(to, ticks);
+        it->frameMs.insert(to, durationMs);
         m_previewPosition = to;
         m_previewElapsed = 0;
         refreshTimeline();
@@ -906,15 +1130,28 @@ void SidboxPlayerAnimationEditor::createUi()
         refreshPreview();
     };
     connect(removeFrame, &QPushButton::clicked, this, [this] { this->removeFrame(); });
+    connect(m_setAllFrameDurations, &QPushButton::clicked, this, [this] {
+        // Work on the explicitly authored state/direction, never on a
+        // mirrored/inherited clip or every animation in the document.
+        const QString key = clipKey(currentState(), currentDirection());
+        auto it = m_clips.find(key);
+        if (it == m_clips.end() || it->frames.isEmpty()) return;
+        const int milliseconds = m_defaultDuration->value();
+        it->durationMs = milliseconds;
+        it->frameMs.fill(milliseconds, it->frames.size());
+        m_previewElapsed = 0;
+        refreshTimeline();
+        refreshPreview();
+    });
     connect(moveLeft, &QPushButton::clicked, this, [this] { moveFrame(-1); });
     connect(moveRight, &QPushButton::clicked, this, [this] { moveFrame(1); });
     connect(m_timeline, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_refreshing) return;
         m_previewPosition = qMax(0, row); m_previewElapsed = 0;
-        updateSelectedFrameTicks(); refreshPreview();
+        updateSelectedFrameDuration(); refreshPreview();
     });
-    connect(m_frameTicks, &QSpinBox::valueChanged, this, [this](int) { saveSelectedFrameTicks(); });
-    connect(m_ticks, &QSpinBox::valueChanged, this, [this](int) { saveClipSettings(); });
+    connect(m_frameDuration, &QSpinBox::valueChanged, this, [this](int) { saveSelectedFrameDuration(); });
+    connect(m_defaultDuration, &QSpinBox::valueChanged, this, [this](int) { saveClipSettings(); });
     connect(m_loop, &QCheckBox::toggled, this, [this] { saveClipSettings(); });
     for (auto *spin : {m_footX, m_footY, m_boxX, m_boxY, m_boxW, m_boxH})
         connect(spin, &QSpinBox::valueChanged, this, [this] { refreshPreview(); });
@@ -929,18 +1166,61 @@ void SidboxPlayerAnimationEditor::createUi()
         if (writeDocument() && offerHeaderUpdate()) accept();
     });
     connect(exportC, &QPushButton::clicked, this, [this] { exportHeader(); });
-    m_timer = new QTimer(this); m_timer->setInterval(20);
+    updateWalkingPreviewControls();
+    m_timer = new QTimer(this);
+    m_timer->setTimerType(Qt::PreciseTimer); // Reduce preview timing jitter at 50 Hz.
+    m_timer->setInterval(20);
     connect(m_timer, &QTimer::timeout, this, [this] {
         if (!m_playing) return;
+        // Run the original 50 Hz preview simulation less frequently at slower
+        // speeds. The animation AND floor advance in the same virtual tick;
+        // no exported frame duration or physics value is modified.
+        m_previewSpeedAccumulator += m_previewSpeedPercent;
+        if (m_previewSpeedAccumulator < 100) return;
+        m_previewSpeedAccumulator -= 100;
         const Clip *c = effectiveClip();
         if (!c || c->frames.isEmpty()) return;
         const int pos = qBound(0, m_previewPosition, c->frames.size() - 1);
-        const int ticks = pos < c->frameTicks.size() ? c->frameTicks.at(pos) : c->ticks;
-        if (++m_previewElapsed < qMax(1, ticks)) return;
-        m_previewElapsed = 0;
-        if (m_previewPosition + 1 < c->frames.size()) ++m_previewPosition;
-        else if (c->loop) m_previewPosition = 0;
-        refreshPreview();
+        // A non-looping animation holds its final frame, but player physics
+        // does not stop at that frame. Keep scrolling the preview floor.
+        const bool showFloor = m_walkingFloor && m_walkingFloor->isChecked()
+            && currentState().compare(QStringLiteral("Walk"), Qt::CaseInsensitive) == 0;
+        if (showFloor && m_previewPhysics && m_previewPhysics->currentIndex() >= 0) {
+            const int physicsIndex = m_previewPhysics->currentIndex();
+            const QJsonObject physics = m_previewPhysicsProfiles.at(physicsIndex).toObject();
+            const int walkSpeed = qBound(0, physics.value(QStringLiteral("walkSpeed")).toInt(), 16);
+            int travelledPixels = walkSpeed;
+            if (physics.value(QStringLiteral("mode")).toInt() == 1) {
+                // Match GAME_PHYSICS_ICE's 0.35 px/tick acceleration, cap and
+                // integer-pixel remainder used by game_tile_player_update().
+                m_iceVelocity100 = qMin(walkSpeed * 100, m_iceVelocity100 + 35);
+                const int step100 = m_iceRemainder100 + m_iceVelocity100;
+                travelledPixels = step100 / 100;
+                m_iceRemainder100 = step100 % 100;
+            } else {
+                m_iceVelocity100 = 0;
+                m_iceRemainder100 = 0;
+            }
+            // Two tiles prevent checkerboard parity from jumping at a wrap.
+            const int period100 = qMax(1, m_worldTileSize * 200);
+            m_floorTravel100 = (m_floorTravel100 + travelledPixels * 100) % period100;
+        }
+        bool changed = false;
+        if (c->loop || pos + 1 < c->frames.size()) {
+            int remaining = m_previewElapsed + 20; // Same 50 Hz timebase as exported runtime.
+            int durationMs = pos < c->frameMs.size() ? c->frameMs.at(pos) : c->durationMs;
+            while (remaining >= qMax(1, durationMs)) {
+                remaining -= qMax(1, durationMs);
+                if (m_previewPosition + 1 < c->frames.size()) ++m_previewPosition;
+                else if (c->loop) m_previewPosition = 0;
+                else { remaining = 0; changed = true; break; }
+                changed = true;
+                durationMs = m_previewPosition < c->frameMs.size()
+                    ? c->frameMs.at(m_previewPosition) : c->durationMs;
+            }
+            m_previewElapsed = remaining;
+        }
+        if (changed || showFloor) refreshPreview();
     });
     m_timer->start();
 }
@@ -949,8 +1229,15 @@ void SidboxPlayerAnimationEditor::rebuildStateList(int selected)
 {
     QSignalBlocker guard(m_stateList);
     m_stateList->clear();
-    for (const QString &state : m_states) {
-        auto *item = new QListWidgetItem(animationStateIcon(state, m_theme), state);
+    for (int id = 0; id < m_states.size(); ++id) {
+        const QString &state = m_states.at(id);
+        // IDs are ordinal and may change when an earlier state is removed.
+        // Show the exact number emitted into player_anim.h without altering
+        // the true state name used by .sbanim, clips, or C header generation.
+        auto *item = new QListWidgetItem(animationStateIcon(state, m_theme),
+            QStringLiteral("%1   %2").arg(id).arg(state));
+        item->setToolTip(tr("Runtime animation state ID: %1\n"
+            "IDs follow the order shown here and may change if states are removed.").arg(id));
         item->setSizeHint(QSize(170, 43)); // Same bordered row height as object types.
         m_stateList->addItem(item);
     }
@@ -983,7 +1270,10 @@ void SidboxPlayerAnimationEditor::updateAtlas()
 void SidboxPlayerAnimationEditor::refreshAll()
 {
     m_previewPosition = 0; m_previewElapsed = 0;
-    refreshTimeline(); refreshPreview();
+    m_floorTravel100 = 0;
+    m_iceVelocity100 = 0;
+    m_iceRemainder100 = 0;
+    refreshTimeline(); updateWalkingPreviewControls(); refreshPreview();
 }
 void SidboxPlayerAnimationEditor::refreshTimeline()
 {
@@ -992,16 +1282,20 @@ void SidboxPlayerAnimationEditor::refreshTimeline()
     QSignalBlocker guard(m_timeline);
     m_timeline->clear();
     const Clip *clip = effectiveClip();
+    if (m_setAllFrameDurations) {
+        const auto local = m_clips.constFind(clipKey(currentState(), currentDirection()));
+        m_setAllFrameDurations->setEnabled(local != m_clips.constEnd() && !local->frames.isEmpty());
+    }
     if (clip) {
         for (int i = 0; i < clip->frames.size(); ++i) {
             const int frame = clip->frames.at(i);
-            const int ticks = i < clip->frameTicks.size() ? clip->frameTicks.at(i) : clip->ticks;
+            const int durationMs = i < clip->frameMs.size() ? clip->frameMs.at(i) : clip->durationMs;
             auto *item = new QListWidgetItem(frameIcon(m_atlas, frame, m_cellW, m_cellH),
-                tr("%1\n%2 ms").arg(frame).arg(ticks * 20));
+                tr("%1\n%2 ms").arg(frame).arg(durationMs));
             item->setData(Qt::UserRole, frame);
-            item->setData(Qt::UserRole + 1, ticks);
-            item->setToolTip(tr("Atlas cell %1 — %2 ticks (%3 ms); drag to reorder")
-                                 .arg(frame).arg(ticks).arg(ticks * 20));
+            item->setData(Qt::UserRole + 1, durationMs);
+            item->setToolTip(tr("Atlas cell %1 — %2 ms; drag to reorder")
+                                 .arg(frame).arg(durationMs));
             item->setTextAlignment(Qt::AlignCenter);
             m_timeline->addItem(item);
         }
@@ -1009,51 +1303,81 @@ void SidboxPlayerAnimationEditor::refreshTimeline()
     if (m_timeline->count())
         m_timeline->setCurrentRow(qBound(0, previous, m_timeline->count() - 1));
     {
-        QSignalBlocker ticks(m_ticks), loop(m_loop);
-        m_ticks->setValue(clip ? clip->ticks : 5);
+        QSignalBlocker durationBlock(m_defaultDuration), loop(m_loop);
+        m_defaultDuration->setValue(clip ? clip->durationMs : 100);
         m_loop->setChecked(clip ? clip->loop : true);
     }
     m_refreshing = false;
-    updateSelectedFrameTicks();
+    updateSelectedFrameDuration();
     bool flipped = false; effectiveClip(&flipped);
     const int cols = m_cellW ? m_atlas.width() / m_cellW : 0;
     const int rows = m_cellH ? m_atlas.height() / m_cellH : 0;
-    m_status->setText(tr("%1 / %2  |  %3 frames%4  |  %5 atlas cells  |  per-frame timing at 50 Hz")
+    m_status->setText(tr("%1 / %2  |  %3 frames%4  |  %5 atlas cells  |  millisecond timings (50 Hz runtime)")
         .arg(currentState(), currentDirection()).arg(clip ? clip->frames.size() : 0)
         .arg(flipped ? tr("  [mirrored from right]") : QString())
         .arg(cols * rows));
 }
-void SidboxPlayerAnimationEditor::updateSelectedFrameTicks()
+void SidboxPlayerAnimationEditor::updateSelectedFrameDuration()
 {
-    if (!m_frameTicks) return;
-    QSignalBlocker block(m_frameTicks);
+    if (!m_frameDuration) return;
+    QSignalBlocker block(m_frameDuration);
     const Clip *clip = effectiveClip();
     const int row = m_timeline->currentRow();
     const bool valid = clip && row >= 0 && row < clip->frames.size();
     const bool local = !currentState().isEmpty() && !currentDirection().isEmpty()
         && m_clips.contains(clipKey(currentState(), currentDirection()))
         && !m_clips.value(clipKey(currentState(), currentDirection())).frames.isEmpty();
-    m_frameTicks->setEnabled(valid && local);
-    m_frameTicks->setValue(valid ? (row < clip->frameTicks.size()
-                              ? clip->frameTicks.at(row) : clip->ticks) : m_ticks->value());
+    m_frameDuration->setEnabled(valid && local);
+    m_frameDuration->setValue(valid ? (row < clip->frameMs.size()
+                              ? clip->frameMs.at(row) : clip->durationMs) : m_defaultDuration->value());
 }
-void SidboxPlayerAnimationEditor::saveSelectedFrameTicks()
+void SidboxPlayerAnimationEditor::saveSelectedFrameDuration()
 {
     if (m_refreshing) return;
     const QString key = clipKey(currentState(), currentDirection());
     const int row = m_timeline->currentRow();
     auto it = m_clips.find(key);
     if (it == m_clips.end() || row < 0 || row >= it->frames.size()) return;
-    while (it->frameTicks.size() < it->frames.size()) it->frameTicks.append(it->ticks);
-    it->frameTicks[row] = m_frameTicks->value();
+    while (it->frameMs.size() < it->frames.size()) it->frameMs.append(it->durationMs);
+    it->frameMs[row] = m_frameDuration->value();
     if (auto *item = m_timeline->item(row)) {
-        item->setData(Qt::UserRole + 1, it->frameTicks[row]);
-        item->setText(tr("%1\n%2 ms").arg(it->frames[row]).arg(it->frameTicks[row] * 20));
-        item->setToolTip(tr("Atlas cell %1 — %2 ticks (%3 ms); drag to reorder")
-                             .arg(it->frames[row]).arg(it->frameTicks[row])
-                             .arg(it->frameTicks[row] * 20));
+        item->setData(Qt::UserRole + 1, it->frameMs[row]);
+        item->setText(tr("%1\n%2 ms").arg(it->frames[row]).arg(it->frameMs[row]));
+        item->setToolTip(tr("Atlas cell %1 — %2 ms; drag to reorder")
+                             .arg(it->frames[row]).arg(it->frameMs[row]));
     }
     m_previewElapsed = 0;
+}
+void SidboxPlayerAnimationEditor::updateWalkingPreviewControls()
+{
+    if (!m_walkingFloor || !m_previewPhysics || !m_floorInfo) return;
+    const bool walking = currentState().compare(QStringLiteral("Walk"), Qt::CaseInsensitive) == 0;
+    m_walkingFloor->setEnabled(walking);
+    m_previewPhysics->setEnabled(walking && m_walkingFloor->isChecked());
+    // Game size controls the common sprite scale for EVERY animation state.
+    // Disabling it outside Walk silently made Idle/Run three times bigger
+    // than Walk at the same Preview zoom, so leave it available globally.
+    if (m_gameScaleCheck)
+        m_gameScaleCheck->setEnabled(true);
+    const int index = m_previewPhysics->currentIndex();
+    if (index < 0 || index >= m_previewPhysicsProfiles.size()) {
+        m_floorInfo->setText(tr("No player physics profiles available."));
+        return;
+    }
+    const QJsonObject physics = m_previewPhysicsProfiles.at(index).toObject();
+    const int speed = physics.value(QStringLiteral("walkSpeed")).toInt();
+    const bool ice = physics.value(QStringLiteral("mode")).toInt() == 1;
+    const QString world = m_previewWorldName.isEmpty() ? tr("current world") : m_previewWorldName;
+    const int editorZoom = qMax(1, qMin(6, qMin(220 / qMax(1, m_cellW),
+                                                 220 / qMax(1, m_cellH))));
+    const int pixelScale = m_gameScaleWalkingFloor ? 1 : editorZoom;
+    const int zoom = m_previewZoom ? m_previewZoom->value() : 1;
+    m_floorInfo->setText(tr("%1: %2×%2 tiles  |  %3: %4 world px/50 Hz tick%5  |  "
+        "%6× game render, %7× display zoom: %8 visible px/tick")
+        .arg(world).arg(m_worldTileSize)
+        .arg(physics.value(QStringLiteral("name")).toString())
+        .arg(speed).arg(ice ? tr(" (Ice acceleration)") : QString())
+        .arg(pixelScale).arg(zoom).arg(speed * pixelScale * zoom));
 }
 void SidboxPlayerAnimationEditor::refreshPreview()
 {
@@ -1064,18 +1388,61 @@ void SidboxPlayerAnimationEditor::refreshPreview()
            ? m_paletteZeroBackground : m_theme.alternateBackground);
     preview.fill(background);
     QPainter painter(&preview);
-    QColor grid = background.lightnessF() < 0.5
-        ? background.lighter(160) : background.darker(140);
-    grid.setAlpha(125);
-    painter.setPen(QPen(grid, 1));
-    const QPoint horizon(128, 164);
-    for (int x = -128; x <= 384; x += 48)
-        painter.drawLine(horizon, QPoint(x, 255));
-    for (int y : {177, 190, 207, 229, 251})
-        painter.drawLine(0, y, 255, y);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    const int scale = qMax(1, qMin(6, qMin(220 / qMax(1, m_cellW), 220 / qMax(1, m_cellH))));
-    const int x = (256 - m_cellW * scale) / 2, y = (256 - m_cellH * scale) / 2;
+    const int editorZoom = qMax(1, qMin(6, qMin(220 / qMax(1, m_cellW), 220 / qMax(1, m_cellH))));
+    const bool showFloor = m_walkingFloor && m_walkingFloor->isChecked()
+        && currentState().compare(QStringLiteral("Walk"), Qt::CaseInsensitive) == 0;
+    // One shared game/editor scale for ALL states. Previously only Walk
+    // honoured Game size (1×), while Idle/Run applied the extra editorZoom
+    // beneath the global Preview zoom (e.g. Walk 2× vs Idle 6×).
+    // The moving floor uses this same scale for tiles and movement; the
+    // separate Preview zoom below magnifies the final 256×256 image only.
+    const int scale = m_gameScaleWalkingFloor ? 1 : editorZoom;
+    const int floorY = 211;
+    const int x = (256 - m_cellW * scale) / 2;
+    // Anchor every state to the same ground plane. Centring non-Walk art
+    // ignored Foot Y and left the character hovering above its grid.
+    const int y = floorY - m_footY->value() * scale;
+    if (showFloor) {
+        // Flat floor with one visual tile for each real world tile, rendered
+        // at the SAME nearest-neighbour sprite zoom. Geometry is visual only.
+        const int tilePixels = qMax(1, m_worldTileSize * scale);
+        const int period = tilePixels * 2;
+        const int travel = (m_floorTravel100 / 100) * scale;
+        const bool left = currentDirection().contains(QStringLiteral("Left"));
+        const int offset = ((left ? -travel : travel) % period + period) % period;
+        const int firstX = -(offset % tilePixels);
+        const int firstColumn = offset / tilePixels;
+        const QColor floorBase = background.lightnessF() < 0.5
+            ? background.lighter(135) : background.darker(123);
+        const QColor alternate = floorBase.lightnessF() < 0.5
+            ? floorBase.lighter(113) : floorBase.darker(108);
+        painter.fillRect(QRect(0, floorY, 256, 256 - floorY), floorBase);
+        for (int column = 0, tileX = firstX; tileX < 256;
+             ++column, tileX += tilePixels) {
+            if ((column + firstColumn) & 1)
+                painter.fillRect(QRect(tileX, floorY, tilePixels, 256 - floorY), alternate);
+        }
+        QColor seam = floorBase.lightnessF() < 0.5
+            ? floorBase.lighter(150) : floorBase.darker(145);
+        painter.setPen(QPen(seam, 1));
+        for (int tileX = firstX; tileX < 256; tileX += tilePixels)
+            painter.drawLine(tileX, floorY, tileX, 255);
+        for (int tileY = floorY; tileY < 256; tileY += tilePixels)
+            painter.drawLine(0, tileY, 255, tileY);
+        painter.setPen(QPen(seam.lighter(125), 2));
+        painter.drawLine(0, floorY, 255, floorY);
+    } else {
+        QColor grid = background.lightnessF() < 0.5
+            ? background.lighter(160) : background.darker(140);
+        grid.setAlpha(125);
+        painter.setPen(QPen(grid, 1));
+        const QPoint horizon(128, 164);
+        for (int gx = -128; gx <= 384; gx += 48)
+            painter.drawLine(horizon, QPoint(gx, 255));
+        for (int gy : {177, 190, floorY, 229, 251})
+            painter.drawLine(0, gy, 255, gy);
+    }
     if (clip && !clip->frames.isEmpty()) {
         const int cols = m_cellW ? m_atlas.width() / m_cellW : 0;
         const int frame = clip->frames[qBound(0, m_previewPosition, clip->frames.size() - 1)];
@@ -1099,7 +1466,13 @@ void SidboxPlayerAnimationEditor::refreshPreview()
         painter.drawLine(fx, fy - 7, fx, fy + 7);
     }
     painter.end();
-    m_preview->setPixmap(QPixmap::fromImage(preview));
+    // Apply display-only zoom uniformly to every animation state. This
+    // scales the completed image, never the animation/world simulation.
+    const int zoom = m_previewZoom ? m_previewZoom->value() : 1;
+    const QSize displaySize(256 * zoom, 256 * zoom);
+    if (m_preview->size() != displaySize) m_preview->setFixedSize(displaySize);
+    m_preview->setPixmap(QPixmap::fromImage(zoom == 1 ? preview :
+        preview.scaled(displaySize, Qt::IgnoreAspectRatio, Qt::FastTransformation)));
 }
 void SidboxPlayerAnimationEditor::appendFrame(int index, bool range)
 {
@@ -1107,14 +1480,14 @@ void SidboxPlayerAnimationEditor::appendFrame(int index, bool range)
     const int count = (m_atlas.width() / m_cellW) * (m_atlas.height() / m_cellH);
     if (index < 0 || index >= count || index > 255) return;
     Clip &clip = m_clips[clipKey(currentState(), currentDirection())];
-    if (clip.frames.isEmpty()) { clip.ticks = m_ticks->value(); clip.loop = m_loop->isChecked(); }
+    if (clip.frames.isEmpty()) { clip.durationMs = m_defaultDuration->value(); clip.loop = m_loop->isChecked(); }
     // Shift-click a range using the previously selected atlas cell.
     const int start = range && m_selectedAtlasFrame >= 0 ? m_selectedAtlasFrame : index;
     const int step = start <= index ? 1 : -1;
     for (int i = start; ; i += step) {
         if (i >= 0 && i < count && clip.frames.size() < 256) {
             clip.frames.append(i);
-            clip.frameTicks.append(m_ticks->value());
+            clip.frameMs.append(m_defaultDuration->value());
         }
         if (i == index) break;
     }
@@ -1140,7 +1513,7 @@ void SidboxPlayerAnimationEditor::removeFrame()
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
     clip.frames.removeAt(position);
-    if (position < clip.frameTicks.size()) clip.frameTicks.removeAt(position);
+    if (position < clip.frameMs.size()) clip.frameMs.removeAt(position);
     refreshTimeline(); m_timeline->setCurrentRow(qMin(position, clip.frames.size() - 1)); refreshPreview();
 }
 void SidboxPlayerAnimationEditor::moveFrame(int delta)
@@ -1155,15 +1528,15 @@ void SidboxPlayerAnimationEditor::moveFrame(int delta)
     const int to = pos + delta;
     if (pos < 0 || to < 0 || to >= clip.frames.size()) return;
     std::swap(clip.frames[pos], clip.frames[to]);
-    while (clip.frameTicks.size() < clip.frames.size()) clip.frameTicks.append(clip.ticks);
-    std::swap(clip.frameTicks[pos], clip.frameTicks[to]);
+    while (clip.frameMs.size() < clip.frames.size()) clip.frameMs.append(clip.durationMs);
+    std::swap(clip.frameMs[pos], clip.frameMs[to]);
     refreshTimeline(); m_timeline->setCurrentRow(to); refreshPreview();
 }
 void SidboxPlayerAnimationEditor::saveClipSettings()
 {
     if (m_refreshing || currentState().isEmpty() || currentDirection().isEmpty()) return;
     Clip &clip = m_clips[clipKey(currentState(), currentDirection())];
-    clip.ticks = m_ticks->value(); clip.loop = m_loop->isChecked();
+    clip.durationMs = m_defaultDuration->value(); clip.loop = m_loop->isChecked();
     refreshTimeline();
 }
 void SidboxPlayerAnimationEditor::readDocument()
@@ -1197,21 +1570,29 @@ void SidboxPlayerAnimationEditor::readDocument()
         }
         if (!fromFile.isEmpty()) m_states = fromFile;
     }
+    const bool millisecondFormat = root.value("version").toInt(2) >= 3;
     for (auto v : root.value("clips").toArray()) {
         const QJsonObject c = v.toObject();
         const QString state = c.value("state").toString(), dir = c.value("direction").toString();
         if (!m_states.contains(state) || !directionsFor(m_mode).contains(dir)) continue;
-        Clip clip; clip.ticks = qBound(1, c.value("ticks").toInt(5), 250);
+        // V2 .sbanim stores 50 Hz ticks. Migrate in memory without changing playback speed.
+        // V3 stores exact millisecond durations, including values not divisible by 20.
+        Clip clip;
+        clip.durationMs = millisecondFormat
+            ? qBound(1, c.value("durationMs").toInt(100), 5000)
+            : qBound(1, c.value("ticks").toInt(5), 250) * 20;
         clip.loop = c.value("loop").toBool(true);
         for (auto f : c.value("frames").toArray()) {
             const int frame = f.toInt(-1);
             if (frame >= 0 && frame < 256 && clip.frames.size() < 256) clip.frames << frame;
         }
-        const QJsonArray frameDurations = c.value("frameTicks").toArray();
+        const QJsonArray frameDurations = c.value(millisecondFormat ? "frameMs" : "frameTicks").toArray();
         for (int i = 0; i < clip.frames.size(); ++i) {
-            clip.frameTicks.append(i < frameDurations.size()
-                ? qBound(1, frameDurations.at(i).toInt(clip.ticks), 250)
-                : clip.ticks);
+            const int duration = i < frameDurations.size()
+                ? frameDurations.at(i).toInt(millisecondFormat ? clip.durationMs : clip.durationMs / 20)
+                : (millisecondFormat ? clip.durationMs : clip.durationMs / 20);
+            clip.frameMs.append(millisecondFormat ? qBound(1, duration, 5000)
+                                                : qBound(1, duration, 250) * 20);
         }
         m_clips[clipKey(state, dir)] = clip;
     }
@@ -1248,7 +1629,7 @@ bool SidboxPlayerAnimationEditor::writeDocument()
         return false;
     }
     QJsonObject root;
-    root["format"] = "SIDBOX-PLAYER-ANIM"; root["version"] = 2;
+    root["format"] = "SIDBOX-PLAYER-ANIM"; root["version"] = 3;
     root["atlas"] = QDir(QFileInfo(m_file).absolutePath()).relativeFilePath(m_atlasFile);
     root["cellWidth"] = m_cellW; root["cellHeight"] = m_cellH;
     root["directions"] = m_mode; root["mirrorLeft"] = m_mirror;
@@ -1264,15 +1645,15 @@ bool SidboxPlayerAnimationEditor::writeDocument()
         const QStringList key = it.key().split('|');
         if (key.size() != 2 || !m_states.contains(key.at(0)) || !directionsFor(m_mode).contains(key.at(1))) continue;
         QJsonObject c; c["state"] = key.at(0); c["direction"] = key.at(1);
-        c["ticks"] = it.value().ticks; c["loop"] = it.value().loop;
+        c["durationMs"] = it.value().durationMs; c["loop"] = it.value().loop;
         QJsonArray frames;
         for (int f : it.value().frames) frames.append(f);
         c["frames"] = frames;
         QJsonArray frameDurations;
         for (int i = 0; i < it.value().frames.size(); ++i)
-            frameDurations.append(i < it.value().frameTicks.size()
-                                  ? it.value().frameTicks.at(i) : it.value().ticks);
-        c["frameTicks"] = frameDurations;
+            frameDurations.append(i < it.value().frameMs.size()
+                                  ? it.value().frameMs.at(i) : it.value().durationMs);
+        c["frameMs"] = frameDurations;
         clips.append(c);
     }
     root["clips"] = clips;
@@ -1292,7 +1673,7 @@ bool SidboxPlayerAnimationEditor::writeDocument()
 QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QString *error) const
 {
     // The playeranim.ruleh owns the COMPLETE runtime C implementation.
-    // Only state IDs, direction IDs, clip frame/tick data and defaults come from Qt.
+    // Only state IDs, direction IDs, clip frame durations (ms) and defaults come from Qt.
     const QDir app(QCoreApplication::applicationDirPath());
     QStringList candidates;
     if (qEnvironmentVariableIsSet("SIDBOX_SDK"))
@@ -1337,7 +1718,7 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
         return {};
     }
     for (const QString &name : {QStringLiteral("STATE"), QStringLiteral("DIRECTION"),
-                                QStringLiteral("FRAME_ARRAY"), QStringLiteral("TICK_ARRAY"),
+                                QStringLiteral("FRAME_ARRAY"), QStringLiteral("DURATION_ARRAY"),
                                 QStringLiteral("CLIP_ENTRY")}) {
         if (!sections.contains(name)) {
             if (error) *error = QStringLiteral("Missing Player Animation rule section %1").arg(name);
@@ -1390,7 +1771,7 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
                 }
             }
         }
-        QString frameName = QStringLiteral("0"), tickName = QStringLiteral("0");
+        QString frameName = QStringLiteral("0"), durationName = QStringLiteral("0");
         if (clip) {
             frameName = QStringLiteral("%1_frames_%2").arg(prefix).arg(index);
             QStringList frameValues;
@@ -1400,26 +1781,26 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
                  {QStringLiteral("FRAME_VALUES"), frameValues.join(QStringLiteral(", ")) + QStringLiteral(", ")}}, arrays)) return {};
             bool nonuniform = false;
             for (int pos = 0; pos < clip->frames.size(); ++pos) {
-                if ((pos < clip->frameTicks.size() ? clip->frameTicks.at(pos) : clip->ticks) != clip->ticks) {
+                if ((pos < clip->frameMs.size() ? clip->frameMs.at(pos) : clip->durationMs) != clip->durationMs) {
                     nonuniform = true; break;
                 }
             }
             if (nonuniform) {
-                tickName = QStringLiteral("%1_ticks_%2").arg(prefix).arg(index);
-                QStringList ticks;
+                durationName = QStringLiteral("%1_ms_%2").arg(prefix).arg(index);
+                QStringList durations;
                 for (int pos = 0; pos < clip->frames.size(); ++pos)
-                    ticks.append(QString::number(pos < clip->frameTicks.size()
-                                ? clip->frameTicks.at(pos) : clip->ticks));
-                if (!renderRow(QStringLiteral("TICK_ARRAY"),
-                    {{QStringLiteral("ARRAY_NAME"), tickName},
-                     {QStringLiteral("TICK_VALUES"), ticks.join(QStringLiteral(", ")) + QStringLiteral(", ")}}, arrays)) return {};
+                    durations.append(QString::number(pos < clip->frameMs.size()
+                                ? clip->frameMs.at(pos) : clip->durationMs));
+                if (!renderRow(QStringLiteral("DURATION_ARRAY"),
+                    {{QStringLiteral("ARRAY_NAME"), durationName},
+                     {QStringLiteral("DURATION_VALUES"), durations.join(QStringLiteral(", ")) + QStringLiteral(", ")}}, arrays)) return {};
             }
         }
         const QMap<QString, QString> fields = {
             {QStringLiteral("FRAME_ARRAY"), frameName},
-            {QStringLiteral("TICK_ARRAY"), tickName},
+            {QStringLiteral("DURATION_ARRAY"), durationName},
             {QStringLiteral("FRAME_COUNT"), clip ? QString::number(clip->frames.size()) : QStringLiteral("0")},
-            {QStringLiteral("TICKS"), clip ? QString::number(clip->ticks) : QStringLiteral("1")},
+            {QStringLiteral("DURATION_MS"), clip ? QString::number(clip->durationMs) : QStringLiteral("1")},
             {QStringLiteral("LOOP"), !clip || clip->loop ? QStringLiteral("1") : QStringLiteral("0")},
             {QStringLiteral("FLIP"), flip ? QStringLiteral("1") : QStringLiteral("0")}
         };
@@ -1445,6 +1826,8 @@ QString SidboxPlayerAnimationEditor::generateHeader(const QString &prefix, QStri
         {QStringLiteral("DIRECTION_COUNT"), QString::number(dirs.size())},
         {QStringLiteral("HAS_HURT"), m_states.contains(QStringLiteral("Hurt"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("HAS_MELEE"), m_states.contains(QStringLiteral("Melee"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_UPSTAIRS"), m_states.contains(QStringLiteral("Upstairs"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
+        {QStringLiteral("HAS_DOWNSTAIRS"), m_states.contains(QStringLiteral("Downstairs"), Qt::CaseInsensitive) ? QStringLiteral("1") : QStringLiteral("0")},
         {QStringLiteral("CLIP_ARRAYS"), arrays},
         {QStringLiteral("CLIP_COUNT"), QString::number(clips.isEmpty() ? 0 : m_states.size() * dirs.size())},
         {QStringLiteral("CLIP_ROWS"), clips},
