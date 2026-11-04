@@ -11,6 +11,7 @@
 #include "notefloweditor.h"
 #include "gamemainownership.h"
 #include "gameworldsnapshot.h"
+#include "sidboxvideoconverter.h"
 #include "optionsdialog.h"
 #include "findreplacedialog.h"
 #include "projectsettingsdialog.h"
@@ -6404,6 +6405,9 @@ void MainWindow::setupInterface()
     guiDesignerAction->setToolTip(tr("Create a visual CoderGirl 480x320 GUI design"));
     QAction *gameDesignerAction = toolBar->addAction(gameEditorIcon("toolbar_gamedesigner.png"), tr("Game Designer"));
     gameDesignerAction->setToolTip(tr("Create a V1 game world, camera layout, and resource references"));
+    QAction *videoConverterAction = toolBar->addAction(
+        gameEditorIcon("gadget_media.png"), tr("Video Converter"));
+    videoConverterAction->setToolTip(tr("Convert videos to SIDBOX MJPEG/MP3 AVI (standalone tool)"));
     QAction *workflowAction = toolBar->addAction(gameEditorIcon("tree_file_txt.png"), tr("Workflow Notes"));
     workflowAction->setToolTip(tr("Create a stand-alone .notef planning board (V1 and V2)."));
     QAction *optionsAction = toolBar->addAction(gameEditorIcon("options.png"), tr("Options"));
@@ -6472,6 +6476,18 @@ void MainWindow::setupInterface()
     connect(projectSettingsAction, &QAction::triggered, this, &MainWindow::showProjectSettings);
     connect(guiDesignerAction, &QAction::triggered, this, &MainWindow::createGuiDesigner);
     connect(gameDesignerAction, &QAction::triggered, this, &MainWindow::createGameDesigner);
+    connect(videoConverterAction, &QAction::triggered, this, [this]() {
+        if (auto *existing = findChild<QDialog *>(QStringLiteral("sidboxVideoConverter"))) {
+            existing->show();
+            existing->raise();
+            existing->activateWindow();
+            return;
+        }
+        auto *converter = new SidboxVideoConverterDialog(this);
+        converter->show();
+        converter->raise();
+        converter->activateWindow();
+    });
     connect(workflowAction, &QAction::triggered, this, [this]{ createWorkflowNotes(); });
     connect(optionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(aboutIdeAction, &QAction::triggered, this, &MainWindow::showAboutIde);

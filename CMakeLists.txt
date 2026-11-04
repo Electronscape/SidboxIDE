@@ -25,6 +25,8 @@ qt_add_executable(SidboxIDE
     projectsettingsdialog.cpp
     projectsettingsdialog.h
     mainwindow.cpp
+    sidboxvideoconverter.cpp
+    sidboxvideoconverter.h
     mainwindow_projectexplorer.cpp
     mainwindow_editorview.cpp
     mainwindow_filewatch.cpp

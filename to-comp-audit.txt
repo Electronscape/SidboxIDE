@@ -82,7 +82,7 @@ Our dependency-warning system already checks important object configurations. Bu
 It should catch missing graphics, broken NPC references, unreachable world destinations, quest references, invalid logic, missing TFCard resources and incompatible save layouts.
 For your planned 20–30-world game, I'd also test generated memory use, world switching, save sizes and performance. Large `.map` worlds are supported, but that alone doesn't establish the memory cost of all the persistent per-world state.
 One smaller polish item: a proper in-game Pause/Resume menu. The title screen already has options, but I don't see a separate player-controlled pause menu in the generated gameplay starter.
-## ❤️ What I'd do before starting the real game
+## What I'd do before starting the real game
 
 
 
