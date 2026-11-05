@@ -12,7 +12,6 @@
 class QCheckBox;
 class QComboBox;
 class QFileSystemModel;
-class QLineEdit;
 class QLabel;
 class QPlainTextEdit;
 class QProcess;
@@ -103,8 +102,8 @@ private:
     QSortFilterProxyModel *m_targetSort = nullptr;
     QTreeView *m_sourceView = nullptr;
     QTreeView *m_targetView = nullptr;
-    QLineEdit *m_sourcePath = nullptr;
-    QLineEdit *m_targetPath = nullptr;
+    QComboBox *m_sourcePath = nullptr;
+    QComboBox *m_targetPath = nullptr;
     QLabel *m_selectedLabel = nullptr;
     QLabel *m_status = nullptr;
     QComboBox *m_resolution = nullptr;

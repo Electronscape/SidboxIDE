@@ -265,8 +265,18 @@ SidboxVideoConverterDialog::SidboxVideoConverterDialog(QWidget *parent)
     auto *sourceHome = new QToolButton(left);
     sourceHome->setText(QStringLiteral("⌂"));
     sourceHome->setToolTip(tr("Home directory"));
-    m_sourcePath = new QLineEdit(left);
-    m_sourcePath->setPlaceholderText(tr("Local folder or smb://user@server/Share/Folder/"));
+    m_sourcePath = new QComboBox(left);
+    m_sourcePath->setEditable(true);
+    m_sourcePath->setInsertPolicy(QComboBox::NoInsert);
+    m_sourcePath->setMaxVisibleItems(15);
+    m_sourcePath->lineEdit()->setPlaceholderText(tr("Local folder or smb://user@server/Share/Folder/"));
+    m_sourcePath->setToolTip(tr("Enter a source folder or choose a previously visited location (last 25)."));
+    for (const QString &path : settings.value(QStringLiteral("sourceHistory")).toStringList()) {
+        if (path.trimmed().isEmpty() || m_sourcePath->count() >= 25) continue;
+        if (path.startsWith(QStringLiteral("smb://"), Qt::CaseInsensitive) &&
+            !QUrl(path).password().isEmpty()) continue;
+        if (m_sourcePath->findText(path) < 0) m_sourcePath->addItem(path);
+    }
     sourceNavigation->addWidget(sourceUp);
     sourceNavigation->addWidget(sourceHome);
     sourceNavigation->addWidget(sourceRefresh);
@@ -327,8 +337,16 @@ SidboxVideoConverterDialog::SidboxVideoConverterDialog(QWidget *parent)
     auto *targetHome = new QToolButton(right);
     targetHome->setText(QStringLiteral("⌂"));
     targetHome->setToolTip(tr("Home directory"));
-    m_targetPath = new QLineEdit(right);
-    m_targetPath->setPlaceholderText(tr("Output folder"));
+    m_targetPath = new QComboBox(right);
+    m_targetPath->setEditable(true);
+    m_targetPath->setInsertPolicy(QComboBox::NoInsert);
+    m_targetPath->setMaxVisibleItems(15);
+    m_targetPath->lineEdit()->setPlaceholderText(tr("Output folder"));
+    m_targetPath->setToolTip(tr("Enter an output folder or choose a previously visited location (last 25)."));
+    for (const QString &path : settings.value(QStringLiteral("targetHistory")).toStringList()) {
+        if (path.trimmed().isEmpty() || m_targetPath->count() >= 25) continue;
+        if (m_targetPath->findText(path) < 0) m_targetPath->addItem(path);
+    }
     targetNavigation->addWidget(targetUp);
     targetNavigation->addWidget(targetHome);
     targetNavigation->addWidget(m_targetPath, 1);
@@ -503,8 +521,11 @@ SidboxVideoConverterDialog::SidboxVideoConverterDialog(QWidget *parent)
             navigateSource(location);
         }
     });
-    connect(m_sourcePath, &QLineEdit::returnPressed, this, [this]() {
-        navigateSource(m_sourcePath->text());
+    connect(m_sourcePath->lineEdit(), &QLineEdit::returnPressed, this, [this]() {
+        navigateSource(m_sourcePath->currentText());
+    });
+    connect(m_sourcePath, &QComboBox::activated, this, [this](int index) {
+        if (index >= 0) navigateSource(m_sourcePath->itemText(index));
     });
     connect(m_sourceView, &QTreeView::doubleClicked, this, [this](const QModelIndex &index) {
         if (m_sourceSort->sourceModel() == m_remoteModel) {
@@ -543,8 +564,11 @@ SidboxVideoConverterDialog::SidboxVideoConverterDialog(QWidget *parent)
         if (parent.cdUp()) navigateTarget(parent.absolutePath());
     });
     connect(targetHome, &QToolButton::clicked, this, [this]() { navigateTarget(QDir::homePath()); });
-    connect(m_targetPath, &QLineEdit::returnPressed, this,
-            [this]() { navigateTarget(m_targetPath->text()); });
+    connect(m_targetPath->lineEdit(), &QLineEdit::returnPressed, this,
+            [this]() { navigateTarget(m_targetPath->currentText()); });
+    connect(m_targetPath, &QComboBox::activated, this, [this](int index) {
+        if (index >= 0) navigateTarget(m_targetPath->itemText(index));
+    });
     connect(m_targetView, &QTreeView::doubleClicked, this, [this](const QModelIndex &index) {
         const QString path = m_targetModel->filePath(m_targetSort->mapToSource(index));
         if (QFileInfo(path).isDir()) navigateTarget(path);
@@ -553,8 +577,13 @@ SidboxVideoConverterDialog::SidboxVideoConverterDialog(QWidget *parent)
             this, [this](const QModelIndex &index) {
         const QString path = m_targetModel->filePath(m_targetSort->mapToSource(index));
         if (QFileInfo(path).isDir()) {
-            m_targetDirectory = path;
-            m_targetPath->setText(QDir::toNativeSeparators(path));
+            m_targetDirectory = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+            const QString visiblePath = QDir::toNativeSeparators(m_targetDirectory);
+            for (int i = m_targetPath->count() - 1; i >= 0; --i)
+                if (m_targetPath->itemText(i) == visiblePath) m_targetPath->removeItem(i);
+            if (m_targetPath->count() == 25) m_targetPath->removeItem(24);
+            m_targetPath->insertItem(0, visiblePath);
+            m_targetPath->setCurrentIndex(0);
         }
     });
     connect(m_convert, &QPushButton::clicked, this, [this]() {
@@ -743,21 +772,21 @@ void SidboxVideoConverterDialog::navigateSource(const QString &directory)
         if (!url.password().isEmpty()) {
             QMessageBox::warning(this, tr("Network source"),
                 tr("Enter the SMB password when prompted, not in the URL."));
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             return;
         }
         if (url.scheme().compare(QStringLiteral("smb"), Qt::CaseInsensitive) != 0 ||
             url.host().isEmpty() || url.path().split(QLatin1Char('/'), Qt::SkipEmptyParts).isEmpty()) {
             QMessageBox::warning(this, tr("Network source"),
                 tr("Use an SMB share URL such as smb://user@server/Share/Folder/"));
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             return;
         }
         if (QStandardPaths::findExecutable(QStringLiteral("smbclient")).isEmpty()) {
             QMessageBox::warning(this, tr("SMB support"),
                 tr("SMB browsing requires the Samba client. On Fedora, install it with:\n"
                    "sudo dnf install samba-client"));
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             return;
         }
         url.setPassword(QString());
@@ -767,7 +796,7 @@ void SidboxVideoConverterDialog::navigateSource(const QString &directory)
 
     const QFileInfo info(QDir::fromNativeSeparators(entered));
     if (!info.isDir()) {
-        m_sourcePath->setText(m_sourceDirectory);
+        m_sourcePath->setEditText(m_sourceDirectory);
         return;
     }
     m_pendingRemoteLocation.clear();
@@ -780,8 +809,13 @@ void SidboxVideoConverterDialog::navigateSource(const QString &directory)
     if (m_sourceSort->sourceModel() != m_sourceModel) {
         m_sourceSort->setSourceModel(m_sourceModel);
     }
-    m_sourceDirectory = info.absoluteFilePath();
-    m_sourcePath->setText(QDir::toNativeSeparators(m_sourceDirectory));
+    m_sourceDirectory = QDir::cleanPath(info.absoluteFilePath());
+    const QString visiblePath = QDir::toNativeSeparators(m_sourceDirectory);
+    for (int i = m_sourcePath->count() - 1; i >= 0; --i)
+        if (m_sourcePath->itemText(i) == visiblePath) m_sourcePath->removeItem(i);
+    if (m_sourcePath->count() == 25) m_sourcePath->removeItem(24);
+    m_sourcePath->insertItem(0, visiblePath);
+    m_sourcePath->setCurrentIndex(0);
     m_sourceView->setRootIndex(m_sourceSort->mapFromSource(m_sourceModel->index(m_sourceDirectory)));
     m_sourceView->sortByColumn(0, Qt::AscendingOrder);
     auto *header = static_cast<SidboxPersistentColumnsHeader *>(m_sourceView->header());
@@ -888,7 +922,7 @@ void SidboxVideoConverterDialog::startRemoteListing(const QUrl &url)
     m_smbListing = process;
     process->setProcessChannelMode(QProcess::SeparateChannels);
     m_status->setText(tr("Opening SMB folder..."));
-    m_sourcePath->setText(url.toDisplayString(QUrl::RemovePassword));
+    m_sourcePath->setEditText(url.toDisplayString(QUrl::RemovePassword));
     connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this, process, url, location](int code, QProcess::ExitStatus state) {
         const bool current = !m_closing && m_smbListing == process &&
@@ -932,7 +966,7 @@ void SidboxVideoConverterDialog::startRemoteListing(const QUrl &url)
                 }
             }
             m_smbPasswordPrompted = false; // Allow another attempt after a bad password.
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             m_status->setText(tr("SMB folder unavailable"));
             QMessageBox::warning(this, tr("SMB folder"),
                 tr("Could not list %1\n\n%2").arg(location,
@@ -951,7 +985,7 @@ void SidboxVideoConverterDialog::startRemoteListing(const QUrl &url)
             if (entry.match(line).hasMatch()) ++parsedRecords;
         }
         if (!parsedRecords) {
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             m_status->setText(tr("SMB listing format not recognised"));
             QMessageBox::warning(this, tr("SMB folder"),
                 tr("Connected to the SMB share, but could not read its directory listing.\n\n%1")
@@ -993,7 +1027,7 @@ void SidboxVideoConverterDialog::startRemoteListing(const QUrl &url)
     connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart && process == m_smbListing) {
             m_smbListing = nullptr;
-            m_sourcePath->setText(m_sourceDirectory);
+            m_sourcePath->setEditText(m_sourceDirectory);
             m_status->setText(tr("smbclient failed to start"));
             process->deleteLater();
         }
@@ -1016,7 +1050,12 @@ void SidboxVideoConverterDialog::showRemoteDirectory(const QUrl &url)
     header->applyRemembered();
     QTimer::singleShot(0, header, [header]() { header->applyRemembered(); });
     m_sourceDirectory = location;
-    m_sourcePath->setText(url.toDisplayString(QUrl::RemovePassword));
+    const QString visiblePath = url.toDisplayString(QUrl::RemovePassword);
+    for (int i = m_sourcePath->count() - 1; i >= 0; --i)
+        if (m_sourcePath->itemText(i) == visiblePath) m_sourcePath->removeItem(i);
+    if (m_sourcePath->count() == 25) m_sourcePath->removeItem(24);
+    m_sourcePath->insertItem(0, visiblePath);
+    m_sourcePath->setCurrentIndex(0);
     m_selectedSource.clear();
     m_selectedLabel->setText(tr("Choose a video on the left, then press Convert →"));
 }
@@ -1025,11 +1064,16 @@ void SidboxVideoConverterDialog::navigateTarget(const QString &directory)
 {
     const QFileInfo info(QDir::fromNativeSeparators(directory.trimmed()));
     if (!info.isDir()) {
-        m_targetPath->setText(m_targetDirectory);
+        m_targetPath->setEditText(m_targetDirectory);
         return;
     }
-    m_targetDirectory = info.absoluteFilePath();
-    m_targetPath->setText(QDir::toNativeSeparators(m_targetDirectory));
+    m_targetDirectory = QDir::cleanPath(info.absoluteFilePath());
+    const QString visiblePath = QDir::toNativeSeparators(m_targetDirectory);
+    for (int i = m_targetPath->count() - 1; i >= 0; --i)
+        if (m_targetPath->itemText(i) == visiblePath) m_targetPath->removeItem(i);
+    if (m_targetPath->count() == 25) m_targetPath->removeItem(24);
+    m_targetPath->insertItem(0, visiblePath);
+    m_targetPath->setCurrentIndex(0);
     m_targetView->setRootIndex(m_targetSort->mapFromSource(m_targetModel->index(m_targetDirectory)));
     m_targetView->sortByColumn(0, Qt::AscendingOrder);
     auto *header = static_cast<SidboxPersistentColumnsHeader *>(m_targetView->header());
@@ -1047,8 +1091,16 @@ void SidboxVideoConverterDialog::convertSelected()
         return;
     }
     // The target address bar is editable; accept a local directory entered there.
-    const QFileInfo typedTarget(QDir::fromNativeSeparators(m_targetPath->text().trimmed()));
-    if (typedTarget.isDir()) m_targetDirectory = typedTarget.absoluteFilePath();
+    const QFileInfo typedTarget(QDir::fromNativeSeparators(m_targetPath->currentText().trimmed()));
+    if (typedTarget.isDir()) {
+        m_targetDirectory = QDir::cleanPath(typedTarget.absoluteFilePath());
+        const QString visiblePath = QDir::toNativeSeparators(m_targetDirectory);
+        for (int i = m_targetPath->count() - 1; i >= 0; --i)
+            if (m_targetPath->itemText(i) == visiblePath) m_targetPath->removeItem(i);
+        if (m_targetPath->count() == 25) m_targetPath->removeItem(24);
+        m_targetPath->insertItem(0, visiblePath);
+        m_targetPath->setCurrentIndex(0);
+    }
     if (!QFileInfo(m_targetDirectory).isDir()) {
         QMessageBox::warning(this, tr("Video Converter"), tr("Choose an existing local target directory."));
         return;
@@ -1249,8 +1301,16 @@ void SidboxVideoConverterDialog::convertBatchFolder()
         (m_smbDownload && m_smbDownload->state() != QProcess::NotRunning)) return;
 
     // Respect an output path typed into the Target address bar.
-    const QFileInfo typedTarget(QDir::fromNativeSeparators(m_targetPath->text().trimmed()));
-    if (typedTarget.isDir()) m_targetDirectory = typedTarget.absoluteFilePath();
+    const QFileInfo typedTarget(QDir::fromNativeSeparators(m_targetPath->currentText().trimmed()));
+    if (typedTarget.isDir()) {
+        m_targetDirectory = QDir::cleanPath(typedTarget.absoluteFilePath());
+        const QString visiblePath = QDir::toNativeSeparators(m_targetDirectory);
+        for (int i = m_targetPath->count() - 1; i >= 0; --i)
+            if (m_targetPath->itemText(i) == visiblePath) m_targetPath->removeItem(i);
+        if (m_targetPath->count() == 25) m_targetPath->removeItem(24);
+        m_targetPath->insertItem(0, visiblePath);
+        m_targetPath->setCurrentIndex(0);
+    }
     if (!QFileInfo(m_targetDirectory).isDir()) {
         QMessageBox::warning(this, tr("Batch Convert"), tr("Choose a valid local destination folder."));
         return;
@@ -1872,6 +1932,13 @@ void SidboxVideoConverterDialog::savePreferences()
     settings.beginGroup(QStringLiteral("tools/videoConverter"));
     settings.setValue(QStringLiteral("sourceDirectory"), m_sourceDirectory);
     settings.setValue(QStringLiteral("targetDirectory"), m_targetDirectory);
+    QStringList sourceHistory, targetHistory;
+    for (int i = 0; i < m_sourcePath->count() && i < 25; ++i)
+        sourceHistory.append(m_sourcePath->itemText(i));
+    for (int i = 0; i < m_targetPath->count() && i < 25; ++i)
+        targetHistory.append(m_targetPath->itemText(i));
+    settings.setValue(QStringLiteral("sourceHistory"), sourceHistory);
+    settings.setValue(QStringLiteral("targetHistory"), targetHistory);
     settings.setValue(QStringLiteral("resolution"), m_resolution->currentData().toSize());
     settings.setValue(QStringLiteral("fps"), m_fps->currentData().toInt());
     settings.setValue(QStringLiteral("quality"), m_quality->currentData().toInt());

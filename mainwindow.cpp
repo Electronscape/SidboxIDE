@@ -6406,9 +6406,9 @@ void MainWindow::setupInterface()
     QAction *gameDesignerAction = toolBar->addAction(gameEditorIcon("toolbar_gamedesigner.png"), tr("Game Designer"));
     gameDesignerAction->setToolTip(tr("Create a V1 game world, camera layout, and resource references"));
     QAction *videoConverterAction = toolBar->addAction(
-        gameEditorIcon("gadget_media.png"), tr("Video Converter"));
+        gameEditorIcon("toolbar_moveconvert.png"), tr("Video Converter"));
     videoConverterAction->setToolTip(tr("Convert videos to SIDBOX MJPEG/MP3 AVI (standalone tool)"));
-    QAction *workflowAction = toolBar->addAction(gameEditorIcon("tree_file_txt.png"), tr("Workflow Notes"));
+    QAction *workflowAction = toolBar->addAction(gameEditorIcon("toolbar_notes.png"), tr("Workflow Notes"));
     workflowAction->setToolTip(tr("Create a stand-alone .notef planning board (V1 and V2)."));
     QAction *optionsAction = toolBar->addAction(gameEditorIcon("options.png"), tr("Options"));
 
