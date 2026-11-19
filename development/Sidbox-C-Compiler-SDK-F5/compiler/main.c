@@ -15,8 +15,13 @@ enum {
 
 static char source_path[PATH_CAPACITY];
 static char app_path[PATH_CAPACITY];
-static char source[SIDC_SOURCE_LIMIT + 1u];
-static char status[PATH_CAPACITY + 64];
+/* One shared pool. Multi-file builds have a combined 128 KiB source limit.
+   Separate NUL terminators keep all file slices stable for compiler tokens. */
+static char source[SIDC_SOURCE_LIMIT + SIDC_MAX_SOURCES];
+static char input_paths[SIDC_MAX_SOURCES][PATH_CAPACITY];
+static SidcSource input_sources[SIDC_MAX_SOURCES];
+static unsigned input_count;
+static char status[PATH_CAPACITY + 128];
 static char stage_path[PATH_CAPACITY];
 static char backup_path[PATH_CAPACITY];
 static CGGadget editor;
@@ -41,7 +46,7 @@ static void show_status(const char *text)
         GUICoderGirl->console->printf(0, "%s\n", text);
 }
 
-static int set_paths(const char *input)
+static int resolve_source_path(const char *input, char *destination, unsigned capacity)
 {
     size_t length = strlen(input);
     if (length < 3 || input[length - 2] != '.' || (input[length - 1] | 32) != 'c')
@@ -49,21 +54,29 @@ static int set_paths(const char *input)
     const char *drive = strchr(input, ':');
     int count;
     if (input[0] == '/' || (drive && drive[1] == '/')) {
-        count = snprintf(source_path, sizeof(source_path), "%s", input);
+        count = snprintf(destination, capacity, "%s", input);
     } else {
         if (drive)
             return 0;
         if (sfgetcwd(stage_path, sizeof(stage_path)) != FR_OK || stage_path[0] == 0)
             return 0;
         size_t cwd_length = strlen(stage_path);
-        count = snprintf(source_path, sizeof(source_path), "%s%s%s", stage_path,
+        count = snprintf(destination, capacity, "%s%s%s", stage_path,
                          stage_path[cwd_length - 1] == '/' ? "" : "/", input);
     }
-    /* Allow for replacing .c with .app and temporary-file suffixes. */
-    if (count < 3 || (unsigned)count + sizeof(".app.sidc-new") >= sizeof(source_path))
+    return count >= 3 && (unsigned)count < capacity;
+}
+
+static int set_paths(const char *input)
+{
+    if (!resolve_source_path(input, source_path, sizeof(source_path)))
         return 0;
-    memcpy(app_path, source_path, (size_t)count - 1u);
-    memcpy(app_path + count - 1, "app", sizeof("app"));
+    size_t count = strlen(source_path);
+    /* Reserve space for the two atomic-output suffixes. */
+    if (count + sizeof(".app.sidc-new") >= sizeof(source_path))
+        return 0;
+    memcpy(app_path, source_path, count - 1u);
+    memcpy(app_path + count - 1u, "app", sizeof("app"));
     return 1;
 }
 
@@ -102,6 +115,44 @@ static int read_source(uint32_t *length)
         return SOURCE_BINARY;
     source[*length] = '\0';
     return FR_OK;
+}
+
+static int read_sources(int argc, char **argv)
+{
+    uint32_t used = 0;
+    input_count = 0;
+    for (int i = 1; i < argc; ++i) {
+        unsigned index = input_count;
+        if (!resolve_source_path(argv[i], input_paths[index], PATH_CAPACITY)) {
+            snprintf(status, sizeof(status), "Invalid .c source path: %s", argv[i]);
+            show_status(status);
+            return 0;
+        }
+        uint32_t length = 0;
+        char *destination = source + used + index;
+        int result = read_file(input_paths[index], destination,
+                               SIDC_SOURCE_LIMIT - used, &length);
+        if (result != FR_OK) {
+            if (result == SOURCE_TOO_LARGE)
+                show_status("Combined sources exceed 128 KiB");
+            else {
+                snprintf(status, sizeof(status), "Open %s: file error %d",
+                         input_paths[index], result);
+                show_status(status);
+            }
+            return 0;
+        }
+        if (memchr(destination, 0, length)) {
+            snprintf(status, sizeof(status), "Source contains NUL: %s", input_paths[index]);
+            show_status(status);
+            return 0;
+        }
+        destination[length] = '\0';
+        input_sources[index] = (SidcSource){destination, length};
+        used += length;
+        ++input_count;
+    }
+    return 1;
 }
 
 static uint32_t read_apicore(void *buffer, uint32_t capacity)
@@ -165,7 +216,7 @@ static int report_file(int result, const char *action)
     if (result == FR_OK)
         return 1;
     if (result == SOURCE_TOO_LARGE)
-        show_status("Source exceeds 8 KiB");
+        show_status("Source exceeds 128 KiB");
     else if (result == SOURCE_BINARY)
         show_status("Source contains a NUL byte");
     else if (result == RESTORE_FAILED)
@@ -183,10 +234,17 @@ static int build(uint32_t length)
 {
     const void *app;
     SidcDiagnostic diagnostic;
-    uint32_t bytes = sidc_compile(source, length, read_apicore, &app, &diagnostic);
+    SidcSource one = {source, length};
+    uint32_t bytes = sidc_compile_sources(input_count ? input_sources : &one,
+                                          input_count ? input_count : 1u,
+                                          read_apicore, &app, &diagnostic);
     if (bytes == 0) {
-        snprintf(status, sizeof(status), "%u:%u  %s", (unsigned)diagnostic.line,
-                 (unsigned)diagnostic.column, diagnostic.message);
+        const char *problem = diagnostic.file_index < input_count
+                            ? input_paths[diagnostic.file_index] : source_path;
+        const char *leaf = strrchr(problem, '/');
+        snprintf(status, sizeof(status), "%s:%u:%u %s", leaf ? leaf + 1 : problem,
+                 (unsigned)diagnostic.line, (unsigned)diagnostic.column,
+                 diagnostic.message ? diagnostic.message : "Compilation failed");
         show_status(status);
         if (editor && diagnostic.line && diagnostic.column) {
             SBOS_TextAreaSetCaret(editor, diagnostic.line - 1u, diagnostic.column - 1u);
@@ -197,8 +255,12 @@ static int build(uint32_t length)
     int result = write_file(app_path, app, bytes);
     if (result == FR_OK) {
         const char *leaf = status_label ? strrchr(app_path, '/') : NULL;
-        snprintf(status, sizeof(status), "Built %s (%u bytes)", leaf ? leaf + 1 : app_path,
-                 (unsigned)bytes);
+        if (input_count > 1u)
+            snprintf(status, sizeof(status), "Built %s (%u bytes, %u sources)",
+                     leaf ? leaf + 1 : app_path, (unsigned)bytes, input_count);
+        else
+            snprintf(status, sizeof(status), "Built %s (%u bytes)",
+                     leaf ? leaf + 1 : app_path, (unsigned)bytes);
         show_status(status);
     }
     return report_file(result, "Build");
@@ -212,9 +274,9 @@ static CGWindowProcRes editor_proc(CGWindow win, const CGMessage_t *message)
         (message->gadget != save_button && message->gadget != build_button))
         return CGPROC_DEFAULT;
 
-    uint32_t bytes = SBOS_TextAreaGetText(editor, source, sizeof(source));
-    if (bytes == 0 || bytes > sizeof(source)) {
-        show_status("Source exceeds 8 KiB");
+    uint32_t bytes = SBOS_TextAreaGetText(editor, source, SIDC_SOURCE_LIMIT + 1u);
+    if (bytes == 0 || bytes > SIDC_SOURCE_LIMIT + 1u) {
+        show_status("Source exceeds 128 KiB");
         return CGPROC_HANDLED;
     }
     if (message->gadget == build_button) {
@@ -260,23 +322,32 @@ static int open_editor(int new_file)
 int main(int argc, char **argv)
 {
     int edit = argc == 1 || (argc == 3 && strcmp(argv[1], "-e") == 0);
-    if (argc != 1 && argc != 2 && !edit) {
-        show_status("Usage: launch compiler.app [-e] source.c");
+    if (argc < 1 || argc > (int)SIDC_MAX_SOURCES + 1 ||
+        (argc >= 2 && strcmp(argv[1], "-e") == 0 && !edit)) {
+        show_status("Usage: compiler [-e] main.c [module.c ...]");
         return 1;
     }
-    const char *path = argc == 1 ? "hello.c" : argv[argc - 1];
+    const char *path = argc == 1 ? "hello.c" : edit ? argv[argc - 1] : argv[1];
     if (!set_paths(path)) {
         show_status("Choose a .c source path");
         return 1;
     }
 
+    if (!edit) {
+        if (!read_sources(argc, argv))
+            return 1;
+        /* The first source chooses the .app filename. All sources share
+           a single final image and are linked inside sidc_compile_sources. */
+        return !build(0);
+    }
+
     uint32_t length = 0;
     int result = read_source(&length);
-    if (edit && result == FR_NO_FILE) {
+    if (result == FR_NO_FILE) {
         memcpy(source, starter, sizeof(starter));
         return open_editor(1);
     }
     if (!report_file(result, "Open source"))
         return 1;
-    return edit ? open_editor(0) : !build(length);
+    return open_editor(0);
 }

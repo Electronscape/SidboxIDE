@@ -1,0 +1,22 @@
+{
+    "version": 2,
+    "projectType": "gui",
+    "appletFormat": "v2",
+    "v2Linker": "llvm",
+    "outputAppName": "sdk-window-input.app",
+    "appSizeKb": 32,
+    "v2HeapKb": 4,
+    "v2StackKb": 8,
+    "files": ["sdk-window-input.c"],
+    "openTabs": ["sdk-window-input.c"],
+    "compiler": {
+        "optimization": "-Os",
+        "suppressWarnings": false,
+        "wall": true,
+        "wextra": false,
+        "functionSections": true,
+        "dataSections": true,
+        "stackUsage": true,
+        "extraFlags": "-include string.h -include stdlib.h"
+    }
+}

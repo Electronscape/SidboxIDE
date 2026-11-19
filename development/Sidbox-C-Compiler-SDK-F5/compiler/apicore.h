@@ -4,13 +4,16 @@
 #include <stdint.h>
 
 #define SIDC_APICORE_PATH "tfcard:/dev/apicore/apis.bin"
-#define SIDC_APICORE_MAGIC "SBAPI01"
+#define SIDC_APICORE_MAGIC_V1 "SBAPI01"
+#define SIDC_APICORE_MAGIC_V2 "SBAPI02"
+#define SIDC_APICORE_MAGIC "SBAPI03"
 
 enum {
-    SIDC_API_CALLS = 8,
-    SIDC_API_CONSTANTS = 16,
+    SIDC_API_CALLS = 40,
+    SIDC_API_CONSTANTS = 40,
     SIDC_API_NAME = 32,
-    SIDC_API_PARAMS = 7,
+    SIDC_API_PARAMS_V2 = 8,
+    SIDC_API_PARAMS = 12,
     SIDC_API_OFFSETS = 3
 };
 
@@ -20,7 +23,20 @@ enum {
     SIDC_API_S16,
     SIDC_API_U16,
     SIDC_API_U32,
-    SIDC_API_U8
+    SIDC_API_U8,
+    SIDC_API_VOID,
+    SIDC_API_S8,
+    SIDC_API_GADGET_CALLBACK,
+    SIDC_API_TIMER_CALLBACK,
+    SIDC_API_S32,
+    SIDC_API_WINDOW_CALLBACK,
+    SIDC_API_WINDOW_REF,
+    SIDC_API_BYTE_BUFFER
+};
+
+enum {
+    SIDC_MSG_MTYPE, SIDC_MSG_WINHND, SIDC_MSG_GADGET, SIDC_MSG_EVENT,
+    SIDC_MSG_A, SIDC_MSG_B, SIDC_MSG_C, SIDC_MSG_D, SIDC_MSG_FIELDS
 };
 
 typedef struct {
@@ -36,7 +52,6 @@ typedef struct {
     uint8_t arity;
     uint8_t result;
     uint8_t params[SIDC_API_PARAMS];
-    uint8_t reserved;
 } SidcApiCall;
 
 typedef struct {
@@ -44,8 +59,16 @@ typedef struct {
     uint32_t value;
 } SidcApiConstant;
 
+/* Stored after the constants starting in SBAPI02. The offsets come from the SDK. */
+typedef struct {
+    uint16_t offsets[SIDC_MSG_FIELDS];
+    uint16_t size;
+    uint16_t reserved;
+} SidcApiMessage;
+
 _Static_assert(sizeof(SidcApiHeader) == 20, "API header layout");
-_Static_assert(sizeof(SidcApiCall) == 48, "API call layout");
+_Static_assert(sizeof(SidcApiCall) == 52, "API call layout");
 _Static_assert(sizeof(SidcApiConstant) == 36, "API constant layout");
+_Static_assert(sizeof(SidcApiMessage) == 20, "API message layout");
 
 #endif
