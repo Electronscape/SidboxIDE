@@ -1,3 +1,0 @@
-graphics.c:9:6:LoadPPB	56	static
-graphics.c:34:6:gfx_createBitmap	8	static
-graphics.c:52:6:gfx_draw1bit	36	static

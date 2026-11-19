@@ -1,5 +1,5 @@
 {
-    "appSizeKb": 352,
+    "appSizeKb": 416,
     "appletFormat": "v2",
     "compiler": {
         "dataSections": true,
@@ -24,7 +24,7 @@
     "linkerScript": "",
     "modSizeKb": 0,
     "openTabs": [
-        "compiler.h"
+        "compiler.c"
     ],
     "outputAppName": "compiler.app",
     "projectType": "gui",

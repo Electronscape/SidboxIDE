@@ -46,11 +46,23 @@ static void show_status(const char *text)
         GUICoderGirl->console->printf(0, "%s\n", text);
 }
 
-static int resolve_source_path(const char *input, char *destination, unsigned capacity)
+/* Resolve a .c input or .app output against the shell working directory.
+   Absolute and tfcard:/ paths are preserved verbatim. */
+static int resolve_path(const char *input, const char *extension,
+                        char *destination, unsigned capacity)
 {
-    size_t length = strlen(input);
-    if (length < 3 || input[length - 2] != '.' || (input[length - 1] | 32) != 'c')
+    if (!input || !*input)
         return 0;
+    size_t length = strlen(input);
+    size_t suffix = strlen(extension);
+    if (length <= suffix)
+        return 0;
+    for (size_t i = 0; i < suffix; ++i) {
+        unsigned char actual = (unsigned char)input[length - suffix + i];
+        unsigned char expected = (unsigned char)extension[i];
+        if ((actual | 32u) != (expected | 32u))
+            return 0;
+    }
     const char *drive = strchr(input, ':');
     int count;
     if (input[0] == '/' || (drive && drive[1] == '/')) {
@@ -64,20 +76,29 @@ static int resolve_source_path(const char *input, char *destination, unsigned ca
         count = snprintf(destination, capacity, "%s%s%s", stage_path,
                          stage_path[cwd_length - 1] == '/' ? "" : "/", input);
     }
-    return count >= 3 && (unsigned)count < capacity;
+    return count > 0 && (unsigned)count < capacity;
 }
 
-static int set_paths(const char *input)
+/* Omitted -o preserves the existing first-source-names-the-app behaviour. */
+static int set_paths(const char *input, const char *output)
 {
-    if (!resolve_source_path(input, source_path, sizeof(source_path)))
+    if (!resolve_path(input, ".c", source_path, sizeof(source_path)))
         return 0;
-    size_t count = strlen(source_path);
-    /* Reserve space for the two atomic-output suffixes. */
-    if (count + sizeof(".app.sidc-new") >= sizeof(source_path))
-        return 0;
-    memcpy(app_path, source_path, count - 1u);
-    memcpy(app_path + count - 1u, "app", sizeof("app"));
-    return 1;
+    if (output) {
+        if (!resolve_path(output, ".app", app_path, sizeof(app_path)))
+            return 0;
+    } else {
+        size_t count = strlen(source_path);
+        /* Replace the last 'c' with 'app', keeping the dot. */
+        if (count + 3u > sizeof(app_path))
+            return 0;
+        memcpy(app_path, source_path, count - 1u);
+        memcpy(app_path + count - 1u, "app", sizeof("app"));
+    }
+    /* Both atomic-write filenames must fit the existing path buffers. */
+    size_t count = strlen(app_path);
+    return count + sizeof(".sidc-new") <= sizeof(stage_path) &&
+           count + sizeof(".sidc-old") <= sizeof(backup_path);
 }
 
 static int read_file(const char *path, void *buffer, uint32_t capacity, uint32_t *length)
@@ -117,14 +138,14 @@ static int read_source(uint32_t *length)
     return FR_OK;
 }
 
-static int read_sources(int argc, char **argv)
+static int read_sources(unsigned count, const char *const *paths)
 {
     uint32_t used = 0;
     input_count = 0;
-    for (int i = 1; i < argc; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
         unsigned index = input_count;
-        if (!resolve_source_path(argv[i], input_paths[index], PATH_CAPACITY)) {
-            snprintf(status, sizeof(status), "Invalid .c source path: %s", argv[i]);
+        if (!resolve_path(paths[i], ".c", input_paths[index], PATH_CAPACITY)) {
+            snprintf(status, sizeof(status), "Invalid .c source path: %s", paths[i]);
             show_status(status);
             return 0;
         }
@@ -155,6 +176,29 @@ static int read_sources(int argc, char **argv)
     return 1;
 }
 
+/* Resolve quoted headers relative to the C file or header that includes them.
+   A NULL buffer only resolves the name for the compiler's header cache. */
+static int read_header(const char *including_path, const char *header_name,
+                       char *buffer, uint32_t capacity, uint32_t *length,
+                       char *resolved_path, uint32_t path_capacity)
+{
+    if (!including_path || !header_name || !*header_name ||
+        header_name[0] == '/' || strchr(header_name, ':'))
+        return 0;
+    const char *slash = strrchr(including_path, '/');
+    if (!slash)
+        return 0;
+    size_t prefix = (size_t)(slash - including_path) + 1u;
+    size_t name_length = strlen(header_name);
+    if (prefix + name_length >= path_capacity)
+        return 0;
+    memcpy(resolved_path, including_path, prefix);
+    memcpy(resolved_path + prefix, header_name, name_length + 1u);
+    if (!buffer)
+        return 1;
+    return read_file(resolved_path, buffer, capacity, length) == FR_OK;
+}
+
 static uint32_t read_apicore(void *buffer, uint32_t capacity)
 {
     uint32_t length;
@@ -164,8 +208,14 @@ static uint32_t read_apicore(void *buffer, uint32_t capacity)
 static int write_file(char *path, const void *bytes, uint32_t length)
 {
     const API_FILEIO *fs = SYSFileSystem;
-    snprintf(stage_path, sizeof(stage_path), "%s.sidc-new", path);
-    snprintf(backup_path, sizeof(backup_path), "%s.sidc-old", path);
+    size_t path_length = strlen(path);
+    if (path_length + sizeof(".sidc-new") > sizeof(stage_path) ||
+        path_length + sizeof(".sidc-old") > sizeof(backup_path))
+        return FR_DENIED;
+    memcpy(stage_path, path, path_length);
+    memcpy(stage_path + path_length, ".sidc-new", sizeof(".sidc-new"));
+    memcpy(backup_path, path, path_length);
+    memcpy(backup_path + path_length, ".sidc-old", sizeof(".sidc-old"));
 
     void *file;
     FRESULT result = fs->sbstream_open(stage_path, SD_WRITE | SD_CREATE_NEW, &file);
@@ -235,18 +285,24 @@ static int build(uint32_t length)
     const void *app;
     SidcDiagnostic diagnostic;
     SidcSource one = {source, length};
-    uint32_t bytes = sidc_compile_sources(input_count ? input_sources : &one,
+    const char *paths[SIDC_MAX_SOURCES];
+    for (unsigned i = 0; i < input_count; ++i)
+        paths[i] = input_paths[i];
+    const char *editor_path = source_path;
+    uint32_t bytes = sidc_compile_project(input_count ? input_sources : &one,
+                                          input_count ? paths : &editor_path,
                                           input_count ? input_count : 1u,
-                                          read_apicore, &app, &diagnostic);
+                                          read_apicore, read_header, &app, &diagnostic);
     if (bytes == 0) {
-        const char *problem = diagnostic.file_index < input_count
+        const char *problem = diagnostic.path ? diagnostic.path
+                            : diagnostic.file_index < input_count
                             ? input_paths[diagnostic.file_index] : source_path;
         const char *leaf = strrchr(problem, '/');
         snprintf(status, sizeof(status), "%s:%u:%u %s", leaf ? leaf + 1 : problem,
                  (unsigned)diagnostic.line, (unsigned)diagnostic.column,
                  diagnostic.message ? diagnostic.message : "Compilation failed");
         show_status(status);
-        if (editor && diagnostic.line && diagnostic.column) {
+        if (editor && !diagnostic.path && diagnostic.line && diagnostic.column) {
             SBOS_TextAreaSetCaret(editor, diagnostic.line - 1u, diagnostic.column - 1u);
             SBOS_GadgetSetFocus(editor);
         }
@@ -321,23 +377,54 @@ static int open_editor(int new_file)
 
 int main(int argc, char **argv)
 {
+    const char *sources[SIDC_MAX_SOURCES];
+    const char *output = NULL;
+    unsigned count = 0;
     int edit = argc == 1 || (argc == 3 && strcmp(argv[1], "-e") == 0);
-    if (argc < 1 || argc > (int)SIDC_MAX_SOURCES + 1 ||
-        (argc >= 2 && strcmp(argv[1], "-e") == 0 && !edit)) {
-        show_status("Usage: compiler [-e] main.c [module.c ...]");
+
+    if (argc < 1 || (argc >= 2 && strcmp(argv[1], "-e") == 0 && !edit)) {
+        show_status("Usage: compiler [-e file.c] | [-i] file.c [more.c ...] [-o name.app]");
         return 1;
     }
-    const char *path = argc == 1 ? "hello.c" : edit ? argv[argc - 1] : argv[1];
-    if (!set_paths(path)) {
-        show_status("Choose a .c source path");
+    if (!edit) {
+        /* -i marks the input list; the original positional form also works.
+           -o consumes exactly the next argument, which must end in .app. */
+        int have_input_flag = 0;
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "-i") == 0) {
+                if (have_input_flag || i + 1 >= argc || argv[i + 1][0] == '-') {
+                    show_status("Usage: compiler -i source.c [more.c ...] -o name.app");
+                    return 1;
+                }
+                have_input_flag = 1;
+            } else if (strcmp(argv[i], "-o") == 0) {
+                if (output || i + 1 >= argc || argv[i + 1][0] == '-') {
+                    show_status("Usage: compiler [-i] file.c [more.c ...] -o name.app");
+                    return 1;
+                }
+                output = argv[++i];
+            } else if (argv[i][0] == '-' || count >= SIDC_MAX_SOURCES) {
+                show_status("Invalid option or too many sources (maximum 16)");
+                return 1;
+            } else {
+                sources[count++] = argv[i];
+            }
+        }
+        if (!count) {
+            show_status("Usage: compiler [-i] file.c [more.c ...] [-o name.app]");
+            return 1;
+        }
+    }
+
+    const char *path = argc == 1 ? "hello.c" : edit ? argv[argc - 1] : sources[0];
+    if (!set_paths(path, output)) {
+        show_status("Choose valid .c sources and a .app output path (-o)");
         return 1;
     }
 
     if (!edit) {
-        if (!read_sources(argc, argv))
+        if (!read_sources(count, sources))
             return 1;
-        /* The first source chooses the .app filename. All sources share
-           a single final image and are linked inside sidc_compile_sources. */
         return !build(0);
     }
 

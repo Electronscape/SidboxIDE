@@ -11,9 +11,19 @@ typedef struct {
     uint32_t line;
     uint32_t column;
     uint32_t file_index;  /* source index, zero for single-file compilation */
+    const char *path;    /* non-NULL for errors inside an included header */
 } SidcDiagnostic;
 
 typedef uint32_t (*SidcReadApiCore)(void *buffer, uint32_t capacity);
+
+/* Resolve a quoted include relative to the including source/header path.
+   buffer == NULL requests path resolution without opening a file.
+   On success, supply the canonical project path in resolved_path. */
+typedef int (*SidcReadHeader)(const char *including_path,
+                              const char *header_name,
+                              char *buffer, uint32_t capacity,
+                              uint32_t *length,
+                              char *resolved_path, uint32_t path_capacity);
 
 typedef struct {
     const char *source;
@@ -29,6 +39,14 @@ uint32_t sidc_compile(const char *source, uint32_t length,
    applies to the sum of all input sources. */
 uint32_t sidc_compile_sources(const SidcSource *sources, uint32_t count,
                               SidcReadApiCore read_apicore,
+                              const void **app, SidcDiagnostic *diagnostic);
+
+/* Like sidc_compile_sources, with local quoted-header support. Source names
+   are full source paths, valid for the duration of the compilation. */
+uint32_t sidc_compile_project(const SidcSource *sources,
+                              const char *const *source_paths, uint32_t count,
+                              SidcReadApiCore read_apicore,
+                              SidcReadHeader read_header,
                               const void **app, SidcDiagnostic *diagnostic);
 
 #endif

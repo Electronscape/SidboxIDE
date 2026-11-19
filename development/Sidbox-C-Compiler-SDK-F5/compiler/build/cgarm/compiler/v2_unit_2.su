@@ -1,9 +1,0 @@
-main.c:70:12:read_file	40	static
-main.c:107:17:read_apicore	16	static
-main.c:113:12:write_file	40	static
-main.c:36:13:show_status	0	static
-main.c:232:12:open_editor	48	static
-main.c:163:12:report_file.part.0	24	static
-main.c:182:12:build	40	static
-main.c:207:24:editor_proc	16	static
-main.c:260:5:main	40	static
