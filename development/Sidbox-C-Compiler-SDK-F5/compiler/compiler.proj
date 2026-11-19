@@ -1,0 +1,36 @@
+{
+    "appSizeKb": 128,
+    "appletFormat": "v2",
+    "compiler": {
+        "dataSections": true,
+        "extraFlags": "-include string.h -include stdlib.h -DSIDC_EXPORT_APICORE",
+        "functionSections": true,
+        "optimization": "-Os",
+        "stackUsage": true,
+        "suppressWarnings": false,
+        "v1ParallelJobs": 4,
+        "wall": true,
+        "wextra": false
+    },
+    "files": [
+        "apicore.h",
+        "applet_v2_format.h",
+        "compiler.c",
+        "compiler.h",
+        "export_apicore.c",
+        "generated_runtime.h",
+        "main.c"
+    ],
+    "linkerScript": "",
+    "modSizeKb": 0,
+    "openTabs": [
+        "main.c",
+        "compiler.c"
+    ],
+    "outputAppName": "compiler.app",
+    "projectType": "gui",
+    "v2HeapKb": 16,
+    "v2Linker": "cgarm",
+    "v2StackKb": 8,
+    "version": 2
+}
