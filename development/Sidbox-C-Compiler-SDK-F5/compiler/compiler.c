@@ -11,7 +11,7 @@ enum {
     TOK_UNSUPPORTED, TOK_APIS_INCLUDE,
     TOK_INT, TOK_VOID, TOK_EXTERN, TOK_CONST, TOK_CHAR,
     TOK_IF, TOK_ELSE, TOK_WHILE, TOK_RETURN, TOK_STATIC, TOK_BREAK, TOK_CONTINUE, TOK_FOR,
-    TOK_SWITCH, TOK_CASE, TOK_DEFAULT,
+    TOK_SWITCH, TOK_CASE, TOK_DEFAULT, TOK_STRUCT, TOK_UNION, TOK_TYPEDEF, TOK_SIZEOF,
     TOK_EQ, TOK_NE, TOK_LE, TOK_GE, TOK_AND, TOK_OR, TOK_ARROW,
     TOK_INC, TOK_DEC, TOK_ADD_ASSIGN, TOK_SUB_ASSIGN, TOK_SKIP
 };
@@ -27,14 +27,16 @@ enum {
     HEADER_PATH_LIMIT = 256, INCLUDE_DEPTH_LIMIT = 12,
     MACRO_LIMIT = 128, MACRO_NAME_LIMIT = 64, CONDITIONAL_LIMIT = 32,
     SWITCH_CASE_LIMIT = 256, SWITCH_BREAK_LIMIT = 512,
-    CONTROL_LIMIT = 64
+    CONTROL_LIMIT = 64, STRUCT_LIMIT = 24, STRUCT_FIELDS = 16, TYPEDEF_LIMIT = 64,
+    INITIAL_WORD_LIMIT = 1024
 };
 
 enum { BUILTIN_MESSAGE = 4, BUILTIN_TICKS = 8, BUILTIN_BUTTONS = 12 };
 enum {
     LOCAL_INT, LOCAL_GADGET, LOCAL_POINTER, LOCAL_S32, LOCAL_ARGV, LOCAL_WINDOW, LOCAL_MESSAGE,
     GLOBAL_BYTE_ARRAY, GLOBAL_INT_ARRAY, LOCAL_INT_ARRAY, LOCAL_INT_POINTER, LOCAL_PADDING,
-    LOCAL_FUNCTION_POINTER
+    LOCAL_FUNCTION_POINTER, LOCAL_STRUCT, LOCAL_STRUCT_POINTER, GLOBAL_STRUCT,
+    LOCAL_STRUCT_ARRAY, GLOBAL_STRUCT_ARRAY
 };
 enum { RETURN_INT, RETURN_VOID, RETURN_WINDOW, RETURN_INT_POINTER };
 enum { VALUE_INT, VALUE_UNSIGNED, VALUE_VOID, VALUE_POINTER, VALUE_INT_POINTER };
@@ -62,6 +64,7 @@ typedef struct {
     uint8_t is_static;
     uint8_t unit;
     uint8_t param_types[FUNCTION_PARAMS];
+    uint8_t param_struct_ids[FUNCTION_PARAMS];
 } Function;
 
 typedef struct {
@@ -70,6 +73,11 @@ typedef struct {
     uint32_t offset;
     uint8_t type;
     uint8_t unit;
+    uint8_t struct_id;
+    uint8_t in_data;
+    uint16_t init_offset;
+    uint16_t init_count;
+    uint32_t array_count;
 } Global;
 
 typedef struct {
@@ -82,8 +90,32 @@ typedef struct {
     Token name;
     uint8_t scope;
     uint8_t type;
+    uint8_t struct_id;
     FunctionPointerSignature callback;
+    uint16_t array_count;
 } Local;
+
+typedef struct {
+    Token name;
+    uint8_t record_id;          /* 255 = scalar int, otherwise record type */
+    uint16_t offset_words;      /* unions place every member at word zero */
+} RecordField;
+
+typedef struct {
+    Token name;                 /* tag name, or anonymous typedef's name */
+    RecordField fields[STRUCT_FIELDS];
+    uint16_t size_words;
+    uint8_t count;
+    uint8_t is_union;
+    uint8_t anonymous;
+    uint8_t unit;
+} StructDef;
+
+typedef struct {
+    Token name;
+    uint8_t record_id;          /* 255 = int */
+    uint8_t unit;
+} TypeAlias;
 
 typedef struct {
     uint32_t at;
@@ -171,8 +203,14 @@ typedef struct {
     unsigned address_count;
     Global globals[GLOBAL_LIMIT];
     unsigned global_count;
+    StructDef structs[STRUCT_LIMIT];
+    unsigned struct_count;
+    TypeAlias aliases[TYPEDEF_LIMIT];
+    unsigned alias_count;
     uint32_t global_bytes;
     uint32_t array_bytes;
+    uint32_t initial_values[INITIAL_WORD_LIMIT];
+    unsigned initial_used;
     Function functions[FUNCTION_LIMIT];
     unsigned function_count;
     Reference calls[CALL_LIMIT];
@@ -984,13 +1022,13 @@ static Token scan(Compiler *c)
             read_char(c);
         token.length = (uint32_t)(c->source + c->pos - token.text);
         static const char *const keywords[] = {
-            "int", "void", "extern", "const", "char", "if", "else", "while", "return", "static", "break", "continue", "for", "switch", "case", "default"
+            "int", "void", "extern", "const", "char", "if", "else", "while", "return", "static", "break", "continue", "for", "switch", "case", "default", "struct", "union", "typedef", "sizeof"
         };
         static const char *const reserved[] = {
             "auto", "do", "double",
             "enum", "float", "goto", "inline", "long", "register",
-            "restrict", "short", "signed", "sizeof", "struct",
-            "typedef", "union", "unsigned", "volatile", "_Alignas",
+            "restrict", "short", "signed",
+            "unsigned", "volatile", "_Alignas",
             "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic",
             "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local"
         };
@@ -1414,6 +1452,511 @@ static int find_local(const Compiler *c, Token name)
     return -1;
 }
 
+static int expression(Compiler *c, int minimum, int requirement);
+
+/* Records are word-aligned, because this subset currently supports only
+   integer and embedded-record members. A struct sums member sizes; a union
+   overlays all members, reserving the largest member size. */
+#define RECORD_INT 255u
+
+static int find_alias(const Compiler *c, Token name)
+{
+    for (unsigned i = 0; i < c->alias_count; ++i)
+        if (c->aliases[i].unit == c->file_index &&
+            same_name(c->aliases[i].name, name)) return (int)i;
+    return -1;
+}
+
+static int find_record(const Compiler *c, Token name, int is_union)
+{
+    for (unsigned i = 0; i < c->struct_count; ++i)
+        if (!c->structs[i].anonymous && same_name(c->structs[i].name, name) &&
+            c->structs[i].is_union == (uint8_t)is_union) return (int)i;
+    return -1;
+}
+
+static int records_equal(const StructDef *a, const StructDef *b)
+{
+    if (a->count != b->count || a->size_words != b->size_words ||
+        a->is_union != b->is_union) return 0;
+    for (unsigned i = 0; i < a->count; ++i)
+        if (!same_name(a->fields[i].name, b->fields[i].name) ||
+            a->fields[i].record_id != b->fields[i].record_id ||
+            a->fields[i].offset_words != b->fields[i].offset_words) return 0;
+    return 1;
+}
+
+/* Consumes either 'struct Tag', 'union Tag', or a known local typedef.
+   Anonymous records appear only in a typedef definition, not as a type name. */
+static int record_type(Compiler *c, unsigned *id)
+{
+    int is_union;
+    if (c->token.kind == TOK_STRUCT || c->token.kind == TOK_UNION) {
+        is_union = c->token.kind == TOK_UNION;
+        advance(c);
+        Token tag = c->token;
+        if (!expect(c, TOK_NAME, "Expected struct or union tag")) return 0;
+        int index = find_record(c, tag, is_union);
+        if (index < 0) error_at(c, tag, is_union ? "Unknown union type; define it first" : "Unknown struct type; define it first");
+        else *id = (unsigned)index;
+        return 1;
+    }
+    if (c->token.kind == TOK_NAME) {
+        int alias = find_alias(c, c->token);
+        if (alias >= 0 && c->aliases[alias].record_id != RECORD_INT) {
+            *id = c->aliases[alias].record_id;
+            advance(c);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int is_record_type(const Compiler *c)
+{
+    if (c->token.kind == TOK_STRUCT || c->token.kind == TOK_UNION) return 1;
+    if (c->token.kind == TOK_NAME) {
+        int alias = find_alias(c, c->token);
+        return alias >= 0 && c->aliases[alias].record_id != RECORD_INT;
+    }
+    return 0;
+}
+
+/* Parses {...}, but intentionally leaves the trailing declarator/semicolon to
+   the caller. An optional name is available for a tagged definition. */
+static int record_definition(Compiler *c, Token tag, int is_union,
+                             int anonymous, Token alias_name)
+{
+    if (!expect(c, '{', "Expected '{' after record type")) return -1;
+    StructDef value = {.name = anonymous ? alias_name : tag,
+                       .is_union = (uint8_t)is_union,
+                       .anonymous = (uint8_t)anonymous,
+                       .unit = c->file_index};
+    while (!c->diagnostic.message && c->token.kind != '}' && c->token.kind != TOK_END) {
+        if (value.count == STRUCT_FIELDS) {
+            error(c, "Record exceeds sixteen fields");
+            return -1;
+        }
+        unsigned child = RECORD_INT;
+        if (accept(c, TOK_INT)) {
+            child = RECORD_INT;
+        } else if (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
+                   c->aliases[find_alias(c, c->token)].record_id == RECORD_INT) {
+            advance(c);
+        } else if (!record_type(c, &child)) {
+            error(c, is_union ? "Only int fields are supported inside union, or previously defined records" : "Only int fields are supported inside struct, or previously defined records");
+            return -1;
+        }
+        Token field = c->token;
+        if (!expect(c, TOK_NAME, "Expected record field name") ||
+            !expect(c, ';', "Expected ';' after record field")) return -1;
+        for (unsigned i = 0; i < value.count; ++i)
+            if (same_name(value.fields[i].name, field)) {
+                error_at(c, field, is_union ? "Duplicate union field" : "Duplicate struct field");
+                return -1;
+            }
+        unsigned words = child == RECORD_INT ? 1u : c->structs[child].size_words;
+        if (!words || words > 65535u - value.size_words) {
+            error_at(c, field, "Record size exceeds supported memory range");
+            return -1;
+        }
+        value.fields[value.count++] = (RecordField){.name=field,
+                    .record_id=(uint8_t)child,
+                    .offset_words=(uint16_t)(is_union ? 0 : value.size_words)};
+        if (is_union) {
+            if (words > value.size_words) value.size_words = (uint16_t)words;
+        } else {
+            value.size_words = (uint16_t)(value.size_words + words);
+        }
+    }
+    if (!expect(c, '}', "Expected '}' after record fields")) return -1;
+    if (anonymous) value.name = c->token;
+    if (!value.count) {
+        error_at(c, tag, "Empty records are outside this C subset");
+        return -1;
+    }
+    if (!anonymous && find_record(c, tag, !is_union) >= 0) {
+        error_at(c, tag, "Struct and union tags share a name namespace");
+        return -1;
+    }
+    int existing = anonymous ? -1 : find_record(c, tag, is_union);
+    if (anonymous) {
+        /* Anonymous typedef records in separate translation units have
+           compatible layout when the shared alias name and fields match. */
+        for (unsigned i = 0; i < c->struct_count; ++i)
+            if (c->structs[i].anonymous &&
+                c->structs[i].unit != c->file_index &&
+                same_name(c->structs[i].name, value.name) &&
+                records_equal(&value, &c->structs[i])) {
+                existing = (int)i;
+                break;
+            }
+    }
+    if (existing >= 0) {
+        if (!records_equal(&value, &c->structs[existing])) {
+            error_at(c, tag, is_union ? "Conflicting union definition" : "Conflicting struct definition");
+            return -1;
+        }
+        return existing;
+    }
+    if (c->struct_count == STRUCT_LIMIT) {
+        error_at(c, tag, "Too many struct/union definitions");
+        return -1;
+    }
+    unsigned next = c->struct_count++;
+    c->structs[next] = value;
+    return (int)next;
+}
+
+static void register_alias(Compiler *c, Token name, unsigned record_id)
+{
+    if (find_global(c, name) >= 0 || find_function(c, name) >= 0) {
+        error_at(c, name, "Typedef conflicts with a file-scope declaration");
+        return;
+    }
+    int existing = find_alias(c, name);
+    if (existing >= 0) {
+        if (c->aliases[existing].record_id != record_id)
+            error_at(c, name, "Conflicting typedef declaration");
+        return;
+    }
+    if (c->alias_count == TYPEDEF_LIMIT) {
+        error_at(c, name, "Too many typedef declarations");
+        return;
+    }
+    c->aliases[c->alias_count++] = (TypeAlias){.name=name,
+                           .record_id=(uint8_t)record_id,.unit=c->file_index};
+}
+
+static void typedef_declaration(Compiler *c)
+{
+    unsigned id = RECORD_INT;
+    int defining = 0, is_union = 0;
+    Token tag = c->token;
+    if (accept(c, TOK_INT)) {
+        id = RECORD_INT;
+    } else if (c->token.kind == TOK_STRUCT || c->token.kind == TOK_UNION) {
+        is_union = c->token.kind == TOK_UNION;
+        advance(c);
+        tag = c->token;
+        if (c->token.kind == TOK_NAME) advance(c);
+        if (c->token.kind == '{') {
+            /* Anonymous layouts are keyed by the alias token, which follows
+               the closing brace. The parser defers name installation. */
+            defining = 1;
+        } else if (tag.kind == TOK_NAME) {
+            int found = find_record(c, tag, is_union);
+            if (found < 0) error_at(c, tag, "Unknown record in typedef");
+            else id = (unsigned)found;
+        } else {
+            error(c, "Expected struct/union definition or tag");
+        }
+    } else if (c->token.kind == TOK_NAME) {
+        int alias = find_alias(c, c->token);
+        if (alias < 0) error(c, "Unknown type in typedef");
+        else { id = c->aliases[alias].record_id; advance(c); }
+    } else {
+        error(c, "Expected type after typedef");
+    }
+    if (c->diagnostic.message) return;
+    if (defining) {
+        /* For anonymous records, the alias token is discovered after parsing
+           the fields; the temporary definition first uses an empty tag. */
+        int rec = record_definition(c, tag, is_union, tag.kind != TOK_NAME, tag);
+        if (rec < 0 || c->diagnostic.message) return;
+        id = (unsigned)rec;
+    }
+    Token alias_name = c->token;
+    if (!expect(c, TOK_NAME, "Expected typedef alias") ||
+        !expect(c, ';', "Expected ';' after typedef")) return;
+    register_alias(c, alias_name, id);
+}
+
+/* sizeof operands are inspected as types, not evaluated as expressions:
+   sizeof(i++) must never increment i or emit its code. */
+static uint32_t sizeof_operand(Compiler *c)
+{
+    int parenthesized = accept(c, '(');
+    int type_operand = 0;
+    unsigned bytes = 0;
+    if (accept(c, TOK_INT)) {
+        type_operand = 1;
+        bytes = 4u;
+        accept(c, '*');
+    } else if (accept(c, TOK_VOID)) {
+        type_operand = 1;
+        if (!accept(c, '*')) {
+            error(c, "sizeof(void) is outside this C subset");
+            return 0u;
+        }
+        bytes = 4u;
+    } else if (accept(c, TOK_CHAR)) {
+        type_operand = 1;
+        bytes = accept(c, '*') ? 4u : 1u;
+    } else if (c->token.kind == TOK_NAME && name_is(c->token, "uint8_t")) {
+        type_operand = 1;
+        advance(c);
+        bytes = accept(c, '*') ? 4u : 1u;
+    } else if (c->token.kind == TOK_NAME && name_is(c->token, "int32_t")) {
+        type_operand = 1;
+        advance(c);
+        bytes = 4u;
+        accept(c, '*');
+    } else if (is_record_type(c)) {
+        type_operand = 1;
+        unsigned rec = 0;
+        if (!record_type(c, &rec)) return 0u;
+        bytes = accept(c, '*') ? 4u : c->structs[rec].size_words * 4u;
+    } else if (c->token.kind == TOK_NUMBER ||
+               c->token.kind == TOK_UNSIGNED_NUMBER) {
+        advance(c);
+        bytes = 4u;
+    } else {
+        int dereference = accept(c, '*');
+        Token name = c->token;
+        if (!expect(c, TOK_NAME, "sizeof needs a type or declared variable")) return 0u;
+        int local = find_local(c, name);
+        int global = local < 0 ? find_global(c, name) : -1;
+        if (local < 0 && global < 0) {
+            error_at(c, name, "sizeof refers to an unknown variable or type");
+            return 0u;
+        }
+        int kind = local >= 0 ? c->locals[local].type : c->globals[global].type;
+        unsigned rec = local >= 0 ? c->locals[local].struct_id : c->globals[global].struct_id;
+        unsigned count = local >= 0 ? c->locals[local].array_count : c->globals[global].array_count;
+        int is_record = kind == LOCAL_STRUCT || kind == GLOBAL_STRUCT ||
+                        kind == LOCAL_STRUCT_ARRAY || kind == GLOBAL_STRUCT_ARRAY ||
+                        kind == LOCAL_STRUCT_POINTER;
+        int is_array = kind == LOCAL_INT_ARRAY || kind == GLOBAL_INT_ARRAY ||
+                       kind == GLOBAL_BYTE_ARRAY || kind == LOCAL_STRUCT_ARRAY ||
+                       kind == GLOBAL_STRUCT_ARRAY;
+        int is_pointer = kind == LOCAL_INT_POINTER || kind == LOCAL_STRUCT_POINTER ||
+                         kind == LOCAL_FUNCTION_POINTER || kind == LOCAL_ARGV ||
+                         kind == LOCAL_POINTER || kind == LOCAL_MESSAGE;
+        bytes = kind == GLOBAL_BYTE_ARRAY || kind == LOCAL_WINDOW ? 1u :
+                is_record && !is_pointer ? c->structs[rec].size_words * 4u : 4u;
+        if (dereference) {
+            if (!is_pointer) { error_at(c, name, "sizeof * needs a pointer"); return 0u; }
+            bytes = kind == LOCAL_STRUCT_POINTER ? c->structs[rec].size_words * 4u : 4u;
+            is_record = kind == LOCAL_STRUCT_POINTER;
+            is_array = 0;
+            is_pointer = 0;
+        } else if (is_array) {
+            bytes *= count;
+        }
+        if (accept(c, '[')) {
+            if (!is_array && !is_pointer) {
+                error_at(c, name, "sizeof indexing needs an array or pointer"); return 0u;
+            }
+            unsigned depth = 1;
+            while (depth && c->token.kind != TOK_END && !c->diagnostic.message) {
+                if (c->token.kind == '[') ++depth;
+                if (c->token.kind == ']') --depth;
+                advance(c);
+            }
+            if (depth) { error(c, "Unterminated sizeof index"); return 0u; }
+            bytes = is_record ? c->structs[rec].size_words * 4u : 4u;
+            is_array = 0;
+        }
+        if (c->token.kind == TOK_ARROW &&
+            (kind != LOCAL_STRUCT_POINTER || dereference)) {
+            error_at(c, name, "sizeof -> needs a record pointer"); return 0u;
+        }
+        while (c->token.kind == '.' || c->token.kind == TOK_ARROW) {
+            advance(c);
+            if (!is_record) { error_at(c, name, "sizeof member needs a struct or union"); return 0u; }
+            Token field = c->token;
+            if (!expect(c, TOK_NAME, "Expected member after sizeof .")) return 0u;
+            const StructDef *def = &c->structs[rec];
+            unsigned i = 0;
+            while (i < def->count && !same_name(def->fields[i].name, field)) ++i;
+            if (i == def->count) { error_at(c, field, "Unknown member in sizeof"); return 0u; }
+            rec = def->fields[i].record_id;
+            is_record = rec != RECORD_INT;
+            bytes = is_record ? c->structs[rec].size_words * 4u : 4u;
+        }
+    }
+    if (type_operand && accept(c, '[')) {
+        Token bound = c->token;
+        if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
+            bound.number == 0 || bound.number > UINT32_MAX / bytes) {
+            error_at(c, bound, "sizeof type array needs a positive constant bound");
+            return 0u;
+        }
+        bytes *= bound.number;
+        advance(c);
+        if (!expect(c, ']', "Expected ']' in sizeof array type")) return 0u;
+    }
+    if (parenthesized && !expect(c, ')', "Expected ')' after sizeof operand")) return 0u;
+    return bytes;
+}
+
+/* r0 contains the base address of a local/global struct or struct pointer. */
+static int struct_member(Compiler *c, unsigned struct_id, int allow_store, int address_only)
+{
+    Token member = c->token;
+    if (!expect(c, TOK_NAME, "Expected record member name")) return VALUE_INT;
+    const StructDef *def = &c->structs[struct_id];
+    unsigned field = 0;
+    while (field < def->count && !same_name(def->fields[field].name, member)) ++field;
+    if (field == def->count) {
+        error_at(c, member, def->is_union ? "Unknown union field" : "Unknown struct field");
+        return VALUE_INT;
+    }
+    RecordField f = def->fields[field];
+    if (f.offset_words) {
+        load_constant(c, 1, f.offset_words * 4u);
+        emit(c, 0x1840);                     /* adds r0, r0, r1 */
+    }
+    if (f.record_id != RECORD_INT) {
+        if (accept(c, '.'))
+            return struct_member(c, f.record_id, allow_store, address_only);
+        if (address_only) return VALUE_POINTER;
+        error_at(c, member, "Use .field to access an embedded record");
+        return VALUE_POINTER;
+    }
+    if (c->token.kind == '.') {
+        error(c, "Integer record fields have no nested members");
+        return VALUE_INT;
+    }
+    if (address_only) return VALUE_INT_POINTER;
+    if (allow_store && (c->token.kind == '=' ||
+                        c->token.kind == TOK_ADD_ASSIGN ||
+                        c->token.kind == TOK_SUB_ASSIGN)) {
+        int op = c->token.kind;
+        advance(c);
+        emit(c, 0xb403);                      /* save member address */
+        if (op != '=') {
+            emit(c, 0x6800);                  /* read old member value */
+            emit(c, 0xb403);                  /* save old value */
+        }
+        expression(c, 1, REQUIRE_INTEGER);
+        if (op != '=') {
+            emit(c, 0xbc06);                  /* old value -> r1 */
+            emit(c, op == TOK_ADD_ASSIGN ? 0x1808 : 0x1a08);
+        }
+        emit(c, 0xbc06);                      /* member address -> r1 */
+        emit(c, 0x6008);                      /* str r0, [r1] */
+        return VALUE_VOID;
+    }
+    emit(c, 0x6800);                          /* ldr r0, [r0] */
+    return VALUE_INT;
+}
+
+/* r0 holds the array base. A struct element occupies count * 4 bytes.
+   The computed address may be used with .member or passed as a struct *. */
+static int struct_array_element(Compiler *c, unsigned struct_id, int allow_store,
+                                int address_only)
+{
+    if (!expect(c, '[', "Expected '[' after struct array")) return VALUE_POINTER;
+    emit(c, 0xb403);                       /* save base {r0,r1} */
+    expression(c, 1, REQUIRE_INTEGER);
+    if (!expect(c, ']', "Expected ']' after struct array index")) return VALUE_POINTER;
+    emit(c, 0xbc06);                       /* base -> r1 */
+    load_constant(c, 2, c->structs[struct_id].size_words * 4u);
+    emit(c, 0x4350);                       /* muls r0, r2 */
+    emit(c, 0x1840);                       /* adds r0, r0, r1 */
+    if (address_only) return VALUE_POINTER;
+    if (accept(c, '.')) return struct_member(c, struct_id, allow_store, 0);
+    error(c, "Use array[index].field to access a struct element");
+    return VALUE_POINTER;
+}
+
+/* Resolve a by-value nested member address. r0 holds the outer record.
+   This deliberately accepts only paths that end at a compatible record,
+   not an int or a structurally similar but distinct record type. */
+static void record_member_pointer(Compiler *c, unsigned root, unsigned expected)
+{
+    for (;;) {
+        Token field = c->token;
+        if (!expect(c, TOK_NAME, "Expected nested record member")) return;
+        const StructDef *def = &c->structs[root];
+        unsigned idx = 0;
+        while (idx < def->count && !same_name(field, def->fields[idx].name)) ++idx;
+        if (idx == def->count) {
+            error_at(c, field, "Unknown struct/union field");
+            return;
+        }
+        RecordField member = def->fields[idx];
+        if (member.offset_words) {
+            load_constant(c, 1, member.offset_words * 4u);
+            emit(c, 0x1840);
+        }
+        if (member.record_id == RECORD_INT) {
+            error_at(c, field, "Nested member is an int, not a record");
+            return;
+        }
+        if (!accept(c, '.')) {
+            if (member.record_id != expected)
+                error_at(c, field, "Struct pointer requires the same struct type");
+            return;
+        }
+        root = member.record_id;
+    }
+}
+
+/* Accept compatible record pointers, addresses of records or nested
+   by-value members, arrays (decaying to pointers), and NULL. */
+static void struct_pointer_value(Compiler *c, unsigned struct_id)
+{
+    int address = accept(c, '&');
+    if (c->token.kind == TOK_NAME) {
+        Token name = c->token;
+        int local = find_local(c, name);
+        int global = local < 0 ? find_global(c, name) : -1;
+        if (!address && name_is(name, "NULL") && local < 0 && global < 0) {
+            advance(c); constant(c, 0); return;
+        }
+        advance(c);
+        uint8_t kind = local >= 0 ? c->locals[local].type :
+                       global >= 0 ? c->globals[global].type : LOCAL_PADDING;
+        unsigned root = local >= 0 ? c->locals[local].struct_id :
+                        global >= 0 ? c->globals[global].struct_id : RECORD_INT;
+        if (kind == LOCAL_STRUCT || kind == GLOBAL_STRUCT) {
+            if (!address) {
+                error_at(c, name, "Use &struct to pass a struct pointer");
+                return;
+            }
+            if (local >= 0) local_address(c, (unsigned)local);
+            else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
+            if (accept(c, '.')) record_member_pointer(c, root, struct_id);
+            else if (root != struct_id)
+                error_at(c, name, "Struct pointer requires the same struct type");
+        } else if (kind == LOCAL_STRUCT_ARRAY || kind == GLOBAL_STRUCT_ARRAY) {
+            if (local >= 0) local_address(c, (unsigned)local);
+            else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
+            if (address) {
+                if (c->token.kind != '[') {
+                    error_at(c, name, "Use &array[index], or pass array directly");
+                    return;
+                }
+                struct_array_element(c, root, 0, 1);
+                if (accept(c, '.')) record_member_pointer(c, root, struct_id);
+                else if (root != struct_id)
+                    error_at(c, name, "Struct pointer requires the same struct type");
+            } else if (c->token.kind == '[') {
+                error_at(c, name, "Use &array[index] when passing an element");
+            } else if (root != struct_id) {
+                error_at(c, name, "Struct pointer requires the same struct type");
+            }
+        } else if (kind == LOCAL_STRUCT_POINTER && local >= 0) {
+            load_local(c, (unsigned)local, 0);
+            if (address && accept(c, TOK_ARROW))
+                record_member_pointer(c, root, struct_id);
+            else if (address || root != struct_id)
+                error_at(c, name, "Struct pointer requires the same struct type");
+        } else {
+            error_at(c, name, "Struct pointer requires the same struct type");
+        }
+    } else if (!address && (c->token.kind == TOK_NUMBER ||
+                            c->token.kind == TOK_UNSIGNED_NUMBER) &&
+               c->token.number == 0) {
+        advance(c); constant(c, 0);
+    } else {
+        error(c, "Expected matching struct pointer, &struct, array, or NULL");
+    }
+}
+
 static unsigned add_local(Compiler *c, Token name, uint8_t type)
 {
     int slot = find_local(c, name);
@@ -1699,7 +2242,9 @@ static int call(Compiler *c, Token name)
             if (i != 0)
                 expect(c, ',', "Expected ',' between arguments");
             uint8_t type = fn->param_types[i];
-            if (type == LOCAL_INT_POINTER) {
+            if (type == LOCAL_STRUCT_POINTER) {
+                struct_pointer_value(c, fn->param_struct_ids[i]);
+            } else if (type == LOCAL_INT_POINTER) {
                 expression(c, 1, REQUIRE_INT_POINTER);
             } else if (type == LOCAL_POINTER || type == LOCAL_MESSAGE) {
                 if (!null_argument(c)) {
@@ -1864,7 +2409,9 @@ static int increment_scalar(Compiler *c, Token name, int op, int postfix)
                          : global >= 0 ? c->globals[global].type : -1;
     if (type < 0 || type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY ||
         type == LOCAL_INT_ARRAY || type == LOCAL_PADDING || type == LOCAL_POINTER ||
-        type == LOCAL_ARGV || type == LOCAL_MESSAGE || type == LOCAL_FUNCTION_POINTER) {
+        type == LOCAL_ARGV || type == LOCAL_MESSAGE || type == LOCAL_FUNCTION_POINTER ||
+        type == LOCAL_STRUCT || type == LOCAL_STRUCT_POINTER || type == GLOBAL_STRUCT ||
+        type == LOCAL_STRUCT_ARRAY || type == GLOBAL_STRUCT_ARRAY) {
         error_at(c, name, "Increment/decrement needs a scalar variable");
         return VALUE_INT;
     }
@@ -1895,6 +2442,9 @@ static int unary(Compiler *c, int allow_store)
         return 0;
     if (++c->nesting > NESTING_LIMIT) {
         error(c, "Expression or block nesting is too deep");
+    } else if (accept(c, TOK_SIZEOF)) {
+        constant(c, sizeof_operand(c));
+        type = VALUE_UNSIGNED;
     } else if (accept(c, TOK_NUMBER) || accept(c, TOK_UNSIGNED_NUMBER)) {
         constant(c, token.number);
         type = token.kind == TOK_UNSIGNED_NUMBER ? VALUE_UNSIGNED : VALUE_INT;
@@ -1929,6 +2479,25 @@ static int unary(Compiler *c, int allow_store)
                 } else if (local_type == LOCAL_FUNCTION_POINTER) {
                     load_local(c, (unsigned)slot, 0);
                     type = VALUE_POINTER;
+                } else if (local_type == LOCAL_STRUCT || local_type == LOCAL_STRUCT_POINTER) {
+                    if (local_type == LOCAL_STRUCT) {
+                        local_address(c, (unsigned)slot);
+                        if (accept(c, '.'))
+                            type = struct_member(c, c->locals[slot].struct_id, allow_store, 0);
+                        else error_at(c, token, "Use .field to access a struct");
+                    } else {
+                        load_local(c, (unsigned)slot, 0);
+                        if (accept(c, TOK_ARROW))
+                            type = struct_member(c, c->locals[slot].struct_id, allow_store, 0);
+                        else if (c->token.kind == '[')
+                            type = struct_array_element(c, c->locals[slot].struct_id, allow_store, 0);
+                        else type = VALUE_POINTER;
+                    }
+                } else if (local_type == LOCAL_STRUCT_ARRAY) {
+                    local_address(c, (unsigned)slot);
+                    if (c->token.kind == '[')
+                        type = struct_array_element(c, c->locals[slot].struct_id, allow_store, 0);
+                    else error_at(c, token, "Use array[index].field for struct arrays");
                 } else if (local_type == LOCAL_INT_ARRAY) {
                     local_address(c, (unsigned)slot);
                     type = c->token.kind == '[' ? int_pointer_element(c, allow_store, 0) : VALUE_INT_POINTER;
@@ -1947,6 +2516,18 @@ static int unary(Compiler *c, int allow_store)
                     uint8_t global_type = c->globals[global].type;
                     if (global_type == GLOBAL_BYTE_ARRAY) {
                         type = byte_array_element(c, (unsigned)global, allow_store);
+                    } else if (global_type == GLOBAL_STRUCT) {
+                        emit_address(c, ADDRESS_GLOBAL, (unsigned)global);
+                        emit(c, 0x4608);                        /* mov r0, r1 */
+                        if (accept(c, '.'))
+                            type = struct_member(c, c->globals[global].struct_id, allow_store, 0);
+                        else error_at(c, token, "Use .field to access a struct");
+                    } else if (global_type == GLOBAL_STRUCT_ARRAY) {
+                        emit_address(c, ADDRESS_GLOBAL, (unsigned)global);
+                        emit(c, 0x4608);
+                        if (c->token.kind == '[')
+                            type = struct_array_element(c, c->globals[global].struct_id, allow_store, 0);
+                        else error_at(c, token, "Use array[index].field for struct arrays");
                     } else if (global_type == GLOBAL_INT_ARRAY) {
                         emit_address(c, ADDRESS_GLOBAL, (unsigned)global);
                         emit(c, 0x4608);                       /* mov r0, r1 */
@@ -1972,7 +2553,16 @@ static int unary(Compiler *c, int allow_store)
         }
         int slot = find_local(c, name);
         int global = slot < 0 ? find_global(c, name) : -1;
-        if (slot >= 0 && (c->locals[slot].type == LOCAL_INT ||
+        if (slot >= 0 && c->locals[slot].type == LOCAL_STRUCT) {
+            local_address(c, (unsigned)slot);
+            if (expect(c, '.', "Use &struct.field to take a member address"))
+                type = struct_member(c, c->locals[slot].struct_id, 0, 1);
+        } else if (global >= 0 && c->globals[global].type == GLOBAL_STRUCT) {
+            emit_address(c, ADDRESS_GLOBAL, (unsigned)global);
+            emit(c, 0x4608);
+            if (expect(c, '.', "Use &struct.field to take a member address"))
+                type = struct_member(c, c->globals[global].struct_id, 0, 1);
+        } else if (slot >= 0 && (c->locals[slot].type == LOCAL_INT ||
                           c->locals[slot].type == LOCAL_INT_ARRAY)) {
             local_address(c, (unsigned)slot);
             if (c->token.kind == '[' && c->locals[slot].type == LOCAL_INT_ARRAY)
@@ -2179,6 +2769,123 @@ static int expression(Compiler *c, int minimum, int requirement)
 
 static void statement(Compiler *c);
 
+/* Initializer backends: local values compile into stack stores; static
+   values are captured as 32-bit words for inclusion in the .app image. */
+static void initialize_scalar(Compiler *c, unsigned word, uint32_t *static_values,
+                              int byte_value)
+{
+    if (!static_values) {
+        expression(c, 1, REQUIRE_INTEGER);
+        store_local(c, word, 0);
+        return;
+    }
+    int negative = accept(c, '-');
+    Token value = c->token;
+    uint32_t number = 0;
+    if (accept(c, TOK_SIZEOF)) {
+        number = sizeof_operand(c);
+    } else {
+        const SidcApiConstant *api = value.kind == TOK_NAME ? find_api_constant(c, value) : NULL;
+        if (value.kind != TOK_NUMBER && value.kind != TOK_UNSIGNED_NUMBER && !api) {
+            error_at(c, value, "Static initializer needs an integer constant or sizeof");
+            return;
+        }
+        number = api ? api->value : value.number;
+        advance(c);
+    }
+    if (negative) number = 0u - number;
+    if (byte_value && number > 255u) {
+        error_at(c, value, "Static uint8_t initializer exceeds 255");
+        return;
+    }
+    static_values[word] = number;
+}
+
+static void initialize_record(Compiler *c, unsigned rec, unsigned base,
+                              uint32_t *static_values, unsigned depth)
+{
+    if (depth > NESTING_LIMIT) { error(c, "Initializer nesting is too deep"); return; }
+    if (!expect(c, '{', "Expected '{' for record initializer")) return;
+    const StructDef *def = &c->structs[rec];
+    unsigned i = 0;
+    while (!c->diagnostic.message && c->token.kind != '}' && c->token.kind != TOK_END) {
+        if (i >= def->count || (def->is_union && i > 0)) {
+            error(c, "Too many initializers for struct or union"); return;
+        }
+        RecordField f = def->fields[i];
+        unsigned slot = base + f.offset_words;
+        if (f.record_id == RECORD_INT) {
+            initialize_scalar(c, slot, static_values, 0);
+        } else if (c->token.kind == '{') {
+            initialize_record(c, f.record_id, slot, static_values, depth + 1);
+        } else if ((c->token.kind == TOK_NUMBER || c->token.kind == TOK_UNSIGNED_NUMBER) &&
+                   c->token.number == 0) {
+            /* {0} is valid even when the first member is an embedded record. */
+            advance(c);
+        } else {
+            error(c, "Embedded record initializer needs braces or zero"); return;
+        }
+        ++i;
+        if (!accept(c, ',')) break;
+    }
+    expect(c, '}', "Expected '}' after record initializer");
+}
+
+static void initialize_array(Compiler *c, unsigned count, unsigned rec,
+                             unsigned base, uint32_t *static_values, int byte_value)
+{
+    if (!expect(c, '{', "Expected '{' for array initializer")) return;
+    unsigned i = 0;
+    unsigned stride = rec == RECORD_INT ? 1u : c->structs[rec].size_words;
+    while (!c->diagnostic.message && c->token.kind != '}' && c->token.kind != TOK_END) {
+        if (i >= count) { error(c, "Too many array initializer elements"); return; }
+        unsigned word = base + i * stride;
+        if (rec == RECORD_INT) {
+            initialize_scalar(c, word, static_values, byte_value);
+        } else if (c->token.kind == '{') {
+            initialize_record(c, rec, word, static_values, 1);
+        } else if ((c->token.kind == TOK_NUMBER || c->token.kind == TOK_UNSIGNED_NUMBER) &&
+                   c->token.number == 0) {
+            advance(c);
+        } else {
+            error(c, "Array record element needs braces or zero"); return;
+        }
+        ++i;
+        if (!accept(c, ',')) break;
+    }
+    expect(c, '}', "Expected '}' after array initializer");
+}
+
+/* Retain the old zero-only path for very large static arrays: they are BSS,
+   not an enormous set of explicit initial values in the applet. */
+static void initialize_large_zero(Compiler *c)
+{
+    if (!expect(c, '{', "Large static arrays only support {0}")) return;
+    if ((c->token.kind != TOK_NUMBER && c->token.kind != TOK_UNSIGNED_NUMBER) ||
+        c->token.number != 0) { error(c, "Large static arrays only support {0}"); return; }
+    advance(c);
+    accept(c, ',');
+    expect(c, '}', "Large static arrays only support {0}");
+}
+
+/* Reserve scratch words in the compiler (not on its small ARM call stack). */
+static uint32_t *initialize_static_buffer(Compiler *c, unsigned words)
+{
+    if (words > INITIAL_WORD_LIMIT - c->initial_used) {
+        error(c, "Too many explicitly initialized static data words"); return NULL;
+    }
+    uint32_t *values = c->initial_values + c->initial_used;
+    memset(values, 0, words * sizeof(uint32_t));
+    return values;
+}
+
+static int initializer_nonzero(const uint32_t *values, unsigned count)
+{
+    for (unsigned i = 0; i < count; ++i)
+        if (values[i] != 0) return 1;
+    return 0;
+}
+
 /* A typed local function pointer: int (*fn)(int,int), or void (*fn)(void).
    This subset deliberately requires int parameters for indirect calls. */
 static void local_callback_declaration(Compiler *c, uint8_t return_type)
@@ -2228,6 +2935,51 @@ static int local_declaration(Compiler *c)
             local_callback_declaration(c, RETURN_VOID);
         else error(c, "Only void function pointers are valid local declarations");
         return 1;
+    } else if (is_record_type(c)) {
+        unsigned struct_id = 0;
+        if (!record_type(c, &struct_id)) return 1;
+        int pointer = accept(c, '*');
+        Token name = c->token;
+        if (!expect(c, TOK_NAME, "Expected record variable name")) return 1;
+        unsigned count = 1;
+        int is_array = !pointer && accept(c, '[');
+        unsigned stride = c->structs[struct_id].size_words;
+        if (is_array) {
+            Token bound = c->token;
+            if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
+                bound.number == 0 || bound.number > LOCAL_LIMIT / stride) {
+                error_at(c, bound, c->structs[struct_id].is_union ? "Local union array exceeds 64 stack slots" : "Local struct array exceeds 64 stack slots");
+                return 1;
+            }
+            count = bound.number;
+            advance(c);
+            if (!expect(c, ']', "Expected ']' after record array size")) return 1;
+        }
+        unsigned words = pointer ? 1u : count * stride;
+        if (words > LOCAL_LIMIT - c->local_count) {
+            error_at(c, name, "Record exceeds remaining 64 local stack slots");
+            return 1;
+        }
+        unsigned slot = add_local(c, name, pointer ? LOCAL_STRUCT_POINTER :
+                                  is_array ? LOCAL_STRUCT_ARRAY : LOCAL_STRUCT);
+        if (c->diagnostic.message) return 1;
+        c->locals[slot].struct_id = (uint8_t)struct_id;
+        c->locals[slot].array_count = (uint16_t)count;
+        for (unsigned i = 1; i < words; ++i)
+            c->locals[c->local_count++] = (Local){.scope=(uint8_t)c->scope,.type=LOCAL_PADDING};
+        if (c->local_count > c->local_peak) c->local_peak = c->local_count;
+        if (pointer) {
+            if (accept(c, '=')) struct_pointer_value(c, struct_id);
+            else constant(c, 0);
+            store_local(c, slot, 0);
+        } else if (accept(c, '=')) {
+            constant(c, 0);
+            for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
+            if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
+            else initialize_record(c, struct_id, slot, NULL, 1);
+        }
+        expect(c, ';', "Expected ';' after record variable");
+        return 1;
     } else if (c->token.kind == TOK_NAME && find_local(c, c->token) < 0) {
         if (accept_sdk_type(c, "CGGadget")) type = LOCAL_GADGET;
         else if (accept_sdk_type(c, "CGWindow") || accept_sdk_type(c, "uint8_t"))
@@ -2252,22 +3004,15 @@ static int local_declaration(Compiler *c)
         if (!expect(c, ']', "Expected ']' after local array size")) return 1;
         unsigned slot = add_local(c, name, LOCAL_INT_ARRAY);
         if (c->diagnostic.message) return 1;
+        c->locals[slot].array_count = (uint16_t)count;
         for (unsigned i = 1; i < count; ++i) {
             c->locals[c->local_count++] = (Local){.scope = (uint8_t)c->scope, .type = LOCAL_PADDING};
         }
         if (c->local_count > c->local_peak) c->local_peak = c->local_count;
         if (accept(c, '=')) {
-            if (!expect(c, '{', "Local array initializer supports only {0}")) return 1;
-            if ((c->token.kind != TOK_NUMBER && c->token.kind != TOK_UNSIGNED_NUMBER) ||
-                c->token.number != 0) {
-                error(c, "Local array initializer supports only {0}");
-                return 1;
-            }
-            advance(c);
-            accept(c, ',');
-            if (!expect(c, '}', "Local array initializer supports only {0}")) return 1;
             constant(c, 0);
             for (unsigned i = 0; i < count; ++i) store_local(c, slot + i, 0);
+            initialize_array(c, count, RECORD_INT, slot, NULL, 0);
         }
         expect(c, ';', "Expected ';' after local array declaration");
         return 1;
@@ -2302,7 +3047,9 @@ static void simple_expression(Compiler *c)
         error_at(c, name, "Assignment needs a declared variable");
         return;
     }
-    if (type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY || type == LOCAL_INT_ARRAY) {
+    if (type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY || type == LOCAL_INT_ARRAY ||
+        type == LOCAL_STRUCT || type == GLOBAL_STRUCT ||
+        type == LOCAL_STRUCT_ARRAY || type == GLOBAL_STRUCT_ARRAY) {
         error_at(c, name, "Assign to an individual array element");
         return;
     }
@@ -2319,6 +3066,15 @@ static void simple_expression(Compiler *c)
             return;
         }
         function_pointer_value(c, &c->locals[slot].callback);
+        store_local(c, (unsigned)slot, 0);
+        return;
+    }
+    if (type == LOCAL_STRUCT_POINTER) {
+        if (op != '=') {
+            error_at(c, name, "Struct pointer only supports simple assignment");
+            return;
+        }
+        struct_pointer_value(c, c->locals[slot].struct_id);
         store_local(c, (unsigned)slot, 0);
         return;
     }
@@ -2581,7 +3337,7 @@ static unsigned builtin_entry(Token name)
 static void global_declaration(Compiler *c, Token name, uint8_t type)
 {
     int function = find_function(c, name);
-    if (find_global(c, name) >= 0 ||
+    if (find_alias(c, name) >= 0 || find_global(c, name) >= 0 ||
         (function >= 0 && c->functions[function].unit == c->file_index) ||
         find_api_constant(c, name) || find_api_call(c, name)) {
         error_at(c, name, "Duplicate file-scope name");
@@ -2619,35 +3375,39 @@ static void global_declaration(Compiler *c, Token name, uint8_t type)
         type = type == LOCAL_INT ? GLOBAL_INT_ARRAY : GLOBAL_BYTE_ARRAY;
     }
     uint32_t initial = 0;
+    uint32_t init_words = type == GLOBAL_INT_ARRAY ? count / 4u : count;
+    unsigned init_at = c->initial_used;
+    int initialized = 0;
     if (accept(c, '=')) {
         if (type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY) {
-            const char *message = "Static array initializer must be {0}";
-            if (!expect(c, '{', message))
-                return;
-            if ((c->token.kind != TOK_NUMBER && c->token.kind != TOK_UNSIGNED_NUMBER) ||
-                c->token.number != 0) {
-                error(c, message);
-                return;
+            if (init_words > INITIAL_WORD_LIMIT - c->initial_used) {
+                initialize_large_zero(c);
+            } else {
+                uint32_t *values = initialize_static_buffer(c, init_words);
+                if (!values) return;
+                initialize_array(c, init_words, RECORD_INT, 0, values,
+                                 type == GLOBAL_BYTE_ARRAY);
+                if (initializer_nonzero(values, init_words)) {
+                    initialized = 1;
+                    c->initial_used += init_words;
+                }
             }
-            advance(c);
-            accept(c, ',');
-            if (!expect(c, '}', message))
-                return;
         } else {
             int negative = accept(c, '-');
             Token token = c->token;
-            const SidcApiConstant *value = token.kind == TOK_NAME ? find_api_constant(c, token) : NULL;
-            if (value)
-                initial = value->value;
-            else if (token.kind == TOK_NUMBER || token.kind == TOK_UNSIGNED_NUMBER)
-                initial = token.number;
+            if (accept(c, TOK_SIZEOF)) initial = sizeof_operand(c);
             else {
-                error(c, "Static initializer needs an integer literal or SDK constant");
-                return;
+                const SidcApiConstant *value = token.kind == TOK_NAME ? find_api_constant(c, token) : NULL;
+                if (value) initial = value->value;
+                else if (token.kind == TOK_NUMBER || token.kind == TOK_UNSIGNED_NUMBER)
+                    initial = token.number;
+                else {
+                    error(c, "Static initializer needs an integer constant or sizeof");
+                    return;
+                }
+                advance(c);
             }
-            advance(c);
-            if (negative)
-                initial = 0u - initial;
+            if (negative) initial = 0u - initial;
         }
     }
     if (type == LOCAL_WINDOW)
@@ -2656,25 +3416,120 @@ static void global_declaration(Compiler *c, Token name, uint8_t type)
         return;
     uint32_t offset;
     if (type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY) {
-        if (type == GLOBAL_INT_ARRAY) c->array_bytes = (c->array_bytes + 3u) & ~3u;
-        offset = c->array_bytes;
-        c->array_bytes += count;
+        if (initialized) {
+            if (type == GLOBAL_INT_ARRAY) c->global_bytes = (c->global_bytes + 3u) & ~3u;
+            offset = c->global_bytes;
+            c->global_bytes += count;
+        } else {
+            if (type == GLOBAL_INT_ARRAY) c->array_bytes = (c->array_bytes + 3u) & ~3u;
+            offset = c->array_bytes;
+            c->array_bytes += count;
+        }
     } else {
+        c->global_bytes = (c->global_bytes + 3u) & ~3u;
         offset = c->global_bytes;
         c->global_bytes += sizeof(initial);
     }
-    c->globals[c->global_count++] = (Global){name, initial, offset, type, c->file_index};
+    c->globals[c->global_count++] = (Global){.name=name,.initial=initial,.offset=offset,.type=type,.unit=c->file_index,
+                .array_count=type == GLOBAL_INT_ARRAY ? count / 4u : type == GLOBAL_BYTE_ARRAY ? count : 0u,
+                .in_data=(uint8_t)initialized,.init_offset=(uint16_t)init_at,
+                .init_count=(uint16_t)(initialized ? init_words : 0u)};
 }
 
 static void external_declaration(Compiler *c)
 {
+    if (accept(c, TOK_TYPEDEF)) {
+        typedef_declaration(c);
+        return;
+    }
+    if ((c->token.kind == TOK_STRUCT || c->token.kind == TOK_UNION) &&
+        c->lookahead.kind == TOK_NAME) {
+        int is_union = c->token.kind == TOK_UNION;
+        advance(c);
+        Token tag = c->token;
+        if (!expect(c, TOK_NAME, "Expected struct or union tag")) return;
+        if (c->token.kind == '{') {
+            record_definition(c, tag, is_union, 0, tag);
+            if (!c->diagnostic.message) expect(c, ';', "Expected ';' after record definition");
+            return;
+        }
+        error_at(c, tag, "File-scope records must be static");
+        return;
+    }
     if (accept(c, TOK_APIS_INCLUDE)) {
-        /* SDK header is a built-in marker; the real SDK signatures come from apis.bin. */
-        if (c->api.call_count == 0)
-            load_apicore(c, c->api_reader);
+        if (c->api.call_count == 0) load_apicore(c, c->api_reader);
         return;
     }
     int is_static = accept(c, TOK_STATIC);
+    if (is_record_type(c)) {
+        unsigned index = 0;
+        if (!record_type(c, &index)) return;
+        if (!is_static) {
+            error(c, "File-scope record variables must be static");
+            return;
+        }
+        Token name = c->token;
+        if (!expect(c, TOK_NAME, "Expected static record variable name")) return;
+        unsigned count = 1;
+        int is_array = accept(c, '[');
+        unsigned stride = c->structs[index].size_words;
+        if (is_array) {
+            Token bound = c->token;
+            if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
+                bound.number == 0 || bound.number > BYTE_ARRAY_LIMIT / (stride * 4u)) {
+                error_at(c, bound, c->structs[index].is_union ? "Invalid static union array size" : "Invalid static struct array size");
+                return;
+            }
+            count = bound.number;
+            advance(c);
+            if (!expect(c, ']', "Expected ']' after record array size")) return;
+        }
+        unsigned words = count * stride;
+        unsigned init_at = c->initial_used;
+        int initialized = 0;
+        if (accept(c, '=')) {
+            if (words > INITIAL_WORD_LIMIT - c->initial_used) {
+                initialize_large_zero(c);
+            } else {
+                uint32_t *values = initialize_static_buffer(c, words);
+                if (!values) return;
+                if (is_array) initialize_array(c, count, index, 0, values, 0);
+                else initialize_record(c, index, 0, values, 1);
+                if (initializer_nonzero(values, words)) {
+                    initialized = 1;
+                    c->initial_used += words;
+                }
+            }
+        }
+        if (!expect(c, ';', "Expected ';' after static record declaration")) return;
+        if (find_alias(c, name) >= 0 || find_global(c, name) >= 0 ||
+            find_function(c, name) >= 0) {
+            error_at(c, name, "Duplicate file-scope name");
+            return;
+        }
+        uint32_t bytes = count * stride * 4u;
+        if (c->global_count == GLOBAL_LIMIT ||
+            (!initialized && c->array_bytes > BYTE_ARRAY_LIMIT - bytes)) {
+            error_at(c, name, "Static record exceeds global array space");
+            return;
+        }
+        uint32_t offset;
+        if (initialized) {
+            c->global_bytes = (c->global_bytes + 3u) & ~3u;
+            offset = c->global_bytes;
+            c->global_bytes += bytes;
+        } else {
+            c->array_bytes = (c->array_bytes + 3u) & ~3u;
+            offset = c->array_bytes;
+            c->array_bytes += bytes;
+        }
+        c->globals[c->global_count++] = (Global){.name=name,.offset=offset,
+              .type=is_array ? GLOBAL_STRUCT_ARRAY : GLOBAL_STRUCT,
+              .unit=c->file_index,.struct_id=(uint8_t)index,.array_count=count,
+              .in_data=(uint8_t)initialized,.init_offset=(uint16_t)init_at,
+              .init_count=(uint16_t)(initialized ? words : 0u)};
+        return;
+    }
     if (!is_static)
         accept(c, TOK_EXTERN);
     unsigned return_type = RETURN_INT;
@@ -2687,7 +3542,10 @@ static void external_declaration(Compiler *c)
         variable_type = LOCAL_GADGET;
     else if (is_static && (accept_sdk_type(c, "CGWindow") || accept_sdk_type(c, "uint8_t")))
         variable_type = LOCAL_WINDOW;
-    else if (accept(c, TOK_INT)) {
+    else if (accept(c, TOK_INT) ||
+             (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
+              c->aliases[find_alias(c, c->token)].record_id == RECORD_INT &&
+              (advance(c), 1))) {
         if (accept(c, '*')) return_type = RETURN_INT_POINTER;
     } else {
         error(c, "Expected a supported function or static variable type");
@@ -2704,7 +3562,7 @@ static void external_declaration(Compiler *c)
     }
     if (!expect(c, '(', "Expected '(' after function name"))
         return;
-    if (find_global(c, name) >= 0) {
+    if (find_alias(c, name) >= 0 || find_global(c, name) >= 0) {
         error_at(c, name, "Duplicate file-scope name");
         return;
     }
@@ -2717,6 +3575,7 @@ static void external_declaration(Compiler *c)
     }
     unsigned arity = 0;
     uint8_t param_types[FUNCTION_PARAMS] = {0};
+    uint8_t param_struct_ids[FUNCTION_PARAMS] = {0};
     Token params[FUNCTION_PARAMS];
     if (builtin == BUILTIN_MESSAGE) {
         if (!expect(c, TOK_CONST, "Expected 'const char *' for sidbox_message") ||
@@ -2739,7 +3598,16 @@ static void external_declaration(Compiler *c)
                     !expect(c, '*', "Expected char ** for main's second parameter"))
                     return;
                 param_types[arity] = LOCAL_ARGV;
-            } else if (accept(c, TOK_INT)) {
+            } else if (is_record_type(c)) {
+                unsigned type_id = 0;
+                if (!record_type(c, &type_id)) return;
+                if (!expect(c, '*', "Only record * parameters are supported")) return;
+                param_types[arity] = LOCAL_STRUCT_POINTER;
+                param_struct_ids[arity] = (uint8_t)type_id;
+            } else if (accept(c, TOK_INT) ||
+                       (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
+                        c->aliases[find_alias(c, c->token)].record_id == RECORD_INT &&
+                        (advance(c), 1))) {
                 param_types[arity] = accept(c, '*') ? LOCAL_INT_POINTER : LOCAL_INT;
             } else if (accept_sdk_type(c, "int32_t")) {
                 param_types[arity] = LOCAL_S32;
@@ -2798,9 +3666,11 @@ static void external_declaration(Compiler *c)
             .is_static = (uint8_t)is_static, .unit = c->file_index
         };
         memcpy(fn->param_types, param_types, arity);
+        memcpy(fn->param_struct_ids, param_struct_ids, arity);
     } else if (c->functions[index].arity != arity ||
                c->functions[index].return_type != return_type ||
-               memcmp(c->functions[index].param_types, param_types, arity)) {
+               memcmp(c->functions[index].param_types, param_types, arity) ||
+               memcmp(c->functions[index].param_struct_ids, param_struct_ids, arity)) {
         error_at(c, name, "Function signature differs from its declaration");
         return;
     }
@@ -2832,6 +3702,8 @@ static void external_declaration(Compiler *c)
             return;
         }
         unsigned slot = add_local(c, params[i], param_types[i]);
+        if (param_types[i] == LOCAL_STRUCT_POINTER)
+            c->locals[slot].struct_id = param_struct_ids[i];
         unsigned reg = i;
         if (i >= 4) {
             emit(c, 0xf8d7);                                   /* ldr.w r0, [r7, #frame+8] */
@@ -2945,7 +3817,10 @@ uint32_t sidc_compile_project(const SidcSource *sources,
             target = c->pc + ref.target;
         } else if (ref.kind == ADDRESS_GLOBAL) {
             const Global *global = &c->globals[ref.target];
-            target = ((global->type == GLOBAL_BYTE_ARRAY || global->type == GLOBAL_INT_ARRAY) ? arrays_at : globals_at) + global->offset;
+            target = (!global->in_data &&
+                      (global->type == GLOBAL_BYTE_ARRAY || global->type == GLOBAL_INT_ARRAY ||
+                       global->type == GLOBAL_STRUCT || global->type == GLOBAL_STRUCT_ARRAY) ?
+                      arrays_at : globals_at) + global->offset;
         } else {
             const Function *fn = &c->functions[ref.target];
             if (!fn->defined) {
@@ -2969,8 +3844,19 @@ uint32_t sidc_compile_project(const SidcSource *sources,
     memset(output.image + strings_end, 0, padded_size - strings_end);
     for (unsigned i = 0; i < c->global_count; ++i) {
         const Global *global = &c->globals[i];
-        if (global->type != GLOBAL_BYTE_ARRAY && global->type != GLOBAL_INT_ARRAY)
+        if (global->in_data) {
+            for (unsigned j = 0; j < global->init_count; ++j) {
+                uint32_t value = c->initial_values[global->init_offset + j];
+                if (global->type == GLOBAL_BYTE_ARRAY)
+                    output.image[globals_at + global->offset + j] = (uint8_t)value;
+                else
+                    memcpy(output.image + globals_at + global->offset + 4u * j,
+                           &value, sizeof(value));
+            }
+        } else if (global->type != GLOBAL_BYTE_ARRAY && global->type != GLOBAL_INT_ARRAY &&
+                   global->type != GLOBAL_STRUCT && global->type != GLOBAL_STRUCT_ARRAY) {
             memcpy(output.image + globals_at + global->offset, &global->initial, sizeof(uint32_t));
+        }
     }
 
     SBV2Header h = {0};
