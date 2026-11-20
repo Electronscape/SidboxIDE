@@ -6,12 +6,13 @@
 #define SIDC_APICORE_PATH "tfcard:/dev/apicore/apis.bin"
 #define SIDC_APICORE_MAGIC_V1 "SBAPI01"
 #define SIDC_APICORE_MAGIC_V2 "SBAPI02"
-#define SIDC_APICORE_MAGIC "SBAPI03"
+#define SIDC_APICORE_MAGIC "SBAPI04"
 
 enum {
-    SIDC_API_CALLS = 40,
-    SIDC_API_CONSTANTS = 40,
-    SIDC_API_NAME = 32,
+    SIDC_API_CALLS = 80,
+    SIDC_API_CONSTANTS = 72,
+    SIDC_API_NAME = 64,
+    SIDC_API_CONST_NAME = 32,
     SIDC_API_PARAMS_V2 = 8,
     SIDC_API_PARAMS = 12,
     SIDC_API_OFFSETS = 3
@@ -31,7 +32,8 @@ enum {
     SIDC_API_S32,
     SIDC_API_WINDOW_CALLBACK,
     SIDC_API_WINDOW_REF,
-    SIDC_API_BYTE_BUFFER
+    SIDC_API_BYTE_BUFFER,
+    SIDC_API_WORD_BUFFER
 };
 
 enum {
@@ -55,7 +57,7 @@ typedef struct {
 } SidcApiCall;
 
 typedef struct {
-    char name[SIDC_API_NAME];
+    char name[SIDC_API_CONST_NAME];
     uint32_t value;
 } SidcApiConstant;
 
@@ -67,7 +69,7 @@ typedef struct {
 } SidcApiMessage;
 
 _Static_assert(sizeof(SidcApiHeader) == 20, "API header layout");
-_Static_assert(sizeof(SidcApiCall) == 52, "API call layout");
+_Static_assert(sizeof(SidcApiCall) == 84, "API call layout");
 _Static_assert(sizeof(SidcApiConstant) == 36, "API constant layout");
 _Static_assert(sizeof(SidcApiMessage) == 20, "API message layout");
 

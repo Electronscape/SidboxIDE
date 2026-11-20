@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+/* Export only symbols supplied by the installed public SDK headers.
+ * Do not fabricate display flags or other constants here. When the SDK
+ * publishes more definitions, include them from that SDK and audit them. */
+
 typedef uint8_t (*CreateWindow)(uint8_t *, int16_t, int16_t, uint16_t, uint16_t,
                                 const char *, uint32_t);
 typedef uint32_t (*CreateTextGadget)(uint8_t, int16_t, int16_t, int16_t, int16_t,
@@ -54,6 +58,145 @@ CHECK_SIGNATURE(API_GUI_GADGETS, canvas_create,
                 CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, CNV_FLAGS_T, GAD_TOOL_FLAGS));
 CHECK_SIGNATURE(API_GUI_GADGETS, set_fpen, void (*)(CGGadget, uint8_t));
 CHECK_SIGNATURE(API_GUI_GADGETS, set_bpen, void (*)(CGGadget, uint8_t));
+/* Graphics EBI ABI snapshot from firmware Core/api/api_gfx_engine.h
+ * (FIRMWARE - 03-11-2026 - 0947).  Many installed idelibs/api/apis.h
+ * versions only FORWARD-DECLARE the gfx table types.  Such incomplete
+ * declarations cannot be used with offsetof or __typeof__.
+ *
+ * Keep these names PRIVATE to the exporter to avoid colliding with SDK
+ * structs if a future SDK eventually includes complete graphics types.
+ * Every slot is represented in its original order. Reserved fields are
+ * raw pointer-sized slots, solely for calculating 32-bit EBI offsets.
+ * The selected function signatures below remain statically checked.
+ */
+
+/* Native hardware ABI: API_Root.hwl is a DIRECT two-level table.
+ * This layout is present in the firmware used by working native games.
+ * The generated compiler understands 0xffff as the unused third hop.
+ * Do NOT add a third pointer dereference or change the firmware table.
+ */
+typedef struct {
+    void (*gamemode)(uint32_t);
+    void (*exitgamemode)(void);
+    uint32_t (*getTicks)(void);
+    void (*dbug)(char *);
+    uint8_t (*getmousepos)(int16_t *, int16_t *);
+    void (*setmousepos)(int16_t, int16_t);
+    void (*getmousedelta)(int32_t *, int32_t *);
+    void (*clrmousedelta)(void);
+    uint8_t (*getjoyport)(void);
+} SidcHwABI;
+_Static_assert(sizeof(void *) == 4 &&
+               offsetof(SidcHwABI, getTicks) == 8 &&
+               offsetof(SidcHwABI, getjoyport) == 32,
+               "Original hardware table offsets have changed");
+typedef struct {
+    const void *hgfx;
+    const void *primatives; /* firmware spelling is intentionally retained */
+} SidcGfxRootABI;
+typedef struct {
+    void (*displaynow)(void);
+    void *vidmem;
+    void *ledbrightness;
+    void (*lcdwait)(void);
+    void *setlcd;
+    void (*setdisplaymode)(int, int, int, int, int);
+    void (*usebuffer)(gfx_bitmap_t *);
+    void (*showfbuffer)(gfx_bitmap_t *);
+    void (*showbbuffer)(gfx_bitmap_t *);
+    void (*dispfbuffers)(gfx_bitmap_t *, gfx_bitmap_t *);
+    void (*dispbbuffers)(gfx_bitmap_t *, gfx_bitmap_t *);
+    void (*scrollf)(int, int);
+    void (*scrollb)(int, int);
+    gfx_bitmap_t *(*getdrawbuffer)(void);
+    gfx_bitmap_t *(*getshowbuffer)(void);
+    gfx_bitmap_t *(*getfbuffer1)(void);
+    gfx_bitmap_t *(*getfbuffer2)(void);
+    gfx_bitmap_t *(*getbbuffer1)(void);
+    gfx_bitmap_t *(*getbbuffer2)(void);
+    void (*usepalettef)(uint32_t *);
+    void (*usepaletteb)(uint32_t *);
+    void *palcycleon;
+    void *palcycleoff;
+    void (*palcycleset)(uint8_t);
+    void (*palcyclerange)(uint8_t, uint8_t);
+    void (*palcyclerate)(uint8_t);
+    void *blitchunk;
+    void *createSprite;
+    void *submitSprite;
+    void *popSprites;
+    void *palcycleonb;
+    void *palcycleoffb;
+    void *palcyclesetb;
+    void *palcyclerangeb;
+    void *palcyclerateb;
+} SidcGfxHardwareABI;
+typedef struct {
+    void (*cls)(void);
+    void (*rectf)(int16_t, int16_t, int16_t, int16_t);
+    void (*plot)(int16_t, int16_t);
+    void (*setcolour)(uint8_t);
+    void *getsprite;
+    void *blitcell;
+    void (*blit)(uint8_t *, int16_t, int16_t, uint16_t, uint16_t);
+    void (*blitw)(uint8_t *, int16_t, int16_t, uint16_t, uint16_t, uint16_t);
+    void *tcollide;
+    void *drawbob;
+    void *bcollide;
+    void (*drawtext)(long, long, const char *);
+    void (*drawtextf)(long, long, const char *, uint8_t, uint8_t);
+    void *drawtextfc;
+    void (*circle)(int16_t, int16_t, int16_t);
+    void (*circlef)(int16_t, int16_t, int16_t);
+    void (*drawline)(int16_t, int16_t, int16_t, int16_t);
+} SidcGfxPrimitivesABI;
+
+_Static_assert(sizeof(SidcGfxRootABI) == 8, "Graphics root must be two ARM pointers");
+_Static_assert(sizeof(SidcGfxHardwareABI) == 35 * 4, "Graphics hardware EBI layout changed");
+_Static_assert(sizeof(SidcGfxPrimitivesABI) == 17 * 4, "Graphics primitives EBI layout changed");
+_Static_assert(offsetof(SidcGfxRootABI, primatives) == 4, "Graphics primitive pointer moved");
+_Static_assert(offsetof(SidcGfxHardwareABI, getfbuffer1) == 15 * 4,
+               "Graphics front buffer offset changed");
+_Static_assert(offsetof(SidcGfxHardwareABI, usepalettef) == 19 * 4,
+               "Graphics palette offset changed");
+_Static_assert(offsetof(SidcGfxPrimitivesABI, drawtext) == 11 * 4,
+               "Graphics text offset changed");
+#define GFX_HW_CHECK(member, signature) CHECK_SIGNATURE(SidcGfxHardwareABI, member, signature)
+#define GFX_PRIM_CHECK(member, signature) CHECK_SIGNATURE(SidcGfxPrimitivesABI, member, signature)
+GFX_HW_CHECK(displaynow, void (*)(void));
+GFX_HW_CHECK(lcdwait, void (*)(void));
+GFX_HW_CHECK(setdisplaymode, void (*)(int, int, int, int, int));
+GFX_HW_CHECK(scrollf, void (*)(int, int));
+GFX_HW_CHECK(scrollb, void (*)(int, int));
+GFX_HW_CHECK(getfbuffer1, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(getfbuffer2, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(getbbuffer1, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(getbbuffer2, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(getdrawbuffer, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(getshowbuffer, gfx_bitmap_t *(*)(void));
+GFX_HW_CHECK(usebuffer, void (*)(gfx_bitmap_t *));
+GFX_HW_CHECK(dispfbuffers, void (*)(gfx_bitmap_t *,gfx_bitmap_t *));
+GFX_HW_CHECK(dispbbuffers, void (*)(gfx_bitmap_t *,gfx_bitmap_t *));
+GFX_HW_CHECK(showfbuffer, void (*)(gfx_bitmap_t *));
+GFX_HW_CHECK(showbbuffer, void (*)(gfx_bitmap_t *));
+GFX_HW_CHECK(usepalettef, void (*)(uint32_t *));
+GFX_HW_CHECK(usepaletteb, void (*)(uint32_t *));
+GFX_HW_CHECK(palcycleset, void (*)(uint8_t));
+GFX_HW_CHECK(palcyclerange, void (*)(uint8_t, uint8_t));
+GFX_HW_CHECK(palcyclerate, void (*)(uint8_t));
+GFX_PRIM_CHECK(cls, void (*)(void));
+GFX_PRIM_CHECK(rectf, void (*)(int16_t,int16_t,int16_t,int16_t));
+GFX_PRIM_CHECK(plot, void (*)(int16_t,int16_t));
+GFX_PRIM_CHECK(setcolour, void (*)(uint8_t));
+GFX_PRIM_CHECK(blit, void (*)(uint8_t *,int16_t,int16_t,uint16_t,uint16_t));
+GFX_PRIM_CHECK(blitw, void (*)(uint8_t *,int16_t,int16_t,uint16_t,uint16_t,uint16_t));
+GFX_PRIM_CHECK(circle, void (*)(int16_t,int16_t,int16_t));
+GFX_PRIM_CHECK(circlef, void (*)(int16_t,int16_t,int16_t));
+GFX_PRIM_CHECK(drawline, void (*)(int16_t,int16_t,int16_t,int16_t));
+GFX_PRIM_CHECK(drawtext, void (*)(long,long,const char *));
+GFX_PRIM_CHECK(drawtextf, void (*)(long,long,const char *,uint8_t,uint8_t));
+/* Desktop suspend/restore are not exported by this table.  The SDK's
+ * API_SYSTEMS is likewise often only forward-declared, so do not access it. */
 _Static_assert(__builtin_types_compatible_p(fnCallback,
                    void (*)(void *, int32_t, int32_t, int32_t, int32_t)),
                "Update the gadget callback signature");
@@ -84,15 +227,29 @@ _Static_assert((uintptr_t)NULL == 0, "The SDK requires a zero null pointer");
 #define GUI_OFFSETS(group, table, member) \
     {offsetof(API_Root, gui), offsetof(API_GUI, group), offsetof(table, member)}
 #define GUI_CALL(group, table, sdk_name, member, return_type, ...) \
-    {.name = #sdk_name, \
+    {.name = "API.gui->" #group "->" #member, \
      .offsets = GUI_OFFSETS(group, table, member), \
      .arity = sizeof((uint8_t[]){__VA_ARGS__}), \
      .result = return_type, .params = {__VA_ARGS__}}
 #define GADGET_CALL(sdk_name, member, return_type, ...) \
     GUI_CALL(gadgets, API_GUI_GADGETS, sdk_name, member, return_type, __VA_ARGS__)
+#define GFX_OFFSETS(group, table, member) \
+    {offsetof(API_Root, gfx), offsetof(SidcGfxRootABI, group), offsetof(table, member)}
+#define GFX_CALL(group, table, sdk_name, member, return_type, ...) \
+    {.name = "API.gfx->" #group "->" #member, .offsets = GFX_OFFSETS(group, table, member), \
+     .arity = sizeof((uint8_t[]){__VA_ARGS__}), .result = return_type, \
+     .params = {__VA_ARGS__}}
+#define GFX_HW(sdk_name, member, return_type, ...) \
+    GFX_CALL(hgfx, SidcGfxHardwareABI, sdk_name, member, return_type, __VA_ARGS__)
+#define GFX_PRIM(sdk_name, member, return_type, ...) \
+    GFX_CALL(primatives, SidcGfxPrimitivesABI, sdk_name, member, return_type, __VA_ARGS__)
+#define HW_CALL(sdk_name, member, return_type) \
+    {.name = "API.hwl->" #member, .offsets = {offsetof(API_Root, hwl), \
+     offsetof(SidcHwABI, member), 0xffffu}, \
+     .arity = 0, .result = return_type}
 #define SDK_CONSTANT(name) {#name, name}
 
-enum { CALL_COUNT = 34, CONSTANT_COUNT = 37 };
+enum { CALL_COUNT = 68, CONSTANT_COUNT = 37 };
 _Static_assert((unsigned)CALL_COUNT <= SIDC_API_CALLS &&
                    (unsigned)CONSTANT_COUNT <= SIDC_API_CONSTANTS,
                "API export exceeds compiler capacity");
@@ -106,7 +263,7 @@ static const struct {
     .header = {SIDC_APICORE_MAGIC, SIDBOX_API_BASE, CALL_COUNT, CONSTANT_COUNT},
     .calls = {
         {
-            .name = "SBOS_CreateWindow",
+            .name = "API.gui->windows->window_create",
             .offsets = GUI_OFFSETS(windows, API_GUI_Windows, window_create),
             .arity = 7,
             .result = SIDC_API_U8,
@@ -144,7 +301,7 @@ static const struct {
         GUI_CALL(windows, API_GUI_Windows, SBOS_CloseWindow, window_close,
                  SIDC_API_VOID, SIDC_API_U8),
         {
-            .name = "SBOS_CreateTimer",
+            .name = "API.gui->timers->create",
             .offsets = GUI_OFFSETS(timers, API_SYS_TIMERS, create),
             .result = SIDC_API_U8
         },
@@ -170,7 +327,42 @@ static const struct {
         GADGET_CALL(SBOS_CreateCanvas, canvas_create, SIDC_API_U32,
                     GADGET_BOUNDS, SIDC_API_U32, SIDC_API_U32),
         GADGET_CALL(SBOS_GadgetSetFPen, set_fpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
-        GADGET_CALL(SBOS_GadgetSetBPen, set_bpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8)
+        GADGET_CALL(SBOS_GadgetSetBPen, set_bpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GFX_HW(SBOS_GFXDisplayNow, displaynow, SIDC_API_VOID),
+        GFX_HW(SBOS_GFXWaitLCD, lcdwait, SIDC_API_VOID),
+        GFX_HW(SBOS_GFXSetDisplayMode, setdisplaymode, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32,SIDC_API_S32,SIDC_API_S32,SIDC_API_S32),
+        GFX_HW(SBOS_GFXScrollFront, scrollf, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32),
+        GFX_HW(SBOS_GFXScrollBack, scrollb, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32),
+        GFX_HW(SBOS_GFXGetFrontBuffer1, getfbuffer1, SIDC_API_U32),
+        GFX_HW(SBOS_GFXGetFrontBuffer2, getfbuffer2, SIDC_API_U32),
+        GFX_HW(SBOS_GFXGetBackBuffer1, getbbuffer1, SIDC_API_U32),
+        GFX_HW(SBOS_GFXGetBackBuffer2, getbbuffer2, SIDC_API_U32),
+        GFX_HW(SBOS_GFXGetDrawBuffer, getdrawbuffer, SIDC_API_U32),
+        GFX_HW(SBOS_GFXGetShowBuffer, getshowbuffer, SIDC_API_U32),
+        GFX_HW(SBOS_GFXFrontBuffers, dispfbuffers, SIDC_API_VOID, SIDC_API_U32,SIDC_API_U32),
+        GFX_HW(SBOS_GFXBackBuffers, dispbbuffers, SIDC_API_VOID, SIDC_API_U32,SIDC_API_U32),
+        GFX_HW(SBOS_GFXUseDrawBuffer, usebuffer, SIDC_API_VOID, SIDC_API_U32),
+        GFX_HW(SBOS_GFXShowFrontBuffer, showfbuffer, SIDC_API_VOID, SIDC_API_U32),
+        GFX_HW(SBOS_GFXShowBackBuffer, showbbuffer, SIDC_API_VOID, SIDC_API_U32),
+        GFX_HW(SBOS_GFXLoadFrontPalette, usepalettef, SIDC_API_VOID, SIDC_API_WORD_BUFFER),
+        GFX_HW(SBOS_GFXLoadBackPalette, usepaletteb, SIDC_API_VOID, SIDC_API_WORD_BUFFER),
+        GFX_HW(SBOS_GFXPaletteCycle, palcycleset, SIDC_API_VOID, SIDC_API_U8),
+        GFX_HW(SBOS_GFXPaletteCycleRange, palcyclerange, SIDC_API_VOID, SIDC_API_U8,SIDC_API_U8),
+        GFX_HW(SBOS_GFXPaletteCycleRate, palcyclerate, SIDC_API_VOID, SIDC_API_U8),
+        GFX_PRIM(SBOS_GFXClear, cls, SIDC_API_VOID),
+        GFX_PRIM(SBOS_GFXRectFill, rectf, SIDC_API_VOID, SIDC_API_S16,SIDC_API_S16,SIDC_API_S16,SIDC_API_S16),
+        GFX_PRIM(SBOS_GFXPlot, plot, SIDC_API_VOID, SIDC_API_S16,SIDC_API_S16),
+        GFX_PRIM(SBOS_GFXSetColour, setcolour, SIDC_API_VOID, SIDC_API_U8),
+        GFX_PRIM(SBOS_GFXBlit, blit, SIDC_API_VOID, SIDC_API_BYTE_BUFFER,SIDC_API_S16,SIDC_API_S16,SIDC_API_U16,SIDC_API_U16),
+        GFX_PRIM(SBOS_GFXBlitStride, blitw, SIDC_API_VOID, SIDC_API_BYTE_BUFFER,SIDC_API_S16,SIDC_API_S16,SIDC_API_U16,SIDC_API_U16,SIDC_API_U16),
+        GFX_PRIM(SBOS_GFXCircle, circle, SIDC_API_VOID, SIDC_API_S16,SIDC_API_S16,SIDC_API_S16),
+        GFX_PRIM(SBOS_GFXCircleFill, circlef, SIDC_API_VOID, SIDC_API_S16,SIDC_API_S16,SIDC_API_S16),
+        GFX_PRIM(SBOS_GFXDrawLine, drawline, SIDC_API_VOID, SIDC_API_S16,SIDC_API_S16,SIDC_API_S16,SIDC_API_S16),
+        GFX_PRIM(SBOS_GFXDrawText, drawtext, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32,SIDC_API_STRING),
+        GFX_PRIM(SBOS_GFXDrawTextScaled, drawtextf, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32,SIDC_API_STRING,SIDC_API_U8,SIDC_API_U8),
+        /* Original hardware EBI fields, unchanged. */
+        HW_CALL(SBOS_HWGetJoyPort, getjoyport, SIDC_API_U8),
+        HW_CALL(SBOS_HWGetCpuCycles, getTicks, SIDC_API_U32)
     },
     .constants = {
         SDK_CONSTANT(SBX_WIN_DEFAULT),

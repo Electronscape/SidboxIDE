@@ -3,12 +3,22 @@
     "projectType": "gui",
     "appletFormat": "v2",
     "v2Linker": "llvm",
-    "outputAppName": "sdk-label.app",
-    "appSizeKb": 32,
-    "v2HeapKb": 4,
+    "outputAppName": "compiler.app",
+    "appSizeKb": 512,
+    "v2HeapKb": 16,
     "v2StackKb": 8,
-    "files": ["sdk-label.c"],
-    "openTabs": ["sdk-label.c"],
+    "files": [
+        "main.c",
+        "compiler.c",
+        "compiler.h",
+        "apicore.h",
+        "applet_v2_format.h",
+        "generated_runtime.h"
+    ],
+    "openTabs": [
+        "main.c",
+        "compiler.c"
+    ],
     "compiler": {
         "optimization": "-Os",
         "suppressWarnings": false,

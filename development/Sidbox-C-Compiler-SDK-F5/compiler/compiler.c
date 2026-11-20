@@ -11,9 +11,10 @@ enum {
     TOK_UNSUPPORTED, TOK_APIS_INCLUDE,
     TOK_INT, TOK_VOID, TOK_EXTERN, TOK_CONST, TOK_CHAR,
     TOK_IF, TOK_ELSE, TOK_WHILE, TOK_RETURN, TOK_STATIC, TOK_BREAK, TOK_CONTINUE, TOK_FOR,
-    TOK_SWITCH, TOK_CASE, TOK_DEFAULT, TOK_STRUCT, TOK_UNION, TOK_TYPEDEF, TOK_SIZEOF,
+    TOK_SWITCH, TOK_CASE, TOK_DEFAULT, TOK_STRUCT, TOK_UNION, TOK_TYPEDEF, TOK_SIZEOF, TOK_ENUM,
     TOK_EQ, TOK_NE, TOK_LE, TOK_GE, TOK_AND, TOK_OR, TOK_ARROW,
-    TOK_INC, TOK_DEC, TOK_ADD_ASSIGN, TOK_SUB_ASSIGN, TOK_SKIP
+    TOK_INC, TOK_DEC, TOK_ADD_ASSIGN, TOK_SUB_ASSIGN, TOK_SHL, TOK_SHR,
+    TOK_BAND_ASSIGN, TOK_BOR_ASSIGN, TOK_BXOR_ASSIGN, TOK_SHL_ASSIGN, TOK_SHR_ASSIGN, TOK_SKIP
 };
 
 enum {
@@ -28,7 +29,8 @@ enum {
     MACRO_LIMIT = 128, MACRO_NAME_LIMIT = 64, CONDITIONAL_LIMIT = 32,
     SWITCH_CASE_LIMIT = 256, SWITCH_BREAK_LIMIT = 512,
     CONTROL_LIMIT = 64, STRUCT_LIMIT = 24, STRUCT_FIELDS = 16, TYPEDEF_LIMIT = 64,
-    INITIAL_WORD_LIMIT = 1024
+    INITIAL_WORD_LIMIT = 1024, PRIVATE_ARENA_BYTES = 32768,
+    ENUM_TAG_LIMIT = 32, ENUM_CONSTANT_LIMIT = 160
 };
 
 enum { BUILTIN_MESSAGE = 4, BUILTIN_TICKS = 8, BUILTIN_BUTTONS = 12 };
@@ -36,10 +38,10 @@ enum {
     LOCAL_INT, LOCAL_GADGET, LOCAL_POINTER, LOCAL_S32, LOCAL_ARGV, LOCAL_WINDOW, LOCAL_MESSAGE,
     GLOBAL_BYTE_ARRAY, GLOBAL_INT_ARRAY, LOCAL_INT_ARRAY, LOCAL_INT_POINTER, LOCAL_PADDING,
     LOCAL_FUNCTION_POINTER, LOCAL_STRUCT, LOCAL_STRUCT_POINTER, GLOBAL_STRUCT,
-    LOCAL_STRUCT_ARRAY, GLOBAL_STRUCT_ARRAY
+    LOCAL_STRUCT_ARRAY, GLOBAL_STRUCT_ARRAY, LOCAL_STRUCT_DOUBLE_POINTER, LOCAL_INT_DOUBLE_POINTER
 };
-enum { RETURN_INT, RETURN_VOID, RETURN_WINDOW, RETURN_INT_POINTER };
-enum { VALUE_INT, VALUE_UNSIGNED, VALUE_VOID, VALUE_POINTER, VALUE_INT_POINTER };
+enum { RETURN_INT, RETURN_VOID, RETURN_WINDOW, RETURN_INT_POINTER, RETURN_RECORD, RETURN_STRUCT_POINTER };
+enum { VALUE_INT, VALUE_UNSIGNED, VALUE_VOID, VALUE_POINTER, VALUE_INT_POINTER, VALUE_STRUCT_DOUBLE_POINTER, VALUE_RECORD, VALUE_INT_DOUBLE_POINTER };
 enum { DISCARD_VALUE, REQUIRE_INTEGER, REQUIRE_SCALAR, STATEMENT_VALUE, REQUIRE_INT_POINTER };
 enum { ADDRESS_STRING, ADDRESS_GLOBAL, ADDRESS_FUNCTION };
 
@@ -63,6 +65,7 @@ typedef struct {
     uint8_t return_type;
     uint8_t is_static;
     uint8_t unit;
+    uint8_t return_struct_id;
     uint8_t param_types[FUNCTION_PARAMS];
     uint8_t param_struct_ids[FUNCTION_PARAMS];
 } Function;
@@ -75,6 +78,7 @@ typedef struct {
     uint8_t unit;
     uint8_t struct_id;
     uint8_t in_data;
+    uint8_t is_const;
     uint16_t init_offset;
     uint16_t init_count;
     uint32_t array_count;
@@ -93,11 +97,13 @@ typedef struct {
     uint8_t struct_id;
     FunctionPointerSignature callback;
     uint16_t array_count;
+    uint8_t is_const;
 } Local;
 
 typedef struct {
     Token name;
     uint8_t record_id;          /* 255 = scalar int, otherwise record type */
+    uint8_t is_pointer;         /* pointer fields occupy one word, including self links */
     uint16_t offset_words;      /* unions place every member at word zero */
 } RecordField;
 
@@ -108,6 +114,7 @@ typedef struct {
     uint8_t count;
     uint8_t is_union;
     uint8_t anonymous;
+    uint8_t complete;
     uint8_t unit;
 } StructDef;
 
@@ -116,6 +123,17 @@ typedef struct {
     uint8_t record_id;          /* 255 = int */
     uint8_t unit;
 } TypeAlias;
+
+typedef struct {
+    Token name;
+    uint32_t value;
+    uint8_t unit;
+} EnumConstant;
+
+typedef struct {
+    Token name;
+    uint8_t unit;
+} EnumTag;
 
 typedef struct {
     uint32_t at;
@@ -207,6 +225,10 @@ typedef struct {
     unsigned struct_count;
     TypeAlias aliases[TYPEDEF_LIMIT];
     unsigned alias_count;
+    EnumConstant enum_constants[ENUM_CONSTANT_LIMIT];
+    unsigned enum_constant_count;
+    EnumTag enum_tags[ENUM_TAG_LIMIT];
+    unsigned enum_tag_count;
     uint32_t global_bytes;
     uint32_t array_bytes;
     uint32_t initial_values[INITIAL_WORD_LIMIT];
@@ -218,11 +240,14 @@ typedef struct {
     uint32_t returns[RETURN_LIMIT];
     unsigned return_count;
     uint8_t return_type;
+    uint8_t return_struct_id;
+    uint8_t return_buffer_slot;
     Local locals[LOCAL_LIMIT];
     unsigned local_count;
     unsigned local_peak;
     unsigned scope;
     unsigned nesting;
+    unsigned value_record_id;   /* the type of the last record-pointer expression */
     unsigned loop_depth;
     unsigned loop_jump_count;
     LoopJump loop_jumps[LOOP_JUMP_LIMIT];
@@ -232,8 +257,15 @@ typedef struct {
     uint32_t switch_breaks[SWITCH_BREAK_LIMIT];
     SwitchCase switch_cases[SWITCH_CASE_LIMIT];
     unsigned switch_case_count;
+    uint16_t heap_global_index;
+    uint8_t heap_used;
 } Compiler;
 
+/* Freestanding Thumb-2 allocator, built without libc or external relocations. */
+/* Generated from tests/heap_runtime_reference.c with freestanding Thumb-2 clang.
+   Both embedded sections have no external relocations or libc calls. */
+static const uint8_t sidc_heap_alloc_code[] = {71,246,241,114,72,242,16,3,130,26,207,246,255,115,154,66,1,210,0,32,112,71,240,181,3,175,77,248,4,189,10,104,3,70,0,42,71,246,248,112,8,191,8,34,162,241,8,14,134,69,79,240,0,0,50,216,18,240,7,5,47,209,216,29,79,246,248,115,9,42,0,234,3,12,43,211,8,35,4,224,24,25,0,241,8,3,147,66,36,210,205,88,0,32,37,240,0,68,8,44,27,211,21,240,7,6,24,209,174,235,3,6,180,66,20,216,0,45,235,212,100,69,233,211,164,235,12,2,200,24,16,42,6,211,0,235,12,1,100,70,8,58,0,35,193,233,2,35,4,241,0,65,0,34,224,232,2,18,93,248,4,187,240,189,71,246,248,112,128,26,132,69,79,240,0,0,245,216,139,24,12,241,0,70,142,80,98,68,88,96,2,241,8,0,8,96,3,241,8,0,93,248,4,187,240,189};
+static const uint8_t sidc_heap_free_code[] = {0,40,117,208,1,241,16,2,130,66,113,216,1,245,0,66,130,66,109,217,66,26,80,7,24,191,112,71,240,181,3,175,77,248,4,189,8,104,71,246,248,115,160,241,8,14,158,69,90,216,16,240,7,3,87,209,9,40,85,211,162,241,8,3,79,240,1,12,8,34,141,88,37,240,0,68,8,44,75,211,21,240,7,6,72,209,174,235,2,6,180,66,68,216,154,66,4,208,34,68,8,50,130,66,237,211,9,224,181,241,255,63,58,220,34,68,79,240,0,12,8,50,130,66,227,211,2,224,95,234,204,114,48,209,202,88,9,40,34,240,0,66,202,80,42,211,79,240,8,12,4,224,131,66,35,208,131,66,156,70,34,210,81,248,12,48,12,241,8,2,35,240,0,68,0,43,4,235,2,3,242,212,131,66,238,210,205,88,0,45,235,212,8,45,17,211,21,240,7,6,14,209,174,235,3,3,157,66,10,216,99,25,3,241,8,4,65,248,12,64,163,24,131,66,235,211,217,231,193,248,0,192,93,248,4,187,189,232,240,64,112,71};
 static Compiler compiler;
 static struct {
     SBV2Header header;
@@ -452,6 +484,15 @@ static int macro_index(const Compiler *c, const char *name, size_t length)
         if (strlen(c->macros[i].name) == length &&
             memcmp(c->macros[i].name, name, length) == 0)
             return (int)i;
+    return -1;
+}
+
+static int enum_constant_lookup(const Compiler *c, const char *name, size_t length)
+{
+    for (int i = (int)c->enum_constant_count - 1; i >= 0; --i)
+        if (c->enum_constants[i].unit == c->file_index &&
+            c->enum_constants[i].name.length == length &&
+            !memcmp(c->enum_constants[i].name.text, name, length)) return i;
     return -1;
 }
 
@@ -1022,11 +1063,11 @@ static Token scan(Compiler *c)
             read_char(c);
         token.length = (uint32_t)(c->source + c->pos - token.text);
         static const char *const keywords[] = {
-            "int", "void", "extern", "const", "char", "if", "else", "while", "return", "static", "break", "continue", "for", "switch", "case", "default", "struct", "union", "typedef", "sizeof"
+            "int", "void", "extern", "const", "char", "if", "else", "while", "return", "static", "break", "continue", "for", "switch", "case", "default", "struct", "union", "typedef", "sizeof", "enum"
         };
         static const char *const reserved[] = {
             "auto", "do", "double",
-            "enum", "float", "goto", "inline", "long", "register",
+            "float", "goto", "inline", "long", "register",
             "restrict", "short", "signed",
             "unsigned", "volatile", "_Alignas",
             "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic",
@@ -1045,6 +1086,12 @@ static Token scan(Compiler *c)
             }
         }
         token.kind = TOK_NAME;
+        int enum_number = enum_constant_lookup(c, token.text, token.length);
+        if (enum_number >= 0) {
+            token.number = c->enum_constants[enum_number].value;
+            token.kind = TOK_NUMBER; /* enumerators in this subset are signed int */
+            return token;
+        }
         int macro = macro_index(c, token.text, token.length);
         if (macro >= 0) {
             int64_t value = c->macros[macro].value;
@@ -1122,9 +1169,19 @@ static Token scan(Compiler *c)
 
     unsigned next = peek(c, 0);
     token.kind = (int)ch;
-    if (next == '=' && (ch == '+' || ch == '-')) {
+    if ((ch == '<' || ch == '>') && next == ch) {
+        read_char(c);
+        token.kind = ch == '<' ? TOK_SHL : TOK_SHR;
+        if (peek(c, 0) == '=') {
+            read_char(c);
+            token.kind = ch == '<' ? TOK_SHL_ASSIGN : TOK_SHR_ASSIGN;
+        }
+    } else if (next == '=' && (ch == '+' || ch == '-')) {
         read_char(c);
         token.kind = ch == '+' ? TOK_ADD_ASSIGN : TOK_SUB_ASSIGN;
+    } else if (next == '=' && (ch == '&' || ch == '|' || ch == '^')) {
+        read_char(c);
+        token.kind = ch == '&' ? TOK_BAND_ASSIGN : ch == '|' ? TOK_BOR_ASSIGN : TOK_BXOR_ASSIGN;
     } else if (next == ch && (ch == '+' || ch == '-')) {
         read_char(c);
         token.kind = ch == '+' ? TOK_INC : TOK_DEC;
@@ -1137,9 +1194,7 @@ static Token scan(Compiler *c)
     } else if (ch == '-' && next == '>') {
         read_char(c);
         token.kind = TOK_ARROW;
-    } else if (ch == 0 ||
-               (ch == next && (ch == '<' || ch == '>')) ||
-               (next == '=' && strchr("*/%&|^", (int)ch))) {
+    } else if (ch == 0 || (next == '=' && strchr("*/%", (int)ch))) {
         error_at(c, token, "Token outside the supported C subset");
         token.kind = TOK_UNSUPPORTED;
     }
@@ -1265,16 +1320,26 @@ static void emit_address(Compiler *c, uint8_t kind, unsigned target)
     emit(c, (uint16_t)(0x1810 | (reg << 6) | reg));            /* adds Rd, r2, Rd */
 }
 
-static int valid_api_name(const char name[SIDC_API_NAME])
+/* Function names are literal EBI field paths, never compiler-created wrappers. */
+static int valid_api_name(const char *name, unsigned limit, int function_path)
 {
-    if (!letter((unsigned char)name[0]))
-        return 0;
-    for (unsigned i = 1; i < SIDC_API_NAME; ++i) {
+    unsigned i = 0;
+    if (function_path) {
+        if (memcmp(name, "API.", 4) != 0) return 0;
+        i = 4;
+    }
+    if (!letter((unsigned char)name[i])) return 0;
+    int parts = 0;
+    for (; i < limit; ++i) {
         unsigned ch = (unsigned char)name[i];
-        if (ch == 0)
-            return 1;
-        if (!letter(ch) && !digit(ch))
-            return 0;
+        if (ch == 0) return !function_path || parts >= 1;
+        if (function_path && ch == '-' && i + 2 < limit &&
+            name[i + 1] == '>' && letter((unsigned char)name[i + 2])) {
+            ++parts;
+            ++i;
+            continue;
+        }
+        if (!letter(ch) && !digit(ch)) return 0;
     }
     return 0;
 }
@@ -1295,22 +1360,24 @@ static int load_apicore(Compiler *c, SidcReadApiCore read_apicore)
     if (SBV2_CRC32(api_file, payload) != crc)
         goto invalid;
     memcpy(&header, api_file, sizeof(header));
-    int wide_calls = memcmp(header.magic, SIDC_APICORE_MAGIC, sizeof(header.magic)) == 0;
-    int has_message = wide_calls || memcmp(header.magic, SIDC_APICORE_MAGIC_V2, sizeof(header.magic)) == 0;
-    if ((!has_message && memcmp(header.magic, SIDC_APICORE_MAGIC_V1, sizeof(header.magic)) != 0) ||
+    if (memcmp(header.magic, SIDC_APICORE_MAGIC, sizeof(header.magic)) != 0) {
+        error(c, "Old or incompatible apis.bin: rebuild SDK EBI-only SBAPI04 metadata");
+        return 0;
+    }
+    if (
         header.base != 0x2001f000u || header.call_count == 0 ||
         header.call_count > SIDC_API_CALLS || header.constant_count > SIDC_API_CONSTANTS)
         goto invalid;
 
-    unsigned max_params = wide_calls ? SIDC_API_PARAMS : SIDC_API_PARAMS_V2;
-    unsigned call_size = offsetof(SidcApiCall, params) + max_params;
+    unsigned max_params = SIDC_API_PARAMS;
+    unsigned call_size = sizeof(SidcApiCall);
     unsigned calls = header.call_count * call_size;
     unsigned constants = header.constant_count * sizeof(SidcApiConstant);
     unsigned message_at = sizeof(header) + calls + constants;
-    if (payload != message_at + (has_message ? sizeof(SidcApiMessage) : 0))
+    if (payload != message_at + sizeof(SidcApiMessage))
         goto invalid;
     memcpy(c->api_constants, api_file + sizeof(header) + calls, constants);
-    if (has_message) {
+    {
         memcpy(&c->message, api_file + message_at, sizeof(c->message));
         unsigned size = c->message.size;
         if (size < 4 || size > 4096 || (size & 3u) || c->message.reserved)
@@ -1322,29 +1389,33 @@ static int load_apicore(Compiler *c, SidcReadApiCore read_apicore)
                 goto invalid;
         }
     }
-    unsigned last_param = wide_calls ? SIDC_API_BYTE_BUFFER
-                        : has_message ? SIDC_API_WINDOW_REF : SIDC_API_TIMER_CALLBACK;
+    unsigned last_param = SIDC_API_WORD_BUFFER;
     for (unsigned i = 0; i < header.call_count; ++i) {
         SidcApiCall *call = &c->api_calls[i];
         memcpy(call, api_file + sizeof(header) + i * call_size, call_size);
-        if (!valid_api_name(call->name) || call->arity > max_params ||
+        if (!valid_api_name(call->name, SIDC_API_NAME, 1) || call->arity > max_params ||
             (call->result != SIDC_API_U8 && call->result != SIDC_API_U32 &&
              call->result != SIDC_API_VOID && call->result != SIDC_API_S8 &&
              call->result != SIDC_API_S32))
             goto invalid;
+        /* A direct API_Root.hwl call is two dereferences rather than the
+         * normal three. 0xffff is allowed ONLY as the final hop sentinel. */
+        if (call->offsets[0] == 0xffffu || call->offsets[1] == 0xffffu)
+            goto invalid;
         for (unsigned j = 0; j < SIDC_API_OFFSETS; ++j)
-            if (call->offsets[j] > 4092 || (call->offsets[j] & 3u))
+            if (call->offsets[j] != 0xffffu &&
+                (call->offsets[j] > 4092 || (call->offsets[j] & 3u)))
                 goto invalid;
         for (unsigned j = 0; j < call->arity; ++j)
             if (call->params[j] < SIDC_API_NULL || call->params[j] > last_param ||
-                call->params[j] == SIDC_API_VOID || call->params[j] == SIDC_API_S32)
+                call->params[j] == SIDC_API_VOID )
                 goto invalid;
         for (unsigned j = call->arity; j < SIDC_API_PARAMS; ++j)
             if (call->params[j] != 0)
                 goto invalid;
     }
     for (unsigned i = 0; i < header.constant_count; ++i)
-        if (!valid_api_name(c->api_constants[i].name))
+        if (!valid_api_name(c->api_constants[i].name, SIDC_API_CONST_NAME, 0))
             goto invalid;
     c->api = header;
     return 1;
@@ -1482,6 +1553,7 @@ static int records_equal(const StructDef *a, const StructDef *b)
     for (unsigned i = 0; i < a->count; ++i)
         if (!same_name(a->fields[i].name, b->fields[i].name) ||
             a->fields[i].record_id != b->fields[i].record_id ||
+            a->fields[i].is_pointer != b->fields[i].is_pointer ||
             a->fields[i].offset_words != b->fields[i].offset_words) return 0;
     return 1;
 }
@@ -1524,18 +1596,35 @@ static int is_record_type(const Compiler *c)
 
 /* Parses {...}, but intentionally leaves the trailing declarator/semicolon to
    the caller. An optional name is available for a tagged definition. */
+static int enum_declaration(Compiler *c);
+
 static int record_definition(Compiler *c, Token tag, int is_union,
                              int anonymous, Token alias_name)
 {
     if (!expect(c, '{', "Expected '{' after record type")) return -1;
+    int existing = anonymous ? -1 : find_record(c, tag, is_union);
+    if (!anonymous && find_record(c, tag, !is_union) >= 0) {
+        error_at(c, tag, "Struct and union tags share a name namespace");
+        return -1;
+    }
+    /* Reserve a tagged record before its body: struct Node *next can then
+       refer to this incomplete type. An embedded Node (without *) cannot. */
+    int reserved = -1;
+    if (existing < 0 && !anonymous) {
+        if (c->struct_count == STRUCT_LIMIT) {
+            error_at(c, tag, "Too many struct/union definitions"); return -1;
+        }
+        reserved = (int)c->struct_count++;
+        c->structs[reserved] = (StructDef){.name=tag,.is_union=(uint8_t)is_union,
+                                          .unit=c->file_index};
+    }
     StructDef value = {.name = anonymous ? alias_name : tag,
                        .is_union = (uint8_t)is_union,
                        .anonymous = (uint8_t)anonymous,
-                       .unit = c->file_index};
+                       .complete=1,.unit = c->file_index};
     while (!c->diagnostic.message && c->token.kind != '}' && c->token.kind != TOK_END) {
         if (value.count == STRUCT_FIELDS) {
-            error(c, "Record exceeds sixteen fields");
-            return -1;
+            error(c, "Record exceeds sixteen fields"); return -1;
         }
         unsigned child = RECORD_INT;
         if (accept(c, TOK_INT)) {
@@ -1543,8 +1632,15 @@ static int record_definition(Compiler *c, Token tag, int is_union,
         } else if (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
                    c->aliases[find_alias(c, c->token)].record_id == RECORD_INT) {
             advance(c);
+        } else if (c->token.kind == TOK_ENUM && enum_declaration(c)) {
+            child = RECORD_INT;
         } else if (!record_type(c, &child)) {
-            error(c, is_union ? "Only int fields are supported inside union, or previously defined records" : "Only int fields are supported inside struct, or previously defined records");
+            error(c, is_union ? "Only int/enum fields or previously defined records are supported inside union" : "Only int/enum fields or previously defined records are supported inside struct");
+            return -1;
+        }
+        int pointer = accept(c, '*');
+        if (!pointer && child != RECORD_INT && !c->structs[child].complete) {
+            error(c, "An incomplete record must be used through a pointer");
             return -1;
         }
         Token field = c->token;
@@ -1555,13 +1651,13 @@ static int record_definition(Compiler *c, Token tag, int is_union,
                 error_at(c, field, is_union ? "Duplicate union field" : "Duplicate struct field");
                 return -1;
             }
-        unsigned words = child == RECORD_INT ? 1u : c->structs[child].size_words;
+        unsigned words = pointer || child == RECORD_INT ? 1u : c->structs[child].size_words;
         if (!words || words > 65535u - value.size_words) {
             error_at(c, field, "Record size exceeds supported memory range");
             return -1;
         }
         value.fields[value.count++] = (RecordField){.name=field,
-                    .record_id=(uint8_t)child,
+                    .record_id=(uint8_t)child,.is_pointer=(uint8_t)pointer,
                     .offset_words=(uint16_t)(is_union ? 0 : value.size_words)};
         if (is_union) {
             if (words > value.size_words) value.size_words = (uint16_t)words;
@@ -1572,24 +1668,15 @@ static int record_definition(Compiler *c, Token tag, int is_union,
     if (!expect(c, '}', "Expected '}' after record fields")) return -1;
     if (anonymous) value.name = c->token;
     if (!value.count) {
-        error_at(c, tag, "Empty records are outside this C subset");
-        return -1;
+        error_at(c, tag, "Empty records are outside this C subset"); return -1;
     }
-    if (!anonymous && find_record(c, tag, !is_union) >= 0) {
-        error_at(c, tag, "Struct and union tags share a name namespace");
-        return -1;
-    }
-    int existing = anonymous ? -1 : find_record(c, tag, is_union);
     if (anonymous) {
-        /* Anonymous typedef records in separate translation units have
-           compatible layout when the shared alias name and fields match. */
         for (unsigned i = 0; i < c->struct_count; ++i)
             if (c->structs[i].anonymous &&
                 c->structs[i].unit != c->file_index &&
                 same_name(c->structs[i].name, value.name) &&
                 records_equal(&value, &c->structs[i])) {
-                existing = (int)i;
-                break;
+                existing = (int)i; break;
             }
     }
     if (existing >= 0) {
@@ -1599,13 +1686,136 @@ static int record_definition(Compiler *c, Token tag, int is_union,
         }
         return existing;
     }
+    if (reserved >= 0) {
+        c->structs[reserved] = value;
+        return reserved;
+    }
     if (c->struct_count == STRUCT_LIMIT) {
-        error_at(c, tag, "Too many struct/union definitions");
-        return -1;
+        error_at(c, tag, "Too many struct/union definitions"); return -1;
     }
     unsigned next = c->struct_count++;
     c->structs[next] = value;
     return (int)next;
+}
+
+/* Enum declarations use compile-time integer expressions, not emitted ARM code. */
+static int enum_precedence(int op)
+{
+    switch (op) {
+    case '|': return 1;
+    case '^': return 2;
+    case '&': return 3;
+    case TOK_SHL: case TOK_SHR: return 4;
+    case '+': case '-': return 5;
+    case '*': case '/': case '%': return 6;
+    default: return 0;
+    }
+}
+
+static int64_t enum_expression(Compiler *c, int minimum, unsigned depth)
+{
+    if (depth > 24u) { error(c, "Enum expression nesting too deep"); return 0; }
+    int op = c->token.kind;
+    int64_t value = 0;
+    if (op == '+' || op == '-' || op == '~') {
+        advance(c);
+        value = enum_expression(c, 7, depth + 1u);
+        if (op == '-') value = -value;
+        if (op == '~') value = ~value;
+    } else if (accept(c, '(')) {
+        value = enum_expression(c, 1, depth + 1u);
+        expect(c, ')', "Expected ')' in enum constant expression");
+    } else if (c->token.kind == TOK_NUMBER || c->token.kind == TOK_UNSIGNED_NUMBER) {
+        value = c->token.kind == TOK_NUMBER ? (int64_t)(int32_t)c->token.number : (int64_t)c->token.number;
+        advance(c);
+    } else {
+        error(c, "Enum initializer requires an integer constant expression");
+        return 0;
+    }
+    while (!c->diagnostic.message && enum_precedence(c->token.kind) >= minimum) {
+        op = c->token.kind;
+        int prec = enum_precedence(op);
+        advance(c);
+        int64_t rhs = enum_expression(c, prec + 1, depth + 1u);
+        if (c->diagnostic.message) return 0;
+        if ((op == '/' || op == '%') && !rhs) {
+            error(c, "Division by zero in enum initializer"); return 0;
+        }
+        if ((op == '/' || op == '%') && value == INT32_MIN && rhs == -1) {
+            error(c, "Enum division overflows signed int"); return 0;
+        }
+        if ((op == TOK_SHL || op == TOK_SHR) && (rhs < 0 || rhs > 31)) {
+            error(c, "Enum shift count must be between 0 and 31"); return 0;
+        }
+        switch (op) {
+        case '+': value += rhs; break;
+        case '-': value -= rhs; break;
+        case '*': value *= rhs; break;
+        case '/': value = (int32_t)value / (int32_t)rhs; break;
+        case '%': value = (int32_t)value % (int32_t)rhs; break;
+        case '&': value &= rhs; break;
+        case '|': value |= rhs; break;
+        case '^': value ^= rhs; break;
+        case TOK_SHL: value = (uint32_t)value << rhs; break;
+        case TOK_SHR: value = (uint32_t)value >> rhs; break;
+        }
+    }
+    return value;
+}
+
+/* Consume enum Tag { ... } or an already declared enum Tag.
+   Enum objects use the existing 32-bit int representation. */
+static int enum_declaration(Compiler *c)
+{
+    if (!expect(c, TOK_ENUM, "Expected enum")) return 0;
+    Token tag = {0};
+    if (c->token.kind == TOK_NAME) {
+        tag = c->token;
+        advance(c);
+    }
+    if (accept(c, '{')) {
+        if (tag.kind == TOK_NAME) {
+            for (unsigned i = 0; i < c->enum_tag_count; ++i)
+                if (c->enum_tags[i].unit == c->file_index &&
+                    same_name(c->enum_tags[i].name, tag)) {
+                    error_at(c, tag, "Duplicate enum definition"); return 0;
+                }
+            if (c->enum_tag_count == ENUM_TAG_LIMIT) {
+                error(c, "Too many enum tags"); return 0;
+            }
+            c->enum_tags[c->enum_tag_count++] = (EnumTag){tag,c->file_index};
+        }
+        int64_t current = -1;
+        unsigned members = 0;
+        while (!c->diagnostic.message && c->token.kind != '}' && c->token.kind != TOK_END) {
+            Token member = c->token;
+            if (!expect(c, TOK_NAME, "Expected enum constant name")) return 0;
+            if (enum_constant_lookup(c, member.text, member.length) >= 0 ||
+                find_alias(c, member) >= 0) {
+                error_at(c, member, "Duplicate enum constant"); return 0;
+            }
+            if (accept(c, '=')) current = enum_expression(c, 1, 0);
+            else ++current;
+            if (current < INT32_MIN || current > INT32_MAX) {
+                error_at(c, member, "Enum constant exceeds signed 32-bit range"); return 0;
+            }
+            if (c->enum_constant_count == ENUM_CONSTANT_LIMIT) {
+                error_at(c, member, "Too many enum constants"); return 0;
+            }
+            c->enum_constants[c->enum_constant_count++] =
+                (EnumConstant){member, (uint32_t)current, c->file_index};
+            ++members;
+            if (!accept(c, ',')) break;
+        }
+        if (!members) { error(c, "Empty enum definitions are unsupported"); return 0; }
+        return expect(c, '}', "Expected '}' after enum constants");
+    }
+    if (tag.kind != TOK_NAME) { error(c, "Expected enum tag or definition"); return 0; }
+    for (unsigned i = 0; i < c->enum_tag_count; ++i)
+        if (c->enum_tags[i].unit == c->file_index &&
+            same_name(c->enum_tags[i].name, tag)) return 1;
+    error_at(c, tag, "Unknown enum tag");
+    return 0;
 }
 
 static void register_alias(Compiler *c, Token name, unsigned record_id)
@@ -1634,6 +1844,9 @@ static void typedef_declaration(Compiler *c)
     int defining = 0, is_union = 0;
     Token tag = c->token;
     if (accept(c, TOK_INT)) {
+        id = RECORD_INT;
+    } else if (c->token.kind == TOK_ENUM) {
+        if (!enum_declaration(c)) return;
         id = RECORD_INT;
     } else if (c->token.kind == TOK_STRUCT || c->token.kind == TOK_UNION) {
         is_union = c->token.kind == TOK_UNION;
@@ -1690,6 +1903,10 @@ static uint32_t sizeof_operand(Compiler *c)
             return 0u;
         }
         bytes = 4u;
+    } else if (c->token.kind == TOK_ENUM) {
+        type_operand = 1;
+        if (!enum_declaration(c)) return 0u;
+        bytes = 4u;
     } else if (accept(c, TOK_CHAR)) {
         type_operand = 1;
         bytes = accept(c, '*') ? 4u : 1u;
@@ -1731,7 +1948,8 @@ static uint32_t sizeof_operand(Compiler *c)
                        kind == GLOBAL_BYTE_ARRAY || kind == LOCAL_STRUCT_ARRAY ||
                        kind == GLOBAL_STRUCT_ARRAY;
         int is_pointer = kind == LOCAL_INT_POINTER || kind == LOCAL_STRUCT_POINTER ||
-                         kind == LOCAL_FUNCTION_POINTER || kind == LOCAL_ARGV ||
+                         kind == LOCAL_FUNCTION_POINTER || kind == LOCAL_STRUCT_DOUBLE_POINTER ||
+                         kind == LOCAL_INT_DOUBLE_POINTER || kind == LOCAL_ARGV ||
                          kind == LOCAL_POINTER || kind == LOCAL_MESSAGE;
         bytes = kind == GLOBAL_BYTE_ARRAY || kind == LOCAL_WINDOW ? 1u :
                 is_record && !is_pointer ? c->structs[rec].size_words * 4u : 4u;
@@ -1758,11 +1976,14 @@ static uint32_t sizeof_operand(Compiler *c)
             bytes = is_record ? c->structs[rec].size_words * 4u : 4u;
             is_array = 0;
         }
-        if (c->token.kind == TOK_ARROW &&
-            (kind != LOCAL_STRUCT_POINTER || dereference)) {
-            error_at(c, name, "sizeof -> needs a record pointer"); return 0u;
-        }
         while (c->token.kind == '.' || c->token.kind == TOK_ARROW) {
+            int member_op = c->token.kind;
+            if (member_op == TOK_ARROW && !is_pointer) {
+                error_at(c, name, "sizeof -> needs a record pointer"); return 0u;
+            }
+            if (member_op == '.' && is_pointer) {
+                error_at(c, name, "sizeof pointer member needs ->"); return 0u;
+            }
             advance(c);
             if (!is_record) { error_at(c, name, "sizeof member needs a struct or union"); return 0u; }
             Token field = c->token;
@@ -1773,7 +1994,8 @@ static uint32_t sizeof_operand(Compiler *c)
             if (i == def->count) { error_at(c, field, "Unknown member in sizeof"); return 0u; }
             rec = def->fields[i].record_id;
             is_record = rec != RECORD_INT;
-            bytes = is_record ? c->structs[rec].size_words * 4u : 4u;
+            is_pointer = def->fields[i].is_pointer;
+            bytes = is_pointer ? 4u : is_record ? c->structs[rec].size_words * 4u : 4u;
         }
     }
     if (type_operand && accept(c, '[')) {
@@ -1792,6 +2014,14 @@ static uint32_t sizeof_operand(Compiler *c)
 }
 
 /* r0 contains the base address of a local/global struct or struct pointer. */
+/* r0 contains the address of a record. Pointer members use one word, and
+   -> follows the pointer stored in that word rather than embedding its target. */
+static int call(Compiler *c, Token name);
+static void record_value_address(Compiler *c, unsigned id);
+static int null_argument(Compiler *c);
+static void struct_pointer_value(Compiler *c, unsigned struct_id);
+static void struct_double_pointer_value(Compiler *c, unsigned struct_id);
+static void int_double_pointer_value(Compiler *c);
 static int struct_member(Compiler *c, unsigned struct_id, int allow_store, int address_only)
 {
     Token member = c->token;
@@ -1806,7 +2036,43 @@ static int struct_member(Compiler *c, unsigned struct_id, int allow_store, int a
     RecordField f = def->fields[field];
     if (f.offset_words) {
         load_constant(c, 1, f.offset_words * 4u);
-        emit(c, 0x1840);                     /* adds r0, r0, r1 */
+        emit(c, 0x1840);                    /* add address + member offset */
+    }
+    if (f.is_pointer) {
+        if (accept(c, TOK_ARROW)) {
+            if (f.record_id == RECORD_INT) {
+                error_at(c, member, "int * field has no record members");
+                return VALUE_INT;
+            }
+            emit(c, 0x6800);                /* follow linked record pointer */
+            return struct_member(c, f.record_id, allow_store, address_only);
+        }
+        if (c->token.kind == '.') {
+            error_at(c, member, "Use -> to follow a pointer field");
+            return VALUE_POINTER;
+        }
+        if (address_only) {
+            error_at(c, member, "Pointer-to-pointer member addresses are not supported");
+            return VALUE_POINTER;
+        }
+        if (allow_store && accept(c, '=')) {
+            emit(c, 0xb403);               /* preserve target member address */
+            if (f.record_id == RECORD_INT)
+                expression(c, 1, REQUIRE_INT_POINTER);
+            else
+                struct_pointer_value(c, f.record_id);
+            emit(c, 0xbc06);               /* target address -> r1 */
+            emit(c, 0x6008);               /* str r0, [r1] */
+            return VALUE_VOID;
+        }
+        if (c->token.kind == TOK_ADD_ASSIGN || c->token.kind == TOK_SUB_ASSIGN ||
+            c->token.kind == TOK_BAND_ASSIGN || c->token.kind == TOK_BOR_ASSIGN ||
+            c->token.kind == TOK_BXOR_ASSIGN || c->token.kind == TOK_SHL_ASSIGN ||
+            c->token.kind == TOK_SHR_ASSIGN)
+            error_at(c, member, "Record pointer fields only support =");
+        emit(c, 0x6800);                   /* ldr pointer from field */
+        c->value_record_id = f.record_id;
+        return f.record_id == RECORD_INT ? VALUE_INT_POINTER : VALUE_POINTER;
     }
     if (f.record_id != RECORD_INT) {
         if (accept(c, '.'))
@@ -1815,31 +2081,43 @@ static int struct_member(Compiler *c, unsigned struct_id, int allow_store, int a
         error_at(c, member, "Use .field to access an embedded record");
         return VALUE_POINTER;
     }
-    if (c->token.kind == '.') {
+    if (c->token.kind == '.' || c->token.kind == TOK_ARROW) {
         error(c, "Integer record fields have no nested members");
         return VALUE_INT;
     }
     if (address_only) return VALUE_INT_POINTER;
     if (allow_store && (c->token.kind == '=' ||
-                        c->token.kind == TOK_ADD_ASSIGN ||
-                        c->token.kind == TOK_SUB_ASSIGN)) {
+                        c->token.kind == TOK_ADD_ASSIGN || c->token.kind == TOK_SUB_ASSIGN ||
+                        c->token.kind == TOK_BAND_ASSIGN || c->token.kind == TOK_BOR_ASSIGN ||
+                        c->token.kind == TOK_BXOR_ASSIGN || c->token.kind == TOK_SHL_ASSIGN ||
+                        c->token.kind == TOK_SHR_ASSIGN)) {
         int op = c->token.kind;
         advance(c);
-        emit(c, 0xb403);                      /* save member address */
+        emit(c, 0xb403);
         if (op != '=') {
-            emit(c, 0x6800);                  /* read old member value */
-            emit(c, 0xb403);                  /* save old value */
+            emit(c, 0x6800);
+            emit(c, 0xb403);
         }
         expression(c, 1, REQUIRE_INTEGER);
         if (op != '=') {
-            emit(c, 0xbc06);                  /* old value -> r1 */
-            emit(c, op == TOK_ADD_ASSIGN ? 0x1808 : 0x1a08);
+            emit(c, 0xbc06);
+            switch (op) {
+            case TOK_ADD_ASSIGN: emit(c, 0x1808); break;
+            case TOK_SUB_ASSIGN: emit(c, 0x1a08); break;
+            case TOK_BAND_ASSIGN: emit(c, 0x4008); break;
+            case TOK_BOR_ASSIGN: emit(c, 0x4308); break;
+            case TOK_BXOR_ASSIGN: emit(c, 0x4048); break;
+            case TOK_SHL_ASSIGN: case TOK_SHR_ASSIGN:
+                emit(c, 0x4602); emit(c, 0x4608);
+                emit(c, op == TOK_SHL_ASSIGN ? 0x4090 : 0x4110);
+                break;
+            }
         }
-        emit(c, 0xbc06);                      /* member address -> r1 */
-        emit(c, 0x6008);                      /* str r0, [r1] */
+        emit(c, 0xbc06);
+        emit(c, 0x6008);
         return VALUE_VOID;
     }
-    emit(c, 0x6800);                          /* ldr r0, [r0] */
+    emit(c, 0x6800);
     return VALUE_INT;
 }
 
@@ -1882,8 +2160,8 @@ static void record_member_pointer(Compiler *c, unsigned root, unsigned expected)
             load_constant(c, 1, member.offset_words * 4u);
             emit(c, 0x1840);
         }
-        if (member.record_id == RECORD_INT) {
-            error_at(c, field, "Nested member is an int, not a record");
+        if (member.record_id == RECORD_INT || member.is_pointer) {
+            error_at(c, field, "Nested member is not an embedded record");
             return;
         }
         if (!accept(c, '.')) {
@@ -1899,6 +2177,30 @@ static void record_member_pointer(Compiler *c, unsigned root, unsigned expected)
    by-value members, arrays (decaying to pointers), and NULL. */
 static void struct_pointer_value(Compiler *c, unsigned struct_id)
 {
+    if (c->token.kind == TOK_NAME && c->lookahead.kind == '(') {
+        Token name = c->token;
+        advance(c);
+        if (!expect(c, '(', "Expected '(' after function name")) return;
+        int returned = call(c, name);
+        if (!((name_is(name, "malloc") || name_is(name, "sidbox_malloc")) &&
+              returned == VALUE_POINTER) &&
+            !(returned == VALUE_POINTER && c->value_record_id == struct_id))
+            error_at(c, name, "Expected matching record pointer return type");
+        return;
+    }
+    if (accept(c, '*')) {
+        Token name = c->token;
+        int slot = name.kind == TOK_NAME ? find_local(c, name) : -1;
+        if (slot < 0 || c->locals[slot].type != LOCAL_STRUCT_DOUBLE_POINTER ||
+            c->locals[slot].struct_id != struct_id) {
+            error_at(c, name, "Expected a matching record ** for dereference");
+            return;
+        }
+        advance(c);
+        load_local(c, (unsigned)slot, 0);
+        emit(c, 0x6800);
+        return;
+    }
     int address = accept(c, '&');
     if (c->token.kind == TOK_NAME) {
         Token name = c->token;
@@ -1913,38 +2215,54 @@ static void struct_pointer_value(Compiler *c, unsigned struct_id)
         unsigned root = local >= 0 ? c->locals[local].struct_id :
                         global >= 0 ? c->globals[global].struct_id : RECORD_INT;
         if (kind == LOCAL_STRUCT || kind == GLOBAL_STRUCT) {
-            if (!address) {
-                error_at(c, name, "Use &struct to pass a struct pointer");
-                return;
-            }
             if (local >= 0) local_address(c, (unsigned)local);
             else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
-            if (accept(c, '.')) record_member_pointer(c, root, struct_id);
-            else if (root != struct_id)
+            if (accept(c, '.')) {
+                /* A by-value nested record needs &, but a pointer field
+                   already holds an address and must not have &. */
+                if (address) record_member_pointer(c, root, struct_id);
+                else {
+                    int type = struct_member(c, root, 0, 0);
+                    if (type != VALUE_POINTER || c->value_record_id != struct_id)
+                        error_at(c, name, "Struct pointer requires the same struct type");
+                }
+            } else if (!address || root != struct_id)
                 error_at(c, name, "Struct pointer requires the same struct type");
         } else if (kind == LOCAL_STRUCT_ARRAY || kind == GLOBAL_STRUCT_ARRAY) {
             if (local >= 0) local_address(c, (unsigned)local);
             else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
-            if (address) {
-                if (c->token.kind != '[') {
-                    error_at(c, name, "Use &array[index], or pass array directly");
-                    return;
+            if (c->token.kind == '[') {
+                if (address) {
+                    struct_array_element(c, root, 0, 1);
+                    if (accept(c, '.')) record_member_pointer(c, root, struct_id);
+                    else if (root != struct_id)
+                        error_at(c, name, "Struct pointer requires the same struct type");
+                } else {
+                    struct_array_element(c, root, 0, 1);
+                    if (accept(c, '.')) {
+                        int type = struct_member(c, root, 0, 0);
+                        if (type != VALUE_POINTER || c->value_record_id != struct_id)
+                            error_at(c, name, "Struct pointer requires the same struct type");
+                    } else {
+                        error_at(c, name, "Use &array[index] when passing an element");
+                    }
                 }
-                struct_array_element(c, root, 0, 1);
-                if (accept(c, '.')) record_member_pointer(c, root, struct_id);
-                else if (root != struct_id)
-                    error_at(c, name, "Struct pointer requires the same struct type");
-            } else if (c->token.kind == '[') {
-                error_at(c, name, "Use &array[index] when passing an element");
-            } else if (root != struct_id) {
+            } else if (address || root != struct_id) {
                 error_at(c, name, "Struct pointer requires the same struct type");
             }
         } else if (kind == LOCAL_STRUCT_POINTER && local >= 0) {
             load_local(c, (unsigned)local, 0);
-            if (address && accept(c, TOK_ARROW))
-                record_member_pointer(c, root, struct_id);
-            else if (address || root != struct_id)
+            if (accept(c, TOK_ARROW)) {
+                if (address) {
+                    record_member_pointer(c, root, struct_id);
+                } else {
+                    int type = struct_member(c, root, 0, 0);
+                    if (type != VALUE_POINTER || c->value_record_id != struct_id)
+                        error_at(c, name, "Struct pointer requires the same struct type");
+                }
+            } else if (address || root != struct_id) {
                 error_at(c, name, "Struct pointer requires the same struct type");
+            }
         } else {
             error_at(c, name, "Struct pointer requires the same struct type");
         }
@@ -1955,6 +2273,146 @@ static void struct_pointer_value(Compiler *c, unsigned struct_id)
     } else {
         error(c, "Expected matching struct pointer, &struct, array, or NULL");
     }
+}
+
+/* r0 addresses a record; walk to a typed pointer field and leave its
+   *storage address* in r0, suitable for a T **. */
+static void int_double_pointer_value(Compiler *c)
+{
+    if (null_argument(c)) return;
+    int address = accept(c, '&');
+    Token name = c->token;
+    if (!expect(c, TOK_NAME, "Expected int ** or &int pointer")) return;
+    int slot = find_local(c, name);
+    if (slot < 0) { error_at(c, name, "Expected declared int pointer"); return; }
+    if (address && c->locals[slot].type == LOCAL_INT_POINTER)
+        local_address(c, (unsigned)slot);
+    else if (!address && c->locals[slot].type == LOCAL_INT_DOUBLE_POINTER)
+        load_local(c, (unsigned)slot, 0);
+    else error_at(c, name, "int ** requires &int_pointer or compatible int **");
+}
+
+static void record_pointer_field_address(Compiler *c, unsigned rec, unsigned expected)
+{
+    for (;;) {
+        Token field = c->token;
+        if (!expect(c, TOK_NAME, "Expected pointer member name")) return;
+        const StructDef *def = &c->structs[rec];
+        unsigned index = 0;
+        while (index < def->count && !same_name(field, def->fields[index].name)) ++index;
+        if (index == def->count) {
+            error_at(c, field, "Unknown record field in pointer address"); return;
+        }
+        RecordField f = def->fields[index];
+        if (f.offset_words) {
+            load_constant(c, 1, f.offset_words * 4u);
+            emit(c, 0x1840);
+        }
+        if (accept(c, TOK_ARROW)) {
+            if (!f.is_pointer || f.record_id == RECORD_INT) {
+                error_at(c, field, "-> needs a record pointer field"); return;
+            }
+            emit(c, 0x6800);
+            rec = f.record_id;
+        } else if (accept(c, '.')) {
+            if (f.is_pointer || f.record_id == RECORD_INT) {
+                error_at(c, field, ". needs an embedded record field"); return;
+            }
+            rec = f.record_id;
+        } else {
+            if (!f.is_pointer || f.record_id != expected)
+                error_at(c, field, "&member needs a matching record pointer field");
+            return;
+        }
+    }
+}
+
+/* Two-level typed record pointers: accepts &Node*, existing Node**, or NULL. */
+static void struct_double_pointer_value(Compiler *c, unsigned struct_id)
+{
+    if (null_argument(c)) return;
+    int address = accept(c, '&');
+    Token name = c->token;
+    if (!expect(c, TOK_NAME, "Expected matching record ** or &record pointer")) return;
+    int slot = find_local(c, name);
+    if (slot < 0) {
+        error_at(c, name, "Struct ** requires a declared pointer or record");
+        return;
+    }
+    unsigned root = c->locals[slot].struct_id;
+    if (address && c->locals[slot].type == LOCAL_STRUCT_POINTER) {
+        if (accept(c, TOK_ARROW)) {
+            load_local(c, (unsigned)slot, 0);
+            record_pointer_field_address(c, root, struct_id);
+        } else if (root == struct_id) local_address(c, (unsigned)slot);
+        else error_at(c, name, "Struct ** requires the same record type");
+    } else if (address && c->locals[slot].type == LOCAL_STRUCT) {
+        if (!expect(c, '.', "Use &record.pointer_member")) return;
+        local_address(c, (unsigned)slot);
+        record_pointer_field_address(c, root, struct_id);
+    } else if (!address && c->locals[slot].type == LOCAL_STRUCT_DOUBLE_POINTER && root == struct_id)
+        load_local(c, (unsigned)slot, 0);
+    else
+        error_at(c, name, "Struct ** requires &record_pointer or a matching record **");
+}
+
+/* r0=source, r1=destination. Copy complete 32-bit record words. */
+static void copy_record(Compiler *c, unsigned words)
+{
+    for (unsigned i = 0; i < words; ++i) {
+        unsigned offset = i * 4u;
+        emit(c, 0xf8d0); emit(c, (uint16_t)(0x2000u | offset)); /* ldr.w r2,[r0,#offset] */
+        emit(c, 0xf8c1); emit(c, (uint16_t)(0x2000u | offset)); /* str.w r2,[r1,#offset] */
+    }
+}
+
+/* Evaluate a record lvalue or record-returning call to its address in r0.
+   The callee gets a private copy; no address aliases are passed by value. */
+static void record_value_address(Compiler *c, unsigned expected)
+{
+    Token name = c->token;
+    if (!expect(c, TOK_NAME, "Expected record value or record-returning call")) return;
+    if (accept(c, '(')) {
+        int type = call(c, name);
+        if (type != VALUE_RECORD || c->value_record_id != expected)
+            error_at(c, name, "Record value requires a matching record-returning function");
+        return;
+    }
+    int local = find_local(c, name);
+    int global = local < 0 ? find_global(c, name) : -1;
+    if (local < 0 && global < 0) {
+        error_at(c, name, "Expected a declared record value"); return;
+    }
+    unsigned type = local >= 0 ? c->locals[local].type : c->globals[global].type;
+    unsigned rec = local >= 0 ? c->locals[local].struct_id : c->globals[global].struct_id;
+    if (type != LOCAL_STRUCT && type != GLOBAL_STRUCT &&
+        type != LOCAL_STRUCT_ARRAY && type != GLOBAL_STRUCT_ARRAY) {
+        error_at(c, name, "Record value requires a struct or union object"); return;
+    }
+    if (local >= 0) local_address(c, (unsigned)local);
+    else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
+    if (type == LOCAL_STRUCT_ARRAY || type == GLOBAL_STRUCT_ARRAY) {
+        if (c->token.kind != '[') {
+            error_at(c, name, "Use record_array[index] for a record value"); return;
+        }
+        struct_array_element(c, rec, 0, 1);
+    }
+    if (accept(c, '.')) record_member_pointer(c, rec, expected);
+    else if (rec != expected) error_at(c, name, "Record value requires the same type");
+}
+
+static unsigned reserve_record_slots(Compiler *c, unsigned id)
+{
+    unsigned words = c->structs[id].size_words;
+    if (!words || words > LOCAL_LIMIT - c->local_count) {
+        error(c, "Record temporaries exceed the 64-word local limit"); return 0;
+    }
+    unsigned slot = c->local_count;
+    for (unsigned i = 0; i < words; ++i)
+        c->locals[c->local_count++] = (Local){.scope=(uint8_t)c->scope,
+                                             .type=LOCAL_PADDING};
+    if (c->local_count > c->local_peak) c->local_peak = c->local_count;
+    return slot;
 }
 
 static unsigned add_local(Compiler *c, Token name, uint8_t type)
@@ -2017,8 +2475,20 @@ static unsigned escape_byte(Compiler *c, Token token, const char **p, const char
 static void string_argument(Compiler *c)
 {
     Token first = c->token;
+    /* SDK text calls can also read a persistent, NUL-terminated byte array.
+       This is for live labels; the caller owns the buffer and its lifetime. */
+    if (first.kind == TOK_NAME) {
+        int index = find_global(c, first);
+        if (index >= 0 && find_local(c, first) < 0 &&
+            c->globals[index].type == GLOBAL_BYTE_ARRAY) {
+            advance(c);
+            emit_address(c, ADDRESS_GLOBAL, (unsigned)index);
+            emit(c, 0x4608);                    /* mov r0, r1 */
+            return;
+        }
+    }
     if (first.kind != TOK_STRING) {
-        error(c, "Expected a string literal argument");
+        error(c, "Expected a string literal or static uint8_t array");
         return;
     }
     if (c->string_bytes == STRING_LIMIT) {
@@ -2171,6 +2641,24 @@ static void api_call(Compiler *c, const SidcApiCall *api)
             emit(c, 0x4608);                                  /* mov r0, r1 */
             break;
         }
+        case SIDC_API_WORD_BUFFER: {
+            if (null_argument(c)) {
+                error(c, "Palette pointer cannot be NULL");
+                break;
+            }
+            Token name = c->token;
+            int index = name.kind == TOK_NAME ? find_global(c, name) : -1;
+            if (index < 0 || find_local(c, name) >= 0 ||
+                c->globals[index].type != GLOBAL_INT_ARRAY ||
+                c->globals[index].array_count < 256u) {
+                error_at(c, name, "Pass a file-scope static int[256] palette array");
+                break;
+            }
+            advance(c);
+            emit_address(c, ADDRESS_GLOBAL, (unsigned)index);
+            emit(c, 0x4608);                                  /* mov r0, r1 */
+            break;
+        }
         case SIDC_API_BYTE_BUFFER: {
             if (null_argument(c))
                 break;
@@ -2203,6 +2691,7 @@ static void api_call(Compiler *c, const SidcApiCall *api)
     unsigned words = prepare_call(c, arity);
     load_constant(c, 12, c->api.base);
     for (unsigned i = 0; i < SIDC_API_OFFSETS; ++i) {
+        if (api->offsets[i] == 0xffffu) break; /* two-hop EBI call */
         emit(c, 0xf8dc);                                      /* ldr.w ip, [ip, #offset] */
         emit(c, (uint16_t)(0xc000 | api->offsets[i]));
     }
@@ -2215,8 +2704,43 @@ static void api_call(Compiler *c, const SidcApiCall *api)
         emit(c, 0xb240);                                      /* promote int8_t to int */
 }
 
+/* Lazily reserve an applet-owned zero-filled arena in the output image. */
+static unsigned reserve_heap(Compiler *c)
+{
+    if (c->heap_used) return c->heap_global_index;
+    if (c->global_count >= GLOBAL_LIMIT || c->array_bytes > BYTE_ARRAY_LIMIT - PRIVATE_ARENA_BYTES) {
+        error(c, "Unable to reserve 16 KiB of applet heap RAM");
+        return 0;
+    }
+    c->array_bytes = (c->array_bytes + 7u) & ~7u;
+    unsigned index = c->global_count++;
+    c->globals[index] = (Global){.offset=c->array_bytes,.type=GLOBAL_BYTE_ARRAY,
+          .array_count=PRIVATE_ARENA_BYTES,.unit=c->file_index};
+    c->array_bytes += PRIVATE_ARENA_BYTES;
+    c->heap_global_index = (uint16_t)index;
+    c->heap_used = 1;
+    return index;
+}
+
+static int heap_call(Compiler *c, Token name)
+{
+    int allocating = name_is(name, "malloc") || name_is(name, "sidbox_malloc");
+    if (allocating) expression(c, 1, REQUIRE_INTEGER);
+    else expression(c, 1, REQUIRE_SCALAR);
+    if (!expect(c, ')', "malloc/free requires one argument")) return VALUE_VOID;
+    unsigned pool = reserve_heap(c);
+    if (c->diagnostic.message) return VALUE_VOID;
+    emit_address(c, ADDRESS_GLOBAL, pool); /* r1 = private arena base */
+    if (c->call_count == CALL_LIMIT) { error(c, "Too many function calls"); return VALUE_VOID; }
+    c->calls[c->call_count++] = (Reference){branch(c), (uint16_t)(allocating ? 0xfffeu : 0xfffdu)};
+    return allocating ? VALUE_POINTER : VALUE_VOID;
+}
+
 static int call(Compiler *c, Token name)
 {
+    if (name_is(name, "malloc") || name_is(name, "free") ||
+        name_is(name, "sidbox_malloc") || name_is(name, "sidbox_free"))
+        return heap_call(c, name);
     const SidcApiCall *api = find_api_call(c, name);
     if (api) {
         api_call(c, api);
@@ -2235,6 +2759,14 @@ static int call(Compiler *c, Token name)
         return 0;
     }
     unsigned words = 0;
+    unsigned extra = fn->return_type == RETURN_RECORD ? 1u : 0u;
+    unsigned returned_slot = 0;
+    if (extra) {
+        returned_slot = reserve_record_slots(c, fn->return_struct_id);
+        if (c->diagnostic.message) return VALUE_VOID;
+        local_address(c, returned_slot);
+        emit(c, 0xb403);                                    /* hidden return address */
+    }
     if (fn->builtin == BUILTIN_MESSAGE) {
         string_argument(c);
     } else {
@@ -2242,8 +2774,14 @@ static int call(Compiler *c, Token name)
             if (i != 0)
                 expect(c, ',', "Expected ',' between arguments");
             uint8_t type = fn->param_types[i];
-            if (type == LOCAL_STRUCT_POINTER) {
+            if (type == LOCAL_STRUCT) {
+                record_value_address(c, fn->param_struct_ids[i]);
+            } else if (type == LOCAL_STRUCT_POINTER) {
                 struct_pointer_value(c, fn->param_struct_ids[i]);
+            } else if (type == LOCAL_STRUCT_DOUBLE_POINTER) {
+                struct_double_pointer_value(c, fn->param_struct_ids[i]);
+            } else if (type == LOCAL_INT_DOUBLE_POINTER) {
+                int_double_pointer_value(c);
             } else if (type == LOCAL_INT_POINTER) {
                 expression(c, 1, REQUIRE_INT_POINTER);
             } else if (type == LOCAL_POINTER || type == LOCAL_MESSAGE) {
@@ -2261,7 +2799,7 @@ static int call(Compiler *c, Token name)
             }
             emit(c, 0xb403);                                   /* push {r0, r1} */
         }
-        words = prepare_call(c, fn->arity);
+        words = prepare_call(c, fn->arity + extra);
     }
     if (!expect(c, ')', "Wrong argument count or missing ')'"))
         return 0;
@@ -2272,6 +2810,15 @@ static int call(Compiler *c, Token name)
     c->calls[c->call_count++] = (Reference){branch(c), (uint16_t)index};
     if (words)
         emit(c, (uint16_t)(0xb000 | words));
+    if (fn->return_type == RETURN_RECORD) {
+        local_address(c, returned_slot); /* return an address to caller-owned storage */
+        c->value_record_id = fn->return_struct_id;
+        return VALUE_RECORD;
+    }
+    if (fn->return_type == RETURN_STRUCT_POINTER) {
+        c->value_record_id = fn->return_struct_id;
+        return VALUE_POINTER;
+    }
     return fn->return_type == RETURN_VOID ? VALUE_VOID :
         fn->return_type == RETURN_INT_POINTER ? VALUE_INT_POINTER : VALUE_INT;
 }
@@ -2365,16 +2912,38 @@ static int byte_array_element(Compiler *c, unsigned index, int allow_store)
     if (!expect(c, ']', "Expected ']' after byte array index"))
         return VALUE_INT;
     emit_address(c, ADDRESS_GLOBAL, index);
-    if (!allow_store || !accept(c, '=')) {
-        emit(c, 0x5c08);                                      /* ldrb r0, [r1, r0] */
+    int op = c->token.kind;
+    int assigning = op == '=' || op == TOK_ADD_ASSIGN || op == TOK_SUB_ASSIGN ||
+        op == TOK_BAND_ASSIGN || op == TOK_BOR_ASSIGN || op == TOK_BXOR_ASSIGN ||
+        op == TOK_SHL_ASSIGN || op == TOK_SHR_ASSIGN;
+    if (!allow_store || !assigning) {
+        emit(c, 0x5c08);                                     /* ldrb r0,[r1,r0] */
         return VALUE_INT;
     }
-
-    emit(c, 0x1808);                                          /* adds r0, r1, r0 */
-    emit(c, 0xb403);                                          /* push {r0, r1} */
+    advance(c);
+    emit(c, 0x1808);                                          /* address of byte */
+    emit(c, 0xb403);                                          /* preserve address */
+    if (op != '=') {
+        emit(c, 0x7800);                                      /* ldrb r0,[r0] */
+        emit(c, 0xb403);                                      /* preserve old byte */
+    }
     expression(c, 1, REQUIRE_INTEGER);
-    emit(c, 0xbc06);                                          /* pop {r1, r2} */
-    emit(c, 0x7008);                                          /* strb r0, [r1] */
+    if (op != '=') {
+        emit(c, 0xbc06);                                      /* old value in r1 */
+        switch (op) {
+        case TOK_ADD_ASSIGN: emit(c, 0x1808); break;
+        case TOK_SUB_ASSIGN: emit(c, 0x1a08); break;
+        case TOK_BAND_ASSIGN: emit(c, 0x4008); break;
+        case TOK_BOR_ASSIGN: emit(c, 0x4308); break;
+        case TOK_BXOR_ASSIGN: emit(c, 0x4048); break;
+        case TOK_SHL_ASSIGN: case TOK_SHR_ASSIGN:
+            emit(c, 0x4602); emit(c, 0x4608);
+            emit(c, op == TOK_SHL_ASSIGN ? 0x4090 : 0x4110);
+            break;
+        }
+    }
+    emit(c, 0xbc06);                                          /* address in r1 */
+    emit(c, 0x7008);                                          /* strb r0,[r1] */
     return VALUE_VOID;
 }
 
@@ -2387,18 +2956,41 @@ static int int_pointer_element(Compiler *c, int allow_store, int address_only)
     expression(c, 1, REQUIRE_INTEGER);
     if (!expect(c, ']', "Expected ']' after array index")) return VALUE_INT;
     emit(c, 0xbc06);                                         /* base -> r1 */
-    emit(c, 0x0080);                                         /* lsls r0, r0, #2 */
-    emit(c, 0x1808);                                         /* adds r0, r1, r0 */
+    emit(c, 0x0080);                                         /* lsls r0,r0,#2 */
+    emit(c, 0x1808);                                         /* adds r0,r1,r0 */
     if (address_only) return VALUE_INT_POINTER;
-    if (allow_store && accept(c, '=')) {
-        emit(c, 0xb403);                                     /* preserve address */
-        expression(c, 1, REQUIRE_INTEGER);
-        emit(c, 0xbc06);                                     /* address -> r1 */
-        emit(c, 0x6008);                                     /* str r0, [r1] */
-        return VALUE_VOID;
+    int op = c->token.kind;
+    int assigning = op == '=' || op == TOK_ADD_ASSIGN || op == TOK_SUB_ASSIGN ||
+        op == TOK_BAND_ASSIGN || op == TOK_BOR_ASSIGN || op == TOK_BXOR_ASSIGN ||
+        op == TOK_SHL_ASSIGN || op == TOK_SHR_ASSIGN;
+    if (!allow_store || !assigning) {
+        emit(c, 0x6800);                                     /* ldr r0,[r0] */
+        return VALUE_INT;
     }
-    emit(c, 0x6800);                                         /* ldr r0, [r0] */
-    return VALUE_INT;
+    advance(c);
+    emit(c, 0xb403);                                         /* preserve address */
+    if (op != '=') {
+        emit(c, 0x6800);                                     /* load old int */
+        emit(c, 0xb403);
+    }
+    expression(c, 1, REQUIRE_INTEGER);
+    if (op != '=') {
+        emit(c, 0xbc06);                                     /* old int in r1 */
+        switch (op) {
+        case TOK_ADD_ASSIGN: emit(c, 0x1808); break;
+        case TOK_SUB_ASSIGN: emit(c, 0x1a08); break;
+        case TOK_BAND_ASSIGN: emit(c, 0x4008); break;
+        case TOK_BOR_ASSIGN: emit(c, 0x4308); break;
+        case TOK_BXOR_ASSIGN: emit(c, 0x4048); break;
+        case TOK_SHL_ASSIGN: case TOK_SHR_ASSIGN:
+            emit(c, 0x4602); emit(c, 0x4608);
+            emit(c, op == TOK_SHL_ASSIGN ? 0x4090 : 0x4110);
+            break;
+        }
+    }
+    emit(c, 0xbc06);                                         /* destination in r1 */
+    emit(c, 0x6008);                                         /* str r0,[r1] */
+    return VALUE_VOID;
 }
 
 static int increment_scalar(Compiler *c, Token name, int op, int postfix)
@@ -2407,11 +2999,17 @@ static int increment_scalar(Compiler *c, Token name, int op, int postfix)
     int global = slot < 0 ? find_global(c, name) : -1;
     int type = slot >= 0 ? c->locals[slot].type
                          : global >= 0 ? c->globals[global].type : -1;
+    if ((slot >= 0 && c->locals[slot].is_const) ||
+        (global >= 0 && c->globals[global].is_const)) {
+        error_at(c, name, "Cannot increment or decrement const variable");
+        return VALUE_INT;
+    }
     if (type < 0 || type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY ||
         type == LOCAL_INT_ARRAY || type == LOCAL_PADDING || type == LOCAL_POINTER ||
         type == LOCAL_ARGV || type == LOCAL_MESSAGE || type == LOCAL_FUNCTION_POINTER ||
         type == LOCAL_STRUCT || type == LOCAL_STRUCT_POINTER || type == GLOBAL_STRUCT ||
-        type == LOCAL_STRUCT_ARRAY || type == GLOBAL_STRUCT_ARRAY) {
+        type == LOCAL_STRUCT_ARRAY || type == GLOBAL_STRUCT_ARRAY ||
+        type == LOCAL_INT_DOUBLE_POINTER || type == LOCAL_STRUCT_DOUBLE_POINTER) {
         error_at(c, name, "Increment/decrement needs a scalar variable");
         return VALUE_INT;
     }
@@ -2457,7 +3055,40 @@ static int unary(Compiler *c, int allow_store)
         }
         type = increment_scalar(c, name, op, 0);
     } else if (accept(c, TOK_NAME)) {
-        if (accept(c, '(')) {
+        if (name_is(token, "API") && c->token.kind == '.') {
+            /* Follow only the actual SDK EBI chain: API.gfx->hgfx->lcdwait().
+             * No synthesised SBOS_ aliases and no arbitrary pointer calls. */
+            char path[SIDC_API_NAME];
+            unsigned n = 3;
+            memcpy(path, "API", n);
+            while (c->token.kind == '.' || c->token.kind == TOK_ARROW) {
+                int separator = c->token.kind;
+                advance(c);
+                Token field = c->token;
+                if (!expect(c, TOK_NAME, "Expected SDK EBI field name")) break;
+                unsigned extra = separator == '.' ? 1u : 2u;
+                if (n + extra + field.length >= sizeof(path)) {
+                    error_at(c, field, "SDK EBI field path exceeds metadata name limit");
+                    break;
+                }
+                if (separator == '.') path[n++] = '.';
+                else {path[n++] = '-'; path[n++] = '>';}
+                memcpy(path + n, field.text, field.length);
+                n += field.length;
+            }
+            path[n] = 0;
+            if (!c->diagnostic.message && expect(c, '(', "Expected call on SDK EBI field")) {
+                Token full = token;
+                full.text = path;
+                full.length = n;
+                const SidcApiCall *ebi = find_api_call(c, full);
+                if (ebi) {
+                    api_call(c, ebi);
+                    type = ebi->result == SIDC_API_VOID ? VALUE_VOID :
+                           ebi->result == SIDC_API_U32 ? VALUE_UNSIGNED : VALUE_INT;
+                } else error_at(c, token, "Unknown SDK EBI field path");
+            }
+        } else if (accept(c, '(')) {
             int slot = find_local(c, token);
             type = slot >= 0 && c->locals[slot].type == LOCAL_FUNCTION_POINTER
                 ? indirect_call(c, (unsigned)slot) : call(c, token);
@@ -2479,6 +3110,13 @@ static int unary(Compiler *c, int allow_store)
                 } else if (local_type == LOCAL_FUNCTION_POINTER) {
                     load_local(c, (unsigned)slot, 0);
                     type = VALUE_POINTER;
+                } else if (local_type == LOCAL_INT_DOUBLE_POINTER) {
+                    load_local(c, (unsigned)slot, 0);
+                    type = VALUE_INT_DOUBLE_POINTER;
+                } else if (local_type == LOCAL_STRUCT_DOUBLE_POINTER) {
+                    load_local(c, (unsigned)slot, 0);
+                    c->value_record_id = c->locals[slot].struct_id;
+                    type = VALUE_STRUCT_DOUBLE_POINTER;
                 } else if (local_type == LOCAL_STRUCT || local_type == LOCAL_STRUCT_POINTER) {
                     if (local_type == LOCAL_STRUCT) {
                         local_address(c, (unsigned)slot);
@@ -2553,7 +3191,10 @@ static int unary(Compiler *c, int allow_store)
         }
         int slot = find_local(c, name);
         int global = slot < 0 ? find_global(c, name) : -1;
-        if (slot >= 0 && c->locals[slot].type == LOCAL_STRUCT) {
+        if ((slot >= 0 && c->locals[slot].is_const) ||
+            (global >= 0 && c->globals[global].is_const)) {
+            error_at(c, name, "Address-of const variable needs const pointer support");
+        } else if (slot >= 0 && c->locals[slot].type == LOCAL_STRUCT) {
             local_address(c, (unsigned)slot);
             if (expect(c, '.', "Use &struct.field to take a member address"))
                 type = struct_member(c, c->locals[slot].struct_id, 0, 1);
@@ -2562,6 +3203,10 @@ static int unary(Compiler *c, int allow_store)
             emit(c, 0x4608);
             if (expect(c, '.', "Use &struct.field to take a member address"))
                 type = struct_member(c, c->globals[global].struct_id, 0, 1);
+        } else if (slot >= 0 && c->locals[slot].type == LOCAL_STRUCT_POINTER) {
+            local_address(c, (unsigned)slot);
+            c->value_record_id = c->locals[slot].struct_id;
+            type = VALUE_STRUCT_DOUBLE_POINTER;
         } else if (slot >= 0 && (c->locals[slot].type == LOCAL_INT ||
                           c->locals[slot].type == LOCAL_INT_ARRAY)) {
             local_address(c, (unsigned)slot);
@@ -2582,16 +3227,44 @@ static int unary(Compiler *c, int allow_store)
             else
                 type = VALUE_INT_POINTER;
         } else if (slot >= 0 && c->locals[slot].type == LOCAL_INT_POINTER) {
-            load_local(c, (unsigned)slot, 0);
-            if (c->token.kind != '[') error_at(c, name, "Pointer-to-pointer requires int ** support");
-            else type = int_pointer_element(c, 0, 1);
+            if (c->token.kind == '[') {
+                load_local(c, (unsigned)slot, 0);
+                type = int_pointer_element(c, 0, 1);
+            } else {
+                local_address(c, (unsigned)slot);
+                type = VALUE_INT_DOUBLE_POINTER;
+            }
         } else {
             error_at(c, name, "Address-of needs an int variable or int array element");
         }
     } else if (accept(c, '*')) {
         type = unary(c, 0);
-        if (type != VALUE_INT_POINTER) {
-            error_at(c, token, "Dereferencing requires int *");
+        if (type == VALUE_INT_DOUBLE_POINTER) {
+            if (allow_store && accept(c, '=')) {
+                emit(c, 0xb403);
+                expression(c, 1, REQUIRE_INT_POINTER);
+                emit(c, 0xbc06);
+                emit(c, 0x6008);
+                type = VALUE_VOID;
+            } else {
+                emit(c, 0x6800);
+                type = VALUE_INT_POINTER;
+            }
+        } else if (type == VALUE_STRUCT_DOUBLE_POINTER) {
+            unsigned rec = c->value_record_id;
+            if (allow_store && accept(c, '=')) {
+                emit(c, 0xb403);
+                struct_pointer_value(c, rec);
+                emit(c, 0xbc06);
+                emit(c, 0x6008);
+                type = VALUE_VOID;
+            } else {
+                emit(c, 0x6800);
+                c->value_record_id = rec;
+                type = VALUE_POINTER;
+            }
+        } else if (type != VALUE_INT_POINTER) {
+            error_at(c, token, "Dereferencing requires int * or matching record **");
         } else if (allow_store && accept(c, '=')) {
             emit(c, 0xb403);                                   /* preserve address */
             expression(c, 1, REQUIRE_INTEGER);
@@ -2614,6 +3287,10 @@ static int unary(Compiler *c, int allow_store)
         } else {
             type = expression(c, 1, DISCARD_VALUE);
             expect(c, ')', "Expected ')'");
+            if (type == VALUE_POINTER && accept(c, TOK_ARROW))
+                type = struct_member(c, c->value_record_id, allow_store, 0);
+            else if (type == VALUE_INT_POINTER && c->token.kind == '[')
+                type = int_pointer_element(c, allow_store, 0);
         }
     } else if (accept(c, '+') || accept(c, '-') || accept(c, '!') || accept(c, '~')) {
         type = unary(c, 0);
@@ -2647,8 +3324,9 @@ static int precedence(int op)
     case '&': return 5;
     case TOK_EQ: case TOK_NE: return 6;
     case '<': case '>': case TOK_LE: case TOK_GE: return 7;
-    case '+': case '-': return 8;
-    case '*': case '/': case '%': return 9;
+    case TOK_SHL: case TOK_SHR: return 8;
+    case '+': case '-': return 9;
+    case '*': case '/': case '%': return 10;
     default: return 0;
     }
 }
@@ -2662,6 +3340,11 @@ static int binary(Compiler *c, int op, int unsigned_word)
     case '&': emit(c, 0x4008); return unsigned_word;            /* ands r0, r1 */
     case '|': emit(c, 0x4308); return unsigned_word;            /* orrs r0, r1 */
     case '^': emit(c, 0x4048); return unsigned_word;            /* eors r0, r1 */
+    case TOK_SHL: case TOK_SHR:
+        emit(c, 0x4602);                                      /* mov r2, r0: shift count */
+        emit(c, 0x4608);                                      /* mov r0, r1: source */
+        emit(c, op == TOK_SHL ? 0x4090 : unsigned_word ? 0x40d0 : 0x4110);
+        return unsigned_word;                                 /* lsls/lsrs/asrs r0,r2 */
     case '/':
         emit(c, unsigned_word ? 0xfbb1 : 0xfb91);
         emit(c, 0xf0f0);                                       /* [us]div r0, r1, r0 */
@@ -2711,7 +3394,8 @@ static int expression(Compiler *c, int minimum, int requirement)
             type = VALUE_INT;
         } else {
             int equality = op == TOK_EQ || op == TOK_NE;
-            if (type == VALUE_VOID || (type == VALUE_POINTER && !equality)) {
+            if (type == VALUE_VOID || ((type == VALUE_POINTER || type == VALUE_STRUCT_DOUBLE_POINTER || type == VALUE_INT_DOUBLE_POINTER ||
+                         type == VALUE_RECORD) && !equality)) {
                 error_at(c, start, "Expected an integer operand, got a pointer");
                 break;
             }
@@ -2737,7 +3421,10 @@ static int expression(Compiler *c, int minimum, int requirement)
                 } else {
                     error_at(c, start, "Invalid pointer arithmetic");
                 }
-            } else if (left_ptr || right_ptr || type == VALUE_POINTER || rhs_type == VALUE_POINTER) {
+            } else if (left_ptr || right_ptr || type == VALUE_POINTER || rhs_type == VALUE_POINTER ||
+                       type == VALUE_STRUCT_DOUBLE_POINTER || rhs_type == VALUE_STRUCT_DOUBLE_POINTER ||
+                       type == VALUE_INT_DOUBLE_POINTER || rhs_type == VALUE_INT_DOUBLE_POINTER ||
+                       type == VALUE_RECORD || rhs_type == VALUE_RECORD) {
                 int lhs_null = (start.kind == TOK_NUMBER || start.kind == TOK_UNSIGNED_NUMBER) && start.number == 0;
                 int rhs_null = (rhs_start.kind == TOK_NUMBER || rhs_start.kind == TOK_UNSIGNED_NUMBER) && rhs_start.number == 0;
                 int compatible = (left_ptr && right_ptr) ||
@@ -2745,20 +3432,26 @@ static int expression(Compiler *c, int minimum, int requirement)
                                  (left_ptr && rhs_type == VALUE_POINTER) ||
                                  (right_ptr && type == VALUE_POINTER) ||
                                  (left_ptr && rhs_type == VALUE_INT && rhs_null) ||
-                                 (right_ptr && type == VALUE_INT && lhs_null);
+                                 (right_ptr && type == VALUE_INT && lhs_null) ||
+                                 (type == VALUE_POINTER && rhs_type == VALUE_INT && rhs_null) ||
+                                 (rhs_type == VALUE_POINTER && type == VALUE_INT && lhs_null);
                 if (!equality || !compatible)
                     error_at(c, start, "Pointer comparisons require compatible pointer values");
                 binary(c, op, 1);
                 type = VALUE_INT;
             } else {
-                type = binary(c, op, type == VALUE_UNSIGNED || rhs_type == VALUE_UNSIGNED)
-                    ? VALUE_UNSIGNED : VALUE_INT;
+                int result_unsigned = op == TOK_SHL || op == TOK_SHR
+                    ? type == VALUE_UNSIGNED
+                    : type == VALUE_UNSIGNED || rhs_type == VALUE_UNSIGNED;
+                type = binary(c, op, result_unsigned) ? VALUE_UNSIGNED : VALUE_INT;
             }
         }
     }
     if ((requirement == REQUIRE_INTEGER || requirement == REQUIRE_SCALAR) && type == VALUE_VOID)
         error_at(c, start, "Expected an integer value, got void");
-    if (requirement == REQUIRE_INTEGER && (type == VALUE_POINTER || type == VALUE_INT_POINTER))
+    if (requirement == REQUIRE_INTEGER && (type == VALUE_POINTER || type == VALUE_INT_POINTER ||
+                                          type == VALUE_STRUCT_DOUBLE_POINTER || type == VALUE_INT_DOUBLE_POINTER ||
+                                          type == VALUE_RECORD))
         error_at(c, start, "Expected an integer value, got a pointer");
     if (requirement == REQUIRE_INT_POINTER && type != VALUE_INT_POINTER && type != VALUE_POINTER &&
         !((start.kind == TOK_NUMBER || start.kind == TOK_UNSIGNED_NUMBER) && start.number == 0))
@@ -2814,7 +3507,18 @@ static void initialize_record(Compiler *c, unsigned rec, unsigned base,
         }
         RecordField f = def->fields[i];
         unsigned slot = base + f.offset_words;
-        if (f.record_id == RECORD_INT) {
+        if (f.is_pointer) {
+            if (static_values) {
+                if (name_is(c->token, "NULL")) { advance(c); static_values[slot] = 0; }
+                else if ((c->token.kind == TOK_NUMBER || c->token.kind == TOK_UNSIGNED_NUMBER) &&
+                         c->token.number == 0) { advance(c); static_values[slot] = 0; }
+                else error(c, "Static pointer field initializers only support NULL or 0");
+            } else {
+                if (f.record_id == RECORD_INT) expression(c, 1, REQUIRE_INT_POINTER);
+                else struct_pointer_value(c, f.record_id);
+                store_local(c, slot, 0);
+            }
+        } else if (f.record_id == RECORD_INT) {
             initialize_scalar(c, slot, static_values, 0);
         } else if (c->token.kind == '{') {
             initialize_record(c, f.record_id, slot, static_values, depth + 1);
@@ -2924,12 +3628,20 @@ static void local_callback_declaration(Compiler *c, uint8_t return_type)
 static int local_declaration(Compiler *c)
 {
     int type = -1;
-    if (accept(c, TOK_INT)) {
+    int is_const = accept(c, TOK_CONST);
+    if (c->token.kind == TOK_ENUM) {
+        if (!enum_declaration(c)) return 1;
+        type = LOCAL_INT;
+    } else if (accept(c, TOK_INT)) {
         if (c->token.kind == '(' && c->lookahead.kind == '*') {
             local_callback_declaration(c, RETURN_INT);
             return 1;
         }
-        type = accept(c, '*') ? LOCAL_INT_POINTER : LOCAL_INT;
+        type = accept(c, '*') ? (accept(c, '*') ? LOCAL_INT_DOUBLE_POINTER : LOCAL_INT_POINTER) : LOCAL_INT;
+    } else if (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
+               c->aliases[find_alias(c, c->token)].record_id == RECORD_INT) {
+        advance(c);
+        type = LOCAL_INT;
     } else if (accept(c, TOK_VOID)) {
         if (c->token.kind == '(' && c->lookahead.kind == '*')
             local_callback_declaration(c, RETURN_VOID);
@@ -2939,6 +3651,7 @@ static int local_declaration(Compiler *c)
         unsigned struct_id = 0;
         if (!record_type(c, &struct_id)) return 1;
         int pointer = accept(c, '*');
+        int double_pointer = pointer && accept(c, '*');
         Token name = c->token;
         if (!expect(c, TOK_NAME, "Expected record variable name")) return 1;
         unsigned count = 1;
@@ -2960,7 +3673,8 @@ static int local_declaration(Compiler *c)
             error_at(c, name, "Record exceeds remaining 64 local stack slots");
             return 1;
         }
-        unsigned slot = add_local(c, name, pointer ? LOCAL_STRUCT_POINTER :
+        unsigned slot = add_local(c, name, double_pointer ? LOCAL_STRUCT_DOUBLE_POINTER :
+                                  pointer ? LOCAL_STRUCT_POINTER :
                                   is_array ? LOCAL_STRUCT_ARRAY : LOCAL_STRUCT);
         if (c->diagnostic.message) return 1;
         c->locals[slot].struct_id = (uint8_t)struct_id;
@@ -2969,14 +3683,25 @@ static int local_declaration(Compiler *c)
             c->locals[c->local_count++] = (Local){.scope=(uint8_t)c->scope,.type=LOCAL_PADDING};
         if (c->local_count > c->local_peak) c->local_peak = c->local_count;
         if (pointer) {
-            if (accept(c, '=')) struct_pointer_value(c, struct_id);
-            else constant(c, 0);
+            if (accept(c, '=')) {
+                if (double_pointer) struct_double_pointer_value(c, struct_id);
+                else struct_pointer_value(c, struct_id);
+            } else constant(c, 0);
             store_local(c, slot, 0);
         } else if (accept(c, '=')) {
-            constant(c, 0);
-            for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
-            if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
-            else initialize_record(c, struct_id, slot, NULL, 1);
+            if (!is_array && c->token.kind != '{') {
+                record_value_address(c, struct_id);
+                emit(c, 0xb403);                  /* push {r0,r1} preserves source */
+                local_address(c, slot);
+                emit(c, 0x4601);                  /* mov r1,r0 destination */
+                emit(c, 0xbc05);                  /* pop {r0,r2} source */
+                copy_record(c, stride);
+            } else {
+                constant(c, 0);
+                for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
+                if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
+                else initialize_record(c, struct_id, slot, NULL, 1);
+            }
         }
         expect(c, ';', "Expected ';' after record variable");
         return 1;
@@ -2985,10 +3710,17 @@ static int local_declaration(Compiler *c)
         else if (accept_sdk_type(c, "CGWindow") || accept_sdk_type(c, "uint8_t"))
             type = LOCAL_WINDOW;
     }
-    if (type < 0) return 0;
+    if (type < 0) {
+        if (is_const) { error(c, "const currently supports integer or enum scalar variables"); return 1; }
+        return 0;
+    }
+    if (is_const && type != LOCAL_INT) {
+        error(c, "const currently supports integer or enum scalar variables"); return 1;
+    }
     Token name = c->token;
     if (!expect(c, TOK_NAME, "Expected a local variable name")) return 1;
     if (accept(c, '[')) {
+        if (is_const) { error_at(c, name, "const arrays are not yet supported"); return 1; }
         if (type != LOCAL_INT) {
             error_at(c, name, "Only local int arrays are supported");
             return 1;
@@ -3018,10 +3750,15 @@ static int local_declaration(Compiler *c)
         return 1;
     }
     unsigned slot = add_local(c, name, (uint8_t)type);
+    if (c->diagnostic.message) return 1;
+    c->locals[slot].is_const = (uint8_t)is_const;
     if (accept(c, '=')) {
-        expression(c, 1, type == LOCAL_INT_POINTER ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
+        if (type == LOCAL_INT_DOUBLE_POINTER) int_double_pointer_value(c);
+        else expression(c, 1, type == LOCAL_INT_POINTER ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
         if (type == LOCAL_WINDOW) emit(c, 0xb2c0);
         store_local(c, slot, 0);
+    } else if (is_const) {
+        error_at(c, name, "const local must be initialized");
     }
     expect(c, ';', "Expected ';' after declaration");
     return 1;
@@ -3032,8 +3769,10 @@ static int local_declaration(Compiler *c)
 static void simple_expression(Compiler *c)
 {
     int assignment = c->lookahead.kind == '=' ||
-                     c->lookahead.kind == TOK_ADD_ASSIGN ||
-                     c->lookahead.kind == TOK_SUB_ASSIGN;
+                     c->lookahead.kind == TOK_ADD_ASSIGN || c->lookahead.kind == TOK_SUB_ASSIGN ||
+                     c->lookahead.kind == TOK_BAND_ASSIGN || c->lookahead.kind == TOK_BOR_ASSIGN ||
+                     c->lookahead.kind == TOK_BXOR_ASSIGN || c->lookahead.kind == TOK_SHL_ASSIGN ||
+                     c->lookahead.kind == TOK_SHR_ASSIGN;
     if (c->token.kind != TOK_NAME || !assignment) {
         expression(c, 1, STATEMENT_VALUE);
         return;
@@ -3045,6 +3784,25 @@ static void simple_expression(Compiler *c)
                          : global >= 0 ? c->globals[global].type : -1;
     if (type < 0) {
         error_at(c, name, "Assignment needs a declared variable");
+        return;
+    }
+    if ((slot >= 0 && c->locals[slot].is_const) ||
+        (global >= 0 && c->globals[global].is_const)) {
+        error_at(c, name, "Cannot assign to const variable");
+        return;
+    }
+    if (type == LOCAL_STRUCT || type == GLOBAL_STRUCT) {
+        Token target = name;
+        advance(c);
+        if (!accept(c, '=')) { error_at(c, target, "Struct assignment only supports ="); return; }
+        unsigned rec = slot >= 0 ? c->locals[slot].struct_id : c->globals[global].struct_id;
+        record_value_address(c, rec);
+        emit(c, 0xb403);
+        if (slot >= 0) local_address(c, (unsigned)slot);
+        else { emit_address(c, ADDRESS_GLOBAL, (unsigned)global); emit(c, 0x4608); }
+        emit(c, 0x4601);
+        emit(c, 0xbc05);
+        copy_record(c, c->structs[rec].size_words);
         return;
     }
     if (type == GLOBAL_BYTE_ARRAY || type == GLOBAL_INT_ARRAY || type == LOCAL_INT_ARRAY ||
@@ -3069,6 +3827,21 @@ static void simple_expression(Compiler *c)
         store_local(c, (unsigned)slot, 0);
         return;
     }
+    if (type == LOCAL_INT_DOUBLE_POINTER) {
+        if (op != '=') { error_at(c, name, "int ** only supports simple assignment"); return; }
+        int_double_pointer_value(c);
+        store_local(c, (unsigned)slot, 0);
+        return;
+    }
+    if (type == LOCAL_STRUCT_DOUBLE_POINTER) {
+        if (op != '=') {
+            error_at(c, name, "Struct ** only supports simple assignment");
+            return;
+        }
+        struct_double_pointer_value(c, c->locals[slot].struct_id);
+        store_local(c, (unsigned)slot, 0);
+        return;
+    }
     if (type == LOCAL_STRUCT_POINTER) {
         if (op != '=') {
             error_at(c, name, "Struct pointer only supports simple assignment");
@@ -3078,7 +3851,10 @@ static void simple_expression(Compiler *c)
         store_local(c, (unsigned)slot, 0);
         return;
     }
-    if (op == TOK_ADD_ASSIGN || op == TOK_SUB_ASSIGN) {
+    if (op != '=') {
+        if (type == LOCAL_INT_POINTER && op != TOK_ADD_ASSIGN && op != TOK_SUB_ASSIGN) {
+            error_at(c, name, "Pointer compound assignment only supports += or -="); return;
+        }
         if (slot >= 0) load_local(c, (unsigned)slot, 0);
         else {
             emit_address(c, ADDRESS_GLOBAL, (unsigned)global);
@@ -3087,10 +3863,20 @@ static void simple_expression(Compiler *c)
         emit(c, 0xb403);                                       /* push old {r0,r1} */
     }
     expression(c, 1, type == LOCAL_INT_POINTER && op == '=' ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
-    if (op == TOK_ADD_ASSIGN || op == TOK_SUB_ASSIGN) {
+    if (op != '=') {
         emit(c, 0xbc06);                                       /* pop old into r1 */
         if (type == LOCAL_INT_POINTER) emit(c, 0x0080);        /* pointer += n scales by 4 */
-        emit(c, op == TOK_ADD_ASSIGN ? 0x1808 : 0x1a08);       /* add/sub */
+        switch (op) {
+        case TOK_ADD_ASSIGN: emit(c, 0x1808); break;
+        case TOK_SUB_ASSIGN: emit(c, 0x1a08); break;
+        case TOK_BAND_ASSIGN: emit(c, 0x4008); break;
+        case TOK_BOR_ASSIGN: emit(c, 0x4308); break;
+        case TOK_BXOR_ASSIGN: emit(c, 0x4048); break;
+        case TOK_SHL_ASSIGN: case TOK_SHR_ASSIGN:
+            emit(c, 0x4602); emit(c, 0x4608);
+            emit(c, op == TOK_SHL_ASSIGN ? 0x4090 : 0x4110);
+            break;
+        }
     }
     if (type == LOCAL_WINDOW) emit(c, 0xb2c0);
     if (slot >= 0) store_local(c, (unsigned)slot, 0);
@@ -3304,7 +4090,14 @@ static void statement(Compiler *c)
             }
         }
     } else if (accept(c, TOK_RETURN)) {
-        if (c->return_type != RETURN_VOID) {
+        if (c->return_type == RETURN_RECORD) {
+            record_value_address(c, c->return_struct_id);
+            load_local(c, c->return_buffer_slot, 1);
+            copy_record(c, c->structs[c->return_struct_id].size_words);
+            emit(c, 0x4608); /* r0 = destination pointer */
+        } else if (c->return_type == RETURN_STRUCT_POINTER) {
+            struct_pointer_value(c, c->return_struct_id);
+        } else if (c->return_type != RETURN_VOID) {
             expression(c, 1, c->return_type == RETURN_INT_POINTER ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
             if (c->return_type == RETURN_WINDOW)
                 emit(c, 0xb2c0);                              /* uxtb r0, r0 */
@@ -3334,7 +4127,7 @@ static unsigned builtin_entry(Token name)
     return 0;
 }
 
-static void global_declaration(Compiler *c, Token name, uint8_t type)
+static void global_declaration(Compiler *c, Token name, uint8_t type, int is_const)
 {
     int function = find_function(c, name);
     if (find_alias(c, name) >= 0 || find_global(c, name) >= 0 ||
@@ -3349,6 +4142,7 @@ static void global_declaration(Compiler *c, Token name, uint8_t type)
     }
     uint32_t count = 0;
     if (accept(c, '[')) {
+        if (is_const) { error_at(c, name, "const static arrays are not yet supported"); return; }
         if (type != LOCAL_WINDOW && type != LOCAL_INT) {
             error_at(c, name, "Only static int and uint8_t arrays are supported");
             return;
@@ -3399,13 +4193,19 @@ static void global_declaration(Compiler *c, Token name, uint8_t type)
             else {
                 const SidcApiConstant *value = token.kind == TOK_NAME ? find_api_constant(c, token) : NULL;
                 if (value) initial = value->value;
-                else if (token.kind == TOK_NUMBER || token.kind == TOK_UNSIGNED_NUMBER)
-                    initial = token.number;
-                else {
+                else if (token.kind == TOK_NUMBER || token.kind == TOK_UNSIGNED_NUMBER) {
+                    int64_t value = enum_expression(c, 1, 0);
+                    if (c->diagnostic.message) return;
+                    if (value < INT32_MIN || value > UINT32_MAX) {
+                        error_at(c, token, "Static initializer exceeds 32-bit range"); return;
+                    }
+                    initial = (uint32_t)value;
+                    token.kind = TOK_END; /* expression already consumed */
+                } else {
                     error(c, "Static initializer needs an integer constant or sizeof");
                     return;
                 }
-                advance(c);
+                if (token.kind != TOK_END) advance(c);
             }
             if (negative) initial = 0u - initial;
         }
@@ -3431,6 +4231,7 @@ static void global_declaration(Compiler *c, Token name, uint8_t type)
         c->global_bytes += sizeof(initial);
     }
     c->globals[c->global_count++] = (Global){.name=name,.initial=initial,.offset=offset,.type=type,.unit=c->file_index,
+                .is_const=(uint8_t)is_const,
                 .array_count=type == GLOBAL_INT_ARRAY ? count / 4u : type == GLOBAL_BYTE_ARRAY ? count : 0u,
                 .in_data=(uint8_t)initialized,.init_offset=(uint16_t)init_at,
                 .init_count=(uint16_t)(initialized ? init_words : 0u)};
@@ -3461,15 +4262,40 @@ static void external_declaration(Compiler *c)
         return;
     }
     int is_static = accept(c, TOK_STATIC);
+    int is_const = accept(c, TOK_CONST);
+    if (c->token.kind == TOK_ENUM) {
+        if (!enum_declaration(c)) return;
+        if (accept(c, ';')) return;
+        Token variable = c->token;
+        if (!expect(c, TOK_NAME, "Expected enum variable name")) return;
+        if (!is_static && !is_const) {
+            error_at(c, variable, "File-scope enum variables must be static"); return;
+        }
+        global_declaration(c, variable, LOCAL_INT, is_const);
+        return;
+    }
+    unsigned record_return_id = RECORD_INT;
+    unsigned record_return_type = 0;
+    Token record_function_name = {0};
     if (is_record_type(c)) {
+        if (is_const) { error(c, "const record declarations are not yet supported"); return; }
         unsigned index = 0;
         if (!record_type(c, &index)) return;
-        if (!is_static) {
-            error(c, "File-scope record variables must be static");
-            return;
-        }
+        int pointer_result = accept(c, '*');
         Token name = c->token;
-        if (!expect(c, TOK_NAME, "Expected static record variable name")) return;
+        if (!expect(c, TOK_NAME, "Expected record declaration name")) return;
+        if (c->token.kind == '(') {
+            record_return_id = index;
+            record_return_type = pointer_result ? RETURN_STRUCT_POINTER : RETURN_RECORD;
+            record_function_name = name;
+            goto parse_record_function;
+        }
+        if (pointer_result) {
+            error_at(c, name, "Static pointer-to-record globals are not supported"); return;
+        }
+        if (!is_static) {
+            error_at(c, name, "File-scope record variables must be static"); return;
+        }
         unsigned count = 1;
         int is_array = accept(c, '[');
         unsigned stride = c->structs[index].size_words;
@@ -3555,11 +4381,20 @@ static void external_declaration(Compiler *c)
     Token name = c->token;
     if (!expect(c, TOK_NAME, "Expected a declaration name"))
         return;
-    if (is_static && return_type == RETURN_INT &&
+    goto parse_function_common;
+parse_record_function:
+    return_type = record_return_type;
+    name = record_function_name;
+parse_function_common:
+    if ((is_static || is_const) && return_type == RETURN_INT &&
         (variable_type != LOCAL_INT || c->token.kind != '(')) {
-        global_declaration(c, name, (uint8_t)variable_type);
+        if (is_const && variable_type != LOCAL_INT) {
+            error_at(c, name, "const only supports integer globals"); return;
+        }
+        global_declaration(c, name, (uint8_t)variable_type, is_const);
         return;
     }
+    if (is_const) { error_at(c, name, "const is not a function qualifier"); return; }
     if (!expect(c, '(', "Expected '(' after function name"))
         return;
     if (find_alias(c, name) >= 0 || find_global(c, name) >= 0) {
@@ -3601,14 +4436,18 @@ static void external_declaration(Compiler *c)
             } else if (is_record_type(c)) {
                 unsigned type_id = 0;
                 if (!record_type(c, &type_id)) return;
-                if (!expect(c, '*', "Only record * parameters are supported")) return;
-                param_types[arity] = LOCAL_STRUCT_POINTER;
+                if (accept(c, '*'))
+                    param_types[arity] = accept(c, '*') ? LOCAL_STRUCT_DOUBLE_POINTER : LOCAL_STRUCT_POINTER;
+                else
+                    param_types[arity] = LOCAL_STRUCT;
                 param_struct_ids[arity] = (uint8_t)type_id;
-            } else if (accept(c, TOK_INT) ||
+            } else if ((c->token.kind == TOK_ENUM && enum_declaration(c)) ||
+                       accept(c, TOK_INT) ||
                        (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
                         c->aliases[find_alias(c, c->token)].record_id == RECORD_INT &&
                         (advance(c), 1))) {
-                param_types[arity] = accept(c, '*') ? LOCAL_INT_POINTER : LOCAL_INT;
+                param_types[arity] = accept(c, '*') ?
+                    (accept(c, '*') ? LOCAL_INT_DOUBLE_POINTER : LOCAL_INT_POINTER) : LOCAL_INT;
             } else if (accept_sdk_type(c, "int32_t")) {
                 param_types[arity] = LOCAL_S32;
             } else if (accept_sdk_type(c, "CGGadget")) {
@@ -3641,6 +4480,10 @@ static void external_declaration(Compiler *c)
     }
     if (!expect(c, ')', "Expected ')' after parameter list"))
         return;
+    if (return_type == RETURN_RECORD && arity > 4u) {
+        error_at(c, name, "Record-returning functions support up to four explicit parameters");
+        return;
+    }
     if (builtin && builtin != BUILTIN_MESSAGE && arity != 0) {
         error_at(c, name, "This Sidbox API takes no arguments");
         return;
@@ -3662,13 +4505,14 @@ static void external_declaration(Compiler *c)
         *fn = (Function){
             .name = name, .entry = builtin, .arity = (uint8_t)arity,
             .builtin = (uint8_t)builtin, .defined = builtin != 0u,
-            .return_type = (uint8_t)return_type,
+            .return_type = (uint8_t)return_type, .return_struct_id = (uint8_t)record_return_id,
             .is_static = (uint8_t)is_static, .unit = c->file_index
         };
         memcpy(fn->param_types, param_types, arity);
         memcpy(fn->param_struct_ids, param_struct_ids, arity);
     } else if (c->functions[index].arity != arity ||
                c->functions[index].return_type != return_type ||
+               c->functions[index].return_struct_id != record_return_id ||
                memcmp(c->functions[index].param_types, param_types, arity) ||
                memcmp(c->functions[index].param_struct_ids, param_struct_ids, arity)) {
         error_at(c, name, "Function signature differs from its declaration");
@@ -3690,21 +4534,41 @@ static void external_declaration(Compiler *c)
     c->loop_depth = c->loop_jump_count = 0;
     c->control_depth = c->switch_break_count = c->switch_case_count = 0;
     c->return_type = fn->return_type;
+    c->return_struct_id = fn->return_struct_id;
+    c->return_buffer_slot = 0;
 
     emit(c, 0xb580);                                           /* push {r7, lr} */
     uint32_t frame = c->pc;
     emit(c, 0);
     emit(c, 0xaf00);                                           /* add r7, sp, #0 */
     uint32_t stack_arg = 0;
+    unsigned return_extra = return_type == RETURN_RECORD ? 1u : 0u;
+    if (return_extra) {
+        Token hidden = {.text="__sidc_return_buffer",.length=20,.kind=TOK_NAME};
+        c->return_buffer_slot = (uint8_t)add_local(c, hidden, LOCAL_PADDING);
+        store_local(c, c->return_buffer_slot, 0);
+    }
+    unsigned parameter_slots[FUNCTION_PARAMS] = {0};
     for (unsigned i = 0; i < arity; ++i) {
         if (params[i].kind != TOK_NAME) {
             error_at(c, params[i], "Parameter needs a name in the function body");
             return;
         }
+        unsigned record_words = param_types[i] == LOCAL_STRUCT ?
+            c->structs[param_struct_ids[i]].size_words : 1u;
+        if (!record_words || record_words > LOCAL_LIMIT - c->local_count) {
+            error_at(c, params[i], "By-value struct parameters exceed 64 local words");
+            return;
+        }
         unsigned slot = add_local(c, params[i], param_types[i]);
-        if (param_types[i] == LOCAL_STRUCT_POINTER)
+        parameter_slots[i] = slot;
+        if (param_types[i] == LOCAL_STRUCT || param_types[i] == LOCAL_STRUCT_POINTER ||
+            param_types[i] == LOCAL_STRUCT_DOUBLE_POINTER)
             c->locals[slot].struct_id = param_struct_ids[i];
-        unsigned reg = i;
+        for (unsigned j = 1; j < record_words; ++j)
+            c->locals[c->local_count++] = (Local){.scope=0,.type=LOCAL_PADDING};
+        if (c->local_count > c->local_peak) c->local_peak = c->local_count;
+        unsigned reg = i + return_extra;
         if (i >= 4) {
             emit(c, 0xf8d7);                                   /* ldr.w r0, [r7, #frame+8] */
             stack_arg = c->pc;
@@ -3714,6 +4578,18 @@ static void external_declaration(Compiler *c)
         if (param_types[i] == LOCAL_WINDOW)
             emit(c, (uint16_t)(0xb2c0 | (reg << 3) | reg));     /* uxtb Ri, Ri */
         store_local(c, slot, reg);
+    }
+    /* Save every incoming parameter before expanding by-value records: loads
+       for a record must not overwrite a later argument in r0-r3. */
+    for (unsigned i = 0; i < arity; ++i) {
+        if (param_types[i] != LOCAL_STRUCT) continue;
+        unsigned slot = parameter_slots[i];
+        unsigned size = c->structs[param_struct_ids[i]].size_words;
+        load_local(c, slot, 1); /* caller's source address */
+        for (unsigned j = 0; j < size; ++j) {
+            emit(c, 0xf8d1); emit(c, (uint16_t)(j * 4u)); /* ldr.w r0, [r1,#j*4] */
+            store_local(c, slot + j, 0);
+        }
     }
     block(c);
     if (c->return_type != RETURN_VOID)
@@ -3794,8 +4670,21 @@ uint32_t sidc_compile_project(const SidcSource *sources,
             patch_branch(c, 0, c->functions[main_index].entry, 0);
         }
     }
+    uint32_t alloc_entry = 0, free_entry = 0;
+    if (c->heap_used && !c->diagnostic.message) {
+        alloc_entry = c->pc;
+        for (unsigned i = 0; i < sizeof(sidc_heap_alloc_code); i += 2)
+            emit(c, (uint16_t)(sidc_heap_alloc_code[i] | ((uint16_t)sidc_heap_alloc_code[i+1] << 8)));
+        free_entry = c->pc;
+        for (unsigned i = 0; i < sizeof(sidc_heap_free_code); i += 2)
+            emit(c, (uint16_t)(sidc_heap_free_code[i] | ((uint16_t)sidc_heap_free_code[i+1] << 8)));
+    }
     for (unsigned i = 0; i < c->call_count && !c->diagnostic.message; ++i) {
         Reference call_ref = c->calls[i];
+        if (call_ref.target == 0xfffeu || call_ref.target == 0xfffdu) {
+            patch_branch(c, call_ref.at, call_ref.target == 0xfffeu ? alloc_entry : free_entry, 1);
+            continue;
+        }
         Function *fn = &c->functions[call_ref.target];
         if (!fn->defined)
             error_at(c, fn->name, "Called function has no definition");
