@@ -1,0 +1,47 @@
+# Compile and run ONE at a time on Sidbox.
+ # Requires target paths under tfcard:/ctests/ to exist.
+# These are Sidbox shell commands, not Linux shell commands.
+
+# compile-only/01-raw-graphics-ebi.c
+compiler -i tfcard:/ctests/compile-only/01-raw-graphics-ebi.c -o tfcard:/ctests/compile-only/01-raw-graphics-ebi.app
+# COMPILE ONLY. DO NOT try to draw on the LCD without a lease.
+
+# games/01-star-fighter.c
+compiler -i tfcard:/ctests/games/01-star-fighter.c -o tfcard:/ctests/games/01-star-fighter.app
+launch tfcard:/ctests/games/01-star-fighter.app
+
+# games/02-raycaster.c
+compiler -i tfcard:/ctests/games/02-raycaster.c -o tfcard:/ctests/games/02-raycaster.app
+launch tfcard:/ctests/games/02-raycaster.app
+
+# games/03-particle-reactor.c
+compiler -i tfcard:/ctests/games/03-particle-reactor.c -o tfcard:/ctests/games/03-particle-reactor.app
+launch tfcard:/ctests/games/03-particle-reactor.app
+
+# games/04-brick-breaker.c
+compiler -i tfcard:/ctests/games/04-brick-breaker.c -o tfcard:/ctests/games/04-brick-breaker.app
+launch tfcard:/ctests/games/04-brick-breaker.app
+
+# gui/01-control-panel.c
+compiler -i tfcard:/ctests/gui/01-control-panel.c -o tfcard:/ctests/gui/01-control-panel.app
+launch tfcard:/ctests/gui/01-control-panel.app
+
+# gui/02-menu-dialogs.c
+compiler -i tfcard:/ctests/gui/02-menu-dialogs.c -o tfcard:/ctests/gui/02-menu-dialogs.app
+launch tfcard:/ctests/gui/02-menu-dialogs.app
+
+# gui/03-resize-layout.c
+compiler -i tfcard:/ctests/gui/03-resize-layout.c -o tfcard:/ctests/gui/03-resize-layout.app
+launch tfcard:/ctests/gui/03-resize-layout.app
+
+# gui/04-text-tools.c
+compiler -i tfcard:/ctests/gui/04-text-tools.c -o tfcard:/ctests/gui/04-text-tools.app
+launch tfcard:/ctests/gui/04-text-tools.app
+
+# hardware/01-joystick-ticks.c
+compiler -i tfcard:/ctests/hardware/01-joystick-ticks.c -o tfcard:/ctests/hardware/01-joystick-ticks.app
+launch tfcard:/ctests/hardware/01-joystick-ticks.app
+
+# hardware/02-cpu-benchmark.c
+compiler -i tfcard:/ctests/hardware/02-cpu-benchmark.c -o tfcard:/ctests/hardware/02-cpu-benchmark.app
+launch tfcard:/ctests/hardware/02-cpu-benchmark.app

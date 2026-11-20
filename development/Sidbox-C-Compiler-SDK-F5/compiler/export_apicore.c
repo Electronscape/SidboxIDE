@@ -58,6 +58,78 @@ CHECK_SIGNATURE(API_GUI_GADGETS, canvas_create,
                 CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, CNV_FLAGS_T, GAD_TOOL_FLAGS));
 CHECK_SIGNATURE(API_GUI_GADGETS, set_fpen, void (*)(CGGadget, uint8_t));
 CHECK_SIGNATURE(API_GUI_GADGETS, set_bpen, void (*)(CGGadget, uint8_t));
+
+/* GUI additions: lock every appended binding to the IDE's public ABI. */
+#define WINDOW_CHECK(member, signature) CHECK_SIGNATURE(API_GUI_Windows, member, signature)
+#define GADGET_CHECK(member, signature) CHECK_SIGNATURE(API_GUI_GADGETS, member, signature)
+#define MENU_CHECK(member, signature) CHECK_SIGNATURE(API_GUI_Menus, member, signature)
+#define DIALOG_CHECK(member, signature) CHECK_SIGNATURE(API_GUI_DIALOGS, member, signature)
+WINDOW_CHECK(to_back, void (*)(CGWindow));
+WINDOW_CHECK(busymouse, void (*)(void));
+WINDOW_CHECK(normalmouse, void (*)(void));
+WINDOW_CHECK(window_mouse_busy, void (*)(CGWindow, uint8_t));
+WINDOW_CHECK(window_mouse_is_busy, uint8_t (*)(CGWindow));
+WINDOW_CHECK(window_disable, void (*)(CGWindow));
+WINDOW_CHECK(window_enable, void (*)(CGWindow));
+GADGET_CHECK(init, void (*)(void));
+GADGET_CHECK(gridselect_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, uint8_t, uint8_t, uint32_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(listbox_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(radiobutton_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, const char *, uint8_t, uint8_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(scrollbar_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, uint8_t, int16_t, int16_t, int16_t, int16_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(slider_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, uint8_t, int16_t, int16_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(textarea_create, CGGadget (*)(CGWindow, int16_t, int16_t, int16_t, int16_t, const char *, uint8_t, GAD_TOOL_FLAGS));
+GADGET_CHECK(get_id, CGGadget (*)(void *));
+GADGET_CHECK(set_hpen, void (*)(CGGadget, uint8_t));
+GADGET_CHECK(destroy, void (*)(CGGadget));
+GADGET_CHECK(set_group_visible, void (*)(CGWindow, uint8_t, uint8_t));
+GADGET_CHECK(set_group_id, void (*)(CGGadget, uint8_t));
+GADGET_CHECK(get_group_id, uint8_t (*)(CGGadget));
+GADGET_CHECK(textarea_get_text, uint32_t (*)(CGGadget, char *, uint32_t));
+GADGET_CHECK(gridselect_set_cell_text, uint32_t (*)(CGGadget, const char *, int16_t));
+GADGET_CHECK(itemlist_init, void (*)(ItemLists_t *));
+GADGET_CHECK(itemlist_deinit, void (*)(ItemLists_t *));
+GADGET_CHECK(itemlist_add, int (*)(ItemLists_t *, const char *, uint32_t));
+GADGET_CHECK(listbox_attach_itemlist, int16_t (*)(CGGadget, ItemLists_t *));
+GADGET_CHECK(button_set_toggle, void (*)(CGGadget, uint8_t));
+GADGET_CHECK(textbox_get_text, const char *(*)(CGGadget));
+GADGET_CHECK(textbox_get_length, uint16_t (*)(CGGadget));
+GADGET_CHECK(textbox_set_caret, void (*)(CGGadget, uint16_t));
+GADGET_CHECK(textbox_get_caret, uint16_t (*)(CGGadget));
+GADGET_CHECK(textarea_set_text, void (*)(CGGadget, const char *));
+GADGET_CHECK(textarea_insert_text, void (*)(CGGadget, const char *));
+GADGET_CHECK(textarea_set_caret, void (*)(CGGadget, uint32_t, uint32_t));
+GADGET_CHECK(textarea_get_caret, void (*)(CGGadget, uint32_t *, uint32_t *));
+GADGET_CHECK(textarea_line_count, uint32_t (*)(CGGadget));
+GADGET_CHECK(label_set_colour, uint32_t (*)(CGGadget, int16_t, int16_t));
+GADGET_CHECK(slider_set_value, void (*)(CGGadget, uint16_t));
+GADGET_CHECK(slider_get_value, uint16_t (*)(CGGadget));
+GADGET_CHECK(scrollbar_set_value, void (*)(CGGadget, uint16_t));
+GADGET_CHECK(scrollbar_get_value, int16_t (*)(CGGadget));
+MENU_CHECK(create_title, cg_menu_t (*)(const char *));
+MENU_CHECK(create_item, cg_menuitem_t (*)(cg_menu_t *, uint8_t, const char *));
+MENU_CHECK(destroy, void (*)(cg_menu_t *));
+MENU_CHECK(attach_to_window, void (*)(cg_menu_t, CGWindow));
+MENU_CHECK(attach_images_itemlist, int16_t (*)(cg_menu_t *, ItemLists_t *));
+MENU_CHECK(set_callback, void (*)(cg_menuitem_t, SBOS_MenuCallback, void *));
+MENU_CHECK(set_flags, void (*)(const cg_menuitem_t *, uint32_t, uint32_t));
+MENU_CHECK(get_flags, uint32_t (*)(const cg_menuitem_t *));
+MENU_CHECK(set_item_image, void (*)(const cg_menuitem_t *, uint8_t));
+MENU_CHECK(active, uint8_t (*)(void));
+MENU_CHECK(close, void (*)(void));
+DIALOG_CHECK(messagebox_ex, CGWindow (*)(CGWindow, const CGFMsgBoxParams *));
+DIALOG_CHECK(messagebox, CGWindow (*)(CGWindow, const char *, const char *, uint8_t));
+DIALOG_CHECK(messagebox_close, void (*)(CGWindow));
+DIALOG_CHECK(infobox_ex, CGWindow (*)(CGWindow, const CGFInfoBoxParams *));
+DIALOG_CHECK(infobox, CGWindow (*)(CGWindow, const char *, const char *));
+DIALOG_CHECK(infobox_close, void (*)(CGWindow));
+DIALOG_CHECK(filerequest, CGWindow (*)(CGWindow, const char *, char *));
+DIALOG_CHECK(filerequest_filter, CGWindow (*)(CGWindow, const char *, char *, const char *));
+DIALOG_CHECK(filerequest_close, void (*)(CGWindow));
+CHECK_SIGNATURE(API_GUI_Console, writec, void (*)(CGWindow, const char *, uint32_t));
+CHECK_SIGNATURE(API_GUI, osupdate, void (*)(void));
+_Static_assert(__builtin_types_compatible_p(SBOS_MenuCallback, void (*)(cg_menu_t, cg_menuitem_t, void *)),
+               "Menu callback ABI changed");
+
 /* Graphics EBI ABI snapshot from firmware Core/api/api_gfx_engine.h
  * (FIRMWARE - 03-11-2026 - 0947).  Many installed idelibs/api/apis.h
  * versions only FORWARD-DECLARE the gfx table types.  Such incomplete
@@ -243,13 +315,18 @@ _Static_assert((uintptr_t)NULL == 0, "The SDK requires a zero null pointer");
     GFX_CALL(hgfx, SidcGfxHardwareABI, sdk_name, member, return_type, __VA_ARGS__)
 #define GFX_PRIM(sdk_name, member, return_type, ...) \
     GFX_CALL(primatives, SidcGfxPrimitivesABI, sdk_name, member, return_type, __VA_ARGS__)
+#define GUI_ROOT_CALL(member, return_type, ...) \
+    {.name = "API.gui->" #member, .offsets = {offsetof(API_Root, gui), \
+     offsetof(API_GUI, member), 0xffffu}, \
+     .arity = sizeof((uint8_t[]){__VA_ARGS__}), .result = return_type, \
+     .params = {__VA_ARGS__}}
 #define HW_CALL(sdk_name, member, return_type) \
     {.name = "API.hwl->" #member, .offsets = {offsetof(API_Root, hwl), \
      offsetof(SidcHwABI, member), 0xffffu}, \
      .arity = 0, .result = return_type}
 #define SDK_CONSTANT(name) {#name, name}
 
-enum { CALL_COUNT = 68, CONSTANT_COUNT = 37 };
+enum { CALL_COUNT = 131, CONSTANT_COUNT = 143 };
 _Static_assert((unsigned)CALL_COUNT <= SIDC_API_CALLS &&
                    (unsigned)CONSTANT_COUNT <= SIDC_API_CONSTANTS,
                "API export exceeds compiler capacity");
@@ -328,6 +405,69 @@ static const struct {
                     GADGET_BOUNDS, SIDC_API_U32, SIDC_API_U32),
         GADGET_CALL(SBOS_GadgetSetFPen, set_fpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
         GADGET_CALL(SBOS_GadgetSetBPen, set_bpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GUI_CALL(windows, API_GUI_Windows, to_back, to_back, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(windows, API_GUI_Windows, busymouse, busymouse, SIDC_API_VOID),
+        GUI_CALL(windows, API_GUI_Windows, normalmouse, normalmouse, SIDC_API_VOID),
+        GUI_CALL(windows, API_GUI_Windows, window_mouse_busy, window_mouse_busy, SIDC_API_VOID, SIDC_API_U8, SIDC_API_U8),
+        GUI_CALL(windows, API_GUI_Windows, window_mouse_is_busy, window_mouse_is_busy, SIDC_API_U8, SIDC_API_U8),
+        GUI_CALL(windows, API_GUI_Windows, window_disable, window_disable, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(windows, API_GUI_Windows, window_enable, window_enable, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(gadgets, API_GUI_GADGETS, init, init, SIDC_API_VOID),
+        GUI_CALL(gadgets, API_GUI_GADGETS, gridselect_create, gridselect_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_U8, SIDC_API_U8, SIDC_API_U32, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, listbox_create, listbox_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, radiobutton_create, radiobutton_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_STRING, SIDC_API_U8, SIDC_API_U8, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, scrollbar_create, scrollbar_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, slider_create, slider_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_create, textarea_create, SIDC_API_U32, SIDC_API_U8, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_S16, SIDC_API_STRING, SIDC_API_U8, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, get_id, get_id, SIDC_API_U32, SIDC_API_POINTER_VALUE),
+        GUI_CALL(gadgets, API_GUI_GADGETS, set_hpen, set_hpen, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GUI_CALL(gadgets, API_GUI_GADGETS, destroy, destroy, SIDC_API_VOID, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, set_group_visible, set_group_visible, SIDC_API_VOID, SIDC_API_U8, SIDC_API_U8, SIDC_API_U8),
+        GUI_CALL(gadgets, API_GUI_GADGETS, set_group_id, set_group_id, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GUI_CALL(gadgets, API_GUI_GADGETS, get_group_id, get_group_id, SIDC_API_U8, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_get_text, textarea_get_text, SIDC_API_U32, SIDC_API_U32, SIDC_API_BYTE_BUFFER, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, gridselect_set_cell_text, gridselect_set_cell_text, SIDC_API_U32, SIDC_API_U32, SIDC_API_STRING, SIDC_API_S16),
+        GUI_CALL(gadgets, API_GUI_GADGETS, itemlist_init, itemlist_init, SIDC_API_VOID, SIDC_API_STRUCT_REF),
+        GUI_CALL(gadgets, API_GUI_GADGETS, itemlist_deinit, itemlist_deinit, SIDC_API_VOID, SIDC_API_STRUCT_REF),
+        GUI_CALL(gadgets, API_GUI_GADGETS, itemlist_add, itemlist_add, SIDC_API_S32, SIDC_API_STRUCT_REF, SIDC_API_STRING, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, listbox_attach_itemlist, listbox_attach_itemlist, SIDC_API_S16_RESULT, SIDC_API_U32, SIDC_API_STRUCT_REF),
+        GUI_CALL(gadgets, API_GUI_GADGETS, button_set_toggle, button_set_toggle, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textbox_get_text, textbox_get_text, SIDC_API_U32, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textbox_get_length, textbox_get_length, SIDC_API_U16_RESULT, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textbox_set_caret, textbox_set_caret, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U16),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textbox_get_caret, textbox_get_caret, SIDC_API_U16_RESULT, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_set_text, textarea_set_text, SIDC_API_VOID, SIDC_API_U32, SIDC_API_STRING),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_insert_text, textarea_insert_text, SIDC_API_VOID, SIDC_API_U32, SIDC_API_STRING),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_set_caret, textarea_set_caret, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U32, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_get_caret, textarea_get_caret, SIDC_API_VOID, SIDC_API_U32, SIDC_API_WORD_REF, SIDC_API_WORD_REF),
+        GUI_CALL(gadgets, API_GUI_GADGETS, textarea_line_count, textarea_line_count, SIDC_API_U32, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, label_set_colour, label_set_colour, SIDC_API_U32, SIDC_API_U32, SIDC_API_S16, SIDC_API_S16),
+        GUI_CALL(gadgets, API_GUI_GADGETS, slider_set_value, slider_set_value, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U16),
+        GUI_CALL(gadgets, API_GUI_GADGETS, slider_get_value, slider_get_value, SIDC_API_U16_RESULT, SIDC_API_U32),
+        GUI_CALL(gadgets, API_GUI_GADGETS, scrollbar_set_value, scrollbar_set_value, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U16),
+        GUI_CALL(gadgets, API_GUI_GADGETS, scrollbar_get_value, scrollbar_get_value, SIDC_API_S16_RESULT, SIDC_API_U32),
+        GUI_CALL(menus, API_GUI_Menus, create_title, create_title, SIDC_API_U32, SIDC_API_STRING),
+        GUI_CALL(menus, API_GUI_Menus, create_item, create_item, SIDC_API_U32, SIDC_API_WORD_REF, SIDC_API_U8, SIDC_API_STRING),
+        GUI_CALL(menus, API_GUI_Menus, destroy, destroy, SIDC_API_VOID, SIDC_API_WORD_REF),
+        GUI_CALL(menus, API_GUI_Menus, attach_to_window, attach_to_window, SIDC_API_VOID, SIDC_API_U32, SIDC_API_U8),
+        GUI_CALL(menus, API_GUI_Menus, attach_images_itemlist, attach_images_itemlist, SIDC_API_S16_RESULT, SIDC_API_WORD_REF, SIDC_API_STRUCT_REF),
+        GUI_CALL(menus, API_GUI_Menus, set_callback, set_callback, SIDC_API_VOID, SIDC_API_U32, SIDC_API_MENU_CALLBACK, SIDC_API_DATA_PTR),
+        GUI_CALL(menus, API_GUI_Menus, set_flags, set_flags, SIDC_API_VOID, SIDC_API_WORD_REF, SIDC_API_U32, SIDC_API_U32),
+        GUI_CALL(menus, API_GUI_Menus, get_flags, get_flags, SIDC_API_U32, SIDC_API_WORD_REF),
+        GUI_CALL(menus, API_GUI_Menus, set_item_image, set_item_image, SIDC_API_VOID, SIDC_API_WORD_REF, SIDC_API_U8),
+        GUI_CALL(menus, API_GUI_Menus, active, active, SIDC_API_U8),
+        GUI_CALL(menus, API_GUI_Menus, close, close, SIDC_API_VOID),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, messagebox_ex, messagebox_ex, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRUCT_REF),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, messagebox, messagebox, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRING, SIDC_API_STRING, SIDC_API_U8),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, messagebox_close, messagebox_close, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, infobox_ex, infobox_ex, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRUCT_REF),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, infobox, infobox, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRING, SIDC_API_STRING),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, infobox_close, infobox_close, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, filerequest, filerequest, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRING, SIDC_API_BYTE_BUFFER),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, filerequest_filter, filerequest_filter, SIDC_API_U8, SIDC_API_U8, SIDC_API_STRING, SIDC_API_BYTE_BUFFER, SIDC_API_STRING),
+        GUI_CALL(dialogs, API_GUI_DIALOGS, filerequest_close, filerequest_close, SIDC_API_VOID, SIDC_API_U8),
+        GUI_CALL(console, API_GUI_Console, writec, writec, SIDC_API_VOID, SIDC_API_U8, SIDC_API_STRING, SIDC_API_U32),
+        GUI_ROOT_CALL(osupdate, SIDC_API_VOID),
         GFX_HW(SBOS_GFXDisplayNow, displaynow, SIDC_API_VOID),
         GFX_HW(SBOS_GFXWaitLCD, lcdwait, SIDC_API_VOID),
         GFX_HW(SBOS_GFXSetDisplayMode, setdisplaymode, SIDC_API_VOID, SIDC_API_S32,SIDC_API_S32,SIDC_API_S32,SIDC_API_S32,SIDC_API_S32),
@@ -401,7 +541,113 @@ static const struct {
         SDK_CONSTANT(CNV_LINE),
         SDK_CONSTANT(CNV_RECT),
         SDK_CONSTANT(CNV_BEVEL),
-        SDK_CONSTANT(CNV_RECTF)
+        SDK_CONSTANT(CNV_RECTF),
+        SDK_CONSTANT(SBX_WF_VISIBLE),
+        SDK_CONSTANT(SBX_WF_NOBORDER),
+        SDK_CONSTANT(SBX_WF_CLOSE),
+        SDK_CONSTANT(SBX_WF_TITLE_BAR),
+        SDK_CONSTANT(SBX_WF_TITLE_BAR_FLAT),
+        SDK_CONSTANT(SBX_WF_ZORDER),
+        SDK_CONSTANT(SBX_WF_MINIMISE),
+        SDK_CONSTANT(SBX_WF_MAXRESTORE),
+        SDK_CONSTANT(SBX_WF_SCREENBOUND),
+        SDK_CONSTANT(SBX_WF_MOVEABLE),
+        SDK_CONSTANT(SBX_WF_RESIZABLE),
+        SDK_CONSTANT(SBX_WF_NOFOCUS),
+        SDK_CONSTANT(SBX_WF_NOAUTOZORDER),
+        SDK_CONSTANT(SBX_WF_ALWAYS_TO_BACK),
+        SDK_CONSTANT(SBX_WF_ALWAYS_TO_FRONT),
+        SDK_CONSTANT(SBX_WF_DOCKRIGHT),
+        SDK_CONSTANT(SBX_WF_DOCKBOTTOM),
+        SDK_CONSTANT(SBX_WF_DISABLE),
+        SDK_CONSTANT(SBX_WF_BASE_ZERO),
+        SDK_CONSTANT(CGMSG_NONE),
+        SDK_CONSTANT(CGMSG_TIMER),
+        SDK_CONSTANT(CGMSG_SYSTEM),
+        SDK_CONSTANT(CGMSG_MENU),
+        SDK_CONSTANT(CGEVT_GAD_PRESSED),
+        SDK_CONSTANT(CGEVT_GAD_FOCUS_LOST),
+        SDK_CONSTANT(CGEVT_GAD_FOCUS_GAINED),
+        SDK_CONSTANT(CGEVT_GAD_KEY),
+        SDK_CONSTANT(CGEVT_GAD_MOUSE_MOVE),
+        SDK_CONSTANT(CGEVT_GAD_MOUSE_DOWN),
+        SDK_CONSTANT(CGEVT_GAD_MOUSE_UP),
+        SDK_CONSTANT(CGEVT_GAD_GRID_CHANGED),
+        SDK_CONSTANT(CGEVT_GAD_LISTBOX_CHANGED),
+        SDK_CONSTANT(CGEVT_GAD_LISTBOX_SCROLLED),
+        SDK_CONSTANT(CGEVT_GAD_RADIO_CHANGED),
+        SDK_CONSTANT(CGEVT_GAD_CARET_MOVED),
+        SDK_CONSTANT(CGEVT_GAD_TEXT_CHANGED),
+        SDK_CONSTANT(CGEVT_GAD_KEYPRESS_DOWN),
+        SDK_CONSTANT(CGEVT_GAD_KEYPRESS_UP),
+        SDK_CONSTANT(CGEVT_GAD_KEYPRESSED),
+        SDK_CONSTANT(CGEVT_MENU_SELECTED),
+        SDK_CONSTANT(CGEVT_WIN_ZORDER),
+        SDK_CONSTANT(CGEVT_WIN_MAXRESTORED),
+        SDK_CONSTANT(CGEVT_WIN_MINIMISE),
+        SDK_CONSTANT(CGEVT_KEY_RELEASED),
+        SDK_CONSTANT(CGEVT_SYS_FILERQ_DONE),
+        SDK_CONSTANT(CGEVT_SYS_FILERQ_CHANGED),
+        SDK_CONSTANT(CGEVT_SYS_MSGBOX_DONE),
+        SDK_CONSTANT(CGEVT_SYS_INFOBOX_DONE),
+        SDK_CONSTANT(CGEVT_SYS_REPAINT),
+        SDK_CONSTANT(GAD_TOOL_DOCKED_RIGHT),
+        SDK_CONSTANT(GAD_TOOL_DOCKED_BOTTOM),
+        SDK_CONSTANT(GAD_TOOL_CYCLEBUTTON),
+        SDK_CONSTANT(GAD_TOOL_SCROLLARROWS),
+        SDK_CONSTANT(GAD_TOOL_MOUSEMOVE),
+        SDK_CONSTANT(GAD_TOOL_ICON),
+        SDK_CONSTANT(GAD_TOOL_ALIGN_BELOW),
+        SDK_CONSTANT(GAD_TOOL_ALIGN_LEFT),
+        SDK_CONSTANT(GAD_TOOL_ALIGN_RIGHT),
+        SDK_CONSTANT(GAD_TOOL_ALIGN_TOP),
+        SDK_CONSTANT(GAD_TOOL_OPAQUE_TEXT),
+        SDK_CONSTANT(GAD_TOOL_TOGGLE),
+        SDK_CONSTANT(GAD_TOOL_LATCHDOWN),
+        SDK_CONSTANT(GAD_TOOL_TRANSPARENT),
+        SDK_CONSTANT(GAD_TOOL_MANUAL_TOGGLE),
+        SDK_CONSTANT(BVF_SHOW_FRAME),
+        SDK_CONSTANT(BVF_SRC_XMAJOR),
+        SDK_CONSTANT(BVF_PERSISTANT),
+        SDK_CONSTANT(BVF_PERSISTENT),
+        SDK_CONSTANT(GAD_NULL),
+        SDK_CONSTANT(GAD_BITMAPVIEW),
+        SDK_CONSTANT(GAD_BUTTON),
+        SDK_CONSTANT(GAD_CANVAS),
+        SDK_CONSTANT(GAD_CHECKBOX),
+        SDK_CONSTANT(GAD_GRIDSELECT),
+        SDK_CONSTANT(GAD_LABEL),
+        SDK_CONSTANT(GAD_LISTBOX),
+        SDK_CONSTANT(GAD_PROGBAR),
+        SDK_CONSTANT(GAD_RADIO),
+        SDK_CONSTANT(GAD_SCROLLBAR),
+        SDK_CONSTANT(GAD_SLIDER),
+        SDK_CONSTANT(GAD_TEXTBOX),
+        SDK_CONSTANT(GAD_TEXTAREA),
+        SDK_CONSTANT(CG_MENU_INVALID),
+        SDK_CONSTANT(CG_MENUITEM_INVALID),
+        SDK_CONSTANT(CG_MENU_BAR_H),
+        SDK_CONSTANT(CG_MENUITEMF_SEPARATOR),
+        SDK_CONSTANT(CG_MENUITEMF_TICKED),
+        SDK_CONSTANT(CG_MENUITEMF_TICKABLE),
+        SDK_CONSTANT(CG_MENUITEMF_CHECKBOX),
+        SDK_CONSTANT(CG_MENU_IMAGE_NONE),
+        SDK_CONSTANT(MSGBOX_CANCEL),
+        SDK_CONSTANT(MSGBOX_OK),
+        SDK_CONSTANT(MSGBOX_YES),
+        SDK_CONSTANT(MSGBOX_NO),
+        SDK_CONSTANT(MSGBOXF_OK),
+        SDK_CONSTANT(MSGBOXF_OKCANCEL),
+        SDK_CONSTANT(MSGBOXF_YESNO),
+        SDK_CONSTANT(MSGBOXF_YESNOCANCEL),
+        SDK_CONSTANT(INFOBOX_OK),
+        SDK_CONSTANT(INFOBOX_OKONLE),
+        SDK_CONSTANT(MAX_FILERQS),
+        SDK_CONSTANT(FILEREQUEST_DEF_WIDTH),
+        SDK_CONSTANT(FILEREQUEST_DEF_HEIGHT),
+        SDK_CONSTANT(FILERQ_OUTCAP),
+        SDK_CONSTANT(SBOS_MAX_TIMERS),
+        SDK_CONSTANT(SBOS_TIMER_SYS_RESERVED)
     },
     .message = {
         .offsets = {

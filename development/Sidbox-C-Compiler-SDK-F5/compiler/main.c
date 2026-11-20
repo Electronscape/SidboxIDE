@@ -15,7 +15,7 @@ enum {
 
 static char source_path[PATH_CAPACITY];
 static char app_path[PATH_CAPACITY];
-/* One shared pool. Multi-file builds have a combined 128 KiB source limit.
+/* One shared pool. Multi-file builds have a combined 1 MiB source limit.
    Separate NUL terminators keep all file slices stable for compiler tokens. */
 static char source[SIDC_SOURCE_LIMIT + SIDC_MAX_SOURCES];
 static char input_paths[SIDC_MAX_SOURCES][PATH_CAPACITY];
@@ -155,7 +155,7 @@ static int read_sources(unsigned count, const char *const *paths)
                                SIDC_SOURCE_LIMIT - used, &length);
         if (result != FR_OK) {
             if (result == SOURCE_TOO_LARGE)
-                show_status("Combined sources exceed 128 KiB");
+                show_status("Combined sources exceed 1 MiB");
             else {
                 snprintf(status, sizeof(status), "Open %s: file error %d",
                          input_paths[index], result);
@@ -266,7 +266,7 @@ static int report_file(int result, const char *action)
     if (result == FR_OK)
         return 1;
     if (result == SOURCE_TOO_LARGE)
-        show_status("Source exceeds 128 KiB");
+        show_status("Source exceeds 1 MiB");
     else if (result == SOURCE_BINARY)
         show_status("Source contains a NUL byte");
     else if (result == RESTORE_FAILED)
@@ -332,7 +332,7 @@ static CGWindowProcRes editor_proc(CGWindow win, const CGMessage_t *message)
 
     uint32_t bytes = SBOS_TextAreaGetText(editor, source, SIDC_SOURCE_LIMIT + 1u);
     if (bytes == 0 || bytes > SIDC_SOURCE_LIMIT + 1u) {
-        show_status("Source exceeds 128 KiB");
+        show_status("Source exceeds 1 MiB");
         return CGPROC_HANDLED;
     }
     if (message->gadget == build_button) {

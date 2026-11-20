@@ -1,0 +1,90 @@
+[
+  {
+    "path": "compile-only/01-raw-graphics-ebi.c",
+    "bytes": 992,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "games/01-star-fighter.c",
+    "bytes": 4952,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "games/02-raycaster.c",
+    "bytes": 5824,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "games/03-particle-reactor.c",
+    "bytes": 4412,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "games/04-brick-breaker.c",
+    "bytes": 4620,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "gui/01-control-panel.c",
+    "bytes": 2308,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "gui/02-menu-dialogs.c",
+    "bytes": 2412,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "gui/03-resize-layout.c",
+    "bytes": 1676,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "gui/04-text-tools.c",
+    "bytes": 2316,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "hardware/01-joystick-ticks.c",
+    "bytes": 2860,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  },
+  {
+    "path": "hardware/02-cpu-benchmark.c",
+    "bytes": 1816,
+    "ok": true,
+    "error": "",
+    "line": 0,
+    "column": 0
+  }
+]

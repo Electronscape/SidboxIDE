@@ -3,14 +3,15 @@
 
 #include <stdint.h>
 
-#define SIDC_APICORE_PATH "tfcard:/dev/apicore/apis.bin"
+/* Compiler definitions live in the firmware-created Sidbox library directory. */
+#define SIDC_APICORE_PATH "tfcard:/sidbox/l/clibs.library"
 #define SIDC_APICORE_MAGIC_V1 "SBAPI01"
 #define SIDC_APICORE_MAGIC_V2 "SBAPI02"
-#define SIDC_APICORE_MAGIC "SBAPI04"
+#define SIDC_APICORE_MAGIC "SBAPI05"
 
 enum {
-    SIDC_API_CALLS = 80,
-    SIDC_API_CONSTANTS = 72,
+    SIDC_API_CALLS = 160,
+    SIDC_API_CONSTANTS = 192,
     SIDC_API_NAME = 64,
     SIDC_API_CONST_NAME = 32,
     SIDC_API_PARAMS_V2 = 8,
@@ -33,7 +34,14 @@ enum {
     SIDC_API_WINDOW_CALLBACK,
     SIDC_API_WINDOW_REF,
     SIDC_API_BYTE_BUFFER,
-    SIDC_API_WORD_BUFFER
+    SIDC_API_WORD_BUFFER,
+    SIDC_API_U16_RESULT,
+    SIDC_API_S16_RESULT,
+    SIDC_API_WORD_REF,
+    SIDC_API_STRUCT_REF,
+    SIDC_API_MENU_CALLBACK,
+    SIDC_API_DATA_PTR,
+    SIDC_API_POINTER_VALUE
 };
 
 enum {

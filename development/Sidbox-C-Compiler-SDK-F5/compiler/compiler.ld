@@ -3,7 +3,7 @@
  * The packer extracts PT_LOAD and R_ARM_RELATIVE; the firmware chooses runtime SDRAM.
  * IDE modifies the 3 settings below on each project build.
  */
-_v2_app_limit   = 0x84000;  /* 128 KiB default; applets share the first 6 MiB SDRAM with music */
+_v2_app_limit   = 0x3c4000;  /* 128 KiB default; applets share the first 6 MiB SDRAM with music */
 _v2_stack_bytes = 0x2000;   /* Stage 6C private PSP for GUI/timer callbacks, entry still on MSP */
 _v2_heap_bytes  = 0x4000;   /* uninitialised additional RAM; bounded _sbrk */
 

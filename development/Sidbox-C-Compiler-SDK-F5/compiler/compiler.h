@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define SIDC_SOURCE_LIMIT (128u * 1024u)
+#define SIDC_SOURCE_LIMIT (1024u * 1024u)
 #define SIDC_MAX_SOURCES 16u
 
 typedef struct {
@@ -35,7 +35,7 @@ uint32_t sidc_compile(const char *source, uint32_t length,
                       SidcReadApiCore read_apicore,
                       const void **app, SidcDiagnostic *diagnostic);
 
-/* Source buffers must remain valid for the entire call. The 128 KiB limit
+/* Source buffers must remain valid for the entire call. The 1 MiB limit
    applies to the sum of all input sources. */
 uint32_t sidc_compile_sources(const SidcSource *sources, uint32_t count,
                               SidcReadApiCore read_apicore,

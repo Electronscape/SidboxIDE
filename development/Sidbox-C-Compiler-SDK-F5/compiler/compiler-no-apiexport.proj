@@ -4,7 +4,7 @@
     "appletFormat": "v2",
     "v2Linker": "llvm",
     "outputAppName": "compiler.app",
-    "appSizeKb": 512,
+    "appSizeKb": 4096,
     "v2HeapKb": 16,
     "v2StackKb": 8,
     "files": [

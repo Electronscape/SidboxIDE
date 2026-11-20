@@ -18,18 +18,19 @@ enum {
 };
 
 enum {
-    /* The 128 KiB source is lexed in place: no full token array is needed. */
-    IMAGE_LIMIT = 65536, STRING_LIMIT = 16384, LOCAL_LIMIT = 64,
+    /* Source is lexed in place. Image, string and initializer buffers stay bounded
+       by the compiler applet SDRAM allocation, not by the V2 file format. */
+    IMAGE_LIMIT = 1024 * 1024, STRING_LIMIT = 128 * 1024, LOCAL_LIMIT = 64,
     FUNCTION_LIMIT = 256, CALL_LIMIT = 2048, RETURN_LIMIT = 1024,
     ADDRESS_LIMIT = 2048, GLOBAL_LIMIT = 128, FUNCTION_PARAMS = 5,
     NESTING_LIMIT = 32, LOOP_LIMIT = 32, LOOP_JUMP_LIMIT = 512,
-    CALLBACK_STACK_BYTES = 8192, BYTE_ARRAY_LIMIT = 256 * 1024,
+    CALLBACK_STACK_BYTES = 8192, BYTE_ARRAY_LIMIT = 1024 * 1024,
     HEADER_POOL_LIMIT = 32 * 1024, HEADER_LIMIT = 32,
     HEADER_PATH_LIMIT = 256, INCLUDE_DEPTH_LIMIT = 12,
     MACRO_LIMIT = 128, MACRO_NAME_LIMIT = 64, CONDITIONAL_LIMIT = 32,
     SWITCH_CASE_LIMIT = 256, SWITCH_BREAK_LIMIT = 512,
     CONTROL_LIMIT = 64, STRUCT_LIMIT = 24, STRUCT_FIELDS = 16, TYPEDEF_LIMIT = 64,
-    INITIAL_WORD_LIMIT = 1024, PRIVATE_ARENA_BYTES = 32768,
+    INITIAL_WORD_LIMIT = 256 * 1024, PRIVATE_ARENA_BYTES = 32768,
     ENUM_TAG_LIMIT = 32, ENUM_CONSTANT_LIMIT = 160
 };
 
@@ -79,8 +80,8 @@ typedef struct {
     uint8_t struct_id;
     uint8_t in_data;
     uint8_t is_const;
-    uint16_t init_offset;
-    uint16_t init_count;
+    uint32_t init_offset;
+    uint32_t init_count;
     uint32_t array_count;
 } Global;
 
@@ -142,7 +143,7 @@ typedef struct {
 
 typedef struct {
     uint32_t at;
-    uint16_t target;
+    uint32_t target;
     uint8_t kind;
 } AddressReference;
 
@@ -1242,7 +1243,7 @@ static void emit(Compiler *c, uint16_t bits)
     if (c->diagnostic.message)
         return;
     if (c->pc + 2u > IMAGE_LIMIT) {
-        error(c, "Native image exceeds 64 KiB");
+        error(c, "Native code exceeds 1 MiB");
         return;
     }
     put16(c->pc, bits);
@@ -1312,7 +1313,7 @@ static void emit_address(Compiler *c, uint8_t kind, unsigned target)
         error(c, "Too many data or callback references");
         return;
     }
-    c->addresses[c->address_count++] = (AddressReference){c->pc, (uint16_t)target, kind};
+    c->addresses[c->address_count++] = (AddressReference){c->pc, (uint32_t)target, kind};
     for (unsigned i = 0; i < 4; ++i)
         emit(c, 0);                                            /* movw/movt Rd, delta */
     unsigned reg = kind == ADDRESS_GLOBAL ? 1u : 0u;
@@ -1361,7 +1362,7 @@ static int load_apicore(Compiler *c, SidcReadApiCore read_apicore)
         goto invalid;
     memcpy(&header, api_file, sizeof(header));
     if (memcmp(header.magic, SIDC_APICORE_MAGIC, sizeof(header.magic)) != 0) {
-        error(c, "Old or incompatible apis.bin: rebuild SDK EBI-only SBAPI04 metadata");
+        error(c, "Old or incompatible clibs.library: requires SBAPI05 metadata");
         return 0;
     }
     if (
@@ -1389,14 +1390,15 @@ static int load_apicore(Compiler *c, SidcReadApiCore read_apicore)
                 goto invalid;
         }
     }
-    unsigned last_param = SIDC_API_WORD_BUFFER;
+    unsigned last_param = SIDC_API_POINTER_VALUE;
     for (unsigned i = 0; i < header.call_count; ++i) {
         SidcApiCall *call = &c->api_calls[i];
         memcpy(call, api_file + sizeof(header) + i * call_size, call_size);
         if (!valid_api_name(call->name, SIDC_API_NAME, 1) || call->arity > max_params ||
             (call->result != SIDC_API_U8 && call->result != SIDC_API_U32 &&
              call->result != SIDC_API_VOID && call->result != SIDC_API_S8 &&
-             call->result != SIDC_API_S32))
+             call->result != SIDC_API_S32 &&
+             call->result != SIDC_API_U16_RESULT && call->result != SIDC_API_S16_RESULT))
             goto invalid;
         /* A direct API_Root.hwl call is two dereferences rather than the
          * normal three. 0xffff is allowed ONLY as the final hop sentinel. */
@@ -1452,7 +1454,7 @@ static void patch_branch(Compiler *c, uint32_t at, uint32_t target, int link)
 {
     if (c->diagnostic.message)
         return;
-    /* Thumb-2 B.W or BL. Even the expanded 64 KiB image fits the branch range. */
+    /* Thumb-2 B.W or BL. The bounded image fits the 24-bit signed branch range. */
     uint32_t d = target - at - 4u;
     uint32_t s = (d >> 24) & 1u;
     uint32_t j1 = ((~(d >> 23)) ^ s) & 1u;
@@ -2492,7 +2494,7 @@ static void string_argument(Compiler *c)
         return;
     }
     if (c->string_bytes == STRING_LIMIT) {
-        error(c, "String data exceeds 16 KiB");
+        error(c, "String data exceeds 128 KiB");
         return;
     }
     unsigned start = c->string_bytes;
@@ -2502,7 +2504,7 @@ static void string_argument(Compiler *c)
         const char *end = p + token.length;
         while (p != end) {
             if (c->string_bytes + 1u >= STRING_LIMIT) {
-                error_at(c, token, "String data exceeds 16 KiB");
+                error_at(c, token, "String data exceeds 128 KiB");
                 return;
             }
             unsigned ch = (unsigned char)*p++;
@@ -2551,6 +2553,7 @@ static void callback_argument(Compiler *c, uint8_t kind)
     };
     static const uint8_t timer_params[] = {LOCAL_POINTER};
     static const uint8_t window_params[] = {LOCAL_WINDOW, LOCAL_MESSAGE};
+    static const uint8_t menu_params[] = {LOCAL_INT, LOCAL_INT, LOCAL_POINTER};
     const uint8_t *types;
     unsigned arity;
     unsigned return_type = RETURN_VOID;
@@ -2560,6 +2563,11 @@ static void callback_argument(Compiler *c, uint8_t kind)
         types = gadget_params;
         arity = sizeof(gadget_params);
         signature = "Gadget callback needs void (void *, int32_t, int32_t, int32_t, int32_t)";
+        break;
+    case SIDC_API_MENU_CALLBACK:
+        types = menu_params;
+        arity = sizeof(menu_params);
+        signature = "Menu callback needs void (uint32_t, uint32_t, void *)";
         break;
     case SIDC_API_WINDOW_CALLBACK:
         types = window_params;
@@ -2622,6 +2630,7 @@ static void api_call(Compiler *c, const SidcApiCall *api)
         case SIDC_API_GADGET_CALLBACK:
         case SIDC_API_TIMER_CALLBACK:
         case SIDC_API_WINDOW_CALLBACK:
+        case SIDC_API_MENU_CALLBACK:
             callback_argument(c, api->params[i]);
             break;
         case SIDC_API_WINDOW_REF: {
@@ -2641,6 +2650,38 @@ static void api_call(Compiler *c, const SidcApiCall *api)
             emit(c, 0x4608);                                  /* mov r0, r1 */
             break;
         }
+        case SIDC_API_WORD_REF:
+        case SIDC_API_STRUCT_REF:
+        case SIDC_API_DATA_PTR: {
+            if (api->params[i] == SIDC_API_DATA_PTR && null_argument(c))
+                break;
+            const char *message =
+                api->params[i] == SIDC_API_STRUCT_REF ?
+                "Pass the address of a file-scope static struct" :
+                api->params[i] == SIDC_API_WORD_REF ?
+                "Pass the address of a file-scope static 32-bit integer" :
+                "Pass NULL or the address of a file-scope static variable";
+            if (!expect(c, '&', message))
+                break;
+            Token name = c->token;
+            int index = name.kind == TOK_NAME ? find_global(c, name) : -1;
+            if (index < 0 || find_local(c, name) >= 0 ||
+                (api->params[i] == SIDC_API_WORD_REF &&
+                 c->globals[index].type != LOCAL_INT &&
+                 c->globals[index].type != LOCAL_GADGET) ||
+                (api->params[i] == SIDC_API_STRUCT_REF &&
+                 c->globals[index].type != GLOBAL_STRUCT)) {
+                error_at(c, name, message);
+                break;
+            }
+            advance(c);
+            emit_address(c, ADDRESS_GLOBAL, (unsigned)index);
+            emit(c, 0x4608);                                  /* mov r0, r1 */
+            break;
+        }
+        case SIDC_API_POINTER_VALUE:
+            expression(c, 1, REQUIRE_SCALAR);
+            break;
         case SIDC_API_WORD_BUFFER: {
             if (null_argument(c)) {
                 error(c, "Palette pointer cannot be NULL");
@@ -2701,7 +2742,11 @@ static void api_call(Compiler *c, const SidcApiCall *api)
     if (api->result == SIDC_API_U8)
         emit(c, 0xb2c0);                                      /* promote uint8_t to int */
     else if (api->result == SIDC_API_S8)
-        emit(c, 0xb240);                                      /* promote int8_t to int */
+        emit(c, 0xb240);
+    else if (api->result == SIDC_API_U16_RESULT)
+        emit(c, 0xb280);                                      /* uxth r0, r0 */
+    else if (api->result == SIDC_API_S16_RESULT)
+        emit(c, 0xb200);                                      /* sxth r0, r0 */                                      /* promote int8_t to int */
 }
 
 /* Lazily reserve an applet-owned zero-filled arena in the output image. */
@@ -3085,7 +3130,9 @@ static int unary(Compiler *c, int allow_store)
                 if (ebi) {
                     api_call(c, ebi);
                     type = ebi->result == SIDC_API_VOID ? VALUE_VOID :
-                           ebi->result == SIDC_API_U32 ? VALUE_UNSIGNED : VALUE_INT;
+                           (ebi->result == SIDC_API_U32 ||
+                            ebi->result == SIDC_API_U16_RESULT ||
+                            ebi->result == SIDC_API_U8) ? VALUE_UNSIGNED : VALUE_INT;
                 } else error_at(c, token, "Unknown SDK EBI field path");
             }
         } else if (accept(c, '(')) {
@@ -3447,6 +3494,63 @@ static int expression(Compiler *c, int minimum, int requirement)
             }
         }
     }
+    if (!c->diagnostic.message && minimum == 1 && accept(c, '?')) {
+        /* C conditional: only the selected arm executes.  The false arm is
+           parsed recursively, which makes nested ?: right-associative. */
+        if (type == VALUE_VOID || type == VALUE_RECORD) {
+            error_at(c, start, "Conditional test needs a scalar value");
+        } else {
+            uint32_t false_arm = branch_on_value(c, 0);
+            Token true_start = c->token;
+            int true_type = expression(c, 1, DISCARD_VALUE);
+            unsigned true_record_id = c->value_record_id;
+            if (expect(c, ':', "Expected ':' in conditional expression")) {
+                uint32_t done = branch(c);
+                patch_branch(c, false_arm, c->pc, 0);
+                Token false_start = c->token;
+                int false_type = expression(c, 1, DISCARD_VALUE);
+                unsigned false_record_id = c->value_record_id;
+                int true_null = ((true_start.kind == TOK_NUMBER ||
+                                  true_start.kind == TOK_UNSIGNED_NUMBER) &&
+                                 true_start.number == 0) ||
+                                (true_start.kind == TOK_NAME && name_is(true_start, "NULL"));
+                int false_null = ((false_start.kind == TOK_NUMBER ||
+                                   false_start.kind == TOK_UNSIGNED_NUMBER) &&
+                                  false_start.number == 0) ||
+                                 (false_start.kind == TOK_NAME && name_is(false_start, "NULL"));
+                if (true_type == VALUE_VOID || false_type == VALUE_VOID ||
+                    true_type == VALUE_RECORD || false_type == VALUE_RECORD) {
+                    error_at(c, start, "Conditional branches need scalar values");
+                } else if ((true_type == VALUE_INT || true_type == VALUE_UNSIGNED) &&
+                           (false_type == VALUE_INT || false_type == VALUE_UNSIGNED)) {
+                    type = (true_type == VALUE_UNSIGNED || false_type == VALUE_UNSIGNED)
+                        ? VALUE_UNSIGNED : VALUE_INT;
+                } else if (true_type == false_type) {
+                    if ((true_type == VALUE_STRUCT_DOUBLE_POINTER || true_type == VALUE_POINTER) &&
+                        true_record_id != false_record_id &&
+                        !true_null && !false_null) {
+                        error_at(c, start, "Conditional pointers have incompatible record types");
+                    }
+                    type = true_type;
+                    c->value_record_id = true_null ? false_record_id : true_record_id;
+                } else if (true_type == VALUE_INT_POINTER &&
+                           false_null) {
+                    type = VALUE_INT_POINTER;
+                } else if (false_type == VALUE_INT_POINTER &&
+                           true_null) {
+                    type = VALUE_INT_POINTER;
+                } else if ((true_type == VALUE_POINTER && false_null) ||
+                           (false_type == VALUE_POINTER && true_null)) {
+                    type = VALUE_POINTER;
+                    c->value_record_id = true_type == VALUE_POINTER
+                        ? true_record_id : false_record_id;
+                } else {
+                    error_at(c, start, "Conditional branches have incompatible types");
+                }
+                patch_branch(c, done, c->pc, 0);
+            }
+        }
+    }
     if ((requirement == REQUIRE_INTEGER || requirement == REQUIRE_SCALAR) && type == VALUE_VOID)
         error_at(c, start, "Expected an integer value, got void");
     if (requirement == REQUIRE_INTEGER && (type == VALUE_POINTER || type == VALUE_INT_POINTER ||
@@ -3628,20 +3732,24 @@ static void local_callback_declaration(Compiler *c, uint8_t return_type)
 static int local_declaration(Compiler *c)
 {
     int type = -1;
+    int integer_declarators = 0;
     int is_const = accept(c, TOK_CONST);
     if (c->token.kind == TOK_ENUM) {
         if (!enum_declaration(c)) return 1;
         type = LOCAL_INT;
+        integer_declarators = 1;
     } else if (accept(c, TOK_INT)) {
         if (c->token.kind == '(' && c->lookahead.kind == '*') {
             local_callback_declaration(c, RETURN_INT);
             return 1;
         }
-        type = accept(c, '*') ? (accept(c, '*') ? LOCAL_INT_DOUBLE_POINTER : LOCAL_INT_POINTER) : LOCAL_INT;
+        type = LOCAL_INT;
+        integer_declarators = 1;
     } else if (c->token.kind == TOK_NAME && find_alias(c, c->token) >= 0 &&
                c->aliases[find_alias(c, c->token)].record_id == RECORD_INT) {
         advance(c);
         type = LOCAL_INT;
+        integer_declarators = 1;
     } else if (accept(c, TOK_VOID)) {
         if (c->token.kind == '(' && c->lookahead.kind == '*')
             local_callback_declaration(c, RETURN_VOID);
@@ -3650,59 +3758,65 @@ static int local_declaration(Compiler *c)
     } else if (is_record_type(c)) {
         unsigned struct_id = 0;
         if (!record_type(c, &struct_id)) return 1;
-        int pointer = accept(c, '*');
-        int double_pointer = pointer && accept(c, '*');
-        Token name = c->token;
-        if (!expect(c, TOK_NAME, "Expected record variable name")) return 1;
-        unsigned count = 1;
-        int is_array = !pointer && accept(c, '[');
-        unsigned stride = c->structs[struct_id].size_words;
-        if (is_array) {
-            Token bound = c->token;
-            if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
-                bound.number == 0 || bound.number > LOCAL_LIMIT / stride) {
-                error_at(c, bound, c->structs[struct_id].is_union ? "Local union array exceeds 64 stack slots" : "Local struct array exceeds 64 stack slots");
+        /* Every declarator has its own pointer stars and array dimensions.
+           E.g. struct Point a, *next, points[3]; */
+        do {
+            int pointer = accept(c, '*');
+            int double_pointer = pointer && accept(c, '*');
+            Token name = c->token;
+            if (!expect(c, TOK_NAME, "Expected record variable name")) return 1;
+            unsigned count = 1;
+            int is_array = !pointer && accept(c, '[');
+            unsigned stride = c->structs[struct_id].size_words;
+            if (is_array) {
+                Token bound = c->token;
+                if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
+                    bound.number == 0 || bound.number > LOCAL_LIMIT / stride) {
+                    error_at(c, bound, c->structs[struct_id].is_union ?
+                             "Local union array exceeds 64 stack slots" :
+                             "Local struct array exceeds 64 stack slots");
+                    return 1;
+                }
+                count = bound.number;
+                advance(c);
+                if (!expect(c, ']', "Expected ']' after record array size")) return 1;
+            }
+            unsigned words = pointer ? 1u : count * stride;
+            if (words > LOCAL_LIMIT - c->local_count) {
+                error_at(c, name, "Record exceeds remaining 64 local stack slots");
                 return 1;
             }
-            count = bound.number;
-            advance(c);
-            if (!expect(c, ']', "Expected ']' after record array size")) return 1;
-        }
-        unsigned words = pointer ? 1u : count * stride;
-        if (words > LOCAL_LIMIT - c->local_count) {
-            error_at(c, name, "Record exceeds remaining 64 local stack slots");
-            return 1;
-        }
-        unsigned slot = add_local(c, name, double_pointer ? LOCAL_STRUCT_DOUBLE_POINTER :
-                                  pointer ? LOCAL_STRUCT_POINTER :
-                                  is_array ? LOCAL_STRUCT_ARRAY : LOCAL_STRUCT);
-        if (c->diagnostic.message) return 1;
-        c->locals[slot].struct_id = (uint8_t)struct_id;
-        c->locals[slot].array_count = (uint16_t)count;
-        for (unsigned i = 1; i < words; ++i)
-            c->locals[c->local_count++] = (Local){.scope=(uint8_t)c->scope,.type=LOCAL_PADDING};
-        if (c->local_count > c->local_peak) c->local_peak = c->local_count;
-        if (pointer) {
-            if (accept(c, '=')) {
-                if (double_pointer) struct_double_pointer_value(c, struct_id);
-                else struct_pointer_value(c, struct_id);
-            } else constant(c, 0);
-            store_local(c, slot, 0);
-        } else if (accept(c, '=')) {
-            if (!is_array && c->token.kind != '{') {
-                record_value_address(c, struct_id);
-                emit(c, 0xb403);                  /* push {r0,r1} preserves source */
-                local_address(c, slot);
-                emit(c, 0x4601);                  /* mov r1,r0 destination */
-                emit(c, 0xbc05);                  /* pop {r0,r2} source */
-                copy_record(c, stride);
-            } else {
-                constant(c, 0);
-                for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
-                if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
-                else initialize_record(c, struct_id, slot, NULL, 1);
+            unsigned slot = add_local(c, name, double_pointer ? LOCAL_STRUCT_DOUBLE_POINTER :
+                                      pointer ? LOCAL_STRUCT_POINTER :
+                                      is_array ? LOCAL_STRUCT_ARRAY : LOCAL_STRUCT);
+            if (c->diagnostic.message) return 1;
+            c->locals[slot].struct_id = (uint8_t)struct_id;
+            c->locals[slot].array_count = (uint16_t)count;
+            for (unsigned i = 1; i < words; ++i)
+                c->locals[c->local_count++] = (Local){.scope=(uint8_t)c->scope,.type=LOCAL_PADDING};
+            if (c->local_count > c->local_peak) c->local_peak = c->local_count;
+            if (pointer) {
+                if (accept(c, '=')) {
+                    if (double_pointer) struct_double_pointer_value(c, struct_id);
+                    else struct_pointer_value(c, struct_id);
+                } else constant(c, 0);
+                store_local(c, slot, 0);
+            } else if (accept(c, '=')) {
+                if (!is_array && c->token.kind != '{') {
+                    record_value_address(c, struct_id);
+                    emit(c, 0xb403);
+                    local_address(c, slot);
+                    emit(c, 0x4601);
+                    emit(c, 0xbc05);
+                    copy_record(c, stride);
+                } else {
+                    constant(c, 0);
+                    for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
+                    if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
+                    else initialize_record(c, struct_id, slot, NULL, 1);
+                }
             }
-        }
+        } while (!c->diagnostic.message && accept(c, ','));
         expect(c, ';', "Expected ';' after record variable");
         return 1;
     } else if (c->token.kind == TOK_NAME && find_local(c, c->token) < 0) {
@@ -3717,49 +3831,58 @@ static int local_declaration(Compiler *c)
     if (is_const && type != LOCAL_INT) {
         error(c, "const currently supports integer or enum scalar variables"); return 1;
     }
-    Token name = c->token;
-    if (!expect(c, TOK_NAME, "Expected a local variable name")) return 1;
-    if (accept(c, '[')) {
-        if (is_const) { error_at(c, name, "const arrays are not yet supported"); return 1; }
-        if (type != LOCAL_INT) {
-            error_at(c, name, "Only local int arrays are supported");
+    /* C declarators: int a = 1, *p = &a, b[3] = {1,2,3};
+       The type is reset for each item, while the declaration's scope is shared. */
+    do {
+        int item_type = type;
+        if (integer_declarators && accept(c, '*'))
+            item_type = accept(c, '*') ? LOCAL_INT_DOUBLE_POINTER : LOCAL_INT_POINTER;
+        Token name = c->token;
+        if (!expect(c, TOK_NAME, "Expected a local variable name")) return 1;
+        if (is_const && item_type != LOCAL_INT) {
+            error_at(c, name, "const currently supports integer or enum scalar variables");
             return 1;
         }
-        Token bound = c->token;
-        if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
-            bound.number == 0 || bound.number > LOCAL_LIMIT - c->local_count) {
-            error_at(c, bound, "Local int array exceeds remaining 64 stack slots");
-            return 1;
+        if (accept(c, '[')) {
+            if (is_const) { error_at(c, name, "const arrays are not yet supported"); return 1; }
+            if (item_type != LOCAL_INT) {
+                error_at(c, name, "Only local int arrays are supported");
+                return 1;
+            }
+            Token bound = c->token;
+            if ((bound.kind != TOK_NUMBER && bound.kind != TOK_UNSIGNED_NUMBER) ||
+                bound.number == 0 || bound.number > LOCAL_LIMIT - c->local_count) {
+                error_at(c, bound, "Local int array exceeds remaining 64 stack slots");
+                return 1;
+            }
+            unsigned count = bound.number;
+            advance(c);
+            if (!expect(c, ']', "Expected ']' after local array size")) return 1;
+            unsigned slot = add_local(c, name, LOCAL_INT_ARRAY);
+            if (c->diagnostic.message) return 1;
+            c->locals[slot].array_count = (uint16_t)count;
+            for (unsigned i = 1; i < count; ++i)
+                c->locals[c->local_count++] = (Local){.scope = (uint8_t)c->scope, .type = LOCAL_PADDING};
+            if (c->local_count > c->local_peak) c->local_peak = c->local_count;
+            if (accept(c, '=')) {
+                constant(c, 0);
+                for (unsigned i = 0; i < count; ++i) store_local(c, slot + i, 0);
+                initialize_array(c, count, RECORD_INT, slot, NULL, 0);
+            }
+        } else {
+            unsigned slot = add_local(c, name, (uint8_t)item_type);
+            if (c->diagnostic.message) return 1;
+            c->locals[slot].is_const = (uint8_t)is_const;
+            if (accept(c, '=')) {
+                if (item_type == LOCAL_INT_DOUBLE_POINTER) int_double_pointer_value(c);
+                else expression(c, 1, item_type == LOCAL_INT_POINTER ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
+                if (item_type == LOCAL_WINDOW) emit(c, 0xb2c0);
+                store_local(c, slot, 0);
+            } else if (is_const) {
+                error_at(c, name, "const local must be initialized");
+            }
         }
-        unsigned count = bound.number;
-        advance(c);
-        if (!expect(c, ']', "Expected ']' after local array size")) return 1;
-        unsigned slot = add_local(c, name, LOCAL_INT_ARRAY);
-        if (c->diagnostic.message) return 1;
-        c->locals[slot].array_count = (uint16_t)count;
-        for (unsigned i = 1; i < count; ++i) {
-            c->locals[c->local_count++] = (Local){.scope = (uint8_t)c->scope, .type = LOCAL_PADDING};
-        }
-        if (c->local_count > c->local_peak) c->local_peak = c->local_count;
-        if (accept(c, '=')) {
-            constant(c, 0);
-            for (unsigned i = 0; i < count; ++i) store_local(c, slot + i, 0);
-            initialize_array(c, count, RECORD_INT, slot, NULL, 0);
-        }
-        expect(c, ';', "Expected ';' after local array declaration");
-        return 1;
-    }
-    unsigned slot = add_local(c, name, (uint8_t)type);
-    if (c->diagnostic.message) return 1;
-    c->locals[slot].is_const = (uint8_t)is_const;
-    if (accept(c, '=')) {
-        if (type == LOCAL_INT_DOUBLE_POINTER) int_double_pointer_value(c);
-        else expression(c, 1, type == LOCAL_INT_POINTER ? REQUIRE_INT_POINTER : REQUIRE_INTEGER);
-        if (type == LOCAL_WINDOW) emit(c, 0xb2c0);
-        store_local(c, slot, 0);
-    } else if (is_const) {
-        error_at(c, name, "const local must be initialized");
-    }
+    } while (!c->diagnostic.message && accept(c, ','));
     expect(c, ';', "Expected ';' after declaration");
     return 1;
 }
@@ -4154,13 +4277,13 @@ static void global_declaration(Compiler *c, Token name, uint8_t type, int is_con
         }
         count = bound.number;
         if (type == LOCAL_INT && count > BYTE_ARRAY_LIMIT / 4u) {
-            error_at(c, bound, "Static int arrays exceed 256 KiB");
+            error_at(c, bound, "Static int arrays exceed 1 MiB");
             return;
         }
         count *= (type == LOCAL_INT ? 4u : 1u);
         unsigned aligned = type == LOCAL_INT ? (c->array_bytes + 3u) & ~3u : c->array_bytes;
         if (aligned > BYTE_ARRAY_LIMIT || count > BYTE_ARRAY_LIMIT - aligned) {
-            error_at(c, bound, "Static byte arrays exceed 256 KiB");
+            error_at(c, bound, "Static byte arrays exceed 1 MiB");
             return;
         }
         advance(c);
@@ -4233,8 +4356,8 @@ static void global_declaration(Compiler *c, Token name, uint8_t type, int is_con
     c->globals[c->global_count++] = (Global){.name=name,.initial=initial,.offset=offset,.type=type,.unit=c->file_index,
                 .is_const=(uint8_t)is_const,
                 .array_count=type == GLOBAL_INT_ARRAY ? count / 4u : type == GLOBAL_BYTE_ARRAY ? count : 0u,
-                .in_data=(uint8_t)initialized,.init_offset=(uint16_t)init_at,
-                .init_count=(uint16_t)(initialized ? init_words : 0u)};
+                .in_data=(uint8_t)initialized,.init_offset=(uint32_t)init_at,
+                .init_count=(uint32_t)(initialized ? init_words : 0u)};
 }
 
 static void external_declaration(Compiler *c)
@@ -4352,8 +4475,8 @@ static void external_declaration(Compiler *c)
         c->globals[c->global_count++] = (Global){.name=name,.offset=offset,
               .type=is_array ? GLOBAL_STRUCT_ARRAY : GLOBAL_STRUCT,
               .unit=c->file_index,.struct_id=(uint8_t)index,.array_count=count,
-              .in_data=(uint8_t)initialized,.init_offset=(uint16_t)init_at,
-              .init_count=(uint16_t)(initialized ? words : 0u)};
+              .in_data=(uint8_t)initialized,.init_offset=(uint32_t)init_at,
+              .init_count=(uint32_t)(initialized ? words : 0u)};
         return;
     }
     if (!is_static)
@@ -4461,7 +4584,7 @@ parse_function_common:
                     return;
                 }
                 if (!c->message.size) {
-                    error(c, "Window messages need a new apis.bin");
+                    error(c, "Window messages need updated clibs.library");
                     return;
                 }
                 param_types[arity] = LOCAL_MESSAGE;
@@ -4624,7 +4747,7 @@ uint32_t sidc_compile_project(const SidcSource *sources,
     for (uint32_t i = 0; i < count; ++i) {
         if (!sources[i].source || sources[i].length > SIDC_SOURCE_LIMIT - total) {
             *diagnostic = (SidcDiagnostic){
-                count == 1 ? "Source exceeds 128 KiB" : "Combined sources exceed 128 KiB",
+                count == 1 ? "Source exceeds 1 MiB" : "Combined sources exceed 1 MiB",
                 1, 1, i, NULL};
             return 0;
         }
@@ -4696,7 +4819,7 @@ uint32_t sidc_compile_project(const SidcSource *sources,
     uint32_t image_size = c->global_bytes ? globals_at + c->global_bytes : strings_end;
     uint32_t arrays_at = (image_size + SBV2_ALIGN - 1u) & ~(SBV2_ALIGN - 1u);
     if (image_size > IMAGE_LIMIT)
-        error(c, "Native image and data exceed 64 KiB");
+        error(c, "Native image and data exceed 1 MiB");
 
     uint32_t stack_bytes = 0;
     for (unsigned i = 0; i < c->address_count && !c->diagnostic.message; ++i) {

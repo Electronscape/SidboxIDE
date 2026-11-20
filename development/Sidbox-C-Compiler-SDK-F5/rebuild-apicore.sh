@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Run from the compiler project root (the directory containing compiler/).
+# Usage: ./rebuild-apicore.sh /path/to/SidboxIDE/idelibs
 project=$(cd -- "$(dirname -- "$0")" && pwd)
 requested=${1:-${SIDBOX_SDK:-}}
 if [[ -z "$requested" || ! -d "$requested" ]]; then
@@ -28,20 +30,32 @@ if [[ ! -x "$arm_gcc" || ! -x "$arm_objcopy" ]]; then
 fi
 
 output="$project/compiler"
+if [[ ! -f "$output/export_apicore.c" || ! -f "$output/apicore.h" ]]; then
+    printf '%s\n' 'Run this script from the root of the updated compiler project.' >&2
+    exit 1
+fi
 work=$(mktemp -d "$output/.apicore-build.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
 "$arm_gcc" -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard \
-    -std=gnu99 --specs=nano.specs -ffreestanding -DSIDBOX_APPLET_V2 \
+    -std=gnu99 -fshort-enums --specs=nano.specs -ffreestanding -DSIDBOX_APPLET_V2 \
     -I"$sdk/api" -I"$sdk/tools/cgarm/include" -I"$project/compiler" \
     -c "$output/export_apicore.c" -o "$work/apicore.o"
 "$arm_objcopy" -O binary --only-section=.sidc_apicore "$work/apicore.o" "$work/api-data"
 test -s "$work/api-data"
-# The gzip trailer supplies the little-endian CRC32 used by the applet loader.
+if [[ $(head -c 7 "$work/api-data") != SBAPI05 ]]; then
+    printf '%s\n' 'Refusing to install metadata with a non-SBAPI05 header.' >&2
+    exit 1
+fi
+
+# The gzip trailer supplies the little-endian CRC32 expected by compiler.app.
 gzip -nc "$work/api-data" > "$work/api.gz"
 {
     cat "$work/api-data"
     tail -c 8 "$work/api.gz" | head -c 4
-} > "$work/apis.bin"
-mv -- "$work/apis.bin" "$output/apis.bin"
-printf '%s\n' 'Updated compiler/apis.bin'
+} > "$work/clibs.library"
+
+# Generate in one temporary file and replace only after every step succeeds.
+mv -- "$work/clibs.library" "$output/clibs.library"
+printf 'Updated %s (%s bytes)\n' "$output/clibs.library" "$(wc -c < "$output/clibs.library" | tr -d ' ')"
+printf '%s\n' 'Copy it to tfcard:/sidbox/l/clibs.library (on your SD card).'
