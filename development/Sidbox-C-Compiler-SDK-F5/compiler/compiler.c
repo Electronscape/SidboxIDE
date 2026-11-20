@@ -18,9 +18,15 @@ enum {
 };
 
 enum {
-    /* Source is lexed in place. Image, string and initializer buffers stay bounded
-       by the compiler applet SDRAM allocation, not by the V2 file format. */
-    IMAGE_LIMIT = 1024 * 1024, STRING_LIMIT = 128 * 1024, LOCAL_LIMIT = 64,
+    /* Source is still lexed in RAM. In streaming builds, code and initialized
+       data are staged on SD and the V2 load-region bounds cap image size. */
+    IMAGE_LIMIT =
+#ifdef SIDC_STREAM_BUILD
+        0x5f0000,
+#else
+        1024 * 1024,
+#endif
+    STRING_LIMIT = 128 * 1024, LOCAL_LIMIT = 64,
     FUNCTION_LIMIT = 256, CALL_LIMIT = 2048, RETURN_LIMIT = 1024,
     ADDRESS_LIMIT = 2048, GLOBAL_LIMIT = 128, FUNCTION_PARAMS = 5,
     NESTING_LIMIT = 32, LOOP_LIMIT = 32, LOOP_JUMP_LIMIT = 512,
@@ -30,7 +36,13 @@ enum {
     MACRO_LIMIT = 128, MACRO_NAME_LIMIT = 64, CONDITIONAL_LIMIT = 32,
     SWITCH_CASE_LIMIT = 256, SWITCH_BREAK_LIMIT = 512,
     CONTROL_LIMIT = 64, STRUCT_LIMIT = 24, STRUCT_FIELDS = 16, TYPEDEF_LIMIT = 64,
-    INITIAL_WORD_LIMIT = 256 * 1024, PRIVATE_ARENA_BYTES = 32768,
+    INITIAL_WORD_LIMIT =
+#ifdef SIDC_STREAM_BUILD
+        0x5f0000 / 4,
+#else
+        256 * 1024,
+#endif
+    PRIVATE_ARENA_BYTES = 32768,
     ENUM_TAG_LIMIT = 32, ENUM_CONSTANT_LIMIT = 160
 };
 
@@ -232,7 +244,10 @@ typedef struct {
     unsigned enum_tag_count;
     uint32_t global_bytes;
     uint32_t array_bytes;
+#ifndef SIDC_STREAM_BUILD
     uint32_t initial_values[INITIAL_WORD_LIMIT];
+#endif
+    uint8_t initializer_nonzero;
     unsigned initial_used;
     Function functions[FUNCTION_LIMIT];
     unsigned function_count;
@@ -268,10 +283,111 @@ typedef struct {
 static const uint8_t sidc_heap_alloc_code[] = {71,246,241,114,72,242,16,3,130,26,207,246,255,115,154,66,1,210,0,32,112,71,240,181,3,175,77,248,4,189,10,104,3,70,0,42,71,246,248,112,8,191,8,34,162,241,8,14,134,69,79,240,0,0,50,216,18,240,7,5,47,209,216,29,79,246,248,115,9,42,0,234,3,12,43,211,8,35,4,224,24,25,0,241,8,3,147,66,36,210,205,88,0,32,37,240,0,68,8,44,27,211,21,240,7,6,24,209,174,235,3,6,180,66,20,216,0,45,235,212,100,69,233,211,164,235,12,2,200,24,16,42,6,211,0,235,12,1,100,70,8,58,0,35,193,233,2,35,4,241,0,65,0,34,224,232,2,18,93,248,4,187,240,189,71,246,248,112,128,26,132,69,79,240,0,0,245,216,139,24,12,241,0,70,142,80,98,68,88,96,2,241,8,0,8,96,3,241,8,0,93,248,4,187,240,189};
 static const uint8_t sidc_heap_free_code[] = {0,40,117,208,1,241,16,2,130,66,113,216,1,245,0,66,130,66,109,217,66,26,80,7,24,191,112,71,240,181,3,175,77,248,4,189,8,104,71,246,248,115,160,241,8,14,158,69,90,216,16,240,7,3,87,209,9,40,85,211,162,241,8,3,79,240,1,12,8,34,141,88,37,240,0,68,8,44,75,211,21,240,7,6,72,209,174,235,2,6,180,66,68,216,154,66,4,208,34,68,8,50,130,66,237,211,9,224,181,241,255,63,58,220,34,68,79,240,0,12,8,50,130,66,227,211,2,224,95,234,204,114,48,209,202,88,9,40,34,240,0,66,202,80,42,211,79,240,8,12,4,224,131,66,35,208,131,66,156,70,34,210,81,248,12,48,12,241,8,2,35,240,0,68,0,43,4,235,2,3,242,212,131,66,238,210,205,88,0,45,235,212,8,45,17,211,21,240,7,6,14,209,174,235,3,3,157,66,10,216,99,25,3,241,8,4,65,248,12,64,163,24,131,66,235,211,217,231,193,248,0,192,93,248,4,187,189,232,240,64,112,71};
 static Compiler compiler;
+#ifndef SIDC_STREAM_BUILD
 static struct {
     SBV2Header header;
     uint8_t image[IMAGE_LIMIT];
 } output;
+#else
+/* The stream writer stores the actual V2 file on SD, including its header.
+   Only the source, compiler tables, and string pool remain in RAM. */
+static void error(Compiler *c, const char *message);
+static const SidcStreamIO *stream_io;
+/* A callback is installed by the applet while building. Avoid console
+   calls from the code generator itself; desktop/host tests need no GUI. */
+static SidcProgress progress_callback;
+static void *progress_context;
+static uint32_t progress_source_total;
+static uint32_t progress_source_done;
+static uint32_t progress_next_percent;
+
+void sidc_set_progress_callback(SidcProgress callback, void *context)
+{
+    progress_callback = callback;
+    progress_context = context;
+}
+
+static void progress_report(const char *phase, uint32_t done, uint32_t total)
+{
+    if (progress_callback)
+        progress_callback(progress_context, phase, done, total);
+}
+
+static void progress_parse(Compiler *c)
+{
+    /* Include-file positions are local to the header; only count bytes from
+       the original source to avoid percentages jumping backwards. */
+    /* Small projects finish quickly: announce their start and finish only. */
+    if (!progress_callback || c->current_header >= 0 ||
+        progress_source_total < 32768u)
+        return;
+    uint32_t done = progress_source_done + c->pos;
+    if (done > progress_source_total) done = progress_source_total;
+    /* Cheap threshold check on every token: division happens only once
+       per milestone, not for every generated instruction/token. */
+    if (progress_next_percent > 100u ||
+        done < (progress_source_total * progress_next_percent + 99u) / 100u)
+        return;
+    uint32_t percent = (done * 100u) / progress_source_total;
+    progress_report("Parse/codegen", done, progress_source_total);
+    progress_next_percent = (percent / 5u + 1u) * 5u;
+}
+static int stream_write(Compiler *c, int initial, uint32_t offset,
+                        const void *bytes, uint32_t length)
+{
+    if (c->diagnostic.message) return 0;
+    if (!stream_io || !stream_io->write ||
+        !stream_io->write(stream_io->context, initial, offset, bytes, length)) {
+        error(c, "Temporary output write failed");
+        return 0;
+    }
+    return 1;
+}
+static int stream_read(Compiler *c, int initial, uint32_t offset,
+                       void *bytes, uint32_t length)
+{
+    if (c->diagnostic.message) return 0;
+    if (!stream_io || !stream_io->read ||
+        !stream_io->read(stream_io->context, initial, offset, bytes, length)) {
+        error(c, "Temporary output read failed");
+        return 0;
+    }
+    return 1;
+}
+static void image_write(Compiler *c, uint32_t offset, const void *data, uint32_t length)
+{
+    if (offset > IMAGE_LIMIT || length > IMAGE_LIMIT - offset) {
+        error(c, "Native image exceeds available V2 link-address region"); return;
+    }
+    stream_write(c, 0, SBV2_HEADER_SIZE + offset, data, length);
+}
+static void image_zero(Compiler *c, uint32_t offset, uint32_t length)
+{
+    static const uint8_t zero[1024] = {0};
+    while (length && !c->diagnostic.message) {
+        uint32_t n = length < sizeof(zero) ? length : sizeof(zero);
+        image_write(c, offset, zero, n);
+        offset += n; length -= n;
+    }
+}
+static void initial_write(Compiler *c, uint32_t word, uint32_t number)
+{
+    if (number) c->initializer_nonzero = 1;
+    stream_write(c, 1, word * 4u, &number, sizeof(number));
+}
+static void initial_clear(Compiler *c, unsigned words)
+{
+    static const uint32_t zeros[256] = {0};
+    uint32_t at = c->initial_used * 4u;
+    uint32_t bytes = words * 4u;
+    while (bytes && !c->diagnostic.message) {
+        uint32_t n = bytes < sizeof(zeros) ? bytes : sizeof(zeros);
+        stream_write(c, 1, at, zeros, n);
+        at += n; bytes -= n;
+    }
+    c->initializer_nonzero = 0;
+}
+#endif
 static uint8_t api_file[sizeof(SidcApiHeader) + SIDC_API_CALLS * sizeof(SidcApiCall) +
                         SIDC_API_CONSTANTS * sizeof(SidcApiConstant) + sizeof(SidcApiMessage) +
                         sizeof(uint32_t)];
@@ -1207,6 +1323,9 @@ static void advance(Compiler *c)
 {
     c->token = c->lookahead;
     c->lookahead = scan(c);
+#ifdef SIDC_STREAM_BUILD
+    progress_parse(c);
+#endif
 }
 
 static int accept(Compiler *c, int kind)
@@ -1234,16 +1353,21 @@ static int accept_sdk_type(Compiler *c, const char *name)
 
 static void put16(uint32_t at, uint16_t bits)
 {
+#ifdef SIDC_STREAM_BUILD
+    uint8_t value[2] = {(uint8_t)bits, (uint8_t)(bits >> 8)};
+    image_write(&compiler, at, value, 2);
+#else
     output.image[at] = (uint8_t)bits;
     output.image[at + 1] = (uint8_t)(bits >> 8);
+#endif
 }
 
 static void emit(Compiler *c, uint16_t bits)
 {
     if (c->diagnostic.message)
         return;
-    if (c->pc + 2u > IMAGE_LIMIT) {
-        error(c, "Native code exceeds 1 MiB");
+    if (c->pc > IMAGE_LIMIT - 2u) {
+        error(c, "Native code exceeds image capacity");
         return;
     }
     put16(c->pc, bits);
@@ -3568,7 +3692,7 @@ static void statement(Compiler *c);
 
 /* Initializer backends: local values compile into stack stores; static
    values are captured as 32-bit words for inclusion in the .app image. */
-static void initialize_scalar(Compiler *c, unsigned word, uint32_t *static_values,
+static void initialize_scalar(Compiler *c, unsigned word, int static_values,
                               int byte_value)
 {
     if (!static_values) {
@@ -3595,11 +3719,15 @@ static void initialize_scalar(Compiler *c, unsigned word, uint32_t *static_value
         error_at(c, value, "Static uint8_t initializer exceeds 255");
         return;
     }
-    static_values[word] = number;
+#ifdef SIDC_STREAM_BUILD
+    initial_write(c, c->initial_used + word, number);
+#else
+    c->initial_values[c->initial_used + word] = number;
+#endif
 }
 
 static void initialize_record(Compiler *c, unsigned rec, unsigned base,
-                              uint32_t *static_values, unsigned depth)
+                              int static_values, unsigned depth)
 {
     if (depth > NESTING_LIMIT) { error(c, "Initializer nesting is too deep"); return; }
     if (!expect(c, '{', "Expected '{' for record initializer")) return;
@@ -3613,9 +3741,9 @@ static void initialize_record(Compiler *c, unsigned rec, unsigned base,
         unsigned slot = base + f.offset_words;
         if (f.is_pointer) {
             if (static_values) {
-                if (name_is(c->token, "NULL")) { advance(c); static_values[slot] = 0; }
+                if (name_is(c->token, "NULL")) advance(c);
                 else if ((c->token.kind == TOK_NUMBER || c->token.kind == TOK_UNSIGNED_NUMBER) &&
-                         c->token.number == 0) { advance(c); static_values[slot] = 0; }
+                         c->token.number == 0) advance(c);
                 else error(c, "Static pointer field initializers only support NULL or 0");
             } else {
                 if (f.record_id == RECORD_INT) expression(c, 1, REQUIRE_INT_POINTER);
@@ -3640,7 +3768,7 @@ static void initialize_record(Compiler *c, unsigned rec, unsigned base,
 }
 
 static void initialize_array(Compiler *c, unsigned count, unsigned rec,
-                             unsigned base, uint32_t *static_values, int byte_value)
+                             unsigned base, int static_values, int byte_value)
 {
     if (!expect(c, '{', "Expected '{' for array initializer")) return;
     unsigned i = 0;
@@ -3676,22 +3804,29 @@ static void initialize_large_zero(Compiler *c)
     expect(c, '}', "Large static arrays only support {0}");
 }
 
-/* Reserve scratch words in the compiler (not on its small ARM call stack). */
-static uint32_t *initialize_static_buffer(Compiler *c, unsigned words)
+static int initialize_static_buffer(Compiler *c, unsigned words)
 {
     if (words > INITIAL_WORD_LIMIT - c->initial_used) {
-        error(c, "Too many explicitly initialized static data words"); return NULL;
+        error(c, "Too many explicitly initialized static data words"); return 0;
     }
-    uint32_t *values = c->initial_values + c->initial_used;
-    memset(values, 0, words * sizeof(uint32_t));
-    return values;
+#ifdef SIDC_STREAM_BUILD
+    initial_clear(c, words);
+#else
+    memset(c->initial_values + c->initial_used, 0, words * sizeof(uint32_t));
+#endif
+    return !c->diagnostic.message;
 }
 
-static int initializer_nonzero(const uint32_t *values, unsigned count)
+static int initializer_nonzero(Compiler *c, unsigned count)
 {
+#ifdef SIDC_STREAM_BUILD
+    (void)count;
+    return c->initializer_nonzero;
+#else
     for (unsigned i = 0; i < count; ++i)
-        if (values[i] != 0) return 1;
+        if (c->initial_values[c->initial_used + i] != 0) return 1;
     return 0;
+#endif
 }
 
 /* A typed local function pointer: int (*fn)(int,int), or void (*fn)(void).
@@ -3812,8 +3947,8 @@ static int local_declaration(Compiler *c)
                 } else {
                     constant(c, 0);
                     for (unsigned i = 0; i < words; ++i) store_local(c, slot + i, 0);
-                    if (is_array) initialize_array(c, count, struct_id, slot, NULL, 0);
-                    else initialize_record(c, struct_id, slot, NULL, 1);
+                    if (is_array) initialize_array(c, count, struct_id, slot, 0, 0);
+                    else initialize_record(c, struct_id, slot, 0, 1);
                 }
             }
         } while (!c->diagnostic.message && accept(c, ','));
@@ -3867,7 +4002,7 @@ static int local_declaration(Compiler *c)
             if (accept(c, '=')) {
                 constant(c, 0);
                 for (unsigned i = 0; i < count; ++i) store_local(c, slot + i, 0);
-                initialize_array(c, count, RECORD_INT, slot, NULL, 0);
+                initialize_array(c, count, RECORD_INT, slot, 0, 0);
             }
         } else {
             unsigned slot = add_local(c, name, (uint8_t)item_type);
@@ -4300,11 +4435,10 @@ static void global_declaration(Compiler *c, Token name, uint8_t type, int is_con
             if (init_words > INITIAL_WORD_LIMIT - c->initial_used) {
                 initialize_large_zero(c);
             } else {
-                uint32_t *values = initialize_static_buffer(c, init_words);
-                if (!values) return;
-                initialize_array(c, init_words, RECORD_INT, 0, values,
+                if (!initialize_static_buffer(c, init_words)) return;
+                initialize_array(c, init_words, RECORD_INT, 0, 1,
                                  type == GLOBAL_BYTE_ARRAY);
-                if (initializer_nonzero(values, init_words)) {
+                if (initializer_nonzero(c, init_words)) {
                     initialized = 1;
                     c->initial_used += init_words;
                 }
@@ -4440,11 +4574,10 @@ static void external_declaration(Compiler *c)
             if (words > INITIAL_WORD_LIMIT - c->initial_used) {
                 initialize_large_zero(c);
             } else {
-                uint32_t *values = initialize_static_buffer(c, words);
-                if (!values) return;
-                if (is_array) initialize_array(c, count, index, 0, values, 0);
-                else initialize_record(c, index, 0, values, 1);
-                if (initializer_nonzero(values, words)) {
+                if (!initialize_static_buffer(c, words)) return;
+                if (is_array) initialize_array(c, count, index, 0, 1, 0);
+                else initialize_record(c, index, 0, 1, 1);
+                if (initializer_nonzero(c, words)) {
                     initialized = 1;
                     c->initial_used += words;
                 }
@@ -4730,14 +4863,14 @@ parse_function_common:
         patch_branch(c, c->returns[i], epilogue, 0);
 }
 
-uint32_t sidc_compile_project(const SidcSource *sources,
+static uint32_t compile_backend(const SidcSource *sources,
                               const char *const *source_paths, uint32_t count,
                               SidcReadApiCore read_apicore,
                               SidcReadHeader read_header,
                               const void **app, SidcDiagnostic *diagnostic)
 {
     Compiler *c = &compiler;
-    *app = NULL;
+    if (app) *app = NULL;
     *diagnostic = (SidcDiagnostic){0};
     if (!sources || count == 0 || count > SIDC_MAX_SOURCES) {
         *diagnostic = (SidcDiagnostic){"Invalid number of source files", 1, 1, 0, NULL};
@@ -4754,11 +4887,22 @@ uint32_t sidc_compile_project(const SidcSource *sources,
         total += sources[i].length;
     }
 
+#ifdef SIDC_STREAM_BUILD
+    progress_source_total = total;
+    progress_source_done = 0;
+    progress_next_percent = 5u;
+    progress_report("Parse/codegen", 0, total);
+#endif
     memset(c, 0, sizeof(*c));
     c->header_reader = read_header;
     c->api_reader = read_apicore;
     c->current_header = -1;
+#ifdef SIDC_STREAM_BUILD
+    image_write(c, 0, sidc_runtime, sizeof(sidc_runtime));
+    if (c->diagnostic.message) { *diagnostic = c->diagnostic; return 0; }
+#else
     memcpy(output.image, sidc_runtime, sizeof(sidc_runtime));
+#endif
     c->pc = sizeof(sidc_runtime);
     for (uint32_t i = 0; i < count && !c->diagnostic.message; ++i) {
         c->file_index = (uint8_t)i;
@@ -4780,7 +4924,18 @@ uint32_t sidc_compile_project(const SidcSource *sources,
         }
         while (!c->diagnostic.message && c->token.kind != TOK_END)
             external_declaration(c);
+#ifdef SIDC_STREAM_BUILD
+        progress_source_done += sources[i].length;
+        if (!c->diagnostic.message)
+            progress_parse(c);
+#endif
     }
+#ifdef SIDC_STREAM_BUILD
+    if (!c->diagnostic.message && progress_next_percent <= 100u)
+        progress_report("Parse/codegen", total, total);
+    if (!c->diagnostic.message)
+        progress_report("Link/patch", 0, 0);
+#endif
 
     if (!c->diagnostic.message) {
         Token main_name = {.text = "main", .length = 4};
@@ -4818,8 +4973,10 @@ uint32_t sidc_compile_project(const SidcSource *sources,
     uint32_t globals_at = (strings_end + 3u) & ~3u;
     uint32_t image_size = c->global_bytes ? globals_at + c->global_bytes : strings_end;
     uint32_t arrays_at = (image_size + SBV2_ALIGN - 1u) & ~(SBV2_ALIGN - 1u);
-    if (image_size > IMAGE_LIMIT)
-        error(c, "Native image and data exceed 1 MiB");
+    if (image_size < strings_end || image_size > IMAGE_LIMIT ||
+        globals_at < strings_end || arrays_at < image_size ||
+        c->array_bytes > IMAGE_LIMIT - arrays_at)
+        error(c, "Native image/data exceed available V2 address region");
 
     uint32_t stack_bytes = 0;
     for (unsigned i = 0; i < c->address_count && !c->diagnostic.message; ++i) {
@@ -4851,6 +5008,39 @@ uint32_t sidc_compile_project(const SidcSource *sources,
         *diagnostic = c->diagnostic;
         return 0;
     }
+#ifdef SIDC_STREAM_BUILD
+    progress_report("Write data", 0, 0);
+    image_write(c, c->pc, c->strings, c->string_bytes);
+    uint32_t padded_size = (image_size + 3u) & ~3u;
+    image_zero(c, strings_end, padded_size - strings_end);
+    for (unsigned i = 0; i < c->global_count && !c->diagnostic.message; ++i) {
+        const Global *global = &c->globals[i];
+        if (global->in_data) {
+            /* Read initializer words in chunks, convert byte arrays in the
+               scratch buffer, and write contiguous output blocks. */
+            uint32_t word_buf[256];
+            uint8_t byte_buf[256];
+            unsigned j = 0;
+            while (j < global->init_count && !c->diagnostic.message) {
+                uint32_t n = global->init_count - j;
+                if (n > 256) n = 256;
+                if (!stream_read(c, 1, (global->init_offset + j) * 4u,
+                                 word_buf, n * 4u)) break;
+                if (global->type == GLOBAL_BYTE_ARRAY) {
+                    for (uint32_t k = 0; k < n; ++k) byte_buf[k] = (uint8_t)word_buf[k];
+                    image_write(c, globals_at + global->offset + j, byte_buf, n);
+                } else {
+                    image_write(c, globals_at + global->offset + j * 4u,
+                                word_buf, n * 4u);
+                }
+                j += n;
+            }
+        } else if (global->type != GLOBAL_BYTE_ARRAY && global->type != GLOBAL_INT_ARRAY &&
+                   global->type != GLOBAL_STRUCT && global->type != GLOBAL_STRUCT_ARRAY) {
+            image_write(c, globals_at + global->offset, &global->initial, 4);
+        }
+    }
+#else
     memcpy(output.image + c->pc, c->strings, c->string_bytes);
     uint32_t padded_size = (image_size + 3u) & ~3u;
     memset(output.image + strings_end, 0, padded_size - strings_end);
@@ -4870,6 +5060,7 @@ uint32_t sidc_compile_project(const SidcSource *sources,
             memcpy(output.image + globals_at + global->offset, &global->initial, sizeof(uint32_t));
         }
     }
+#endif
 
     SBV2Header h = {0};
     memcpy(h.magic, SBV2_MAGIC_BYTES, sizeof(h.magic));
@@ -4886,10 +5077,88 @@ uint32_t sidc_compile_project(const SidcSource *sources,
     h.alignment = SBV2_ALIGN;
     h.reserved = stack_bytes;
     h.flags = stack_bytes ? SBV2_FLAG_PRIVATE_PSP : 0u;
+#ifdef SIDC_STREAM_BUILD
+    /* Perform the final CRC pass over the staged applet, not over RAM. */
+    if (c->diagnostic.message) { *diagnostic = c->diagnostic; return 0; }
+    progress_report("CRC", 0, image_size);
+    uint32_t crc_next_percent = 10u;
+    uint8_t chunk[1024];
+    uint32_t crc = 0xffffffffu;
+    for (uint32_t done = 0; done < image_size && !c->diagnostic.message;) {
+        uint32_t n = image_size - done;
+        if (n > sizeof(chunk)) n = sizeof(chunk);
+        if (!stream_read(c, 0, SBV2_HEADER_SIZE + done, chunk, n)) break;
+        for (uint32_t i = 0; i < n; ++i) {
+            crc ^= chunk[i];
+            for (unsigned bit = 0; bit < 8u; ++bit)
+                crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0);
+        }
+        done += n;
+        if (progress_callback && image_size >= 32768u) {
+            /* Use only 32-bit arithmetic. CGARM does not link 64-bit
+               division support and CRC progress must not require it. */
+            uint32_t whole = image_size / 100u;
+            uint32_t fraction = image_size % 100u;
+            uint32_t low = 0u;
+            uint32_t high = 100u;
+            while (low < high) {
+                uint32_t midpoint = (low + high + 1u) / 2u;
+                uint32_t threshold = whole * midpoint +
+                                     (fraction * midpoint + 99u) / 100u;
+                if (done >= threshold)
+                    low = midpoint;
+                else
+                    high = midpoint - 1u;
+            }
+            uint32_t percent = low;
+            if (percent >= crc_next_percent && crc_next_percent <= 100u) {
+                progress_report("CRC", done, image_size);
+                crc_next_percent = (percent / 10u + 1u) * 10u;
+            }
+        }
+    }
+    if (!c->diagnostic.message && crc_next_percent <= 100u)
+        progress_report("CRC", image_size, image_size);
+    h.image_crc32 = ~crc;
+    if (!c->diagnostic.message &&
+        !SBV2_ValidateHeader(&h, h.file_size, 0x5f0000u, 0x5f0000u))
+        error(c, "Generated app exceeds V2 loader memory/address limits");
+    if (!c->diagnostic.message)
+        stream_write(c, 0, 0, &h, sizeof(h));
+    if (c->diagnostic.message) { *diagnostic = c->diagnostic; return 0; }
+    return h.file_size;
+#else
     h.image_crc32 = SBV2_CRC32(output.image, image_size);
     output.header = h;
-    *app = &output;
+    if (app) *app = &output;
     return h.file_size;
+#endif
+}
+
+#ifdef SIDC_STREAM_BUILD
+uint32_t sidc_compile_project_stream(const SidcSource *sources,
+                              const char *const *source_paths, uint32_t count,
+                              SidcReadApiCore read_apicore, SidcReadHeader read_header,
+                              const SidcStreamIO *io, SidcDiagnostic *diagnostic)
+{
+    if (!io || !io->write || !io->read) {
+        *diagnostic = (SidcDiagnostic){"Missing SD-backed output writer",1,1,0,NULL};
+        return 0;
+    }
+    stream_io = io;
+    uint32_t result = compile_backend(sources, source_paths, count, read_apicore,
+                                       read_header, NULL, diagnostic);
+    stream_io = NULL;
+    return result;
+}
+#else
+uint32_t sidc_compile_project(const SidcSource *sources,
+                              const char *const *source_paths, uint32_t count,
+                              SidcReadApiCore read_apicore, SidcReadHeader read_header,
+                              const void **app, SidcDiagnostic *diagnostic)
+{
+    return compile_backend(sources, source_paths, count, read_apicore,
+                           read_header, app, diagnostic);
 }
 
 uint32_t sidc_compile_sources(const SidcSource *sources, uint32_t count,
@@ -4907,3 +5176,5 @@ uint32_t sidc_compile(const char *source, uint32_t length,
     const SidcSource input = {source, length};
     return sidc_compile_sources(&input, 1u, read_apicore, app, diagnostic);
 }
+
+#endif /* SIDC_STREAM_BUILD */

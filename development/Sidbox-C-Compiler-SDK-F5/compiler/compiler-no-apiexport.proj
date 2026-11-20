@@ -4,7 +4,7 @@
     "appletFormat": "v2",
     "v2Linker": "llvm",
     "outputAppName": "compiler.app",
-    "appSizeKb": 4096,
+    "appSizeKb": 2048,
     "v2HeapKb": 16,
     "v2StackKb": 8,
     "files": [
@@ -27,6 +27,6 @@
         "functionSections": true,
         "dataSections": true,
         "stackUsage": true,
-        "extraFlags": "-include string.h -include stdlib.h"
+        "extraFlags": "-include string.h -include stdlib.h -DSIDC_STREAM_BUILD"
     }
 }

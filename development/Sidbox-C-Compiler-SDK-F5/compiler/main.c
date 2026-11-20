@@ -29,6 +29,48 @@ static CGGadget save_button;
 static CGGadget build_button;
 static CGGadget status_label;
 
+#ifdef SIDC_STREAM_BUILD
+/* Progress always goes to the firmware console, including GUI editor builds.
+   Stages with no known total are printed once as announcements. */
+static void console_compile_progress(void *context, const char *phase,
+                                     uint32_t completed, uint32_t total)
+{
+    (void)context;
+    if (!GUICoderGirl || !GUICoderGirl->console) return;
+    if (!total) {
+        GUICoderGirl->console->printf(0, "[SIDC] %s...\n", phase);
+    } else {
+        /* Exact integer percentage with only 32-bit arithmetic.
+           Avoid __aeabi_uldivmod, which the CGARM V2 linker does not supply.
+           Calculate ceil(total * midpoint / 100) without overflow. */
+        uint32_t whole = total / 100u;
+        uint32_t fraction = total % 100u;
+        uint32_t low = 0u;
+        uint32_t high = 100u;
+        while (low < high) {
+            uint32_t midpoint = (low + high + 1u) / 2u;
+            uint32_t threshold = whole * midpoint +
+                                 (fraction * midpoint + 99u) / 100u;
+            if (completed >= threshold)
+                low = midpoint;
+            else
+                high = midpoint - 1u;
+        }
+        uint32_t percent = low;
+        GUICoderGirl->console->printf(0, "[SIDC] %s %u%% (%u/%u bytes)\n",
+            phase, (unsigned)percent, (unsigned)completed, (unsigned)total);
+    }
+    /* console->printf queues text, but a long foreground compilation can
+       prevent the desktop from servicing/painting that queue. The SDK exposes
+       osupdate specifically for cooperative OS servicing. Pump ONLY for CLI
+       builds: the GUI editor calls build() from its window procedure, where
+       recursive event dispatch would not be safe. Progress already arrives
+       at coarse milestones, not once per emitted instruction. */
+    if (!editor && GUICoderGirl->osupdate)
+        GUICoderGirl->osupdate();
+}
+#endif
+
 static const char starter[] =
     "extern int sidbox_message(const char *message);\n"
     "\n"
@@ -42,8 +84,8 @@ static void show_status(const char *text)
 {
     if (status_label)
         SBOS_LabelSetText(status_label, text);
-    else
-        GUICoderGirl->console->printf(0, "%s\n", text);
+    /* Report results and errors even when invoked from the GUI editor. */
+    GUICoderGirl->console->printf(0, "%s\n", text);
 }
 
 /* Resolve a .c input or .app output against the shell working directory.
@@ -261,6 +303,198 @@ static int write_file(char *path, const void *bytes, uint32_t length)
     return FR_OK;
 }
 
+/* SD-backed random-access binary writer. The 4 KiB page prevents one
+ * FatFS transaction per emitted Thumb instruction, but patches to earlier
+ * branches and addresses remain supported. The previous .app is never
+ * modified until the validated new file has been closed successfully. */
+#ifdef SIDC_STREAM_BUILD
+enum { STREAM_PAGE_BYTES = 4096 };
+typedef struct {
+    void *file;
+    uint8_t page[STREAM_PAGE_BYTES];
+    uint32_t page_base;
+    uint32_t valid;
+    uint32_t size_on_disk;
+    int page_loaded;
+    int dirty;
+} StreamFile;
+typedef struct {
+    StreamFile app;
+    StreamFile init;
+    char init_path[PATH_CAPACITY];
+    int io_error;
+} StreamFiles;
+static StreamFiles stream_files;
+
+static int stream_flush_page(StreamFile *s)
+{
+    if (!s->dirty) return 1;
+    const API_FILEIO *fs = SYSFileSystem;
+    uint32_t written = 0;
+    if (fs->sbstream_seek(s->file, s->page_base) != FR_OK ||
+        fs->sbstream_write(s->file, s->page, s->valid, &written) != FR_OK ||
+        written != s->valid) return 0;
+    if (s->page_base + s->valid > s->size_on_disk)
+        s->size_on_disk = s->page_base + s->valid;
+    s->dirty = 0;
+    return 1;
+}
+static int stream_load_page(StreamFile *s, uint32_t base)
+{
+    if (s->page_loaded && s->page_base == base) return 1;
+    if (!stream_flush_page(s)) return 0;
+    memset(s->page, 0, sizeof(s->page));
+    s->page_base = base;
+    s->page_loaded = 1;
+    s->valid = 0;
+    if (base < s->size_on_disk) {
+        uint32_t n = s->size_on_disk - base;
+        uint32_t received = 0;
+        if (n > STREAM_PAGE_BYTES) n = STREAM_PAGE_BYTES;
+        const API_FILEIO *fs = SYSFileSystem;
+        if (fs->sbstream_seek(s->file, base) != FR_OK ||
+            fs->sbstream_read(s->file, s->page, n, &received) != FR_OK ||
+            received != n) return 0;
+        s->valid = n;
+    }
+    return 1;
+}
+static int stream_write_bytes(StreamFile *s, uint32_t offset,
+                              const void *bytes, uint32_t count)
+{
+    if (count && (!s->file || offset > UINT32_MAX - count)) return 0;
+    const uint8_t *src = (const uint8_t *)bytes;
+    while (count) {
+        uint32_t base = offset & ~(uint32_t)(STREAM_PAGE_BYTES - 1u);
+        if (!stream_load_page(s, base)) return 0;
+        uint32_t in_page = offset - base;
+        uint32_t n = STREAM_PAGE_BYTES - in_page;
+        if (n > count) n = count;
+        memcpy(s->page + in_page, src, n);
+        if (in_page + n > s->valid) s->valid = in_page + n;
+        s->dirty = 1;
+        offset += n; src += n; count -= n;
+    }
+    return 1;
+}
+static int stream_read_bytes(StreamFile *s, uint32_t offset,
+                             void *bytes, uint32_t count)
+{
+    if (!s->file || !stream_flush_page(s) ||
+        offset > s->size_on_disk || count > s->size_on_disk - offset)
+        return 0;
+    if (!count) return 1;
+    const API_FILEIO *fs = SYSFileSystem;
+    uint32_t received = 0;
+    return fs->sbstream_seek(s->file, offset) == FR_OK &&
+           fs->sbstream_read(s->file, bytes, count, &received) == FR_OK &&
+           received == count;
+}
+static int stream_io_write(void *ctx, int initializer, uint32_t offset,
+                           const void *bytes, uint32_t count)
+{
+    StreamFiles *streams = (StreamFiles *)ctx;
+    int ok = stream_write_bytes(initializer ? &streams->init : &streams->app,
+                                offset, bytes, count);
+    if (!ok) streams->io_error = 1;
+    return ok;
+}
+static int stream_io_read(void *ctx, int initializer, uint32_t offset,
+                          void *bytes, uint32_t count)
+{
+    StreamFiles *streams = (StreamFiles *)ctx;
+    int ok = stream_read_bytes(initializer ? &streams->init : &streams->app,
+                               offset, bytes, count);
+    if (!ok) streams->io_error = 1;
+    return ok;
+}
+static int stream_open_file(StreamFile *s, const char *path)
+{
+    memset(s, 0, sizeof(*s));
+    /* Only our own temporary filenames are replaced; the last good .app
+       is deliberately untouched until commit. */
+    SYSFileSystem->sbremove(path);
+    return SYSFileSystem->sbstream_open(path,
+        SD_READ | SD_WRITE | SD_CREATE_NEW, &s->file) == FR_OK;
+}
+static int stream_close_file(StreamFile *s)
+{
+    if (!s->file) return 1;
+    int ok = stream_flush_page(s);
+    if (ok) ok = SYSFileSystem->sbstream_flush(s->file) == FR_OK;
+    FRESULT closed = SYSFileSystem->sbstream_close(s->file);
+    s->file = NULL;
+    return ok && closed == FR_OK;
+}
+static int commit_staged_app(void)
+{
+    const API_FILEIO *fs = SYSFileSystem;
+    uint32_t flags = 0;
+    FRESULT result = fs->sbstat(app_path, &flags, NULL);
+    int saved_previous = 0;
+    if (result == FR_OK) {
+        result = (flags & 1u) ? FR_DENIED : fs->sbrename(app_path, backup_path);
+        saved_previous = result == FR_OK;
+    } else if (result == FR_NO_FILE) result = FR_OK;
+    if (result == FR_OK) result = fs->sbrename(stage_path, app_path);
+    if (result != FR_OK) {
+        if (saved_previous && fs->sbrename(backup_path, app_path) != FR_OK)
+            return RESTORE_FAILED;
+        fs->sbremove(stage_path);
+        return result;
+    }
+    if (saved_previous && fs->sbremove(backup_path) != FR_OK)
+        return BACKUP_RETAINED;
+    return FR_OK;
+}
+static int stream_compile_app(const SidcSource *sources,
+                              const char *const *paths, unsigned count,
+                              SidcDiagnostic *diag, uint32_t *file_bytes)
+{
+    const size_t length = strlen(app_path);
+    if (length + sizeof(".sidc-new") > sizeof(stage_path) ||
+        length + sizeof(".sidc-old") > sizeof(backup_path) ||
+        length + sizeof(".sidc-ini") > sizeof(stream_files.init_path))
+        return FR_INVALID_NAME;
+    snprintf(stage_path, sizeof(stage_path), "%s.sidc-new", app_path);
+    snprintf(backup_path, sizeof(backup_path), "%s.sidc-old", app_path);
+    snprintf(stream_files.init_path, sizeof(stream_files.init_path),
+             "%s.sidc-ini", app_path);
+    stream_files.io_error = 0;
+    if (!stream_open_file(&stream_files.app, stage_path)) return FR_DISK_ERR;
+    if (!stream_open_file(&stream_files.init, stream_files.init_path)) {
+        stream_close_file(&stream_files.app);
+        SYSFileSystem->sbremove(stage_path);
+        return FR_DISK_ERR;
+    }
+    SidcStreamIO io = {&stream_files, stream_io_write, stream_io_read};
+    sidc_set_progress_callback(console_compile_progress, NULL);
+    *file_bytes = sidc_compile_project_stream(sources, paths, count,
+                       read_apicore, read_header, &io, diag);
+    sidc_set_progress_callback(NULL, NULL);
+    /* Close both files before renaming, including on failure. */
+    int good = stream_close_file(&stream_files.init);
+    if (!stream_close_file(&stream_files.app)) good = 0;
+    SYSFileSystem->sbremove(stream_files.init_path);
+    if (!good || !*file_bytes || stream_files.io_error) {
+        SYSFileSystem->sbremove(stage_path);
+        return *file_bytes ? FR_DISK_ERR : FR_OK;
+    }
+    uint32_t actual_size = 0;
+    uint32_t stage_flags = 0;
+    if (SYSFileSystem->sbstat(stage_path, &stage_flags, &actual_size) != FR_OK ||
+        (stage_flags & 1u) ||
+        actual_size != *file_bytes) {
+        SYSFileSystem->sbremove(stage_path);
+        return FR_DISK_ERR;
+    }
+    GUICoderGirl->console->printf(0, "[SIDC] Installing validated .app...\n");
+    if (!editor && GUICoderGirl->osupdate)
+        GUICoderGirl->osupdate();
+    return commit_staged_app();
+}
+#endif
+
 static int report_file(int result, const char *action)
 {
     if (result == FR_OK)
@@ -282,25 +516,36 @@ static int report_file(int result, const char *action)
 
 static int build(uint32_t length)
 {
-    const void *app;
     SidcDiagnostic diagnostic;
     SidcSource one = {source, length};
     const char *paths[SIDC_MAX_SOURCES];
     for (unsigned i = 0; i < input_count; ++i)
         paths[i] = input_paths[i];
     const char *editor_path = source_path;
-    uint32_t bytes = sidc_compile_project(input_count ? input_sources : &one,
-                                          input_count ? paths : &editor_path,
-                                          input_count ? input_count : 1u,
-                                          read_apicore, read_header, &app, &diagnostic);
-    if (bytes == 0) {
+    const SidcSource *units = input_count ? input_sources : &one;
+    const char *const *unit_paths = input_count ? paths : &editor_path;
+    const unsigned count = input_count ? input_count : 1u;
+    uint32_t bytes = 0;
+    int result = FR_OK;
+#ifdef SIDC_STREAM_BUILD
+    GUICoderGirl->console->printf(0, "[SIDC] Compiling %u source file(s)...\n", count);
+    if (!editor && GUICoderGirl->osupdate)
+        GUICoderGirl->osupdate();
+    result = stream_compile_app(units, unit_paths, count, &diagnostic, &bytes);
+#else
+    const void *app;
+    bytes = sidc_compile_project(units, unit_paths, count,
+                                 read_apicore, read_header, &app, &diagnostic);
+    if (bytes) result = write_file(app_path, app, bytes);
+#endif
+    if (bytes == 0 && diagnostic.message) {
         const char *problem = diagnostic.path ? diagnostic.path
                             : diagnostic.file_index < input_count
                             ? input_paths[diagnostic.file_index] : source_path;
         const char *leaf = strrchr(problem, '/');
         snprintf(status, sizeof(status), "%s:%u:%u %s", leaf ? leaf + 1 : problem,
                  (unsigned)diagnostic.line, (unsigned)diagnostic.column,
-                 diagnostic.message ? diagnostic.message : "Compilation failed");
+                 diagnostic.message);
         show_status(status);
         if (editor && !diagnostic.path && diagnostic.line && diagnostic.column) {
             SBOS_TextAreaSetCaret(editor, diagnostic.line - 1u, diagnostic.column - 1u);
@@ -308,8 +553,7 @@ static int build(uint32_t length)
         }
         return 0;
     }
-    int result = write_file(app_path, app, bytes);
-    if (result == FR_OK) {
+    if (result == FR_OK && bytes) {
         const char *leaf = status_label ? strrchr(app_path, '/') : NULL;
         if (input_count > 1u)
             snprintf(status, sizeof(status), "Built %s (%u bytes, %u sources)",
@@ -318,6 +562,9 @@ static int build(uint32_t length)
             snprintf(status, sizeof(status), "Built %s (%u bytes)",
                      leaf ? leaf + 1 : app_path, (unsigned)bytes);
         show_status(status);
+    }
+    if (!bytes && result == FR_OK) {
+        show_status("Compilation produced no output"); return 0;
     }
     return report_file(result, "Build");
 }
