@@ -30,6 +30,19 @@ static CGGadget build_button;
 static CGGadget status_label;
 
 #ifdef SIDC_STREAM_BUILD
+/* A CLI compile owns a small progress window so OS timers remain active after
+   main() returns.  The shell receives job-start status; the final result is
+   printed asynchronously after the timer completes. */
+static CGWindow progress_window;
+static CGTimer compile_timer = CGTIMER_INVALID;
+static int compile_running;
+static int compile_in_callback;
+static SidcDiagnostic compile_diagnostic;
+static SidcSource editor_source;
+static const char *compile_paths[SIDC_MAX_SOURCES];
+#endif
+
+#ifdef SIDC_STREAM_BUILD
 /* Progress always goes to the firmware console, including GUI editor builds.
    Stages with no known total are printed once as announcements. */
 static void console_compile_progress(void *context, const char *phase,
@@ -60,14 +73,26 @@ static void console_compile_progress(void *context, const char *phase,
         GUICoderGirl->console->printf(0, "[SIDC] %s %u%% (%u/%u bytes)\n",
             phase, (unsigned)percent, (unsigned)completed, (unsigned)total);
     }
-    /* console->printf queues text, but a long foreground compilation can
-       prevent the desktop from servicing/painting that queue. The SDK exposes
-       osupdate specifically for cooperative OS servicing. Pump ONLY for CLI
-       builds: the GUI editor calls build() from its window procedure, where
-       recursive event dispatch would not be safe. Progress already arrives
-       at coarse milestones, not once per emitted instruction. */
-    if (!editor && GUICoderGirl->osupdate)
-        GUICoderGirl->osupdate();
+    /* Timer callback returns to the normal OS GUI loop after each chunk.
+       Calling osupdate() here could recurse into the compiler and corrupt its
+       parser state, so the timer owns the yielding/repaint boundary. */
+    if (status_label) {
+        if (!total) {
+            snprintf(status, sizeof(status), "%s...", phase);
+        } else {
+            uint32_t whole = total / 100u, fraction = total % 100u;
+            uint32_t low = 0u, high = 100u;
+            while (low < high) {
+                uint32_t middle = (low + high + 1u) / 2u;
+                uint32_t threshold = whole * middle +
+                    (fraction * middle + 99u) / 100u;
+                if (completed >= threshold) low = middle;
+                else high = middle - 1u;
+            }
+            snprintf(status, sizeof(status), "%s: %u%%", phase, (unsigned)low);
+        }
+        SBOS_LabelSetText(status_label, status);
+    }
 }
 #endif
 
@@ -447,9 +472,9 @@ static int commit_staged_app(void)
         return BACKUP_RETAINED;
     return FR_OK;
 }
-static int stream_compile_app(const SidcSource *sources,
-                              const char *const *paths, unsigned count,
-                              SidcDiagnostic *diag, uint32_t *file_bytes)
+static int stream_start_app(const SidcSource *sources,
+                            const char *const *paths, unsigned count,
+                            SidcDiagnostic *diag)
 {
     const size_t length = strlen(app_path);
     if (length + sizeof(".sidc-new") > sizeof(stage_path) ||
@@ -469,30 +494,40 @@ static int stream_compile_app(const SidcSource *sources,
     }
     SidcStreamIO io = {&stream_files, stream_io_write, stream_io_read};
     sidc_set_progress_callback(console_compile_progress, NULL);
-    *file_bytes = sidc_compile_project_stream(sources, paths, count,
-                       read_apicore, read_header, &io, diag);
+    if (!sidc_job_begin(sources, paths, count, read_apicore, read_header, &io, diag)) {
+        sidc_job_end();
+        sidc_set_progress_callback(NULL, NULL);
+        stream_close_file(&stream_files.init);
+        stream_close_file(&stream_files.app);
+        SYSFileSystem->sbremove(stream_files.init_path);
+        SYSFileSystem->sbremove(stage_path);
+        return FR_OK; /* diagnostic describes parser or library failure */
+    }
+    return FR_OK;
+}
+
+static int stream_finish_app(uint32_t file_bytes, int success)
+{
+    sidc_job_end();
     sidc_set_progress_callback(NULL, NULL);
-    /* Close both files before renaming, including on failure. */
     int good = stream_close_file(&stream_files.init);
     if (!stream_close_file(&stream_files.app)) good = 0;
     SYSFileSystem->sbremove(stream_files.init_path);
-    if (!good || !*file_bytes || stream_files.io_error) {
+    if (!good || stream_files.io_error || !success || !file_bytes) {
         SYSFileSystem->sbremove(stage_path);
-        return *file_bytes ? FR_DISK_ERR : FR_OK;
+        return good && !stream_files.io_error ? FR_OK : FR_DISK_ERR;
     }
     uint32_t actual_size = 0;
     uint32_t stage_flags = 0;
     if (SYSFileSystem->sbstat(stage_path, &stage_flags, &actual_size) != FR_OK ||
-        (stage_flags & 1u) ||
-        actual_size != *file_bytes) {
+        (stage_flags & 1u) || actual_size != file_bytes) {
         SYSFileSystem->sbremove(stage_path);
         return FR_DISK_ERR;
     }
     GUICoderGirl->console->printf(0, "[SIDC] Installing validated .app...\n");
-    if (!editor && GUICoderGirl->osupdate)
-        GUICoderGirl->osupdate();
     return commit_staged_app();
 }
+
 #endif
 
 static int report_file(int result, const char *action)
@@ -514,8 +549,134 @@ static int report_file(int result, const char *action)
     return result == BACKUP_RETAINED;
 }
 
+#ifdef SIDC_STREAM_BUILD
+static void compile_tick(void *user)
+{
+    (void)user;
+    if (!compile_running || compile_in_callback) return;
+    compile_in_callback = 1;
+    uint32_t bytes = 0;
+    int state = sidc_job_step(128u, &bytes);
+    if (state == 0) {
+        compile_in_callback = 0;
+        return; /* Return to OS: queued console/GUI gets painted here. */
+    }
+    compile_running = 0;
+    if (compile_timer != CGTIMER_INVALID) {
+        SBOS_TimerCancel(compile_timer);
+        SBOS_FreeTimer(compile_timer);
+        compile_timer = CGTIMER_INVALID;
+    }
+    int result = stream_finish_app(bytes, state > 0);
+    if (compile_diagnostic.message) {
+        const char *problem = compile_diagnostic.path ? compile_diagnostic.path
+            : compile_diagnostic.file_index < input_count
+            ? input_paths[compile_diagnostic.file_index] : source_path;
+        const char *leaf = strrchr(problem, '/');
+        snprintf(status, sizeof(status), "%s:%u:%u %s", leaf ? leaf + 1 : problem,
+                 (unsigned)compile_diagnostic.line, (unsigned)compile_diagnostic.column,
+                 compile_diagnostic.message);
+        show_status(status);
+        if (editor && !compile_diagnostic.path &&
+            compile_diagnostic.line && compile_diagnostic.column) {
+            SBOS_TextAreaSetCaret(editor, compile_diagnostic.line - 1u,
+                                  compile_diagnostic.column - 1u);
+            SBOS_GadgetSetFocus(editor);
+        }
+    } else if (result == FR_OK && state > 0 && bytes) {
+        const char *leaf = status_label ? strrchr(app_path, '/') : NULL;
+        if (input_count > 1u)
+            snprintf(status, sizeof(status), "Built %s (%u bytes, %u sources)",
+                leaf ? leaf + 1 : app_path, (unsigned)bytes, input_count);
+        else
+            snprintf(status, sizeof(status), "Built %s (%u bytes)",
+                leaf ? leaf + 1 : app_path, (unsigned)bytes);
+        show_status(status);
+    } else if (result != FR_OK) {
+        report_file(result, "Build");
+    } else {
+        show_status("Compilation produced no output");
+    }
+    compile_in_callback = 0;
+}
+
+static CGWindowProcRes progress_proc(CGWindow win, const CGMessage_t *message)
+{
+    (void)win;
+    if (message && message->mtype == CGMSG_WINDOW &&
+        message->eventClass == CGEVT_WIN_CLOSE_REQUEST && compile_running)
+        return CGPROC_HANDLED; /* Do not unload the applet mid-build. */
+    return CGPROC_DEFAULT;
+}
+
+static int open_progress_window(void)
+{
+    progress_window = SBOS_CreateWindow(NULL, 55, 75, 370, 92,
+        "Sidbox C compiler", SBX_WF_VISIBLE | SBX_WF_CLOSE |
+        SBX_WF_TITLE_BAR | SBX_WF_MOVEABLE | SBX_WF_SCREENBOUND);
+    if (progress_window == 0u || progress_window == 0xffu)
+        return 0;
+    status_label = SBOS_CreateLabel(progress_window, 10, 23, 345, 20,
+                                   "Preparing compile...", GAD_TOOL_DEFAULT);
+    if (!status_label) {
+        SBOS_CloseWindow(progress_window);
+        progress_window = 0;
+        return 0;
+    }
+    SBOS_SetWindowProc(progress_window, progress_proc);
+    return 1;
+}
+#endif
+
 static int build(uint32_t length)
 {
+#ifdef SIDC_STREAM_BUILD
+    if (compile_running) {
+        show_status("Build already in progress");
+        return 0;
+    }
+    const SidcSource *units;
+    if (input_count) {
+        units = input_sources;
+        for (unsigned i = 0; i < input_count; ++i)
+            compile_paths[i] = input_paths[i];
+    } else {
+        editor_source = (SidcSource){source, length};
+        units = &editor_source;
+        compile_paths[0] = source_path;
+    }
+    const unsigned count = input_count ? input_count : 1u;
+    compile_diagnostic = (SidcDiagnostic){0};
+    GUICoderGirl->console->printf(0, "[SIDC] Compiling %u source file(s) in chunks...\n", count);
+    int result = stream_start_app(units, compile_paths, count, &compile_diagnostic);
+    if (compile_diagnostic.message) {
+        show_status(compile_diagnostic.message);
+        return 0;
+    }
+    if (result != FR_OK) {
+        report_file(result, "Open scratch files");
+        return 0;
+    }
+    compile_timer = SBOS_CreateTimer();
+    if (compile_timer == CGTIMER_INVALID) {
+        stream_finish_app(0, 0);
+        show_status("No free OS timer for compilation");
+        return 0;
+    }
+    compile_running = 1;
+    compile_in_callback = 0;
+    /* Run only a bounded amount of compiler work per timer tick. */
+    int timer_result = SBOS_TimerSet(compile_timer, 10u, 10u, compile_tick, NULL);
+    if (timer_result < 0) {
+        compile_running = 0;
+        SBOS_FreeTimer(compile_timer);
+        compile_timer = CGTIMER_INVALID;
+        stream_finish_app(0, 0);
+        show_status("Could not schedule compilation timer");
+        return 0;
+    }
+    return 1;
+#else
     SidcDiagnostic diagnostic;
     SidcSource one = {source, length};
     const char *paths[SIDC_MAX_SOURCES];
@@ -525,58 +686,48 @@ static int build(uint32_t length)
     const SidcSource *units = input_count ? input_sources : &one;
     const char *const *unit_paths = input_count ? paths : &editor_path;
     const unsigned count = input_count ? input_count : 1u;
-    uint32_t bytes = 0;
-    int result = FR_OK;
-#ifdef SIDC_STREAM_BUILD
-    GUICoderGirl->console->printf(0, "[SIDC] Compiling %u source file(s)...\n", count);
-    if (!editor && GUICoderGirl->osupdate)
-        GUICoderGirl->osupdate();
-    result = stream_compile_app(units, unit_paths, count, &diagnostic, &bytes);
-#else
-    const void *app;
-    bytes = sidc_compile_project(units, unit_paths, count,
-                                 read_apicore, read_header, &app, &diagnostic);
-    if (bytes) result = write_file(app_path, app, bytes);
-#endif
+    const void *app = NULL;
+    uint32_t bytes = sidc_compile_project(units, unit_paths, count,
+                                         read_apicore, read_header, &app, &diagnostic);
+    int result = bytes ? write_file(app_path, app, bytes) : FR_OK;
     if (bytes == 0 && diagnostic.message) {
-        const char *problem = diagnostic.path ? diagnostic.path
-                            : diagnostic.file_index < input_count
-                            ? input_paths[diagnostic.file_index] : source_path;
-        const char *leaf = strrchr(problem, '/');
-        snprintf(status, sizeof(status), "%s:%u:%u %s", leaf ? leaf + 1 : problem,
-                 (unsigned)diagnostic.line, (unsigned)diagnostic.column,
-                 diagnostic.message);
+        snprintf(status, sizeof(status), "%u:%u %s", (unsigned)diagnostic.line,
+                 (unsigned)diagnostic.column, diagnostic.message);
         show_status(status);
-        if (editor && !diagnostic.path && diagnostic.line && diagnostic.column) {
-            SBOS_TextAreaSetCaret(editor, diagnostic.line - 1u, diagnostic.column - 1u);
-            SBOS_GadgetSetFocus(editor);
-        }
         return 0;
     }
     if (result == FR_OK && bytes) {
-        const char *leaf = status_label ? strrchr(app_path, '/') : NULL;
-        if (input_count > 1u)
-            snprintf(status, sizeof(status), "Built %s (%u bytes, %u sources)",
-                     leaf ? leaf + 1 : app_path, (unsigned)bytes, input_count);
-        else
-            snprintf(status, sizeof(status), "Built %s (%u bytes)",
-                     leaf ? leaf + 1 : app_path, (unsigned)bytes);
+        snprintf(status, sizeof(status), "Built %s (%u bytes)", app_path, (unsigned)bytes);
         show_status(status);
-    }
-    if (!bytes && result == FR_OK) {
-        show_status("Compilation produced no output"); return 0;
+        return 1;
     }
     return report_file(result, "Build");
+#endif
 }
 
 static CGWindowProcRes editor_proc(CGWindow win, const CGMessage_t *message)
 {
     (void)win;
+#ifdef SIDC_STREAM_BUILD
+    /* Closing a window carrying the active timer would invalidate the GUI
+       event owner while SD output is being patched. */
+    if (compile_running && message && message->mtype == CGMSG_WINDOW &&
+        message->eventClass == CGEVT_WIN_CLOSE_REQUEST) {
+        show_status("Please wait until compilation completes");
+        return CGPROC_HANDLED;
+    }
+#endif
     if (!message || message->mtype != CGMSG_GADGET ||
         message->eventClass != CGEVT_GAD_ACTIVATED ||
         (message->gadget != save_button && message->gadget != build_button))
         return CGPROC_DEFAULT;
 
+#ifdef SIDC_STREAM_BUILD
+    if (compile_running) {
+        show_status("Build in progress, editor input locked");
+        return CGPROC_HANDLED;
+    }
+#endif
     uint32_t bytes = SBOS_TextAreaGetText(editor, source, SIDC_SOURCE_LIMIT + 1u);
     if (bytes == 0 || bytes > SIDC_SOURCE_LIMIT + 1u) {
         show_status("Source exceeds 1 MiB");
@@ -672,7 +823,23 @@ int main(int argc, char **argv)
     if (!edit) {
         if (!read_sources(count, sources))
             return 1;
+#ifdef SIDC_STREAM_BUILD
+        if (!open_progress_window()) {
+            show_status("Cannot open compiler progress window (OS timer requires window)");
+            return 1;
+        }
+        if (!build(0)) {
+            SBOS_CloseWindow(progress_window);
+            progress_window = 0;
+            status_label = 0;
+            return 1;
+        }
+        /* This GUI applet retains its window after main returns.  The shell
+           sees successful job START; completion/error follows on the console. */
+        return 0;
+#else
         return !build(0);
+#endif
     }
 
     uint32_t length = 0;

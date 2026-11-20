@@ -25,7 +25,7 @@
     "modSizeKb": 0,
     "openTabs": [
         "compiler.c",
-        "export_apicore.c"
+        "main.c"
     ],
     "outputAppName": "compiler.app",
     "projectType": "gui",

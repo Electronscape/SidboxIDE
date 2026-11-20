@@ -301,6 +301,48 @@ static uint32_t progress_source_total;
 static uint32_t progress_source_done;
 static uint32_t progress_next_percent;
 
+
+/* Exactly one compiler job may be active in an applet.  A job is a persistent
+ * continuation; no live C parser stack frame may cross a timer tick. */
+typedef struct {
+    SidcSource sources[SIDC_MAX_SOURCES];
+    const char *paths[SIDC_MAX_SOURCES];
+    SidcReadApiCore api_reader;
+    SidcReadHeader header_reader;
+    SidcStreamIO io;
+    SidcDiagnostic *diagnostic;
+    uint32_t count;
+    uint32_t total;
+    uint32_t unit;
+    uint32_t call_index;
+    uint32_t address_index;
+    uint32_t global_index;
+    uint32_t init_index;
+    uint32_t strings_end;
+    uint32_t globals_at;
+    uint32_t image_size;
+    uint32_t arrays_at;
+    uint32_t padded_size;
+    uint32_t stack_bytes;
+    uint32_t frame;
+    uint32_t stack_arg;
+    uint32_t crc_done;
+    uint32_t crc;
+    uint32_t crc_next_percent;
+    uint32_t file_bytes;
+    unsigned phase;
+    unsigned function_open;
+    unsigned unit_open;
+} SidcJobState;
+
+enum {
+    JOB_IDLE, JOB_SOURCE, JOB_PARSE, JOB_LINK_START, JOB_LINK_CALLS,
+    JOB_LINK_ADDRESSES, JOB_DATA_START, JOB_DATA_GLOBALS, JOB_CRC,
+    JOB_COMPLETE, JOB_FAILED
+};
+static SidcJobState cooperative_job;
+static SidcJobState *active_job;
+
 void sidc_set_progress_callback(SidcProgress callback, void *context)
 {
     progress_callback = callback;
@@ -4494,6 +4536,23 @@ static void global_declaration(Compiler *c, Token name, uint8_t type, int is_con
                 .init_count=(uint32_t)(initialized ? init_words : 0u)};
 }
 
+/* Both synchronous and cooperative codegen use the same epilogue. */
+static void finish_function_body(Compiler *c, uint32_t frame, uint32_t stack_arg)
+{
+    if (c->return_type != RETURN_VOID)
+        constant(c, 0);
+    uint32_t epilogue = c->pc;
+    unsigned words = (c->local_peak + 1u) & ~1u;
+    emit(c, (uint16_t)(0xb000 | words));
+    emit(c, 0xbd80);
+    if (c->diagnostic.message) return;
+    put16(frame, (uint16_t)(0xb080 | words));
+    if (stack_arg)
+        put16(stack_arg, (uint16_t)((words + 2u) * 4u));
+    for (unsigned i = 0; i < c->return_count; ++i)
+        patch_branch(c, c->returns[i], epilogue, 0);
+}
+
 static void external_declaration(Compiler *c)
 {
     if (accept(c, TOK_TYPEDEF)) {
@@ -4847,20 +4906,18 @@ parse_function_common:
             store_local(c, slot + j, 0);
         }
     }
-    block(c);
-    if (c->return_type != RETURN_VOID)
-        constant(c, 0);                                        /* fallthrough from main */
-    uint32_t epilogue = c->pc;
-    unsigned words = (c->local_peak + 1u) & ~1u;
-    emit(c, (uint16_t)(0xb000 | words));                        /* add sp, #frame */
-    emit(c, 0xbd80);                                           /* pop {r7, pc} */
-    if (c->diagnostic.message)
+#ifdef SIDC_STREAM_BUILD
+    if (active_job) {
+        /* The prologue and parameter handling are finished.  Keep Compiler
+           state alive; the timer will parse the outer body in statement batches. */
+        active_job->frame = frame;
+        active_job->stack_arg = stack_arg;
+        active_job->function_open = 1u;
         return;
-    put16(frame, (uint16_t)(0xb080 | words));                   /* sub sp, #frame */
-    if (stack_arg)
-        put16(stack_arg, (uint16_t)((words + 2u) * 4u));
-    for (unsigned i = 0; i < c->return_count; ++i)
-        patch_branch(c, c->returns[i], epilogue, 0);
+    }
+#endif
+    block(c);
+    finish_function_body(c, frame, stack_arg);
 }
 
 static uint32_t compile_backend(const SidcSource *sources,
@@ -5150,6 +5207,330 @@ uint32_t sidc_compile_project_stream(const SidcSource *sources,
                                        read_header, NULL, diagnostic);
     stream_io = NULL;
     return result;
+}
+
+/* Start an SD-backed compile, but do not run the parser in this call.
+   Caller must keep all source buffers and paths unchanged until completion. */
+int sidc_job_begin(const SidcSource *sources,
+                   const char *const *source_paths, uint32_t count,
+                   SidcReadApiCore read_apicore, SidcReadHeader read_header,
+                   const SidcStreamIO *io, SidcDiagnostic *diagnostic)
+{
+    if (!diagnostic) return 0;
+    *diagnostic = (SidcDiagnostic){0};
+    if (active_job || !sources || !io || !io->write || !io->read ||
+        count == 0u || count > SIDC_MAX_SOURCES) {
+        *diagnostic = (SidcDiagnostic){"Invalid or overlapping compiler job", 1, 1, 0, NULL};
+        return 0;
+    }
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!sources[i].source || sources[i].length > SIDC_SOURCE_LIMIT - total) {
+            *diagnostic = (SidcDiagnostic){"Combined sources exceed 1 MiB", 1, 1, i, NULL};
+            return 0;
+        }
+        total += sources[i].length;
+    }
+    SidcJobState *j = &cooperative_job;
+    memset(j, 0, sizeof(*j));
+    for (uint32_t i = 0; i < count; ++i) {
+        j->sources[i] = sources[i];
+        j->paths[i] = source_paths ? source_paths[i] : NULL;
+    }
+    j->count = count;
+    j->total = total;
+    j->io = *io; /* the caller's stack-local IO wrapper need not survive */
+    j->api_reader = read_apicore;
+    j->header_reader = read_header;
+    j->diagnostic = diagnostic;
+    j->phase = JOB_SOURCE;
+    active_job = j;
+    stream_io = &j->io;
+    Compiler *c = &compiler;
+    memset(c, 0, sizeof(*c));
+    c->header_reader = read_header;
+    c->api_reader = read_apicore;
+    c->current_header = -1;
+    progress_source_total = total;
+    progress_source_done = 0;
+    progress_next_percent = 5u;
+    progress_report("Parse/codegen", 0, total);
+    image_write(c, 0, sidc_runtime, sizeof(sidc_runtime));
+    c->pc = sizeof(sidc_runtime);
+    if (c->diagnostic.message) {
+        *diagnostic = c->diagnostic;
+        j->phase = JOB_FAILED;
+        return 0;
+    }
+    return 1;
+}
+
+/* Always call this after completion, failure, or cancellation, and close the
+   SD files in the applet.  No generated app is installed on an aborted job. */
+void sidc_job_end(void)
+{
+    active_job = NULL;
+    stream_io = NULL;
+    cooperative_job.phase = JOB_IDLE;
+}
+
+/* Return 0 while building, +1 on success, -1 on failure.  At most
+   'budget' outer-level statements or relocations are processed per call.
+   Nested C statements can be more expensive, but never yield with a live
+   recursive-descent stack, avoiding corrupted scopes and branch fixups. */
+int sidc_job_step(uint32_t budget, uint32_t *file_bytes)
+{
+    SidcJobState *j = active_job;
+    Compiler *c = &compiler;
+    if (!j || !file_bytes) return -1;
+    *file_bytes = 0;
+    if (!budget) budget = 1u;
+    if (budget > 512u) budget = 512u;
+    if (j->phase == JOB_FAILED) return -1;
+    if (j->phase == JOB_COMPLETE) { *file_bytes = j->file_bytes; return 1; }
+
+    if (j->phase == JOB_SOURCE) {
+        if (j->unit == j->count) {
+            if (progress_next_percent <= 100u)
+                progress_report("Parse/codegen", j->total, j->total);
+            progress_report("Link/patch", 0, 0);
+            j->phase = JOB_LINK_START;
+        } else {
+            uint32_t i = j->unit;
+            c->file_index = (uint8_t)i;
+            c->source = j->sources[i].source;
+            c->active_path = j->paths[i];
+            c->current_header = -1;
+            c->include_depth = 0;
+            c->conditional_depth = 0;
+            c->macro_count = 0;
+            c->length = j->sources[i].length;
+            c->pos = 0;
+            c->line = c->column = 1;
+            advance(c);
+            advance(c);
+            while (c->token.kind == TOK_APIS_INCLUDE && !c->diagnostic.message) {
+                if (c->api.call_count == 0 && !load_apicore(c, j->api_reader))
+                    break;
+                advance(c);
+            }
+            j->phase = JOB_PARSE;
+        }
+    } else if (j->phase == JOB_PARSE) {
+        for (uint32_t n = 0; n < budget && !c->diagnostic.message; ++n) {
+            if (j->function_open) {
+                if (c->token.kind == '}' || c->token.kind == TOK_END) {
+                    expect(c, '}', "Expected '}' at end of block");
+                    if (!c->diagnostic.message)
+                        finish_function_body(c, j->frame, j->stack_arg);
+                    j->function_open = 0;
+                } else if (!local_declaration(c)) {
+                    statement(c);
+                }
+            } else if (c->token.kind == TOK_END) {
+                progress_source_done += j->sources[j->unit].length;
+                ++j->unit;
+                /* progress_parse adds c->pos; we already accounted for the
+                   completed file.  Avoid reporting its bytes twice. */
+                uint32_t old_pos = c->pos;
+                c->pos = 0;
+                progress_parse(c);
+                c->pos = old_pos;
+                j->phase = JOB_SOURCE;
+                break;
+            } else {
+                external_declaration(c);
+            }
+        }
+    } else if (j->phase == JOB_LINK_START) {
+        Token main_name = {.text="main", .length=4};
+        int main_index = find_function(c, main_name);
+        if (main_index < 0 || !c->functions[main_index].defined ||
+            (c->functions[main_index].arity != 0 &&
+             c->functions[main_index].param_types[1] != LOCAL_ARGV)) {
+            error(c, "Define int main(void) or int main(int argc, char **argv)");
+        } else {
+            patch_branch(c, 0, c->functions[main_index].entry, 0);
+        }
+        if (c->heap_used && !c->diagnostic.message) {
+            j->frame = c->pc; /* temporary allocation entry, no function active */
+            for (unsigned i = 0; i < sizeof(sidc_heap_alloc_code); i += 2u)
+                emit(c, (uint16_t)(sidc_heap_alloc_code[i] |
+                    ((uint16_t)sidc_heap_alloc_code[i + 1u] << 8)));
+            j->stack_arg = c->pc; /* temporary free entry */
+            for (unsigned i = 0; i < sizeof(sidc_heap_free_code); i += 2u)
+                emit(c, (uint16_t)(sidc_heap_free_code[i] |
+                    ((uint16_t)sidc_heap_free_code[i + 1u] << 8)));
+        }
+        j->phase = JOB_LINK_CALLS;
+    } else if (j->phase == JOB_LINK_CALLS) {
+        for (uint32_t n = 0; n < budget && j->call_index < c->call_count &&
+             !c->diagnostic.message; ++n, ++j->call_index) {
+            Reference ref = c->calls[j->call_index];
+            if (ref.target == 0xfffeu || ref.target == 0xfffdu) {
+                patch_branch(c, ref.at, ref.target == 0xfffeu ? j->frame : j->stack_arg, 1);
+            } else {
+                Function *fn = &c->functions[ref.target];
+                if (!fn->defined) error_at(c, fn->name, "Called function has no definition");
+                else patch_branch(c, ref.at, fn->entry, 1);
+            }
+        }
+        if (j->call_index == c->call_count && !c->diagnostic.message) {
+            j->strings_end = c->pc + c->string_bytes;
+            j->globals_at = (j->strings_end + 3u) & ~3u;
+            j->image_size = c->global_bytes ? j->globals_at + c->global_bytes : j->strings_end;
+            j->arrays_at = (j->image_size + SBV2_ALIGN - 1u) & ~(SBV2_ALIGN - 1u);
+            if (j->image_size < j->strings_end || j->image_size > IMAGE_LIMIT ||
+                j->globals_at < j->strings_end || j->arrays_at < j->image_size ||
+                c->array_bytes > IMAGE_LIMIT - j->arrays_at)
+                error(c, "Native image/data exceed available V2 address region");
+            j->phase = JOB_LINK_ADDRESSES;
+        }
+    } else if (j->phase == JOB_LINK_ADDRESSES) {
+        for (uint32_t n = 0; n < budget && j->address_index < c->address_count &&
+             !c->diagnostic.message; ++n, ++j->address_index) {
+            AddressReference ref = c->addresses[j->address_index];
+            uint32_t target;
+            if (ref.kind == ADDRESS_STRING) {
+                target = c->pc + ref.target;
+            } else if (ref.kind == ADDRESS_GLOBAL) {
+                const Global *global = &c->globals[ref.target];
+                target = (!global->in_data &&
+                    (global->type == GLOBAL_BYTE_ARRAY || global->type == GLOBAL_INT_ARRAY ||
+                     global->type == GLOBAL_STRUCT || global->type == GLOBAL_STRUCT_ARRAY) ?
+                    j->arrays_at : j->globals_at) + global->offset;
+            } else {
+                const Function *fn = &c->functions[ref.target];
+                if (!fn->defined) {
+                    error_at(c, fn->name, "Callback function has no definition");
+                    break;
+                }
+                target = fn->entry | 1u;
+                j->stack_bytes = CALLBACK_STACK_BYTES;
+            }
+            uint32_t delta = target - ((ref.at + 12u) & ~3u);
+            unsigned reg = ref.kind == ADDRESS_GLOBAL ? 1u : 0u;
+            wide_immediate(ref.at, 0xf240, reg, (uint16_t)delta);
+            wide_immediate(ref.at + 4u, 0xf2c0, reg, (uint16_t)(delta >> 16));
+        }
+        if (j->address_index == c->address_count && !c->diagnostic.message) {
+            progress_report("Write data", 0, 0);
+            j->phase = JOB_DATA_START;
+        }
+    } else if (j->phase == JOB_DATA_START) {
+        image_write(c, c->pc, c->strings, c->string_bytes);
+        j->padded_size = (j->image_size + 3u) & ~3u;
+        image_zero(c, j->strings_end, j->padded_size - j->strings_end);
+        j->phase = JOB_DATA_GLOBALS;
+    } else if (j->phase == JOB_DATA_GLOBALS) {
+        uint32_t work = 0;
+        while (j->global_index < c->global_count && work < budget && !c->diagnostic.message) {
+            const Global *g = &c->globals[j->global_index];
+            if (g->in_data && j->init_index < g->init_count) {
+                uint32_t word_buf[256];
+                uint8_t byte_buf[256];
+                uint32_t n = g->init_count - j->init_index;
+                if (n > 256u) n = 256u;
+                if (n > budget - work) n = budget - work;
+                if (!stream_read(c, 1, (g->init_offset + j->init_index) * 4u,
+                                 word_buf, n * 4u)) break;
+                if (g->type == GLOBAL_BYTE_ARRAY) {
+                    for (uint32_t k = 0; k < n; ++k) byte_buf[k] = (uint8_t)word_buf[k];
+                    image_write(c, j->globals_at + g->offset + j->init_index, byte_buf, n);
+                } else {
+                    image_write(c, j->globals_at + g->offset + j->init_index * 4u,
+                                word_buf, n * 4u);
+                }
+                j->init_index += n;
+                work += n;
+            } else {
+                if (!g->in_data && g->type != GLOBAL_BYTE_ARRAY &&
+                    g->type != GLOBAL_INT_ARRAY && g->type != GLOBAL_STRUCT &&
+                    g->type != GLOBAL_STRUCT_ARRAY)
+                    image_write(c, j->globals_at + g->offset, &g->initial, 4);
+                ++j->global_index;
+                j->init_index = 0;
+                ++work;
+            }
+        }
+        if (j->global_index == c->global_count && !c->diagnostic.message) {
+            progress_report("CRC", 0, j->image_size);
+            j->crc = 0xffffffffu;
+            j->crc_next_percent = 10u;
+            j->phase = JOB_CRC;
+        }
+    } else if (j->phase == JOB_CRC) {
+        uint8_t chunk[1024];
+        uint32_t budget_bytes = budget * 64u;
+        for (uint32_t amount = 0; amount < budget_bytes &&
+             j->crc_done < j->image_size && !c->diagnostic.message;) {
+            uint32_t n = j->image_size - j->crc_done;
+            if (n > sizeof(chunk)) n = sizeof(chunk);
+            if (n > budget_bytes - amount) n = budget_bytes - amount;
+            if (!stream_read(c, 0, SBV2_HEADER_SIZE + j->crc_done, chunk, n)) break;
+            for (uint32_t k = 0; k < n; ++k) {
+                j->crc ^= chunk[k];
+                for (unsigned bit = 0; bit < 8u; ++bit)
+                    j->crc = (j->crc >> 1) ^ ((j->crc & 1u) ? 0xedb88320u : 0);
+            }
+            j->crc_done += n;
+            amount += n;
+        }
+        if (progress_callback && j->image_size >= 32768u &&
+            j->crc_next_percent <= 100u) {
+            uint32_t total = j->image_size;
+            uint32_t whole = total / 100u;
+            uint32_t fraction = total % 100u;
+            uint32_t low = 0u, high = 100u;
+            while (low < high) {
+                uint32_t middle = (low + high + 1u) / 2u;
+                uint32_t threshold = whole * middle + (fraction * middle + 99u) / 100u;
+                if (j->crc_done >= threshold) low = middle;
+                else high = middle - 1u;
+            }
+            if (low >= j->crc_next_percent) {
+                progress_report("CRC", j->crc_done, j->image_size);
+                j->crc_next_percent = (low / 10u + 1u) * 10u;
+            }
+        }
+        if (j->crc_done == j->image_size && !c->diagnostic.message) {
+            if (j->crc_next_percent <= 100u)
+                progress_report("CRC", j->image_size, j->image_size);
+            SBV2Header h = {0};
+            memcpy(h.magic, SBV2_MAGIC_BYTES, sizeof(h.magic));
+            h.version = SBV2_VERSION;
+            h.header_size = SBV2_HEADER_SIZE;
+            h.file_size = SBV2_HEADER_SIZE + j->padded_size;
+            h.image_size = j->image_size;
+            uint32_t data_end = j->arrays_at + c->array_bytes;
+            h.memory_size = ((data_end + SBV2_ALIGN - 1u) & ~(SBV2_ALIGN - 1u)) + j->stack_bytes;
+            h.entry_offset = 1;
+            h.link_base = 0xd0010000u;
+            h.relocation_offset = h.file_size;
+            h.alignment = SBV2_ALIGN;
+            h.reserved = j->stack_bytes;
+            h.flags = j->stack_bytes ? SBV2_FLAG_PRIVATE_PSP : 0u;
+            h.image_crc32 = ~j->crc;
+            if (!SBV2_ValidateHeader(&h, h.file_size, 0x5f0000u, 0x5f0000u))
+                error(c, "Generated app exceeds V2 loader memory/address limits");
+            if (!c->diagnostic.message)
+                stream_write(c, 0, 0, &h, sizeof(h));
+            if (!c->diagnostic.message) {
+                j->file_bytes = h.file_size;
+                j->phase = JOB_COMPLETE;
+            }
+        }
+    }
+    if (c->diagnostic.message) {
+        *j->diagnostic = c->diagnostic;
+        j->phase = JOB_FAILED;
+        return -1;
+    }
+    if (j->phase == JOB_COMPLETE) {
+        *file_bytes = j->file_bytes;
+        return 1;
+    }
+    return 0;
 }
 #else
 uint32_t sidc_compile_project(const SidcSource *sources,

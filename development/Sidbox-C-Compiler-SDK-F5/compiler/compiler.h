@@ -59,6 +59,16 @@ typedef struct {
 typedef void (*SidcProgress)(void *context, const char *phase,
                              uint32_t completed, uint32_t total);
 void sidc_set_progress_callback(SidcProgress callback, void *context);
+
+/* Cooperative SD build: begin once, call step from a GUI timer, then end.
+   step: 0 = working, 1 = complete, -1 = diagnostic/I/O failure.
+   All input buffers must stay valid until end() is called. */
+int sidc_job_begin(const SidcSource *sources,
+                   const char *const *source_paths, uint32_t count,
+                   SidcReadApiCore read_apicore, SidcReadHeader read_header,
+                   const SidcStreamIO *io, SidcDiagnostic *diagnostic);
+int sidc_job_step(uint32_t work_budget, uint32_t *file_bytes);
+void sidc_job_end(void);
 #endif
 
 /* Write a complete validated V2 file via SD-backed random-access callbacks.
